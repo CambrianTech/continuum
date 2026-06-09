@@ -3,6 +3,15 @@
 > The mind controls its own destiny. RAG, memory, and thought processes are sacred.
 > The persona decides what context it needs based on what it's servicing.
 
+> **Status @ 2026-05-16.** This document's *principle* — every queue item carries its own RAG contract, the persona composes generically, the substrate stays domain-agnostic — is still load-bearing and unchanged. Its *implementation sketch* (TypeScript-shaped `BaseQueueItem`, `PersonaUser.consolidate(contract)`, hand-coded RAG composition) has been superseded by the canonical Rust substrate. Read the principle here; read the implementation in:
+>
+> - **[CBAR-SUBSTRATE-ARCHITECTURE.md](architecture/CBAR-SUBSTRATE-ARCHITECTURE.md)** — `RuntimeFrame` / `CognitionTurnFrame` is the Rust analog of "queue item carries its own context." The `ArtifactSelector` typed subscription replaces the TS pattern of declaring sources by string.
+> - **[GENOME-FOUNDRY-SENTINEL.md](architecture/GENOME-FOUNDRY-SENTINEL.md)** — `DemandAlignedRecall` is the typed Rust API the persona reaches for; `CapabilityQuery → RankedPool` replaces the TS pattern of consolidating sources manually.
+>
+> If the queue-item-carries-its-RAG-contract sentence ever conflicts with what the canonical docs say about `RuntimeFrame` + `DemandAlignedRecall`, defer to the canonical docs.
+>
+> **Cross-grid extension (added 2026-05-20).** The same principle — *every routable artifact carries its own typed contract; the substrate stays domain-agnostic* — is what `airc-protocol::Envelope` + header projections do at the grid layer. Forge-alloy contracts (`forge.persona.*`, `forge.capability.*`, …) are the cross-machine analog of `RuntimeFrame` / `ArtifactSelector`: typed body + projected headers a subscriber filters on without parsing the body. See [AGENT-BACKBONE-INTEGRATION.md](architecture/AGENT-BACKBONE-INTEGRATION.md) §3.4 + §4.3.
+
 ## The Core Principle
 
 **Every queue item declares its own RAG requirements.** The persona doesn't need hardcoded knowledge of what context to gather — the work itself carries that information, and the persona consolidates across the queue item's requirements before responding.

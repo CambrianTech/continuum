@@ -16,7 +16,7 @@
  * State accumulates — milestone N builds on milestone N-1's code.
  */
 
-import type { Pipeline, PipelineStep } from '../../../workers/continuum-core/bindings/modules/sentinel';
+import type { Pipeline, PipelineStep } from '../../../../core/continuum-core/bindings/modules/sentinel';
 import type { ProjectStudentPipelineConfig } from '../../genome/shared/AcademyTypes';
 import { academyEvent, ACADEMY_EVENTS } from '../../genome/shared/AcademyTypes';
 

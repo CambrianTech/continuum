@@ -25,11 +25,19 @@ export const SYSTEM_MILESTONES = {
   DEPLOY_PORTS_ALLOCATED: 'deploy_ports_allocated',
   DEPLOY_COMPLETE: 'deploy_complete',
   
+  // Rust Core Phase Milestones (continuum#722 — supervised lifecycle)
+  // continuum-core-server is the Rust IPC backbone. Pre-fix it was BUILT
+  // by parallel-start.sh but never LAUNCHED — users had to manually spawn
+  // it in another tab. SystemOrchestrator now owns its lifecycle (spawn,
+  // health-gate, auto-restart on crash with panic-loop detection).
+  CORE_START: 'core_start',
+  CORE_READY: 'core_ready',
+
   // Server Phase Milestones
   SERVER_START: 'server_start',
   SERVER_PROCESS_READY: 'server_process_ready',
   SERVER_WEBSOCKET_READY: 'server_websocket_ready',
-  SERVER_HTTP_READY: 'server_http_ready', 
+  SERVER_HTTP_READY: 'server_http_ready',
   SERVER_BOOTSTRAP_COMPLETE: 'server_bootstrap_complete',
   SERVER_COMMANDS_LOADED: 'server_commands_loaded',
   SERVER_READY: 'server_ready',
@@ -64,23 +72,46 @@ export const MILESTONE_DEPENDENCIES: Record<SystemMilestone, readonly SystemMile
   [SYSTEM_MILESTONES.DEPLOY_FILES_COMPLETE]: [],
   [SYSTEM_MILESTONES.DEPLOY_COMPLETE]: [],
   
+  // Rust core startup — runs in parallel with the TS server (different
+  // socket / process). CORE_READY does NOT block SERVER_READY or
+  // BROWSER_LAUNCH (corrected from initial #977 design): if the Rust
+  // core SIGABRTs (e.g. vendored llama.cpp Metal cleanup assert, the
+  // original #56 bug observed live 2026-05-01), the user must still
+  // see a browser — widgets handle missing-IPC gracefully (the original
+  // #722 symptom of "blank widgets on refresh" is preferable to "no
+  // browser at all"; the deferred Layer D from #977 will surface a
+  // "Core offline" banner so users know what's degraded).
+  //
+  // SYSTEM_HEALTHY composes BOTH SERVER_READY + CORE_READY — that's
+  // the right "everything green" signal for monitoring + health checks
+  // without gating user-facing entry points on the Rust core.
+  [SYSTEM_MILESTONES.CORE_START]: [],
+  [SYSTEM_MILESTONES.CORE_READY]: [SYSTEM_MILESTONES.CORE_START],
+
   // Essential server startup sequence
   [SYSTEM_MILESTONES.SERVER_START]: [],
   [SYSTEM_MILESTONES.SERVER_PROCESS_READY]: [SYSTEM_MILESTONES.SERVER_START],
   [SYSTEM_MILESTONES.SERVER_WEBSOCKET_READY]: [SYSTEM_MILESTONES.SERVER_START],
-  [SYSTEM_MILESTONES.SERVER_HTTP_READY]: [SYSTEM_MILESTONES.SERVER_START], 
+  [SYSTEM_MILESTONES.SERVER_HTTP_READY]: [SYSTEM_MILESTONES.SERVER_START],
   [SYSTEM_MILESTONES.SERVER_BOOTSTRAP_COMPLETE]: [SYSTEM_MILESTONES.SERVER_START],
   [SYSTEM_MILESTONES.SERVER_COMMANDS_LOADED]: [SYSTEM_MILESTONES.SERVER_START],
+  // SERVER_READY does NOT depend on CORE_READY — see comment above on
+  // CORE_READY. TS server can serve the browser without the Rust core
+  // being healthy; widgets fall back to cached data + show degraded
+  // surface.
   [SYSTEM_MILESTONES.SERVER_READY]: [SYSTEM_MILESTONES.SERVER_START],
-  
+
   // CRITICAL: Browser launch MUST wait for server ready
   [SYSTEM_MILESTONES.BROWSER_LAUNCH_INITIATED]: [SYSTEM_MILESTONES.SERVER_READY],
   [SYSTEM_MILESTONES.BROWSER_PROCESS_STARTED]: [SYSTEM_MILESTONES.BROWSER_LAUNCH_INITIATED],
   [SYSTEM_MILESTONES.BROWSER_WEBSOCKET_CONNECTED]: [SYSTEM_MILESTONES.BROWSER_LAUNCH_INITIATED],
   [SYSTEM_MILESTONES.BROWSER_INTERFACE_LOADED]: [SYSTEM_MILESTONES.BROWSER_LAUNCH_INITIATED],
   [SYSTEM_MILESTONES.BROWSER_READY]: [SYSTEM_MILESTONES.BROWSER_LAUNCH_INITIATED],
-  
-  [SYSTEM_MILESTONES.SYSTEM_HEALTHY]: [SYSTEM_MILESTONES.SERVER_READY],
+
+  // SYSTEM_HEALTHY = BOTH server + core green (the monitoring signal).
+  // Distinct from per-entry-point requirements above so the browser
+  // doesn't gate on a degraded core.
+  [SYSTEM_MILESTONES.SYSTEM_HEALTHY]: [SYSTEM_MILESTONES.SERVER_READY, SYSTEM_MILESTONES.CORE_READY],
   [SYSTEM_MILESTONES.SYSTEM_READY]: [SYSTEM_MILESTONES.SERVER_READY, SYSTEM_MILESTONES.BROWSER_READY]
 };
 
@@ -191,6 +222,24 @@ export const MILESTONE_COMPLETION_CRITERIA = {
     processes: [],
     ports: ['websocket_server', 'http_server'],
     signals: ['server_ready', 'system_healthy']
+  },
+
+  // Rust core milestones (continuum#722) — see SystemOrchestrator.executeCoreReady
+  [SYSTEM_MILESTONES.CORE_START]: {
+    description: 'continuum-core-server process spawned (or skipped in docker mode)',
+    checkFunction: 'checkCoreStart',
+    files: [],
+    processes: ['continuum-core-server'],
+    ports: [],
+    signals: ['core_start']
+  },
+  [SYSTEM_MILESTONES.CORE_READY]: {
+    description: 'continuum-core-server Unix socket accepting connections',
+    checkFunction: 'checkCoreReady',
+    files: ['.continuum/sockets/continuum-core.sock'],
+    processes: ['continuum-core-server'],
+    ports: [],
+    signals: ['core_ready']
   },
   
   // Browser milestones - CRITICAL ORDERING

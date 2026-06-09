@@ -23,7 +23,7 @@ import { initializeSecrets, getSecret } from '../../../system/secrets/SecretMana
 import { Logger } from '../../../system/core/logging/Logger';
 import { RateLimiter, AsyncQueue, Semaphore, DaemonMetrics } from '../../../generator/DaemonConcurrency';
 import type { BaseResponsePayload } from '../../../system/core/types/ResponseTypes';
-import { RustCoreIPCClient, getContinuumCoreSocketPath } from '../../../workers/continuum-core/bindings/RustCoreIPC';
+import { RustCoreIPCClient, getContinuumCoreSocketPath } from '../../../../core/continuum-core/bindings/RustCoreIPC';
 import type { CollectionName } from '../../../shared/generated-collection-constants';
 import { MetricsCollector } from '../../../system/metrics/server/MetricsCollector';
 

@@ -12,7 +12,7 @@
  * Run with: npx tsx tests/integration/tts-stt-roundtrip.test.ts
  */
 
-import { RustCoreIPCClient, getContinuumCoreSocketPath } from '../../workers/continuum-core/bindings/RustCoreIPC';
+import { RustCoreIPCClient, getContinuumCoreSocketPath } from '../../../core/continuum-core/bindings/RustCoreIPC';
 import * as fs from 'fs';
 
 const SOCKET_PATH = getContinuumCoreSocketPath();

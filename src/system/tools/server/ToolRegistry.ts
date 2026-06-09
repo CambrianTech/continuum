@@ -21,7 +21,7 @@ import type { CommandSignature } from '../../../commands/list/shared/ListTypes';
 import type { UUID } from '../../core/types/CrossPlatformUUID';
 import type { MediaItem } from '../../data/entities/ChatMessageEntity';
 import type { CommandParams, CommandResult } from '../../core/types/JTAGTypes';
-import { AIProviderDaemon } from '../../../daemons/ai-provider-daemon/shared/AIProviderDaemon';
+import { RustCoreIPCClient } from '../../../../core/continuum-core/bindings/RustCoreIPC';
 import { getSearchWorkerClient } from '../../../shared/ipc/SearchWorkerClient';
 
 import { List } from '../../../commands/list/shared/ListTypes';
@@ -84,11 +84,10 @@ export class ToolRegistry {
   private tools: Map<string, ToolDefinition> = new Map();
   private initialized = false;
 
-  // Semantic search: tool embeddings cache
-  private toolEmbeddings: Map<string, number[]> = new Map();
-  private embeddingsGeneratedAt: number = 0;
-  private readonly EMBEDDINGS_TTL_MS = 5 * 60 * 1000; // 5 min (matches tool cache)
-  private embeddingsGenerating: Promise<void> | null = null; // Prevent concurrent generation
+  // Semantic search: cache is owned by Rust (cognition/tool_embedding.rs).
+  // TS just dedups concurrent first-time embed calls per process.
+  private embeddingsGenerating: Promise<void> | null = null;
+  private embeddingsCached: boolean = false;
 
   private constructor() {}
 
@@ -391,66 +390,50 @@ export class ToolRegistry {
   // ===========================================================================
 
   /**
-   * Ensure tool embeddings are cached (lazy generation with TTL)
+   * Ensure the Rust-side tool embedding cache has been populated.
+   * Dedups concurrent first-time triggers per process; subsequent
+   * calls are no-ops (Rust cache persists for the process lifetime).
    */
   private async ensureToolEmbeddings(): Promise<void> {
-    const now = Date.now();
-    const isFresh = this.toolEmbeddings.size > 0 &&
-                    (now - this.embeddingsGeneratedAt) < this.EMBEDDINGS_TTL_MS;
-
-    if (isFresh) return;
-
-    // If already generating, wait for that to complete
+    if (this.embeddingsCached) return;
     if (this.embeddingsGenerating) {
       await this.embeddingsGenerating;
       return;
     }
-
-    // Generate embeddings for all tools
-    this.embeddingsGenerating = this.generateToolEmbeddings();
+    this.embeddingsGenerating = this.populateRustEmbeddingCache();
     try {
       await this.embeddingsGenerating;
+      this.embeddingsCached = true;
     } finally {
       this.embeddingsGenerating = null;
     }
   }
 
   /**
-   * Generate embeddings for all tools
+   * Populate the Rust-side `cognition/tool_embedding` cache via IPC.
+   * Replaces the TS-side `AIProviderDaemon.createEmbedding` + local
+   * `Map<string, number[]>` cache combo from before continuum#1411.
    */
-  private async generateToolEmbeddings(): Promise<void> {
+  private async populateRustEmbeddingCache(): Promise<void> {
     const tools = this.getAllTools();
-    const texts = tools.map(t => `${t.name}: ${t.description}`);
-
-    console.log(`🔍 ToolRegistry: Generating embeddings for ${tools.length} tools...`);
+    console.log(`🔍 ToolRegistry: Embedding ${tools.length} tools via Rust IPC...`);
     const startTime = Date.now();
-
-    try {
-      const response = await AIProviderDaemon.createEmbedding({
-        input: texts,
-        model: 'nomic-embed-text', // Local embedding, fast
-      });
-
-      // Cache results
-      this.toolEmbeddings.clear();
-      tools.forEach((tool, i) => {
-        if (response.embeddings[i]) {
-          this.toolEmbeddings.set(tool.name, response.embeddings[i]);
-        }
-      });
-      this.embeddingsGeneratedAt = Date.now();
-
-      const elapsed = Date.now() - startTime;
-      console.log(`✅ ToolRegistry: Generated ${this.toolEmbeddings.size} embeddings in ${elapsed}ms`);
-    } catch (error) {
-      console.error('❌ ToolRegistry: Failed to generate embeddings:', error);
-      throw error;
-    }
+    const client = await RustCoreIPCClient.getInstanceAsync();
+    const response = await client.cognitionEmbedTools({
+      tools: tools.map(t => ({ name: t.name, description: t.description })),
+    });
+    const elapsed = Date.now() - startTime;
+    console.log(
+      `✅ ToolRegistry: Rust embedded ${response.embeddings.length} tools in ${elapsed}ms (model=${response.model})`
+    );
   }
 
   /**
-   * Semantic search for tools by meaning
-   * Returns tools ranked by cosine similarity to query
+   * Semantic search for tools by meaning. Rust owns embedding generation,
+   * cache, cosine similarity, threshold filter, and ranking — this is a
+   * thin shim that maps the wire result into the registry's display shape
+   * (cleaned descriptions). See `cognition/tool_embedding.rs` for the
+   * substance.
    */
   async semanticSearchTools(
     query: string,
@@ -458,56 +441,21 @@ export class ToolRegistry {
   ): Promise<Array<{ name: string; description: string; category: string; similarity: number }>> {
     await this.ensureToolEmbeddings();
 
-    // Embed the query
-    const queryResponse = await AIProviderDaemon.createEmbedding({
-      input: [query],
-      model: 'nomic-embed-text',
+    const client = await RustCoreIPCClient.getInstanceAsync();
+    const rawResults = await client.cognitionSemanticSearchTools({
+      query,
+      limit,
     });
-    const queryVector = queryResponse.embeddings[0];
 
-    if (!queryVector) {
-      throw new Error('Failed to generate query embedding');
-    }
-
-    // Compute similarities
-    const results: Array<{ name: string; description: string; category: string; similarity: number }> = [];
-
-    for (const tool of this.tools.values()) {
-      const toolVector = this.toolEmbeddings.get(tool.name);
-      if (!toolVector) continue;
-
-      const similarity = this.cosineSimilarity(queryVector, toolVector);
-      if (similarity > 0.3) { // Threshold for relevance
-        const category = tool.name.includes('/') ? tool.name.split('/')[0] : 'root';
-        results.push({
-          name: tool.name,
-          description: this.cleanDescription(tool.description, 120) || tool.name,
-          category,
-          similarity: Math.round(similarity * 1000) / 1000, // Round to 3 decimals
-        });
-      }
-    }
-
-    // Sort by similarity descending
-    return results
-      .sort((a, b) => b.similarity - a.similarity)
-      .slice(0, limit);
-  }
-
-  /**
-   * Cosine similarity between two vectors
-   */
-  private cosineSimilarity(a: number[], b: number[]): number {
-    if (a.length !== b.length) return 0;
-
-    let dot = 0, magA = 0, magB = 0;
-    for (let i = 0; i < a.length; i++) {
-      dot += a[i] * b[i];
-      magA += a[i] * a[i];
-      magB += b[i] * b[i];
-    }
-    const magnitude = Math.sqrt(magA) * Math.sqrt(magB);
-    return magnitude === 0 ? 0 : dot / magnitude;
+    // Map Rust descriptions through cleanDescription for chat UX
+    // (Rust stores the raw description; the 120-char cap is a TS
+    // presentation concern).
+    return rawResults.map(r => ({
+      name: r.name,
+      description: this.cleanDescription(r.description, 120) || r.name,
+      category: r.category,
+      similarity: r.similarity,
+    }));
   }
 
   // ===========================================================================

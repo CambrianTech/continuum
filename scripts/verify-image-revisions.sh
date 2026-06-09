@@ -52,7 +52,7 @@ if [[ -z "${TAG:-}" ]]; then
 fi
 
 REGISTRY_HOST="ghcr.io"
-DEFAULT_IMAGES="ghcr.io/cambriantech/continuum-core:ghcr.io/cambriantech/continuum-core-vulkan:ghcr.io/cambriantech/continuum-core-cuda:ghcr.io/cambriantech/continuum-livekit-bridge:ghcr.io/cambriantech/continuum-node:ghcr.io/cambriantech/continuum-model-init:ghcr.io/cambriantech/continuum-widgets"
+DEFAULT_IMAGES="ghcr.io/cambriantech/continuum-core-vulkan:ghcr.io/cambriantech/continuum-core-cuda:ghcr.io/cambriantech/continuum-livekit-bridge:ghcr.io/cambriantech/continuum-node:ghcr.io/cambriantech/continuum-model-init:ghcr.io/cambriantech/continuum-widgets"
 IMAGES="${IMAGES:-$DEFAULT_IMAGES}"
 
 STALE_ARM64_OUT="${STALE_ARM64_OUT:-/dev/null}"
@@ -84,7 +84,7 @@ image_relevant_paths() {
   local ref="$1"
   case "$ref" in
     *continuum-core-cuda*|*continuum-core-vulkan*|*continuum-core*|*continuum-livekit-bridge*)
-      echo "src/workers docker/continuum-core.Dockerfile docker/continuum-core-cuda.Dockerfile docker/continuum-core-vulkan.Dockerfile docker/livekit-bridge.Dockerfile docker/livekit-entrypoint.sh docker/livekit.yaml"
+      echo "core docker/continuum-core.Dockerfile docker/continuum-core-cuda.Dockerfile docker/continuum-core-vulkan.Dockerfile docker/livekit-bridge.Dockerfile docker/livekit-entrypoint.sh docker/livekit.yaml"
       ;;
     *continuum-node*)
       # node-server bakes most of src/ + node_modules/ via npm ci. Anything
@@ -96,7 +96,7 @@ image_relevant_paths() {
       echo "src/widgets src/browser src/shared docker/widget-server.Dockerfile"
       ;;
     *continuum-model-init*)
-      echo "src/scripts/install-livekit.sh src/scripts/download-voice-models.sh docker/model-init.Dockerfile"
+      echo "tools/scripts/install-livekit.sh tools/scripts/download-voice-models.sh docker/model-init.Dockerfile"
       ;;
     *)
       # Unknown image — be safe, treat any change as relevant.
@@ -262,13 +262,19 @@ if [ "$WARN_ARM64" -ne 0 ]; then
   echo "⚠️  arm64 stale on $(wc -l < "$STALE_ARM64_OUT" | tr -d ' ') image(s):"
   while IFS= read -r REF; do echo "     - $REF"; done < "$STALE_ARM64_OUT"
   echo "   Mac M-series dev: run \`scripts/push-current-arch.sh\` to refresh."
-  echo "   Not blocking — CI auto-rebuild will catch this once #965 lands GitHub arm64 runner support."
+  echo "   Not blocking today, but CI will not rebuild this automatically."
 fi
 
 if [ "$FAILED" -ne 0 ]; then
   echo ""
   echo "❌ STALE-IMAGE GATE FAILED — amd64 image(s) at :$TAG built from a different commit."
-  echo "   The user-facing target must always be current. Re-push from the Linux/amd64 host and re-run."
+  echo "   The user-facing target must always be current."
+  echo ""
+  echo "   Fix:"
+  echo "     Linux/amd64 host: run \`scripts/push-current-arch.sh\`"
+  echo "     Then re-run this workflow."
+  echo ""
+  echo "   CI is a check here, not a builder; it will not auto-rebuild stale Rust images."
   exit 1
 fi
 echo ""

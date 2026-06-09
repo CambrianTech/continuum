@@ -22,7 +22,7 @@
  *  minSimilarity — min acceptable cosine similarity (default 0.65)
  */
 
-import type { Pipeline, PipelineStep } from '../../../workers/continuum-core/bindings/modules/sentinel';
+import type { Pipeline, PipelineStep } from '../../../../core/continuum-core/bindings/modules/sentinel';
 
 export interface SemanticTranslatorConfig {
   /** Content to translate */

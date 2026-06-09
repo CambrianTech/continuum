@@ -1,0 +1,10 @@
+{
+  "tierId": "m1_uma_16gb",
+  "label": "M1 16GB Unified Memory",
+  "category": "mseries",
+  "localVideoCapable": true,
+  "minParamsBMeaningful": 1.0,
+  "maxParamsBFits": 7.0,
+  "unifiedMemoryGib": 16,
+  "note": "Base tier comfort zone. Helper + Coder at 3B; can stretch to 7B at quantized; live avatars plus moderate background workloads concurrently."
+}

@@ -1,0 +1,29 @@
+[package]
+name = "continuum-cli"
+version = "0.1.0"
+edition = "2021"
+description = "continuum command-line client. Links continuum-client directly (no Node, no IPC daemon middleware) — every command goes through the same Connection/CommandClient seam the substrate's integration tests exercise. Successor to src/jtag (per task #143)."
+
+[[bin]]
+# Short, memorable command name. The shell shim that lands on $PATH can
+# alias `jtag` → `ctm` for backward muscle-memory.
+name = "ctm"
+path = "src/main.rs"
+
+[dependencies]
+# The shared client lib — this is the whole point.
+continuum-client = { path = "../../client/continuum-client" }
+
+# Airc handle for substrate addressing.
+airc-lib = { workspace = true }
+
+# Argument parsing.
+clap = { version = "4", features = ["derive", "env"] }
+
+# Runtime + JSON + IDs + error handling.
+tokio = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+anyhow = "1"
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }

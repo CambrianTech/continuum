@@ -14,7 +14,7 @@
  *   // [{ name: 'dev/build-feature', description: '...', category: 'dev' }, ...]
  */
 
-import type { Pipeline } from '../../../workers/continuum-core/bindings/modules/sentinel';
+import type { Pipeline } from '../../../../core/continuum-core/bindings/modules/sentinel';
 import { buildDevBuildFeaturePipeline, type DevBuildFeatureConfig } from './DevBuildFeaturePipeline';
 import { buildDevFixBugPipeline, type DevFixBugConfig } from './DevFixBugPipeline';
 import { buildDevCodeReviewPipeline, type DevCodeReviewConfig } from './DevCodeReviewPipeline';

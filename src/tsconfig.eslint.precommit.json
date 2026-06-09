@@ -1,0 +1,14 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true
+  },
+  "include": [
+    "tests/precommit/**/*.test.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    "dist",
+    "workers/vendor/**/*"
+  ]
+}

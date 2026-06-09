@@ -46,7 +46,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { SystemPaths } from '../config/SystemPaths';
 import { LoggerWorkerClient } from '../../../shared/ipc/logger/LoggerWorkerClient';
-import { resolveCoreEndpointString } from '../../../workers/continuum-core/bindings/modules/base';
+import { resolveCoreEndpointString } from '../../../../core/continuum-core/bindings/modules/base';
 
 // Import from modular files
 import { LogLevel, FileMode, createLoggerConfig, parseFileMode } from './LoggerTypes';

@@ -55,7 +55,7 @@ let _inferenceProto: grpc.GrpcObject | null = null;
 
 function getInferenceProto(): grpc.GrpcObject {
   if (!_inferenceProto) {
-    const PROTO_PATH = path.join(__dirname, '../../../workers/inference-grpc/proto/inference.proto');
+    const PROTO_PATH = path.join(__dirname, '../../../../core/inference-grpc/proto/inference.proto');
     const packageDefinition = protoLoader.loadSync(PROTO_PATH, {
       keepCase: true,
       longs: String,

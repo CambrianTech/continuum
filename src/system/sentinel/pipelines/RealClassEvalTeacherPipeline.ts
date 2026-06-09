@@ -20,7 +20,7 @@
  * 7. Emits reexam:complete if comparison data exists
  */
 
-import type { Pipeline, PipelineStep } from '../../../workers/continuum-core/bindings/modules/sentinel';
+import type { Pipeline, PipelineStep } from '../../../../core/continuum-core/bindings/modules/sentinel';
 import type { RealClassEvalTeacherPipelineConfig } from '../../genome/shared/AcademyTypes';
 import { academyEvent, ACADEMY_EVENTS } from '../../genome/shared/AcademyTypes';
 

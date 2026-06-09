@@ -11,7 +11,7 @@
  * Rust workers should feel IDENTICAL to TypeScript workers.
  * Promises and events flow the same way regardless of implementation language.
  *
- * MIRRORED IN RUST: workers/shared/jtag_protocol.rs
+ * MIRRORED IN RUST: ../core/shared/jtag_protocol.rs
  * Keep these two files in sync!
  */
 

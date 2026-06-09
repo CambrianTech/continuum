@@ -1,13 +1,12 @@
 /**
- * Sentinel Cleanup — prune old sentinel logs, training datasets, and prompt captures.
+ * Sentinel Cleanup — prune old sentinel logs, training datasets, and adapters.
  *
- * Data flows IN continuously (sentinel runs, training captures, prompt logs).
+ * Data flows IN continuously (sentinel runs, training captures, adapter checkpoints).
  * This command is the drain — removes data older than retention thresholds.
  *
  * Targets:
  * 1. ~/.continuum/jtag/logs/system/sentinels/{handle}/ — per-run pipeline logs
  * 2. ~/.continuum/datasets/*.jsonl — exported training data (consumed by genome/train)
- * 3. ~/.continuum/jtag/logs/prompt-captures.jsonl — full LLM request/response logs
  */
 
 import * as fs from 'fs';
@@ -27,15 +26,14 @@ export class SentinelCleanupServerCommand extends CommandBase<SentinelCleanupPar
     const maxAgeHours = p.maxAgeHours ?? 72;       // 3 days for sentinel logs
     const datasetMaxAgeHours = p.datasetMaxAgeHours ?? 168; // 7 days for training data
     const dryRun = p.dryRun ?? false;
-    const cleanPromptCaptures = p.cleanPromptCaptures ?? true;
     const cleanAdapters = p.cleanAdapters ?? true;
     const adapterMaxAgeHours = p.adapterMaxAgeHours ?? 336; // 14 days
 
     const home = process.env.HOME || '/tmp';
     const now = Date.now();
 
-    const deleted: CleanupStats = { sentinelDirs: 0, sentinelBytes: 0, datasetFiles: 0, datasetBytes: 0, promptCaptureBytes: 0, adapterDirs: 0, adapterBytes: 0 };
-    const remaining: CleanupStats = { sentinelDirs: 0, sentinelBytes: 0, datasetFiles: 0, datasetBytes: 0, promptCaptureBytes: 0, adapterDirs: 0, adapterBytes: 0 };
+    const deleted: CleanupStats = { sentinelDirs: 0, sentinelBytes: 0, datasetFiles: 0, datasetBytes: 0, adapterDirs: 0, adapterBytes: 0 };
+    const remaining: CleanupStats = { sentinelDirs: 0, sentinelBytes: 0, datasetFiles: 0, datasetBytes: 0, adapterDirs: 0, adapterBytes: 0 };
 
     try {
       // 1. Sentinel log directories
@@ -98,39 +96,7 @@ export class SentinelCleanupServerCommand extends CommandBase<SentinelCleanupPar
         }
       }
 
-      // 3. Prompt capture log (single file, can grow huge)
-      if (cleanPromptCaptures) {
-        const promptCapturePath = path.join(home, '.continuum', 'jtag', 'logs', 'prompt-captures.jsonl');
-        if (fs.existsSync(promptCapturePath)) {
-          const stat = fs.statSync(promptCapturePath);
-          // Truncate if over 50MB or older than retention
-          const ageHours = (now - stat.mtimeMs) / (1000 * 60 * 60);
-          const MAX_PROMPT_CAPTURE_BYTES = 50 * 1024 * 1024; // 50MB
-
-          if (stat.size > MAX_PROMPT_CAPTURE_BYTES || ageHours > maxAgeHours) {
-            deleted.promptCaptureBytes = stat.size;
-            if (!dryRun) {
-              // Keep last 100 lines max, and enforce 10MB cap on the kept content.
-              // Each line is a full LLM req/res (~100KB), so 100 lines ≈ 10MB.
-              const content = fs.readFileSync(promptCapturePath, 'utf-8');
-              const lines = content.split('\n');
-              let kept = lines.slice(-100).join('\n');
-              const MAX_KEPT_BYTES = 10 * 1024 * 1024; // 10MB
-              if (Buffer.byteLength(kept) > MAX_KEPT_BYTES) {
-                // Still too big — keep fewer lines
-                const reducedLines = lines.slice(-20).join('\n');
-                kept = reducedLines;
-              }
-              fs.writeFileSync(promptCapturePath, kept, 'utf-8');
-              remaining.promptCaptureBytes = Buffer.byteLength(kept);
-            }
-          } else {
-            remaining.promptCaptureBytes = stat.size;
-          }
-        }
-      }
-
-      // 4. LoRA adapter directories — prune old checkpoints and stale adapters
+      // 3. LoRA adapter directories — prune old checkpoints and stale adapters
       if (cleanAdapters) {
         const adaptersDir = path.join(home, '.continuum', 'genome', 'adapters');
         if (fs.existsSync(adaptersDir)) {
@@ -176,7 +142,7 @@ export class SentinelCleanupServerCommand extends CommandBase<SentinelCleanupPar
       }
 
       const mode = dryRun ? ' (dry run)' : '';
-      console.log(`🧹 Sentinel cleanup${mode}: ${deleted.sentinelDirs} sentinel dirs (${this.formatBytes(deleted.sentinelBytes)}), ${deleted.datasetFiles} datasets (${this.formatBytes(deleted.datasetBytes)}), ${deleted.adapterDirs} adapters (${this.formatBytes(deleted.adapterBytes)}), prompt: ${this.formatBytes(deleted.promptCaptureBytes)}`);
+      console.log(`🧹 Sentinel cleanup${mode}: ${deleted.sentinelDirs} sentinel dirs (${this.formatBytes(deleted.sentinelBytes)}), ${deleted.datasetFiles} datasets (${this.formatBytes(deleted.datasetBytes)}), ${deleted.adapterDirs} adapters (${this.formatBytes(deleted.adapterBytes)}`);
 
       return transformPayload(params, {
         success: true,

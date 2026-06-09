@@ -106,6 +106,12 @@ export abstract class AbstractMessageAdapter<TContentData = unknown> {
   /**
    * Main render method - just returns HTML, no per-row CSS injection
    * Efficient for dynamic paging/infinite scroll
+   *
+   * LEGACY PATH: returns an HTML string that the caller assigns via
+   * innerHTML on a live element. Prefer overriding `renderMessageElement`
+   * — it returns a constructed DOM node, doesn't blow away reactive
+   * children, and keeps user-controlled text inside `.textContent`
+   * rather than re-parsed HTML. Tracked in issue #1100.
    */
   renderMessage(message: ChatMessageEntity, currentUserId: string): string {
     try {
@@ -129,6 +135,71 @@ export abstract class AbstractMessageAdapter<TContentData = unknown> {
       console.error(`Adapter ${this.contentType} render error:`, error);
       return this.renderError('Content rendering failed');
     }
+  }
+
+  /**
+   * DOM-returning render path (preferred). Returns the adapter's
+   * `message-content-adapter` wrapper as an HTMLElement, ready to be
+   * appended to the message bubble's content slot.
+   *
+   * Default body (DRY — issue #1158): parse content via the subclass's
+   * `parseContent`, build the wrapper via `createAdapterWrapper`, render
+   * the rich content string via `renderContent`, then adopt it on a
+   * detached `<template>` and append the resulting `DocumentFragment`
+   * to the wrapper. The live message-content slot never sees `innerHTML`,
+   * so any Lit-managed reactive children survive sibling updates.
+   *
+   * Subclasses only need to override this when they build the wrapper's
+   * children directly via DOM APIs (e.g. `ImageMessageAdapter` constructs
+   * `<img>` nodes via property assignment to keep src/alt out of any
+   * HTML-parse path). Adapters that already produce a clean HTML string
+   * from `renderContent` should NOT override this — the default is
+   * correct and avoids per-subclass copy-paste.
+   *
+   * Why this exists: assigning `innerHTML` on a live element destroys
+   * any Lit-managed reactive children and re-parses HTML even when the
+   * content is fully under our control. The detached-template path
+   * avoids both problems and shrinks the XSS surface (user text that
+   * goes through `textContent` is unaffected by this parse).
+   */
+  renderMessageElement(message: ChatMessageEntity, currentUserId: string): HTMLElement | null {
+    try {
+      const data = this.parseContent(message);
+      if (!data) return null;
+      this.contentData = data;
+
+      const wrapper = this.createAdapterWrapper();
+      const contentHtml = this.renderContent(data, currentUserId);
+
+      // Parse the rich content on a detached <template>. Its content is
+      // a DocumentFragment, which we adopt into the wrapper via
+      // appendChild — never via innerHTML on the wrapper itself.
+      const template = globalThis.document.createElement('template');
+      template.innerHTML = contentHtml;
+      wrapper.appendChild(template.content.cloneNode(true));
+      return wrapper;
+    } catch (error) {
+      console.error(`${this.constructor?.name ?? 'AbstractMessageAdapter'}.renderMessageElement failed:`, error);
+      return null;
+    }
+  }
+
+  /**
+   * Helper for subclasses: build the standard `message-content-adapter`
+   * wrapper HTMLElement with the correct classes + data attribute.
+   * Subclasses append their own content into this wrapper.
+   */
+  protected createAdapterWrapper(): HTMLElement {
+    const wrapper = document.createElement('div');
+    const classes = [
+      'message-content-adapter',
+      `content-type-${this.contentType}`,
+      ...this.getContentClasses(),
+      ...(this.options.customClassNames || [])
+    ];
+    wrapper.className = classes.join(' ');
+    wrapper.dataset.contentType = this.contentType;
+    return wrapper;
   }
 
   /**

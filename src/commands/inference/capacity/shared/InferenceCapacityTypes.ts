@@ -11,22 +11,27 @@ import type { JTAGError } from '@system/core/types/ErrorTypes';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
 
 /**
- * Inference Capacity Command Parameters
+ * Inference Capacity Command Parameters — no command-specific params;
+ * CommandParams (context + sessionId + userId) is the full payload
+ * shape. Type alias (not `extends CommandParams {}` with `_noParams:
+ * never` marker) so the type is genuinely empty + structurally
+ * identical to CommandParams.
  */
-export interface InferenceCapacityParams extends CommandParams {
-  _noParams?: never; // Marker to avoid empty interface
-}
+export type InferenceCapacityParams = CommandParams;
 
 /**
- * Factory function for creating InferenceCapacityParams
+ * Factory function for creating InferenceCapacityParams.
+ *
+ * userId is REQUIRED on CommandParams (auto-injected at runtime by
+ * Commands.execute, explicit on server-side construction).
+ * createPayload<T> returns `T & JTAGPayload` which is structurally
+ * CommandParams when T = `{ userId: UUID }` — no casts needed.
  */
 export const createInferenceCapacityParams = (
   context: JTAGContext,
   sessionId: UUID,
-  data: Record<string, unknown> = {}
-): InferenceCapacityParams => createPayload(context, sessionId, {
-  ...data
-}) as unknown as InferenceCapacityParams;
+  userId: UUID,
+): InferenceCapacityParams => createPayload(context, sessionId, { userId });
 
 /**
  * Inference Capacity Command Result

@@ -7,7 +7,7 @@
 
 import type { UUID } from '../../../core/types/CrossPlatformUUID';
 import type { TaskDomain, TaskType, TaskStatus } from '../../../data/entities/TaskEntity';
-import type { ChannelEnqueueRequest } from '../../../../shared/generated';
+import type { ChannelEnqueueRequest } from '@shared/generated';
 
 // Re-export TaskStatus for use in PersonaUser
 export type { TaskStatus };

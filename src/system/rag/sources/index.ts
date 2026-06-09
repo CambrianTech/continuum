@@ -27,7 +27,6 @@ export { WidgetContextSource } from './WidgetContextSource';
 export { PersonaIdentitySource } from './PersonaIdentitySource';
 export { GlobalAwarenessSource, registerConsciousness, unregisterConsciousness, getConsciousness } from './GlobalAwarenessSource';
 export { VoiceConversationSource, registerVoiceOrchestrator, unregisterVoiceOrchestrator } from './VoiceConversationSource';
-export { SocialMediaRAGSource } from './SocialMediaRAGSource';
 export { CodeToolSource } from './CodeToolSource';
 export { ProjectContextSource } from './ProjectContextSource';
 export { GovernanceSource } from './GovernanceSource';

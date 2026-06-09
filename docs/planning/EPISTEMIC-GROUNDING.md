@@ -345,7 +345,7 @@ by the Soviet Union during the Cold War."
 - [Ethical AI Attribution](../governance/ETHICAL-AI-ATTRIBUTION.md) — adapter provenance
 - [AI Alignment Philosophy](../governance/AI-ALIGNMENT-PHILOSOPHY.md) — safety through citizenship
 - [Phase 2B RAG Hippocampus](../PHASE2B-RAG-HIPPOCAMPUS.md) — memory system
-- [Sentinel Gap Analysis](../sentinel/SENTINEL-GAP-ANALYSIS.md) — quality scoring
+- [Alpha Gap Analysis](ALPHA-GAP-ANALYSIS.md) — current alpha quality and validation gates
 - [Social Calendar Integrations](SOCIAL-CALENDAR-INTEGRATIONS.md) — external communication (needs epistemic gate)
 - [Academy Architecture](../personas/ACADEMY_ARCHITECTURE.md) — training validation
 

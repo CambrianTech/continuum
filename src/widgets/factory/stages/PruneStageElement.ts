@@ -2,7 +2,7 @@
  * PruneStageElement — UI for the alloy 'prune' stage
  *
  * Controls: strategy, level (0-90%), min heads, min KV heads, analysis steps
- * Maps 1:1 to ForgeAlloy PruneStage schema.
+ * Maps 1:1 to ForgeRecipe PruneStage schema.
  */
 
 import { html, css, reactive, type TemplateResult, type CSSResultGroup } from '../../shared/ReactiveWidget';

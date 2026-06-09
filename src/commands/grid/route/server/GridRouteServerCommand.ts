@@ -7,7 +7,7 @@
 import { CommandBase, type ICommandDaemon } from '@daemons/command-daemon/shared/CommandBase';
 import type { JTAGContext } from '@system/core/types/JTAGTypes';
 import type { GridRouteParams, GridRouteResult } from '../shared/GridRouteTypes';
-import { RustCoreIPCClient, getContinuumCoreSocketPath } from '../../../../workers/continuum-core/bindings/RustCoreIPC';
+import { RustCoreIPCClient, getContinuumCoreSocketPath } from '../../../../../core/continuum-core/bindings/RustCoreIPC';
 
 export class GridRouteServerCommand extends CommandBase<GridRouteParams, GridRouteResult> {
 	private rustClient: RustCoreIPCClient;

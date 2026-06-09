@@ -23,14 +23,85 @@ Every step in the phases below earns inclusion by serving one of those three. St
 
 When a user reports a bug, the workflow becomes: capture the broken fixture → write a `#[test]` that loads it → reproduce the failure in a Rust test → fix → green. No live deploy needed for the inner loop.
 
-## Status overview (2026-04-23)
+## 2026-05-11 Architecture Posture
+
+The library plan is no longer a future refactor. It is the management plan for getting Continuum to alpha.
+
+The target is a Rust persona runtime with browser/TS as an adapter, not a TypeScript persona runtime with Rust helpers. That distinction is load-bearing:
+
+- **PersonaRuntime is the product core.** It owns turn batching, inbox consolidation, RAG/context assembly, model selection, inference, post-processing, memory events, tool execution, and resource accounting.
+- **Sensory I/O is core persona behavior.** A standard persona is expected to perceive text, image/video, and audio; speak or produce audio; drive avatar/control output; and appear in WebRTC rooms. Text-only is a compatibility/degraded path, not the product definition.
+- **TS is a host adapter.** It renders UI, receives browser/user events, invokes typed Rust commands, and posts results. It must not decide how a persona thinks.
+- **Every step must delete the old owner.** A Rust duplicate beside an active TS implementation is not migration; it is two sources of truth. #1068 and #1069 are the pattern: move the behavior to Rust, add Rust tests, remove the TS duplicate.
+- **Major rework is allowed when the boundary is wrong.** Do not preserve an API because downstream code is messy. Preserve user-visible behavior, not internal accidental architecture.
+- **Concurrency and pressure are first-class design inputs.** Persona code should be designed like a realtime engine: evented, bounded, backpressured, resource-aware, and measured.
+
+### Qwen-First Sensory Runtime Target
+
+The base local persona target is Qwen multimodal: Qwen 3.5 now, Qwen 3.6 as soon as it is viable. The runtime should ask for capabilities and budgets, not names: "needs vision + audio + tool/control output + context >= X + GPU residency within Y" is the contract. The model registry then resolves the best available Qwen-family or forged derivative on the current machine.
+
+This is why the model/provider registry belongs in Rust. It must reason about:
+
+- multimodal capability flags: text, vision, audio input, audio output, tool/control, embedding, LoRA, MoE;
+- hardware support: Metal, CUDA, Vulkan, DMR, unified memory, VRAM, context/KV footprint;
+- residency and paging: base model, mmproj, audio layers, LoRA adapters, KV cache, embeddings, and avatar/render resources;
+- degradation: explicit `Unavailable`, `MissingCapability`, `CpuFallbackRequired`, `InsufficientMemory`, or `KernelGap` states surfaced to UI/tests;
+- upstream work: llama.cpp, Candle training path, GGUF tooling, projector support, and kernels are modifiable dependencies. Fork/vendor/upstream when Qwen needs a layer or optimization.
+
+STT/TTS remain useful adapters for compatibility models, but they are not the happy-path architecture for standard personas. The happy path is sensory-native personas running on the user's GPU budget.
+
+The next major architectural milestone is a Rust-owned persona turn pipeline:
+
+```text
+Signal/RoomEvent
+  -> Rust inbox consolidation / admission control
+  -> Rust RAG/context builder
+  -> Rust recipe or cognition executor
+  -> Rust inference/model resolver
+  -> Rust post-processing + trace/fixture capture
+  -> thin host post/broadcast adapter
+```
+
+The system is not considered healthy while this path depends on Node for batching, cognition decisions, prompt/RAG construction, or model/tool behavior.
+
+### Uniform Rust OOP Pattern
+
+Rust does not use Java/C++ base classes directly, but Continuum should preserve the same design discipline: common complexity belongs in shared base traits, default implementations, and reusable engines. Leaf modules should declare what they are, not reimplement how the runtime works.
+
+The model is CBAR-style: `QueueThread<T>` owned the queue, wake cadence, priority behavior, abort/flush semantics, and backpressure; subclasses only implemented `handleItem`. `CBAR_VideoFrame` owned lazy cached derived data; analyzers consumed it without recomputing or copying. Continuum needs the same shape for AI runtime work.
+
+In Continuum terms, a persona component, model backend, recipe step, memory source, transport, or tool should get logs, trace, fixture capture, metrics, comms, concurrency, cancellation, queueing, backpressure, and resource accounting for free by implementing the base contract. If each subclass/implementor has to wire those itself, the abstraction is wrong.
+
+Required pattern:
+
+| Layer | Rust shape | Owns |
+|---|---|---|
+| Runtime base | `PersonaRuntime`, `RuntimeEngine`, `RuntimeContext` | lifecycle, event loop, cancellation, deadlines, trace, fixture capture |
+| Capability contracts | traits such as `InferenceBackend`, `PageableBackend`, `MemoryStore`, `ToolExecutor`, `RecipeExecutor` | uniform behavior contracts and typed errors |
+| Policy engines | `PressureBroker`, `PagingPolicy`, `AdmissionController`, `TurnBatcher` | scheduling, backpressure, residency, fairness, resource budgets |
+| Data contracts | `Signal`, `PersonaContext`, `RespondInput`, `RecipeStep`, `ModelRequirement` | ts-rs exported wire types and replay fixtures |
+| Adapters | `LlamaCppAdapter`, future cloud/local/grid adapters, TS host adapter | eccentric platform/provider details only |
+| Leaf behavior | small structs implementing traits | domain-specific logic with no duplicated lifecycle/scheduling/error handling |
+
+Rules:
+
+- **Complexity lives at the base.** Backpressure, cancellation, queue draining, retry, replay capture, tracing, metrics, and typed error propagation are implemented once in the substrate.
+- **Leaf modules are boring.** If adding a backend, recipe step, tool, or memory source requires custom lifecycle code, the base trait is missing an abstraction.
+- **Uniform command semantics.** Command execution returns typed success/error. Callers own catch/retry/report behavior. Inner command implementations should not swallow errors into fake success.
+- **IDs over copies.** Runtime boundaries pass handles, IDs, offsets, buffer references, or artifact keys whenever possible; large media, KV, tensors, embeddings, and frames are not copied through Node.
+- **Speed is inherited.** New modules get concurrency, batching, backpressure, and replay automatically by implementing the base contract. Performance is not a per-feature afterthought.
+- **Pipelines are inherited.** A new subclass/implementor plugs into the runtime pipeline; it does not invent its own logging, scheduling, IPC, or test harness.
+- **Comms are inherited.** A component emits and consumes typed events through the runtime bus. AIRC/grid/host adapters bridge those events; leaf components do not know transport details.
+
+## Status overview (2026-05-11)
 
 - **Phase A (cognition substrate):** A1–A5 ✅ landed
+- **Phase A.4/A.5 follow-through:** #1068 moved turn recording fully Rust-side; #1069 moved response cleanup Rust-side and removed the TS duplicate.
 - **Phase B (recipes):** Rust Recipe-trait approach RIPPED (was wrong shape — recipes are DATA). Replaced with: JSON recipe entities + Rust-native pipeline executor (per `RECIPE-EXECUTION-RUNTIME.md`). Executor not yet built. Old hardcoded Recipe trait + ChatRecipe deleted in commit `983d30102`.
-- **Phase C (paging):** All steps unstarted. Today proved C5 (MtmdContext pool) is the latency killer — see findings below.
+- **Phase C (paging):** Substrate pieces exist, but the actual resource manager is incomplete. MtmdContext pooling, KV policy, LoRA/model residency, and pressure gates are alpha-critical.
 - **Phase D (FFI / embeddable):** All steps unstarted.
-- **Phase E (trace + replay):** Replay test infrastructure repaired in commit `66c4d3799`. Trace emission still pending.
-- **Phase F (output quality):** NEW phase added 2026-04-23 — model output bugs surfaced during testing (echo loops, "SpeakerName: X" garbage, tool_use markup leak). Widget chip rendering shipped in commit `980bcbce6`. Prompt assembly bugs remain.
+- **Phase E (trace + replay):** Recorder exists and is now Rust-owned. Per-seam trace emission and replay tooling still need to become mandatory gates.
+- **Phase F (output quality):** Tool/thinking markup cleanup is Rust-owned as of #1069. Echo loops, generic greetings, and prompt/RAG quality remain active blockers.
 
 ## What today taught us (load-bearing findings 2026-04-23)
 

@@ -4,19 +4,27 @@
  * Remove an API key for a cloud AI provider. Removes from ~/.continuum/config.env, clears process.env, and emits system:config:key-removed event to deactivate personas.
  */
 
-import type { CommandParams, CommandResult, CommandInput, JTAGContext } from '@system/core/types/JTAGTypes';
-import { createPayload, transformPayload } from '@system/core/types/JTAGTypes';
-import { SYSTEM_SCOPES } from '@system/core/types/SystemScopes';
+import type { CommandInput, CommandParams, JTAGContext } from '@system/core/types/JTAGTypes';
+import { transformPayload } from '@system/core/types/JTAGTypes';
 import { Commands } from '@system/core/shared/Commands';
 import type { JTAGError } from '@system/core/types/ErrorTypes';
 import type { UUID } from '@system/core/types/CrossPlatformUUID';
+import {
+  type AiKeyParams,
+  type AiKeyResult,
+  type AiKeySyncMode,
+  createAiKeyParams,
+  createAiKeyResult
+} from '../../common/AiKeyBase';
 
 /**
  * Ai Key Remove Command Parameters
  */
-export interface AiKeyRemoveParams extends CommandParams {
+export interface AiKeyRemoveParams extends CommandParams, AiKeyParams {
   // The config key name (e.g., 'ANTHROPIC_API_KEY', 'DEEPSEEK_API_KEY')
   provider: string;
+  // Request immediate sync after local remove
+  sync?: AiKeySyncMode;
 }
 
 /**
@@ -28,22 +36,25 @@ export const createAiKeyRemoveParams = (
   data: {
     // The config key name (e.g., 'ANTHROPIC_API_KEY', 'DEEPSEEK_API_KEY')
     provider: string;
+    sync?: AiKeySyncMode;
+    targetNodes?: string[];
+    dryRun?: boolean;
   }
-): AiKeyRemoveParams => createPayload(context, sessionId, {
-  userId: SYSTEM_SCOPES.SYSTEM,
-
+): AiKeyRemoveParams => createAiKeyParams(context, sessionId, {
   ...data
 });
 
 /**
  * Ai Key Remove Command Result
  */
-export interface AiKeyRemoveResult extends CommandResult {
-  success: boolean;
+export interface AiKeyRemoveResult extends AiKeyResult {
   // Whether the key was removed successfully
   removed: boolean;
   // The config key name that was removed
   provider: string;
+  synced?: boolean;
+  syncMode?: AiKeySyncMode;
+  targetNodes?: string[];
   error?: JTAGError;
 }
 
@@ -59,9 +70,13 @@ export const createAiKeyRemoveResult = (
     removed?: boolean;
     // The config key name that was removed
     provider?: string;
+    synced?: boolean;
+    syncMode?: AiKeySyncMode;
+    targetNodes?: string[];
+    mergePlanId?: string;
     error?: JTAGError;
   }
-): AiKeyRemoveResult => createPayload(context, sessionId, {
+): AiKeyRemoveResult => createAiKeyResult(context, sessionId, {
   removed: data.removed ?? false,
   provider: data.provider ?? '',
   ...data

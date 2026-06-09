@@ -19,7 +19,7 @@ import type { WorkingMemoryEntry } from './InMemoryCognitionStorage';
 import { LongTermMemoryStore, type LongTermMemoryEntry } from './LongTermMemoryStore';
 import type { QueueItem } from '../../PersonaInbox';
 import { RustEmbeddingClient } from '../../../../../core/services/RustEmbeddingClient';
-import { RustCoreIPCClient } from '../../../../../../workers/continuum-core/bindings/RustCoreIPC';
+import { RustCoreIPCClient } from '../../../../../../../core/continuum-core/bindings/RustCoreIPC';
 
 export interface ConsolidationOptions {
   minSimilarity?: number;

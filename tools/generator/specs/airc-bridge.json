@@ -1,0 +1,107 @@
+{
+  "name": "airc/bridge",
+  "description": "Ingest one AIRC message into Continuum. Normal messages become chat; explicit !continuum directives become bounded development and test commands. This is the inbox-side companion to airc/send: it lets AIRC peers drive Continuum validation without shelling through jtag chat/send or chat/export by hand.",
+  "params": [
+    {
+      "name": "message",
+      "type": "string",
+      "optional": false,
+      "description": "Raw AIRC message body. Plain text is bridged into Continuum chat; messages beginning with the command prefix are parsed as bridge directives."
+    },
+    {
+      "name": "senderNick",
+      "type": "string",
+      "optional": true,
+      "description": "AIRC sender nick used for attribution in bridged chat text."
+    },
+    {
+      "name": "channel",
+      "type": "string",
+      "optional": true,
+      "description": "AIRC channel name, with or without leading #. Defaults to general."
+    },
+    {
+      "name": "room",
+      "type": "string",
+      "optional": true,
+      "description": "Continuum room name to target. Defaults to general; the AIRC channel is preserved separately for attribution and mirroring."
+    },
+    {
+      "name": "commandPrefix",
+      "type": "string",
+      "optional": true,
+      "description": "Directive prefix for test and control messages. Defaults to !continuum."
+    },
+    {
+      "name": "dryRun",
+      "type": "boolean",
+      "optional": true,
+      "description": "Parse and report intent without executing Continuum commands."
+    },
+    {
+      "name": "mirrorResponse",
+      "type": "boolean",
+      "optional": true,
+      "description": "Send bridge command responses back to AIRC via the airc CLI."
+    }
+  ],
+  "results": [
+    {
+      "name": "handled",
+      "type": "boolean",
+      "description": "True when the bridge executed the parsed action. Dry runs return handled=false."
+    },
+    {
+      "name": "parsed",
+      "type": "ParsedAircBridgeMessage",
+      "description": "Structured parser output for the incoming AIRC message."
+    },
+    {
+      "name": "responseText",
+      "type": "string",
+      "optional": true,
+      "description": "Short human and AI readable response for the action."
+    },
+    {
+      "name": "mirrored",
+      "type": "boolean",
+      "optional": true,
+      "description": "True when response mirroring to AIRC was requested and handed off successfully."
+    },
+    {
+      "name": "mirrorError",
+      "type": "string",
+      "optional": true,
+      "description": "AIRC mirror failure, surfaced loudly instead of swallowed."
+    },
+    {
+      "name": "commandResult",
+      "type": "unknown",
+      "optional": true,
+      "description": "Underlying Continuum command result for directives such as chat export or activity list."
+    }
+  ],
+  "imports": [
+    {
+      "names": ["ParsedAircBridgeMessage"],
+      "from": "@system/airc-bridge/shared/AircBridgeProtocol",
+      "typeOnly": true
+    }
+  ],
+  "examples": [
+    {
+      "description": "Dry-run a normal chat message from AIRC",
+      "command": "./jtag airc/bridge --message='hello from airc' --senderNick=mac-codex --channel=general --dryRun=true"
+    },
+    {
+      "description": "Check bridge health from AIRC",
+      "command": "./jtag airc/bridge --message='!continuum ping' --senderNick=win-claude --channel=general --mirrorResponse=true"
+    },
+    {
+      "description": "Assert a marker landed in Continuum chat",
+      "command": "./jtag airc/bridge --message='!continuum assert seen marker-123 --room general --last 100' --senderNick=mac-codex --channel=general"
+    }
+  ],
+  "accessLevel": "ai-safe",
+  "category": "airc"
+}

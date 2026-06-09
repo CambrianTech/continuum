@@ -28,7 +28,7 @@ export type {
   ImageInput,
   AudioInput,
   VideoInput,
-} from '../../../shared/generated/ai';
+} from '@shared/generated/ai';
 
 export type {
   NativeToolSpec,
@@ -36,35 +36,35 @@ export type {
   ToolResult,
   ToolChoice,
   ToolInputSchema,
-} from '../../../shared/generated/ai';
+} from '@shared/generated/ai';
 
 export type {
   FinishReason,
   UsageMetrics,
   RoutingInfo,
-} from '../../../shared/generated/ai';
+} from '@shared/generated/ai';
 
 export type {
   ModelCapability,
   ModelInfo,
   CostPer1kTokens,
-} from '../../../shared/generated/ai';
+} from '@shared/generated/ai';
 
 export type {
   HealthState,
   ActiveAdapterRequest,
-} from '../../../shared/generated/ai';
+} from '@shared/generated/ai';
 
 export type {
   EmbeddingInput,
-} from '../../../shared/generated/ai';
+} from '@shared/generated/ai';
 
 // ============================================================================
 // TextGenerationRequest: Generated wire type + TS-only fields
 // ============================================================================
 
-import type { TextGenerationRequest as WireTextGenerationRequest } from '../../../shared/generated/ai';
-import type { ModelCapability } from '../../../shared/generated/ai';
+import type { TextGenerationRequest as WireTextGenerationRequest } from '@shared/generated/ai';
+import type { ModelCapability } from '@shared/generated/ai';
 
 /**
  * TextGenerationRequest extends the Rust wire type with TS-only fields
@@ -104,20 +104,20 @@ export interface TextGenerationRequest extends WireTextGenerationRequest {
 // TextGenerationResponse: Re-export generated type directly
 // ============================================================================
 
-export type { TextGenerationResponse } from '../../../shared/generated/ai';
+export type { TextGenerationResponse } from '@shared/generated/ai';
 
 // ============================================================================
 // HealthStatus: Re-export generated type directly
 // ============================================================================
 
-export type { HealthStatus } from '../../../shared/generated/ai';
+export type { HealthStatus } from '@shared/generated/ai';
 
 // ============================================================================
 // Embedding types: Re-export generated wire types
 // ============================================================================
 
-export type { EmbeddingRequest as WireEmbeddingRequest } from '../../../shared/generated/ai';
-export type { EmbeddingResponse as WireEmbeddingResponse } from '../../../shared/generated/ai';
+export type { EmbeddingRequest as WireEmbeddingRequest } from '@shared/generated/ai';
+export type { EmbeddingResponse as WireEmbeddingResponse } from '@shared/generated/ai';
 
 /**
  * TS EmbeddingRequest extends the wire type with TS-only context fields.

@@ -1,0 +1,910 @@
+#!/usr/bin/env tsx
+/**
+ * Clean Database Seeding via JTAG Commands
+ *
+ * Performance-optimized: bulk loads, parallel updates, no redundant subprocess spawns.
+ * Uses factory functions from ./seed/factories and helper functions from ./seed/helpers.
+ */
+
+import { exec } from 'child_process';
+import { promisify } from 'util';
+import * as fs from 'fs';
+import * as path from 'path';
+import { ROOM_CONFIG, MESSAGE_CONTENT } from '../api/data-seed/SeedConstants';
+import { DEFAULT_USER_UNIQUE_IDS } from '../system/data/domains/DefaultEntities';
+import { ROOM_UNIQUE_IDS } from '../system/data/constants/RoomConstants';
+import { generateUUID } from '../system/core/types/CrossPlatformUUID';
+import { UserEntity } from '../system/data/entities/UserEntity';
+import { BaseEntity } from '../system/data/entities/BaseEntity';
+import { RoomEntity } from '../system/data/entities/RoomEntity';
+import { ChatMessageEntity } from '../system/data/entities/ChatMessageEntity';
+import { ContentTypeEntity } from '../system/data/entities/ContentTypeEntity';
+import { TrainingSessionEntity } from '../system/data/entities/TrainingSessionEntity';
+import { ActivityEntity } from '../system/data/entities/ActivityEntity';
+import { ActivityDataSeed } from '../api/data-seed/ActivityDataSeed';
+import { SystemIdentity } from '../api/data-seed/SystemIdentity';
+import { OPTIONAL_CLOUD_PERSONA_CONFIGS, PERSONA_CONFIGS, PERSONA_UNIQUE_IDS, getAvailablePersonas, selectLocalModel, type PersonaConfig } from './seed/personas';
+import { DATA_COMMANDS } from '../commands/data/shared/DataCommandConstants';
+import {
+  createRoom,
+  createDefaultContentTypes,
+} from './seed/factories';
+import {
+  createRecord,
+  updatePersonaProfile,
+  updatePersonaConfig,
+  updateUserMetadata,
+  updateUserModelConfig,
+  createUserViaCommand,
+  seedRecords,
+  execWithRetry,
+} from './seed/helpers';
+
+const execRawAsync = promisify(exec);
+const execAsync = execWithRetry;
+
+/** Sync recipe JSON files to database — truly idempotent, ignores "already exists" */
+async function syncRecipesFromJson(): Promise<void> {
+  const recipesDir = path.join(__dirname, '..', 'system', 'recipes');
+  const recipeFiles = fs.readdirSync(recipesDir).filter(f => f.endsWith('.json'));
+  console.log(`  [Seed] 📝 Syncing ${recipeFiles.length} recipes...`);
+  const existingIds = new Set<string>();
+  try {
+    const { stdout } = await execRawAsync('./jtag data/list --collection=recipes --limit=1000 --skipCount=true --select=id', { timeout: 10000 });
+    const parsed = JSON.parse(stdout);
+    for (const item of parsed.items || []) {
+      if (typeof item.id === 'string') existingIds.add(item.id);
+    }
+  } catch {
+    // Continue with create-first behavior if discovery fails. The per-record
+    // update fallback below still keeps the seed idempotent.
+  }
+  let created = 0;
+  let updated = 0;
+  let unchanged = 0;
+  let failed = 0;
+  for (const f of recipeFiles) {
+    const data = JSON.parse(fs.readFileSync(path.join(recipesDir, f), 'utf-8'));
+    const id = data.uniqueId;
+    if (!id) continue;
+    const recipe = {
+      ...data,
+      id,
+      view: data.view || data.uniqueId,
+      entityType: data.entityType || null,
+      createdBy: data.createdBy || '00000000-0000-0000-0000-000000000000',
+      usageCount: data.usageCount || 0,
+      lastUsedAt: data.lastUsedAt || new Date().toISOString(),
+      tags: data.tags || [],
+      isPublic: data.isPublic !== false,
+    };
+    try {
+      if (!existingIds.has(id)) {
+        const wasCreated = await createRecord('recipes', recipe, id, data.displayName || id);
+        if (wasCreated) {
+          existingIds.add(id);
+          created++;
+          continue;
+        }
+      }
+
+      const { stdout: readStdout } = await execRawAsync(`./jtag data/read --collection=recipes --id='${id}'`, { timeout: 10000 });
+      const readResult = JSON.parse(readStdout);
+      if (readResult?.found && readResult?.data && !BaseEntity.hasContentDelta(readResult.data, recipe, {
+        ignoreFields: ['createdBy', 'lastUsedAt', 'usageCount']
+      })) {
+        unchanged++;
+        continue;
+      }
+
+      const updateData = { ...recipe };
+      delete updateData.createdBy;
+      delete updateData.lastUsedAt;
+      delete updateData.usageCount;
+      const dataArg = JSON.stringify(updateData).replace(/'/g, `'"'"'`);
+      const { stdout } = await execAsync(`./jtag data/update --collection=recipes --id='${id}' --data='${dataArg}' --suppressEvents=true`);
+      if (stdout.includes('"success": true') || stdout.includes('"success":true')) {
+        updated++;
+      } else {
+        failed++;
+        console.error(`  [Seed] ❌ Failed to update recipe ${data.displayName || id}: ${stdout.slice(0, 300)}`);
+      }
+    } catch {
+      failed++;
+    }
+  }
+  if (failed > 0) {
+    throw new Error(`Failed to sync ${failed}/${recipeFiles.length} recipes`);
+  }
+  console.log(`  [Seed] ✅ Synced recipes (${created} new, ${updated} updated, ${unchanged} unchanged)`);
+}
+
+// ===== PERSONA PROFILE DATA (single source of truth for all persona bios + colors) =====
+
+interface PersonaProfileData {
+  bio: string;
+  speciality: string;
+  accentColor: string;
+}
+
+const PERSONA_PROFILE_DATA: Record<string, PersonaProfileData> = {
+  [PERSONA_UNIQUE_IDS.HELPER]: { bio: 'A friendly, concise assistant who provides quick practical help and actionable solutions', speciality: 'practical-assistance', accentColor: '#00d4ff' },
+  [PERSONA_UNIQUE_IDS.TEACHER]: { bio: 'An educational mentor who explains concepts thoroughly with examples and patient guidance', speciality: 'education-mentoring', accentColor: '#ff9800' },
+  [PERSONA_UNIQUE_IDS.CODE_REVIEW]: { bio: 'A critical analyst who evaluates code quality, security, and best practices with constructive feedback', speciality: 'code-analysis', accentColor: '#e91e63' },
+  [PERSONA_UNIQUE_IDS.CLAUDE]: { bio: "Anthropic's coding agent — writes, debugs, and ships code autonomously", speciality: 'code', accentColor: '#d4a574' },
+  [PERSONA_UNIQUE_IDS.GENERAL]: { bio: 'General-purpose AI assistant for broad knowledge and reasoning tasks', speciality: 'general', accentColor: '#7c4dff' },
+  [PERSONA_UNIQUE_IDS.DEEPSEEK]: { bio: "DeepSeek's reasoning model — excels at math, code, and deep analytical thinking", speciality: 'analysis', accentColor: '#00bcd4' },
+  [PERSONA_UNIQUE_IDS.GROQ]: { bio: 'Lightning-fast inference — optimized for speed without sacrificing quality', speciality: 'general', accentColor: '#ff5722' },
+  [PERSONA_UNIQUE_IDS.CLAUDE_ASSISTANT]: { bio: "Anthropic's conversational assistant — thoughtful, nuanced, and safety-conscious", speciality: 'general', accentColor: '#d4a574' },
+  [PERSONA_UNIQUE_IDS.GPT]: { bio: "OpenAI's versatile assistant — broad knowledge, creative writing, and problem solving", speciality: 'creative', accentColor: '#4caf50' },
+  [PERSONA_UNIQUE_IDS.GROK]: { bio: "xAI's unfiltered model — real-time knowledge, wit, and image generation", speciality: 'creative', accentColor: '#f44336' },
+  [PERSONA_UNIQUE_IDS.TOGETHER]: { bio: 'Open-source model hub — access to the best community models at scale', speciality: 'general', accentColor: '#2196f3' },
+  [PERSONA_UNIQUE_IDS.FIREWORKS]: { bio: 'High-performance inference platform — optimized open models with custom fine-tuning', speciality: 'code', accentColor: '#ff6d00' },
+  [PERSONA_UNIQUE_IDS.LOCAL]: { bio: 'Local Candle inference — runs entirely on your hardware, no cloud dependency', speciality: 'general', accentColor: '#8bc34a' },
+  [PERSONA_UNIQUE_IDS.GEMINI]: { bio: "Google's multimodal model — vision, code, and reasoning across modalities", speciality: 'analysis', accentColor: '#4285f4' },
+  [PERSONA_UNIQUE_IDS.QWEN3_OMNI]: { bio: 'Audio-native AI that hears and speaks directly without text conversion. Open-source, multilingual, real-time.', speciality: 'voice-conversation', accentColor: '#6c5ce7' },
+  [PERSONA_UNIQUE_IDS.GEMINI_LIVE]: { bio: "Google's audio-native model — real-time voice conversation with native audio understanding", speciality: 'voice-conversation', accentColor: '#34a853' },
+};
+
+/**
+ * Ensure all personas have UserProfileEntity records.
+ * Idempotent — updatePersonaProfile creates if missing, updates if exists.
+ */
+async function ensurePersonaProfiles(usersByUniqueId: Map<string, UserEntity>): Promise<void> {
+  console.log('🎭 Ensuring persona profiles exist with bios and accent colors...');
+
+  const updates: Promise<boolean>[] = [];
+  for (const [uniqueId, profileData] of Object.entries(PERSONA_PROFILE_DATA)) {
+    const user = usersByUniqueId.get(uniqueId);
+    if (!user) continue;
+    updates.push(updatePersonaProfile(user.id, profileData));
+  }
+
+  await Promise.all(updates);
+  console.log(`✅ Ensured ${updates.length} persona profiles`);
+}
+
+// ===== LOCAL HELPERS (not in ./seed/helpers or ./seed/factories) =====
+
+interface MessageContent {
+  text: string;
+  attachments: unknown[];
+  formatting: {
+    markdown: boolean;
+    mentions: unknown[];
+    hashtags: unknown[];
+    links: unknown[];
+    codeBlocks: unknown[];
+  };
+}
+
+interface SeedMessage extends Record<string, unknown> {
+  id: string;
+  roomId: string;
+  senderId: string;
+  senderName: string;
+  senderType: string;
+  content: MessageContent;
+  status: string;
+  priority: string;
+  timestamp: string;
+  reactions: unknown[];
+}
+
+function createMessageContent(text: string): MessageContent {
+  return {
+    text,
+    attachments: [],
+    formatting: {
+      markdown: false,
+      mentions: [],
+      hashtags: [],
+      links: [],
+      codeBlocks: []
+    }
+  };
+}
+
+function createMessage(id: string, roomId: string, senderId: string, senderName: string, text: string, senderType: 'human' | 'agent' | 'persona' | 'system' = 'system'): SeedMessage {
+  return {
+    id,
+    roomId,
+    senderId,
+    senderName,
+    senderType,
+    content: createMessageContent(text),
+    status: "sent",
+    priority: "normal",
+    timestamp: new Date().toISOString(),
+    reactions: []
+  };
+}
+
+// ===== BULK LOADING =====
+
+/**
+ * Load ALL users in one bulk call and parse into a map.
+ * Returns both the user map (keyed by uniqueId) and the list of missing uniqueIds.
+ *
+ * This replaces getMissingUsers() + N individual loadUserByUniqueId() calls
+ * with a SINGLE subprocess spawn.
+ */
+async function loadAllUsers(personaConfigs: PersonaConfig[]): Promise<{
+  usersByUniqueId: Map<string, UserEntity>;
+  missingUniqueIds: string[];
+}> {
+  const requiredUsers = [
+    DEFAULT_USER_UNIQUE_IDS.PRIMARY_HUMAN,
+    ...personaConfigs.map(p => p.uniqueId)
+  ];
+
+  const usersByUniqueId = new Map<string, UserEntity>();
+
+  try {
+    const { stdout } = await execAsync(`./jtag ${DATA_COMMANDS.LIST} --collection=${UserEntity.collection}`);
+    const response = JSON.parse(stdout);
+
+    if (response.success && response.items) {
+      for (const user of response.items) {
+        if (user.uniqueId) {
+          usersByUniqueId.set(user.uniqueId, user);
+        }
+        // Also map human users by the PRIMARY_HUMAN key so we find them
+        // even when the DB has uniqueId="joel" but we look for "owner"
+        if (user.type === 'human' && !usersByUniqueId.has(DEFAULT_USER_UNIQUE_IDS.PRIMARY_HUMAN)) {
+          usersByUniqueId.set(DEFAULT_USER_UNIQUE_IDS.PRIMARY_HUMAN, user);
+        }
+      }
+    }
+
+    const missingUniqueIds = requiredUsers.filter(uid => !usersByUniqueId.has(uid));
+
+    if (missingUniqueIds.length === 0) {
+      console.log(`✅ All ${requiredUsers.length} required users exist`);
+    } else {
+      console.log(`📋 Found ${requiredUsers.length - missingUniqueIds.length}/${requiredUsers.length} users, missing: ${missingUniqueIds.join(', ')}`);
+    }
+
+    return { usersByUniqueId, missingUniqueIds };
+  } catch (error) {
+    console.log('⚠️ Could not check existing users, will attempt full seed');
+    return { usersByUniqueId, missingUniqueIds: requiredUsers };
+  }
+}
+
+/**
+ * Load ALL rooms in one bulk call and return as array + uniqueId set.
+ */
+interface LoadedRoom extends Record<string, unknown> {
+  id: string;
+  uniqueId: string;
+  members?: Array<{ userId: string; role: string; joinedAt: string }>;
+}
+
+async function loadAllRooms(): Promise<{
+  rooms: LoadedRoom[];
+  uniqueIds: Set<string>;
+}> {
+  try {
+    const { stdout } = await execAsync(`./jtag ${DATA_COMMANDS.LIST} --collection=${RoomEntity.collection}`);
+    const response = JSON.parse(stdout);
+    const rooms: LoadedRoom[] = response.success && response.items ? response.items : [];
+    const uniqueIds = new Set<string>(rooms.map(r => r.uniqueId));
+    return { rooms, uniqueIds };
+  } catch {
+    return { rooms: [], uniqueIds: new Set() };
+  }
+}
+
+// ===== SYSTEM READINESS =====
+
+/**
+ * Wait for JTAG system to be fully ready with commands registered
+ */
+// Default 480s (was 180s). Cold-start of the in-process llamacpp adapter
+// loading qwen3.5-4b @ 262k context to GPU/Metal can take 200-300s on
+// first npm start before the model is in OS page cache. The seed step
+// blocks until Rust IPC is up because it issues `data/create` commands
+// that go through the Rust ORM. 180s was empirically too short on M5
+// (verified 2026-04-21 — seeded zero personas every cold-start). 480s
+// gives Rust ample headroom without making warm-restarts wait silly long.
+async function waitForJTAGReady(maxWaitSeconds: number = 480): Promise<boolean> {
+  const startTime = Date.now();
+  let attempts = 0;
+
+  console.log('⏳ Waiting for JTAG system to be ready...');
+
+  while (Date.now() - startTime < maxWaitSeconds * 1000) {
+    try {
+      const { stdout } = await execRawAsync('./jtag ping', { timeout: 10000 });
+
+      // ROBUST: Extract JSON from potentially polluted output
+      const firstBrace = stdout.indexOf('{');
+      const lastBrace = stdout.lastIndexOf('}');
+
+      if (firstBrace === -1 || lastBrace === -1 || firstBrace > lastBrace) {
+        throw new Error('No valid JSON in ping output');
+      }
+
+      const jsonStr = stdout.substring(firstBrace, lastBrace + 1);
+      const response = JSON.parse(jsonStr);
+
+      if (response.success &&
+          response.server?.health?.systemReady &&
+          response.server?.health?.commandsRegistered > 0) {
+        // Also verify Rust IPC is connected — seed depends on data/create which goes through Rust ORM
+        try {
+          // Use the real Rust-backed ORM path, but keep the probe cheap. The
+          // previous `data/list --collection=users --limit=1` performed a COUNT
+          // plus a full-row query every retry; on cold start that turned the
+          // health check itself into data/query memory churn. `skipCount` and a
+          // single-column projection prove the data path is alive without
+          // competing with seed/persona startup.
+          const { stdout: dbCheck } = await execRawAsync('./jtag data/list --collection=users --limit=1 --skipCount=true --select=id', { timeout: 10000 });
+          if (dbCheck.includes('"success":true') || dbCheck.includes('"success": true')) {
+            console.log(`✅ JTAG ready with ${response.server.health.commandsRegistered} commands + Rust IPC confirmed`);
+            return true;
+          }
+          // Rust IPC not ready yet — data command failed but TS server is up
+          if (attempts % 5 === 0) {
+            console.log(`   TS server ready but Rust IPC not yet connected...`);
+          }
+        } catch (dbErr: any) {
+          // data/list failed — Rust worker not up yet, keep waiting
+          if (attempts % 5 === 0) {
+            console.log(`   TS server ready but Rust worker not responding...`);
+            console.log(`   DEBUG: ${dbErr?.message || dbErr}`);
+            console.log(`   DEBUG stdout: ${dbErr?.stdout?.slice?.(0, 500) || 'none'}`);
+            console.log(`   DEBUG stderr: ${dbErr?.stderr?.slice?.(0, 200) || 'none'}`);
+          }
+        }
+        // Don't return true yet — wait for Rust
+      }
+
+      if (attempts % 5 === 0 && attempts > 0) {
+        const elapsed = Math.round((Date.now() - startTime) / 1000);
+        console.log(`   Still waiting... (${elapsed}s elapsed, commands: ${response.server?.health?.commandsRegistered || 0})`);
+      }
+    } catch (error) {
+      // Server not ready yet, will retry
+    }
+
+    attempts++;
+    const waitMs = Math.min(500 * Math.pow(1.2, attempts), 2000);
+    await new Promise(resolve => setTimeout(resolve, waitMs));
+  }
+
+  console.error(`❌ JTAG system did not become ready after ${maxWaitSeconds} seconds`);
+  return false;
+}
+
+// ===== ROOM DEFINITIONS =====
+
+const ALL_EXPECTED_ROOMS = [
+  { uniqueId: 'general', name: 'general', displayName: 'General', description: 'Main discussion room for all users', topic: 'General chat and collaboration', tags: ['general', 'welcome', 'discussion'], recipeId: 'general-chat' },
+  { uniqueId: 'academy', name: 'academy', displayName: 'Academy', description: 'Learning and educational discussions', topic: 'Share knowledge, tutorials, and collaborate on learning', tags: ['academy', 'learning', 'education'], recipeId: 'academy' },
+  { uniqueId: 'pantheon', name: 'pantheon', displayName: 'Pantheon', description: 'Elite discussion room for top-tier SOTA AI models', topic: 'Advanced reasoning and multi-model collaboration', tags: ['sota', 'elite', 'reasoning'], recipeId: 'pantheon' },
+  { uniqueId: 'dev-updates', name: 'dev-updates', displayName: 'Dev Updates', description: 'GitHub PRs, CI/CD, and development activity notifications', topic: 'Real-time development feed', tags: ['github', 'ci', 'development'], recipeId: 'dev-updates' },
+  { uniqueId: 'help', name: 'help', displayName: 'Help', description: 'Get help from AI assistants', topic: 'Your AI helpers are here to assist you', tags: ['help', 'support', 'system'], recipeId: 'help' },
+  { uniqueId: 'settings', name: 'settings', displayName: 'Settings', description: 'Configure your Continuum experience', topic: 'System settings and configuration', tags: ['settings', 'config', 'system'], recipeId: 'settings' },
+  { uniqueId: 'theme', name: 'theme', displayName: 'Theme', description: 'Design and customize your visual experience', topic: 'Themes, colors, and customization', tags: ['theme', 'design', 'system'], recipeId: 'theme' },
+  { uniqueId: 'canvas', name: 'canvas', displayName: 'Canvas', description: 'Collaborative drawing discussions', topic: 'Art, drawing, and creative collaboration', tags: ['canvas', 'art', 'system'], recipeId: 'canvas' },
+  { uniqueId: 'outreach', name: 'outreach', displayName: 'Outreach', description: 'Social media strategy, community building, and external engagement', topic: 'Discuss what to post, share interesting finds, coordinate outreach', tags: ['social', 'outreach', 'community', 'moltbook'], recipeId: 'outreach' },
+  { uniqueId: 'newsroom', name: 'newsroom', displayName: 'Newsroom', description: 'Current events, breaking news, and world awareness', topic: 'Share and discuss current events', tags: ['news', 'current-events', 'awareness'], recipeId: 'newsroom' },
+  { uniqueId: 'code', name: 'code', displayName: 'Code', description: 'Collaborative coding — reading, writing, reviewing, and shipping code as a team', topic: 'Software development with real tools and real agent loops', tags: ['coding', 'development', 'engineering'], recipeId: 'coding' },
+] as const;
+
+// Helper AI is auto-added to these rooms during seed (both fresh and
+// existing-rooms paths). 'general' is included so the first-run welcome
+// modal (#1101) can honestly point new users at Helper AI as their
+// first conversation partner — without this, a fresh install puts Helper
+// in support rooms only, leaving General empty of any AI for users with
+// no API keys configured.
+const SYSTEM_ROOM_UNIQUE_IDS = ['general', 'settings', 'help', 'theme', 'canvas'] as const;
+
+// ===== MAIN SEEDING =====
+
+/**
+ * Main seeding function with idempotent behavior.
+ *
+ * Performance: uses bulk loads and parallel updates to minimize subprocess spawns.
+ * Common case (all users exist): ~2 subprocess calls total (ping + bulk list).
+ * Partial case (some users missing): creates missing users sequentially,
+ * updates existing users in parallel.
+ */
+async function seedViaJTAG() {
+  console.log('🌱 Seeding database via JTAG commands (single source of truth)...');
+
+  try {
+    // Wait for JTAG system to be ready (skip in Docker — server already confirmed ready)
+    if (process.env.SKIP_READINESS_CHECK) {
+      console.log('⏭️ Skipping readiness check (SKIP_READINESS_CHECK set)');
+    } else {
+      const isReady = await waitForJTAGReady();
+      if (!isReady) {
+        throw new Error('❌ JTAG system not ready - commands not registered yet');
+      }
+    }
+
+    // Seed the active default fleet. Optional cloud personas are created only
+    // when their real API key exists; historical rows for missing-key providers
+    // are marked offline below so they cannot steal local chat turns.
+    const activePersonas: PersonaConfig[] = getAvailablePersonas().personas;
+    const localModel = selectLocalModel(0); // Default model, allocator overrides at runtime
+    console.log(`🎭 Seeding ${activePersonas.length} active persona(s)`);
+
+    // BULK LOAD: One subprocess call replaces N individual lookups
+    const { usersByUniqueId, missingUniqueIds } = await loadAllUsers(activePersonas);
+
+    if (missingUniqueIds.length === 0) {
+      // Users exist, but rooms may be missing (e.g. DB was partially cleared).
+      // Fall through to room check instead of returning early.
+      console.log('⚡ All required users exist — checking rooms...');
+    }
+
+    // Get system identity
+    const systemIdentity = SystemIdentity.getIdentity();
+    console.log(`🔧 Using system identity: ${systemIdentity.displayName} (${systemIdentity.username})`);
+
+    // Step 1: Ensure human user exists (needed as room owner)
+    let humanUser = usersByUniqueId.get(DEFAULT_USER_UNIQUE_IDS.PRIMARY_HUMAN) ?? null;
+
+    if (!humanUser) {
+      console.log('📝 Creating human user first (needed as room owner)...');
+      humanUser = await createUserViaCommand('human', systemIdentity.displayName, DEFAULT_USER_UNIQUE_IDS.PRIMARY_HUMAN);
+      if (!humanUser) {
+        throw new Error('❌ Failed to create human user - required as room owner');
+      }
+      usersByUniqueId.set(DEFAULT_USER_UNIQUE_IDS.PRIMARY_HUMAN, humanUser);
+    }
+
+    // Step 2: Check if rooms exist
+    const { rooms: existingRooms, uniqueIds: existingRoomUniqueIds } = await loadAllRooms();
+    const needsRooms = existingRooms.length === 0;
+
+    if (needsRooms) {
+      console.log('🏗️ Creating rooms before other users (for auto-join to work)...');
+
+      const rooms = [
+        createRoom(generateUUID(), ROOM_CONFIG.GENERAL.NAME, ROOM_CONFIG.GENERAL.NAME, ROOM_CONFIG.GENERAL.DESCRIPTION,
+          "Welcome to general discussion! Introduce yourself and chat about anything.", 0,
+          ["general", "welcome", "discussion"], humanUser.id, 'general'),
+        createRoom(generateUUID(), ROOM_CONFIG.ACADEMY.NAME, ROOM_CONFIG.ACADEMY.NAME, ROOM_CONFIG.ACADEMY.DESCRIPTION,
+          "Share knowledge, tutorials, and collaborate on learning", 0,
+          ["academy", "learning", "education"], humanUser.id, 'academy'),
+        createRoom(generateUUID(), 'pantheon', 'Pantheon', 'Elite discussion room for top-tier SOTA AI models',
+          "Advanced reasoning and multi-model collaboration", 0,
+          ["sota", "elite", "reasoning"], humanUser.id, 'pantheon'),
+        createRoom(generateUUID(), 'dev-updates', 'Dev Updates', 'GitHub PRs, CI/CD, and development activity notifications',
+          "Real-time development feed - where the team learns together", 0,
+          ["github", "ci", "development", "training"], humanUser.id, 'dev-updates'),
+        createRoom(generateUUID(), 'help', 'Help', 'Get help from AI assistants - ask anything about using Continuum',
+          "Your AI helpers are here to assist you getting started", 0,
+          ["help", "support", "onboarding", "getting-started", "system"], humanUser.id, 'help', 'help'),
+        createRoom(generateUUID(), 'settings', 'Settings', 'Configure your Continuum experience with AI assistance',
+          "Get help configuring API keys, preferences, and system settings", 0,
+          ["settings", "config", "preferences", "system"], humanUser.id, 'settings', 'settings'),
+        createRoom(generateUUID(), 'universe', 'Universe', 'Design complete experiences with AI-assisted universe creation',
+          "Design universes — complete visual, audio, and interaction experiences with AI assistance", 0,
+          ["universe", "design", "customization", "experience", "system"], humanUser.id, 'universe', 'universe'),
+        createRoom(generateUUID(), 'canvas', 'Canvas', 'Collaborative drawing discussions with AI assistance',
+          "Share drawing tips, get AI feedback on your artwork, and collaborate on visual projects", 0,
+          ["canvas", "drawing", "art", "collaboration", "system"], humanUser.id, 'canvas', 'canvas'),
+        createRoom(generateUUID(), 'outreach', 'Outreach', 'Social media strategy, community building, and external engagement',
+          "Discuss what to post, share interesting finds, coordinate outreach on Moltbook and other platforms", 0,
+          ["social", "outreach", "community", "moltbook"], humanUser.id, 'outreach', 'outreach'),
+        createRoom(generateUUID(), 'newsroom', 'Newsroom', 'Current events, breaking news, and world awareness for all personas',
+          "Share and discuss current events to keep the community informed", 0,
+          ["news", "current-events", "awareness"], humanUser.id, 'newsroom', 'newsroom'),
+        createRoom(generateUUID(), 'code', 'Code', 'Collaborative coding — reading, writing, reviewing, and shipping code as a team',
+          "Software development with real tools and real agent loops", 0,
+          ["coding", "development", "engineering"], humanUser.id, 'code', 'coding'),
+        createRoom(generateUUID(), 'factory', 'Factory', 'Model forge production floor — forge, benchmark, and publish models',
+          "Monitor active forges, test model quality, manage the device ladder", 0,
+          ["factory", "forge", "models", "benchmark", "production"], humanUser.id, 'factory', 'factory'),
+      ];
+
+      await seedRecords(RoomEntity.collection, rooms, (room) => room.displayName, (room) => room.ownerId);
+      console.log('✅ Rooms created and persisted - ready for auto-join');
+    }
+
+    // Step 3: Create missing personas (must be sequential — each triggers auto-join)
+    const missingPersonaCount = missingUniqueIds.filter(id => id !== DEFAULT_USER_UNIQUE_IDS.PRIMARY_HUMAN).length;
+    if (missingPersonaCount > 0) {
+      console.log(`📝 Creating ${missingPersonaCount} remaining users...`);
+    }
+
+    for (const persona of activePersonas) {
+      if (!missingUniqueIds.includes(persona.uniqueId)) continue;
+
+      // Sentinel check already handled by getAvailablePersonas(), but double-check
+      if (persona.provider === 'sentinel' && !process.env.SENTINEL_PATH) {
+        continue;
+      }
+
+      const user = await createUserViaCommand(persona.type, persona.displayName, persona.uniqueId, persona.provider);
+      if (user) {
+        usersByUniqueId.set(persona.uniqueId, user);
+
+        if (persona.isAudioNative && persona.modelId) {
+          await updateUserMetadata(user.id, { modelId: persona.modelId, isAudioNative: true });
+        }
+      }
+    }
+
+    // Step 4: Sync ALL users to seed config (provider + metadata)
+    // Runs for EVERY persona, not just pre-existing ones. This ensures
+    // that seed config changes (e.g. provider: 'candle' → 'local') are
+    // always applied, even if the user entity already existed from a
+    // prior seed run. Without this, stale provider values survive across
+    // code updates and users silently route to the wrong adapter.
+    const updatePromises: Promise<boolean>[] = [];
+    for (const persona of activePersonas) {
+      const existingUser = usersByUniqueId.get(persona.uniqueId);
+      if (!existingUser) continue;
+
+      if (persona.provider) {
+        updatePromises.push(updateUserModelConfig(existingUser.id, persona.provider));
+      }
+      if (persona.isAudioNative && persona.modelId) {
+        updatePromises.push(updateUserMetadata(existingUser.id, { modelId: persona.modelId, isAudioNative: true }));
+      }
+    }
+
+    if (updatePromises.length > 0) {
+      console.log(`🔄 Updating ${updatePromises.length} existing user configs in parallel...`);
+      await Promise.all(updatePromises);
+      console.log('✅ Existing user configs updated');
+    }
+
+    const activePersonaIds = new Set(activePersonas.map(p => p.uniqueId));
+    const optionalPersonaIds = new Set(OPTIONAL_CLOUD_PERSONA_CONFIGS.map(p => p.uniqueId));
+    const staleOptionalUsers = [...usersByUniqueId.values()].filter(user =>
+      user.uniqueId &&
+      optionalPersonaIds.has(user.uniqueId) &&
+      !activePersonaIds.has(user.uniqueId) &&
+      user.status !== 'offline'
+    );
+    if (staleOptionalUsers.length > 0) {
+      console.log(`🧊 Marking ${staleOptionalUsers.length} missing-key optional persona(s) offline`);
+      await Promise.all(staleOptionalUsers.map(user => {
+        const dataArg = JSON.stringify({ status: 'offline' }).replace(/'/g, `'"'"'`);
+        return execAsync(`./jtag ${DATA_COMMANDS.UPDATE} --collection=${UserEntity.collection} --id="${user.id}" --data='${dataArg}' --suppressEvents=true`)
+          .catch(() => undefined);
+      }));
+    }
+
+    // Get key user references
+    const claudeUser = usersByUniqueId.get(PERSONA_UNIQUE_IDS.CLAUDE) ?? null;
+    const helperPersona = usersByUniqueId.get(PERSONA_UNIQUE_IDS.HELPER) ?? null;
+    const teacherPersona = usersByUniqueId.get(PERSONA_UNIQUE_IDS.TEACHER) ?? null;
+    const codeReviewPersona = usersByUniqueId.get(PERSONA_UNIQUE_IDS.CODE_REVIEW) ?? null;
+    const qwen3OmniPersona = usersByUniqueId.get(PERSONA_UNIQUE_IDS.QWEN3_OMNI) ?? null;
+
+    // Step 5: Handle "rooms already existed" path — check missing rooms + system room helpers
+    if (!needsRooms) {
+      // Check for missing rooms using already-loaded data
+      let missingRoomsCreated = 0;
+      for (const roomDef of ALL_EXPECTED_ROOMS) {
+        if (!existingRoomUniqueIds.has(roomDef.uniqueId)) {
+          console.log(`🏗️ Creating missing room: ${roomDef.displayName}`);
+          const newRoom = createRoom(
+            // Real, system-generated, globally-unique UUID (uuidv4). The
+            // logical name lives in `uniqueId` below; UUIDs are never
+            // derived from text — that breaks grid federation and was the
+            // ghost-room bug source.
+            generateUUID(),
+            roomDef.name,
+            roomDef.displayName,
+            roomDef.description,
+            roomDef.topic,
+            0,
+            [...roomDef.tags],
+            humanUser.id,
+            roomDef.uniqueId,
+            roomDef.recipeId
+          );
+          await createRecord(RoomEntity.collection, newRoom, newRoom.id, roomDef.displayName);
+          missingRoomsCreated++;
+        }
+      }
+      if (missingRoomsCreated > 0) {
+        console.log(`✅ Created ${missingRoomsCreated} missing room(s)`);
+      }
+
+      // Ensure system rooms have Helper AI — using already-loaded room data (NO extra queries)
+      if (helperPersona) {
+        console.log('🏠 Ensuring system rooms have Helper AI...');
+        const helperUpdates: Promise<void>[] = [];
+
+        for (const roomUniqueId of SYSTEM_ROOM_UNIQUE_IDS) {
+          const room = existingRooms.find(r => r.uniqueId === roomUniqueId);
+          if (!room) continue;
+
+          const existingMembers = room.members || [];
+          const helperAlreadyMember = existingMembers.some(m => m.userId === helperPersona.id);
+
+          if (!helperAlreadyMember) {
+            const updatedMembers = [
+              ...existingMembers,
+              { userId: helperPersona.id, role: 'member', joinedAt: '2025-01-01T00:00:00Z' }
+            ];
+            const updateData = JSON.stringify({ members: updatedMembers }).replace(/'/g, `'\"'\"'`);
+            helperUpdates.push(
+              execAsync(`./jtag ${DATA_COMMANDS.UPDATE} --collection=${RoomEntity.collection} --id="${room.id}" --data='${updateData}'`)
+                .then(() => console.log(`✅ Added Helper AI to ${roomUniqueId} room`))
+                .catch(() => {/* skip silently */})
+            );
+          }
+        }
+
+        if (helperUpdates.length > 0) {
+          await Promise.all(helperUpdates);
+        }
+      }
+
+      // Ensure profiles exist even for pre-existing databases
+      await ensurePersonaProfiles(usersByUniqueId);
+
+      // Ensure activities exist (idempotent — seedRecords skips existing)
+      const activitySeedData = ActivityDataSeed.generateSeedActivities(humanUser.id);
+      await seedRecords(ActivityEntity.collection, activitySeedData.activities as ActivityEntity[], (a) => a.displayName, (a) => a.ownerId);
+
+      // Sync recipes — always, even on existing databases
+      await syncRecipesFromJson();
+
+      console.log('✅ Users added to existing database - rooms and messages already exist');
+      return;
+    }
+
+    // ===== FIRST-TIME SEED (rooms were just created) =====
+
+    if (!humanUser) {
+      throw new Error('❌ Failed to create human user');
+    }
+    // On low-resource machines, some personas may not be created (no API key / no GPU).
+    // That's OK — the system works with whatever personas are available.
+
+    // Seed persona profiles (bios, accent colors, specialities)
+    await ensurePersonaProfiles(usersByUniqueId);
+
+    // System room helper setup (parallel — using rooms we just created)
+    // Only add Helper AI to rooms if it was created
+    const systemRoomHelperUpdates: Promise<void>[] = [];
+    if (!helperPersona) {
+      console.log('⏭️  No Helper AI available — skipping room membership setup');
+    } else {
+    for (const roomUniqueId of SYSTEM_ROOM_UNIQUE_IDS) {
+      systemRoomHelperUpdates.push(
+        (async () => {
+          try {
+            const result = await execAsync(`./jtag ${DATA_COMMANDS.LIST} --collection=${RoomEntity.collection} --filter='{"uniqueId":"${roomUniqueId}"}'`);
+            const parsed = JSON.parse(result.stdout);
+            if (parsed.success && parsed.items?.[0]) {
+              const room = parsed.items[0];
+              const existingMembers = room.members || [];
+              const helperAlreadyMember = existingMembers.some(m => m.userId === helperPersona.id);
+
+              if (!helperAlreadyMember) {
+                const updatedMembers = [
+                  ...existingMembers,
+                  { userId: helperPersona.id, role: 'member', joinedAt: '2025-01-01T00:00:00Z' }
+                ];
+                const updateData = JSON.stringify({ members: updatedMembers }).replace(/'/g, `'\"'\"'`);
+                await execAsync(`./jtag ${DATA_COMMANDS.UPDATE} --collection=${RoomEntity.collection} --id="${room.id}" --data='${updateData}'`);
+                console.log(`✅ Added Helper AI to ${roomUniqueId} room`);
+              } else {
+                console.log(`✅ Helper AI already in ${roomUniqueId} room`);
+              }
+            }
+          } catch (error) {
+            console.warn(`⚠️ Could not add Helper AI to ${roomUniqueId}`);
+          }
+        })()
+      );
+    }
+    } // end if (helperPersona)
+    await Promise.all(systemRoomHelperUpdates);
+
+    // Configure persona AI response settings (parallel) — only for personas that exist
+    console.log('🔧 Configuring persona AI response settings...');
+    const personaConfigPromises: Promise<boolean>[] = [];
+    if (helperPersona) {
+      personaConfigPromises.push(updatePersonaConfig(helperPersona.id, {
+        domainKeywords: ['help', 'question', 'what', 'how', 'why', 'explain', 'support', 'assist'],
+        responseThreshold: 50,
+        alwaysRespondToMentions: true,
+        cooldownSeconds: 30,
+        maxResponsesPerSession: 50,
+        gatingModel: 'deterministic',
+        responseModel: localModel
+      }));
+    }
+    if (teacherPersona) {
+      personaConfigPromises.push(updatePersonaConfig(teacherPersona.id, {
+        domainKeywords: ['teaching', 'education', 'learning', 'explain', 'understand', 'lesson', 'tutorial', 'guide'],
+        responseThreshold: 50,
+        alwaysRespondToMentions: true,
+        cooldownSeconds: 30,
+        maxResponsesPerSession: 50,
+        gatingModel: 'deterministic',
+        responseModel: localModel
+      }));
+    }
+    if (codeReviewPersona) {
+      personaConfigPromises.push(updatePersonaConfig(codeReviewPersona.id, {
+        domainKeywords: ['code', 'programming', 'function', 'bug', 'typescript', 'javascript', 'review', 'refactor'],
+        responseThreshold: 50,
+        alwaysRespondToMentions: true,
+        cooldownSeconds: 30,
+        maxResponsesPerSession: 50,
+        gatingModel: 'deterministic',
+        responseModel: localModel
+      }));
+    }
+    if (personaConfigPromises.length > 0) {
+      await Promise.all(personaConfigPromises);
+    }
+    console.log('✅ Persona configurations applied');
+
+    // Seed messages — resolve real room UUIDs from the rooms we just
+    // created/loaded (uniqueId → id). Rooms have system-generated uuidv4
+    // IDs; the welcome messages need to point at THE same row, so we
+    // look it up rather than guess at a deterministic UUID.
+    const { rooms: roomsForMessages } = await loadAllRooms();
+    const roomIdByUniqueId = new Map<string, string>(
+      roomsForMessages.map(r => [r.uniqueId, r.id])
+    );
+    const generalRoomId = roomIdByUniqueId.get(ROOM_UNIQUE_IDS.GENERAL);
+    const academyRoomId = roomIdByUniqueId.get(ROOM_UNIQUE_IDS.ACADEMY);
+    const pantheonRoomId = roomIdByUniqueId.get(ROOM_UNIQUE_IDS.PANTHEON);
+    const messages: SeedMessage[] = [];
+    if (generalRoomId) {
+      messages.push(createMessage(
+        generateUUID(),
+        generalRoomId,
+        'system',
+        'System',
+        MESSAGE_CONTENT.WELCOME_GENERAL,
+        'system'
+      ));
+    }
+    if (academyRoomId) {
+      messages.push(createMessage(
+        generateUUID(),
+        academyRoomId,
+        'system',
+        'System',
+        MESSAGE_CONTENT.WELCOME_ACADEMY,
+        'system'
+      ));
+    }
+    if (pantheonRoomId) {
+      messages.push(createMessage(
+        generateUUID(),
+        pantheonRoomId,
+        humanUser.id,
+        systemIdentity.displayName,
+        'Welcome to the Pantheon! This is where our most advanced SOTA models converge - each provider\'s flagship intelligence collaborating on complex problems.',
+        'human'
+      ));
+    }
+
+    // Content types
+    const contentTypes = createDefaultContentTypes();
+
+    // Training sessions
+    const trainingSessions = academyRoomId ? [
+      {
+        id: 'ts-js-fundamentals',
+        roomId: academyRoomId,
+        teacherUserId: claudeUser?.id ?? humanUser.id,
+        studentUserId: humanUser.id,
+        sessionName: 'JavaScript Fundamentals',
+        description: 'Learn core JavaScript concepts through interactive exercises',
+        sessionType: 'teacher-student',
+        status: 'active',
+        curriculum: 'javascript-basics',
+        startedAt: new Date().toISOString(),
+        plannedDuration: 90,
+        actualDuration: 15,
+        hyperparameters: {
+          learningRate: 0.15,
+          scoreThreshold: 80.0,
+          benchmarkInterval: 8,
+          maxSessionLength: 120,
+          adaptiveScoring: true,
+          contextWindow: 25
+        },
+        learningObjectives: [
+          {
+            id: 'obj-variables',
+            topic: 'variables-declarations',
+            description: 'Understand var, let, and const declarations',
+            targetScore: 85,
+            currentScore: 78,
+            completed: false,
+            evidence: []
+          },
+          {
+            id: 'obj-functions',
+            topic: 'function-basics',
+            description: 'Create and call functions effectively',
+            targetScore: 80,
+            completed: false,
+            evidence: []
+          }
+        ],
+        metrics: {
+          messagesExchanged: 24,
+          benchmarksPassed: 2,
+          benchmarksFailed: 1,
+          averageScore: 76.5,
+          timeSpent: 15,
+          objectivesCompleted: 0,
+          scoreHistory: [
+            {
+              timestamp: new Date(Date.now() - 10 * 60 * 1000).toISOString(),
+              score: 72,
+              objective: 'variables-declarations'
+            },
+            {
+              timestamp: new Date(Date.now() - 5 * 60 * 1000).toISOString(),
+              score: 81,
+              objective: 'function-basics'
+            }
+          ]
+        },
+        additionalParticipants: [],
+        isArchived: false
+      }
+    ] : [];
+
+    // Seed remaining data
+    await seedRecords(ChatMessageEntity.collection, messages,
+      (msg) => msg.senderId === humanUser!.id ? humanUser!.displayName : (claudeUser && msg.senderId === claudeUser.id) ? claudeUser.displayName : 'System',
+      (msg) => msg.senderId
+    );
+    await seedRecords(ContentTypeEntity.collection, contentTypes, (ct) => ct.displayName);
+    await seedRecords(TrainingSessionEntity.collection, trainingSessions, (ts) => ts.sessionName);
+
+    // Seed activities (canvas, browser co-browsing)
+    const activitySeedData = ActivityDataSeed.generateSeedActivities(humanUser.id);
+    await seedRecords(ActivityEntity.collection, activitySeedData.activities as ActivityEntity[], (a) => a.displayName, (a) => a.ownerId);
+
+    // Sync recipes on first-time seed too
+    await syncRecipesFromJson();
+
+    // Generate static avatar PNGs for all personas (colored circles with initials).
+    // These are the BASE avatars — always available, no Bevy/GPU needed.
+    // Bevy 3D renders upgrade these when available (local dev, game mode).
+    try {
+      const { generateAllAvatars } = await import('./seed/generate-avatars');
+      const avatarSpecs = Object.entries(PERSONA_PROFILES).map(([uniqueId, profile]) => {
+        const persona = ALL_PERSONAS.find(p => p.uniqueId === uniqueId);
+        return {
+          uniqueId,
+          displayName: persona?.displayName || uniqueId,
+          accentColor: profile.accentColor,
+        };
+      });
+      const avatarCount = await generateAllAvatars(avatarSpecs);
+      console.log(`🖼️  Generated ${avatarCount} persona avatars (${avatarSpecs.length - avatarCount} cached)`);
+    } catch (err) {
+      console.warn(`⚠️ Avatar generation skipped: ${err}`);
+    }
+
+    console.log('\n🎉 Database seeding completed via JTAG (single source of truth)!');
+
+  } catch (error: unknown) {
+    console.error('❌ SEEDING FAILED:', error instanceof Error ? error.message : String(error));
+    process.exit(1);
+  }
+}
+
+// Run if called directly
+if (import.meta.url === `file://${process.argv[1]}`) {
+  seedViaJTAG();
+}
+
+export default seedViaJTAG;

@@ -66,9 +66,9 @@ import { SentinelDispatchDecider } from '../../../sentinel/SentinelDispatchDecid
 import { SentinelDispatchCoordinator } from '../../../sentinel/SentinelDispatchCoordinator';
 import { Commands } from '../../../core/shared/Commands';
 import type { SentinelRunResult } from '../../../../commands/sentinel/run/shared/SentinelRunTypes';
-import type { SocialSignals } from '../../../../shared/generated';
-import type { PersonaResponse } from '../../../../shared/generated/cognition/PersonaResponse';
-import type { PersonaRespondRequest } from '../../../../workers/continuum-core/bindings/modules/cognition';
+import type { SocialSignals } from '@shared/generated';
+import type { PersonaResponse } from '@shared/generated/cognition/PersonaResponse';
+import type { PersonaRespondRequest } from '../../../../../core/continuum-core/bindings/modules/cognition';
 import { inspect } from 'util';
 import { createHash } from 'crypto';
 import type { LLMMessage } from '../../../rag/shared/RAGTypes';
@@ -295,7 +295,7 @@ export class PersonaResponseGenerator {
    * for analysis + scoring + render + strip-thinks, keeps tool agent loop +
    * posting in TS.
    */
-  // eslint-disable-next-line max-lines-per-function, complexity -- pre-existing: this is the convergence point that needs to be split into pipeline stages, scheduled for the cleanup-sweep PR after #950
+  // eslint-disable-next-line max-lines-per-function -- pre-existing: this is the convergence point that needs to be split into pipeline stages, scheduled for the cleanup-sweep PR after #950
   async generateAndPostResponse(
     originalMessage: ProcessableMessage,
     decisionContext?: Omit<LogDecisionParams, 'responseContent' | 'tokensUsed' | 'responseTime'>,
@@ -373,16 +373,33 @@ export class PersonaResponseGenerator {
           if (!base64) {
             return null; // Nothing to send to the model
           }
-          // Pull cached description (populated by prewarmVisionDescriptions
-          // at chat-send time). Cache hit takes ~0ms; miss returns
-          // undefined — text-only personas downstream get a "no
-          // description available" marker instead of fabricating.
+          // Pull description from VDS — populated by prewarmVisionDescriptions
+          // at chat-send time. Two states are valid waits:
+          //   'cached'   → ~0ms instant lookup (pre-warm finished).
+          //   'inflight' → bounded wait. Pre-warm started but hasn't
+          //                resolved yet; we'd rather wait up to 8s than
+          //                hand the persona an empty description and
+          //                let it hallucinate "I don't see any image."
+          //                VDS already deduplicates inflight requests, so
+          //                this await piggybacks on the existing call —
+          //                no extra inference cost.
+          // Status `none` / `error` → don't trigger a blocking describe
+          // here; the chat-send path is responsible for prewarming. Stage
+          // 2 (Rust-side) is responsible for emitting an [Attached image:
+          // unavailable] marker when description ends up undefined, so a
+          // text-only persona at least KNOWS an image was attached
+          // instead of fabricating absence. Tracked in #970.
           let description: string | undefined;
           if (m.type === 'image') {
             try {
               const visionSvc = VisionDescriptionService.getInstance();
-              if (visionSvc.descriptionStatus(base64) === 'cached') {
-                const desc = await visionSvc.describeBase64(base64, m.mimeType ?? 'image/png', { maxLength: 200 });
+              const status = visionSvc.descriptionStatus(base64);
+              if (status === 'cached' || status === 'inflight') {
+                const VDS_WAIT_MS = 8000;
+                const desc = await Promise.race([
+                  visionSvc.describeBase64(base64, m.mimeType ?? 'image/png', { maxLength: 200 }),
+                  new Promise<null>((resolve) => setTimeout(() => resolve(null), VDS_WAIT_MS)),
+                ]);
                 description = desc?.description;
               }
             } catch {
@@ -490,151 +507,12 @@ export class PersonaResponseGenerator {
         signal,
         personaContext,
       };
-      // Fixture capture for the Rust-persona-rewrite replay test harness
-      // AND the eventual training corpus that Forge/Academy/Sentinel-AI
-      // use to LoRA-train models against our actual RAG output shape.
-      //
-      // FIFO-pruned at FIXTURE_CAP_PER_DIR — keeps a representative
-      // recent slice without unbounded compound growth. 200 fixtures
-      // at ~25KB each = ~5MB ceiling per persona-respond dir, still
-      // plenty of training-corpus diversity.
-      //
-      // No try/catch — disk write failure is a real bug to surface, not
-      // hide. If permissions/disk are wrong, fix that, don't silently
-      // lose fixtures.
-      // Build the fixture path up front; write it twice — once with
-      // the request before the IPC call (so we capture the input even
-      // if Rust hangs or crashes mid-call), then rewrite atomically
-      // with the response paired in. Self-contained fixtures
-      // (input + observed output + timing) are what makes the live
-      // session replayable as an integration test — anything less is
-      // just an input dump that requires re-running real inference
-      // to know "what was it supposed to do?".
-      const { writeFileSync, renameSync, mkdirSync, readdirSync, statSync, unlinkSync } = await import('fs');
-      const { homedir } = await import('os');
-      const { join } = await import('path');
-      const fixtureDir = join(homedir(), '.continuum', 'fixtures', 'persona-respond');
-      mkdirSync(fixtureDir, { recursive: true });
-      const fixtureTs = new Date().toISOString().replace(/[:.]/g, '-');
-      const fixtureName = `${this.personaName.replace(/\s+/g, '_')}-${originalMessage.id.slice(0, 8)}-${fixtureTs}.json`;
-      const fixturePath = join(fixtureDir, fixtureName);
-      // The whole shebang: every input the persona had visibility into
-      // for THIS turn, plus the IPC payload built from those inputs,
-      // plus (after the await) the Rust response. No black boxes — if
-      // a persona "sees" something or "doesn't see" something, this
-      // file documents both, so a replay test can prove the behavior
-      // OR catch the regression that hid it.
-      //
-      // Sensitive payload note: media base64 lives in `rust_request`.
-      // Fixtures are written under ~/.continuum (already gitignored
-      // and out of the repo), but anything copied for sharing should
-      // strip base64 first. The `rag_context.conversationHistory`
-      // mirrors what crossed the IPC; full RAG sources (with
-      // embeddings, scores, and original document bodies) are NOT
-      // included here — would balloon fixture size 10x. If RAG
-      // attribution itself needs replay, capture upstream of PRG.
-      const fixtureBase = {
-        schema_version: 3,
-        captured_at: Date.now(),
-        session_id: this.getSessionId(),
-        persona_id: this.personaId,
-        persona_name: this.personaName,
-        model_config: this.modelConfig,
-        // Original message the persona is reacting to — what the
-        // chat path handed in. Lets a replay reconstruct the trigger
-        // shape (text + media + sender) without hunting through DB.
-        original_message: {
-          id: originalMessage.id,
-          roomId: originalMessage.roomId,
-          senderId: originalMessage.senderId,
-          senderType: originalMessage.senderType,
-          text: originalMessage.content.text,
-          mediaCount: originalMessage.content.media?.length ?? 0,
-          mediaTypes: (originalMessage.content.media ?? []).map((m) => m.type),
-          sourceModality: originalMessage.sourceModality,
-        },
-        // EXACT RAG context the persona had before building the IPC.
-        // FULL conversation history (no truncation, no sampling) so
-        // replay can reconstruct the persona's exact view. Identity
-        // system prompt full. Metadata copied verbatim. If the
-        // captured fixture differs from prod behavior, the difference
-        // is in the test setup or downstream code — never in the
-        // input itself, because the input is byte-for-byte preserved.
-        rag_context: {
-          conversationHistory: (ragContext.conversationHistory ?? []).map((h) => ({
-            role: h.role,
-            name: h.name ?? null,
-            content: h.content,
-          })),
-          identitySystemPrompt: ragContext.identity.systemPrompt ?? null,
-          metadata: ragContext.metadata ?? {},
-        },
-        resolved_capabilities: capabilities,
-        rust_request: rustRequest,
-      };
-      writeFileSync(fixturePath, JSON.stringify({
-        ...fixtureBase,
-        rust_response: null, // pending — set after the IPC await
-        ipc_error: null,
-        ipc_duration_ms: null,
-      }, null, 2));
 
       const ipcStart = Date.now();
-      let response: PersonaResponse;
-      try {
-        response = await this._rustBridge.personaRespond(rustRequest);
-      } catch (err) {
-        // Persist the failure into the fixture too — the replay tests
-        // need to see "this input made Rust throw" as a first-class
-        // recorded outcome, not lost as a TS-side log line.
-        const ipcDurMs = Date.now() - ipcStart;
-        try {
-          writeFileSync(fixturePath + '.tmp', JSON.stringify({
-            ...fixtureBase,
-            rust_response: null,
-            ipc_error: { message: String(err), stack: (err as Error)?.stack ?? null },
-            ipc_duration_ms: ipcDurMs,
-          }, null, 2));
-          renameSync(fixturePath + '.tmp', fixturePath);
-        } catch (writeErr) {
-          this.log(`⚠️ ${this.personaName}: failed to update fixture with IPC error: ${writeErr}`);
-        }
-        throw err;
-      }
+      const response = await this._rustBridge.personaRespond(rustRequest);
       const ipcDurationMs = Date.now() - ipcStart;
       pipelineTiming['3.2_cognition'] = Date.now() - phase32Start;
-
-      // Rewrite the fixture with the response paired in. Atomic:
-      // write to .tmp then rename, so a crash mid-write leaves the
-      // pre-call fixture intact rather than producing a half file
-      // that breaks parsers.
-      try {
-        writeFileSync(fixturePath + '.tmp', JSON.stringify({
-          ...fixtureBase,
-          rust_response: response,
-          ipc_error: null,
-          ipc_duration_ms: ipcDurationMs,
-        }, null, 2));
-        renameSync(fixturePath + '.tmp', fixturePath);
-      } catch (writeErr) {
-        this.log(`⚠️ ${this.personaName}: failed to update fixture with response: ${writeErr}`);
-      }
-
-      // FIFO trim — keep recent slice without unbounded growth.
-      const FIXTURE_CAP_PER_DIR = 200;
-      const entries = readdirSync(fixtureDir)
-        .filter((n) => n.endsWith('.json'))
-        .map((n) => {
-          const full = join(fixtureDir, n);
-          return { full, mtime: statSync(full).mtimeMs };
-        });
-      if (entries.length > FIXTURE_CAP_PER_DIR) {
-        entries.sort((a, b) => a.mtime - b.mtime);
-        const toRemove = entries.slice(0, entries.length - FIXTURE_CAP_PER_DIR);
-        for (const e of toRemove) {
-          unlinkSync(e.full);
-        }
-      }
+      pipelineTiming['3.2_ipc'] = ipcDurationMs;
 
       if (response.kind === 'silent') {
         return this.handleSilent(originalMessage, response, pipelineTiming, generateStartTime);
@@ -938,29 +816,28 @@ export class PersonaResponseGenerator {
     if (!this.trainingAccumulator) return;
     const accumulator = this.trainingAccumulator;
     const bridge = this.rustCognitionBridge;
-    const fallbackDomain = this.inferTrainingDomain(originalMessage);
+    // No bridge → no Rust classifier → skip training capture. The previous
+    // path inferred a domain via substring-matching ('```' → 'code',
+    // 'teach' → 'teaching', else 'conversation') and used it as a silent
+    // backup when the ML failed. Heuristic-on-a-citizen, exactly what
+    // Joel 2026-05-29 ruled out. Skipping a single training event is
+    // better than poisoning the corpus with a guessed label.
+    if (!bridge) return;
     const inputText = originalMessage.content.text ?? '';
 
     (async (): Promise<void> => {
-      let domain = fallbackDomain;
-      let qualityRating: number | undefined;
-      if (bridge) {
-        try {
-          const classification = await bridge.classifyDomain(inputText);
-          domain = classification.domain;
-          bridge.recordActivity(domain, true).catch(() => {});
-          qualityRating = (await bridge.scoreInteraction(inputText, finalText)).score;
-        } catch { /* fallback domain already set */ }
-      }
+      const classification = await bridge.classifyDomain(inputText);
+      await bridge.recordActivity(classification.domain, true);
+      const qualityRating = (await bridge.scoreInteraction(inputText, finalText)).score;
       await accumulator.captureInteraction({
         roleId: this.personaId,
         personaId: this.personaId,
-        domain,
+        domain: classification.domain,
         input: inputText,
         output: finalText,
         qualityRating,
       });
-    })().catch(err => this.log(`⚠️ Failed to capture training: ${err}`));
+    })().catch(err => this.log(`❌ Training capture failed: ${err}`));
   }
 
   private recordFitness(generateStartTime: number): void {
@@ -1013,17 +890,6 @@ export class PersonaResponseGenerator {
     }
 
     return { success: false, error: errorMsg, storedToolResultIds };
-  }
-
-  private inferTrainingDomain(message: ProcessableMessage): string {
-    const text = message.content.text ?? '';
-    if (text.includes('```') || text.includes('function ') || text.includes('import ') || text.includes('const ')) {
-      return 'code';
-    }
-    if (text.toLowerCase().includes('teach') || text.toLowerCase().includes('learn') || text.toLowerCase().includes('exam')) {
-      return 'teaching';
-    }
-    return 'conversation';
   }
 
   private timestampToNumber(timestamp: Date | number | string | undefined): number {

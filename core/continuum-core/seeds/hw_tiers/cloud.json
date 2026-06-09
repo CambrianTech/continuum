@@ -1,0 +1,9 @@
+{
+  "tierId": "cloud",
+  "label": "Cloud Inference",
+  "category": "cloud",
+  "localVideoCapable": false,
+  "minParamsBMeaningful": 7.0,
+  "maxParamsBFits": 405.0,
+  "note": "Cloud-routed inference (Anthropic, OpenAI, etc.) — substrate uses cloud as an inference peer like any other [[inference-is-an-adapter-always-in-the-loop]]. localVideoCapable=false because rendering happens locally; only the model lives in the cloud."
+}

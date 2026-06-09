@@ -9,7 +9,7 @@ import { CommandBase, type ICommandDaemon } from '@daemons/command-daemon/shared
 import type { JTAGContext } from '@system/core/types/JTAGTypes';
 import type { GridNodeStatusParams, GridNodeStatusResult } from '../shared/GridNodeStatusTypes';
 import { createGridNodeStatusResultFromParams } from '../shared/GridNodeStatusTypes';
-import { RustCoreIPCClient, getContinuumCoreSocketPath } from '../../../../workers/continuum-core/bindings/RustCoreIPC';
+import { RustCoreIPCClient, getContinuumCoreSocketPath } from '../../../../../core/continuum-core/bindings/RustCoreIPC';
 import { COMMANDS } from '@shared/generated-command-constants';
 
 export class GridNodeStatusServerCommand extends CommandBase<GridNodeStatusParams, GridNodeStatusResult> {

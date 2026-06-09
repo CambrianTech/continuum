@@ -9,7 +9,7 @@ import { CommandBase, type ICommandDaemon } from '@daemons/command-daemon/shared
 import type { JTAGContext } from '@system/core/types/JTAGTypes';
 import type { GridJobQueueParams, GridJobQueueResult } from '../shared/GridJobQueueTypes';
 import { createGridJobQueueResultFromParams } from '../shared/GridJobQueueTypes';
-import { RustCoreIPCClient, getContinuumCoreSocketPath } from '../../../../workers/continuum-core/bindings/RustCoreIPC';
+import { RustCoreIPCClient, getContinuumCoreSocketPath } from '../../../../../core/continuum-core/bindings/RustCoreIPC';
 import { COMMANDS } from '@shared/generated-command-constants';
 
 export class GridJobQueueServerCommand extends CommandBase<GridJobQueueParams, GridJobQueueResult> {

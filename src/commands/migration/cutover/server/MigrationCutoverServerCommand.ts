@@ -9,7 +9,7 @@ import type { JTAGContext } from '@system/core/types/JTAGTypes';
 import { ValidationError } from '@system/core/types/ErrorTypes';
 import type { MigrationCutoverParams, MigrationCutoverResult } from '../shared/MigrationCutoverTypes';
 import { createMigrationCutoverResultFromParams } from '../shared/MigrationCutoverTypes';
-import { RustCoreIPCClient } from '../../../../workers/continuum-core/bindings/RustCoreIPC';
+import { RustCoreIPCClient } from '../../../../../core/continuum-core/bindings/RustCoreIPC';
 
 export class MigrationCutoverServerCommand extends CommandBase<MigrationCutoverParams, MigrationCutoverResult> {
 

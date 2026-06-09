@@ -15,7 +15,7 @@
  * validation loop: it proves training actually improved the model.
  */
 
-import type { Pipeline, PipelineStep } from '../../../workers/continuum-core/bindings/modules/sentinel';
+import type { Pipeline, PipelineStep } from '../../../../core/continuum-core/bindings/modules/sentinel';
 import type { StudentPipelineConfig } from '../../genome/shared/AcademyTypes';
 import { academyEvent, ACADEMY_EVENTS } from '../../genome/shared/AcademyTypes';
 

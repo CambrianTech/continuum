@@ -9,7 +9,7 @@ import { CommandBase, type ICommandDaemon } from '../../../../../daemons/command
 import type { JTAGContext, JTAGPayload } from '../../../../../system/core/types/JTAGTypes';
 import { transformPayload } from '../../../../../system/core/types/JTAGTypes';
 import type { SentinelLogsListParams, SentinelLogsListResult } from '../shared/SentinelLogsListTypes';
-import { RustCoreIPCClient } from '../../../../../workers/continuum-core/bindings/RustCoreIPC';
+import { RustCoreIPCClient } from '../../../../../../core/continuum-core/bindings/RustCoreIPC';
 
 export class SentinelLogsListServerCommand extends CommandBase<SentinelLogsListParams, SentinelLogsListResult> {
   constructor(context: JTAGContext, subpath: string, commander: ICommandDaemon) {

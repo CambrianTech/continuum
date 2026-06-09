@@ -37,6 +37,7 @@ import { AdaptiveConsolidationThreshold } from './AdaptiveConsolidationThreshold
 import { MemoryConsolidationAdapter } from './adapters/MemoryConsolidationAdapter';
 import { SemanticCompressionAdapter } from './adapters/SemanticCompressionAdapter';
 import { RawMemoryAdapter } from './adapters/RawMemoryAdapter';
+import { getDefaultConsolidationMode } from './HippocampusConsolidationPolicy';
 import type { WorkingMemoryEntry } from '../../cognition/memory/InMemoryCognitionStorage';
 import { DataDaemon } from '../../../../../../daemons/data-daemon/shared/DataDaemon';
 import type { UniversalFilter } from '../../../../../../daemons/data-daemon/shared/DataStorageAdapter';
@@ -45,12 +46,27 @@ import type { VectorSearchParams, VectorSearchResult_CLI } from '../../../../../
 import { BackpressureService } from '../../../../../core/services/BackpressureService';
 import { CognitionLogger } from '../../cognition/CognitionLogger';
 import { TieredMemoryCache } from '../../../../../rag/cache/TieredMemoryCache';
+import { StartupAutonomousWorkGate } from '../../StartupAutonomousWorkGate';
 
 import { DataOpen } from '../../../../../../commands/data/open/shared/DataOpenTypes';
 import { VectorSearch } from '../../../../../../commands/data/vector-search/shared/VectorSearchCommandTypes';
 import { DataList } from '../../../../../../commands/data/list/shared/DataListTypes';
 import { DataCreate } from '../../../../../../commands/data/create/shared/DataCreateTypes';
-import type { CorpusMemory } from '../../../../../../workers/continuum-core/bindings/CorpusMemory';
+import type { CorpusMemory } from '../../../../../../../core/continuum-core/bindings/CorpusMemory';
+
+function selectDefaultConsolidationAdapter(
+  persona: PersonaUser,
+  logger: NonNullable<ConstructorParameters<typeof SemanticCompressionAdapter>[1]>['logger']
+): MemoryConsolidationAdapter {
+  if (getDefaultConsolidationMode() === 'raw') {
+    return new RawMemoryAdapter();
+  }
+
+  return new SemanticCompressionAdapter(
+    persona,
+    { maxThoughtsPerGroup: 10, logger }
+  );
+}
 
 /**
  * Snapshot of persona state at tick time
@@ -123,7 +139,7 @@ export class Hippocampus extends PersonaContinuousSubprocess {
 
   constructor(persona: PersonaUser, adapter?: MemoryConsolidationAdapter) {
     super(persona, {
-      priority: 'low', // Low priority - don't interfere with response times
+      priority: 'lowest', // Background memory must not compete with visible chat turns.
       name: 'Hippocampus'
     });
 
@@ -137,15 +153,10 @@ export class Hippocampus extends PersonaContinuousSubprocess {
     // Initialize adaptive threshold (sigmoid-based, activity-responsive)
     this.adaptiveThreshold = new AdaptiveConsolidationThreshold();
 
-    // Initialize consolidation adapter (default: semantic compression)
-    // Pass persona directly - adapter uses persona.generateText() for synthesis (same code path as chat)
     const hippocampusLogger = (message: string) => {
       this.persona.logger.enqueueLog('hippocampus.log', message);
     };
-    this.consolidationAdapter = adapter || new SemanticCompressionAdapter(
-      persona,
-      { maxThoughtsPerGroup: 10, logger: hippocampusLogger }
-    );
+    this.consolidationAdapter = adapter || selectDefaultConsolidationAdapter(persona, hippocampusLogger);
 
     this.log(`Initialized with ${this.consolidationAdapter.getName()} adapter`);
 
@@ -404,6 +415,10 @@ export class Hippocampus extends PersonaContinuousSubprocess {
       ...this.metrics,
       tickCount: this.metrics.tickCount + 1
     };
+
+    if (StartupAutonomousWorkGate.isPaused()) {
+      return;
+    }
 
     // BACKPRESSURE: Skip consolidation entirely when system is under high load
     // Consolidation involves LLM calls (expensive) - wait until load drops

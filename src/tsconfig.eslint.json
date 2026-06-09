@@ -1,0 +1,43 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true
+  },
+  "include": [
+    "cli.ts",
+    "index.ts",
+    "browser-index.ts",
+    "server-index.ts",
+    "api/**/*.ts",
+    "browser/**/*.ts",
+    "server/**/*.ts",
+    "shared/**/*.ts",
+    "system/airc-chat/server/**/*.ts",
+    "system/airc-chat/shared/**/*.ts",
+    "daemons/**/*.ts",
+    "commands/**/*.ts",
+    "generator/generate-command-constants.ts",
+    "generator/generate-command-schemas.ts",
+    "widgets/**/*.ts",
+    "tests/workers/**/*.ts",
+    "tests/unit/chat-to-airc-proof-gates-doc.spec.ts",
+    "tests/unit/url-card-adapter-xss.spec.ts",
+    "test-path-aliases.ts",
+    "test-path-aliases-runtime.ts"
+  ],
+  "files": [
+    "tests/unit/chat-coordination-stream.test.ts",
+    "tests/unit/core/event-class-registry.test.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    "dist",
+    "workers/vendor/**/*",
+    "examples/**/*",
+    "mcp/**/*",
+    "**/*.test.ts",
+    "**/*.bak",
+    "**/*.bak/**/*",
+    "**/templates/**/*"
+  ]
+}

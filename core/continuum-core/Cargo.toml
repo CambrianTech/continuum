@@ -1,0 +1,308 @@
+[package]
+name = "continuum-core"
+edition.workspace = true
+version.workspace = true
+authors.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]  # cdylib for FFI, rlib for other Rust
+
+[[bin]]
+name = "continuum-core-server"
+path = "src/main.rs"
+
+[[bin]]
+name = "dequantize-gguf"
+path = "src/bin/dequantize_gguf.rs"
+
+[[bin]]
+name = "vrm-convert-textures"
+path = "src/bin/vrm_convert_textures.rs"
+
+[[bin]]
+name = "vrm-inspect"
+path = "src/bin/vrm_inspect.rs"
+
+[[bin]]
+name = "cargo-continuum-vdd"
+path = "src/bin/cargo-continuum-vdd.rs"
+
+[dependencies]
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+# Procedural derive macros for ORM entities — #[derive(Entity)].
+# Same crate would be path-deps elsewhere; explicit path makes the
+# dev loop tight (no version juggle while the macro evolves).
+continuum-orm-derive = { path = "../continuum-orm-derive" }
+continuum-airc-protocol = { path = "../continuum-airc-protocol" }
+reqwest = { version = "0.12", features = ["json"] }
+thiserror.workspace = true
+dashmap = "6.1"  # Lock-free concurrent HashMap
+tikv-jemallocator = "0.6"  # jemalloc: returns memory to OS aggressively, reduces fragmentation
+libc = "0.2"     # Process group management (setsid, kill -pgid)
+toml = "0.8"     # Avatar model manifest parsing
+base64 = "0.22"  # Base64 encoding for audio data
+sha2 = "0.10"   # SHA-256 for OAuth 2.0 PKCE code challenges (RFC 7636) + L1-6 contract canonical hash
+ed25519-dalek = { version = "2", features = ["rand_core", "serde"] }  # L1-6 contract event signatures (matches airc-protocol's pinned version)
+
+# Direct dep on the airc daemon's local IPC contract. No subprocess; no
+# JSON re-encoding in the hot path. CBOR over length-prefixed frames
+# (Unix domain socket / Windows named pipe). Pulls airc-protocol +
+# airc-core transitively. SHA pinned at the workspace level.
+airc-ipc.workspace = true
+airc-core.workspace = true
+airc-protocol.workspace = true
+# airc-lib: high-level SDK helpers. `decode_wire_event` (the canonical
+# Vec<u8> → TranscriptEvent decoder for `Response::Event { envelope }`)
+# is what the v5 owner-core migration (task #82) consumes today; the
+# rest of airc-lib is tree-shaken away from the build.
+airc-lib.workspace = true
+
+async-trait.workspace = true
+chrono.workspace = true
+
+# HTTP server for Anthropic-compatible local inference endpoint
+# Claude Code sends POST /v1/messages — we serve it from Candle
+axum = "0.8"
+tower = "0.5"
+tower-http = { version = "0.6", features = ["cors"] }
+parking_lot.workspace = true
+tokio-stream.workspace = true
+
+# Voice processing dependencies
+tokio-tungstenite.workspace = true  # WebSocket server for voice calls
+futures-util.workspace = true
+futures = "0.3"  # For VAD block_on in audio thread
+hound = "3.5"  # WAV file reading/writing
+once_cell.workspace = true
+rubato = "0.15"  # High-quality audio resampling
+# TEMPORARY: whisper-rs vendors its own ggml and appears to collide with
+# our llama crate's ggml_backend registry — server segfaults in
+# ggml_backend_dev_type during llama_model_load even with
+# CONTINUUM_SKIP_STT=1 (the skip avoids calling init but the symbols are
+# still linked). Gating this dep + the whisper.rs module behind the
+# 'whisper' feature proves the collision theory.
+# whisper-rs = "0.13"  # Whisper.cpp bindings for STT
+ort.workspace = true  # ONNX Runtime for TTS
+rayon.workspace = true
+ndarray.workspace = true
+num_cpus = "1.16"  # CPU count detection
+dirs = "5.0"  # User directories for model paths
+sysinfo = "0.33"  # Cross-platform CPU, memory, system resource monitoring
+
+# llama — our owned substrate for inference (67.8 tok/s on M5 Metal).
+# Vendored llama.cpp built via cmake, features gate metal/cuda.
+llama = { path = "../llama" }
+
+# Candle — kept for training, Orpheus TTS, and legacy backends.
+# Inference flows through the llama crate above.
+candle-core.workspace = true
+candle-nn.workspace = true  # For VarBuilder
+candle-transformers.workspace = true
+tokenizers = { workspace = true, features = ["onig"] }
+
+# Pocket-TTS (Kyutai, 100M, Candle-based CPU TTS with voice cloning)
+# Uses candle 0.9 (separate from our 0.8) — CPU-only, no Metal flag to avoid conflicts
+pocket-tts = { version = "0.6", default-features = false }
+
+# Model loading (for inference module)
+safetensors.workspace = true  # Model weight files
+hf-hub.workspace = true       # HuggingFace model downloads
+half = "2.4"                  # f16/bf16 handling for LoRA
+earshot = "0.1"  # Fast VAD (WebRTC-style)
+msedge-tts.workspace = true  # Edge-TTS (free Microsoft TTS API)
+tracing.workspace = true
+tracing-subscriber.workspace = true
+tracing-appender.workspace = true
+rand.workspace = true  # For test audio generation
+ts-rs.workspace = true  # TypeScript type generation
+
+# Memory/Hippocampus — pure compute engine (data from TS ORM via IPC)
+fastembed.workspace = true      # Inline ONNX embedding (~5ms per embed, no IPC hop)
+
+# LiveKit WebRTC SFU — AI agents join rooms with native audio/video.
+# Optional: Docker ARM64 builds skip this (webrtc-sys C++ fails on ARM64 Linux).
+# LiveKit server runs as its own container; this is only for Rust-side agent participation.
+# MIGRATION: bridge_client.rs replaces direct LiveKit usage. These deps will be removed
+# once bridge_client is fully validated. livekit-bridge binary handles WebRTC.
+livekit = { version = "0.7", features = ["native-tls"], optional = true }
+livekit-api = { version = "0.4", features = ["native-tls"], optional = true }
+
+# Bridge protocol — shared types for livekit-bridge IPC (no heavy deps)
+continuum-bridge-protocol = { path = "../livekit-protocol" }
+
+# Bevy 3D engine — headless rendering for VRM avatar video frames
+# One shared Bevy instance renders all 14 avatars via RenderLayers isolation
+# GPU readback via Readback component → RGBA frames → LiveKit video tracks
+#
+# NO bevy_winit: winit requires the main thread on macOS (Cocoa/AppKit constraint).
+# Our Bevy app runs on a dedicated background thread, so winit is incompatible.
+# WindowPlugin (from bevy_window, pulled in by bevy_render) registers the
+# Events<WindowResized> that camera_system needs — no winit required.
+# ScheduleRunnerPlugin drives the headless frame loop.
+bevy = { version = "0.18", default-features = false, features = [
+    "bevy_render",
+    "bevy_core_pipeline",
+    "bevy_asset",
+    "bevy_pbr",
+    "bevy_scene",
+    "bevy_gltf",
+    "bevy_animation",
+    "bevy_mesh",          # Split from bevy_render in 0.17 — MorphWeights, mesh types
+    "bevy_color",
+    "bevy_state",
+    "bevy_window",        # WindowPlugin (registers Events<WindowResized>) — NOT bevy_winit
+    "reflect_auto_register",  # Auto-register ALL Reflect types in TypeRegistry (scene spawning needs this)
+    "png",
+    "jpeg",                   # JPEG texture format — required by webaverse VRM models (wv-kanji, wv-ruike)
+    "ktx2",                   # KTX2 texture format — required for VRM 1.0 models
+    "basis-universal",        # Basis Universal decompression — KTX2 textures use this codec
+] }
+
+# wgpu HAL access — needed for Metal texture extraction (GPU→GPU pipeline)
+# Version matches Bevy 0.18's wgpu dependency
+wgpu = "27"
+wgpu-hal = "27"
+
+arc-swap = "1.7"           # Wait-free policy publish for SubstrateGovernor (Lane H)
+notify = "8"               # Policy directory watch + hot reload for SubstrateGovernor
+crossbeam-channel = "0.5"  # Frame delivery from Bevy render thread to LiveKit
+image = "0.25"             # RGBA → PNG encoding for avatar snapshots
+
+# Dataset module — CSV parsing for training data import
+csv = "1"
+
+# Code module — file operations, change tracking, code intelligence
+similar = "2.6"                  # Unified diff computation
+ignore = "0.4"                   # .gitignore-aware file walking (from ripgrep)
+regex = "1"                      # Regex search for code search
+
+# ORM module — database-agnostic storage with adapter traits
+rusqlite = { version = "0.32", features = ["bundled"] }  # SQLite adapter
+deadpool-postgres.workspace = true                        # Postgres connection pool
+tokio-postgres.workspace = true                           # Postgres async driver
+
+# Metal API — GPU detection (VRAM), compute shaders (RGBA→NV12 on GPU)
+# Version 0.32 matches wgpu-hal 27 (Bevy 0.18) for type compatibility
+[target.'cfg(target_os = "macos")'.dependencies]
+metal = "0.32"
+objc = "0.2"    # Objective-C runtime — for Metal APIs not wrapped by metal crate
+# MLX — Apple Silicon native inference runtime. Phase A of continuum#897
+# only flags the module on via the `mlx` feature; the actual `mlx-rs` crate
+# dep lands in phase B when we implement forward() and have the full-Xcode
+# build prerequisite (mlx-sys transitively needs `xcrun metal` for shader
+# compilation, which the Command Line Tools don't include).
+#
+# mlx-rs = { version = "0.25", optional = true }  # phase B
+
+[features]
+# `metal` is NOT default — earlier comment claimed it was harmless on
+# non-Mac targets, empirically false (2026-04-22 docker CI failure):
+# `candle-core/metal` pulls `objc2-foundation` unconditionally, which
+# fires `compile_error!("objc2 only works on Apple platforms")` on
+# Linux + Windows builds. The "no harm" assertion never tested.
+#
+# Build the right way per platform:
+#   macOS:                 cargo build --features metal,accelerate
+#   Linux + CUDA:          cargo build --features cuda,load-dynamic-ort
+#   Linux CPU / WSL2-Ubuntu / Windows: cargo build  (no GPU features)
+#
+# `scripts/shared/cargo-features.sh` already detects the right set per
+# uname; `npm start` and the docker builds source it. The only cost is
+# a Mac dev typing `cargo build` directly without features now gets a
+# CPU-only build — paid by the dev who knows to add the flags. The
+# benefit is docker / CI / cross-platform builds stop pulling Apple-
+# only crates into their dep tree on every host.
+default = ["livekit-webrtc"]
+livekit-webrtc = ["dep:livekit", "dep:livekit-api"]
+metal = ["candle-core/metal", "candle-nn/metal", "candle-transformers/metal", "llama/metal", "ort/coreml"]
+cuda = ["candle-core/cuda", "candle-nn/cuda", "candle-transformers/cuda", "llama/cuda", "ort/cuda"]
+# Vulkan is llama.cpp-only (Candle has no Vulkan backend). Used by the
+# Mac-Carl-in-container path: Podman + krunkit routes Vulkan API calls out
+# to MoltenVK on the host, which translates to Metal. Also valid on Linux
+# Nvidia/AMD hosts with libvulkan available.
+vulkan = ["llama/vulkan"]
+# ORT execution providers for the broader Carl-OOTB matrix (#964 series
+# follow-up). Each adds a cfg branch in inference/ort_providers.rs so
+# fastembed / Piper-TTS / Moonshine-STT / Kokoro / Orpheus / Silero VAD
+# pick up the right GPU EP per platform — no silent CPU fallback per
+# the architectural rule. Linux runs continuum-core in containers with
+# the matching GPU passthrough; native dev hosts pick whichever feature
+# matches their hardware.
+#
+#   rocm     → AMD GPU (Linux). ort/rocm needs ROCm runtime libs at link.
+#   directml → Windows native + DirectX 12 (Nvidia / AMD / Intel).
+#   openvino → Intel CPU/GPU/VPU (Linux + Windows). Different from CPU
+#              fallback: OpenVINO is Intel's GPU/NPU acceleration path.
+rocm = ["ort/rocm"]
+directml = ["ort/directml"]
+openvino = ["ort/openvino"]
+# MLX — Apple Silicon native inference path (phases A–E of continuum#897).
+# Only compiles on macOS/aarch64; the adapter module is guarded by this feature
+# AND by cfg(target_os = "macos") so non-Mac targets simply don't see the code.
+# Phase A: flag only, no mlx-rs dep yet. Phase B will add `dep:mlx-rs` back
+# once we're writing forward() and can ensure full Xcode is installed.
+mlx = []
+accelerate = ["candle-core/accelerate", "candle-nn/accelerate", "candle-transformers/accelerate"]
+# Linux: swap ORT from static (download-binaries) to dynamic loading.
+# Avoids protobuf symbol conflict with webrtc-sys. macOS uses static (default).
+load-dynamic-ort = ["ort/load-dynamic"]
+
+# test-fixtures: opts in non-production code that exists for CI / debug /
+# replay contexts. Most prominent: HeuristicInferenceAdapter (the
+# deterministic canned-response stand-in for tests). Production binaries
+# MUST NOT build with this feature.
+#
+# Per [[no-fallbacks-ever]] and [[no-if-statements-use-llms-for-cognition]],
+# Joel (2026-06-01): "You mix this fake shit in and it's going live ALL
+# THE TIME. The fake shit is a CHOSEN model adapter no other form."
+# Compile-time gating via this feature is the structural guarantee that
+# release builds physically cannot contain the heuristic adapter. The
+# `#[cfg(any(test, feature = "test-fixtures"))]` gate on
+# `src/ai/heuristic_adapter.rs` means:
+#   - Unit tests inside continuum-core: free via cfg(test).
+#   - Integration tests / demo binaries that need the fixture: opt in
+#     via `cargo test --features test-fixtures` or `--features test-fixtures`
+#     on the bin target.
+#   - Production: heuristic adapter doesn't exist in the binary at all.
+test-fixtures = []
+
+# stress-tests: opts in concurrency / multi-thread / load tests that
+# pin substrate invariants under N-task simultaneous load. Each test
+# uses `#[tokio::test(flavor = "multi_thread", worker_threads = N)]`
+# plus 50-task `futures::join_all` bodies — the compile cost of these
+# is real and they validated their target invariants at sign-off
+# (tasks #64, #65, #66, #67, #68). Default `cargo test` skips them
+# entirely; periodic CI runs them via `--features stress-tests`.
+#
+# Joel 2026-06-08: "Yes half the battle is tests and we wrote all
+# this infra. Need to stop forgetting." Pattern matches the
+# `test-fixtures` doctrine — compile-time gating, not `#[ignore]`,
+# so the binary literally doesn't contain the stress harness when
+# the feature is off.
+#
+# What's gated: the `mod stress { ... }` block inside each module's
+# `#[cfg(test)] mod tests` block (chat, generator, data cursors,
+# airc realtime_store as of this writing). Greppable by:
+#     grep -rln 'cfg(feature = "stress-tests")' src/
+stress-tests = []
+
+[lints.rust]
+# objc 0.2's msg_send! macro uses the deprecated cargo-clippy cfg check.
+# Allow until we migrate to objc2.
+unexpected_cfgs = "allow"
+
+[dev-dependencies]
+tokio-test = "0.4"
+tempfile = "3"                   # Temp directories for code module tests
+
+# Cross-airc integration tests (tests/airc_ipc_roundtrip.rs). The fixture
+# spawns two real Airc peers on LAN loopback; the client crate gives us
+# `Connection` + `AircIpcTransport` so we can exercise the substrate's
+# command_handler against an actual continuum-client request envelope.
+airc-test-fixtures = { path = "../airc-test-fixtures" }
+continuum-client = { path = "../../client/continuum-client" }
+airc-protocol = { workspace = true }
+futures = "0.3"

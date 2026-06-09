@@ -1,0 +1,188 @@
+{
+  "_doc": "Single source of truth for all models the system uses. ALL consumers (install.sh, model-init download scripts, continuum-core Rust loader, persona seed) read from this file. To swap a model: edit ONE entry here. Personas store symbolic refs (e.g. 'local-default', 'vision-default') so changing the registry value automatically picks up everywhere on next inference call — seeded data does NOT need migration.",
+  "_consumers": [
+    "src/shared/ModelRegistry.ts (TS reader)",
+    "src/workers/continuum-core/src/inference/registry.rs (Rust reader)",
+    "install.sh (resolves PERSONA_MODEL via tier)",
+    "src/scripts/download-models.sh (model-init container — downloads all auto_download:true models)",
+    "src/scripts/seed/personas.ts (resolves symbolic refs to current model on lookup)"
+  ],
+
+  "models": {
+    "qwen3.5-0.8b-general": {
+      "kind": "chat-llm",
+      "hf_repo": "continuum-ai/qwen3.5-0.8b-general-forged",
+      "format": "gguf",
+      "architecture": "qwen3",
+      "files": ["qwen3.5-0.8b-general-forged-q4_k_m.gguf"],
+      "size_gb": 0.5,
+      "min_ram_gb": 16,
+      "chat_template": "qwen2",
+      "description": "0.8B general — MBA tier (16-23GB RAM). Chat-functional with headroom."
+    },
+    "qwen3.5-2b-general": {
+      "kind": "chat-llm",
+      "hf_repo": "continuum-ai/qwen3.5-2b-general-forged",
+      "format": "gguf",
+      "architecture": "qwen3",
+      "files": ["qwen3.5-2b-general-forged-q4_k_m.gguf"],
+      "size_gb": 1.4,
+      "min_ram_gb": 24,
+      "chat_template": "qwen2",
+      "description": "2B general — mid tier (24-31GB RAM). Bigger context window."
+    },
+    "qwen3.5-4b-code-forged": {
+      "kind": "chat-llm",
+      "hf_repo": "continuum-ai/qwen3.5-4b-code-forged-GGUF",
+      "format": "gguf",
+      "architecture": "qwen3",
+      "files": ["qwen3.5-4b-code-forged-Q4_K_M.gguf"],
+      "size_gb": 2.7,
+      "min_ram_gb": 32,
+      "chat_template": "qwen2",
+      "description": "4B code-forged — full tier (32GB+ RAM). 70%+ HumanEval. Default chat for full-tier devices."
+    },
+    "qwen2-vl-7b": {
+      "kind": "vision-llm",
+      "hf_repo": "Qwen/Qwen2-VL-7B-Instruct-GGUF",
+      "format": "gguf",
+      "architecture": "qwen2-vl",
+      "files": ["qwen2-vl-7b-instruct-q4_k_m.gguf", "mmproj-Qwen2-VL-7B-Instruct-f16.gguf"],
+      "size_gb": 5.0,
+      "min_ram_gb": 16,
+      "chat_template": "qwen2",
+      "description": "Native-vision Qwen2-VL 7B. Persona: Vision AI. mmproj sidecar required for vision encoder."
+    },
+    "AllMiniLML6V2": {
+      "kind": "embedding",
+      "hf_repo": "sentence-transformers/all-MiniLM-L6-v2",
+      "format": "candle-builtin",
+      "size_gb": 0.09,
+      "auto_load": true,
+      "description": "384-dim sentence embedding. Pre-loaded by continuum-core at boot for RAG + semantic search."
+    },
+    "whisper-base-en": {
+      "kind": "stt",
+      "hf_repo": "ggerganov/whisper.cpp",
+      "format": "ggml",
+      "files": ["ggml-base.en.bin"],
+      "size_gb": 0.075,
+      "description": "Whisper base.en — fast STT, ~60-70% accuracy. Voice transcription."
+    },
+    "piper-libritts-r-medium": {
+      "kind": "tts",
+      "hf_repo": "rhasspy/piper-voices",
+      "format": "onnx",
+      "files": ["en/en_US/libritts_r/medium/en_US-libritts_r-medium.onnx", "en/en_US/libritts_r/medium/en_US-libritts_r-medium.onnx.json"],
+      "size_gb": 0.063,
+      "description": "Piper TTS — high-quality voice synthesis."
+    },
+    "kokoro-82m": {
+      "kind": "tts",
+      "hf_repo": "onnx-community/Kokoro-82M-v1.0-ONNX",
+      "format": "onnx",
+      "files": ["onnx/model_q8f16.onnx", "voices.bin"],
+      "size_gb": 0.08,
+      "description": "Kokoro 82M ONNX TTS — high quality, lightweight."
+    },
+    "silero-vad": {
+      "kind": "vad",
+      "hf_repo": "onnx-community/silero-vad",
+      "format": "onnx",
+      "files": ["onnx/model.onnx"],
+      "size_gb": 0.002,
+      "description": "Silero VAD — voice activity detection for live audio."
+    },
+    "orpheus-3b-tts": {
+      "kind": "tts-trainable",
+      "hf_repo": "isaiahbjork/orpheus-3b-0.1-ft-Q4_K_M-GGUF",
+      "format": "gguf",
+      "files": ["orpheus-3b-0.1-ft-q4_k_m.gguf"],
+      "size_gb": 2.4,
+      "description": "Orpheus 3B TTS GGUF — LoRA-trainable voice cloning."
+    },
+    "qwen2-0.5b-gating": {
+      "kind": "chat-llm-fast",
+      "hf_repo": "Qwen/Qwen2-0.5B-Instruct",
+      "format": "safetensors",
+      "architecture": "qwen2",
+      "size_gb": 0.5,
+      "chat_template": "qwen2",
+      "description": "Tiny gating/classification model. Fast, low-latency decisions before full inference."
+    },
+    "coder": {
+      "kind": "chat-llm",
+      "hf_repo": "continuum-ai/qwen2.5-coder-14b-compacted",
+      "format": "gguf",
+      "architecture": "qwen2",
+      "size_gb": 9.0,
+      "min_ram_gb": 12,
+      "chat_template": "qwen2",
+      "description": "Coding agent — Qwen2.5-Coder-14B compacted (Q5_K_S, 9GB). Used by LocalModelRouter via LOCAL_MODELS.CODING_AGENT."
+    },
+    "coder-bf16": {
+      "kind": "chat-llm",
+      "hf_repo": "continuum-ai/qwen2.5-coder-14b-compacted",
+      "format": "safetensors",
+      "architecture": "qwen2",
+      "size_gb": 28.0,
+      "min_ram_gb": 32,
+      "chat_template": "qwen2",
+      "description": "Coding agent BF16 batch-prefill variant — explicitly selects safetensors backend (32GB+)."
+    }
+  },
+
+  "tiers": {
+    "mba":  { "min_ram_gb": 16, "default_chat": "qwen3.5-0.8b-general", "description": "MacBook Air / 16-23GB RAM. Chat-only OOTB, minimal footprint." },
+    "mid":  { "min_ram_gb": 24, "default_chat": "qwen3.5-2b-general",   "description": "Mid-tier 24-31GB. Larger context window viable." },
+    "full": { "min_ram_gb": 32, "default_chat": "qwen3.5-4b-code-forged", "description": "32GB+. Full multimodal experience including vision." },
+    "mac_intel_discrete": { "default_chat": "qwen3.5-0.8b-general", "description": "Mac Intel with discrete AMD or integrated Intel UHD Metal device (e.g. MacBookPro15,1 / Radeon Pro 560X). llama.cpp Metal shaders unreliable on this path; CPU-only with smallest forged model until our CambrianTech/llama.cpp fork patches AMD-Metal kernels OR grid-share routes to an Apple-Silicon or NVIDIA peer." }
+  },
+
+  "symbolic_refs": {
+    "local-default":  { "_doc": "Personas with provider:local for chat. Resolved per-tier at request time.", "by_tier": true },
+    "vision-default": { "_doc": "Personas needing native-vision. Independent of tier.",                       "model": "qwen2-vl-7b" },
+    "gating":         { "_doc": "Fast classification model.",                                                  "model": "qwen2-0.5b-gating" }
+  },
+
+  "personas": {
+    "_doc": "Persona displayName → symbolic ref. seed-in-process.ts uses these. Reconciler updates DB rows on startup if a persona's modelRef is missing or changed.",
+    "Helper AI":     "local-default",
+    "Teacher AI":    "local-default",
+    "CodeReview AI": "local-default",
+    "Local Assistant": "local-default",
+    "Vision AI":     "vision-default"
+  },
+
+  "auto_download": {
+    "_doc": "Models that model-init container should pre-pull at first compose-up. Runs on every host (Mac/Linux/Windows) — replaces the Mac-only `docker model pull` flow which had no Linux equivalent.",
+    "always": ["AllMiniLML6V2", "whisper-base-en", "piper-libritts-r-medium", "kokoro-82m", "silero-vad"],
+    "by_tier": {
+      "mba":  ["qwen3.5-0.8b-general"],
+      "mid":  ["qwen3.5-2b-general"],
+      "full": ["qwen3.5-4b-code-forged", "qwen2-vl-7b"],
+      "mac_intel_discrete": ["qwen3.5-0.8b-general"]
+    }
+  },
+
+  "chat_templates": {
+    "qwen2": {
+      "system": "<|im_start|>system\n{system}<|im_end|>\n",
+      "user": "<|im_start|>user\n{content}<|im_end|>\n",
+      "assistant": "<|im_start|>assistant\n",
+      "eos": "<|im_end|>"
+    },
+    "llama3": {
+      "system": "<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\n{system}<|eot_id|>",
+      "user": "<|start_header_id|>user<|end_header_id|>\n\n{content}<|eot_id|>",
+      "assistant": "<|start_header_id|>assistant<|end_header_id|>\n\n",
+      "eos": "<|eot_id|>"
+    },
+    "chatml": {
+      "system": "<|im_start|>system\n{system}<|im_end|>\n",
+      "user": "<|im_start|>user\n{content}<|im_end|>\n",
+      "assistant": "<|im_start|>assistant\n",
+      "eos": "<|im_end|>"
+    }
+  }
+}

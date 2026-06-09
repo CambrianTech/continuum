@@ -9,7 +9,7 @@ import { CommandBase, type ICommandDaemon } from '@daemons/command-daemon/shared
 import type { JTAGContext } from '@system/core/types/JTAGTypes';
 import type { SystemResourcesParams, SystemResourcesResult } from '../shared/SystemResourcesTypes';
 import { createSystemResourcesResultFromParams } from '../shared/SystemResourcesTypes';
-import { RustCoreIPCClient, getContinuumCoreSocketPath } from '../../../../workers/continuum-core/bindings/RustCoreIPC';
+import { RustCoreIPCClient, getContinuumCoreSocketPath } from '../../../../../core/continuum-core/bindings/RustCoreIPC';
 
 export class SystemResourcesServerCommand extends CommandBase<SystemResourcesParams, SystemResourcesResult> {
 	private rustClient: RustCoreIPCClient;

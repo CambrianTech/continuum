@@ -9,7 +9,7 @@
  * - Direct mention detection
  * - Message deduplication
  * - State-based gating (energy, mood, attention)
- * See: workers/continuum-core/src/persona/cognition.rs
+ * See: ../core/continuum-core/src/persona/cognition.rs
  *
  * Philosophy: Try fast/simple adapters first, fall back to expensive/complex ones.
  * Each adapter can say "I'll handle this" or "pass to next adapter".

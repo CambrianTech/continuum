@@ -1,0 +1,35 @@
+{
+  "name": "@jtag-commands/airc/send",
+  "version": "1.0.0",
+  "description": "Send a message to the airc mesh from inside Continuum. Wraps the airc CLI's `airc send` command — broadcasts to a channel by default, DMs a peer when peer is provided. First-class surface for the AircBridge integration (continuum#967, AGENT-BACKBONE-INTEGRATION §11.2): personas (or any caller) can publish to the cross-machine peer mesh that humans + Claude Code + Codex tabs share. Outbox direction only; inbox routing (airc → persona inbox) is a separate v0.5 follow-up requiring an embedded `airc connect` Monitor process tree.",
+  "main": "server/AircSendServerCommand.ts",
+  "types": "shared/AircSendTypes.ts",
+  "scripts": {
+    "test": "npm run test:unit && npm run test:integration",
+    "test:unit": "npx vitest run test/unit/*.test.ts",
+    "test:integration": "npx tsx test/integration/AircSendIntegration.test.ts",
+    "lint": "npx eslint **/*.ts",
+    "typecheck": "npx tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@jtag/core": "*"
+  },
+  "files": [
+    "shared/**/*.ts",
+    "browser/**/*.ts",
+    "server/**/*.ts",
+    "test/**/*.ts",
+    "README.md"
+  ],
+  "keywords": [
+    "jtag",
+    "command",
+    "airc/send"
+  ],
+  "license": "MIT",
+  "author": "",
+  "repository": {
+    "type": "git",
+    "url": ""
+  }
+}

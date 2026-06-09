@@ -9,7 +9,7 @@ import { CommandBase, type ICommandDaemon } from '@daemons/command-daemon/shared
 import type { JTAGContext } from '@system/core/types/JTAGTypes';
 import { transformPayload } from '@system/core/types/JTAGTypes';
 import type { SentinelApproveParams, SentinelApproveResult } from '../shared/SentinelApproveTypes';
-import { RustCoreIPCClient } from '../../../../workers/continuum-core/bindings/RustCoreIPC';
+import { RustCoreIPCClient } from '../../../../../core/continuum-core/bindings/RustCoreIPC';
 
 export class SentinelApproveServerCommand extends CommandBase<SentinelApproveParams, SentinelApproveResult> {
 

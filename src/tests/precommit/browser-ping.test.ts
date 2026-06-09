@@ -13,16 +13,26 @@
 
 import { jtag } from '../../server-index';
 
+interface CommandResult {
+  readonly success?: boolean;
+  readonly commands?: readonly unknown[];
+}
+
+interface JtagClient {
+  readonly commands: Record<string, (params: Record<string, unknown>) => Promise<CommandResult>>;
+  readonly disconnect?: () => Promise<void>;
+}
+
 async function testBrowserPing(): Promise<void> {
   console.log('🏓 BROWSER PING TEST');
   console.log('=================================');
 
-  let client: any;
+  let client: JtagClient | undefined;
 
   try {
     // 1. Connect to JTAG system
     console.log('🔗 Connecting to JTAG system...');
-    client = await jtag.connect();
+    client = await jtag.connect() as JtagClient;
     console.log('✅ Connected\n');
 
     // 2. Execute ping from server context
@@ -75,4 +85,4 @@ async function testBrowserPing(): Promise<void> {
   }
 }
 
-testBrowserPing();
+void testBrowserPing();

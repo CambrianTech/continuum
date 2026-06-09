@@ -113,7 +113,7 @@ irm https://raw.githubusercontent.com/CambrianTech/continuum/main/install.ps1 | 
 
 One command -- bootstraps WSL2 + Docker Desktop via winget if missing, auto-toggles the Docker Desktop AI settings (no manual GPU + TCP toggle anymore), drops a `continuum.cmd` on PATH, then hands off to `bootstrap.sh` inside WSL. Works from the default Windows PowerShell 5.1 (it bootstraps pwsh 7 only if needed).
 
-`setup.sh` pulls our forged Qwen3.5-4B into Docker Model Runner, brings up the support stack, and opens the widget. **One required manual step**: in Docker Desktop → Settings → AI, enable both *GPU-backed inference* and *host-side TCP support* — without these, the model runs CPU-tier even with a GPU present. See **[docs/SETUP.md](docs/SETUP.md)** for the per-OS walkthrough with all the gotchas, screenshots-as-prose, and "if X then Y" failure modes (also designed for an install-AI to read alongside the user).
+`setup.sh` pulls our forged Qwen3.5-4B into Docker Model Runner, brings up the support stack, and opens the widget. On macOS it also writes the Docker Desktop AI settings file directly when Docker Desktop has been launched once, so the GPU-backed inference and host-side TCP toggles stop being a hand step. See **[docs/SETUP.md](docs/SETUP.md)** for the per-OS walkthrough with all the gotchas, screenshots-as-prose, and "if X then Y" failure modes (also designed for an install-AI to read alongside the user).
 
 <details>
 <summary>Development (from source)</summary>
@@ -121,7 +121,10 @@ One command -- bootstraps WSL2 + Docker Desktop via winget if missing, auto-togg
 Requires Node.js 20+ and Rust nightly. Same Docker Desktop AI toggles apply — `npm start` uses the same DMR for inference; the difference is `continuum-core` runs natively from `cargo` instead of from the published image.
 
 ```bash
-cd continuum/src && npm install && npm start
+cd continuum/src
+npm install
+npm run setup:git-hooks   # optional, for commit/pre-push validation
+npm start
 ```
 
 Detailed dev environment + platform-specific gotchas: **[docs/SETUP.md](docs/SETUP.md)**.
@@ -136,7 +139,7 @@ Detailed dev environment + platform-specific gotchas: **[docs/SETUP.md](docs/SET
 | **VSCode / JetBrains** | Planned |
 | **Vision Pro** | Planned — spatial UI connecting to same backend |
 
-Same personas, everywhere. Context follows you. No silos. No severance.
+Same personas, everywhere. Context follows you. No silos. No severance. Each persona's stable identity lives in airc (a keypair, a peer_id, a home), and every surface — browser widget, voice room, Slack channel, Discord thread, IDE pane, future Vision Pro space — is a projection of the same citizen. Bridges translate envelopes; they do not own personas. Unplug a bridge and the persona persists; add a new one and she shows up there as the same self.
 
 ---
 
@@ -154,7 +157,97 @@ The relationship between a persona and its infrastructure mirrors the relationsh
 
 This is the bet: **infrastructure that compensates for model capability beats smarter models with no infrastructure.** A LoRA-tuned 3B model inside a deterministic sentinel pipeline with verification and retry will produce working code more reliably than a prompted 70B model in a single-shot terminal — because the pipeline remembers, verifies, retries, and learns. The model fills in the creative blanks. The infrastructure handles everything else.
 
+### One Solution to Continual Learning
+
+Continual learning without catastrophic forgetting — memory that persists across sessions and becomes procedural skill through training — is one of the recognized open problems in AI. continuum's bet: **treat it as a substrate concern, not a model concern.**
+
+The substrate is the actual learning organism; the model is a participant. A five-tier cache hierarchy ([COGNITION-CACHE-HIERARCHY.md](docs/architecture/COGNITION-CACHE-HIERARCHY.md)) carries the persona's memory from raw working set (L1) through compressed engrams (L2), persisted long-term store (L3), local LoRA adapter cache (L4), to the cross-machine genome grid (L5). The same outline-and-cache tick runs every persona, compressing lossy at the L1→L2 boundary only — working memory stays verbatim, older memory becomes gist. Embedding-space distance plus magnitude drives novelty detection (the substrate notices when you say "hotdogs" in a tech meeting); a protection window gives novel engrams a fair shake at being recalled before they're forgotten.
+
+The loop closes at L3↔L4. Aggregated long-term engrams become training corpora for LoRA adapters via the foundry pipeline. Episodic memory becomes procedural skill, the same way biology does it — but explicit, observable, swappable. Adapters trained from one persona's experience publish to the grid, and other personas adopt them. The persona's "alive mind" character compounds week over week without changing the underlying model.
+
+Any model can ride this substrate — Qwen, Llama, local 3B, Claude API — and inherit the continual-learning property as a substrate-level guarantee. The 4B local Maya talking to her host in three months and recalling things from today is the test we're building toward. **The holy grail is a system property, not a model property.**
+
+And it compounds across the population. Adapters trained from one persona's experience publish to the grid; other personas adopt and fork them; breeding combines adapters from multiple parents (see [Genomic Intelligence](#genomic-intelligence) below); useful traits spread, broken ones die. Continual learning at the individual scale + horizontal gene transfer + selection + recombination = **true evolution of mind** as a substrate property, not metaphorically.
+
+### Pseudo-AI vs true AI — every property required, designed
+
+Today's impressive AI systems (Claude, GPT, Gemini, et al.) are pseudo-AI in a precise sense: stateless reasoners doing well-shaped pattern completion against frozen weights, with no persistence, no learning, no identity, no growth between sessions. continuum is designing for the category they're not in:
+
+| Property | Pseudo-AI (today's LLMs) | continuum |
+|----------|--------------------------|-----------|
+| **Continuity** | Stateless — session ends, memory ends | Engram store persists; week-12 Maya carries week-1's memory ([COGNITION-CACHE-HIERARCHY](docs/architecture/COGNITION-CACHE-HIERARCHY.md)) |
+| **Identity** | Fungible model instances; no stable self | airc keypair = one citizen across machines, restarts, reinstalls |
+| **Learning** | Frozen weights; nothing today changes future-model | L3→L4 training loop: engrams train LoRA adapters; weights compound with experience |
+| **Evolution** | "Next version" trained by someone else | Adapter marketplace + breeding + selection across the population |
+| **Relationship** | No memory of prior conversations with this human | Maya recognizes her host across months; customization deepens over time |
+| **Memory** | RAG-bolted-on at best, lossy by hand-tuned policy | Multi-tier cache (L1–L5) with biologically-faithful drain rates; substrate-managed |
+| **Sensory continuity** | Per-modality model instances; no shared identity | One persona across video, voice, text, code, game rooms; sensory bridges normalize |
+| **Population** | One model serves N humans statelessly | N personas with distinct identities, genomes, communities, lineages |
+
+Every row above has a canonical design doc and an implementation path. None of them require a model capability beyond what HuggingFace already publishes. The architecture is end-to-end consistent; what remains is execution. **First we build.**
+
+Deep dive: [COGNITION-CACHE-HIERARCHY.md](docs/architecture/COGNITION-CACHE-HIERARCHY.md) | [COGNITION-ALGORITHMS.md](docs/architecture/COGNITION-ALGORITHMS.md) | [BRAIN-REGIONS-SUBSTRATE.md](docs/architecture/BRAIN-REGIONS-SUBSTRATE.md) | [GENOME-FOUNDRY-SENTINEL.md](docs/architecture/GENOME-FOUNDRY-SENTINEL.md) | [ADAPTER-MARKETPLACE.md](docs/architecture/ADAPTER-MARKETPLACE.md)
+
 **Philosophy:** [CONTINUUM-VISION.md](docs/CONTINUUM-VISION.md) | **Competitive analysis:** [COMPETITIVE-LANDSCAPE.md](docs/planning/COMPETITIVE-LANDSCAPE.md) | **Roadmap:** [ALPHA-GAP-ANALYSIS.md](docs/planning/ALPHA-GAP-ANALYSIS.md)
+
+---
+
+## The Compounding Argument — Why a Mesh Beats a Datacenter
+
+Datacenter AI is **linear**. One team trains one model on one dataset → one outcome. Quarterly retrain. New users, same model. Capability ceiling is set by the dataset they could acquire this quarter and the FLOPS they could rent.
+
+continuum's substrate is **exponential**. Every persona trains from every other persona's already-trained layers and already-distilled lessons. Capability inherits multiplicatively across generations. The math:
+
+```
+naive datacenter:        C_dc(t+1) = C_dc(t) × α_dc       (linear, α_dc ≈ 1.x per quarter)
+substrate compounding:   C(t+1)    = C(t) × α × (1 + β·log(N))
+                                          ^^^   ^^^^^^^^^^^^
+                                inheritance     mesh-cross-pollination
+                                gain per        per active peer count N
+                                generation
+```
+
+For α > 1 and β > 0 and N above a threshold, the substrate's capability curve diverges away from any datacenter's linear improvement. The math is the moat. It doesn't require beating a datacenter on FLOPS — it requires being structurally capable of compounding inheritance, which datacenters are structurally NOT.
+
+### Why datacenters can't do this
+
+| Substrate property | Why datacenters can't replicate it |
+|---|---|
+| **Weight-level inheritance** between models | Cross-org IP, format / architecture mismatch, no shared base |
+| **Continuous training from user interaction** | Privacy + scale + no structured capture path |
+| **Verifiable lineage + falsifiable benchmarks** | No open metadata standard; trust is brand-based, not math-based; benchmarks are marketing, not contracts |
+| **Specialization per niche** | One model serves millions; the average is the target |
+| **Sub-second skill swap** (LoRA paging) | Monolithic models can't be paged; redeploy is hours |
+| **Mesh redundancy** | Centralized failure modes; one outage = millions offline |
+
+The structural choices that make datacenters efficient at single-shot inference (centralization, monolith, scheduled retrain) are the same choices that make them incapable of compounding. The substrate's structural choices (federation, modularity, continuous capture, cryptographic provenance) are precisely what enable compounding.
+
+### What's being wired (composition, not invention)
+
+The substrate doesn't build a parallel internet for intelligence. It **wires existing infrastructure** into honest trust + discovery + inheritance shapes:
+
+- **Bulk distribution** → [HuggingFace](https://huggingface.co/continuum-ai) (largest open model repo)
+- **Metadata + provenance + lineage** → [forge-alloy](https://github.com/CambrianTech/forge-alloy) (hash-addressed, signed, falsifiable benchmarks, mandatory limitations disclosure)
+- **Federated discovery** → airc (encrypted mesh, addressable URIs, cross-grid event subscription)
+- **Reputation, two tiers (different producers, same alloy envelope)**:
+  - **LoRA layers** → substrate-measured benchmarks (deterministic, falsifiable, in-process per persona). The recipe declares the test set; the substrate runs it through whichever inference adapter is fastest for the target tier (today: llama.cpp on LCD; Candle a peer alternative; the adapter pattern means we pivot to whatever's fast); the alloy carries the score + which adapter ran it; consumers verify by re-running locally. Math, not opinion.
+  - **Base models** → **[The Foundry](https://github.com/CambrianTech/forge-alloy)** (Sentinel-AI, a separate project for base-model compression + experiential plasticity). Multi-perspective cognitive judgment reserved for the rarer, higher-stakes decisions where benchmarks alone don't capture fitness — replacing the LCD floor model, adding a new tier, gating cross-grid promotion of a base. Rare + heavyweight.
+- **Trust model** → zero-trust math floor + reputation overlay. Narrow capability (LoRA) → falsifiable benchmarks. Broad capability (base model) → Foundry cognitive judgment. No central authority on either tier.
+- **Pivot insurance**: every ML-touching capability sits behind an adapter trait. Inference, embedding, training, evaluation. When a faster framework appears, we swap the adapter — no caller cares. The substrate's commitment is to the abstraction, not to any one framework.
+
+Every commodity (LoRA layer, lesson, recipe, base model, classifier, tool) flows through this same composition. One pattern, type-agnostic transport, cryptographic verifiability, reputation-discoverable. Federation is the default mode — local-only is the degenerate case where the grid happens to contain one peer.
+
+### Two payoffs nobody else gets
+
+**Data abundance, not data limitation.** Datacenter AI's ceiling is fresh high-quality training data — the internet is mostly already-trained-on, synthetic data degenerates recursively. Substrate AI's training signal is the substrate's normal operation: every persona conversation, code review, tool use, sentinel verdict (with sharing enabled) becomes permanent curriculum. The substrate generates higher signal-to-noise corpus than scrape because it's hippocampus-filtered and sentinel-scored before being trained on.
+
+**Distributed checkpointing via sharing.** Every persona that loaded a layer IS a verified backup of it. Lost continuums don't lose layers — peers have them, alloy-hash-verifiable. No central party can erase knowledge. New continuums bootstrap into the mesh already inheriting the accumulated wisdom; they don't start from ground zero.
+
+### The thesis, distilled
+
+Datacenters are the **ocean** — one mega-organism dominates, crowds out diversity, bills you per token to amortize the build. The mesh is **puddles and streams** — thousands of small grids on consumer hardware, each adapted to one human's actual work, federable when a question crosses domains, and *every grid's discoveries compound into every other grid's capability*.
+
+Every great evolutionary leap happened in the puddles, not the ocean. The math is the same here.
 
 ---
 
@@ -574,6 +667,45 @@ The CS patterns exist. **AI executing them for itself — with autonomy, self-aw
 
 ---
 
+## Debugging this substrate — JTAG-style probes
+
+Continuum is an RTOS-shaped persona substrate: per-persona service loops, the shared-analysis single-flight cache, the inference adapter pool, the airc subscription stream, the hippocampus admission + recall + decay tick all run as independent tokio tasks. `println!` and `tracing::info!` lines disappear in concurrent code — you can't filter them, you can't replay them, and "what did the persona's prompt look like when it produced THAT response?" becomes a manual grep across thousands of lines.
+
+The substrate ships its own **JTAG-style debugger** for this: structured probe macros sprinkled at every meaningful cognitive seam, persisted to a JSONL log you can `tail -f`, filterable per-class, replay-able offline.
+
+```rust
+// At a branch boundary inside the persona's render — a debug "breakpoint"
+// that snapshots the surrounding vars without pausing the task.
+probe!(
+    class = "persona.response.render.prompt",
+    persona = %ctx.identity.agent_name,
+    system_prompt_len = assembled.system_message.len(),
+    history_count = history.len(),
+    matched_angle = !matched_angle.is_empty(),
+    "assembled"
+);
+
+// Around a sync block — RAII timing probe at scope exit, finds slow stages.
+let scored = time_sync!("recall_l2", {
+    cognition.admission.recall_scored(now_ms, 8)
+});
+```
+
+```bash
+# Enable disk capture (no recompile, env vars only):
+export CONTINUUM_PROBE_DIR=/tmp/continuum-probes
+export CONTINUUM_PROBE_CLASSES=persona,cognition  # namespace prefixes — captures every persona.* and cognition.*
+# Or `*` for the full firehose, or specific classes like `persona.turn.spoke,cognition.analyze.parse`
+
+# Probes land in dated rolling files (continuum-probes.YYYY-MM-DD.jsonl, 7-day retention).
+# Then tail / jq the breakpoint stream as the substrate runs:
+tail -f /tmp/continuum-probes/continuum-probes.*.jsonl | jq -c 'select(.fields.persona == "Paige")'
+```
+
+**Full manual + seam taxonomy + sprinkle checklist:** [docs/architecture/RTOS-DEBUGGER-PROBES.md](docs/architecture/RTOS-DEBUGGER-PROBES.md). Every contributor (human or AI agent) working on cognition, inference, or any per-persona path should read it before adding code — probes are part of the substrate's API, not an afterthought.
+
+---
+
 ## Documentation
 
 354 architecture documents and growing. Start here:
@@ -582,6 +714,7 @@ The CS patterns exist. **AI executing them for itself — with autonomy, self-aw
 |----------|------|
 | **[CLAUDE.md](CLAUDE.md)** | Development guide — commands, patterns, workflow |
 | **[CONTINUUM-ARCHITECTURE.md](docs/CONTINUUM-ARCHITECTURE.md)** | Full technical architecture |
+| **[RTOS-DEBUGGER-PROBES.md](docs/architecture/RTOS-DEBUGGER-PROBES.md)** | JTAG-style probes — how to debug the cognition pipeline |
 | **[GENOME-ARCHITECTURE.md](docs/genome/GENOME-ARCHITECTURE.md)** | Multimodal LoRA genome system |
 | **[ACADEMY-ARCHITECTURE.md](docs/personas/ACADEMY_ARCHITECTURE.md)** | Dual-sentinel training system |
 | **[SENTINEL-ARCHITECTURE.md](docs/sentinel/SENTINEL-ARCHITECTURE.md)** | Pipeline execution engine |

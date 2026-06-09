@@ -35,7 +35,7 @@ export interface DecisionProposeParams extends CommandParams {
   }>;
 
   /** Who should vote on this? */
-  scope?: ProposalScope; // Default: 'all'
+  proposalScope?: ProposalScope; // Default: 'all'
 
   /** How urgent is this? Determines response window */
   significanceLevel?: SignificanceLevel; // Default: 'medium'
@@ -102,4 +102,3 @@ export const createCollaborationDecisionProposeResultFromParams = (
   params: DecisionProposeParams,
   differences: Omit<DecisionProposeResult, 'context' | 'sessionId' | 'userId'>
 ): DecisionProposeResult => transformPayload(params, differences);
-

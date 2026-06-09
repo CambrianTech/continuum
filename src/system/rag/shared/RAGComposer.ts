@@ -31,7 +31,7 @@ const TIER_ORDER: Record<PromptTier, number> = {
   [PromptTier.SEMI_STABLE]: 1,
   [PromptTier.VOLATILE]: 2,
 };
-import type { RagSourceRequest, RagComposeResult, RagSourceResult } from '../../../shared/generated/rag';
+import type { RagSourceRequest, RagComposeResult, RagSourceResult } from '@shared/generated/rag';
 import { Logger } from '../../core/logging/Logger';
 import { TimingHarness } from '../../core/shared/TimingHarness';
 
@@ -68,7 +68,7 @@ const SHARED_SOURCE_TTL_MS = 5_000;
 // All consumers (RAG, cognition, ORM) share ONE connection.
 // ═══════════════════════════════════════════════════════════════════════════
 
-import type { RustCoreIPCClient as RustCoreIPCClientType } from '../../../workers/continuum-core/bindings/RustCoreIPC';
+import type { RustCoreIPCClient as RustCoreIPCClientType } from '../../../../core/continuum-core/bindings/RustCoreIPC';
 
 /**
  * Get the shared IPC client singleton.
@@ -76,7 +76,7 @@ import type { RustCoreIPCClient as RustCoreIPCClientType } from '../../../worker
  * RequestId correlation handles concurrent requests safely.
  */
 async function getSharedIPCClient(): Promise<RustCoreIPCClientType> {
-  const { RustCoreIPCClient } = await import('../../../workers/continuum-core/bindings/RustCoreIPC');
+  const { RustCoreIPCClient } = await import('../../../../core/continuum-core/bindings/RustCoreIPC');
   return RustCoreIPCClient.getInstanceAsync();
 }
 

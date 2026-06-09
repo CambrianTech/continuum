@@ -1,0 +1,8 @@
+// Auto-generated barrel export — do not edit manually
+// Source: generator/generate-rust-bindings.ts
+// Re-generate: npx tsx generator/generate-rust-bindings.ts
+
+export type { EventClassChannelStrategy } from './EventClassChannelStrategy';
+export type { EventClassConfig } from './EventClassConfig';
+export type { EventClassUnknownSchemaPolicy } from './EventClassUnknownSchemaPolicy';
+export type { ResolvedEventClassConfig } from './ResolvedEventClassConfig';

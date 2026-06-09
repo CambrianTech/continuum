@@ -11,7 +11,7 @@ Make TS decorators the **one place** entity schema is authored, and make that au
 After Phase 2:
 
 - TS entities declare shape via decorators (unchanged)
-- A build step walks `ENTITY_REGISTRY`, emits `src/shared/generated/entity_schemas.json`
+- A build step walks `ENTITY_REGISTRY`, emits `protocol/typescript/entity_schemas.json`
 - Rust `DataModule` loads this JSON at module init, keeps it in memory
 - `data/ensure-schema` IPC carries only a **collection name** — no field list, no index list, no FK list
 - Rust `ensure_schema(collection)` looks up the shape in its loaded map and builds backend-specific SQL inside the adapter
@@ -30,11 +30,11 @@ TS has three global metadata registries in `src/system/data/decorators/FieldDeco
 
 `ENTITY_REGISTRY` in `src/daemons/data-daemon/server/EntityRegistry.ts` maps `collectionName -> EntityConstructor`.
 
-None of these three registries are read by Rust today (m5's survey: zero matches for `Archive`, `CompositeIndex`, or indexed-field metadata in `src/workers/continuum-core/src`). They are TS-side documentation that the wire layer transforms into `CollectionSchema` per-ensure-schema call.
+None of these three registries are read by Rust today (m5's survey: zero matches for `Archive`, `CompositeIndex`, or indexed-field metadata in `core/continuum-core/src`). They are TS-side documentation that the wire layer transforms into `CollectionSchema` per-ensure-schema call.
 
 ## Target artifact
 
-`src/shared/generated/entity_schemas.json`:
+`protocol/typescript/entity_schemas.json`:
 
 ```jsonc
 {
@@ -109,7 +109,7 @@ async function main() {
   const sha256 = await sha256hex(canonical);
   const output = { $schemaVersion: 1, $generatedAt: new Date().toISOString(), $sha256: sha256, entities };
 
-  await writeFile('src/shared/generated/entity_schemas.json', JSON.stringify(output, null, 2));
+  await writeFile('protocol/typescript/entity_schemas.json', JSON.stringify(output, null, 2));
 }
 ```
 
@@ -180,9 +180,9 @@ Each step builds clean on its own; reviewable as separate PRs if we want.
 
 ## Open questions
 
-1. **Where does `entity_schemas.json` ship?** Options: (a) in the repo under `src/shared/generated/`, checked in (same as `generated.ts` today); (b) generated at install, never committed. (a) keeps builds reproducible without network; (b) avoids merge conflicts on the generated file. Recommend (a) — consistent with existing generated artifacts.
+1. **Where does `entity_schemas.json` ship?** Options: (a) in the repo under `protocol/typescript/`, checked in (same as `generated.ts` today); (b) generated at install, never committed. (a) keeps builds reproducible without network; (b) avoids merge conflicts on the generated file. Recommend (a) — consistent with existing generated artifacts.
 
-2. **Do we ship the schema file with the Rust binary, or read from filesystem at runtime?** Runtime read wins flexibility; binary-embed wins one less file to manage. For Docker, the file is in the image via the build context. For native Mac, it's at `$REPO_ROOT/src/shared/generated/entity_schemas.json`. Probably runtime-read with a well-defined resolution order.
+2. **Do we ship the schema file with the Rust binary, or read from filesystem at runtime?** Runtime read wins flexibility; binary-embed wins one less file to manage. For Docker, the file is in the image via the build context. For native Mac, it's at `$REPO_ROOT/protocol/typescript/entity_schemas.json`. Probably runtime-read with a well-defined resolution order.
 
 3. **What about the `validateData` path in `data/schema`?** Currently TS runs `entity.validate()` in-process. Phase 2 doesn't change this — validation is TS-side entity logic, not SQL. (Though Phase 3+ could argue validation should also move to Rust. Out of scope here.)
 

@@ -14,7 +14,8 @@ import { RoomEntity, type RoomType } from '../system/data/entities/RoomEntity';
 import { UserProfileEntity, type UserSpecialityType } from '../system/data/entities/UserProfileEntity';
 import type { UUID } from '../system/core/types/CrossPlatformUUID';
 import { PERSONA_UNIQUE_IDS, getAvailablePersonas, selectLocalModel } from '../scripts/seed/personas';
-import { CONTENT_TYPE_CONFIGS } from '../shared/generated/ContentTypes';
+import { DEFAULT_USER_UNIQUE_IDS } from '../system/data/domains/DefaultEntities';
+import { CONTENT_TYPE_CONFIGS } from '@shared/generated/ContentTypes';
 import { DataList } from '../commands/data/list/shared/DataListTypes';
 import { DataCreate } from '../commands/data/create/shared/DataCreateTypes';
 import { DataUpdate } from '../commands/data/update/shared/DataUpdateTypes';
@@ -294,15 +295,31 @@ async function syncPersonaProviders(_seeder: DatabaseSeeder): Promise<void> {
       // Vision AI on docker carl ended up running a code model with no
       // vision capability — see #957. Pass config.modelId through so the
       // persona seed's declared model survives every resync.
+      //
+      // 2026-05-04: PersonaConfig now prefers symbolic modelRef (e.g.
+      // 'local-default', 'vision-default') over hardcoded modelId. This
+      // resolves to the CURRENT registry value at seed time so changing
+      // src/shared/models.json automatically updates seeded personas
+      // ("update the existing seeded values so the personas PICK UP THE
+      // MODEL change and arent stuck in the past" — Joel 2026-05-04).
+      // The reconciler check below + this resolve will UPDATE existing
+      // rows when the registry changes.
       const currentModelId = (user as Record<string, unknown>).modelConfig
         ? ((user as Record<string, unknown>).modelConfig as Record<string, unknown>).model
         : undefined;
-      const desiredModelId = config.modelId;
+      let desiredModelId = config.modelId;
+      if (!desiredModelId && config.modelRef) {
+        const { resolveModel, tierFromRamGB } = await import('../shared/ModelRegistry');
+        const ramGB = Math.round((require('os').totalmem() / 1024 / 1024 / 1024));
+        const tier = tierFromRamGB(ramGB);
+        const spec = resolveModel(config.modelRef, tier);
+        desiredModelId = spec.hf_repo;
+      }
       const providerChanged = currentProvider !== config.provider;
       const modelChanged = desiredModelId !== undefined && currentModelId !== desiredModelId;
 
       if (providerChanged || modelChanged) {
-        const newConfig = getModelConfigForProvider(config.provider, config.modelId);
+        const newConfig = getModelConfigForProvider(config.provider, desiredModelId);
         await DataUpdate.execute({
           collection: 'users',
           dbHandle: 'default',
@@ -337,11 +354,26 @@ export async function seedDatabase(): Promise<boolean> {
   console.log('🌱 Seeding database (in-process)...');
   const start = Date.now();
 
-  // Owner
-  const owner = await seeder.findOrCreateUser('joel', 'Developer', 'human');
+  // Owner — uses DEFAULT_USER_UNIQUE_IDS.PRIMARY_HUMAN ('owner') as the
+  // canonical uniqueId. SessionDaemonServer.findSeededHumanOwner() returns
+  // the FIRST type='human' user; if seed-in-process used a divergent
+  // uniqueId (e.g. hardcoded 'joel'), the find would still return SOMEONE
+  // type=human but rooms get created with the wrong owner_id, jtag CLI
+  // sessions auth as the canonical 'owner', and DataList rooms returns 0
+  // because owner_id doesn't match session-user.id.
+  // Pre-fix b69f 2026-05-02: chat-probe failed with "Room not found:
+  // general" precisely because seed wrote rooms.owner_id pointing at the
+  // 'joel' user but session-daemon picked 'owner'. Now: single source of
+  // truth via the canonical constant — matches scripts/seed-continuum.ts
+  // (line 182, 386) which has used PRIMARY_HUMAN correctly all along.
+  const owner = await seeder.findOrCreateUser(
+    DEFAULT_USER_UNIQUE_IDS.PRIMARY_HUMAN,
+    'Developer',
+    'human',
+  );
   // Emit event so SessionDaemon upgrades anonymous browser sessions to this owner
   void Events.emit('data:users:created', owner);
-  console.log(`  ✅ Owner: ${owner.displayName}`);
+  console.log(`  ✅ Owner: ${owner.displayName} (uniqueId: ${owner.uniqueId})`);
 
   // Rooms — validate recipeIds exist before creating anything
   const validRecipes = new Set(Object.keys(CONTENT_TYPE_CONFIGS));
@@ -365,14 +397,31 @@ export async function seedDatabase(): Promise<boolean> {
   const localModel = selectLocalModel(0);
   const created: Map<string, UserEntity> = new Map();
 
+  // Resolve symbolic modelRef → concrete modelId via ModelRegistry. Each
+  // persona's stored modelId stays synced with src/shared/models.json so
+  // changing the registry value updates seeded personas on next startup
+  // (Joel 2026-05-04: "personas PICK UP THE MODEL change and arent stuck
+  // in the past").
+  const { resolveModel, tierFromRamGB } = await import('../shared/ModelRegistry');
+  const seedRamGB = Math.round(require('os').totalmem() / 1024 / 1024 / 1024);
+  const seedTier = tierFromRamGB(seedRamGB);
+
   for (const config of personas) {
     try {
+      let resolvedModelId = config.modelId;
+      if (!resolvedModelId && config.modelRef) {
+        try {
+          resolvedModelId = resolveModel(config.modelRef, seedTier).hf_repo;
+        } catch (e) {
+          console.warn(`  ⚠️ ${config.displayName}: modelRef '${config.modelRef}' did not resolve: ${e}`);
+        }
+      }
       const user = await seeder.findOrCreateUser(
         config.uniqueId,
         config.displayName,
         config.type === 'agent' ? 'agent' : 'persona',
         config.provider,
-        config.modelId,
+        resolvedModelId,
       );
       created.set(config.uniqueId, user);
     } catch (err) {
@@ -414,5 +463,55 @@ export async function seedDatabase(): Promise<boolean> {
   console.log(`  ✅ ${recipeCount} recipes`);
 
   console.log(`🎉 Seeded in ${((Date.now() - start) / 1000).toFixed(1)}s`);
+
+  // ── Read-back verify (Phase 4 chat-probe debugging, 2026-05-02) ────────
+  //
+  // The seed claims success when DataCreate.execute returns; that's not
+  // proof the write actually landed in the configured backend. b69f's
+  // deep dive 2026-05-02 found a divergence:
+  //   - seed log: `🔔 ORM.store emitting: data:rooms:created` × 8
+  //   - main.db mtime: unchanged (April 17 state, 2 weeks stale)
+  //   - subsequent `data/list --collection=rooms` returns 0 items
+  //   - chat-probe (`jtag collaboration/chat/send --room=general`)
+  //     fails with `Room not found: general`
+  //
+  // i.e. the create path emitted events BUT data wasn't queryable. Either
+  // ORM.store goes through an in-memory buffer that never flushes, the
+  // write hits a different backend than the read does (DATABASE_URL race
+  // between node-server and continuum-core), or the IPC to Rust silently
+  // returns success without persisting. None of those are visible at the
+  // seed boundary today — caller proceeds, downstream chat fails, signal
+  // is lost.
+  //
+  // Read-back asserts that what we just wrote can be read back via the
+  // same DataList path the chat surface uses. If not, fail loudly here
+  // with the diagnostic the next debugger needs (expected/got counts,
+  // dbHandle in use, hint at root-cause classes). Per the global "loud-
+  // fail / no silent failure" rule.
+  const verifyRooms = await DataList.execute<RoomEntity>({
+    collection: RoomEntity.collection,
+    limit: ROOMS.length + 1,
+    dbHandle: 'default',
+  });
+  const verifyCount = verifyRooms?.items?.length ?? 0;
+  if (verifyCount < ROOMS.length) {
+    const verifyError = verifyRooms?.error ?? '(no error reported by DataList)';
+    throw new Error(
+      `Seed FATAL: post-write verify failed — wrote ${ROOMS.length} rooms ` +
+      `but DataList returned ${verifyCount} via dbHandle='default'. ` +
+      `This means create-emit succeeded but the data is not queryable on ` +
+      `the same backend the chat surface reads from. Likely causes: ` +
+      `(1) ORM.store wrote to a different backend than DataList reads ` +
+      `(check DATABASE_URL — empty in node-server vs continuum-core), ` +
+      `(2) write went to in-memory buffer never flushed (Rust IPC issue), ` +
+      `(3) DATABASE_URL changed mid-run (postgres profile activated/deactivated). ` +
+      `DataList result error: ${verifyError}. ` +
+      `Investigate: docker exec node-server env | grep DATABASE_URL; ` +
+      `docker exec continuum-core env | grep DATABASE_URL; ` +
+      `mtime of \$AIRC_HOME/.continuum/database/main.db before+after seed.`
+    );
+  }
+  console.log(`  ✅ Verified ${verifyCount} rooms readable via dbHandle='default'`);
+
   return true;
 }

@@ -20,47 +20,37 @@ export class PingServerCommand extends CommandBase<PingParams, PingResult> {
     const pingParams = params as PingParams;
     const server = await this.getServerInfo();
 
-    // Collect AI status if verbose flag set
+    // Collect AI status if verbose flag set. Composes with ai/status command.
+    // If the composition fails, aiStatus stays undefined — callers see no field
+    // and know the check didn't run. The previous catch substituted a magic
+    // all-zeros object that LIED about the actual AI state. Doctrine: report
+    // truth or omit; don't synthesize zeros.
     let aiStatus;
     if (pingParams.verbose) {
       const startTime = Date.now();
-      try {
-        // Get ai/status command from commander
-        interface CommandDaemonWithCommands {
-          commands: Map<string, CommandBase<CommandParams, CommandResult>>;
-        }
-        const commandDaemon = this.commander as unknown as CommandDaemonWithCommands;
-        const aiStatusCommand = commandDaemon.commands.get('ai/status');
-        if (aiStatusCommand) {
-          // Call ai/status with 2 second timeout
-          const statusParams: AIStatusParams = {
-            userId: pingParams.userId,
-            context: params.context,
-            sessionId: params.sessionId,
-            includeInactive: false,
-            timeout: 2000  // 2 second timeout for AI status check
-          };
-          const statusResult = await aiStatusCommand.execute(statusParams) as AIStatusResult;
-
-          const checkDuration = Date.now() - startTime;
-
-          if (statusResult.success) {
-            aiStatus = {
-              ...statusResult.summary,
-              checkDuration
-            };
-          }
-        }
-      } catch (_error) {
-        // AI status check failed or timed out - include empty summary
-        aiStatus = {
-          total: 0,
-          healthy: 0,
-          starting: 0,
-          degraded: 0,
-          dead: 0,
-          checkDuration: Date.now() - startTime
+      // Get ai/status command from the commander's local registry. Direct map
+      // access (not Commands.execute) avoids the IPC round-trip for a
+      // same-process command-to-command call.
+      interface CommandDaemonWithCommands {
+        commands: Map<string, CommandBase<CommandParams, CommandResult>>;
+      }
+      const commandDaemon = this.commander as unknown as CommandDaemonWithCommands;
+      const aiStatusCommand = commandDaemon.commands.get('ai/status');
+      if (aiStatusCommand) {
+        const statusParams: AIStatusParams = {
+          userId: pingParams.userId,
+          context: params.context,
+          sessionId: params.sessionId,
+          includeInactive: false,
+          timeout: 2000
         };
+        const statusResult = await aiStatusCommand.execute(statusParams) as AIStatusResult;
+        if (statusResult.success) {
+          aiStatus = {
+            ...statusResult.summary,
+            checkDuration: Date.now() - startTime
+          };
+        }
       }
     }
 

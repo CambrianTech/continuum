@@ -13,12 +13,14 @@ import {
   html,
   reactive,
   unsafeCSS,
+  nothing,
   type TemplateResult,
   type CSSResultGroup
 } from '../../shared/ReactiveListWidget';
+import '../../shared/EmptyStateWidget';
 import { RoomEntity } from '../../../system/data/entities/RoomEntity';
 import { UserEntity } from '../../../system/data/entities/UserEntity';
-import { CONTENT_TYPE_CONFIGS, type ContentType } from '../../../shared/generated/ContentTypes';
+import { CONTENT_TYPE_CONFIGS, type ContentType } from '@shared/generated/ContentTypes';
 import type { UUID } from '../../../system/core/types/CrossPlatformUUID';
 // No DEFAULT_ROOMS import. Rooms have system-generated UUIDs (uuidv4 at seed
 // time, globally unique — required for grid federation). The active-room
@@ -116,6 +118,24 @@ export class RoomListWidget extends ReactiveListWidget<RoomEntity> {
     this.scroller?.load();
   }
 
+  // === EMPTY STATE === (#1101)
+  protected override renderEmptyState(): TemplateResult {
+    // Copy depends on which filter is active so the message matches what
+    // the user is looking at. The "create your first room" CTA is left
+    // unwired for now — emits an event the parent can listen for once
+    // room-creation UX lands.
+    const isDmFilter = this.activeFilter === 'dms';
+    return html`
+      <empty-state
+        icon=${isDmFilter ? '✉️' : '#'}
+        empty-title=${isDmFilter ? 'No direct messages yet' : 'No rooms yet'}
+        subtitle=${isDmFilter
+          ? 'Open a DM with another user or persona to start a private conversation.'
+          : 'Rooms are shared spaces for conversations with humans and AI personas.'}
+      ></empty-state>
+    `;
+  }
+
   // === ITEM ===
   renderItem(room: RoomEntity): TemplateResult {
     if (this.isDM(room)) {
@@ -182,13 +202,38 @@ export class RoomListWidget extends ReactiveListWidget<RoomEntity> {
     return html`
       <div class="entity-list-container">
         ${this.renderHeader()}
-        <div class="${this.containerClass}"></div>
+        <div
+          class="${this.containerClass}"
+          ?hidden=${this.isEmpty}
+          role="listbox"
+          aria-label="Rooms and direct messages"
+        ></div>
+        ${this.isEmpty ? this.renderEmptyState() : nothing}
         ${showNewDM && hasDMs ? html`
           <div class="new-dm-btn" @click=${this.startNewDM}>+ Start a conversation</div>
         ` : ''}
         ${this.renderFooter()}
       </div>
     `;
+  }
+
+  // === A11Y === (#1099 phase 2 + 3a)
+  protected override isItemIdSelected(id: string): boolean {
+    return id === this.currentRoomId;
+  }
+
+  protected override getItemLabel(room: RoomEntity): string {
+    if (this.isDM(room)) {
+      const info = this.getDMDisplayInfo(room);
+      const memberCount = room.members?.length ?? 0;
+      const isGroup = memberCount > 2;
+      return isGroup
+        ? `Group DM: ${info.name}, ${memberCount} members`
+        : `Direct message with ${info.name}`;
+    }
+    const name = room.displayName ?? room.name ?? 'Room';
+    const topic = room.topic ?? '';
+    return topic ? `Room ${name} — ${topic}` : `Room ${name}`;
   }
 
   // === FILTERING ===
@@ -261,6 +306,10 @@ export class RoomListWidget extends ReactiveListWidget<RoomEntity> {
     // Subscribe to pageState - single source of truth for current room
     this.createMountEffect(() => {
       const unsubscribe = pageState.subscribe((state) => {
+        if (!state) {
+          this.currentRoomId = null;
+          return;
+        }
         if (state.entityId) {
           const matchingRoom = this.entities.find(
             (room: RoomEntity) => room.id === state.entityId || room.uniqueId === state.entityId
@@ -413,7 +462,7 @@ export class RoomListWidget extends ReactiveListWidget<RoomEntity> {
     this.selectRoom(room);
   }
 
-  protected override onItemClick(_item: RoomEntity): void {
-    // Handled by @click in renderItem template
+  protected override onItemClick(item: RoomEntity): void {
+    this.selectRoom(item);
   }
 }

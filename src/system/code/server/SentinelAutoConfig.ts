@@ -14,7 +14,7 @@
  */
 
 import { CodeDaemon } from '../../../daemons/code-daemon/shared/CodeDaemon';
-import type { SentinelRule } from '../../../shared/generated/code/SentinelRule';
+import type { SentinelRule } from '@shared/generated/code/SentinelRule';
 import { Logger } from '../../core/logging/Logger';
 
 const log = Logger.create('SentinelAutoConfig', 'code');

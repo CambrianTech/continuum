@@ -8,7 +8,7 @@ import type { JTAGContext } from '@system/core/types/JTAGTypes';
 import { ValidationError } from '@system/core/types/ErrorTypes';
 import type { PlasticityCompactParams, PlasticityCompactResult } from '../shared/PlasticityCompactTypes';
 import { createPlasticityCompactResultFromParams } from '../shared/PlasticityCompactTypes';
-import { RustCoreIPCClient } from '../../../../workers/continuum-core/bindings/RustCoreIPC';
+import { RustCoreIPCClient } from '../../../../../core/continuum-core/bindings/RustCoreIPC';
 
 export class PlasticityCompactServerCommand extends CommandBase<PlasticityCompactParams, PlasticityCompactResult> {
 
@@ -29,7 +29,7 @@ export class PlasticityCompactServerCommand extends CommandBase<PlasticityCompac
       adapterPath: params.adapterPath,
       modelPath: params.modelPath,
       outputPath: params.outputPath,
-      config: params.config as Record<string, unknown> as import('../../../../workers/continuum-core/bindings/modules/plasticity').PlasticityCompactParams['config'],
+      config: params.config as Record<string, unknown> as import('../../../../../core/continuum-core/bindings/modules/plasticity').PlasticityCompactParams['config'],
     });
 
     return createPlasticityCompactResultFromParams(params, {

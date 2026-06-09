@@ -18,11 +18,11 @@
  */
 
 import net from 'net';
-import { resolveCoreEndpoint, connectToCoreEndpoint } from '../../../workers/continuum-core/bindings/modules/base';
+import { resolveCoreEndpoint, connectToCoreEndpoint } from '../../../../core/continuum-core/bindings/modules/base';
 import type {
   TextGenerationRequest,
 } from '../shared/AIProviderTypesV2';
-import type { TextGenerationResponse, RoutingInfo } from '../../../shared/generated/ai';
+import type { TextGenerationResponse, RoutingInfo } from '@shared/generated/ai';
 
 // Endpoint resolution: honors CONTINUUM_CORE_URL env (tcp://host:port for
 // containerized callers on Mac where Unix sockets don't traverse Docker

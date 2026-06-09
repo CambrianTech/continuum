@@ -43,7 +43,6 @@ import {
   WidgetContextSource,
   PersonaIdentitySource,
   GlobalAwarenessSource,
-  SocialMediaRAGSource,
   CodeToolSource,
   ProjectContextSource,
   GovernanceSource,
@@ -135,7 +134,6 @@ export class ChatRAGBuilder extends RAGBuilder {
         new ProjectContextSource(),      // Priority 70: Project workspace context (git, team, build)
         new SentinelAwarenessSource(),   // Priority 58: Sentinel pipeline awareness (autonomous orchestration)
         new CodebaseSearchSource(),      // Priority 55: Semantic code search from indexed codebase
-        new SocialMediaRAGSource(),      // Priority 55: Social media HUD (engagement duty)
         new CodeToolSource(),            // Priority 50: Coding workflow guidance
         new ToolMethodologySource(),     // Priority 48: Non-code tool workflow guidance
         new ToolDefinitionsSource(),     // Priority 45: Tool definitions (native/XML, budget-aware)

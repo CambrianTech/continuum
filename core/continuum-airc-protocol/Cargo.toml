@@ -1,0 +1,10 @@
+[package]
+name = "continuum-airc-protocol"
+version = "0.1.0"
+edition = "2021"
+description = "Wire-shape types for the substrate's airc command + event protocols. Shared between continuum-core (server-side handler + cross-grid transport) and continuum-client (client-side transport). Substrate-internal coupling (RouteDecision conversion, etc.) stays in continuum-core."
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }

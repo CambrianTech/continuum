@@ -19,7 +19,7 @@ import { createHash } from 'crypto';
 import { ORM } from '../../../daemons/data-daemon/server/ORM';
 import { CodeIndexEntity } from '../../data/entities/CodeIndexEntity';
 import type { IndexingResult, CodeExportType, CodeIndexEntry } from '../shared/CodebaseTypes';
-import type { RustCoreIPCClient as RustCoreIPCClientType } from '../../../workers/continuum-core/bindings/RustCoreIPC';
+import type { RustCoreIPCClient as RustCoreIPCClientType } from '../../../../core/continuum-core/bindings/RustCoreIPC';
 import type { UUID } from '../../core/types/CrossPlatformUUID';
 import { Logger } from '../../core/logging/Logger';
 
@@ -654,7 +654,7 @@ export class CodebaseIndexer {
   private async getIPC(): Promise<RustCoreIPCClientType> {
     if (this.ipcClient) return this.ipcClient;
 
-    const { RustCoreIPCClient, getContinuumCoreSocketPath } = await import('../../../workers/continuum-core/bindings/RustCoreIPC');
+    const { RustCoreIPCClient, getContinuumCoreSocketPath } = await import('../../../../core/continuum-core/bindings/RustCoreIPC');
     this.ipcClient = new RustCoreIPCClient(getContinuumCoreSocketPath());
     await this.ipcClient.connect();
     return this.ipcClient;

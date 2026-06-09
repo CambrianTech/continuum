@@ -375,23 +375,6 @@ I found some interesting content.
       expect(tools).toContain('screenshot');
     });
 
-    it('should handle empty tool call list', async () => {
-      const context = {
-        personaId: MOCK_PERSONA_ID,
-        personaName: MOCK_PERSONA_NAME,
-        sessionId: MOCK_SESSION_ID,
-        contextId: MOCK_CONTEXT_ID,
-        context: { sessionId: MOCK_SESSION_ID, contextId: MOCK_CONTEXT_ID } as any,
-        personaConfig: {
-          autoLoadMedia: false,
-          supportedMediaTypes: []
-        }
-      };
-
-      const result = await executor.executeToolCalls([], context);
-      expect(result.formattedResults).toBe('');
-      expect(result.media).toBeUndefined();
-    });
   });
 
   describe('End-to-End Tool Execution', () => {

@@ -9,10 +9,10 @@ import { transformPayload } from '@system/core/types/JTAGTypes';
 import type { ICommandDaemon } from '@daemons/command-daemon/shared/CommandBase';
 import { ChatExportCommand } from '../shared/ChatExportCommand';
 import type { ChatExportParams, ChatExportResult } from '../shared/ChatExportTypes';
-import { RoomEntity } from '@system/data/entities/RoomEntity';
 import { ChatMessageEntity } from '@system/data/entities/ChatMessageEntity';
 import { Commands } from '@system/core/shared/Commands';
 import type { DataListParams, DataListResult } from '@commands/data/list/shared/DataListTypes';
+import { resolveRoomIdentifier } from '@system/routing/RoutingService';
 import * as fs from 'fs';
 import * as path from 'path';
 import { SystemPaths } from '@system/core/config/SystemPaths';
@@ -28,8 +28,28 @@ export class ChatExportServerCommand extends ChatExportCommand {
     const collection = params.collection || ChatMessageEntity.collection;
     const includeThreading = params.includeThreading ?? true;
 
+    // Resolve room ONCE up front through the canonical resolver — used both
+    // for the data/list filter (needs UUID) and the markdown header (wants
+    // displayName). Pre-fix this command had its own findRoom() that only
+    // matched RoomEntity.id and RoomEntity.name, so chat/send accepting
+    // 'general' (uniqueId) but chat/export rejecting it as "Room not
+    // found" was a real input asymmetry — Carl-UX QA #94 from airc-8a5e
+    // 2026-05-03. resolveRoomIdentifier handles uniqueId/UUID/name and
+    // is documented as "THE SINGLE SOURCE OF TRUTH for room resolution"
+    // in RoutingService.ts.
+    let resolvedRoomId: string | undefined;
+    let resolvedRoomDisplayName: string | undefined;
+    if (params.room) {
+      const resolved = await resolveRoomIdentifier(params.room);
+      if (!resolved) {
+        throw new Error(`Room not found: ${params.room}`);
+      }
+      resolvedRoomId = resolved.id;
+      resolvedRoomDisplayName = resolved.displayName;
+    }
+
     // 1. Fetch messages with filters
-    let messages = await this.fetchMessages(params, collection);
+    let messages = await this.fetchMessages(params, collection, resolvedRoomId);
 
     // 2. Apply post-filters (system/test messages, timestamps)
     messages = this.applyPostFilters(messages, params);
@@ -37,8 +57,10 @@ export class ChatExportServerCommand extends ChatExportCommand {
     // 3. Reverse to show oldest first in export
     messages = Array.from(messages).reverse();
 
-    // 4. Generate markdown
-    const markdown = this.generateMarkdown(messages, includeThreading, params.room);
+    // 4. Generate markdown — prefer canonical displayName from the resolver
+    // so the export header reads "Chat Export - General" regardless of
+    // whether the user typed --room=general or --room=General.
+    const markdown = this.generateMarkdown(messages, includeThreading, resolvedRoomDisplayName ?? params.room);
 
     // Write to file or return as string
     if (params.output) {
@@ -83,14 +105,12 @@ export class ChatExportServerCommand extends ChatExportCommand {
    * Fetch messages from database with initial filters
    * Returns messages with IDs from DataRecord (entity.id may not be populated)
    */
-  private async fetchMessages(params: ChatExportParams, collection: string): Promise<ChatMessageEntity[]> {
+  private async fetchMessages(params: ChatExportParams, collection: string, resolvedRoomId?: string): Promise<ChatMessageEntity[]> {
     const limit = params.limit || 50;
     const filter: Record<string, unknown> = { ...params.filter };
 
-    // Resolve room if provided
-    if (params.room) {
-      const room = await this.findRoom(params.room, params);
-      filter.roomId = room.id;
+    if (resolvedRoomId) {
+      filter.roomId = resolvedRoomId;
     }
 
     // Query messages using data/list command
@@ -163,38 +183,6 @@ export class ChatExportServerCommand extends ChatExportCommand {
     }
 
     return filtered;
-  }
-
-  /**
-   * Find room by ID or name
-   * Returns entity.id since data/list returns entities directly
-   */
-  private async findRoom(roomIdOrName: string, params: ChatExportParams): Promise<{ id: import('@system/core/types/CrossPlatformUUID').UUID; entity: RoomEntity }> {
-    // Query all rooms using data/list command
-    const result = await DataList.execute<RoomEntity>({
-        dbHandle: 'default',
-        collection: RoomEntity.collection,
-        filter: {},
-        context: params.context,
-        sessionId: params.sessionId
-      }
-    );
-
-    if (!result.success || !result.items) {
-      throw new Error('Failed to query rooms');
-    }
-
-    // Find by ID or name
-    const room = result.items.find((r: RoomEntity) =>
-      r.id === roomIdOrName || r.name === roomIdOrName
-    );
-
-    if (!room) {
-      const roomNames = result.items.map((r: RoomEntity) => r.name).join(', ');
-      throw new Error(`Room not found: ${roomIdOrName}. Available: ${roomNames}`);
-    }
-
-    return { id: room.id, entity: room };
   }
 
   /**

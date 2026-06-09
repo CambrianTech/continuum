@@ -1,0 +1,1568 @@
+use crate::code::{FileEngine, ShellSession};
+use crate::gpu::GpuMemoryManager;
+use crate::modules::agent::AgentModule;
+use crate::modules::ai_provider::AIProviderModule;
+use crate::modules::airc::AircModule;
+use crate::modules::auth::ExternalWebviewAuthModule;
+use crate::modules::avatar::AvatarModule;
+use crate::modules::cargo::CargoModule;
+use crate::modules::channel::{ChannelModule, ChannelState};
+use crate::modules::code::{CodeModule, CodeState};
+use crate::modules::cognition::{CognitionModule, CognitionState};
+use crate::modules::data::DataModule;
+use crate::modules::dataset::DatasetModule;
+use crate::modules::embedding::EmbeddingModule;
+use crate::modules::events::EventsModule;
+use crate::modules::forge::ForgeModule;
+use crate::modules::gpu::GpuModule;
+use crate::modules::grid::GridModule;
+use crate::modules::health::HealthModule;
+use crate::modules::inference::InferenceModule;
+use crate::modules::live::{VoiceModule, VoiceState};
+use crate::modules::logger::LoggerModule;
+use crate::modules::memory::{MemoryModule, MemoryState};
+use crate::modules::models::ModelsModule;
+use crate::modules::persona_allocator::PersonaAllocatorModule;
+use crate::modules::rag::{RagModule, RagState};
+use crate::modules::search::SearchModule;
+use crate::modules::sentinel::SentinelModule;
+use crate::modules::system_resources::SystemResourceModule;
+use crate::modules::tool_parsing::ToolParsingModule;
+use crate::modules::vision::VisionModule;
+/// IPC server for continuum-core
+///
+/// Unix socket server that accepts JSON requests and returns JSON responses.
+/// Follows the same pattern as logger worker - event-driven, no polling.
+///
+/// Architecture:
+/// - One thread per connection (spawn on accept)
+/// - Tokio async for concurrent request handling
+/// - JSON protocol (JTAGRequest/JTAGResponse)
+/// - Performance timing on every request
+/// - Modular runtime routes commands through ServiceModule trait (Phase 1+)
+use crate::persona::{ChannelRegistry, PersonaState};
+use crate::rag::RagEngine;
+use crate::runtime::{CommandResult, Runtime};
+use crate::system_resources::SystemResourceMonitor;
+use crate::{log_debug, log_error, log_info};
+use dashmap::DashMap;
+use std::io::{BufRead, BufReader, Read, Write};
+use std::net::{TcpListener, TcpStream};
+use std::os::unix::net::{UnixListener, UnixStream};
+use std::path::Path;
+use std::sync::Arc;
+use uuid::Uuid;
+
+fn prepare_unix_socket_path(socket_path: &str) -> std::io::Result<()> {
+    let path = Path::new(socket_path);
+
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)?;
+        }
+    }
+
+    if path.exists() {
+        std::fs::remove_file(path)?;
+    }
+
+    Ok(())
+}
+
+/// Stream abstraction that lets handle_client serve both Unix socket clients
+/// (native callers — continuum-core-server's primary IPC path) and TCP clients
+/// (container callers — node-server running inside Docker on Mac, where Unix
+/// sockets don't traverse the Docker VM boundary). Same request/response
+/// protocol over both transports.
+trait IpcStream: Read + Write + Send + Sized + 'static {
+    fn try_clone_stream(&self) -> std::io::Result<Self>;
+    fn peer_addr_str(&self) -> String;
+}
+
+impl IpcStream for UnixStream {
+    fn try_clone_stream(&self) -> std::io::Result<Self> {
+        self.try_clone()
+    }
+    fn peer_addr_str(&self) -> String {
+        format!("{:?}", self.peer_addr().ok())
+    }
+}
+
+impl IpcStream for TcpStream {
+    fn try_clone_stream(&self) -> std::io::Result<Self> {
+        self.try_clone()
+    }
+    fn peer_addr_str(&self) -> String {
+        self.peer_addr()
+            .map(|a| a.to_string())
+            .unwrap_or_else(|_| "unknown".to_string())
+    }
+}
+
+// ============================================================================
+// Request/Response Protocol + Memory Diagnostics
+// ============================================================================
+// Split out of this file 2026-05-18 — see ipc/protocol.rs (InboxMessageRequest,
+// Response) and ipc/diagnostics.rs (per-command RSS tracking). Re-exported
+// here so existing call sites resolve unchanged.
+
+pub mod diagnostics;
+pub mod protocol;
+
+use diagnostics::{current_rss_mb, dump_memory_report, log_command_rss_delta};
+pub use protocol::InboxMessageRequest;
+use protocol::Response;
+
+// See modules/health.rs, cognition.rs, channel.rs, voice.rs, code.rs, memory.rs,
+// models.rs, data.rs, logger.rs, search.rs, embedding.rs, rag.rs for command handlers.
+
+// ============================================================================
+// IPC Server State
+// ============================================================================
+
+/// ServerState holds Arc references that are passed to ServiceModules during initialization.
+/// After modules are registered with the runtime, these fields are not accessed directly
+/// by ServerState methods — all command handling goes through runtime.dispatch().
+/// The fields are kept here to ensure the Arc lifetimes outlive the modules.
+#[allow(dead_code)]
+struct ServerState {
+    voice_service: Arc<crate::live::session::voice_service::VoiceService>,
+    /// Per-persona channel registries + state — DashMap: hot-path ops are &mut self.
+    channel_registries: Arc<DashMap<Uuid, (ChannelRegistry, PersonaState)>>,
+    rag_engine: Arc<RagEngine>,
+    /// Server-side audio buffer pool for handle-based synthesis.
+    audio_pool: Arc<crate::live::audio::buffer::AudioBufferPool>,
+    /// Tokio runtime handle for async operations from IPC threads.
+    rt_handle: tokio::runtime::Handle,
+    /// Per-persona memory manager — pure compute on in-memory MemoryCorpus.
+    memory_manager: Arc<crate::memory::PersonaMemoryManager>,
+    /// Per-persona file engines — workspace-scoped file operations with change tracking.
+    file_engines: Arc<DashMap<String, FileEngine>>,
+    /// Per-persona shell sessions — persistent bash per workspace with handle+poll.
+    shell_sessions: Arc<DashMap<String, ShellSession>>,
+    /// Modular runtime — ServiceModule-based command routing.
+    runtime: Arc<Runtime>,
+    /// GPU memory manager — unified VRAM coordination.
+    gpu_manager: Arc<GpuMemoryManager>,
+}
+
+impl ServerState {
+    #[allow(clippy::too_many_arguments)]
+    fn new_with_shared_state(
+        rt_handle: tokio::runtime::Handle,
+        memory_manager: Arc<crate::memory::PersonaMemoryManager>,
+        runtime: Arc<Runtime>,
+        channel_registries: Arc<DashMap<Uuid, (ChannelRegistry, PersonaState)>>,
+        rag_engine: Arc<RagEngine>,
+        voice_service: Arc<crate::live::session::voice_service::VoiceService>,
+        audio_pool: Arc<crate::live::audio::buffer::AudioBufferPool>,
+        file_engines: Arc<DashMap<String, FileEngine>>,
+        shell_sessions: Arc<DashMap<String, ShellSession>>,
+        gpu_manager: Arc<GpuMemoryManager>,
+    ) -> Self {
+        Self {
+            voice_service,
+            channel_registries,
+            rag_engine,
+            audio_pool,
+            rt_handle,
+            memory_manager,
+            file_engines,
+            shell_sessions,
+            runtime,
+            gpu_manager,
+        }
+    }
+}
+
+// ============================================================================
+// Handle Result - supports JSON and binary responses
+// ============================================================================
+
+/// Result from handling an IPC request.
+/// Binary variant allows raw PCM audio to bypass base64 encoding entirely.
+enum HandleResult {
+    /// Standard JSON response (all non-audio commands)
+    Json(Response),
+    /// Binary response: JSON metadata + raw bytes (audio commands)
+    /// Eliminates base64 encoding overhead for audio data.
+    Binary {
+        json_header: Response,
+        binary_data: Vec<u8>,
+    },
+}
+
+// ============================================================================
+// Connection Handler - Length-Prefixed Binary Framing
+// ============================================================================
+
+/// Send a length-prefixed JSON response frame.
+/// Frame format: [4 bytes u32 BE length][JSON payload bytes]
+fn send_json_frame<S: Write>(stream: &mut S, response: &Response) -> std::io::Result<()> {
+    let json = match serde_json::to_string(response) {
+        Ok(j) => j,
+        Err(e) => {
+            log_error!("ipc", "server", "Failed to serialize response: {}", e);
+            r#"{"success":false,"error":"Internal serialization error"}"#.to_string()
+        }
+    };
+    let payload = json.as_bytes();
+    let length = payload.len() as u32;
+
+    stream.write_all(&length.to_be_bytes())?;
+    stream.write_all(payload)?;
+    stream.flush()
+}
+
+/// Send a length-prefixed binary response frame.
+/// Frame format: [4 bytes u32 BE total_length][JSON header bytes][\0][raw binary bytes]
+/// The \0 separator is unambiguous — serde_json encodes null chars as \u0000.
+fn send_binary_frame<S: Write>(
+    stream: &mut S,
+    response: &Response,
+    binary_data: &[u8],
+) -> std::io::Result<()> {
+    let json = match serde_json::to_string(response) {
+        Ok(j) => j,
+        Err(e) => {
+            log_error!(
+                "ipc",
+                "server",
+                "Failed to serialize binary response header: {}",
+                e
+            );
+            r#"{"success":false,"error":"Internal serialization error"}"#.to_string()
+        }
+    };
+    let json_bytes = json.as_bytes();
+    let total_length = (json_bytes.len() + 1 + binary_data.len()) as u32; // +1 for \0 separator
+
+    stream.write_all(&total_length.to_be_bytes())?;
+    stream.write_all(json_bytes)?;
+    stream.write_all(&[0u8])?; // separator
+    stream.write_all(binary_data)?;
+    stream.flush()
+}
+
+/// Handle a single IPC client connection with concurrent request processing.
+///
+/// Architecture:
+/// - Reader thread (this function): reads newline-delimited JSON requests from the socket
+/// - Writer thread: serializes responses back to the socket in arrival order
+/// - Rayon pool: processes each request concurrently on worker threads
+///
+/// The TS client multiplexes via requestId — responses can arrive in any order.
+/// This eliminates the sequential bottleneck where 6 concurrent requests from
+/// RAGComposer (global-awareness, semantic-memory, etc.) were serialized per-connection.
+fn handle_client<S: IpcStream>(stream: S, state: Arc<ServerState>) -> std::io::Result<()> {
+    let peer_addr = stream.peer_addr_str();
+    log_debug!("ipc", "server", "Client connected: {}", peer_addr);
+
+    let reader = BufReader::new(stream.try_clone_stream()?);
+
+    // Response channel — tokio tasks send completed results, writer thread serializes to socket.
+    // Unbounded: request rate is limited by socket read speed, not processing speed.
+    let (tx, rx) = std::sync::mpsc::channel::<(Option<u64>, HandleResult)>();
+
+    // Writer thread — owns the write half of the socket, serializes response frames.
+    // Multiple tokio tasks complete concurrently; this thread ensures atomic frame writes.
+    let mut writer_stream = stream.try_clone_stream()?;
+    let writer_handle = std::thread::spawn(move || {
+        for (request_id, result) in rx {
+            let write_result = match result {
+                HandleResult::Json(response) => {
+                    let response = response.with_request_id(request_id);
+                    send_json_frame(&mut writer_stream, &response)
+                }
+                HandleResult::Binary {
+                    json_header,
+                    binary_data,
+                } => {
+                    let json_header = json_header.with_request_id(request_id);
+                    send_binary_frame(&mut writer_stream, &json_header, &binary_data)
+                }
+            };
+            if let Err(e) = write_result {
+                log_error!("ipc", "server", "Write error: {}", e);
+                break;
+            }
+        }
+    });
+
+    // Reader loop — parse requests and dispatch to tokio for concurrent processing.
+    // No longer blocks waiting for handle_request() to complete before reading next request.
+    for line in reader.lines() {
+        let line = line?;
+        if line.is_empty() {
+            continue;
+        }
+
+        // Parse JSON to extract requestId and command
+        let json_value: serde_json::Value = match serde_json::from_str(&line) {
+            Ok(v) => v,
+            Err(e) => {
+                let _ = tx.send((
+                    None,
+                    HandleResult::Json(Response::error(format!("Invalid JSON: {e}"))),
+                ));
+                continue;
+            }
+        };
+
+        let request_id = json_value.get("requestId").and_then(|v| v.as_u64());
+        let command = json_value
+            .get("command")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
+        // Dispatch to tokio directly — NO RAYON THREAD BLOCKED.
+        //
+        // Previous: rayon::spawn → route_command_sync (blocks rayon thread for up to 60s)
+        // Now: tokio::spawn → route_command (async, zero thread blocking)
+        //
+        // rayon::spawn was the root cause of system-wide starvation:
+        // - Every IPC request occupied a rayon thread for its entire duration (up to 60s)
+        // - With 14 agents sending concurrent ai/generate + data/count + voice/speak-in-call,
+        //   all rayon threads were blocked waiting, and new commands couldn't start
+        // - This caused voice/speak-in-call timeouts → intermittent mouth animation
+        // - Also caused ai/generate and data/count timeouts → general system degradation
+        //
+        // tokio handles thousands of concurrent tasks without blocking any OS threads.
+        let state = state.clone();
+        let tx = tx.clone();
+        let rt_handle = state.rt_handle.clone();
+        rt_handle.spawn(async move {
+            let handle_result = if let Some(ref cmd) = command {
+                let rss_before = current_rss_mb();
+                let result = state.runtime.route_command(cmd, json_value.clone()).await;
+                let rss_after = current_rss_mb();
+                log_command_rss_delta(cmd, rss_before, rss_after);
+
+                match result {
+                    Some(Ok(CommandResult::Json(value))) => {
+                        // Propagate operation-level failure: if the inner value
+                        // has success:false, the IPC response must reflect that.
+                        // Otherwise callers only see the transport-level success.
+                        let is_inner_failure = value
+                            .get("success")
+                            .and_then(|v| v.as_bool())
+                            .map(|s| !s)
+                            .unwrap_or(false);
+                        if is_inner_failure {
+                            let error = value
+                                .get("error")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("Operation failed")
+                                .to_string();
+                            HandleResult::Json(Response {
+                                success: false,
+                                result: Some(value),
+                                error: Some(error),
+                                request_id: None,
+                            })
+                        } else {
+                            HandleResult::Json(Response::success(value))
+                        }
+                    }
+                    Some(Ok(CommandResult::Binary { metadata, data })) => HandleResult::Binary {
+                        json_header: Response::success(metadata),
+                        binary_data: data,
+                    },
+                    // Cell shapes from MODULE-ARCHITECTURE.md §5.1.
+                    // Handle: serialize the HandleRef as JSON over the
+                    // wire; the TS-side caller holds it and passes back
+                    // on subsequent calls (long-running session pattern
+                    // — inference, training, hosting, ORM).
+                    Some(Ok(other)) => match other.to_json_value() {
+                        Ok(value) => HandleResult::Json(Response::success(value)),
+                        Err(e) => HandleResult::Json(Response::error(e)),
+                    },
+                    Some(Err(e)) => HandleResult::Json(Response::error(e)),
+                    None => HandleResult::Json(Response::error(format!(
+                        "Unknown command: '{}'. No module registered for this command prefix.",
+                        cmd
+                    ))),
+                }
+            } else {
+                HandleResult::Json(Response::error(
+                    "Missing 'command' field in request".to_string(),
+                ))
+            };
+            let _ = tx.send((request_id, handle_result));
+        });
+    }
+
+    // Drop sender to signal writer thread to exit, then wait for it
+    drop(tx);
+    let _ = writer_handle.join();
+
+    log_debug!("ipc", "server", "Client disconnected: {}", peer_addr);
+    Ok(())
+}
+
+// ============================================================================
+// Tests - Binary Framing & Protocol
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn prepare_unix_socket_path_creates_parent_dir() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let socket_path = temp_dir
+            .path()
+            .join("missing")
+            .join("sockets")
+            .join("continuum-core.sock");
+
+        prepare_unix_socket_path(socket_path.to_str().unwrap()).unwrap();
+
+        assert!(socket_path.parent().unwrap().is_dir());
+    }
+
+    #[test]
+    fn prepare_unix_socket_path_removes_stale_socket_file() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let socket_path = temp_dir.path().join("continuum-core.sock");
+        std::fs::write(&socket_path, b"stale").unwrap();
+
+        prepare_unix_socket_path(socket_path.to_str().unwrap()).unwrap();
+
+        assert!(!socket_path.exists());
+    }
+
+    // ========================================================================
+    // Binary Framing Unit Tests
+    // ========================================================================
+
+    #[test]
+    fn test_json_frame_roundtrip() {
+        // Create a response, write to buffer, verify framing
+        let response = Response::success(serde_json::json!({"healthy": true}));
+        let json = serde_json::to_string(&response).unwrap();
+        let payload = json.as_bytes();
+
+        // Build frame: [4-byte BE length][payload]
+        let length = payload.len() as u32;
+        let mut frame = Vec::new();
+        frame.extend_from_slice(&length.to_be_bytes());
+        frame.extend_from_slice(payload);
+
+        // Parse frame
+        assert!(frame.len() >= 4);
+        let parsed_length = u32::from_be_bytes([frame[0], frame[1], frame[2], frame[3]]) as usize;
+        assert_eq!(parsed_length, payload.len());
+
+        let parsed_json: serde_json::Value =
+            serde_json::from_slice(&frame[4..4 + parsed_length]).unwrap();
+        assert_eq!(parsed_json["success"], true);
+        assert_eq!(parsed_json["result"]["healthy"], true);
+    }
+
+    #[test]
+    fn test_binary_frame_roundtrip() {
+        // Simulate binary response: JSON header + \0 + raw PCM
+        let response = Response::success(serde_json::json!({
+            "sample_rate": 16000,
+            "duration_ms": 500,
+            "binary_pcm": true
+        }));
+        let json = serde_json::to_string(&response).unwrap();
+        let json_bytes = json.as_bytes();
+
+        // Simulate PCM audio data (4 samples of i16)
+        let audio_samples: Vec<i16> = vec![1000, -2000, 3000, -4000];
+        let pcm_bytes: Vec<u8> = audio_samples.iter().flat_map(|s| s.to_le_bytes()).collect();
+
+        // Build binary frame: [4-byte BE total_length][JSON][\0][PCM]
+        let total_length = (json_bytes.len() + 1 + pcm_bytes.len()) as u32;
+        let mut frame = Vec::new();
+        frame.extend_from_slice(&total_length.to_be_bytes());
+        frame.extend_from_slice(json_bytes);
+        frame.push(0u8); // separator
+        frame.extend_from_slice(&pcm_bytes);
+
+        // Parse frame
+        let parsed_total = u32::from_be_bytes([frame[0], frame[1], frame[2], frame[3]]) as usize;
+        let payload = &frame[4..4 + parsed_total];
+
+        // Find \0 separator
+        let sep_idx = payload
+            .iter()
+            .position(|&b| b == 0)
+            .expect("Should have separator");
+        let parsed_json_bytes = &payload[..sep_idx];
+        let parsed_binary = &payload[sep_idx + 1..];
+
+        // Verify JSON header
+        let parsed: serde_json::Value = serde_json::from_slice(parsed_json_bytes).unwrap();
+        assert_eq!(parsed["result"]["sample_rate"], 16000);
+        assert_eq!(parsed["result"]["binary_pcm"], true);
+
+        // Verify binary PCM data
+        assert_eq!(parsed_binary.len(), pcm_bytes.len());
+        let parsed_samples: Vec<i16> = parsed_binary
+            .chunks_exact(2)
+            .map(|chunk| i16::from_le_bytes([chunk[0], chunk[1]]))
+            .collect();
+        assert_eq!(parsed_samples, audio_samples);
+    }
+
+    #[test]
+    fn test_binary_frame_separator_unambiguous() {
+        // Verify that serde_json never produces a raw 0x00 byte
+        // (it encodes null chars as \u0000, which is 6 ASCII bytes)
+        let json_with_null = serde_json::json!({"text": "before\0after"});
+        let serialized = serde_json::to_string(&json_with_null).unwrap();
+        let bytes = serialized.as_bytes();
+
+        // Should NOT contain raw 0x00 byte
+        assert!(
+            !bytes.contains(&0u8),
+            "serde_json should never emit raw 0x00 byte, got: {:?}",
+            serialized
+        );
+        // Should contain the escaped form
+        assert!(
+            serialized.contains("\\u0000"),
+            "Null should be escaped as \\u0000"
+        );
+    }
+
+    // ========================================================================
+    // Response Serialization Tests
+    // ========================================================================
+    // NOTE: Request deserialization tests removed - legacy Request enum deleted.
+    // Commands now route through ServiceModule implementations (modules/*.rs).
+    // Each module has its own tests for command handling.
+
+    #[test]
+    fn test_response_success_serialization() {
+        let response = Response::success(serde_json::json!({"key": "value"}));
+        let json = serde_json::to_string(&response).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["success"], true);
+        assert_eq!(parsed["result"]["key"], "value");
+        assert!(parsed.get("error").is_none() || parsed["error"].is_null());
+    }
+
+    #[test]
+    fn test_response_error_serialization() {
+        let response = Response::error("something broke".to_string());
+        let json = serde_json::to_string(&response).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["success"], false);
+        assert_eq!(parsed["error"], "something broke");
+    }
+
+    #[test]
+    fn test_response_with_request_id() {
+        let response = Response::success(serde_json::json!({})).with_request_id(Some(42));
+        let json = serde_json::to_string(&response).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["requestId"], 42);
+    }
+
+    // ========================================================================
+    // Integration Test: Full IPC Round-Trip via Unix Socket
+    // Requires: continuum-core-server running (cargo test --ignored)
+    // ========================================================================
+
+    #[test]
+    #[ignore] // Requires running continuum-core server
+    fn test_ipc_health_check_live() {
+        use std::io::Write;
+        use std::os::unix::net::UnixStream;
+
+        let socket_path = "/tmp/continuum-core.sock";
+        let mut stream =
+            UnixStream::connect(socket_path).expect("Failed to connect to continuum-core socket");
+
+        // Send health-check request
+        let request = r#"{"command":"health-check","requestId":1}"#;
+        stream.write_all(request.as_bytes()).unwrap();
+        stream.write_all(b"\n").unwrap();
+        stream.flush().unwrap();
+
+        // Read length-prefixed response
+        let mut len_buf = [0u8; 4];
+        std::io::Read::read_exact(&mut stream, &mut len_buf).unwrap();
+        let length = u32::from_be_bytes(len_buf) as usize;
+
+        let mut payload = vec![0u8; length];
+        std::io::Read::read_exact(&mut stream, &mut payload).unwrap();
+
+        let response: serde_json::Value = serde_json::from_slice(&payload).unwrap();
+        assert_eq!(response["success"], true);
+        assert_eq!(response["result"]["healthy"], true);
+        assert_eq!(response["requestId"], 1);
+
+        println!("IPC health-check response: {}", response);
+    }
+
+    #[test]
+    #[ignore] // Requires running continuum-core server with Kokoro model
+    fn test_ipc_voice_synthesize_binary_live() {
+        use std::io::Write;
+
+        let socket_path = "/tmp/continuum-core.sock";
+        let mut stream = std::os::unix::net::UnixStream::connect(socket_path)
+            .expect("Failed to connect to continuum-core socket");
+
+        // Send voice/synthesize request
+        let request =
+            r#"{"command":"voice/synthesize","text":"Hello world","voice":"af","requestId":2}"#;
+        stream.write_all(request.as_bytes()).unwrap();
+        stream.write_all(b"\n").unwrap();
+        stream.flush().unwrap();
+
+        // Read length-prefixed response (may be binary)
+        let mut len_buf = [0u8; 4];
+        std::io::Read::read_exact(&mut stream, &mut len_buf).unwrap();
+        let length = u32::from_be_bytes(len_buf) as usize;
+        assert!(length > 0, "Response should not be empty");
+
+        let mut payload = vec![0u8; length];
+        std::io::Read::read_exact(&mut stream, &mut payload).unwrap();
+
+        // Find \0 separator for binary frame
+        let sep_idx = payload.iter().position(|&b| b == 0);
+
+        if let Some(idx) = sep_idx {
+            // Binary response: JSON header + \0 + raw PCM
+            let json_bytes = &payload[..idx];
+            let pcm_bytes = &payload[idx + 1..];
+
+            let header: serde_json::Value = serde_json::from_slice(json_bytes).unwrap();
+            assert_eq!(header["success"], true);
+            assert_eq!(header["result"]["binary_pcm"], true);
+
+            let sample_rate = header["result"]["sample_rate"].as_u64().unwrap();
+            let num_samples = header["result"]["num_samples"].as_u64().unwrap();
+            let duration_ms = header["result"]["duration_ms"].as_u64().unwrap();
+
+            assert_eq!(sample_rate, 16000);
+            assert!(num_samples > 100, "Should have >100 samples");
+            assert!(duration_ms > 50, "Should be >50ms");
+            assert_eq!(
+                pcm_bytes.len(),
+                num_samples as usize * 2,
+                "PCM bytes should be 2 * num_samples"
+            );
+
+            // Verify PCM data is valid i16 audio (not all zeros)
+            let samples: Vec<i16> = pcm_bytes
+                .chunks_exact(2)
+                .map(|c| i16::from_le_bytes([c[0], c[1]]))
+                .collect();
+            let max_amp = samples.iter().map(|s| s.abs()).max().unwrap_or(0);
+            assert!(
+                max_amp > 100,
+                "Audio should not be silence, max amplitude: {}",
+                max_amp
+            );
+
+            println!(
+                "IPC voice/synthesize: {} samples, {}Hz, {}ms, {} bytes PCM, max amp: {}",
+                num_samples,
+                sample_rate,
+                duration_ms,
+                pcm_bytes.len(),
+                max_amp
+            );
+        } else {
+            // JSON-only response (likely an error)
+            let response: serde_json::Value = serde_json::from_slice(&payload).unwrap();
+            panic!("Expected binary response, got JSON: {}", response);
+        }
+    }
+}
+
+// ============================================================================
+// Server Main Loop
+// ============================================================================
+
+/// Ready-edge watch for the IPC server — flips `false → true` exactly
+/// once when the Unix socket is bound + chmod'd. Any consumer can
+/// `subscribe_ready()` to get a `watch::Receiver<bool>` and await the
+/// transition; subscribers added after the flip see the current `true`
+/// value on first `borrow_and_update`. Per the substrate concurrency
+/// doctrine: signals replace races. Same shape as
+/// `bevy_renderer::subscribe_ready` and `ServiceModule::ready_edge`.
+static IPC_READY: std::sync::OnceLock<tokio::sync::watch::Sender<bool>> =
+    std::sync::OnceLock::new();
+
+fn ipc_ready_tx() -> &'static tokio::sync::watch::Sender<bool> {
+    IPC_READY.get_or_init(|| tokio::sync::watch::channel(false).0)
+}
+
+/// Subscribe to the IPC server's ready edge. Returns a receiver that
+/// starts at `false` and flips to `true` exactly once when the Unix
+/// socket is bound + world-rw chmod'd. Replaces the prior oneshot
+/// parameter that had to be threaded through `start_server` — now any
+/// number of consumers can await the same edge without coordination
+/// at the call site.
+pub fn subscribe_ready() -> tokio::sync::watch::Receiver<bool> {
+    ipc_ready_tx().subscribe()
+}
+
+pub fn start_server(
+    socket_path: &str,
+    livekit_manager: Arc<crate::live::transport::bridge_client::LiveKitAgentManager>,
+    rt_handle: tokio::runtime::Handle,
+    memory_manager: Arc<crate::memory::PersonaMemoryManager>,
+    pressure_monitor: Arc<crate::system_resources::MemoryPressureMonitor>,
+    disk_pressure_monitor: Arc<crate::system_resources::DiskPressureMonitor>,
+    boot_mode: crate::runtime::BootMode,
+) -> std::io::Result<()> {
+    prepare_unix_socket_path(socket_path)?;
+
+    log_info!(
+        "ipc",
+        "server",
+        "Starting IPC server on {} (mode={})",
+        socket_path,
+        boot_mode.label()
+    );
+
+    // Load the model_registry BEFORE any ServiceModule is constructed.
+    // Several adapters (AnthropicAdapter, LlamaCppAdapter, …) read from
+    // `model_registry::global()` in their constructors — if init hasn't
+    // happened yet those panic at module registration time. Failure here
+    // is fatal: the registry is the single source of truth for model ids
+    // and a missing config is a boot-order / packaging bug, not a runtime
+    // condition we can recover from.
+    match crate::model_registry::init_global() {
+        Ok(reg) => log_info!(
+            "ipc",
+            "server",
+            "model_registry loaded: {} models across {} providers",
+            reg.models().count(),
+            reg.providers().count()
+        ),
+        Err(e) => panic!("failed to load model_registry: {e}"),
+    }
+
+    // Create modular runtime
+    log_info!("ipc", "server", "Initializing modular runtime...");
+    let runtime = Arc::new(Runtime::new());
+
+    // Phase 0: GPU Memory Manager (detect VRAM, create budgets)
+    let gpu_manager = Arc::new(GpuMemoryManager::detect());
+
+    // Provide GPU manager to TTS, renderer, and embedding subsystems for VRAM tracking
+    crate::live::audio::tts::set_gpu_manager(gpu_manager.clone());
+    crate::live::video::bevy_renderer::set_gpu_manager(gpu_manager.clone());
+    crate::modules::embedding::set_gpu_manager(gpu_manager.clone());
+
+    // Phase 1: HealthModule (stateless)
+    runtime.register(Arc::new(HealthModule::new()));
+
+    // ExternalWebviewAuthModule — OAuth 2.0 + PKCE via system browser.
+    // Landed in 26ab8c0ad; re-enabling after merge from feat/mac-docker-model-runner
+    // briefly restored m5's stub from before 26ab8c0ad landed.
+    runtime.register(Arc::new(ExternalWebviewAuthModule::new()));
+
+    // Phase 1: GpuModule (GPU stats + pressure IPC)
+    runtime.register(Arc::new(GpuModule::new(gpu_manager.clone())));
+
+    // ForgeModule (continuum#1164 Phase 4 stub — forge/run IPC).
+    // v1 returns a stub ForgeArtifact from a recipe; Phase 5+ wires the
+    // real foundry executor.
+    runtime.register(Arc::new(ForgeModule::new()));
+
+    // CargoModule (PERSONA-AS-DEVELOPER-GAP.md Priority 2 — Rust
+    // toolchain wrappers). Stateless; wraps cargo build/test
+    // subprocess invocations with --message-format=json parsing for
+    // structured errors/warnings + libtest output parsing for test
+    // counts + failure names.
+    runtime.register(Arc::new(CargoModule::new()));
+
+    // EventsModule (L1-1 — event-class declaration registry).
+    // Spec: GRID-BUS-ARCHITECTURE §2.2 (continuum#1439).
+    // Exposes events/declare-class, events/get-class, events/list-classes,
+    // events/resolve-channel. The TS thin shim at src/system/events/shared/
+    // EventClass.ts reads through this; the L1-2 AircEventTransport will
+    // consult resolve-channel at emit time.
+    runtime.register(Arc::new(EventsModule::new()));
+
+    // Phase 1: PersonaAllocatorModule (hardware-aware persona allocation)
+    runtime.register(Arc::new(PersonaAllocatorModule::new(gpu_manager.clone())));
+
+    // Phase 1: SystemResourceModule (CPU + memory + process monitoring IPC)
+    let system_monitor = Arc::new(SystemResourceMonitor::new());
+    let system_resource_module = Arc::new(SystemResourceModule::new(system_monitor));
+    system_resource_module.set_pressure_monitor(pressure_monitor.clone());
+    runtime.register(system_resource_module);
+
+    // Phase 2 of #1239 (continuum#1299 PR-1): PressureBrokerModule.
+    // Brings the cross-pool PressureBroker online — instantiates the
+    // singleton, pre-registers DockerTierPool as a ResourcePool, and
+    // hands the broker's `relieve()` tick to the runtime's standard
+    // start_tick_loops() machinery (cadence = BrokerConfig.tick_interval,
+    // default 5s, matching DMR_TICK_INTERVAL). Other pools (VRAM, KV
+    // cache) attach via `module.broker().register(...)` from their own
+    // construction sites. Observer-only in PR-1: no commands routed
+    // here yet. PR-2 of #1299 adds `system/pressure-broker-state` IPC;
+    // PR-3 wires the chat-substrate alert sink.
+    runtime.register(Arc::new(
+        crate::modules::pressure_broker_module::PressureBrokerModule::new(),
+    ));
+    // Register DiskPressureMonitor with the broker as a signal-only
+    // ResourcePool — `evict_at_least` returns 0 (the monitor doesn't
+    // own files), but the broker emits typed PressureAlert events on
+    // tier transitions, surfacing disk pressure on the same wire +
+    // dashboard as memory + Docker + LoRA + KV pools. Concrete disk
+    // pools (genome cache, probe JSONL rotation, model registry) will
+    // register their own ResourcePool impls in follow-up slices and
+    // the broker will drive eviction against THOSE. Per task #88
+    // "broker pool" half.
+    let broker_arc = runtime
+        .registry()
+        .module_of_type::<crate::modules::pressure_broker_module::PressureBrokerModule>()
+        .and_then(|m| {
+            m.as_any()
+                .downcast_ref::<crate::modules::pressure_broker_module::PressureBrokerModule>()
+                .map(|bm| bm.broker())
+        });
+    if let Some(broker) = broker_arc {
+        broker.register(
+            disk_pressure_monitor.clone() as Arc<dyn crate::paging::pool::ResourcePool>
+        );
+        broker.register(
+            pressure_monitor.clone() as Arc<dyn crate::paging::pool::ResourcePool>
+        );
+
+        // Register a `FilesystemTierPool` for the probe JSONL
+        // rotation dir — closes the broker → pool → real eviction
+        // loop end-to-end. When disk pressure crosses the broker's
+        // act_above threshold, the broker walks the registered pools
+        // and asks each to free bytes; this pool actually does it
+        // (deletes oldest probe files until want_bytes are freed).
+        //
+        // The probe sink's own `tracing_appender::rolling` handles
+        // the time axis (daily rotation, 7-day retention); this pool
+        // handles the space-pressure axis (broker-driven eviction
+        // when disk is hot). Both bounds active simultaneously.
+        //
+        // Soft cap = 500 MB. Picked to be larger than a typical
+        // 7-day probe window (probably < 100 MB even under heavy
+        // capture) but bounded so a runaway sprinkle / leak gets
+        // visible to the broker before disk fills.
+        const PROBE_POOL_SOFT_CAP_BYTES: u64 = 500 * 1024 * 1024;
+        if let Some(home) = dirs::home_dir() {
+            let probe_dir = home.join(".continuum/jtag/logs/probes");
+            broker.register(Arc::new(crate::paging::FilesystemTierPool::new(
+                "probe-jsonl",
+                probe_dir,
+                PROBE_POOL_SOFT_CAP_BYTES,
+            )) as Arc<dyn crate::paging::pool::ResourcePool>);
+            log_info!(
+                "ipc",
+                "server",
+                "FilesystemTierPool 'probe-jsonl' registered with PressureBroker (soft cap 500 MB)"
+            );
+        } else {
+            log_error!(
+                "ipc",
+                "server",
+                "no HOME — probe-jsonl FilesystemTierPool not registered"
+            );
+        }
+
+        log_info!(
+            "ipc",
+            "server",
+            "Disk + Memory pressure monitors registered as ResourcePools ('disk-root', 'sys-memory') with PressureBroker"
+        );
+    } else {
+        log_error!(
+            "ipc",
+            "server",
+            "PressureBrokerModule not retrievable after registration — pressure monitors won't appear on the broker"
+        );
+    }
+
+    // Runtime-owned lease ledger for CPU/GPU/memory/disk/network admission.
+    // Subsystems ask this broker for capacity instead of keeping private caps.
+    runtime.register(Arc::new(
+        crate::modules::resource_broker::ResourceBrokerModule::new(),
+    ));
+
+    // Phase 1: InferenceModule — exposes inference/capacity so TS side
+    // (InferenceCoordinator) reads a single Rust source of truth instead
+    // of duplicating the RAM formula. See issue #887.
+    runtime.register(Arc::new(InferenceModule::new()));
+
+    // Phase 5: InferenceLlmModule (MODULE-CATALOG §II `inference-llm`)
+    // — the substrate's local-LLM generation surface. Subscribes to
+    // inference/llm/request commands, returns InferenceComplete +
+    // FirstTokenEmitted bundles. Stub-backed in PR-2; adapter-routed
+    // in PR-4 (#1395) when constructed via with_adapter. PR-5 (this
+    // registration) wires the module into the runtime so it's
+    // callable from the cognition path — no Runtime adapter wiring
+    // yet (caller construction option lands when persona-cognition
+    // composes via with_bus_and_adapter).
+    //
+    // Shipped via the .new() constructor (bus-less, stub-backed)
+    // so this PR doesn't bind us to a specific LlamaCppAdapter
+    // initialization story; downstream PRs swap construction when
+    // the LlamaCppAdapter init lifecycle is integrated with the
+    // Runtime startup phase.
+    runtime.register(Arc::new(
+        crate::inference::llm_module_service::InferenceLlmModule::new(),
+    ));
+
+    // Lane C PR-3: VddModule — `vdd/report` reads structured
+    // VDD records from `~/.continuum/vdd/<sha>/<scenario>/record.jsonl`
+    // (written by the harness via `ArtifactWriter`) and emits a
+    // machine-readable report. Replaces "tail the log and grep
+    // for first-token-ms" with a single command return. PR-body
+    // VDD claims become `./jtag vdd/report --git_sha=<sha>`,
+    // not pasted terminal text.
+    runtime.register(Arc::new(crate::modules::vdd::VddModule::new()));
+
+    // Shared state for per-persona cognition (unified: engine + inbox + rate limiter + sleep + adapters + genome)
+    let rag_engine = Arc::new(RagEngine::new());
+    let cognition_state = Arc::new(
+        CognitionState::new(rag_engine.clone())
+            .with_gpu_manager(gpu_manager.clone())
+            .with_module_registry(runtime.registry_arc()),
+    );
+    let personas = cognition_state.personas.clone();
+    runtime.register(Arc::new(CognitionModule::new(cognition_state)));
+
+    // Channel module shares the unified personas map for fast-path decisions
+    let channel_registries: Arc<DashMap<Uuid, (ChannelRegistry, PersonaState)>> =
+        Arc::new(DashMap::new());
+    let channel_state = Arc::new(ChannelState::from_existing(
+        channel_registries.clone(),
+        personas,
+    ));
+    runtime.register(Arc::new(ChannelModule::new(channel_state)));
+
+    // Phase 3: ModelsModule (stateless, async HTTP discovery)
+    runtime.register(Arc::new(ModelsModule::new()));
+
+    // Phase 3: MemoryModule (wraps PersonaMemoryManager)
+    let memory_state = Arc::new(MemoryState::new(memory_manager.clone()));
+    runtime.register(Arc::new(MemoryModule::new(memory_state)));
+
+    // Phase 3: RagModule (batched RAG composition with parallel Rayon loading)
+    let rag_state = Arc::new(RagState::new(memory_manager.clone()));
+    runtime.register(Arc::new(RagModule::new(rag_state)));
+
+    // Phase 3: VoiceModule (wraps VoiceService, CallManager, AudioBufferPool)
+    let voice_service = Arc::new(crate::live::session::voice_service::VoiceService::new());
+    let audio_pool = Arc::new(crate::live::audio::buffer::AudioBufferPool::new());
+    let voice_state = Arc::new(VoiceState::new(
+        voice_service.clone(),
+        livekit_manager.clone(),
+        audio_pool.clone(),
+    ));
+    runtime.register(Arc::new(VoiceModule::new(voice_state)));
+
+    // Phase 3: CodeModule (wraps file engines and shell sessions per-persona)
+    let file_engines: Arc<DashMap<String, FileEngine>> = Arc::new(DashMap::new());
+    let shell_sessions: Arc<DashMap<String, ShellSession>> = Arc::new(DashMap::new());
+    let code_state = Arc::new(CodeState::new(
+        file_engines.clone(),
+        shell_sessions.clone(),
+        rt_handle.clone(),
+    ));
+    runtime.register(Arc::new(CodeModule::new(code_state)));
+
+    // Phase 4: DataModule (database-agnostic storage via ORM adapters)
+    // DB path is passed per-request from TypeScript - NO defaults
+    runtime.register(Arc::new(DataModule::new()));
+
+    // Phase 4a: LoggerModule (absorbs standalone logger worker)
+    // Provides log/write, log/ping via main socket
+    runtime.register(Arc::new(LoggerModule::new()));
+
+    // Phase 4b: SearchModule (absorbs standalone search worker)
+    // Provides search/execute, search/vector, search/list, search/params
+    runtime.register(Arc::new(SearchModule::new()));
+
+    // Phase 4c: EmbeddingModule (absorbs standalone embedding worker)
+    // Provides embedding/generate, embedding/model/{load,list,info,unload}
+    runtime.register(Arc::new(EmbeddingModule::new()));
+
+    // RuntimeModule: Exposes metrics and control for AI-driven system management (Ares)
+    // Provides runtime/metrics/{all,module,slow}, runtime/list
+    runtime.register(Arc::new(
+        crate::modules::runtime_control::RuntimeModule::new(),
+    ));
+
+    // MCPModule: Dynamic tool discovery for MCP servers
+    // Provides mcp/list-tools, mcp/search-tools, mcp/tool-help
+    runtime.register(Arc::new(crate::modules::mcp::MCPModule::new()));
+
+    // AgentModule: Autonomous AI coding agents with structured tool calling
+    // Provides agent/start, agent/status, agent/stop, agent/list, agent/wait
+    runtime.register(Arc::new(AgentModule::new(rt_handle.clone())));
+
+    // AircModule: Rust-native AIRC queue/flywheel primitives.
+    // Provides airc/queue-scan without routing through Node/TypeScript.
+    // Discovery: `AircModule::discover_and_construct` asks `airc ipc-
+    // endpoint` (airc#1095) for the canonical daemon socket and auto-
+    // installs airc if missing — the previous derive-from-home scheme
+    // drifted and broke headless boot. Uses rt_handle.block_on because
+    // start_server is sync but discovery is async; we're on the main
+    // bootstrap thread, not inside a tokio task, so blocking here is
+    // safe and gates module registration on the discovery result.
+    //
+    // Outer 180s timeout caps total boot stall. Inner subprocess
+    // waits have their own per-call deadlines (5s socket discovery,
+    // 5s peer_id status, 120s auto-install) but the OUTER call has
+    // no overall budget without this wrapper — a wedged daemon
+    // could theoretically chain stalls beyond what individual
+    // deadlines catch. 180s covers worst-case auto-install + a few
+    // discovery rounds. Reviewer-defect-driven (continuum #1507
+    // finding 6); substrate-is-a-good-citizen "predictable startup"
+    // non-negotiable.
+    const AIRC_DISCOVERY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(180);
+    let discovery = rt_handle.block_on(async {
+        match tokio::time::timeout(AIRC_DISCOVERY_TIMEOUT, crate::airc::discover()).await {
+            Ok(d) => d,
+            Err(_) => {
+                tracing::error!(
+                    timeout_secs = AIRC_DISCOVERY_TIMEOUT.as_secs(),
+                    "AIRC discovery exceeded outer timeout — promoting to Unreachable."
+                );
+                crate::airc::AircDiscovery::Unreachable {
+                    reason: crate::airc::DiscoveryFailure::EndpointCommandFailed(format!(
+                        "discovery did not return within {}s — substrate is unresponsive",
+                        AIRC_DISCOVERY_TIMEOUT.as_secs()
+                    )),
+                }
+            }
+        }
+    });
+    tracing::info!(
+        kind = discovery.kind(),
+        reason = ?discovery.reason(),
+        "AIRC discovery complete"
+    );
+    let airc_module = Arc::new(AircModule::from_discovery(&discovery));
+    let persona_bootstrap_deps = airc_module
+        .daemon_socket()
+        .map(|p| p.to_path_buf())
+        .zip(airc_module.default_room());
+    let persona_bootstrap_room_name = airc_module.default_room_name().map(|s| s.to_string());
+    runtime.register(airc_module);
+
+    // A.2 [[no-fallbacks-ever]]: in `FullCitizen` or `FailFast` mode,
+    // the substrate REFUSES to boot if AIRC isn't `Healthy` — there's
+    // no path where degraded discovery silently substitutes
+    // inference-only mode (Slice A's R2#2 violation). Operator must
+    // explicitly opt into `--mode=inference-only` to allow degraded
+    // boot. The seed-presence heuristic Slice A used is gone.
+    if boot_mode.requires_persona_hosting() && !discovery.can_host_personas() {
+        let reason_msg = discovery
+            .reason()
+            .map(|r| format!("{}", r))
+            .unwrap_or_else(|| "AIRC discovery did not produce Healthy state".to_string());
+        tracing::error!(
+            mode = boot_mode.label(),
+            discovery_kind = discovery.kind(),
+            reason = %reason_msg,
+            "Refusing to boot: --mode={} requires AIRC Healthy, but discovery is {}. \
+             Resolve the AIRC issue (see error above) OR re-launch with \
+             --mode=inference-only to opt into degraded operation.",
+            boot_mode.label(),
+            discovery.kind()
+        );
+        return Err(std::io::Error::other(format!(
+            "AIRC discovery {} but --mode={} requires Healthy. \
+             Reason: {}. Resolve AIRC or use --mode=inference-only ([[no-fallbacks-ever]])",
+            discovery.kind(),
+            boot_mode.label(),
+            reason_msg
+        )));
+    }
+
+    // PersonaInstanceManagerModule: owns the live PersonaAircRuntime
+    // registry — the kernel's roster of citizens in The Grid. Exposes
+    // `persona/instances/bootstrap`, `persona/instances/list`,
+    // `persona/instances/get`. Only registered when AIRC discovery
+    // produced both a daemon socket AND a default room — without
+    // either, citizens have nowhere to attach. The degraded path
+    // logs and skips registration so the rest of the server boots;
+    // the operator's remedy is the same as for AIRC discovery
+    // failures (install airc / run `airc room <name>`).
+    if let Some((daemon_socket, default_room)) = persona_bootstrap_deps {
+        let continuum_root = crate::modules::persona_instance_manager::resolve_continuum_root();
+        let daemon_socket_for_rag_inspect = daemon_socket.clone();
+        let registry = crate::persona::PersonaAircRuntimeRegistry::new();
+        let instance_manager = Arc::new(
+            crate::modules::persona_instance_manager::PersonaInstanceManagerModule::new(
+                registry,
+                daemon_socket,
+                default_room,
+                persona_bootstrap_room_name.clone(),
+                continuum_root,
+            ),
+        );
+        runtime.register(instance_manager.clone());
+        log_info!(
+            "ipc",
+            "server",
+            "PersonaInstanceManagerModule registered — citizens can be bootstrapped via \
+             `persona/instances/bootstrap`"
+        );
+
+        // ── persona/rag-inspect — RAG introspection callable from any AI ──
+        //
+        // FilesystemPersonaResolver reads the persona's seed.json + attaches
+        // via airc_lib::Airc::attach_as using the same continuum_root +
+        // daemon_socket the instance manager just used. The module exposes
+        // the `persona/rag-inspect` command so sentinel personas, Claude,
+        // and any other AI can `Commands.execute('persona/rag-inspect', {
+        // persona: 'Paige' })` to honestly see what Paige's RAG layer would
+        // surface right now. Per [[observability-is-half-the-architecture]].
+        //
+        // chain_inference path stays RAG-only here (default_adapter=None)
+        // until the substrate has an Arc-shareable inference adapter pool
+        // (the current AdapterRegistry is Box-based + can't hand out Arcs
+        // without a separate refactor). The chained variant is exercised
+        // by the existing unit tests; production wiring of the inference
+        // probe is a follow-up.
+        let rag_inspect_resolver = std::sync::Arc::new(
+            crate::modules::persona_rag_inspect_filesystem::FilesystemPersonaResolver::new(
+                crate::modules::persona_instance_manager::resolve_continuum_root(),
+                daemon_socket_for_rag_inspect,
+            ),
+        );
+        let rag_inspect_module = std::sync::Arc::new(
+            crate::modules::persona_rag_inspect::PersonaRagInspectModule::new(
+                rag_inspect_resolver,
+            ),
+        );
+        runtime.register(rag_inspect_module);
+        log_info!(
+            "ipc",
+            "server",
+            "PersonaRagInspectModule registered — `persona/rag-inspect` available"
+        );
+
+        // The Grid's first heartbeat at server boot: resume any
+        // existing citizens from disk + ensure at least one is
+        // present. ResumeOrMintProvider scans
+        // `<continuum_root>/personas/*/seed.json`; for each parsed
+        // seed it yields a ResumedFromDisk intent (airc-lib will load
+        // the existing keypair from identity.key when bootstrap runs
+        // — same persona, same peer_id, across restarts). If no
+        // citizens are on disk, it floor-mints one fresh per the
+        // `min_personas = 1` policy below.
+        //
+        // Fired as an async task off the IPC bootstrap thread so the
+        // server-ready signal isn't blocked on daemon round-trips.
+        // Failure of any single bootstrap is non-fatal — log + move
+        // on; the operator can re-fire via the
+        // `persona/instances/bootstrap` command once the underlying
+        // issue (disk full, daemon down, corrupted seed) is resolved.
+        // ── Slice 13: substrate-managed persona hosting ──────────────
+        //
+        // Composes slices 7-12 into the production boot path:
+        //
+        //   PersonaSpawnerModule::plan_for_tier (slice 7)
+        //     → bootstrap_planned (slice 8): mints/resumes airc identities
+        //     → materialize_adapters (slice 9): builds inference adapters
+        //     → spawn_persona_service (slice 12): runs the serve_persona_loop
+        //     → PersonaAircRuntimeRegistry::attach_service_loop (slice 13 Q3):
+        //       parks the JoinHandle in the slot alongside the runtime
+        //
+        // BEFORE slice 13: this boot loop called `bootstrap_one` per
+        // persona and logged a welcome — the persona was reachable via
+        // `airc peers` but never responded. Mute citizens.
+        //
+        // AFTER slice 13 (this code): each planned persona gets her
+        // serve_persona_loop running on rt_handle, with the JoinHandle
+        // owned by the registry slot for orderly shutdown.
+        //
+        // Per the design doc HEADLESS-PERSONA-HOST-LOOP.md (PR #1510):
+        //   - P2 (in effect): plan_for_tier returns single Helper until
+        //     slice 14 lands role-in-seed.json.
+        //   - Q1 (applied): bootstrap_planned takes &Registry.
+        //   - Q3 (applied): single registry keyspace owns runtime +
+        //     service loop.
+        //   - P1 (deferred): tokio::signal::ctrl_c wiring lands in a
+        //     follow-up alongside the Runtime::shutdown caller.
+        //     Slot-level shutdown_slot is available via the registry
+        //     and exercised by the persona/instances/* IPC commands.
+        //   - Q2 (deferred): detect_host_capability needs a production
+        //     GpuMonitor constructor that doesn't exist yet (see TODO
+        //     below). For now slice 13 uses CpuOnly + Compat, which
+        //     produces the LCD Qwen2.5-0.5B Helper for all tiers. When
+        //     the GpuMonitor construction lands, swap the hardcoded
+        //     tier for `detect_host_capability(&gpu_monitor, &system_info)`.
+        //   - P3 (deferred): ResourceBroker.acquire admission for each
+        //     adapter spawn is its own slice. Current LCD case (1
+        //     persona × ~500 MiB GGUF) is well within all supported
+        //     tiers' headroom; broker admission becomes load-bearing
+        //     when multi-persona returns in slice 14.
+        // Slice 13.5: the persona spawn pipeline lives in
+        // `PersonaSpawnSupervisor` now. IPC boot just constructs
+        // it and calls `spawn_all` — every previously-inline
+        // composition step (bootstrap_planned, materialize_adapters,
+        // spawn_persona_service, attach_service_loop, orderly
+        // drain, BootSummary) is encapsulated in the supervisor and
+        // unit-testable in isolation.
+        //
+        // TODO #52: replace `CpuOnly + Compat` with
+        // `detect_host_capability(&gpu_monitor, &system_info)` once
+        // a production GpuMonitor constructor exists.
+        let supervisor = crate::persona::host::PersonaSpawnSupervisor::new(
+            crate::persona::spawner_module::PersonaSpawnerModule::new(
+                crate::cognition::model_resolver::types::HwCapabilityTier::CpuOnly,
+                crate::persona::hw_tier_descriptor::HwTierCategory::Compat,
+            ),
+            instance_manager.clone(),
+            std::sync::Arc::new(crate::persona::supervisor::LlamaCppPersonaAdapterFactory),
+            "default",
+            crate::model_registry::global(),
+            rt_handle.clone(),
+        );
+        let continuum_root_for_boot =
+            crate::modules::persona_instance_manager::resolve_continuum_root();
+        rt_handle.spawn(async move {
+            use crate::persona::resume_or_mint_provider::ResumeOrMintProvider;
+            let mut provider =
+                match ResumeOrMintProvider::new(&continuum_root_for_boot, 1).await {
+                    Ok(p) => p,
+                    Err(e) => {
+                        tracing::warn!(
+                            error = %e,
+                            "ResumeOrMintProvider construction failed — server up, no \
+                             citizens online. Resolve continuum_root permissions + \
+                             restart, or fire `persona/instances/bootstrap` manually."
+                        );
+                        return;
+                    }
+                };
+            let summary = supervisor.spawn_all(&mut provider).await;
+            tracing::info!(
+                hosted = summary.hosted,
+                failed = summary.failed(),
+                "🌐 Substrate boot composition complete (slice 13.5)"
+            );
+        });
+    } else {
+        // A.2: by this point the mode-driven gate above has already
+        // returned `Err` if persona hosting was required and discovery
+        // failed. Reaching here means `--mode=inference-only` — the
+        // operator explicitly opted into degraded operation. Single
+        // info-level line tells them what's missing without scaring.
+        tracing::info!(
+            mode = boot_mode.label(),
+            discovery_kind = discovery.kind(),
+            "PersonaInstanceManagerModule not registered (--mode=inference-only, AIRC \
+             discovery {}). Substrate continues for inference / embedding / forge / \
+             cargo / code. Resolve AIRC and re-launch in --mode=full-citizen to host \
+             personas.",
+            discovery.kind()
+        );
+    }
+
+    // AIProviderModule: Unified AI provider for cloud and local inference
+    // Provides ai/generate, ai/providers/list, ai/providers/health
+    // Routes to DeepSeek, Anthropic, OpenAI, Together, Groq, Fireworks, XAI, Google
+    runtime.register(Arc::new(AIProviderModule::with_gpu_manager(
+        gpu_manager.clone(),
+    )));
+
+    // SentinelModule: Concurrent, fault-tolerant build/task execution
+    // Provides sentinel/execute, sentinel/status, sentinel/cancel, sentinel/list
+    // And sentinel/logs/list, sentinel/logs/read, sentinel/logs/tail
+    // Process isolation via child processes - safe for Xcode, cargo, etc.
+    let sentinel_module = Arc::new(SentinelModule::new());
+    runtime.register(sentinel_module.clone());
+    crate::modules::sentinel::register_for_shutdown(sentinel_module);
+
+    // ToolParsingModule: Stateless tool call parsing + correction
+    // Provides tool-parsing/parse, tool-parsing/correct, tool-parsing/register-tools,
+    // tool-parsing/decode-name, tool-parsing/encode-name
+    // Replaces 784 lines of TypeScript ToolFormatAdapter hierarchy
+    runtime.register(Arc::new(ToolParsingModule::new()));
+
+    // PlasticityModule: Adaptive neural plasticity optimization engine
+    // Provides plasticity/analyze, plasticity/compact, plasticity/topology
+    // Per-head utilization-aware pruning, mixed-precision quantization, GQA-aware
+    runtime.register(Arc::new(crate::modules::plasticity::PlasticityModule::new()));
+
+    // AvatarModule: Bevy 3D avatar snapshots for profile pictures
+    // Provides avatar/snapshot — allocates render slot, captures frame, saves PNG
+    runtime.register(Arc::new(AvatarModule::new()));
+
+    // DatasetModule: Training dataset import and management
+    // Provides dataset/import-csv, dataset/import-realclasseval, dataset/list, dataset/info
+    runtime.register(Arc::new(DatasetModule::new()));
+
+    // VisionModule: Content-addressed cache + event notification for vision descriptions
+    // Provides vision/description-get, vision/description-put, vision/description-status,
+    // vision/cache-stats, vision/cache-warm, vision/cache-evict
+    runtime.register(Arc::new(VisionModule::new()));
+
+    // GridModule: inter-node transport + routing (Tailscale, Reticulum)
+    let grid_dir = dirs::home_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join(".continuum")
+        .join("grid");
+    let local_has_gpu = gpu_manager.total_vram_bytes() > 0;
+    let local_vram_mb = gpu_manager.total_vram_bytes() / (1024 * 1024);
+    // Keep a handle on the GridModule's state so we can build the
+    // GridInterceptor below. The interceptor needs the same router +
+    // node registry + transports the GridModule itself runs on; using
+    // the public `state()` getter avoids duplicating any of that.
+    let grid_module = Arc::new(GridModule::new(grid_dir, local_has_gpu, local_vram_mb));
+    let grid_state = grid_module.state();
+    runtime.register(grid_module);
+
+    // Initialize modules (runs async init in sync context)
+    rt_handle.block_on(async {
+        if let Err(e) = runtime.initialize().await {
+            log_error!("ipc", "server", "Runtime initialization failed: {}", e);
+        }
+    });
+
+    // Start periodic tick loops for modules that declare a tick_interval.
+    // Replaces TypeScript's per-persona setIntervals (task polling, self-task gen, training checks).
+    // Tick loops run as tokio tasks — they're lightweight and don't block the IPC thread.
+    let _tick_handles = rt_handle.block_on(async { runtime.start_tick_loops() });
+
+    // Verify the required-module set for THIS (discovery, mode) pair.
+    // A.2 makes the set conditional — `persona_instance_manager` and
+    // `persona-rag-inspect` are only required when AIRC is `Healthy`
+    // AND mode requires persona hosting. Slice A's flat list put
+    // those in the unconditional set, which broke `--mode=inference-only`
+    // (R1#1 BLOCK). Conditional dispatch eliminates the contradiction
+    // structurally.
+    if let Err(e) = runtime.verify_registration(&discovery, boot_mode) {
+        log_error!("ipc", "server", "{}", e);
+        return Err(std::io::Error::other(e));
+    }
+
+    log_info!(
+        "ipc",
+        "server",
+        "Modular runtime ready with {} modules: {:?}",
+        runtime.registry().list_modules().len(),
+        runtime.registry().list_modules()
+    );
+
+    // Initialize global CommandExecutor for all spawned processes (sentinels, agents, etc.)
+    // This allows ANY async task to execute ANY command (Rust or TypeScript)
+    // TypeScript commands route via Unix socket to /tmp/jtag-command-router.sock
+    //
+    // Interceptor chain order (per MODULE-ARCHITECTURE.md §5): airc
+    // sits at the head so explicit aircPeer/aircRoom targeting beats
+    // grid's capability-based remote routing. grid sits next so
+    // routingHint / nodeId / capability-based commands hop to a peer
+    // before the kernel tries local Rust dispatch. Both interceptors
+    // decline cleanly when their routing decision is "local," so
+    // existing commands see zero behavior change.
+    let interceptors: Vec<std::sync::Arc<dyn crate::runtime::CommandInterceptor>> = vec![
+        std::sync::Arc::new(crate::runtime::AircInterceptor::new()),
+        std::sync::Arc::new(crate::runtime::GridInterceptor::new(grid_state)),
+    ];
+    crate::runtime::init_executor_with_interceptors(runtime.registry_arc(), interceptors);
+
+    let listener = UnixListener::bind(socket_path)?;
+    // Make the socket world-rw so callers running under a different UID
+    // than the server can connect. Concrete failure (#1008): on Windows
+    // WSL2 + Docker Desktop, continuum-core runs as root inside the
+    // container and binds the socket; the host-side jtag (running as
+    // the WSL user, uid 1000) gets EACCES connecting to the root-owned
+    // socket. Mac/Linux dev mode (server + caller both run as the same
+    // user) is unaffected. 0o666 is appropriate for an IPC substrate
+    // socket that lives in a path the caller can already see — same
+    // blast radius as anything reading /tmp. Failing-loud (no `?` here
+    // would suppress the error; let it propagate) is intentional per
+    // the global "evidence is for the debugger" rule. Caught live by
+    // continuum-b69f 2026-05-02 during Carl-OOTB Windows Phase 4.
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(socket_path, std::fs::Permissions::from_mode(0o666))?;
+    }
+
+    // Socket is bound + world-rw chmod'd. Fire the ready watch so any
+    // consumer (main.rs awaiting boot completion, future subsystems
+    // wanting to know when IPC is up) observes the false→true edge.
+    // The watch supersedes the previous oneshot parameter — any number
+    // of late or eager subscribers can attach via `subscribe_ready()`.
+    let _ = ipc_ready_tx().send(true);
+    crate::probe!(
+        class = "ready.observed",
+        module = "ipc-server",
+        socket = socket_path
+    );
+
+    let state = Arc::new(ServerState::new_with_shared_state(
+        rt_handle,
+        memory_manager,
+        runtime,
+        channel_registries,
+        rag_engine,
+        voice_service,
+        audio_pool,
+        file_engines,
+        shell_sessions,
+        gpu_manager,
+    ));
+
+    log_info!("ipc", "server", "IPC server ready");
+
+    // Optional TCP listener — exposes the same IPC protocol over TCP for
+    // callers that can't reach a Unix socket (containerized node-server on
+    // Mac, where the Unix socket lives on the host outside the Docker VM
+    // boundary). Set CONTINUUM_CORE_TCP=<port> (typically 9100) to enable.
+    //
+    // Bind address: CONTINUUM_CORE_BIND env, default 127.0.0.1 (safe —
+    // loopback only). Mac Option B install.sh sets 0.0.0.0 explicitly
+    // because Docker Desktop's `host.docker.internal` resolves to the
+    // host's docker-bridge IP (~192.168.65.254), NOT to 127.0.0.1 — a
+    // loopback-bound listener is unreachable from containers. Binding
+    // 0.0.0.0 accepts on the docker bridge; Mac's application firewall
+    // blocks LAN inbound for unsigned dev binaries by default, so the
+    // exposure stays local in practice. Explicit env-driven choice beats
+    // hidden platform detection.
+    //
+    // Unix socket remains the primary path — same binary, same server state,
+    // same handle_client code via the IpcStream trait. TCP is additive.
+    if let Ok(tcp_port_str) = std::env::var("CONTINUUM_CORE_TCP") {
+        if let Ok(port) = tcp_port_str.parse::<u16>() {
+            if port > 0 {
+                let bind_host = std::env::var("CONTINUUM_CORE_BIND")
+                    .unwrap_or_else(|_| "127.0.0.1".to_string());
+                let bind_addr = format!("{}:{}", bind_host, port);
+                match TcpListener::bind(&bind_addr) {
+                    Ok(tcp_listener) => {
+                        log_info!(
+                            "ipc",
+                            "server",
+                            "TCP listener ready on {} (for container callers via host.docker.internal)",
+                            bind_addr
+                        );
+                        let tcp_state = state.clone();
+                        std::thread::spawn(move || {
+                            for stream in tcp_listener.incoming() {
+                                match stream {
+                                    Ok(stream) => {
+                                        let state = tcp_state.clone();
+                                        std::thread::spawn(move || {
+                                            if let Err(e) = handle_client(stream, state) {
+                                                log_error!(
+                                                    "ipc",
+                                                    "server",
+                                                    "TCP client error: {}",
+                                                    e
+                                                );
+                                            }
+                                        });
+                                    }
+                                    Err(e) => {
+                                        log_error!("ipc", "server", "TCP accept error: {}", e);
+                                    }
+                                }
+                            }
+                        });
+                    }
+                    Err(e) => {
+                        log_error!(
+                            "ipc",
+                            "server",
+                            "TCP listener failed to bind {}: {}",
+                            bind_addr,
+                            e
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    // Periodic memory leak reporter — logs RSS + top leakers every 10s
+    // Also acts as OOM guard: exits gracefully before OOM kills us ungracefully.
+    // Limit is 80% of system RAM (not a fixed 4GB) — scales from an 8GB MacBook
+    // Air to a 192GB workstation without false kills. The old 4GB limit was killing
+    // the process on 48GB machines where 5.6GB RSS is perfectly normal (whisper
+    // 1.6GB + ORT embedding runtime 1.8GB one-time alloc + working set).
+    let mem_rt = state.rt_handle.clone();
+    mem_rt.spawn(async {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(10));
+        let system_ram_mb = {
+            #[cfg(target_os = "macos")]
+            {
+                use std::process::Command;
+                Command::new("sysctl")
+                    .args(["-n", "hw.memsize"])
+                    .output()
+                    .ok()
+                    .and_then(|o| String::from_utf8(o.stdout).ok())
+                    .and_then(|s| s.trim().parse::<u64>().ok())
+                    .map(|bytes| bytes / (1024 * 1024))
+                    .unwrap_or(8192) // fallback 8GB
+            }
+            #[cfg(target_os = "linux")]
+            {
+                std::fs::read_to_string("/proc/meminfo")
+                    .ok()
+                    .and_then(|s| {
+                        s.lines()
+                            .find(|l| l.starts_with("MemTotal:"))
+                            .and_then(|l| l.split_whitespace().nth(1))
+                            .and_then(|kb| kb.parse::<u64>().ok())
+                            .map(|kb| kb / 1024)
+                    })
+                    .unwrap_or(8192)
+            }
+            #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+            { 8192u64 }
+        };
+        // 80% of system RAM — aggressive enough to catch real leaks,
+        // generous enough not to false-kill on big machines.
+        let max_rss_mb: u64 = (system_ram_mb * 80) / 100;
+        eprintln!(
+            "[MEMGUARD] Memory guard: system={}MB, limit={}MB (80%)", system_ram_mb, max_rss_mb
+        );
+        loop {
+            interval.tick().await;
+            dump_memory_report();
+            let rss = current_rss_mb();
+            if rss > max_rss_mb {
+                eprintln!(
+                    "[MEMLEAK] FATAL: RSS {}MB exceeds {}MB limit (80% of {}MB system RAM) — \
+                     exiting gracefully to avoid OOM. Restart with: npm start. Fix tracked in #603.",
+                    rss, max_rss_mb, system_ram_mb
+                );
+                // Give time for the message to flush
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                std::process::exit(1);
+            }
+        }
+    });
+
+    // Accept connections (event-driven - sleeps until connection)
+    for stream in listener.incoming() {
+        match stream {
+            Ok(stream) => {
+                let state = state.clone();
+
+                // Spawn thread for concurrent handling
+                std::thread::spawn(move || {
+                    if let Err(e) = handle_client(stream, state) {
+                        log_error!("ipc", "server", "Client error: {}", e);
+                    }
+                });
+            }
+            Err(e) => {
+                log_error!("ipc", "server", "Connection error: {}", e);
+            }
+        }
+    }
+
+    Ok(())
+}

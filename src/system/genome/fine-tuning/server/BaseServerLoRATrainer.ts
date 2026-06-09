@@ -18,7 +18,7 @@ import type {
 import { AdapterPackage, type AdapterPackageManifest, type QuantizationInfo } from '../../server/AdapterPackage';
 import type { CompactionManifest } from '../../shared/AdapterPackageTypes';
 import type { TrainingMetadata } from '../../entities/GenomeLayerEntity';
-import { RustCoreIPCClient } from '../../../../workers/continuum-core/bindings/RustCoreIPC';
+import { RustCoreIPCClient } from '../../../../../core/continuum-core/bindings/RustCoreIPC';
 import * as path from 'path';
 import * as fs from 'fs';
 import * as os from 'os';

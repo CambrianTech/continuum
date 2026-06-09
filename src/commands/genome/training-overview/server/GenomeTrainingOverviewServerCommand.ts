@@ -14,8 +14,8 @@ import { DataList } from '@commands/data/list/shared/DataListTypes';
 import { GenomeLayers } from '@commands/genome/layers/shared/GenomeLayersTypes';
 import { GenomeAcademySessionList } from '@commands/genome/academy-session-list/shared/GenomeAcademySessionListTypes';
 import type { AcademySessionSummary } from '@commands/genome/academy-session-list/shared/GenomeAcademySessionListTypes';
-import { RustCoreIPCClient } from '../../../../workers/continuum-core/bindings/RustCoreIPC';
-import type { GridNode, NodeCapability } from '../../../../workers/continuum-core/bindings/modules/grid';
+import { RustCoreIPCClient } from '../../../../../core/continuum-core/bindings/RustCoreIPC';
+import type { GridNode, NodeCapability } from '../../../../../core/continuum-core/bindings/modules/grid';
 import { UserEntity } from '@system/data/entities/UserEntity';
 import { Logger } from '@system/core/logging/Logger';
 

@@ -8,7 +8,7 @@
  * - Verbose output is filtered to reduce noise
  */
 
-import type { SentinelRule, OutputClassification, SentinelAction } from '../../../../shared/generated';
+import type { SentinelRule, OutputClassification, SentinelAction } from '@shared/generated';
 
 // Helper to create rules concisely
 const rule = (

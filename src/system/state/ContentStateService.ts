@@ -64,10 +64,11 @@ class ContentStateServiceImpl {
 
     // Deduplicate input — server may send duplicates from stale persisted state
     const deduped = this.deduplicateItems(openItems);
+    const resolvedCurrentItemId = this.resolveCurrentItemId(openItems, deduped, currentItemId);
 
     this.state = {
       openItems: deduped,
-      currentItemId
+      currentItemId: resolvedCurrentItemId
     };
     this.initialized = true;
     console.log(`📋 ContentState: Initialized with ${deduped.length} items${deduped.length < openItems.length ? ` (removed ${openItems.length - deduped.length} duplicates)` : ''}`);
@@ -81,15 +82,16 @@ class ContentStateServiceImpl {
   update(openItems: ContentItem[], currentItemId?: UUID): void {
     // Deduplicate input
     const deduped = this.deduplicateItems(openItems);
+    const resolvedCurrentItemId = this.resolveCurrentItemId(openItems, deduped, currentItemId);
 
     // Fast path: check if anything actually changed
-    if (this.initialized && !this.hasStateChanged(deduped, currentItemId)) {
+    if (this.initialized && !this.hasStateChanged(deduped, resolvedCurrentItemId)) {
       return;
     }
 
     this.state = {
       openItems: deduped,
-      currentItemId
+      currentItemId: resolvedCurrentItemId
     };
     this.initialized = true;
     console.log(`📋 ContentState: Updated with ${deduped.length} items`);
@@ -112,6 +114,23 @@ class ContentStateServiceImpl {
       }
     }
     return seen;
+  }
+
+  private resolveCurrentItemId(
+    originalItems: ContentItem[],
+    dedupedItems: ContentItem[],
+    currentItemId?: UUID
+  ): UUID | undefined {
+    if (!currentItemId) return dedupedItems[0]?.id;
+    if (dedupedItems.some(item => item.id === currentItemId)) return currentItemId;
+
+    const originalCurrent = originalItems.find(item => item.id === currentItemId);
+    if (originalCurrent) {
+      const canonical = dedupedItems.find(item => contentItemsMatch(item, originalCurrent));
+      if (canonical) return canonical.id;
+    }
+
+    return dedupedItems[0]?.id;
   }
 
   private hasStateChanged(openItems: ContentItem[], currentItemId?: UUID): boolean {

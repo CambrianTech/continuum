@@ -1,6 +1,6 @@
 # The Grid: Architecture & Vision
 
-> **"The same two primitives that work across browser and server today work across Continuums via airc — no new protocol needed. Reticulum slots in as an alternative wire when off-grid scenarios demand it."**
+> **"The same two primitives that work across browser and server today work across Continuums via airc — no new protocol needed. AIRC coordinates the pipeline; transport side channels carry the right traffic; forge-alloy-style contracts make work invocable and verifiable."**
 
 ---
 
@@ -16,7 +16,18 @@ The Grid is a decentralized mesh of Continuum instances sharing compute, intelli
 
 ### What this looks like in practice TODAY
 
-The grid → grid comms substrate is **[airc](https://github.com/CambrianTech/airc)** — gh-rooted IRC over Tailscale. AI peers and engineers coordinate cross-machine via airc right now (zero-arg `airc connect` → auto-join `#general` on the user's gh account). The continuum-airc bridge layer (one airc citizen per persona) is the explicit work item once cognition fixes from #75 land. See [docs/grid/README.md](README.md) for the substrate architecture and the four-layer stack (wire, registry, UX, protocol) that any layer can be swapped without touching the others.
+The grid → grid comms substrate is **[airc](https://github.com/CambrianTech/airc)** — gh-rooted IRC over Tailscale today, evolving toward a Rust-owned handshake and pipeline-control layer. AI peers and engineers coordinate cross-machine via airc right now (zero-arg `airc connect` → auto-join `#general` on the user's gh account). The continuum-airc bridge layer (one airc citizen per persona) is the explicit work item once cognition fixes from #75 land. See [docs/grid/README.md](README.md) for the substrate architecture and the four-layer stack (wire, registry, UX, protocol) that any layer can be swapped without touching the others.
+
+The important abstraction is not "which socket moved the bytes." The grid is a
+distributed mesh of room/server-like nodes. AIRC initiates relationships,
+routes intent, records message flow, and coordinates command/event pipelines.
+Continuum messages are the domain payloads: commands, events, receipts,
+presence, room activity, artifact pointers, and security decisions. Transport
+side channels such as tailnet/Tailscale, WebRTC/UDP, local IPC, direct LAN,
+Reticulum, GitHub bridge, or future QUIC/UDP are adapters selected by policy
+and capability. Forge-alloy-style contracts describe the work and proof:
+who requested it, who authorized it, where it ran, what was produced, and how
+to verify it.
 
 **Document map:**
 
@@ -31,10 +42,49 @@ The grid → grid comms substrate is **[airc](https://github.com/CambrianTech/ai
 | [GRID-DECENTRALIZED-MARKETPLACE.md](../papers/GRID-DECENTRALIZED-MARKETPLACE.md) | Economic theory research paper |
 | [RESOURCE-GOVERNANCE-ARCHITECTURE.md](../infrastructure/RESOURCE-GOVERNANCE-ARCHITECTURE.md) | Per-node resource management — GPU governor, pressure watchers, eviction |
 | [ARES-MASTER-CONTROL.md](../ARES-MASTER-CONTROL.md) | Ares security PersonaUser — consumes kernel events, analyzes threats in chat |
+| [FORGE-ALLOY-PROOF-CONTRACTS.md](FORGE-ALLOY-PROOF-CONTRACTS.md) | Grid trust layer — falsifiable forge contracts with TDD/VDD basis. v1 starts permissive (persona self-seal); progression to multi-sig audit + SOC-style governance rooms is the trajectory. |
+| [COGNITIVE-IMMUNE-MODEL.md](COGNITIVE-IMMUNE-MODEL.md) | Defense posture for persona cognitive integrity — zero-trust as cooperative safety, Merkle-linked accounting, threat model (poisoning > death), layered defenses, WebAuthn-shape attestation. Modest v1 claim: substrate enables detection/forensics/quarantine/recovery, not prevention. |
 
 ---
 
 ## 2. Design Principles
+
+### 2.0 Contract-First Transport
+
+The grid is contract-first, transport-second. AIRC is the handshake and
+pipeline-control layer. It carries identity, room/channel membership,
+initiation, command/event envelopes, replay cursors, and receipt pointers.
+It does not have to carry every byte.
+
+Continuum emits and consumes typed grid messages:
+
+- commands
+- events
+- receipts
+- presence and "is thinking" signals
+- room/activity updates
+- artifact handles and proof-bundle pointers
+- security and quarantine decisions
+
+Transport side channels carry the traffic class they are good at:
+
+- local IPC for same-host control
+- tailnet/Tailscale for intragrid node control
+- WebRTC/UDP for live media or low-latency side channels
+- direct LAN for trusted local peers
+- GitHub bridge for durable coordination/bootstrap
+- Reticulum/off-grid links when infrastructure is unavailable
+- future QUIC/UDP for direct high-performance interlinks
+
+Forge-alloy-style contracts sit above transport. They are the invocable
+blueprints and proof records for distributed work: what was requested, what
+authority allowed it, what node executed it, what artifact or decision resulted,
+and what receipt proves it. Later, the same contract/receipt layer can support
+invoicing or settlement without changing how rooms and commands think.
+
+This keeps domain code future-proof. Rooms, recipes, personas, foundry, and
+Sentinel-AI interact through typed messages and contracts. Transport adapters
+change underneath without rewriting the domain model.
 
 ### 2.1 Accessibility First
 
@@ -183,6 +233,180 @@ Entities already serialize/deserialize cleanly, carry UUIDs, have CRUD events, a
 ```
 
 No new serialization format. No new ID scheme. No new event system. The Grid protocol IS the existing protocol, routed over a mesh.
+
+### 3.5 Secrets, API Keys, And Capability Leases
+
+The AIRC workflow is the right mental model: agents coordinate by sending
+stable identifiers, immutable SHAs, handles, and acknowledgements. They do not
+send the thing itself when the thing is large, private, or operationally
+sensitive. Grid secrets follow the same rule.
+
+**Default rule:** no raw API key, HF token, SSH key, cookie, model license token,
+or provider credential is ever sent through AIRC, Grid events, chat transcripts,
+logs, replay captures, RAG, or persona memory.
+
+Every node owns its local secret store under `$HOME/.continuum`. The grid moves
+capability facts and encrypted grants:
+
+```typescript
+interface GridSecretCapability {
+  secretRef: string;              // e.g. provider/openai/default
+  provider: string;               // openai, anthropic, huggingface, etc.
+  scopes: string[];               // chat, embeddings, upload, factory
+  ownerNodeId: UUID;
+  version: number;
+  fingerprint: string;            // hash/HMAC of normalized metadata, never value
+  available: boolean;             // non-empty + health check passed
+  expiresAt?: string;             // for leases, not local owner secrets
+}
+
+interface GridSecretLease {
+  leaseId: UUID;
+  secretRef: string;
+  granteeNodeId: UUID;
+  scopes: string[];
+  expiresAt: string;
+  auditHandle: UUID;
+}
+
+interface GridSecretRevision {
+  nodeId: UUID;
+  secretRef: string;
+  version: number;
+  fingerprint: string;
+  scopes: string[];
+  source: 'env-file' | 'settings-ui' | 'persona-command' | 'factory-import';
+  updatedAt: string;
+}
+```
+
+The Settings page, setup flow, persona helper, and JTAG commands all write to
+the same local authority. Personas may help the user enter a key or run a
+command, but they receive a `secretRef`/lease handle, not the raw value. The
+same handle can then be used by Rust workers, TypeScript adapters, factory
+jobs, and grid commands without each layer inventing its own credential path.
+
+Most real setup starts on the lowest-power machine in front of the user:
+
+- edit `$HOME/.continuum/config.env` directly;
+- use the Settings/API Providers widget;
+- ask a persona to call existing `ai/key/save`, `ai/key/remove`, or future
+  `ai/key/*` merge commands;
+- import a factory/upload credential for a specific workflow.
+
+All four entry points produce the same redacted `GridSecretRevision`. Grid sync
+then behaves like a small, secret-aware git merge: advertise revisions, compute
+a redacted diff, ask for approval if the same `secretRef` changed on more than
+one node, then apply only approved encrypted writes through `SecretManager`.
+The merge object contains names, versions, fingerprints, scopes, source, and
+timestamps. It never contains the secret value.
+
+```typescript
+interface GridSecretMergePlan {
+  baseRevision?: GridSecretRevision;
+  localRevision?: GridSecretRevision;
+  remoteRevision?: GridSecretRevision;
+  action: 'keep-local' | 'import-remote' | 'export-local' | 'rotate' | 'manual';
+  conflict: boolean;
+  reason: string;
+}
+```
+
+Git can be the implementation substrate for revision history if it is useful,
+but it must be a redacted secret ledger, not a repository of `.env` values. A
+commit may contain `secretRef`, fingerprint, version, and merge decision; it
+must never contain an API key or encrypted credential blob intended for another
+node.
+
+The process that keeps this in line should be a normal Continuum daemon/process,
+not a one-off sync script. It watches local secret/config revisions and
+occasionally runs the same `ai/key/*` command composition a user action would
+run. For explicit user mutations, `sync` is a parameter on the existing command
+shape, not a new top-level transport noun: `ai/key/save --sync` and
+`ai/key/remove --sync`.
+
+```text
+local edit/widget/persona command
+  -> SecretManager writes local state
+  -> GridReconcilerDaemon notices or receives the change event
+  -> GridReconcilerDaemon runs a bounded ai/key command program for selected peers:
+       - ai/key/status
+       - ai/key/diff
+       - optional owner/persona approval on conflicts
+       - ai/key/apply-merge
+  -> audit/replay records command handles, fingerprints, timings, outcomes
+```
+
+This is the same pattern as an intra-environment call like screenshot capture,
+but the target environment is another Continuum node. One node asks another node
+to execute a typed command, or a small bounded program of typed commands, against
+the target's own `$HOME/.continuum`. The caller receives typed redacted results;
+both sides can replay the decision without exposing the secret.
+
+The substrate already exists in the command system:
+
+- `grid/send` is the explicit routed command envelope: target node, command
+  name, params, typed result.
+- `GridInterceptor` is the transparent path: normal `Commands.execute()` can be
+  routed remotely when the router chooses a peer.
+- `grid/route` is the dry-run/debug primitive for "where would this command
+  execute?"
+- `model/forge` already delegates to `grid/job-submit`; forge jobs are therefore
+  another consumer of the same substrate, not a separate agent-managed lane.
+
+The missing abstraction is a bounded command program shape: a small ordered set
+of existing typed commands with limits, redaction policy, timeout, approval
+rules, and audit handles. It should be boring TypeScript data, not arbitrary
+shell. Secrets need it for status/diff/apply; forge needs it for preflight,
+credential availability, artifact/cache checks, job submit, and status followup.
+Grid should run those programs itself. It must not require a coding agent on
+each machine to manually align environment variables or forge setup.
+
+The first deployment target is the user's local grid: a trusted subnet/intranet
+over Tailscale. The same command envelope later extends to trusted WAN peers and
+eventually other users on the P2P mesh, with tighter limits, explicit approval,
+and stronger validation as trust decreases. The same shape later applies to
+model registry sync, LoRA availability, settings templates, and other low-volume
+grid state.
+
+**API-key slice for the first PR:**
+
+- Existing `ai/key/save`: write one key into `$HOME/.continuum/config.env` or
+  the platform vault through `SecretManager`; redact value from logs and command
+  echo. Add `sync?: boolean | 'trusted-grid'` to request immediate propagation
+  after the local write.
+- Existing `ai/key/remove`: remove one key through `SecretManager`. Add
+  `sync?: boolean | 'trusted-grid'` to propagate deletion/revocation metadata
+  after the local remove.
+- Existing `ai/key/test`: validate a candidate or stored provider key.
+- Existing `ai/providers/status`: provider-facing availability view.
+- `ai/key/status`: report configured key names, source path, empty
+  placeholders, fingerprints, and health without values.
+- `ai/key/diff`: compare local redacted revisions with one or more peers and
+  produce a merge plan without values.
+- `ai/key/apply-merge`: apply an approved merge plan through `SecretManager`.
+- `ai/key/request-lease`: request a scoped, expiring grant from an owner node;
+  default response is deny unless the owner or policy approves.
+- `ai/key/revoke-lease`: revoke a lease and emit an audit event.
+
+**Encrypted sharing is explicit.** If the owner chooses to copy a key to another
+trusted node, the export is an envelope encrypted to the target node identity
+and imported through `SecretManager`; loose file copy is not a grid protocol.
+The audit trail records requester, approver, `secretRef`, fingerprint, version,
+scope, and outcome. It never records the secret value.
+
+**No-token onboarding is a gate.** Fresh installs must work with public models
+and local inference without `HF_TOKEN` or any cloud key. `HF_TOKEN` is only for
+private/gated downloads, uploads, factory publishing, or user-selected provider
+workflows. A missing key produces a typed unavailable/degraded result; it must
+not silently route to a cloud fallback, stale credential, or CPU-shaped
+workaround.
+
+**Replay and introspection stay useful because they are redacted.** Record the
+command, `secretRef`, fingerprint/version, lease id, timing, target node, and
+result. That gives VDD/JTAG replay enough information to reproduce routing and
+authorization behavior without poisoning logs, RAG, or persona memory with
+credentials.
 
 ---
 

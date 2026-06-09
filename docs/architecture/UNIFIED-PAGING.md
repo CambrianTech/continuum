@@ -30,7 +30,7 @@ The fix: one primitive — `PagedResourcePool<K, V>` — that all pageable resou
 
 ## The primitive (Rust)
 
-`src/workers/continuum-core/src/paging/pool.rs` — generic resource pool with the operations every paging layer needs:
+`core/continuum-core/src/paging/pool.rs` — generic resource pool with the operations every paging layer needs:
 
 ```rust
 pub struct PagedResourcePool<K, V> { /* ... */ }
@@ -167,8 +167,8 @@ The drift between hand-rolled implementations is what's preventing this today. U
 
 ## Acceptance for this commit
 
-- `src/workers/continuum-core/src/paging/pool.rs` exists with the documented interface
-- `src/workers/continuum-core/src/paging/mod.rs` re-exports the public surface
+- `core/continuum-core/src/paging/pool.rs` exists with the documented interface
+- `core/continuum-core/src/paging/mod.rs` re-exports the public surface
 - `pub mod paging;` added to `lib.rs`
 - 8 unit tests pass; cargo check clean (61 dead-code warnings, no errors)
 - Zero behavior change to existing code (additive only — no consumer migrated yet)

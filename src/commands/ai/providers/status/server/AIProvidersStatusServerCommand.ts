@@ -22,11 +22,20 @@ const PROVIDER_CONFIG: Array<{
   billingUrl?: string;
 }> = [
   {
-    provider: 'Candle',
-    key: 'CANDLE_ENABLED',
+    // Local inference goes through Docker Model Runner via Rust IPC
+    // (AIProviderDaemon.generateText → ai/generate). The previous entry
+    // was "Candle" with a similar description, but Candle is a training
+    // framework (LoRA, autodiff, fine-tuning), NOT inference — Joel's
+    // correction in #980 Bug 6. Training callers access Candle through
+    // the training/plasticity module directly; it doesn't belong in the
+    // user-facing inference-providers list. AIProviderDaemonServer.ts
+    // line 146-150 confirms: Candle is NOT registered in the inference
+    // adapter registry.
+    provider: 'Docker Model Runner',
+    key: 'DMR_ENABLED',
     category: 'local',
-    description: 'Local AI server via Candle - free, private, no API key needed',
-    getKeyUrl: 'https://github.com/huggingface/candle'
+    description: 'Local LLM inference via Docker Desktop Model Runner (Metal on Apple Silicon, CUDA on Nvidia, Vulkan on AMD/Intel)',
+    getKeyUrl: 'https://docs.docker.com/desktop/features/model-runner/'
   },
   {
     provider: 'Anthropic',
@@ -129,8 +138,16 @@ export class AIProvidersStatusServerCommand extends AIProvidersStatusCommand {
 
     const providers: ProviderStatus[] = PROVIDER_CONFIG.map(config => {
       // Candle is always available — it's local inference, no API key needed
-      const isConfigured = config.category === 'local' ? true : secrets.has(config.key);
-      const rawKey = isConfigured && config.category !== 'local' ? secrets.get(config.key) : undefined;
+      //
+      // For non-local providers: SecretManager.has(key) returns true when the
+      // key NAME is present in config.env even if its VALUE is empty (the
+      // shipped fresh config has ANTHROPIC_API_KEY=, OPENAI_API_KEY=,
+      // DEEPSEEK_API_KEY= as empty placeholders). So has(key) gave false-
+      // positive isConfigured=true for every fresh install, leading users to
+      // attempt chat and hit an opaque 401. Check the actual value length
+      // instead. (#980 Bug 5.)
+      const rawKey = config.category === 'local' ? undefined : secrets.get(config.key, 'AIProvidersStatusServerCommand');
+      const isConfigured = config.category === 'local' ? true : (rawKey?.trim().length ?? 0) > 0;
 
       return {
         provider: config.provider,

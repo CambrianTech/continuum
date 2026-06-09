@@ -1,5 +1,69 @@
 # CLAUDE - ESSENTIAL DEVELOPMENT GUIDE
 
+## 🛑 STOP — If You Are About To Edit Persona / Cognition / service_loop
+
+**Required first read** before touching ANY of `core/continuum-core/src/persona/{service_loop,unified,supervisor,rag_inspect}.rs`, anything in `core/continuum-core/src/cognition/`, or `core/continuum-core/src/bin/airc_chat_demo.rs`:
+
+→ **[docs/architecture/PERSONA-COGNITION-PIPELINE.md](docs/architecture/PERSONA-COGNITION-PIPELINE.md)**
+
+It documents what a persona actually IS (embodied, multi-modal, tool-using, continually-learning citizen with genome paging and L1-L5 memory), the per-persona cognition cycle that already exists in `cognition/` (`analyze` → `score_persona` → `genome.activate_skill` → `compose_for_turn` → `evaluate_response` → `clean_and_validate` → `ToolExecutor` → `audit`), the bypass that's being removed (`inspect_persona_rag_with_inference`), the wire layer that IS validated end-to-end, and the forbidden moves the model keeps reflex-coding under amnesia (text-only `TurnInput`, `will_respond + response_text` chatbot contracts, parallel allocators, hardcoded LCD-tier clamps that handicap capable models).
+
+**The cost of skipping this doc and re-inferring the architecture from the bypass is rebuilding a chatbot in place of a year of substrate work.** Don't.
+
+## 🛑 STOP — If You Are About To Add a Monitor, Broker, Pool, Region, Or Any Concurrent Concern
+
+**Required first read** before adding ANY new tokio task, watch channel, pressure source, resource pool, brain region, or background tick — or before touching any file under `core/continuum-core/src/{runtime,paging,system_resources}/`:
+
+→ **[docs/architecture/CONCURRENCY-STYLE-GUIDE.md](docs/architecture/CONCURRENCY-STYLE-GUIDE.md)**
+
+It documents the canonical RTOS shape (own task + `tokio::time::interval` + `watch::Sender<Snapshot>` + atomic gate + `spawn_blocking` + 100ms timeout + quarantine), the existing primitives you MUST reuse (`ServiceModule`, `BrainRegion`, `PagedResourcePool`, `PressureBroker`, `MemoryPressureMonitor`), the cadence ladder, and the forbidden-moves list the model keeps reflex-coding under amnesia (synchronous main-thread probes, env-var-tuned substrate thresholds, sleep-loops instead of `interval`, `tracing::info!(target=...)` masquerading as a probe, hot-path pressure interpretation, parallel managers/coordinators, locks across await, `unwrap()` on substrate startup).
+
+**The cost of skipping this doc is reinventing `MemoryPressureMonitor` as a `runtime/disk_guard.rs` with env-tunable thresholds running synchronously on main — which is exactly what happened the day this guide got written.** Don't.
+
+## 🛑 STOP — If You Are About To Add a Test, Fixture, Recorder, Replay, Or Test-Adapter
+
+**Required first read** before adding ANY `#[cfg(test)] mod`, fixture struct, mock adapter, replay scaffold, recording sink, or `MockX`/`StubX`/`FakeX` type to continuum-core:
+
+→ **`continuum-core/Cargo.toml` § "test-fixtures"** + **`continuum-core/Cargo.toml` § "stress-tests"** + **task #154 + #155** in the task list.
+
+We already wrote the test infrastructure. The recurring slop pattern is the model forgetting it exists and reinventing it per-PR:
+
+| You want to… | Use the existing primitive | Where it lives |
+|---|---|---|
+| Stand-in inference adapter (canned responses) | `HeuristicInferenceAdapter` | `ai/heuristic_adapter.rs`, gated `#[cfg(any(test, feature = "test-fixtures"))]` |
+| Capture a live persona turn (input + output + cognition trace) | `persona::recorder` writer + `vdd::turn_replay` reader | `persona/recorder.rs`, `vdd/turn_replay.rs` |
+| Capture / replay a RAG context | `RagCaptureSink` trait + `JsonlRagCaptureSink` + `RecordingRagSource` + `ReplayRagSource` | `rag/sources/recording.rs`, `rag/sources/replay.rs`, PRs #10, #11, #12 |
+| Multi-thread concurrency stress test | New test goes into the **existing `#[cfg(feature = "stress-tests")] mod stress {…}` block** in that file. **Don't add a new test mod.** | `modules/{chat,data,generator}/`, `airc/realtime_store.rs` |
+| Two-airc-peer integration test fixture | `TwoAircLoopback` (in flight, task #187) | when landed: cross-grid integration tests in `tests/` |
+| Bus-recording subscriber that captures events for assertion | `RecordingModule` pattern in `runtime/runtime.rs` test mod — extract via `use crate::runtime::runtime::test_helpers::RecordingModule` (task #155: when this gets pulled out of inline mod into a sibling crate / re-exported helper) | `runtime/runtime.rs::piece_2_pr3_dispatch_tests` |
+
+**The rules going forward (the part the model keeps forgetting under amnesia):**
+
+1. **One `#[cfg(test)] mod tests` per file.** Never add a second test mod to a file. If the file already has one, extend it. If you're tempted to add a new mod for a new theme, use a nested `mod theme_name { use super::*; … }` *inside* the existing tests mod. The 3-mods-in-runtime.rs / 6-mods-in-grid/tests.rs pattern is the slop.
+2. **Stress / multi-thread tests go behind `#[cfg(feature = "stress-tests")] mod stress {…}`.** Compile-time gating, not `#[ignore]`. Sign-off stress harnesses live in the gated block forever; default `cargo test` skips them.
+3. **Mock / Stub / Fake adapters go behind `#[cfg(any(test, feature = "test-fixtures"))]`.** Production binaries physically cannot link them. The cargo feature is the contract; new fixtures inherit the same gate.
+4. **Battle-harden regression tests get added to the relevant existing mod and link the issue / commit they regress** (`// regression for #1519 / commit abc123`). They are not their own file. They are not their own mod. They are one `#[test]` with a one-line `// what this catches:` doc.
+5. **Reusable fixtures live in one place per concern.** `HeuristicInferenceAdapter` is the adapter fixture. `RecordingRagSource` / `ReplayRagSource` are the RAG fixtures. Don't write a parallel `MockInferenceAdapter` in your test file. Per task #155 (still pending): the `CannedModule` in `runtime/command_executor.rs` is the next conversion target — when you need a "canned ServiceModule" in a test, use the upcoming extracted version, not a new mock.
+6. **Tests must justify themselves.** A `// what this catches:` comment naming the invariant or regression is the minimum bar. Tests of trivial getters / constructors / "does the enum still have this variant" get refused at review. The 3,646-tests-in-continuum-core number is the audit Joel is reading; every PR adds to it.
+
+**The cost of skipping this doc is the model rebuilding `RecordingModule` inline in every test file, refusing to gate stress tests, growing the test surface by N tests per PR without curating any of them, and turning `cargo test` into a 14-minute build for tests that were each individually justified at sign-off but collectively duplicate.** Don't.
+
+## 📐 Canonical Substrate Docs (read first)
+
+If you're new to the substrate, or you're picking up runtime/cognition work, read these in order before anything else in this file. They are the precedence-winning truth on substrate-shaped questions:
+
+1. **[docs/architecture/CBAR-SUBSTRATE-ARCHITECTURE.md](docs/architecture/CBAR-SUBSTRATE-ARCHITECTURE.md)** — the RTOS-style runtime contract every Rust module inherits. Concurrency, scheduling, memory + device pressure, telemetry, artifact handles, lifecycle. The "for free triplet" (base trait + derive macro + scaffold generator) is here, with the engram-analyzer worked example.
+2. **[docs/architecture/GENOME-FOUNDRY-SENTINEL.md](docs/architecture/GENOME-FOUNDRY-SENTINEL.md)** — the artifact-sharing economy on top of the substrate. Tiered genome cache (L1–L5), foundry-as-JIT, sentinel-AI-as-PGO, demand-aligned recall, composer + speculator, `SubstrateGovernor` (DVFS — same Rust code on MacBook Air and RTX 5090, different governor policy).
+3. **[docs/architecture/AI-COMMAND-NAMESPACE.md](docs/architecture/AI-COMMAND-NAMESPACE.md)** — every AI/ML thing (LLMs, vision, audio, classifiers, planning algs, game AI, low-level kernels) under one `ai/*` tree, one adapter pattern, one handle abstraction. Commands stay dumb; daemons get clever.
+4. **[docs/architecture/INFERENCE-SCHEDULING-AND-SCARCITY.md](docs/architecture/INFERENCE-SCHEDULING-AND-SCARCITY.md)** — the daemons behind `ai/inference/*`. Tiered slot pools, continuous batching, multi-LoRA serving, adaptive quantization, base-model sharing, cross-grid routing. M5 hosting multi-modal Qwen across multiple lanes. The adaptive-resolution analogy is the canonical mental model. (Aspirational ceiling.)
+   - **[docs/architecture/INFERENCE-LANES-REALISTIC.md](docs/architecture/INFERENCE-LANES-REALISTIC.md)** — the realistic floor: ONE base model, N persona lanes (each a `(persona, TaskKind, ThroughputLease)` triple), continuous batching through the same model. Composes prior art that's already in tree (FootprintRegistry, ThroughputLeaseRegistry, AdaptiveThroughputPlanner, PressureBroker, recipe_budget). Concrete build plan for #109. Read THIS first if you're picking up scheduler work — start here, then escalate to the ceiling doc only when needed.
+5. **[docs/architecture/OBSERVABILITY-AS-SUBSTRATE.md](docs/architecture/OBSERVABILITY-AS-SUBSTRATE.md)** — half the substrate is structured capture of load-bearing decisions. CaptureSink pattern, Noop default at zero hot-path cost, replay-as-first-class. The differentiator between a complex guess and an intentional brain.
+   - **[docs/architecture/RTOS-DEBUGGER-PROBES.md](docs/architecture/RTOS-DEBUGGER-PROBES.md)** — the practical companion: how to USE the `probe!` / `time_sync!` / `time_async!` macros as RTOS-style breakpoints with variable inspection + timing. The substrate is concurrent across N tokio tasks; `tracing::info!` lines don't survive that. Probes do. Per Joel `[[jtag-probes-are-rtos-debugger]]`: sprinkle at every meaningful seam, name the surrounding vars you'd want at a breakpoint, wrap timing-critical blocks. Read THIS before adding cognition code — the doc carries the class taxonomy + the sprinkle checklist + the file-sink env vars.
+6. **[docs/planning/AI-LANE-OPEN-QUESTIONS.md](docs/planning/AI-LANE-OPEN-QUESTIONS.md)** — the explicit punch list of design decisions we KNOW we need but haven't made yet (LoRA paging cost calibration, quantization tier selection, peer discovery on the grid, etc). Read before starting work on the inference scheduler.
+7. **[docs/planning/ALPHA-GAP-ANALYSIS.md](docs/planning/ALPHA-GAP-ANALYSIS.md)** — the lane-shaped roadmap. Current state of Lanes A–H, owners, merge gates, active PRs.
+
+The rest of this file is project guidance — build commands, conventions, useful snippets. If it ever disagrees with the canonical substrate docs on substrate-shaped questions (concurrency, scheduling, memory, pressure, telemetry, artifact handles), defer to the canonical docs and reconcile this file in a follow-up.
+
 ## 🏭 FORGE TEMPLATE ARCHITECTURE (the next sprint)
 
 **Lesson from the qwen3-coder-30b-a3b-compacted-19b-256k v1 publish (alloy hash `aa61c4bdf463847c`):** authoring per-artifact alloy files by hand is anti-architectural. Every successful forge requires the same set of fields — `name`, `userSummary`, `description`, `tags`, `source`, `stages[]` with notes, `results.benchmarks[]` with `samplesPath` + `baseSamplesPath`, `priorMetricBaselines[]`, `limitations[]`, `methodologyPaperUrl` — and we wrote them by hand into a `.alloy.json` for the v1 publish. That's where they need to STOP being manually authored.
@@ -1564,5 +1628,6 @@ Generators and OOP are intertwined parallel forces:
   practices, and in some ways like C++ templating with generics. These are your superpowers
 - for getters in typescript we do not prefix methods with get, we use get or set like good properties and often this is backed by _theProperty type private var
 - never commit code until you validate it works. deploy and validate first, make sure it compiles, npm run build:ts before that
-- if we have manually checked that ai persona can respond and use their tools, especially if they themselves have QA'd for us, we can use --no-verify in our commit to avoid the precommit hook, which tests this.
+- never use `--no-verify` on commit or push. If hooks fail because of a stale worktree, missing submodule, missing generated file, or a bug in the hook itself, fix the underlying problem; never bypass the shared validation path.
 - commit often per logical unit once validated. merging to main is the only step that requires my approval — commits to feature branches do not.
+- **clean as you go.** Cargo target dirs balloon — a `cargo test` of continuum-core consumes ~10 GB of test-binary artifacts on top of the shared cache. Discipline: (1) ALWAYS `export CARGO_TARGET_DIR="$HOME/.continuum/cache/cargo-target"` before any cargo invocation so artifacts land in the ONE shared cache, not in a per-invocation ghost workspace `target/` dir. (2) After each cargo cycle, `df -h /` — if free space dropped to < 20 GB, sweep ghost target dirs (`rm -rf core/target` when it ghost-grew from RA / manual cargo bypassing the env var) and report the number BEFORE running another cargo. (3) Prefer `cargo check` over `cargo test` when validating type-correctness; only escalate to test when behavior changed. (4) Slice 3 in `core/.cargo/config.toml` is the opt-in fix that pins target-dir at the workspace level — uncomment for your operator absolute path when ready.

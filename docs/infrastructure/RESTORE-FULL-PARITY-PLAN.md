@@ -12,10 +12,10 @@ Each one strips a documented sensory capability from the containerized product:
 
 | # | Location | Cheat | Impact |
 |---|---|---|---|
-| 1 | `src/workers/continuum-core/src/main.rs:171` | `CONTINUUM_SKIP_STT=1` env hatch | Personas can't hear. |
-| 2 | `src/workers/continuum-core/src/main.rs:172` | `CONTINUUM_SKIP_TTS=1` env hatch | Personas can't speak. |
-| 3 | `src/workers/continuum-core/Cargo.toml:62` | `whisper-rs = "0.13"` commented out | No STT backend even when enabled. |
-| 4 | `src/workers/vendor/whisper.cpp/` | Submodule vendored but no Rust wrapper | Dead weight until wired. |
+| 1 | `core/continuum-core/src/main.rs:171` | `CONTINUUM_SKIP_STT=1` env hatch | Personas can't hear. |
+| 2 | `core/continuum-core/src/main.rs:172` | `CONTINUUM_SKIP_TTS=1` env hatch | Personas can't speak. |
+| 3 | `core/continuum-core/Cargo.toml:62` | `whisper-rs = "0.13"` commented out | No STT backend even when enabled. |
+| 4 | `core/vendor/whisper.cpp/` | Submodule vendored but no Rust wrapper | Dead weight until wired. |
 | 5 | `docker-compose.yml:63` + `docker-compose.gpu.yml:47` | `--no-default-features` strips `livekit-webrtc` | No in-process WebRTC → no low-latency video calls in container. |
 | 6 | `docker/continuum-core*.Dockerfile` | `RUN mkdir -p /app/avatars` (empty) | No VRM models → avatar pipeline dead. |
 | 7 | `src/models/avatars/` (133MB) | Git-ignored (`src/.gitignore` `/models/`) | CI checkout has nothing to bake; no way to ship them today. |

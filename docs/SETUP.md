@@ -8,7 +8,7 @@
 
 ## What you'll have running
 
-After `curl install.sh | bash` completes (and the per-OS manual steps below):
+After `curl install.sh | bash` completes (and any first-time Docker Desktop launch / reboot your OS asks for):
 
 - A continuum widget at `http://localhost:9003`
 - Default rooms: General, Pantheon, Code, Factory, Academy
@@ -26,7 +26,7 @@ If you've used Ollama or LM Studio: continuum is the next layer — multi-person
 - [**Linux + Nvidia**](#linux--nvidia) — RTX 30/40/50, native Docker
 - [**Linux + AMD / Intel GPU**](#linux--amd--intel-vulkan) — Vulkan path (experimental in this PR scope)
 
-Each section: **prereqs → curl install → required manual steps → success check → if it breaks**.
+Each section: **prereqs → curl install → Docker Desktop initialization → success check → if it breaks**.
 
 ---
 
@@ -43,20 +43,14 @@ Each section: **prereqs → curl install → required manual steps → success c
 ### Install
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/CambrianTech/continuum/main/src/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/CambrianTech/continuum/main/tools/scripts/install.sh | bash
 ```
 
 Pulls images, pulls the forged Qwen3.5 model into Docker Model Runner, starts the support stack, and launches `continuum-core` natively (Metal for Candle, Bevy, vision, audio).
 
-### Required manual step (one-time, ~30 seconds)
+### Docker Desktop initialization
 
-**Docker Desktop → Settings → AI:**
-
-1. Check **Enable GPU-backed inference** (lights up Metal for Docker Model Runner — without this, you get CPU speed and a slow first impression)
-2. Check **Enable host-side TCP support** (port `12434`, default — required so the continuum core container can reach DMR on the host)
-3. Click **Apply**
-
-Docker Desktop will swap the inference backend to `llama.cpp latest-metal` automatically. **No restart required.**
+The installer writes Docker Desktop's AI settings directly once Docker Desktop has been launched at least once and the settings store exists. If this is a brand-new Docker Desktop install, open Docker Desktop once, accept the EULA, then rerun the installer. After that, the GPU-backed inference and host-side TCP toggles are applied automatically.
 
 ### Success check
 
@@ -70,8 +64,8 @@ Then open `http://localhost:9003`, send "hello" in the General room, and Helper 
 
 ### If it breaks
 
-- **Personas reply slowly (under 15 tok/s):** the AI toggles weren't applied. Re-check Settings → AI.
-- **`docker model status` says `latest-cpu` instead of `latest-metal`:** the GPU-backed inference toggle is off. Toggle it, click Apply, re-check.
+- **Personas reply slowly (under 15 tok/s):** Docker Desktop was not initialized far enough for the settings write to land. Launch Docker Desktop once, accept the EULA, rerun the installer, then re-check.
+- **`docker model status` says `latest-cpu` instead of `latest-metal`:** the GPU-backed inference toggle did not apply. Re-run the installer after Docker Desktop has a writable settings store.
 - **Widget loads but no personas reply:** check `~/.continuum/jtag/logs/system/daemons/AIProviderDaemonServer.log` for routing errors. Most likely the AI provider daemon needs the host-side TCP toggle.
 - **Clean reset:** `docker compose down && docker compose up -d` then re-run `curl install.sh`.
 
@@ -89,9 +83,9 @@ Then open `http://localhost:9003`, send "hello" in the General room, and Helper 
 - WSL2 with an Ubuntu distro installed (`wsl --install -d Ubuntu` from PowerShell)
 - ~10 GB free disk
 
-### Required manual steps (one-time, ~5 minutes)
+### Docker Desktop + WSL initialization
 
-These are not skippable — defaults will leave you running on CPU at ~10 tok/s instead of GPU at ~237 tok/s, or fail to start altogether.
+These are not skippable — defaults will leave you running on CPU at ~10 tok/s instead of GPU at ~237 tok/s, or fail to start altogether. The installer writes the Docker Desktop AI settings directly once Docker Desktop has a writable settings store; if Docker Desktop has never been launched on this machine, open it once and rerun the installer after the first-run EULA completes.
 
 #### 1. Configure WSL2
 
@@ -121,22 +115,16 @@ wsl --shutdown
 
 WSL will cold-launch with the new config on the next Docker Desktop startup.
 
-#### 2. Enable Docker Desktop AI features
+#### 2. Docker Desktop AI settings
 
-**Docker Desktop → Settings → AI:**
-
-1. Check **Enable GPU-backed inference** (swaps `llama.cpp latest-cpu` → `latest-cuda` automatically — without this, you're on CPU)
-2. Check **Enable host-side TCP support** (port `12434` default — required so containers can reach DMR)
-3. Click **Apply**
-
-Docker Desktop installs the CUDA backend on Apply. **You may see a "WSL integration unexpectedly stopped" dialog with error `Wsl/Service/0x8007274c`** — this is `WSAETIMEDOUT` on the WSL distro initialization. Click **Restart the WSL integration**. If the same error recurs, run `wsl --shutdown` from an admin PowerShell, then click Restart again. The hard reset is sometimes required because the integration restart only re-runs Docker plumbing inside the existing VM, not the VM itself.
+The installer writes **Enable GPU-backed inference** and **Enable host-side TCP support** into Docker Desktop automatically once the settings store exists. If Docker Desktop has never been launched on the machine, start it once, accept the EULA, and rerun the installer so the settings file exists. If Docker Desktop shows a "WSL integration unexpectedly stopped" dialog with error `Wsl/Service/0x8007274c`, click **Restart the WSL integration**. If the same error recurs, run `wsl --shutdown` from an admin PowerShell, then click Restart again. The hard reset is sometimes required because the integration restart only re-runs Docker plumbing inside the existing VM, not the VM itself.
 
 ### Install
 
 From WSL (Ubuntu):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/CambrianTech/continuum/main/src/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/CambrianTech/continuum/main/tools/scripts/install.sh | bash
 ```
 
 ### Success check
@@ -166,8 +154,8 @@ While inference runs, you should see GPU utilization spike to 70%+ and memory gr
 ### If it breaks
 
 - **"WSL integration unexpectedly stopped" loop:** `wsl --shutdown` from admin PowerShell. The Restart-the-WSL-integration button is not the same as `wsl --shutdown` — the latter is the actual VM hard-reset.
-- **`docker model status` says `latest-cpu`:** the GPU toggle is off, or Docker Desktop hasn't finished installing the CUDA backend. Re-check Settings → AI, click Apply, wait 60 seconds.
-- **Personas reply but `nvidia-smi` shows no activity:** the host-side TCP toggle is off. The container can't reach DMR; it's likely silently routing to a CPU path. Toggle it on.
+- **`docker model status` says `latest-cpu`:** Docker Desktop hasn't finished applying the AI settings yet. Re-run the installer after Docker Desktop has a writable settings store, then wait 60 seconds.
+- **Personas reply but `nvidia-smi` shows no activity:** the host-side TCP setting did not apply. Re-run the installer after Docker Desktop has a writable settings store.
 - **Build fails with apt timeouts:** WSL networking issue, often resolved by `--network=host` or by `wsl --shutdown` to reset DNS. See [docs/infrastructure/WINDOWS-WSL2-INSTALL-GUIDE.md](infrastructure/WINDOWS-WSL2-INSTALL-GUIDE.md) for the full playbook.
 
 ---
@@ -185,7 +173,7 @@ While inference runs, you should see GPU utilization spike to 70%+ and memory gr
 ### Install
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/CambrianTech/continuum/main/src/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/CambrianTech/continuum/main/tools/scripts/install.sh | bash
 ```
 
 The installer detects CUDA capability and uses `docker-compose.gpu.yml` to wire the `continuum-core-cuda` image with `runtime: nvidia`.
@@ -220,7 +208,7 @@ The Vulkan variant uses `/dev/dri` passthrough for AMD/Intel GPUs and any Linux 
 Every PR build publishes images tagged `:pr-<NUMBER>` to ghcr alongside `:<sha>`. To install a PR's exact images instead of `:latest`:
 
 ```bash
-CONTINUUM_IMAGE_TAG=pr-891 curl -fsSL https://raw.githubusercontent.com/CambrianTech/continuum/main/src/scripts/install.sh | bash
+CONTINUUM_IMAGE_TAG=pr-891 curl -fsSL https://raw.githubusercontent.com/CambrianTech/continuum/main/tools/scripts/install.sh | bash
 ```
 
 The tag flows through `docker-compose*.yml` for all 7 image variants. Use this to validate a PR end-to-end on real hardware before merge.
@@ -269,7 +257,7 @@ Verifies submodules, IPC sockets, GPU vs CPU backend, scheduler vs llama-server,
 If you're a Claude / Codex / similar walking a user through this doc, the failure modes above are written to be pattern-matchable. Specific cues:
 
 - **`Wsl/Service/0x8007274c`** in a Docker Desktop dialog → `wsl --shutdown` from admin PowerShell, then click Restart the WSL integration
-- **`predicted_per_second` < 15 on Mac for a 4B model** → AI toggles not applied; have user open Docker Desktop → Settings → AI and check both boxes
+- **`predicted_per_second` < 15 on Mac for a 4B model** → Docker Desktop has not been initialized enough for the settings write to land; launch Docker Desktop once, accept the EULA, rerun the installer
 - **`docker model status` shows `latest-cpu`** on a Nvidia/Mac box that should have GPU acceleration → same toggle issue
 - **`Appears stuck (Nseconds since last success)`** in `AIProviderDaemonServer.log` → most likely a stale-metric warning; verify by sending a chat and confirming the persona replies (the metric is a lagging health probe, not a definitive failure signal)
 - **Personas reply with stale provider routing (Candle CPU instead of DMR)** → docker container image is pre-`cfe2a4316`; pull `:pr-891` (or `:latest` post-merge) and restart `docker compose up -d`

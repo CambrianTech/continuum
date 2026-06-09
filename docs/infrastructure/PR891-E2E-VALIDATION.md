@@ -92,7 +92,7 @@ curl -fsSL https://raw.githubusercontent.com/CambrianTech/continuum/feature/infe
 - [ ] No surprise mid-install sudo prompts (each prompt is preceded by a
       log line stating which module is asking and why). The strict "exactly
       one prompt" assertion comes online once the legacy-sudo-site migration
-      ships in `src/scripts/install.sh` — until then, dry-run accepts
+      ships in `tools/scripts/install.sh` — until then, dry-run accepts
       multiple prompts as long as each is announced.
 - [ ] If WSL integration disabled, install errors with the documented hint
       (`mod_docker_wsl_integration` should detect + print Docker Desktop
@@ -109,7 +109,7 @@ Owner: shared. Sanity check that the same modules work in dev mode.
 ```bash
 git clone https://github.com/CambrianTech/continuum.git
 cd continuum/src
-npm start  # parallel-start.sh delegates to src/scripts/install.sh --mode=dev
+npm start  # parallel-start.sh delegates to tools/scripts/install.sh --mode=dev
 ```
 
 ### Smoke checklist

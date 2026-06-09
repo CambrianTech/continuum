@@ -27,8 +27,8 @@ import type {
   ToolCall as NativeToolCall,
   ToolResult as NativeToolResult,
 } from '../../../daemons/ai-provider-daemon/shared/AIProviderTypesV2';
-import type { ToolParseResult } from '../../../workers/continuum-core/bindings/RustCoreIPC';
-import RustCoreIPCClient from '../../../workers/continuum-core/bindings/RustCoreIPC';
+import type { ToolParseResult } from '../../../../core/continuum-core/bindings/RustCoreIPC';
+import RustCoreIPCClient from '../../../../core/continuum-core/bindings/RustCoreIPC';
 
 // ─── Public Interfaces ───────────────────────────────────────────────
 

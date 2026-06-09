@@ -39,7 +39,7 @@ const ENTITY_TYPE_COLLECTIONS: Record<string, string> = {
   activity: 'activities',
 };
 
-import { CONTENT_TYPE_CONFIGS } from '../../shared/generated/ContentTypes';
+import { CONTENT_TYPE_CONFIGS } from '@shared/generated/ContentTypes';
 
 function getCollectionForContentType(contentType: string): string | undefined {
   const config = CONTENT_TYPE_CONFIGS[contentType as keyof typeof CONTENT_TYPE_CONFIGS];
@@ -235,6 +235,9 @@ class ContentServiceImpl {
         } : undefined;
         pageState.setContent(newCurrent.type, newCurrent.entityId, resolved);
         this.updateUrl(newCurrent.type, newCurrent.uniqueId || newCurrent.entityId);
+      } else if (wasCurrentItem) {
+        pageState.clear();
+        this.clearUrl();
       }
 
       // 5. Persist to server (background)
@@ -262,6 +265,12 @@ class ContentServiceImpl {
     const newPath = buildContentPath(contentType, identifier);
     if (window.location.pathname !== newPath) {
       window.history.pushState({ path: newPath }, '', newPath);
+    }
+  }
+
+  private clearUrl(): void {
+    if (window.location.pathname !== '/') {
+      window.history.pushState({ path: '/' }, '', '/');
     }
   }
 

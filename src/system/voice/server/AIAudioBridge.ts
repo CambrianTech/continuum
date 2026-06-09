@@ -10,7 +10,7 @@
  */
 
 import type { UUID } from '../../core/types/CrossPlatformUUID';
-import { RustCoreIPCClient, getContinuumCoreSocketPath } from '../../../workers/continuum-core/bindings/RustCoreIPC';
+import { RustCoreIPCClient, getContinuumCoreSocketPath } from '../../../../core/continuum-core/bindings/RustCoreIPC';
 import { Events } from '../../core/shared/Events';
 import { DataDaemon } from '../../../daemons/data-daemon/shared/DataDaemon';
 import { EVENT_SCOPES } from '../../events/shared/EventSystemConstants';

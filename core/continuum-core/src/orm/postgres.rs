@@ -1,0 +1,2049 @@
+//! PostgreSQL Storage Adapter
+//!
+//! Implements the StorageAdapter trait for PostgreSQL databases.
+//! Uses deadpool-postgres for async connection pooling with MVCC concurrency.
+//!
+//! Key differences from SQLite:
+//! - Natively async (no worker thread needed)
+//! - $1, $2, $3 parameter placeholders (not ?)
+//! - JSONB for JSON fields (binary, indexed)
+//! - Native BOOLEAN, BIGINT, TIMESTAMPTZ types
+//! - information_schema for introspection (not sqlite_master)
+//! - ~ for regex, ILIKE for case-insensitive contains
+//! - MVCC: concurrent reads AND writes without lock contention
+
+use async_trait::async_trait;
+use chrono::{DateTime, Utc};
+use deadpool_postgres::{Config, ManagerConfig, Pool, RecyclingMethod, Runtime};
+use serde_json::{json, Value};
+use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
+use tokio::sync::RwLock;
+use tokio_postgres::types::{Json, ToSql};
+use tokio_postgres::NoTls;
+
+use super::adapter::{naming, AdapterCapabilities, AdapterConfig, ClearAllResult, StorageAdapter};
+use super::query::{FieldFilter, QueryOperator, SortDirection, StorageQuery};
+use super::types::{
+    BatchOperation, BatchOperationType, CollectionSchema, CollectionStats, DataRecord,
+    RecordMetadata, StorageResult, METADATA_KEYS, UUID,
+};
+
+/// Format a tokio-postgres error with full detail chain.
+/// The default Display for these errors often just says "db error" — useless.
+fn format_pg_error(e: &tokio_postgres::Error) -> String {
+    if let Some(db_err) = e.as_db_error() {
+        format!(
+            "{}: {} (column: {}, detail: {})",
+            db_err.severity(),
+            db_err.message(),
+            db_err.column().unwrap_or("?"),
+            db_err.detail().unwrap_or("none")
+        )
+    } else {
+        format!("{:?}", e)
+    }
+}
+
+/// PostgreSQL storage adapter — async-native with connection pooling
+pub struct PostgresAdapter {
+    pool: Option<Pool>,
+    /// Database schema (namespace) for multi-tenant isolation
+    schema: String,
+    /// Cached column types per table — avoids repeated information_schema queries.
+    /// Invalidated per-table when schema evolution adds new columns.
+    col_type_cache: Arc<RwLock<HashMap<String, HashMap<String, String>>>>,
+    /// Per-table set of column names known to exist after a successful ensure.
+    /// Lets us short-circuit ensure_table_exists_pg on the hot write path
+    /// when the incoming row introduces no new columns. Process-local; if a
+    /// concurrent writer ALTERs the table, the next miss-then-success rebuilds
+    /// the entry.
+    ensured_columns_cache: Arc<RwLock<HashMap<String, HashSet<String>>>>,
+}
+
+impl PostgresAdapter {
+    pub fn new() -> Self {
+        Self {
+            pool: None,
+            schema: "public".to_string(),
+            col_type_cache: Arc::new(RwLock::new(HashMap::new())),
+            ensured_columns_cache: Arc::new(RwLock::new(HashMap::new())),
+        }
+    }
+
+    fn pool(&self) -> Result<&Pool, String> {
+        self.pool
+            .as_ref()
+            .ok_or_else(|| "PostgreSQL adapter not initialized".to_string())
+    }
+
+    /// Get column types for a table, using cache when available.
+    /// Cache is invalidated per-table when schema evolution adds columns.
+    async fn cached_column_types(
+        &self,
+        client: &deadpool_postgres::Client,
+        bare_table: &str,
+    ) -> HashMap<String, String> {
+        // Check cache first (read lock — concurrent reads OK)
+        {
+            let cache = self.col_type_cache.read().await;
+            if let Some(types) = cache.get(bare_table) {
+                return types.clone();
+            }
+        }
+        // Cache miss — fetch from information_schema and populate
+        let types = get_column_types(client, bare_table, &self.schema).await;
+        if !types.is_empty() {
+            let mut cache = self.col_type_cache.write().await;
+            cache.insert(bare_table.to_string(), types.clone());
+        }
+        types
+    }
+
+    /// Invalidate cached column types for a table (after schema evolution).
+    /// The ensured-columns cache is managed exclusively by
+    /// `ensure_table_exists_cached`, so we do NOT touch it here — the wrapper
+    /// only inserts after a real ALTER has succeeded, so the entry remains
+    /// authoritative for the columns we just added.
+    async fn invalidate_column_cache(&self, bare_table: &str) {
+        let mut cache = self.col_type_cache.write().await;
+        cache.remove(bare_table);
+    }
+
+    /// Hot-path wrapper around `ensure_table_exists_pg`.
+    ///
+    /// Most writes don't introduce new columns — running CREATE IF NOT EXISTS +
+    /// information_schema lookup + per-column ALTER existence check on every
+    /// row burns 2 round-trips for nothing. We track the set of column names
+    /// proven to exist for a table; if every column the row needs is already
+    /// in that set, we skip straight to the INSERT.
+    ///
+    /// Returns `true` when we actually hit Postgres (caller should invalidate
+    /// the column-type cache because an ALTER may have happened); `false`
+    /// means the cache absorbed the call.
+    async fn ensure_table_exists_cached(
+        &self,
+        client: &deadpool_postgres::Client,
+        qualified_table: &str,
+        bare_table: &str,
+        data: &Value,
+    ) -> Result<bool, String> {
+        let needed: Vec<String> = if let Value::Object(obj) = data {
+            obj.keys()
+                .filter(|k| !METADATA_KEYS.contains(&k.as_str()))
+                .map(|k| naming::to_snake_case(k))
+                .collect()
+        } else {
+            Vec::new()
+        };
+
+        {
+            let cache = self.ensured_columns_cache.read().await;
+            if let Some(known) = cache.get(bare_table) {
+                if needed.iter().all(|c| known.contains(c)) {
+                    return Ok(false);
+                }
+            }
+        }
+
+        ensure_table_exists_pg(client, qualified_table, bare_table, &self.schema, data).await?;
+
+        {
+            let mut cache = self.ensured_columns_cache.write().await;
+            let entry = cache.entry(bare_table.to_string()).or_insert_with(|| {
+                let mut s = HashSet::new();
+                s.insert("id".to_string());
+                s.insert("created_at".to_string());
+                s.insert("updated_at".to_string());
+                s.insert("version".to_string());
+                s
+            });
+            for c in &needed {
+                entry.insert(c.clone());
+            }
+        }
+        Ok(true)
+    }
+
+    /// Return a schema-qualified table name for SQL statements
+    fn table_ref(&self, collection: &str) -> String {
+        let table = naming::to_table_name(collection);
+        if self.schema == "public" {
+            table
+        } else {
+            format!("{}.{}", self.schema, table)
+        }
+    }
+}
+
+impl Default for PostgresAdapter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+// ─── SQL Helpers ──────────────────────────────────────────────────────────────
+
+/// Convert a serde_json Value to a boxed ToSql, coercing types to match
+/// the target PostgreSQL column type. This avoids tokio-postgres type mismatches.
+///
+/// Key coercions:
+/// - NULL: typed to match column (Option::<f64>::None for DOUBLE PRECISION, etc.)
+/// - Number → BOOLEAN: 0/1 integers from SQLite coerced to bool
+/// - Number → DOUBLE PRECISION: i64 coerced to f64
+/// - String → BOOLEAN: "true"/"false" coerced to bool
+fn value_to_pg_typed(value: &Value, pg_data_type: Option<&str>) -> Box<dyn ToSql + Sync + Send> {
+    match value {
+        Value::Null => {
+            // NULL must be typed to match the target column — Postgres driver rejects
+            // Option::<String>::None for a DOUBLE PRECISION column, etc.
+            match pg_data_type {
+                Some("double precision") | Some("real") | Some("numeric") => {
+                    Box::new(Option::<f64>::None)
+                }
+                Some("bigint") | Some("integer") | Some("smallint") => {
+                    Box::new(Option::<i64>::None)
+                }
+                Some("boolean") => Box::new(Option::<bool>::None),
+                Some("jsonb") | Some("json") => Box::new(Option::<Json<Value>>::None),
+                Some("timestamp with time zone") => Box::new(Option::<DateTime<Utc>>::None),
+                Some("timestamp without time zone") => {
+                    Box::new(Option::<chrono::NaiveDateTime>::None)
+                }
+                _ => Box::new(Option::<String>::None),
+            }
+        }
+        Value::Bool(b) => {
+            match pg_data_type {
+                Some("text") | Some("character varying") => {
+                    // Column is TEXT but value is boolean — serialize as string
+                    Box::new(if *b {
+                        "true".to_string()
+                    } else {
+                        "false".to_string()
+                    })
+                }
+                Some("bigint") | Some("integer") | Some("smallint") => {
+                    // Column is integer — store as 0/1
+                    Box::new(if *b { 1_i64 } else { 0_i64 })
+                }
+                Some("jsonb") | Some("json") => Box::new(Json(value.clone())),
+                _ => Box::new(*b),
+            }
+        }
+        Value::Number(n) => {
+            match pg_data_type {
+                Some("boolean") => {
+                    // SQLite stores booleans as 0/1 integers
+                    Box::new(n.as_i64().map(|i| i != 0).unwrap_or(false))
+                }
+                Some("double precision") | Some("real") | Some("numeric") => {
+                    Box::new(n.as_f64().unwrap_or(0.0))
+                }
+                Some("bigint") | Some("integer") | Some("smallint") => {
+                    Box::new(n.as_i64().unwrap_or(0))
+                }
+                _ => {
+                    // No column type info — serialize as string (TEXT is the safest default).
+                    // Sending i64 to a TEXT column causes WrongType { postgres: Text, rust: "i64" }.
+                    // If the column is actually numeric, Postgres implicitly casts '123'::text to int.
+                    Box::new(n.to_string())
+                }
+            }
+        }
+        Value::String(s) => {
+            match pg_data_type {
+                Some("boolean") => {
+                    // SQLite may also store booleans as "true"/"false" strings
+                    let b = s.eq_ignore_ascii_case("true") || s == "1";
+                    Box::new(b)
+                }
+                Some("bigint") | Some("integer") | Some("smallint") => {
+                    // Numeric strings from SQLite
+                    Box::new(s.parse::<i64>().unwrap_or(0))
+                }
+                Some("double precision") | Some("real") | Some("numeric") => {
+                    Box::new(s.parse::<f64>().unwrap_or(0.0))
+                }
+                Some("jsonb") | Some("json") => {
+                    // JSON stored as TEXT in SQLite
+                    match serde_json::from_str::<Value>(s) {
+                        Ok(v) => Box::new(Json(v)),
+                        Err(_) => Box::new(s.clone()),
+                    }
+                }
+                _ => Box::new(s.clone()),
+            }
+        }
+        // Arrays and objects — normally JSONB, but coerce if target column differs
+        Value::Array(_) | Value::Object(_) => {
+            match pg_data_type {
+                Some("text") | Some("character varying") => {
+                    // Column is TEXT but value is JSON — serialize to string
+                    Box::new(serde_json::to_string(value).unwrap_or_default())
+                }
+                Some("boolean") => {
+                    // Shouldn't happen with fixed pg_type_from_value, but handle gracefully
+                    Box::new(false)
+                }
+                Some("bigint") | Some("integer") | Some("smallint") => Box::new(0_i64),
+                Some("double precision") | Some("real") | Some("numeric") => Box::new(0.0_f64),
+                _ => Box::new(Json(value.clone())),
+            }
+        }
+    }
+}
+
+/// Query column data types from information_schema for type-aware parameter coercion
+async fn get_column_types(
+    client: &deadpool_postgres::Client,
+    table: &str,
+    schema: &str,
+) -> HashMap<String, String> {
+    let sql = format!(
+        "SELECT column_name, data_type FROM information_schema.columns \
+         WHERE table_schema = '{}' AND table_name = '{}'",
+        schema, table
+    );
+    match client.query(&sql, &[]).await {
+        Ok(rows) => {
+            let mut types = HashMap::new();
+            for row in &rows {
+                types.insert(row.get::<_, String>(0), row.get::<_, String>(1));
+            }
+            types
+        }
+        Err(_) => HashMap::new(),
+    }
+}
+
+/// Infer PostgreSQL column type from a JSON value.
+/// Value type takes priority over naming conventions — an Array named "sessions_active"
+/// is JSONB, not BOOLEAN, regardless of the "_active" suffix.
+fn pg_type_from_value(value: &Value, col_name: &str) -> &'static str {
+    // Concrete types from value — no guessing needed
+    match value {
+        Value::Bool(_) => return "BOOLEAN",
+        Value::Array(_) | Value::Object(_) => return "JSONB",
+        _ => {}
+    }
+
+    // For ambiguous types (null, number, string), use naming convention hints
+    let is_boolean_col = col_name.starts_with("is_")
+        || col_name.starts_with("has_")
+        || col_name.ends_with("_active")
+        || col_name.ends_with("_enabled")
+        || col_name.ends_with("_visible")
+        || col_name.ends_with("_deleted");
+
+    if is_boolean_col {
+        return "BOOLEAN";
+    }
+
+    match value {
+        Value::Number(n) => {
+            if n.is_i64() {
+                "BIGINT"
+            } else {
+                "DOUBLE PRECISION"
+            }
+        }
+        Value::String(_) | Value::Null => "TEXT",
+        _ => "TEXT", // unreachable — concrete types handled above
+    }
+}
+
+/// Map FieldType enum to PostgreSQL type string
+fn pg_type_from_field_type(ft: &super::types::FieldType) -> &'static str {
+    match ft {
+        super::types::FieldType::String => "TEXT",
+        super::types::FieldType::Number => "DOUBLE PRECISION",
+        super::types::FieldType::Boolean => "BOOLEAN",
+        super::types::FieldType::Date => "TIMESTAMPTZ",
+        super::types::FieldType::Json => "JSONB",
+        super::types::FieldType::Uuid => "TEXT",
+    }
+}
+
+/// SQL keyword for a CascadeRule under Postgres semantics. Same
+/// mapping as sqlite — both speak SQL-standard cascade keywords.
+fn pg_cascade_rule_sql(rule: super::types::CascadeRule) -> &'static str {
+    use super::types::CascadeRule;
+    match rule {
+        CascadeRule::Restrict => "RESTRICT",
+        CascadeRule::Cascade => "CASCADE",
+        CascadeRule::SetNull => "SET NULL",
+        CascadeRule::NoAction => "NO ACTION",
+    }
+}
+
+/// Build WHERE clause with $N placeholders and collect parameter values.
+/// When `col_types` is provided, uses type-aware coercion to match actual Postgres
+/// column types — prevents WrongType errors when auto-created columns have unexpected types.
+fn build_where_clause(
+    filter: &Option<HashMap<String, FieldFilter>>,
+    param_offset: usize,
+    col_types: &HashMap<String, String>,
+) -> (String, Vec<Box<dyn ToSql + Sync + Send>>) {
+    let mut conditions = Vec::new();
+    let mut params: Vec<Box<dyn ToSql + Sync + Send>> = Vec::new();
+    let mut idx = param_offset;
+
+    // Helper: coerce value using column type if known
+    let coerce = |v: &Value, column: &str| -> Box<dyn ToSql + Sync + Send> {
+        let pg_type = col_types.get(column).map(|s| s.as_str());
+        value_to_pg_typed(v, pg_type)
+    };
+
+    if let Some(filters) = filter {
+        for (field, filter) in filters {
+            let column = naming::to_snake_case(field);
+            match filter {
+                FieldFilter::Value(v) => {
+                    if v.is_null() {
+                        conditions.push(format!("{} IS NULL", column));
+                    } else {
+                        idx += 1;
+                        conditions.push(format!("{} = ${}", column, idx));
+                        params.push(coerce(v, &column));
+                    }
+                }
+                FieldFilter::Operator(op) => match op {
+                    QueryOperator::Eq(v) => {
+                        idx += 1;
+                        conditions.push(format!("{} = ${}", column, idx));
+                        params.push(coerce(v, &column));
+                    }
+                    QueryOperator::Ne(v) => {
+                        idx += 1;
+                        conditions.push(format!("{} != ${}", column, idx));
+                        params.push(coerce(v, &column));
+                    }
+                    QueryOperator::Gt(v) => {
+                        idx += 1;
+                        conditions.push(format!("{} > ${}", column, idx));
+                        params.push(coerce(v, &column));
+                    }
+                    QueryOperator::Gte(v) => {
+                        idx += 1;
+                        conditions.push(format!("{} >= ${}", column, idx));
+                        params.push(coerce(v, &column));
+                    }
+                    QueryOperator::Lt(v) => {
+                        idx += 1;
+                        conditions.push(format!("{} < ${}", column, idx));
+                        params.push(coerce(v, &column));
+                    }
+                    QueryOperator::Lte(v) => {
+                        idx += 1;
+                        conditions.push(format!("{} <= ${}", column, idx));
+                        params.push(coerce(v, &column));
+                    }
+                    QueryOperator::In(values) => {
+                        let placeholders: Vec<String> = values
+                            .iter()
+                            .map(|v| {
+                                idx += 1;
+                                params.push(coerce(v, &column));
+                                format!("${}", idx)
+                            })
+                            .collect();
+                        conditions.push(format!("{} IN ({})", column, placeholders.join(", ")));
+                    }
+                    QueryOperator::NotIn(values) => {
+                        let placeholders: Vec<String> = values
+                            .iter()
+                            .map(|v| {
+                                idx += 1;
+                                params.push(coerce(v, &column));
+                                format!("${}", idx)
+                            })
+                            .collect();
+                        conditions.push(format!("{} NOT IN ({})", column, placeholders.join(", ")));
+                    }
+                    QueryOperator::Exists(exists) => {
+                        if *exists {
+                            conditions.push(format!("{} IS NOT NULL", column));
+                        } else {
+                            conditions.push(format!("{} IS NULL", column));
+                        }
+                    }
+                    QueryOperator::Regex(pattern) => {
+                        idx += 1;
+                        conditions.push(format!("{} ~ ${}", column, idx));
+                        params.push(Box::new(pattern.clone()));
+                    }
+                    QueryOperator::Contains(substr) => {
+                        idx += 1;
+                        conditions.push(format!("{} ILIKE ${}", column, idx));
+                        params.push(Box::new(format!("%{}%", substr)));
+                    }
+                    QueryOperator::IsNull => {
+                        conditions.push(format!("{} IS NULL", column));
+                    }
+                    QueryOperator::IsNotNull => {
+                        conditions.push(format!("{} IS NOT NULL", column));
+                    }
+                },
+            }
+        }
+    }
+
+    if conditions.is_empty() {
+        (String::new(), params)
+    } else {
+        (format!("WHERE {}", conditions.join(" AND ")), params)
+    }
+}
+
+/// Build ORDER BY clause
+/// Build SELECT clause from optional column projection.
+/// Converts camelCase field names to snake_case for SQL.
+/// Always includes id, created_at, updated_at, version (metadata columns).
+fn build_select_clause(select: &Option<Vec<String>>) -> String {
+    match select {
+        Some(cols) if !cols.is_empty() => {
+            let mut selected: Vec<String> = vec![
+                "id".to_string(),
+                "created_at".to_string(),
+                "updated_at".to_string(),
+                "version".to_string(),
+            ];
+            for col in cols {
+                let snake = naming::to_snake_case(col);
+                if snake != "id"
+                    && snake != "created_at"
+                    && snake != "updated_at"
+                    && snake != "version"
+                {
+                    selected.push(snake);
+                }
+            }
+            selected.join(", ")
+        }
+        _ => "*".to_string(),
+    }
+}
+
+fn build_order_clause(sort: &Option<Vec<super::query::SortSpec>>) -> String {
+    if let Some(sorts) = sort {
+        if !sorts.is_empty() {
+            let parts: Vec<_> = sorts
+                .iter()
+                .map(|s| {
+                    let dir = match s.direction {
+                        SortDirection::Asc => "ASC",
+                        SortDirection::Desc => "DESC",
+                    };
+                    format!("{} {}", naming::to_snake_case(&s.field), dir)
+                })
+                .collect();
+            return format!("ORDER BY {}", parts.join(", "));
+        }
+    }
+    String::new()
+}
+
+/// Convert a tokio_postgres Row to a DataRecord
+fn row_to_record(
+    row: &tokio_postgres::Row,
+    collection: &str,
+    columns: &[tokio_postgres::Column],
+) -> Result<DataRecord, String> {
+    let mut data = serde_json::Map::new();
+    let mut id: Option<String> = None;
+    let mut created_at: Option<String> = None;
+    let mut updated_at: Option<String> = None;
+    let mut version: Option<u32> = None;
+
+    for (i, col) in columns.iter().enumerate() {
+        let col_name = col.name();
+        let pg_type = col.type_();
+
+        let value: Value = match pg_type {
+            &tokio_postgres::types::Type::BOOL => match row.try_get::<_, Option<bool>>(i) {
+                Ok(Some(b)) => json!(b),
+                Ok(None) => Value::Null,
+                Err(_) => Value::Null,
+            },
+            &tokio_postgres::types::Type::INT2 => match row.try_get::<_, Option<i16>>(i) {
+                Ok(Some(n)) => json!(n),
+                Ok(None) => Value::Null,
+                Err(_) => Value::Null,
+            },
+            &tokio_postgres::types::Type::INT4 => match row.try_get::<_, Option<i32>>(i) {
+                Ok(Some(n)) => json!(n),
+                Ok(None) => Value::Null,
+                Err(_) => Value::Null,
+            },
+            &tokio_postgres::types::Type::INT8 => match row.try_get::<_, Option<i64>>(i) {
+                Ok(Some(n)) => json!(n),
+                Ok(None) => Value::Null,
+                Err(_) => Value::Null,
+            },
+            &tokio_postgres::types::Type::FLOAT4 => match row.try_get::<_, Option<f32>>(i) {
+                Ok(Some(n)) => json!(n),
+                Ok(None) => Value::Null,
+                Err(_) => Value::Null,
+            },
+            &tokio_postgres::types::Type::FLOAT8 => match row.try_get::<_, Option<f64>>(i) {
+                Ok(Some(n)) => json!(n),
+                Ok(None) => Value::Null,
+                Err(_) => Value::Null,
+            },
+            &tokio_postgres::types::Type::JSONB | &tokio_postgres::types::Type::JSON => {
+                match row.try_get::<_, Option<Json<Value>>>(i) {
+                    Ok(Some(j)) => j.0,
+                    Ok(None) => Value::Null,
+                    Err(_) => Value::Null,
+                }
+            }
+            &tokio_postgres::types::Type::TIMESTAMPTZ => {
+                match row.try_get::<_, Option<DateTime<Utc>>>(i) {
+                    Ok(Some(dt)) => json!(dt.to_rfc3339()),
+                    Ok(None) => Value::Null,
+                    Err(_) => Value::Null,
+                }
+            }
+            &tokio_postgres::types::Type::TIMESTAMP => {
+                match row.try_get::<_, Option<chrono::NaiveDateTime>>(i) {
+                    Ok(Some(ndt)) => {
+                        let dt: DateTime<Utc> = DateTime::from_naive_utc_and_offset(ndt, Utc);
+                        json!(dt.to_rfc3339())
+                    }
+                    Ok(None) => Value::Null,
+                    Err(_) => Value::Null,
+                }
+            }
+            _ => {
+                // Default: read as text — no speculative JSON parsing.
+                // JSONB/JSON columns are already handled above with proper typed extraction.
+                // TEXT that happens to look like JSON stays as a string (the schema said TEXT).
+                match row.try_get::<_, Option<String>>(i) {
+                    Ok(Some(s)) => json!(s),
+                    Ok(None) => Value::Null,
+                    Err(_) => Value::Null,
+                }
+            }
+        };
+
+        let camel_col = naming::to_camel_case(col_name);
+        match col_name {
+            "id" => id = value.as_str().map(|s| s.to_string()),
+            "created_at" => created_at = value.as_str().map(|s| s.to_string()),
+            "updated_at" => updated_at = value.as_str().map(|s| s.to_string()),
+            "version" => {
+                version = value
+                    .as_u64()
+                    .map(|n| n as u32)
+                    .or(value.as_i64().map(|n| n as u32))
+            }
+            _ => {
+                data.insert(camel_col, value);
+            }
+        }
+    }
+
+    // Include base fields in data for TypeScript compatibility
+    if let Some(ref id_str) = id {
+        data.insert("id".to_string(), json!(id_str));
+    }
+    if let Some(ref ts) = created_at {
+        data.insert("createdAt".to_string(), json!(ts));
+    }
+    if let Some(ref ts) = updated_at {
+        data.insert("updatedAt".to_string(), json!(ts));
+    }
+    if let Some(v) = version {
+        data.insert("version".to_string(), json!(v));
+    }
+
+    Ok(DataRecord {
+        id: id.unwrap_or_default(),
+        collection: collection.to_string(),
+        data: Value::Object(data),
+        metadata: RecordMetadata {
+            created_at: created_at.unwrap_or_else(|| chrono::Utc::now().to_rfc3339()),
+            updated_at: updated_at.unwrap_or_else(|| chrono::Utc::now().to_rfc3339()),
+            version: version.unwrap_or(1),
+            tags: None,
+            schema: None,
+            ttl: None,
+        },
+    })
+}
+
+// ─── Async Trait Implementation ──────────────────────────────────────────────
+
+#[async_trait]
+impl StorageAdapter for PostgresAdapter {
+    fn name(&self) -> &'static str {
+        "postgres"
+    }
+
+    fn capabilities(&self) -> AdapterCapabilities {
+        AdapterCapabilities {
+            supports_transactions: true,
+            supports_indexing: true,
+            supports_full_text_search: true,
+            supports_vector_search: false, // pgvector would be a separate feature
+            supports_joins: true,
+            supports_batch: true,
+            max_record_size: 1_073_741_824, // 1GB
+        }
+    }
+
+    async fn initialize(&mut self, config: AdapterConfig) -> Result<(), String> {
+        use crate::clog_info;
+
+        if let Some(ns) = &config.namespace {
+            self.schema = ns.clone();
+        }
+
+        let mut pg_config = Config::new();
+        pg_config.url = Some(config.connection_string.clone());
+        pg_config.manager = Some(ManagerConfig {
+            recycling_method: RecyclingMethod::Fast,
+        });
+        // Apply max_connections and wait timeout to deadpool.
+        // wait timeout = 10s prevents pool.get() from blocking forever when all
+        // connections are in use. Without this, pool exhaustion causes rayon thread
+        // starvation and cascading IPC death.
+        pg_config.pool = Some(deadpool_postgres::PoolConfig {
+            max_size: config.max_connections,
+            timeouts: deadpool_postgres::Timeouts {
+                wait: Some(std::time::Duration::from_secs(10)),
+                create: Some(std::time::Duration::from_secs(10)),
+                recycle: Some(std::time::Duration::from_secs(5)),
+            },
+            ..Default::default()
+        });
+
+        let pool = pg_config
+            .create_pool(Some(Runtime::Tokio1), NoTls)
+            .map_err(|e| format!("Failed to create Postgres pool: {}", e))?;
+
+        // Verify connectivity
+        let client = pool
+            .get()
+            .await
+            .map_err(|e| format!("Failed to connect to Postgres: {}", e))?;
+
+        // Ensure schema exists
+        client
+            .execute(&format!("CREATE SCHEMA IF NOT EXISTS {}", self.schema), &[])
+            .await
+            .map_err(|e| format!("Failed to create schema: {}", e))?;
+
+        clog_info!(
+            "PostgresAdapter initialized: pool_size={}, schema={}",
+            config.max_connections,
+            self.schema
+        );
+
+        self.pool = Some(pool);
+        Ok(())
+    }
+
+    async fn close(&mut self) -> Result<(), String> {
+        // Drop the pool - all connections will be closed
+        self.pool = None;
+        Ok(())
+    }
+
+    async fn create(&self, record: DataRecord) -> StorageResult<DataRecord> {
+        let pool = match self.pool() {
+            Ok(p) => p,
+            Err(e) => return StorageResult::err(e),
+        };
+        let client = match pool.get().await {
+            Ok(c) => c,
+            Err(e) => return StorageResult::err(format!("Pool error: {}", e)),
+        };
+
+        let bare_table = naming::to_table_name(&record.collection);
+        let qualified_table = self.table_ref(&record.collection);
+        let now: DateTime<Utc> = Utc::now();
+        let now_rfc3339 = now.to_rfc3339();
+
+        // Ensure table exists (auto-create from data shape).
+        // Invalidate column type cache only when the cached helper actually
+        // hit Postgres — if the row introduced no new columns, both caches
+        // stay warm and we save 2 round-trips on the steady-state hot path.
+        let schema_changed = match self
+            .ensure_table_exists_cached(&client, &qualified_table, &bare_table, &record.data)
+            .await
+        {
+            Ok(c) => c,
+            Err(e) => return StorageResult::err(e),
+        };
+        if schema_changed {
+            self.invalidate_column_cache(&bare_table).await;
+        }
+
+        // Get column types for type-aware parameter coercion
+        let col_types = self.cached_column_types(&client, &bare_table).await;
+
+        // Build column list and values
+        let mut columns = vec![
+            "id".to_string(),
+            "created_at".to_string(),
+            "updated_at".to_string(),
+            "version".to_string(),
+        ];
+        let mut params: Vec<Box<dyn ToSql + Sync + Send>> = vec![
+            Box::new(record.id.clone()),
+            Box::new(now),
+            Box::new(now),
+            Box::new(1_i64),
+        ];
+
+        if let Value::Object(data) = &record.data {
+            for (key, value) in data {
+                if METADATA_KEYS.contains(&key.as_str()) {
+                    continue;
+                }
+                let col_name = naming::to_snake_case(key);
+                let pg_type = col_types.get(&col_name).map(|s| s.as_str());
+                columns.push(col_name);
+                params.push(value_to_pg_typed(value, pg_type));
+            }
+        }
+
+        let placeholders: Vec<String> = (1..=columns.len()).map(|i| format!("${}", i)).collect();
+        let sql = format!(
+            "INSERT INTO {} ({}) VALUES ({}) ON CONFLICT (id) DO NOTHING",
+            qualified_table,
+            columns.join(", "),
+            placeholders.join(", ")
+        );
+
+        let params_ref: Vec<&(dyn ToSql + Sync)> =
+            params.iter().map(|b| &**b as &(dyn ToSql + Sync)).collect();
+
+        match client.execute(&sql, &params_ref).await {
+            Ok(rows) => {
+                if rows == 0 {
+                    // ON CONFLICT DO NOTHING — record already exists
+                    return StorageResult::err(format!("Record already exists: {}", record.id));
+                }
+                StorageResult::ok(DataRecord {
+                    metadata: RecordMetadata {
+                        created_at: now_rfc3339.clone(),
+                        updated_at: now_rfc3339,
+                        version: 1,
+                        ..record.metadata
+                    },
+                    ..record
+                })
+            }
+            Err(e) => {
+                // Diagnostic: include column names + types for debugging serialization errors
+                let col_info: Vec<String> = columns
+                    .iter()
+                    .enumerate()
+                    .map(|(i, c)| {
+                        let pg_type = col_types.get(c).map(|t| t.as_str()).unwrap_or("?");
+                        format!("${}: {}({})", i + 1, c, pg_type)
+                    })
+                    .collect();
+                StorageResult::err(format!(
+                    "Insert failed [{}]: {:?} | columns: [{}]",
+                    qualified_table,
+                    e,
+                    col_info.join(", ")
+                ))
+            }
+        }
+    }
+
+    async fn read(&self, collection: &str, id: &UUID) -> StorageResult<DataRecord> {
+        let pool = match self.pool() {
+            Ok(p) => p,
+            Err(e) => return StorageResult::err(e),
+        };
+        let client = match pool.get().await {
+            Ok(c) => c,
+            Err(e) => return StorageResult::err(format!("Pool error: {}", e)),
+        };
+
+        let table = self.table_ref(collection);
+
+        let sql = format!("SELECT * FROM {} WHERE id = $1 LIMIT 1", table);
+
+        let rows = match client.query(&sql, &[&id]).await {
+            Ok(r) => r,
+            Err(e) => {
+                let msg = format_pg_error(&e);
+                if msg.contains("does not exist") {
+                    return StorageResult::err(format!("Record not found: {}", id));
+                }
+                return StorageResult::err(format!("Query failed: {}", msg));
+            }
+        };
+
+        if rows.is_empty() {
+            return StorageResult::err(format!("Record not found: {}", id));
+        }
+
+        match row_to_record(&rows[0], collection, rows[0].columns()) {
+            Ok(record) => StorageResult::ok(record),
+            Err(e) => StorageResult::err(format!("Row conversion failed: {}", e)),
+        }
+    }
+
+    async fn query(&self, query: StorageQuery) -> StorageResult<Vec<DataRecord>> {
+        let pool = match self.pool() {
+            Ok(p) => p,
+            Err(e) => return StorageResult::err(e),
+        };
+        let client = match pool.get().await {
+            Ok(c) => c,
+            Err(e) => return StorageResult::err(format!("Pool error: {}", e)),
+        };
+
+        let bare_table = naming::to_table_name(&query.collection);
+        let table = self.table_ref(&query.collection);
+
+        // Schema evolution: ensure table + columns exist before SELECT.
+        // Without this, querying a stale table with new entity fields fails with
+        // "column X does not exist". Build a dummy data object from the SELECT
+        // projection so ensure_table_exists_pg can ALTER TABLE ADD COLUMN.
+        if let Some(ref cols) = query.select {
+            let mut dummy = serde_json::Map::new();
+            for col in cols {
+                dummy.insert(col.clone(), Value::Null);
+            }
+            let schema_changed = match self
+                .ensure_table_exists_cached(&client, &table, &bare_table, &Value::Object(dummy))
+                .await
+            {
+                Ok(c) => c,
+                Err(e) => return StorageResult::err(e),
+            };
+            if schema_changed {
+                self.invalidate_column_cache(&bare_table).await;
+            }
+        }
+
+        let col_types = self.cached_column_types(&client, &bare_table).await;
+        let (where_clause, where_params) = build_where_clause(&query.filter, 0, &col_types);
+        let order_clause = build_order_clause(&query.sort);
+
+        let select_clause = build_select_clause(&query.select);
+        let mut sql = format!("SELECT {} FROM {}", select_clause, table);
+        if !where_clause.is_empty() {
+            sql.push(' ');
+            sql.push_str(&where_clause);
+        }
+        if !order_clause.is_empty() {
+            sql.push(' ');
+            sql.push_str(&order_clause);
+        }
+        if let Some(limit) = query.limit {
+            sql.push_str(&format!(" LIMIT {}", limit));
+        }
+        if let Some(offset) = query.offset {
+            sql.push_str(&format!(" OFFSET {}", offset));
+        }
+
+        let params_ref: Vec<&(dyn ToSql + Sync)> = where_params
+            .iter()
+            .map(|b| &**b as &(dyn ToSql + Sync))
+            .collect();
+
+        let rows = match client.query(&sql, &params_ref).await {
+            Ok(r) => r,
+            Err(e) => {
+                let msg = format_pg_error(&e);
+                if msg.contains("does not exist") {
+                    return StorageResult::ok(Vec::new());
+                }
+                return StorageResult::err(format!("Query failed: {}", msg));
+            }
+        };
+
+        let mut records = Vec::with_capacity(rows.len());
+        for row in &rows {
+            match row_to_record(row, &query.collection, row.columns()) {
+                Ok(record) => records.push(record),
+                Err(e) => return StorageResult::err(format!("Row conversion failed: {}", e)),
+            }
+        }
+
+        StorageResult::ok(records)
+    }
+
+    async fn query_with_join(&self, query: StorageQuery) -> StorageResult<Vec<DataRecord>> {
+        let pool = match self.pool() {
+            Ok(p) => p,
+            Err(e) => return StorageResult::err(e),
+        };
+        let client = match pool.get().await {
+            Ok(c) => c,
+            Err(e) => return StorageResult::err(format!("Pool error: {}", e)),
+        };
+
+        let table = self.table_ref(&query.collection);
+
+        // If no joins specified, delegate to simple query
+        let joins = match &query.joins {
+            Some(j) if !j.is_empty() => j,
+            _ => return self.query(query).await,
+        };
+
+        // Build JOIN SQL — apply column projection to main table if specified
+        let main_select = match &query.select {
+            Some(cols) if !cols.is_empty() => {
+                let mut parts = vec![
+                    format!("{}.id", table),
+                    format!("{}.created_at", table),
+                    format!("{}.updated_at", table),
+                    format!("{}.version", table),
+                ];
+                for col in cols {
+                    let snake = naming::to_snake_case(col);
+                    if snake != "id"
+                        && snake != "created_at"
+                        && snake != "updated_at"
+                        && snake != "version"
+                    {
+                        parts.push(format!("{}.{}", table, snake));
+                    }
+                }
+                parts.join(", ")
+            }
+            _ => format!("{}.*", table),
+        };
+        let mut select_parts = vec![main_select];
+        let mut join_clauses = Vec::new();
+
+        for join in joins {
+            let join_table = self.table_ref(&join.collection);
+            let join_type_sql = match join.join_type {
+                super::query::JoinType::Left => "LEFT JOIN",
+                super::query::JoinType::Inner => "INNER JOIN",
+            };
+
+            let local_col = naming::to_snake_case(&join.local_field);
+            let foreign_col = naming::to_snake_case(&join.foreign_field);
+
+            // Select specific fields or all
+            if let Some(fields) = &join.select {
+                for field in fields {
+                    let pg_col = naming::to_snake_case(field);
+                    select_parts.push(format!(
+                        "{}.{} AS {}__{}",
+                        join_table, pg_col, join.alias, pg_col
+                    ));
+                }
+            } else {
+                select_parts.push(format!("{}.*", join_table));
+            }
+
+            join_clauses.push(format!(
+                "{} {} ON {}.{} = {}.{}",
+                join_type_sql, join_table, table, local_col, join_table, foreign_col
+            ));
+        }
+
+        let bare_table = naming::to_table_name(&query.collection);
+        let col_types = self.cached_column_types(&client, &bare_table).await;
+        let (where_clause, where_params) = build_where_clause(&query.filter, 0, &col_types);
+        let order_clause = build_order_clause(&query.sort);
+
+        let mut sql = format!(
+            "SELECT {} FROM {} {}",
+            select_parts.join(", "),
+            table,
+            join_clauses.join(" ")
+        );
+
+        if !where_clause.is_empty() {
+            sql.push(' ');
+            sql.push_str(&where_clause);
+        }
+        if !order_clause.is_empty() {
+            sql.push(' ');
+            sql.push_str(&order_clause);
+        }
+        if let Some(limit) = query.limit {
+            sql.push_str(&format!(" LIMIT {}", limit));
+        }
+        if let Some(offset) = query.offset {
+            sql.push_str(&format!(" OFFSET {}", offset));
+        }
+
+        let params_ref: Vec<&(dyn ToSql + Sync)> = where_params
+            .iter()
+            .map(|b| &**b as &(dyn ToSql + Sync))
+            .collect();
+
+        let rows = match client.query(&sql, &params_ref).await {
+            Ok(r) => r,
+            Err(e) => return StorageResult::err(format!("Join query failed: {}", e)),
+        };
+
+        let mut records = Vec::with_capacity(rows.len());
+        for row in &rows {
+            match row_to_record(row, &query.collection, row.columns()) {
+                Ok(record) => records.push(record),
+                Err(e) => return StorageResult::err(format!("Row conversion failed: {}", e)),
+            }
+        }
+
+        StorageResult::ok(records)
+    }
+
+    async fn count(&self, query: StorageQuery) -> StorageResult<usize> {
+        let pool = match self.pool() {
+            Ok(p) => p,
+            Err(e) => return StorageResult::err(e),
+        };
+        let client = match pool.get().await {
+            Ok(c) => c,
+            Err(e) => return StorageResult::err(format!("Pool error: {}", e)),
+        };
+
+        let bare_table = naming::to_table_name(&query.collection);
+        let table = self.table_ref(&query.collection);
+        let col_types = self.cached_column_types(&client, &bare_table).await;
+        let (where_clause, where_params) = build_where_clause(&query.filter, 0, &col_types);
+
+        let mut sql = format!("SELECT COUNT(*) FROM {}", table);
+        if !where_clause.is_empty() {
+            sql.push(' ');
+            sql.push_str(&where_clause);
+        }
+
+        let params_ref: Vec<&(dyn ToSql + Sync)> = where_params
+            .iter()
+            .map(|b| &**b as &(dyn ToSql + Sync))
+            .collect();
+
+        match client.query_one(&sql, &params_ref).await {
+            Ok(row) => {
+                let count: i64 = row.get(0);
+                StorageResult::ok(count as usize)
+            }
+            Err(e) => {
+                let msg = format_pg_error(&e);
+                if msg.contains("does not exist") {
+                    return StorageResult::ok(0);
+                }
+                StorageResult::err(format!("Count failed: {}", msg))
+            }
+        }
+    }
+
+    async fn update(
+        &self,
+        collection: &str,
+        id: &UUID,
+        data: Value,
+        increment_version: bool,
+    ) -> StorageResult<DataRecord> {
+        let pool = match self.pool() {
+            Ok(p) => p,
+            Err(e) => return StorageResult::err(e),
+        };
+        let client = match pool.get().await {
+            Ok(c) => c,
+            Err(e) => return StorageResult::err(format!("Pool error: {}", e)),
+        };
+
+        let bare_table = naming::to_table_name(collection);
+        let table = self.table_ref(collection);
+        let now: DateTime<Utc> = Utc::now();
+
+        // Get column types for type-aware parameter coercion
+        let col_types = self.cached_column_types(&client, &bare_table).await;
+
+        let mut sets = vec!["updated_at = $1".to_string()];
+        let mut params: Vec<Box<dyn ToSql + Sync + Send>> = vec![Box::new(now)];
+        let mut idx = 1_usize;
+
+        if increment_version {
+            sets.push("version = version + 1".to_string());
+        }
+
+        if let Value::Object(obj) = &data {
+            for (key, value) in obj {
+                if METADATA_KEYS.contains(&key.as_str()) {
+                    continue;
+                }
+                idx += 1;
+                let col_name = naming::to_snake_case(key);
+                let pg_type = col_types.get(&col_name).map(|s| s.as_str());
+                sets.push(format!("{} = ${}", col_name, idx));
+                params.push(value_to_pg_typed(value, pg_type));
+            }
+        }
+
+        idx += 1;
+        params.push(Box::new(id.clone()));
+
+        let sql = format!(
+            "UPDATE {} SET {} WHERE id = ${}",
+            table,
+            sets.join(", "),
+            idx
+        );
+        let params_ref: Vec<&(dyn ToSql + Sync)> =
+            params.iter().map(|b| &**b as &(dyn ToSql + Sync)).collect();
+
+        match client.execute(&sql, &params_ref).await {
+            Ok(rows) if rows > 0 => self.read(collection, id).await,
+            Ok(_) => StorageResult::err(format!("Record not found: {}", id)),
+            Err(e) => {
+                // Schema evolution: auto-add missing columns and retry.
+                // Evict the ensured-columns cache first — it lied (claimed a
+                // column existed that Postgres just rejected), so we must hit
+                // information_schema to rebuild ground truth.
+                let err_msg = format_pg_error(&e);
+                if err_msg.contains("does not exist") && err_msg.contains("column") {
+                    self.ensured_columns_cache.write().await.remove(&bare_table);
+                    if let Err(evolve_err) =
+                        ensure_table_exists_pg(&client, &table, &bare_table, &self.schema, &data)
+                            .await
+                    {
+                        return StorageResult::err(format!(
+                            "Update failed [{}]: {} (schema evolution also failed: {})",
+                            bare_table, err_msg, evolve_err
+                        ));
+                    }
+                    self.invalidate_column_cache(&bare_table).await;
+                    // Retry the update after adding columns
+                    match client.execute(&sql, &params_ref).await {
+                        Ok(rows) if rows > 0 => self.read(collection, id).await,
+                        Ok(_) => StorageResult::err(format!("Record not found: {}", id)),
+                        Err(e2) => StorageResult::err(format!(
+                            "Update failed [{}] after schema evolution: {}",
+                            bare_table,
+                            format_pg_error(&e2)
+                        )),
+                    }
+                } else {
+                    StorageResult::err(format!("Update failed [{}]: {}", bare_table, err_msg))
+                }
+            }
+        }
+    }
+
+    async fn delete(&self, collection: &str, id: &UUID) -> StorageResult<bool> {
+        let pool = match self.pool() {
+            Ok(p) => p,
+            Err(e) => return StorageResult::err(e),
+        };
+        let client = match pool.get().await {
+            Ok(c) => c,
+            Err(e) => return StorageResult::err(format!("Pool error: {}", e)),
+        };
+
+        let table = self.table_ref(collection);
+        let sql = format!("DELETE FROM {} WHERE id = $1", table);
+
+        match client.execute(&sql, &[&id]).await {
+            Ok(rows) => StorageResult::ok(rows > 0),
+            Err(e) => StorageResult::err(format!("Delete failed: {}", e)),
+        }
+    }
+
+    async fn batch(&self, operations: Vec<BatchOperation>) -> StorageResult<Vec<Value>> {
+        let mut results = Vec::with_capacity(operations.len());
+        for op in operations {
+            let result = match op.operation_type {
+                BatchOperationType::Create => {
+                    if let (Some(id), Some(data)) = (op.id, op.data) {
+                        let record = DataRecord {
+                            id,
+                            collection: op.collection,
+                            data,
+                            metadata: RecordMetadata::default(),
+                        };
+                        let r = self.create(record).await;
+                        json!({"success": r.success, "error": r.error})
+                    } else {
+                        json!({"success": false, "error": "Missing id or data"})
+                    }
+                }
+                BatchOperationType::Read => {
+                    if let Some(id) = op.id {
+                        let r = self.read(&op.collection, &id).await;
+                        json!({"success": r.success, "data": r.data, "error": r.error})
+                    } else {
+                        json!({"success": false, "error": "Missing id"})
+                    }
+                }
+                BatchOperationType::Update => {
+                    if let (Some(id), Some(data)) = (op.id, op.data) {
+                        let r = self.update(&op.collection, &id, data, true).await;
+                        json!({"success": r.success, "error": r.error})
+                    } else {
+                        json!({"success": false, "error": "Missing id or data"})
+                    }
+                }
+                BatchOperationType::Delete => {
+                    if let Some(id) = op.id {
+                        let r = self.delete(&op.collection, &id).await;
+                        json!({"success": r.success, "error": r.error})
+                    } else {
+                        json!({"success": false, "error": "Missing id"})
+                    }
+                }
+            };
+            results.push(result);
+        }
+        StorageResult::ok(results)
+    }
+
+    async fn ensure_schema(&self, schema: CollectionSchema) -> StorageResult<bool> {
+        let pool = match self.pool() {
+            Ok(p) => p,
+            Err(e) => return StorageResult::err(e),
+        };
+        let client = match pool.get().await {
+            Ok(c) => c,
+            Err(e) => return StorageResult::err(format!("Pool error: {}", e)),
+        };
+
+        let table = self.table_ref(&schema.collection);
+
+        let mut columns = vec![
+            "id TEXT PRIMARY KEY".to_string(),
+            "created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()".to_string(),
+            "updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()".to_string(),
+            "version BIGINT NOT NULL DEFAULT 1".to_string(),
+        ];
+
+        for field in &schema.fields {
+            let col_name = naming::to_snake_case(&field.name);
+            // Skip BaseEntity columns — adapter hardcodes them above.
+            // See sqlite.rs::do_ensure_schema for the rationale.
+            if super::entity::is_base_entity_column(&col_name) {
+                continue;
+            }
+            let col_type = pg_type_from_field_type(&field.field_type);
+
+            let mut col_def = format!("{} {}", col_name, col_type);
+            if !field.nullable {
+                col_def.push_str(" NOT NULL");
+            }
+            if field.unique {
+                col_def.push_str(" UNIQUE");
+            }
+            columns.push(col_def);
+        }
+
+        // Foreign keys — same shape as sqlite.rs::do_ensure_schema.
+        // Per [[no-fallbacks-ever]] + Joel 2026-06-03 ("provide a
+        // relational db this time"): emit FOREIGN KEY constraints
+        // inside CREATE TABLE so the DB enforces referential
+        // integrity, not application code.
+        for field in &schema.fields {
+            if let Some(fk) = &field.foreign_key {
+                let col_name = naming::to_snake_case(&field.name);
+                let target_table = self.table_ref(&fk.collection);
+                let target_col = naming::to_snake_case(&fk.field);
+                columns.push(format!(
+                    "FOREIGN KEY ({}) REFERENCES {}({}) ON DELETE {} ON UPDATE {}",
+                    col_name,
+                    target_table,
+                    target_col,
+                    pg_cascade_rule_sql(fk.on_delete),
+                    pg_cascade_rule_sql(fk.on_update),
+                ));
+            }
+        }
+
+        let sql = format!(
+            "CREATE TABLE IF NOT EXISTS {} ({})",
+            table,
+            columns.join(", ")
+        );
+
+        if let Err(e) = client.execute(&sql, &[]).await {
+            // Concurrent DDL race: table may already exist
+            let is_race = e.as_db_error().map_or(false, |db| {
+                matches!(
+                    db.code(),
+                    &tokio_postgres::error::SqlState::DUPLICATE_TABLE
+                        | &tokio_postgres::error::SqlState::UNIQUE_VIOLATION
+                )
+            });
+            if !is_race {
+                return StorageResult::err(format!("Create table failed: {}", format_pg_error(&e)));
+            }
+        }
+
+        // Create indexes
+        for field in &schema.fields {
+            if field.indexed {
+                let col_name = naming::to_snake_case(&field.name);
+                let idx_name = format!("idx_{}_{}", table, col_name);
+                let idx_sql = format!(
+                    "CREATE INDEX IF NOT EXISTS {} ON {} ({})",
+                    idx_name, table, col_name
+                );
+                if let Err(e) = client.execute(&idx_sql, &[]).await {
+                    return StorageResult::err(format!(
+                        "Create index failed: {}",
+                        format_pg_error(&e)
+                    ));
+                }
+            }
+        }
+
+        // Create composite indexes
+        for index in &schema.indexes {
+            let cols: Vec<String> = index
+                .fields
+                .iter()
+                .map(|f| naming::to_snake_case(f))
+                .collect();
+            let unique = if index.unique { "UNIQUE " } else { "" };
+            let idx_sql = format!(
+                "CREATE {}INDEX IF NOT EXISTS {} ON {} ({})",
+                unique,
+                naming::to_snake_case(&index.name),
+                table,
+                cols.join(", ")
+            );
+            if let Err(e) = client.execute(&idx_sql, &[]).await {
+                return StorageResult::err(format!(
+                    "Create composite index failed: {}",
+                    format_pg_error(&e)
+                ));
+            }
+        }
+
+        // Phase 2 Step 4: seed the ensured_columns_cache (m5's QW#1) with
+        // the DECLARED column set from the schema. Subsequent writes skip
+        // the ensure_table_exists_cached probe entirely — zero runtime
+        // data-shape inference on the hot write path. Previously the cache
+        // was populated lazily on first write and grew column-by-column;
+        // now it starts authoritative.
+        //
+        // Merge semantics (per m5-test review of PR #904): extend, don't
+        // replace. If ensure_table_exists_cached populated the entry first
+        // (theoretical ordering window — ensure_schema typically runs before
+        // any write, but nothing enforces that), we union our declared set
+        // into what's already known rather than dropping it. Matches the
+        // `or_insert_with + insert` pattern at ensure_table_exists_cached.
+        //
+        // Bare-table name matches what ensure_table_exists_cached uses as
+        // the cache key (the unqualified collection → snake_case conversion).
+        let bare_table = naming::to_table_name(&schema.collection);
+        {
+            let mut cache = self.ensured_columns_cache.write().await;
+            let entry = cache.entry(bare_table).or_insert_with(HashSet::new);
+            entry.insert("id".to_string());
+            entry.insert("created_at".to_string());
+            entry.insert("updated_at".to_string());
+            entry.insert("version".to_string());
+            for field in &schema.fields {
+                entry.insert(naming::to_snake_case(&field.name));
+            }
+        }
+
+        StorageResult::ok(true)
+    }
+
+    async fn list_collections(&self) -> StorageResult<Vec<String>> {
+        let pool = match self.pool() {
+            Ok(p) => p,
+            Err(e) => return StorageResult::err(e),
+        };
+        let client = match pool.get().await {
+            Ok(c) => c,
+            Err(e) => return StorageResult::err(format!("Pool error: {}", e)),
+        };
+
+        let sql = format!(
+            "SELECT table_name FROM information_schema.tables \
+             WHERE table_schema = '{}' AND table_type = 'BASE TABLE'",
+            self.schema
+        );
+
+        let rows = match client.query(&sql, &[]).await {
+            Ok(r) => r,
+            Err(e) => return StorageResult::err(format!("Query failed: {}", e)),
+        };
+
+        let tables: Vec<String> = rows.iter().map(|r| r.get::<_, String>(0)).collect();
+        StorageResult::ok(tables)
+    }
+
+    async fn collection_stats(&self, collection: &str) -> StorageResult<CollectionStats> {
+        let count_result = self
+            .count(StorageQuery {
+                collection: collection.to_string(),
+                ..Default::default()
+            })
+            .await;
+
+        let record_count = count_result.data.unwrap_or(0);
+
+        StorageResult::ok(CollectionStats {
+            name: collection.to_string(),
+            record_count,
+            total_size: 0,
+            last_modified: chrono::Utc::now().to_rfc3339(),
+            schema: None,
+            indices: None,
+        })
+    }
+
+    async fn truncate(&self, collection: &str) -> StorageResult<bool> {
+        let pool = match self.pool() {
+            Ok(p) => p,
+            Err(e) => return StorageResult::err(e),
+        };
+        let client = match pool.get().await {
+            Ok(c) => c,
+            Err(e) => return StorageResult::err(format!("Pool error: {}", e)),
+        };
+
+        let table = self.table_ref(collection);
+        let sql = format!("TRUNCATE TABLE {} CASCADE", table);
+
+        match client.execute(&sql, &[]).await {
+            Ok(_) => StorageResult::ok(true),
+            Err(e) => StorageResult::err(format!("Truncate failed: {}", e)),
+        }
+    }
+
+    async fn clear_all(&self) -> StorageResult<ClearAllResult> {
+        let tables_result = self.list_collections().await;
+        let tables = match tables_result.data {
+            Some(t) => t,
+            None => return StorageResult::err(tables_result.error.unwrap_or_default()),
+        };
+
+        let mut cleared = Vec::new();
+        for table in &tables {
+            if self.truncate(table).await.success {
+                cleared.push(table.clone());
+            }
+        }
+
+        StorageResult::ok(ClearAllResult {
+            tables_cleared: cleared,
+            records_deleted: 0,
+        })
+    }
+
+    async fn cleanup(&self) -> Result<(), String> {
+        let pool = self.pool()?;
+        let client = pool.get().await.map_err(|e| format!("Pool error: {}", e))?;
+
+        // VACUUM FULL requires exclusive lock, use regular VACUUM + ANALYZE
+        client
+            .execute("VACUUM", &[])
+            .await
+            .map_err(|e| format!("Vacuum failed: {}", e))?;
+
+        client
+            .execute("ANALYZE", &[])
+            .await
+            .map_err(|e| format!("Analyze failed: {}", e))?;
+
+        Ok(())
+    }
+}
+
+/// Auto-create table from JSON data shape (matches SQLite behavior).
+/// `qualified_table` is the schema-qualified name for DDL/DML (e.g. "test_orm.users").
+/// `bare_table` is the unqualified name for information_schema queries.
+/// `schema` is the schema name for information_schema filtering.
+async fn ensure_table_exists_pg(
+    client: &deadpool_postgres::Client,
+    qualified_table: &str,
+    bare_table: &str,
+    schema: &str,
+    data: &Value,
+) -> Result<(), String> {
+    // Try CREATE TABLE IF NOT EXISTS first (idempotent, handles races).
+    // Previous approach checked SELECT EXISTS first, but that TOCTOU race
+    // caused "duplicate key on pg_class" errors under concurrent creates.
+    let mut columns = vec![
+        "id TEXT PRIMARY KEY".to_string(),
+        "created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()".to_string(),
+        "updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()".to_string(),
+        "version BIGINT NOT NULL DEFAULT 1".to_string(),
+    ];
+
+    if let Value::Object(obj) = data {
+        for (key, value) in obj {
+            if METADATA_KEYS.contains(&key.as_str()) {
+                continue;
+            }
+            let col_name = naming::to_snake_case(key);
+            let col_type = pg_type_from_value(value, &col_name);
+            columns.push(format!("{} {}", col_name, col_type));
+        }
+    }
+
+    let sql = format!(
+        "CREATE TABLE IF NOT EXISTS {} ({})",
+        qualified_table,
+        columns.join(", ")
+    );
+
+    match client.execute(&sql, &[]).await {
+        Ok(_) => {}
+        Err(e) => {
+            // Concurrent CREATE TABLE IF NOT EXISTS can race on pg_class.
+            // Error code 42P07 = duplicate_table — another connection won the race.
+            // Error code 23505 = unique_violation on pg_class index.
+            // Both mean the table exists — safe to continue.
+            let is_race = e.as_db_error().map_or(false, |db| {
+                matches!(
+                    db.code(),
+                    &tokio_postgres::error::SqlState::DUPLICATE_TABLE
+                        | &tokio_postgres::error::SqlState::UNIQUE_VIOLATION
+                )
+            });
+            if !is_race {
+                return Err(format!("Create table failed: {}", format_pg_error(&e)));
+            }
+        }
+    }
+
+    // Schema evolution: add any missing columns
+    if let Value::Object(obj) = data {
+        let cols_sql = format!(
+            "SELECT column_name FROM information_schema.columns \
+             WHERE table_schema = '{}' AND table_name = '{}'",
+            schema, bare_table
+        );
+        let rows = client
+            .query(&cols_sql, &[])
+            .await
+            .map_err(|e| format!("Column check failed: {}", format_pg_error(&e)))?;
+        let existing_cols: Vec<String> = rows.iter().map(|r| r.get::<_, String>(0)).collect();
+
+        for (key, value) in obj {
+            if METADATA_KEYS.contains(&key.as_str()) {
+                continue;
+            }
+            let col_name = naming::to_snake_case(key);
+            if !existing_cols.contains(&col_name) {
+                let col_type = pg_type_from_value(value, &col_name);
+                let alter_sql = format!(
+                    "ALTER TABLE {} ADD COLUMN IF NOT EXISTS {} {}",
+                    qualified_table, col_name, col_type
+                );
+                client
+                    .execute(&alter_sql, &[])
+                    .await
+                    .map_err(|e| format!("Add column failed: {}", format_pg_error(&e)))?;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// These tests require a live PostgreSQL instance.
+    /// Run with: cargo test --lib -- --ignored postgres
+    /// Or: DATABASE_URL=postgres://user:pass@localhost/testdb cargo test --lib -- --ignored
+
+    fn get_test_url() -> String {
+        std::env::var("DATABASE_URL").unwrap_or_else(|_| {
+            "postgres://continuum:continuum@localhost:5432/continuum_test".to_string()
+        })
+    }
+
+    async fn setup_pg_adapter() -> PostgresAdapter {
+        let mut adapter = PostgresAdapter::new();
+        adapter
+            .initialize(AdapterConfig {
+                connection_string: get_test_url(),
+                namespace: Some("test_orm".to_string()),
+                timeout_ms: 30_000,
+                max_connections: 5,
+            })
+            .await
+            .expect("PostgreSQL connection failed - is Postgres running?");
+
+        // Clean test schema
+        let pool = adapter.pool().unwrap();
+        let client = pool.get().await.unwrap();
+        client
+            .execute("SET search_path TO test_orm", &[])
+            .await
+            .unwrap();
+
+        adapter
+    }
+
+    #[tokio::test]
+    #[ignore] // Requires live Postgres
+    async fn test_pg_create_and_read() {
+        let adapter = setup_pg_adapter().await;
+
+        // Clean up from previous runs
+        let _ = adapter.truncate("users").await;
+
+        adapter
+            .ensure_schema(CollectionSchema {
+                collection: "users".to_string(),
+                fields: vec![super::super::types::SchemaField {
+                    name: "name".to_string(),
+                    field_type: super::super::types::FieldType::String,
+                    indexed: false,
+                    unique: false,
+                    nullable: false,
+                    max_length: None,
+                    foreign_key: None,
+                }],
+                indexes: vec![],
+            })
+            .await;
+
+        let record = DataRecord {
+            id: "pg-test-123".to_string(),
+            collection: "users".to_string(),
+            data: json!({"name": "test-user"}),
+            metadata: RecordMetadata::default(),
+        };
+
+        let create_result = adapter.create(record).await;
+        assert!(
+            create_result.success,
+            "Create failed: {:?}",
+            create_result.error
+        );
+
+        let read_result = adapter.read("users", &"pg-test-123".to_string()).await;
+        assert!(read_result.success, "Read failed: {:?}", read_result.error);
+        let data = read_result.data.unwrap();
+        assert_eq!(data.data["name"], "test-user");
+    }
+
+    #[tokio::test]
+    #[ignore] // Requires live Postgres
+    async fn test_pg_query_with_filters() {
+        let adapter = setup_pg_adapter().await;
+
+        adapter
+            .ensure_schema(CollectionSchema {
+                collection: "query_test".to_string(),
+                fields: vec![
+                    super::super::types::SchemaField {
+                        name: "name".to_string(),
+                        field_type: super::super::types::FieldType::String,
+                        indexed: true,
+                        unique: false,
+                        nullable: false,
+                        max_length: None,
+                        foreign_key: None,
+                    },
+                    super::super::types::SchemaField {
+                        name: "age".to_string(),
+                        field_type: super::super::types::FieldType::Number,
+                        indexed: false,
+                        unique: false,
+                        nullable: true,
+                        max_length: None,
+                        foreign_key: None,
+                    },
+                ],
+                indexes: vec![],
+            })
+            .await;
+
+        let _ = adapter.truncate("query_test").await;
+
+        // Create test records
+        for (i, name) in ["Alice", "Bob", "Charlie"].iter().enumerate() {
+            let record = DataRecord {
+                id: format!("qt-{}", i),
+                collection: "query_test".to_string(),
+                data: json!({"name": name, "age": 20 + i as i64 * 5}),
+                metadata: RecordMetadata::default(),
+            };
+            let r = adapter.create(record).await;
+            assert!(r.success, "Create failed: {:?}", r.error);
+        }
+
+        // Query all
+        let all = adapter
+            .query(StorageQuery {
+                collection: "query_test".to_string(),
+                ..Default::default()
+            })
+            .await;
+        assert!(all.success);
+        assert_eq!(all.data.as_ref().unwrap().len(), 3);
+
+        // Query with filter
+        let mut filter = HashMap::new();
+        filter.insert("name".to_string(), FieldFilter::Value(json!("Alice")));
+        let filtered = adapter
+            .query(StorageQuery {
+                collection: "query_test".to_string(),
+                filter: Some(filter),
+                ..Default::default()
+            })
+            .await;
+        assert!(filtered.success);
+        assert_eq!(filtered.data.as_ref().unwrap().len(), 1);
+
+        // Count
+        let count = adapter
+            .count(StorageQuery {
+                collection: "query_test".to_string(),
+                ..Default::default()
+            })
+            .await;
+        assert!(count.success);
+        assert_eq!(count.data.unwrap(), 3);
+    }
+
+    #[tokio::test]
+    #[ignore] // Requires live Postgres
+    async fn test_pg_update_and_delete() {
+        let adapter = setup_pg_adapter().await;
+
+        adapter
+            .ensure_schema(CollectionSchema {
+                collection: "update_test".to_string(),
+                fields: vec![super::super::types::SchemaField {
+                    name: "name".to_string(),
+                    field_type: super::super::types::FieldType::String,
+                    indexed: false,
+                    unique: false,
+                    nullable: false,
+                    max_length: None,
+                    foreign_key: None,
+                }],
+                indexes: vec![],
+            })
+            .await;
+
+        let _ = adapter.truncate("update_test").await;
+
+        // Create
+        let record = DataRecord {
+            id: "upd-1".to_string(),
+            collection: "update_test".to_string(),
+            data: json!({"name": "Before"}),
+            metadata: RecordMetadata::default(),
+        };
+        adapter.create(record).await;
+
+        // Update
+        let updated = adapter
+            .update(
+                "update_test",
+                &"upd-1".to_string(),
+                json!({"name": "After"}),
+                true,
+            )
+            .await;
+        assert!(updated.success);
+        let data = updated.data.unwrap();
+        assert_eq!(data.data["name"], "After");
+
+        // Delete
+        let deleted = adapter.delete("update_test", &"upd-1".to_string()).await;
+        assert!(deleted.success);
+        assert!(deleted.data.unwrap());
+
+        // Verify gone
+        let read = adapter.read("update_test", &"upd-1".to_string()).await;
+        assert!(!read.success);
+    }
+
+    #[tokio::test]
+    #[ignore] // Requires live Postgres
+    async fn test_pg_list_collections_and_stats() {
+        let adapter = setup_pg_adapter().await;
+
+        // Ensure at least one table exists
+        adapter
+            .ensure_schema(CollectionSchema {
+                collection: "stats_test".to_string(),
+                fields: vec![super::super::types::SchemaField {
+                    name: "data".to_string(),
+                    field_type: super::super::types::FieldType::Json,
+                    indexed: false,
+                    unique: false,
+                    nullable: true,
+                    max_length: None,
+                    foreign_key: None,
+                }],
+                indexes: vec![],
+            })
+            .await;
+
+        let collections = adapter.list_collections().await;
+        assert!(collections.success);
+        assert!(collections
+            .data
+            .unwrap()
+            .contains(&"stats_test".to_string()));
+
+        let stats = adapter.collection_stats("stats_test").await;
+        assert!(stats.success);
+    }
+
+    #[tokio::test]
+    #[ignore] // Requires live Postgres
+    async fn test_pg_batch_operations() {
+        let adapter = setup_pg_adapter().await;
+
+        adapter
+            .ensure_schema(CollectionSchema {
+                collection: "batch_test".to_string(),
+                fields: vec![super::super::types::SchemaField {
+                    name: "value".to_string(),
+                    field_type: super::super::types::FieldType::String,
+                    indexed: false,
+                    unique: false,
+                    nullable: true,
+                    max_length: None,
+                    foreign_key: None,
+                }],
+                indexes: vec![],
+            })
+            .await;
+
+        let _ = adapter.truncate("batch_test").await;
+
+        let ops = vec![
+            BatchOperation {
+                operation_type: BatchOperationType::Create,
+                collection: "batch_test".to_string(),
+                id: Some("batch-1".to_string()),
+                data: Some(json!({"value": "one"})),
+            },
+            BatchOperation {
+                operation_type: BatchOperationType::Create,
+                collection: "batch_test".to_string(),
+                id: Some("batch-2".to_string()),
+                data: Some(json!({"value": "two"})),
+            },
+            BatchOperation {
+                operation_type: BatchOperationType::Read,
+                collection: "batch_test".to_string(),
+                id: Some("batch-1".to_string()),
+                data: None,
+            },
+        ];
+
+        let result = adapter.batch(ops).await;
+        assert!(result.success);
+        let results = result.data.unwrap();
+        assert_eq!(results.len(), 3);
+        assert!(results[0]["success"].as_bool().unwrap());
+        assert!(results[1]["success"].as_bool().unwrap());
+        assert!(results[2]["success"].as_bool().unwrap());
+    }
+
+    #[tokio::test]
+    #[ignore] // Requires live Postgres
+    async fn test_pg_jsonb_columns() {
+        let adapter = setup_pg_adapter().await;
+
+        adapter
+            .ensure_schema(CollectionSchema {
+                collection: "jsonb_test".to_string(),
+                fields: vec![
+                    super::super::types::SchemaField {
+                        name: "config".to_string(),
+                        field_type: super::super::types::FieldType::Json,
+                        indexed: false,
+                        unique: false,
+                        nullable: true,
+                        max_length: None,
+                        foreign_key: None,
+                    },
+                    super::super::types::SchemaField {
+                        name: "tags".to_string(),
+                        field_type: super::super::types::FieldType::Json,
+                        indexed: false,
+                        unique: false,
+                        nullable: true,
+                        max_length: None,
+                        foreign_key: None,
+                    },
+                ],
+                indexes: vec![],
+            })
+            .await;
+
+        let _ = adapter.truncate("jsonb_test").await;
+
+        let record = DataRecord {
+            id: "jsonb-1".to_string(),
+            collection: "jsonb_test".to_string(),
+            data: json!({
+                "config": {"theme": "dark", "fontSize": 14},
+                "tags": ["rust", "postgres", "orm"]
+            }),
+            metadata: RecordMetadata::default(),
+        };
+
+        let create = adapter.create(record).await;
+        assert!(create.success, "JSONB create failed: {:?}", create.error);
+
+        let read = adapter.read("jsonb_test", &"jsonb-1".to_string()).await;
+        assert!(read.success, "JSONB read failed: {:?}", read.error);
+
+        let data = read.data.unwrap();
+        // JSONB should preserve the structure
+        assert_eq!(data.data["config"]["theme"], "dark");
+        assert_eq!(data.data["tags"][0], "rust");
+    }
+
+    #[tokio::test]
+    #[ignore] // Requires live Postgres
+    async fn test_pg_clear_all() {
+        let adapter = setup_pg_adapter().await;
+
+        // Create a table with data
+        adapter
+            .ensure_schema(CollectionSchema {
+                collection: "clear_test".to_string(),
+                fields: vec![super::super::types::SchemaField {
+                    name: "x".to_string(),
+                    field_type: super::super::types::FieldType::String,
+                    indexed: false,
+                    unique: false,
+                    nullable: true,
+                    max_length: None,
+                    foreign_key: None,
+                }],
+                indexes: vec![],
+            })
+            .await;
+
+        let record = DataRecord {
+            id: "clear-1".to_string(),
+            collection: "clear_test".to_string(),
+            data: json!({"x": "y"}),
+            metadata: RecordMetadata::default(),
+        };
+        adapter.create(record).await;
+
+        // Clear all
+        let result = adapter.clear_all().await;
+        assert!(result.success);
+
+        // Verify empty
+        let count = adapter
+            .count(StorageQuery {
+                collection: "clear_test".to_string(),
+                ..Default::default()
+            })
+            .await;
+        assert_eq!(count.data.unwrap(), 0);
+    }
+}

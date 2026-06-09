@@ -26,7 +26,7 @@
  * - Training happens AFTER all milestones (batch, not per-milestone)
  */
 
-import type { Pipeline, PipelineStep } from '../../../workers/continuum-core/bindings/modules/sentinel';
+import type { Pipeline, PipelineStep } from '../../../../core/continuum-core/bindings/modules/sentinel';
 import type { DemoPipelineConfig } from './DemoTypes';
 import { demoEvent } from './DemoTypes';
 

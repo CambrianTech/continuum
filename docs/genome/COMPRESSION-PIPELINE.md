@@ -290,7 +290,7 @@ This is personalized model compression. Your model, your data, your hardware, yo
 ## File Structure
 
 ```
-src/workers/continuum-core/src/modules/plasticity/
+core/continuum-core/src/modules/plasticity/
 ├── mod.rs          — IPC routing, handle_command
 ├── types.rs        — HeadTopology, CompressionRecipe, DeviceSpec, GgufQuantType
 ├── scoring.rs      — Per-head gradient utilization scoring
@@ -302,7 +302,7 @@ src/workers/continuum-core/src/modules/plasticity/
 ├── pipeline.rs     — [NEW] End-to-end orchestration
 ├── validation.rs   — Integration tests, GGUF verification
 
-src/workers/continuum-core/src/inference/
+core/continuum-core/src/inference/
 ├── vendored/quantized_llama.rs  — GGUF inference (Qwen2 + variable heads)
 ├── backends/llama_gguf.rs       — LlamaGgufBackend
 ├── backends/mod.rs              — ModelBackend trait, generate()

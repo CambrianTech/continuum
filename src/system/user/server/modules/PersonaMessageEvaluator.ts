@@ -1,14 +1,16 @@
 /**
  * PersonaMessageEvaluator - Handles message evaluation and response decision for PersonaUser
  *
- * REFACTORING: Extracted from PersonaUser.ts (lines 566-1869)
- * Pure function extraction - no behavioral changes
+ * This module orchestrates the response flow:
+ * - Rust fullEvaluate (ALL pre-response gates in one IPC call)
+ * - Response coordination (turn claiming)
+ * - Cognition-based response planning + execution
+ * - Training signal extraction (awaited, not fire-and-forget)
  *
- * This module contains the core message evaluation logic:
- * - Cognition-based response planning
- * - LLM-based gating decisions
- * - Heuristic fallbacks
- * - Response coordination
+ * No heuristic gates. Per Joel 2026-05-29: the cognition decides, the
+ * orchestration surfaces failures. Decision-time errors default to silent
+ * (don't respond) — see evaluateShouldRespond's outer catch — but that's
+ * a safe default, not a second decision algorithm.
  */
 
 import type { UUID } from '../../../core/types/CrossPlatformUUID';
@@ -30,10 +32,10 @@ import type { RAGContext } from '../../../data/entities/CoordinationDecisionEnti
 import type { RAGContext as PipelineRAGContext, RAGArtifact } from '../../../rag/shared/RAGTypes';
 import { truncate } from '../../../../shared/utils/StringUtils';
 import type { DecisionContext } from './cognition/adapters/IDecisionAdapter';
-import { getChatCoordinator } from '../../../coordination/server/ChatCoordinationStream';
+import { getChatCoordinator, type ChatThought } from '../../../coordination/server/ChatCoordinationStream';
 import { calculateMessagePriority } from './PersonaInbox';
 import { toInboxMessageRequest } from './RustCognitionBridge';
-import type { SenderType, FullEvaluateResult, SocialSignals } from '../../../../shared/generated';
+import type { SenderType, FullEvaluateResult, SocialSignals } from '@shared/generated';
 import type { FastPathDecision } from './central-nervous-system/CNSTypes';
 // personaSleepManager no longer needed — sleep mode gating moved to Rust evaluator
 import {
@@ -90,9 +92,8 @@ export type GatingResult = GatingRespondResult | GatingSilentResult;
  *
  * Handles:
  * - Cognition-based response planning (with SelfState, WorkingMemory)
- * - Message gating (should respond?)
+ * - Message gating via Rust fullEvaluate (ALL gates in one IPC call)
  * - Response coordination (with other AIs)
- * - Heuristic scoring and fallbacks
  */
 export class PersonaMessageEvaluator {
   private readonly trainingSignalExtractor: PersonaTrainingSignalExtractor;
@@ -175,14 +176,27 @@ export class PersonaMessageEvaluator {
       return;
     }
 
+    const coordinationStart = Date.now();
+    const claimGranted = await this.coordinateResponseClaim(messageEntity, earlyResult);
+    evalTiming['coordination_claim'] = Date.now() - coordinationStart;
+    if (!claimGranted) {
+      this.personaUser.logAIDecision('SILENT', 'coordination: another persona owns this turn', {
+        message: safeMessageText.slice(0, 100),
+        sender: messageEntity.senderName,
+        roomId: messageEntity.roomId,
+      });
+      return;
+    }
+
     // ECHO CHAMBER: Now handled by Rust Gate 6 inside fullEvaluate() above.
     // No separate TS-side check needed — Rust checks echo chamber atomically.
 
-    // SIGNAL DETECTION: Analyze message content for training signals
-    // Fire-and-forget - AI classifier determines if content is feedback
-    this.detectAndBufferTrainingSignal(messageEntity).catch(err => {
-      this.log(`⚠️ ${this.personaUser.displayName}: Signal detection failed (non-fatal):`, err);
-    });
+    // SIGNAL DETECTION: Analyze message content for training signals.
+    // Awaited (was fire-and-forget) — silent failure here means the persona
+    // misses learning signals. If it throws, the outer catch in
+    // evaluateAndPossiblyRespondWithCognition turns it into silent-on-error
+    // (the correct default for evaluation failure).
+    await this.detectAndBufferTrainingSignal(messageEntity);
 
     // STEP 1: Create Task from message
     let t0 = Date.now();
@@ -590,60 +604,24 @@ export class PersonaMessageEvaluator {
     // No centralized coordinator - each AI uses recipes to decide if they should contribute
     this.log(`✅ ${this.personaUser.displayName}: Autonomous decision to respond (RAG-based reasoning, conf=${gatingResult.confidence})`);
 
-    // 🔧 POST-INFERENCE VALIDATION: delegated to PersonaMessageGate
-    const postInferenceStart = Date.now();
-    const postInferenceResult = await this.messageGate.checkPostInferenceAdequacy(
-      messageEntity,
-      this.personaUser.rustCognition,
-    );
-
-    if (postInferenceResult.shouldSkip) {
-      this.log(`[GATE:POST_INFERENCE] ${this.personaUser.displayName}: BLOCK — ${postInferenceResult.reason}`);
-
-      if (this.personaUser.client) {
-        Events.emit<AIDecidedSilentEventData>(
-          DataDaemon.jtagContext!,
-          AI_DECISION_EVENTS.DECIDED_SILENT,
-          {
-            personaId: this.personaUser.id,
-            personaName: this.personaUser.displayName,
-            roomId: messageEntity.roomId,
-            messageId: messageEntity.id,
-            isHumanMessage: senderIsHuman,
-            timestamp: Date.now(),
-            reason: `Post-inference: ${postInferenceResult.reason}`,
-            confidence: 0.95,
-            gatingModel: 'post-inference'
-          },
-          { scope: EVENT_SCOPES.ROOM, scopeId: messageEntity.roomId }
-        ).catch(err => this.log(`⚠️ Event emit failed: ${err}`));
-
-        getAIAudioBridge().setCognitiveState(this.personaUser.id, 'idle').catch(() => {});
-        Events.emit(DataDaemon.jtagContext!, PRESENCE_EVENTS.TYPING_STOP, {
-          userId: this.personaUser.id, displayName: this.personaUser.displayName, roomId: messageEntity.roomId
-        }).catch(() => {});
-      }
-
-      this.personaUser.logAIDecision('SILENT', `Post-inference skip: ${postInferenceResult.reason}`, {
-        message: messageEntity.content.text,
-        sender: messageEntity.senderName,
-        roomId: messageEntity.roomId
-      });
-
-      // PHASE 5C: Log post-inference SILENT with full RAG context (already built)
-      CoordinationDecisionLogger.logDecision({
-        ...decisionContext,
-        action: 'SILENT',
-        reasoning: `Post-inference: ${postInferenceResult.reason}`,
-        responseTime: Date.now() - postInferenceStart,
-        tags: [...(decisionContext.tags ?? []), 'post-inference-block']
-      }).catch(err => this.log(`⚠️ Failed to log post-inference SILENT decision: ${err}`));
-
-      return;
-    }
-
-
-    this.log(`⏱️ ${this.personaUser.displayName}: [INNER] post-inference validation=${Date.now() - postInferenceStart}ms`);
+    // REMOVED: TS-side post-inference adequacy gate (2026-05-16, Joel's
+    // architecture reset). This gate ran `messageGate.checkPostInferenceAdequacy`
+    // AFTER inference completed and suppressed later personas when an earlier
+    // one (typically Helper AI) already posted an "adequate" response — exactly
+    // the Helper-only-path / TS-cognition-policy anti-pattern Joel banned.
+    //
+    // Per the reset: "every persona must own ... decision ... runtime only
+    // schedules compute lanes based on resources." Each persona's pre-inference
+    // should-respond is in Rust (cognition/should-respond, #1284); admission +
+    // engram recall are in Rust (#1121 series); the resource-aware gate is
+    // moving to the central resources daemon (#1299 broker stack). A TS gate
+    // that runs AFTER inference is policy duplication — and the suppression
+    // semantics specifically reproduce the "Helper-only" path Joel called out.
+    //
+    // The original logic dispatched DECIDED_SILENT, set idle audio state,
+    // emitted typing-stop, logged via CoordinationDecisionLogger. None of that
+    // is needed when the persona just naturally proceeds to post — no
+    // suppression event, no silent-decision logging, just the response.
 
     // 🔧 PHASE: Update RAG context (fire-and-forget — bookkeeping, not needed before generation)
     // The pre-built RAG context from evaluateShouldRespond already has current messages.
@@ -693,9 +671,10 @@ export class PersonaMessageEvaluator {
     // Signal conversation activity (warms room — active conversation stays alive)
     getChatCoordinator().onMessageServiced(messageEntity.roomId, this.personaUser.id);
 
-    // Track response for rate limiting (Rust is sole authority)
-    this.personaUser.rustCognition.trackResponse(messageEntity.roomId)
-      .catch(err => this.log(`⚠️ Rust trackResponse failed (non-fatal): ${err}`));
+    // Track response for rate limiting. Rust is sole authority — if this
+    // fails the rate counter is wrong and the persona could flood. Awaited,
+    // not fire-and-forget; no swallow.
+    await this.personaUser.rustCognition.trackResponse(messageEntity.roomId);
 
     // PHASE 2: Track activity in PersonaState (energy depletion, mood calculation)
     // Recalculate priority to estimate complexity (higher priority = more engaging conversation)
@@ -716,6 +695,42 @@ export class PersonaMessageEvaluator {
     await this.personaUser.personaState.recordActivity(estimatedDurationMs, messageComplexity);
 
     this.log(`🧠 ${this.personaUser.displayName}: State updated (energy=${this.personaUser.personaState.getState().energy.toFixed(2)}, mood=${this.personaUser.personaState.getState().mood})`);
+  }
+
+  /**
+   * One room message should become one coordinated response turn unless the
+   * room explicitly allows more responders. The cheap Rust gate may say several
+   * personas are eligible; this claim step selects the responder before RAG,
+   * memory recall, embeddings, or generation begin.
+   */
+  private async coordinateResponseClaim(
+    messageEntity: ProcessableMessage,
+    earlyResult: FullEvaluateResult,
+  ): Promise<boolean> {
+    const coordinator = getChatCoordinator();
+    const thought: ChatThought = {
+      personaId: this.personaUser.id,
+      personaName: this.personaUser.displayName,
+      type: 'claiming',
+      confidence: earlyResult.confidence,
+      reasoning: `${earlyResult.gate}: ${earlyResult.reason}`,
+      timestamp: Date.now(),
+      messageId: messageEntity.id,
+      roomId: messageEntity.roomId,
+    };
+
+    await coordinator.broadcastChatThought(messageEntity.id, messageEntity.roomId, thought);
+    const decision = await coordinator.waitForChatDecision(messageEntity.id);
+    if (!decision) {
+      this.log(`⏰ ${this.personaUser.displayName}: Coordination timeout for ${messageEntity.id.slice(0, 8)} — deferring`);
+      return false;
+    }
+
+    const granted = decision.granted.includes(this.personaUser.id);
+    if (!granted) {
+      this.log(`🧵 ${this.personaUser.displayName}: Deferring ${messageEntity.id.slice(0, 8)} to coordinated responder`);
+    }
+    return granted;
   }
 
   /**
@@ -946,7 +961,7 @@ export class PersonaMessageEvaluator {
         ).catch(err => this.log(`⚠️ Error event emit failed: ${err}`));
       }
 
-      // Error in evaluation = SILENT. No fallback guessing.
+      // Error in evaluation = SILENT. No guessing path.
       return {
         shouldRespond: false as const,
         confidence: 0,

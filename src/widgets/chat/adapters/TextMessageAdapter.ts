@@ -160,6 +160,11 @@ export class TextMessageAdapter extends AbstractMessageAdapter<TextContentData> 
     return out;
   }
 
+  // renderMessageElement: inherits the DRY base default (#1158).
+  // TextMessageAdapter's content is a clean string from `renderContent`,
+  // so the base's parseContent → createAdapterWrapper → detached-template
+  // path is exactly what we want. No override needed.
+
   async handleContentLoading(_element: HTMLElement): Promise<void> {
     // Text content loads instantly, no async work needed
     return Promise.resolve();

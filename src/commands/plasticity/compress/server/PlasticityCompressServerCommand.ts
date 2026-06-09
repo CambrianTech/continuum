@@ -7,7 +7,7 @@ import { CommandBase, type ICommandDaemon } from '@daemons/command-daemon/shared
 import type { JTAGContext } from '@system/core/types/JTAGTypes';
 import type { PlasticityCompressParams, PlasticityCompressResult } from '../shared/PlasticityCompressTypes';
 import { createPlasticityCompressResultFromParams } from '../shared/PlasticityCompressTypes';
-import { RustCoreIPCClient } from '../../../../workers/continuum-core/bindings/RustCoreIPC';
+import { RustCoreIPCClient } from '../../../../../core/continuum-core/bindings/RustCoreIPC';
 
 export class PlasticityCompressServerCommand extends CommandBase<PlasticityCompressParams, PlasticityCompressResult> {
 

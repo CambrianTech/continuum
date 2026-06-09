@@ -477,13 +477,7 @@
     {
       "name": "utilities/hello",
       "description": "Simple hello world command for testing",
-      "params": {
-        "_noParams": {
-          "type": "string",
-          "required": false,
-          "description": "_noParams parameter"
-        }
-      }
+      "params": {}
     },
     {
       "name": "utilities/docs/search",
@@ -3314,24 +3308,12 @@
     {
       "name": "migration/verify",
       "description": "Verify migration integrity by comparing record counts between source and target",
-      "params": {
-        "_noParams": {
-          "type": "string",
-          "required": false,
-          "description": "_noParams parameter"
-        }
-      }
+      "params": {}
     },
     {
       "name": "migration/status",
       "description": "Get current migration progress with per-collection breakdown",
-      "params": {
-        "_noParams": {
-          "type": "string",
-          "required": false,
-          "description": "_noParams parameter"
-        }
-      }
+      "params": {}
     },
     {
       "name": "migration/start",
@@ -3378,24 +3360,12 @@
     {
       "name": "migration/resume",
       "description": "Resume a paused migration from its last checkpoint",
-      "params": {
-        "_noParams": {
-          "type": "string",
-          "required": false,
-          "description": "_noParams parameter"
-        }
-      }
+      "params": {}
     },
     {
       "name": "migration/pause",
       "description": "Pause an in-flight migration. Can be resumed later from the last checkpoint.",
-      "params": {
-        "_noParams": {
-          "type": "string",
-          "required": false,
-          "description": "_noParams parameter"
-        }
-      }
+      "params": {}
     },
     {
       "name": "migration/cutover",
@@ -4349,13 +4319,7 @@
     {
       "name": "interface/browser/capabilities",
       "description": "Check available browser automation capabilities. Returns explicit status for each capability (webmcp, puppeteer, etc). No fallbacks - AIs see exactly what is/isn't available.",
-      "params": {
-        "_noParams": {
-          "type": "string",
-          "required": false,
-          "description": "_noParams parameter"
-        }
-      }
+      "params": {}
     },
     {
       "name": "inference/generate",
@@ -4401,13 +4365,7 @@
     {
       "name": "inference/capacity",
       "description": "Report local-inference concurrency cap. How many parallel generate requests the hardware can handle simultaneously — matches the BatchScheduler's n_seq_max and the InferenceCoordinator's admission slots. Scaled by RAM: 48GB+ → 3, 16GB+ → 2, else 1. Single source of truth across the TS admission layer and the Rust scheduler (see issue #887).",
-      "params": {
-        "_noParams": {
-          "type": "string",
-          "required": false,
-          "description": "_noParams parameter"
-        }
-      }
+      "params": {}
     },
     {
       "name": "help",
@@ -4454,13 +4412,7 @@
     {
       "name": "grid/setup-check",
       "description": "Diagnose grid setup: Tailscale install, connectivity, HTTPS certs, peers, Docker grid profile, and actionable fix steps. Run this to see what's needed before enabling distributed compute.",
-      "params": {
-        "_noParams": {
-          "type": "string",
-          "required": false,
-          "description": "_noParams parameter"
-        }
-      }
+      "params": {}
     },
     {
       "name": "grid/send",
@@ -8571,13 +8523,7 @@
     {
       "name": "code/shell/status",
       "description": "Get shell session info for the persona's workspace — current working directory, active and total execution count. No parameters required (userId auto-injected).",
-      "params": {
-        "_noParams": {
-          "type": "string",
-          "required": false,
-          "description": "_noParams parameter"
-        }
-      }
+      "params": {}
     },
     {
       "name": "code/shell/sentinel",
@@ -9082,6 +9028,68 @@
           "type": "boolean",
           "required": false,
           "description": "force parameter"
+        }
+      }
+    },
+    {
+      "name": "airc/send",
+      "description": "Send a message to the airc mesh from inside Continuum. Wraps the airc CLI's `airc send` command — broadcasts to a channel by default, DMs a peer when peer is provided. First-class surface for the AircBridge integration (continuum#967, AGENT-BACKBONE-INTEGRATION §11.2): personas (or any caller) can publish to the cross-machine peer mesh that humans + Claude Code + Codex tabs share. Outbox direction only; inbox routing (airc → persona inbox) is a separate v0.5 follow-up requiring an embedded `airc connect` Monitor process tree.",
+      "params": {
+        "message": {
+          "type": "string",
+          "required": true,
+          "description": "message parameter"
+        },
+        "channel": {
+          "type": "string",
+          "required": false,
+          "description": "channel parameter"
+        },
+        "peer": {
+          "type": "string",
+          "required": false,
+          "description": "peer parameter"
+        }
+      }
+    },
+    {
+      "name": "airc/bridge",
+      "description": "Ingest one AIRC message into Continuum. Normal messages become chat; explicit !continuum directives become bounded development and test commands. This is the inbox-side companion to airc/send: it lets AIRC peers drive Continuum validation without shelling through jtag chat/send or chat/export by hand.",
+      "params": {
+        "message": {
+          "type": "string",
+          "required": true,
+          "description": "message parameter"
+        },
+        "senderNick": {
+          "type": "string",
+          "required": false,
+          "description": "senderNick parameter"
+        },
+        "channel": {
+          "type": "string",
+          "required": false,
+          "description": "channel parameter"
+        },
+        "room": {
+          "type": "string",
+          "required": false,
+          "description": "room parameter"
+        },
+        "commandPrefix": {
+          "type": "string",
+          "required": false,
+          "description": "commandPrefix parameter"
+        },
+        "dryRun": {
+          "type": "boolean",
+          "required": false,
+          "description": "dryRun parameter"
+        },
+        "mirrorResponse": {
+          "type": "boolean",
+          "required": false,
+          "description": "mirrorResponse parameter"
         }
       }
     },
@@ -9826,6 +9834,16 @@
           "description": "allowFallback parameter"
         }
       }
+    },
+    {
+      "name": "ai/local-inference/status",
+      "description": "Query Continuum's local inference HTTP server (Anthropic-compatible Messages API). Returns whether the server is running and the URL external agents (Claude Code via ANTHROPIC_BASE_URL, future Codex via OPENAI_BASE_URL) should point at to use local Continuum models instead of cloud APIs. First-class surface for the AGENT-BACKBONE integration story (PR #976 §1-§4).",
+      "params": {}
+    },
+    {
+      "name": "ai/local-inference/start",
+      "description": "Ensure Continuum's local inference HTTP server is running and return its URL. Idempotent — if already running, returns the existing URL without restarting. External agents (Claude Code via ANTHROPIC_BASE_URL, future Codex via OPENAI_BASE_URL) should call this once at startup, then use the returned URL. First-class surface for the AGENT-BACKBONE integration story (PR #976 §1-§4); previously only reachable as the Sentinel-internal sentinel/local-inference-start IPC command.",
+      "params": {}
     },
     {
       "name": "ai/key/test",

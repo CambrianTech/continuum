@@ -33,7 +33,7 @@ import type {
   JoinSpec,
 } from '../shared/DataStorageAdapter';
 import type { VectorSearchResult } from '../shared/VectorSearchTypes';
-import { resolveCoreEndpoint, connectToCoreEndpoint, type CoreEndpoint } from '../../../workers/continuum-core/bindings/modules/base';
+import { resolveCoreEndpoint, connectToCoreEndpoint, type CoreEndpoint } from '../../../../core/continuum-core/bindings/modules/base';
 
 // Input type for joins (allows optional properties)
 type JoinSpecInput = Partial<JoinSpec> & Pick<JoinSpec, 'collection' | 'alias' | 'localField' | 'foreignField'>;
@@ -176,20 +176,30 @@ class IPCConnection {
 
   private scheduleReconnect(): void {
     if (this.reconnectTimer) return; // already scheduled
-    const delay = Math.min(1000 * Math.pow(2, this.reconnectAttempts), 30000); // 1s, 2s, 4s, ... max 30s
+    const delay = Math.min(1000 * Math.pow(2, Math.min(this.reconnectAttempts, 5)), 30000); // 1s, 2s, 4s, 8s, 16s, 30s, 30s, ...
     this.reconnectTimer = setTimeout(async () => {
       this.reconnectTimer = null;
       try {
         await this.connect();
+        if (this.reconnectAttempts > 0) {
+          console.log(`[IPC#${this.connectionIndex}] Reconnected to continuum-core after ${this.reconnectAttempts} attempts`);
+        }
         this.reconnectAttempts = 0;
-        console.log(`[IPC#${this.connectionIndex}] Reconnected to continuum-core`);
       } catch {
         this.reconnectAttempts++;
-        if (this.reconnectAttempts < 10) {
-          this.scheduleReconnect(); // try again with longer delay
-        } else {
-          console.error(`[IPC#${this.connectionIndex}] Gave up reconnecting after ${this.reconnectAttempts} attempts`);
+        // continuum#722 — never give up reconnecting. Pre-fix capped at
+        // 10 attempts (~3min total) which left widgets blank permanently
+        // when the Rust core was slow to come up. The orchestrator now
+        // respawns the core on crash (continuum#722 layer A); the IPC
+        // pool needs to be ready when it does.
+        //
+        // Surface every Nth failure so the log isn't silent during a
+        // long outage — debugger / user can tell whether reconnection
+        // is iterating (different errors) or stuck (same error).
+        if (this.reconnectAttempts === 1 || this.reconnectAttempts % 10 === 0) {
+          console.warn(`[IPC#${this.connectionIndex}] Reconnect attempt ${this.reconnectAttempts} failed — continuum-core still unreachable. Will keep trying.`);
         }
+        this.scheduleReconnect(); // try again with longer delay
       }
     }, delay);
   }

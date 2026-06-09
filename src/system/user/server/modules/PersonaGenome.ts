@@ -22,7 +22,7 @@ import { LoRAAdapter, type LoRAAdapterState } from './LoRAAdapter';
 import { generateUUID } from '../../../core/types/CrossPlatformUUID';
 import type { AIProviderAdapter } from '../../../../daemons/ai-provider-daemon/shared/AIProviderTypesV2';
 import type { RustCognitionBridge } from './RustCognitionBridge';
-import type { GenomeAdapterInfo } from '../../../../shared/generated';
+import type { GenomeAdapterInfo } from '@shared/generated';
 import { AdapterStore } from '../../../genome/server/AdapterStore';
 
 /**
@@ -536,7 +536,8 @@ export class PersonaGenome {
    * Get active adapters in format suitable for TextGenerationRequest
    *
    * This is the bridge between PersonaGenome and the AI provider system.
-   * Returns adapter info that CandleAdapter can use to load/apply LoRA weights.
+   * Returns adapter info that the active training/runtime adapter can use to
+   * load or apply LoRA weights.
    */
   getActiveAdaptersForRequest(): Array<{ name: string; path: string; domain: string; scale: number }> {
     const result: Array<{ name: string; path: string; domain: string; scale: number }> = [];

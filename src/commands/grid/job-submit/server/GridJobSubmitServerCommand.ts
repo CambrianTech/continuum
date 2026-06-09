@@ -10,7 +10,7 @@ import type { JTAGContext } from '@system/core/types/JTAGTypes';
 import { ValidationError } from '@system/core/types/ErrorTypes';
 import type { GridJobSubmitParams, GridJobSubmitResult } from '../shared/GridJobSubmitTypes';
 import { createGridJobSubmitResultFromParams } from '../shared/GridJobSubmitTypes';
-import { RustCoreIPCClient, getContinuumCoreSocketPath } from '../../../../workers/continuum-core/bindings/RustCoreIPC';
+import { RustCoreIPCClient, getContinuumCoreSocketPath } from '../../../../../core/continuum-core/bindings/RustCoreIPC';
 import { COMMANDS } from '@shared/generated-command-constants';
 
 export class GridJobSubmitServerCommand extends CommandBase<GridJobSubmitParams, GridJobSubmitResult> {

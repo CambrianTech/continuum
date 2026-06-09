@@ -1,0 +1,35 @@
+{
+  "name": "@jtag-commands/cognition/recall-engrams",
+  "version": "1.0.0",
+  "description": "Query a persona's admitted-engram store. Modes: 'recent' (default) returns newest-first N engrams; 'by_id' looks up by exact engram id; 'by_keyword' does case-insensitive substring match; 'by_origin' filters by EngramOriginKind (chat | airc | tool | self_reflection). Wraps the Rust IPC handler shipped in #1121 PR-5.",
+  "main": "server/CognitionRecallEngramsServerCommand.ts",
+  "types": "shared/CognitionRecallEngramsTypes.ts",
+  "scripts": {
+    "test": "npm run test:unit && npm run test:integration",
+    "test:unit": "npx vitest run test/unit/*.test.ts",
+    "test:integration": "npx tsx test/integration/CognitionRecallEngramsIntegration.test.ts",
+    "lint": "npx eslint **/*.ts",
+    "typecheck": "npx tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@jtag/core": "*"
+  },
+  "files": [
+    "shared/**/*.ts",
+    "browser/**/*.ts",
+    "server/**/*.ts",
+    "test/**/*.ts",
+    "README.md"
+  ],
+  "keywords": [
+    "jtag",
+    "command",
+    "cognition/recall-engrams"
+  ],
+  "license": "MIT",
+  "author": "",
+  "repository": {
+    "type": "git",
+    "url": ""
+  }
+}

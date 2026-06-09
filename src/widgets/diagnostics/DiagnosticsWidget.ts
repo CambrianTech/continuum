@@ -21,7 +21,7 @@ import { ContentService } from '../../system/state/ContentService';
 
 import { DataList } from '../../commands/data/list/shared/DataListTypes';
 import { CodeTree, type CodeTreeResult } from '../../commands/code/tree/shared/CodeTreeTypes';
-import type { TreeNode } from '../../shared/generated/code/TreeNode';
+import type { TreeNode } from '@shared/generated/code/TreeNode';
 
 // Verbose logging helper for browser
 const verbose = () => typeof window !== 'undefined' && window.JTAG_VERBOSE === true;

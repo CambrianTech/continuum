@@ -8,7 +8,7 @@ import { CommandBase, type ICommandDaemon } from '@daemons/command-daemon/shared
 import type { JTAGContext } from '@system/core/types/JTAGTypes';
 import type { MigrationStatusParams, MigrationStatusResult } from '../shared/MigrationStatusTypes';
 import { createMigrationStatusResultFromParams } from '../shared/MigrationStatusTypes';
-import { RustCoreIPCClient } from '../../../../workers/continuum-core/bindings/RustCoreIPC';
+import { RustCoreIPCClient } from '../../../../../core/continuum-core/bindings/RustCoreIPC';
 
 export class MigrationStatusServerCommand extends CommandBase<MigrationStatusParams, MigrationStatusResult> {
 

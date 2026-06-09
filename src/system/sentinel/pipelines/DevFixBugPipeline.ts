@@ -30,7 +30,7 @@
  *   });
  */
 
-import type { Pipeline, PipelineStep } from '../../../workers/continuum-core/bindings/modules/sentinel';
+import type { Pipeline, PipelineStep } from '../../../../core/continuum-core/bindings/modules/sentinel';
 
 export interface DevFixBugConfig {
   /** Bug description (natural language, error message, or issue link) */

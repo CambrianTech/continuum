@@ -1,697 +1,1288 @@
-# Alpha Gap Analysis — Master Plan
+# Alpha Gap Analysis — Stability Plan
 
-**Updated**: 2026-04-17
-**Status**: **PR #891 (feature/inference-perf) closing.** Docker Model Runner is THE inference runtime (Metal Mac, CUDA Windows/Linux). Candle off chat routing. ORM abstraction sealed (handles not URLs). SQLite default (postgres opt-in). Full matrix GREEN: M5 Mac × {Docker, npm}, BigMama Win/WSL2 × Docker. Zero API keys required for first chat. Image pipeline: dev builds on metal → pushes to ghcr → CI validates (never builds). 4 personas chat via DMR GPU on both platforms.
-**Branch**: `feature/inference-perf` → merging to `main`
+<!-- markdownlint-disable MD013 MD060 -->
 
-This document is the **single source of truth** for remaining work. Each phase is ordered by dependency — later phases build on earlier ones. Every open GitHub issue is mapped to exactly one phase. Issues are breadcrumbs on the path to fruition — not a backlog to dread.
+**Updated**: 2026-05-16
+**Branch policy**: every change lands as `PR -> canary -> validation -> PR -> main`
+**Status**: active planning document, shared by humans and agents
+**Operating rule**: Rust owns runtime logic. TypeScript is UI, schema, generated types, and thin command/transport glue.
+**Template-first rule**: new commands must start from `tools/generator/specs/*.json` and Continuum's command generator. Manual command scaffolds are not acceptable; hand edits are for post-generation behavior only.
+**Architectural mandate**: Rust-first, GPU-first, replay-tested. No patchwork substitutes for the target architecture.
+**Runtime substrate spec**: [CBAR Substrate Architecture](../architecture/CBAR-SUBSTRATE-ARCHITECTURE.md) — the runtime/RTOS contract every Rust concern inherits. ALPHA-GAP owns sequencing; CBAR-SUBSTRATE owns the substrate behavior the lanes converge on.
+**Sensory model plan**: [Sensory Model And Experiential Plasticity Plan](../architecture/SENSORY-MODEL-AND-EXPERIENTIAL-PLASTICITY-PLAN.md)
 
----
+This document is the alpha/gap source of truth. Work should not proceed as disconnected chat threads, private agent branches, or parallel "gap" documents. Each implementation PR must name the issue it advances, land in `canary`, publish validation evidence, and only then be considered for promotion to `main`.
 
-## What Changed Since April 6 (PR #891 Session — 2026-04-16/17)
+As of 2026-05-13 there is exactly one alpha/gap planning file:
+`docs/planning/ALPHA-GAP-ANALYSIS.md`. New alpha/gap notes are merged here or
+deleted. Architecture references may point here, but they must not become
+parallel status ledgers.
 
-### Architecture Pivots
-- **Docker Model Runner = chat inference runtime.** DMR via Docker Desktop: Metal on Mac (~50 tok/s), CUDA on Windows/Linux (~237 tok/s). Candle relegated to training/LoRA only. No silent CPU fallback — hard error with install hint. (#905, closed)
-- **ORM abstraction sealed.** Callers pass opaque handles (`@main`, `@persona:<slug>`, `@metrics`), never URLs/paths/SQL. Rust resolves handles to backends via `entity_schemas.json` (build-time codegen from TS decorators). SQLite default; postgres opt-in via `--profile postgres`. Phase 2 complete (steps 1-4).
-- **Mac Option B.** Native continuum-core on host (Metal) + Docker support services. TCP listener (port 9100) bridges containerized node-server to native core via `host.docker.internal`. Docker VM sized to PHYS - 18GB headroom (not 80%).
-- **Windows Docker Desktop.** DMR reachable from containers at `model-runner.docker.internal` (not localhost:12434). CUDA backend requires Docker Desktop Settings → AI toggles (not scriptable yet, #910).
+The previous 2026-05-01 alpha snapshot was useful but had become a historical log. This revision turns it into an execution plan for the current goal: **stable, GPU-first, Rust-centric Continuum with modular Docker and fast tests that do not depend on the Node/UI stack for core correctness.**
 
-### Infrastructure
-- **CI validates, doesn't build** (#906, closed — pipeline in place). `push-image.sh` on metal hardware → ghcr stages images → CI pulls + validates. Image-coverage gate checks `:pr-<N>` tags exist.
-- **Cross-mode collision detection.** `npm stop` kills BOTH Docker stack AND native processes. `npm start` detects if Docker stack already running (and vice versa). Port pre-flight fails fast on 9001/9100 instead of late EADDRINUSE.
-- **Heartbeat pre-flight.** Detects stale/duplicate native continuum-core-server on Mac. Fails loud with kill recipe.
+## 2026-05-11 Management Reset: Rust First, No Patchwork
 
-### Verified Matrix (PR #891)
-| Cell | Status | Detail |
+Continuum is past the point where local fixes to Node/TS symptoms can be treated as product progress. The product is a native, highly concurrent, resource-aware AI runtime that happens to have a browser UI. The implementation posture is therefore:
+
+1. **Architecture beats remedies.** If the bug is caused by cognition, inference, resource pressure, model routing, memory, tool execution, or persona scheduling living in the wrong layer, the fix is to move the responsibility to the right Rust abstraction. Do not add another TS guardrail around a Rust/runtime concern.
+2. **Rust is the design language for runtime behavior.** New behavior under persona cognition, model selection, local inference, paging, LoRA/model residency, memory consolidation, tool parsing/execution, command execution semantics, and recovery state machines starts in Rust.
+3. **TypeScript is not the prototype layer for cognition.** TS iteration speed is not a justification. A fast prototype that stays in Node becomes permanent debt. The correct loop is Rust unit test -> Rust replay/VDD test -> canary integration -> live smoke.
+4. **No silent fallbacks.** CPU fallback, cloud fallback, empty API-key availability, generic model fallback, placeholder UUIDs, and swallowed command errors are alpha blockers unless explicitly surfaced as degraded state with a user-visible remedy.
+5. **No feature-disabling fixes.** A fix that makes tests pass by disabling local models, personas, chat, inference, telemetry, or replay is a regression unless the PR is explicitly a kill-switch PR and documents the lost capability.
+6. **No PR sediment.** PRs are not storage. A PR either merges to canary after evidence, gets rebased and completed, or is closed with the durable work moved into an issue/design doc. Long-lived PRs are technical debt.
+7. **Perfect means structurally correct, not endlessly delayed.** The expected cadence is small architectural PRs that move ownership to Rust and delete the wrong layer. "Perfect" does not mean one huge rewrite branch; it means every merged increment points at the final architecture and reduces future work.
+
+This reset supersedes "move fast and break things" thinking. Agents have enough implementation bandwidth to spend the extra hours on the correct abstraction up front. That is cheaper than debugging another patchwork system for weeks.
+
+## Alpha Definition
+
+Alpha is ready when a fresh user can install, boot, talk to personas, recover from common failures, and verify the system mostly through Rust-level tests.
+
+The non-negotiable gates:
+
+1. **GPU-first inference**: alpha-critical inference must use Metal/CUDA/Vulkan/DMR GPU paths. No silent CPU fallback.
+2. **Sensory personas are the product**: every standard persona has multimodal perception, voice/audio, avatar/control output, and WebRTC room presence. Text-only is a compatibility/degraded mode, not the alpha target.
+3. **Qwen multimodal is the local target family**: Qwen 3.5 now and Qwen 3.6 next are treated as first-class local persona targets. Vision/audio layer gaps, unsupported kernels, CPU layers, or upstream runtime limitations are owned engineering work.
+4. **Rust core owns behavior**: persona cognition, scheduling, resource pressure, paging, inference orchestration, replay, and recovery live in Rust.
+5. **Node/TS is thin**: browser UI, command adapters, schemas, generated types, and minimal transport glue only.
+6. **Docker is modular and GPU-capable**: one opaque "build/seed/start everything" container is not alpha-ready. Services need independent health, logs, restart boundaries, and GPU-visible runtime paths on machines that support them.
+7. **Fast tests first**: core work must be covered by `cargo test` or Rust integration tests before Docker/browser tests.
+8. **Canary is the sync point**: every fix is merged to `canary` first and tested there by available Mac/Windows/Linux agents.
+9. **No silent success**: health checks, install steps, inference readiness, bridge delivery, and UI restore paths must fail loud with actionable evidence.
+10. **Persona cognition TS line count trends downward**: any PR touching persona cognition must delete or shrink TS runtime logic under `src/system/user/server/` unless it is strictly UI/schema/adapter work.
+11. **Replay before live claims**: persona, RAG, tool, inference, and memory changes must include a Rust fixture/replay/unit test before "works live" is accepted.
+12. **One source of truth per runtime fact**: model definitions, provider availability, context budgets, hardware capability, config values, room identity, and command semantics must each have one canonical owner.
+
+### CBAR-Like Runtime Substrate Contract
+
+Continuum's Rust runtime must adopt the CBAR performance philosophy from
+`/Users/joelteply/Development/cambrian/cb-mobile-sdk/cpp/cbar`: small concern
+modules inherit the hard machinery from a shared substrate. The goal is not a
+literal class-for-class port; the goal is the same RTOS-style behavior:
+concurrent lanes, bounded queues, lazy shared artifacts, realtime-first
+cadence, resource admission, and handles instead of copied memory.
+
+The reusable substrate must provide:
+
+- `RuntimeFrame` / `CognitionTurnFrame`: one turn/frame object with stable keys
+  and lazy artifacts for room snapshot, RAG, model selection, prompt fragments,
+  media handles, embeddings, KV leases, LoRA leases, response envelopes, and
+  trace metrics.
+- `RuntimeModule`: a narrow Rust trait for concerns. Modules declare
+  subscriptions, lane, cadence, dependencies, and budget; they do not invent
+  their own scheduler.
+- `ResourceClass` plus `TargetSilicon`: the shipped two-axis scheduler shape.
+  `ResourceClass` describes what kind of work is being scheduled, while
+  `TargetSilicon` describes where it wants to run. Docs may say "lane"
+  informally, but implementation should reuse these shipped enums rather than
+  invent `ResourceLane`.
+- `ArtifactHandle` / leases: module boundaries pass ids, hashes, offsets,
+  texture ids, buffer leases, model residency leases, KV page ids, and LoRA
+  page ids. Bulk payloads stay resident in the owning pool.
+- dependency wakeups: work runs when required artifacts become ready, not
+  because a global FIFO happened to drain.
+- cadence and pressure gates: realtime work runs first; delayed work runs by
+  cadence, state delta, or explicit trigger; pressure reduces cadence,
+  precision, context, subscriber count, or modality with visible reasons.
+- built-in logs, metrics, flush, abort, shutdown, queue depth, queue time,
+  execution time, coalesced count, deferred count, and resource residency.
+- one standard VDD record emitted by the Rust substrate for every platform, so
+  Mac, Windows/RTX, Docker, and future grid nodes report comparable timing,
+  throughput, CPU/GPU, residency, silence, and bottleneck fields.
+- one-line instrumentation helpers for runtime code: scopes, marks, counters,
+  residency, deferrals, and failures should feed the standard VDD record
+  automatically. A module author should not write a custom timing harness to
+  answer whether CPU fell, GPU utilization rose, memory/power stayed bounded,
+  or throughput improved.
+
+This substrate is the base-class/OOP-equivalent discipline for Rust. Extension
+code should be short: implement the small trait, declare dependencies, and let
+the runtime provide concurrency, telemetry, pressure, wakeups, and lifecycle.
+New modules should normally be measured in a few hundred lines, not thousands.
+If a new runtime concern needs its own bespoke communications, queue,
+backpressure, retry, metrics, lifecycle, or failure-reporting system, the PR is
+exposing missing substrate work and should fix the shared substrate instead of
+growing a monolith.
+
+The first implementation PRs should not add more bespoke queues, fallback
+paths, or TS orchestration. They should converge existing Rust pieces into this
+substrate: `ServiceModule`, `MessageBus`, `SharedCompute`, `ChannelQueue`,
+`PressureBroker`, `PagedResourcePool`, model registry, and
+`llamacpp_scheduler`.
+The missing work is specifically `RuntimeFrame` / `CognitionTurnFrame` and
+formal artifact subscription/cadence/dependency declarations on top of the
+shipped substrate primitives, not a restart from zero.
+
+### Sensory Persona Product Contract
+
+Continuum's differentiator is not "chat with several text bots." The alpha product is a local sensory persona grid: users can call personas into a WebRTC room, speak to them, see them, and receive useful multimodal responses from agents that can perceive images/video/audio and drive avatar or other control outputs.
+
+Implementation consequences:
+
+- **Every standard persona declares sensory requirements.** The default requirement set includes text, vision, audio input, voice/audio output, avatar/control output, and WebRTC presence. A persona that cannot satisfy those requirements is marked `Degraded` with the missing capability, not silently treated as alpha-complete.
+- **STT/TTS are adapters, not the center.** They exist to support compatibility models and weaker hosts. The standard local model path targets multimodal models directly where possible.
+- **Qwen 3.5/3.6 are optimization targets.** The registry and runtime resolve model requirements by capability, context, memory budget, and GPU support. They do not scatter hardcoded model names or accept random provider/model drift.
+- **Qwen GPU support is an alpha contract.** Qwen 3.5 text/code and Qwen2-VL
+  vision must run through Continuum's llama.cpp/local runtime with all viable
+  layers on the required platform backend: Mac -> Metal, NVIDIA -> CUDA, and
+  AMD/Intel -> Vulkan. Unsupported Qwen layers, mmproj/audio/vision gaps, CPU
+  graph splits, or missing upstream kernels are implementation blockers to fix
+  or vendor/upstream, not reasons to route around the local runtime. The model
+  resolver must expose selected model, backend, GPU layer count, expected
+  residency, unsupported layers, and any degraded reason before a persona turn
+  starts.
+- **Open-source runtime gaps are ours to fix.** If llama.cpp, Candle training code, GGUF conversion, kernels, multimodal projectors, audio layers, or paging support are missing what Qwen needs, the work item is to fork/vendor/upstream the fix with benchmarks. "Upstream cannot" is not a final answer for open-source dependencies.
+- **No CPU crutches in the happy path.** CPU fallback is explicit degraded mode for unsupported hardware, tests, or emergency operation. It is not a performance plan for a 3090/5090/M-series target.
+- **Live media is a gate.** Video chat, avatar output, and WebRTC bridge health are alpha gates. A PR that breaks sensory persona presence must fail validation before canary promotion.
+- **Sensory model scouting is a tracked workstream.** Current Qwen3.5, Qwen3.6, Qwen2.5-Omni, Qwen3-Omni, forge/alloy, experiential plasticity, pruning, and MoE pruning work lives in the sensory model plan linked above. Runtime adoption still goes through the Rust registry and VDD gates.
+
+## Current Snapshot
+
+Reflects canary as of 2026-05-16 (post the 8-PR cognition-oxidization batch +
+PressureBroker bootstrap PR-1/2/3 + Docker tier Phase 1 + inference-grpc
+fail-closed). For each area, the "current read" is what is provably in canary,
+not what is intended. "Alpha risk" calls out the gap to the alpha gates above.
+
+| Area | Current read (canary @ 2026-05-18) | Alpha risk |
 |---|---|---|
-| M5 Mac × Docker | GREEN | DMR Metal, 50 tok/s, 4 personas |
-| M5 Mac × npm | GREEN | DMR Metal |
-| BigMama Win/WSL2 × Docker | GREEN | DMR CUDA, 237 tok/s, 4 personas, 13.6GB GPU |
-| M1 Mac × npm | GREEN (cloud) | Local Candle functional but slow |
-| M1 Mac × Docker | INFRA-FIXED | VM sizing bug fixed (31be8660a), needs Docker Desktop relaunch to retest |
+| AIRC collaboration | AIRC canary has public `knock` plus forward-secret `approve`/`decrypt-approval` handoff; Continuum PR #1110 pilots repo-local `.airc/` collaboration rules; agent flywheel board #1272 active with codex-main heartbeats | Queue/nudge work tracked in CambrianTech/airc#562; Continuum personas and external agent providers are not yet first-class workers on the shared queue; manager-role transition in progress this session |
+| UI room state | PR #1047 merged to `canary` for stale duplicate General tab recovery | Needs live UI reload validation before `main` promotion |
+| Docker | Phase 1 of Docker tier surface merged (#1297 — `system/docker-tier-stats` IPC + ts-rs DockerTierStats); `scripts/main-promotion-gate.sh` landed (#1399) as the canary->main per-host receipt gate; GPU profile + tier pool eviction (#1238, #1239) still open; historical bulk and mixed responsibility still in the runtime images | Docker can mask failures and slow iteration; tier pool eviction + capability-visible health are the remaining alpha lifts; main promotion still needs linux/amd64 CUDA (#1410) and linux/amd64 Vulkan receipts for the same SHA |
+| Rust core | Substantial gains this session: PressureBroker bootstrap landed (#1307 PR-1 + #1308 PR-2 IPC + #1310 PR-3 status surface); runtime lease broker added (#1313); cognition migrated for `should_respond` (#1284), `rate_proposals` (#1290/#1291/#1293), `generate_recipe` (#1298/#1301/#1303), `vision-describe` (#1292), and `generate_response` (#1398/#1400/#1402/#1407); inference-llm runtime registration landed (#1404); `PersonaTurnFrame` now carries consolidated inbox, RAG seed, response prompt, and replay schema v2 with captured prompt (#1412); ToolRegistry semantic-search oxidizer PR-1 landed (#1413) | Lane D is no longer unstarted, but the alpha-critical `persona/turn-execute` command (#1409) is still in flight; per-module hardcoded concurrency declarations still present across `core/continuum-core/src/modules/*.rs`; universal base trait + derive macro + scaffold generator (the "low-friction inheritance" triplet from CBAR-SUBSTRATE) not yet landed |
+| Node/TS | Net-negative trend this week: TS cognition deleted through oxidization stacks; `AIDecisionService.generateResponse` is now a thin Rust IPC shim and no longer owns TS slot coordination (#1402/#1407); Lane F ratchet landed for persona cognition dirs (#1401) and expanded to `src/system/ai/server` (#1406); SQLite default config landed (#1271) | Multiple TS daemons still own runtime logic that belongs in continuum-core; Lane F PR-2 still needs CI/pre-push enforcement beyond the local ratchet, and PR-3 still needs forbidden-provider/fallback scans |
+| Config/secrets | `$HOME/.continuum/config.env` is the local source of truth, but empty placeholders and per-process loading have caused false provider availability | Cloud providers can steal local turns and fail; grid nodes cannot yet receive encrypted config consistently |
+| Tests | Many tests exist; the alpha loop still overuses `npm start`/browser/Docker as proof; `no_cpu_fallback_contract.rs` regression test exists for the llama.cpp/ORT paths only — does not cover the Candle-side device selection where the orpheus + inference-grpc CPU fallbacks lived before #1314 | Slow tests hide root causes and discourage TDD; the no-CPU-fallback contract test needs widening to the whole workers tree, not just three whitelisted files |
 
-### Issues Closed by PR #891
-- #769 Qwen3.5 as default model
-- #887 Inference capacity consolidation
-- #898 npm start port conflicts with Docker
-- #906 CI validates staged images pipeline
+## Immediate Canary Work Packages
 
-### New Issues Filed (Post-Merge Follow-ups)
-- #908 Windows npm start should route through docker compose
-- #909 Local persona tool execution (cloud wired, local not)
-- #910 DMR CUDA on Windows needs manual Docker Desktop toggle
-- #911 16GB MacBook Air can't run Option B (product scope decision)
+These are the active alpha blockers exposed by the 2026-05-11 VDD runs and
+PR #1082 review. They are split so agents can work in parallel without stepping
+on each other. Each lane starts from `canary`, opens a focused PR back to
+`canary`, and posts validation evidence before merge. Assignment is explicit:
+if an agent cannot work a lane, it says so on AIRC and the lane is reassigned.
 
----
+| Lane | State @ 2026-05-18 | Owner | Branch | First PR | Merge gate |
+|---|---|---|---|---|---|
+| A. Rust model registry and admission | In progress | RTX/Windows lane (catalog + admission); supervision rotated from Codex PM → this manager | `feature/rust-model-registry-admission` (merged-stack), follow-ups on canary | Typed Rust catalog, capability request, resolver/admission explanation | Rust resolver tests plus missing-Qwen fail-hard test |
+| B. Installer model seeding and GPU profiles | Phase 1 landed (#1297 Docker tier surface); main-promotion release receipt script landed (#1399); GPU profile + tier-pool eviction still open (#1238/#1239); linux/amd64 CUDA receipt is tracked as #1410 | RTX/Windows Docker lane; Lane A owns registry artifact contract; Windows/WSL Claude expected to own #1410 when online | `feature/docker-gpu-profile-modular` plus receipt work per host | `model-init`/installer seeds required Qwen artifacts into the runtime model volume; per-host receipts prove Docker/GPU paths | Windows/RTX fresh install reaches model-ready state or fails loud; `scripts/main-promotion-gate.sh --check-receipts` passes only when Mac/Metal, linux/amd64 CUDA, and linux/amd64 Vulkan receipts share the promoted SHA |
+| C. VDD telemetry substrate | In progress; structured RuntimeMetric emitting from inference and persona but VDD report command not yet bound | RTX/Windows substrate; Mac/Metal adapter sub-task carried by Mac lane | `feature/rust-vdd-telemetry-substrate` | Structured timing/resource metrics flow into trace/event bus | VDD report shows first-token, tok/s, CPU, GPU, VRAM/RSS from structured data |
+| D. CBAR persona runtime frame | In progress. `PersonaTurnFrame` landed with drain-frame wrap (#1398), lazy `response_prompt` (#1400), `generate_response` Rust IPC path (#1402/#1407), inference-llm runtime registration (#1404), and replay schema v2 carrying the exact response prompt (#1412) | Lane D owner on AIRC; #1409 claimed on `feat/lane-d-persona-turn-execute` | `feature/cbar-persona-runtime-frame` / `feat/lane-d-persona-turn-execute` | Rust `PersonaTurnFrame` with lazy RAG/media/priority outputs and inbox coalescing | #1409 must produce a Rust `persona/turn-execute` command that chains drain -> frame -> response_prompt -> inference/llm/request -> prod replay record; multi-message smoke produces one consolidated turn, not per-event inference flood |
+| E. Pressure broker and paging gate | Bootstrap landed (#1307 PR-1 broker types/registry, #1308 PR-2 IPC, #1310 PR-3 status surface, #1313 runtime lease broker); paging (KV/LoRA residency) + pooled mtmd context still open | RTX/Mac runtime lanes | `feature/pressurebroker-admission-gate` (bootstrap stack merged); follow-ups branch per PR | Unified admission gate blocks unsafe backend/model/context loads | Concurrency test refuses unsafe second load and reports `Backpressured`/`Unavailable` |
+| F. TS cognition deletion ratchet | PR-1 local ratchet landed (#1401); AI server cognition shim coverage landed (#1406). Current baseline covers seven watched dirs including `src/system/ai/server` | Lane F split: ratchet owner for CI wiring + deprecated-provider scan; deletion owners refresh baseline in deletion PRs when watched LOC drops | `feature/persona-ts-deletion-ratchet` follow-ups | CI/check script enforces no new persona cognition TS and net-negative touched cognition | PR fails if verb-shaped TS cognition grows or introduces forbidden provider/fallback strings; PR-2 must wire ratchet into pre-push/CI, PR-3 adds deprecated-provider/fallback scan |
+| G. Canary PR hygiene | Active. #1408 refresh captures the 2026-05-18 canary stack and current delegation state | Codex currently claimed #1408; manager/architect reviews over AIRC | `docs/alpha-gap-refresh-1408` | This document plus issue/PR checklist cleanup | Every active PR has owner, blocker, validation command, and canary target; stale canary PRs (#1085/#1071/#1026) are triaged instead of left as failed-smoke sediment |
+| H. Substrate governor + tiered genome cache | **Proposed** — design landed via continuum#1327. 7-PR implementation sequence: governor types → tier stores → recall API → composer+speculator → foundry skeleton → sentinel skeleton → sharing-protocol local-first | **Needs owner claim** | `feature/substrate-governor-genome-cache` | `SubstrateGovernor` + `HardwareClass` + hardware detection at boot | Same Rust binary writes different policy on MacBook Air vs RTX 5090; VDD records prove different tier sizes / concurrency / speculation aggressiveness |
 
-## Current State (What Works)
+Adjacent active workstream not in the lane table:
 
-| Subsystem | Status | Notes |
-|-----------|--------|-------|
-| Live video calls | Working | Human + 14 AI avatars, 3D scenes, real-time voice |
-| Persona telemetry | Working | INT/NRG/ATN meters, cognitive diamonds, genome bars |
-| Memory pressure | Working | Graduated levels (normal/warning/high/critical), RSS bounded |
-| Persona cadence | Working | Pressure-aware adaptive timing |
-| Chat coordination | Working | ThoughtStream turn-taking, probabilistic responders |
-| LoRA training | Proven E2E | Train/discover/load/merge/inference pipeline |
-| Academy | Proven E2E | Dual-sentinel teacher/student, RealClassEval 53% pass (cloud) |
-| Sentinel pipeline | Working | 12 step types, 55 Rust tests, CodingAgent integration |
-| Sentinel workspaces | Working | Identity chain, git worktree isolation, lifecycle cleanup |
-| Dev CLI front door | Working | `--repoPath` on all dev commands |
-| Recipe-Sentinel convergence | Working | Recipes declare sentinelTemplates, RAG filters by recipe |
-| Recipe commands | Working | recipe/list, recipe/run, recipe/generate |
-| Capability registry | Working | Skill domains, all 10 adapters self-register |
-| ORM | Working | SQLite default + Postgres opt-in. Handle-based abstraction (Phase 2 complete). entity_schemas.json codegen. QW#1-3 perf wins. |
-| RAG (chat history) | Working | Tiered cache L1/L2, 30-50ms cached |
-| RAG (codebase) | Proven E2E | CodebaseIndexer + CodebaseSearchSource, auto-index on startup |
-| Vision pipeline | Proven E2E | Tiered perception, content-addressed cache |
-| Neural compression | Proven E2E | Head pruning + Q3_K_S: 32B model on 32GB MacBook, 5.3 tok/s |
-| Compression pipeline | Built | Planner + GGUF writer + pipeline orchestration, 142 tests |
-| HuggingFace distribution | Live | continuum-ai/qwen2.5-coder-14b-compacted published |
-| Local GGUF inference | Working | Docker Model Runner (Metal Mac / CUDA Win+Linux). Candle = training only. |
-| Auto model discovery | Working | DMR live catalog + resolve_dmr_model_name. install.sh pulls default model. |
-| Pressure system | Complete | ThoughtStream slots + voice broadcast gating (PR #304) |
-| Decision logging | Complete | CoordinationDecisionLogger, full RAG context capture |
-| Widget system | Working | 32 auto-discovered widgets, Lit + Shadow DOM |
-| Command system | Working | 339 auto-discovered commands, zero central registries |
-| AI providers | Working | 12 providers. GPU-always routing: DMR priority 0, Candle off chat path. InferenceDevice enum filters by GPU/CPU. No silent fallback. |
-| continuum-core | Working | 26 Rust modules, 1,179+ tests |
+- **GRID-INFERENCE-ROUTING** — PR-1 (inference capability announcer + probe +
+  registry) in flight on `feat/grid-inference-routing-pr2-announcer`. This is
+  the grid-side counterpart of Lane A: Lane A says which model the request
+  needs, GRID-INFERENCE-ROUTING says which peer can serve it. Owner: airc-8a5e.
+  Tracked under § 7 (AIRC And Continuum Internal AI Collaboration) below.
+- **ToolRegistry semantic search oxidizer (#1411)** — PR-1 landed as #1413
+  (pure types, cosine similarity, threshold). Follow-ups should mirror the
+  Rust oxidizer cadence used by `check_redundancy` and `generate_response`:
+  Rust cache + IPC handler, TS shim, then dead-TS deletion.
 
----
+Lane claim updates as of 2026-05-18:
 
-## Phase 0: Critical Bugs (Ship-Blockers)
+- Lane A has shipped a Rust crate skeleton — `model_registry/` exists in
+  `core/continuum-core/src/`, with curated catalog rows and an
+  admission resolver — but it is **NOT shipped** in the sense of "alpha
+  contract met." Live UI QA on 2026-05-18 19:18Z surfaced the failure
+  mode: `Vision AI error: model id 'Qwen/Qwen2-VL-7B-Instruct-GGUF' not
+  in registry — add it to models.toml`. 20 personas, 0 responses. The
+  Rust crate's "canonical" status is contradicted by 5 other sources of
+  truth (see "Multi-source-of-truth merge gate" in the Lane A section
+  below for the full inventory + hard gate). Open Lane A blockers:
+  delete `models.toml`, delete or auto-generate `src/shared/models.json`
+  and the `ModelRegistry.ts` variants, surface missing-model as a typed
+  UI failure (never silence), and prove vision works against an
+  initialized 20-persona room.
+- Lane B Phase 1 landed (#1297 `system/docker-tier-stats` IPC + ts-rs
+  `DockerTierStats`). Capability-visible health and tier-pool eviction
+  (#1238/#1239) are the next Lane B PRs; both should consume the Lane A
+  registry artifact contract, not invent a parallel one.
+- Lane C structured `RuntimeMetric` events emit from inference paths, but the
+  `vdd-report-command` step (Lane C PR sequence step 3) is not yet bound. As a
+  result, "VDD" is still mostly read from logs rather than from a single
+  command's structured output. RAG source tracing and `SEAM_RAG_COMPOSE`
+  remain joint with Lane D.
+- **Lane D is now the active critical path rather than an unstarted lane.**
+  `PersonaTurnFrame` can wrap drained inboxes, expose a response prompt, and
+  emit replay records whose v2 schema carries the exact prompt that fed
+  inference (#1398/#1400/#1412). `generate_response` now admits and executes
+  through Rust (#1402/#1407), and `inference-llm` is registered at runtime
+  (#1404). The next blocker is #1409: a Rust `persona/turn-execute` command
+  that chains the pieces in one Rust call and writes the prod replay record.
+- Lane E bootstrap landed (#1307 / #1308 / #1310 / #1313). The remaining lane
+  scope is paging (KV/LoRA residency, pooled mtmd context, eviction policy)
+  and **deletion of pre-broker concurrency hacks** that still bypass the
+  broker. Concrete example pinned for deletion:
+  `core/inference-grpc/src/main.rs` — `get_num_workers()` reads
+  `INFERENCE_WORKERS` from `~/.continuum/config.env` and otherwise picks a
+  worker count from system memory at startup. Both branches are exactly the
+  "we do not hard code" / "they code in tokio not whatever their fee fees say"
+  anti-pattern. PressureBroker owns concurrency; this function should be
+  deleted and the worker count derived from broker leases.
+- Lane F has been progressing through manual deletion (rate_proposals adapter
+  zero-callers delete, generate_recipe shim collapse, #1306 cognition cap
+  lift, #1309 TS suppression rip — ~2500 LOC TS removed this session). The
+  mechanical ratchet itself (the CI gate that prevents *new* verb-shaped TS)
+  has not yet landed. Until it does, the deletion progress is reversible.
+- Lane G refresh in flight: this document, the supporting doc cross-links
+  (CBAR-SUBSTRATE precedence rule added), and the lane status table you are
+  reading.
+- Lane H proposed via continuum#1327
+  ([GENOME-FOUNDRY-SENTINEL.md](../architecture/GENOME-FOUNDRY-SENTINEL.md)).
+  Owns the artifact-sharing economy layered on top of CBAR-SUBSTRATE:
+  tiered genome cache (L1–L5), `WorkingSetManager` + page faults, foundry
+  (JIT for SOTA absorption), sentinel-AI (profile-guided optimization
+  from lived traces), demand-aligned recall, composer + speculator, and
+  the `SubstrateGovernor` (DVFS for AI — same Rust code on MacBook Air
+  and RTX 5090, different governor policy). Sibling to Lane E
+  (`PressureBroker`): broker owns admission; governor owns sizing.
+  Needs owner claim; 7-PR sequence detailed in the GENOME-FOUNDRY-SENTINEL
+  doc's Part 13.
 
-> Fix before anything else. These break the first-run experience.
+### Lane A: Rust Model Registry And Admission
 
-### SECURITY — Identity & Sessions (BLOCKS GRID, MULTI-USER, EVERYTHING)
+**Problem**: model/provider facts are scattered, cloud/local availability can be
+misreported, and the Windows/RTX VDD run proved the CUDA stack can be healthy
+while no local Qwen model exists and personas silently produce zero replies.
 
-| # | Issue | Status | What |
-|---|-------|--------|------|
-| [#568](https://github.com/CambrianTech/continuum/issues/568) | **Session identity broken — all-zeros UUIDs** | PARTIAL | Browser sessions now get real userId (`./jtag ping` returns `18db7494`). Fixed: browser command, generator template (343 commands), session destroy. Remaining: CommandDaemon fallback, server-internal session. |
-| [#566](https://github.com/CambrianTech/continuum/issues/566) | **Tab reconnection — tabs multiply, sessions orphaned** | PARTIAL | CLI now works so browser detection on `npm start` can refresh existing tabs. Root cause of duplicate tabs: CLI was broken (generator main blocks in esbuild). Fixed. Remaining: proper session rebinding on WebSocket reconnect. |
-| [#565](https://github.com/CambrianTech/continuum/issues/565) | **WSL2 auto-start on boot** | PARTIAL | wsl-boot.sh fixed (uses LAN gateway DNS, not 8.8.8.8). PR #581 merged. Remaining: Windows scheduled task setup, `generateResolvConf=false` auto-config. |
+**Design**:
 
-**Done when**: Every connection has a real UUID. Reconnecting tabs rebind to existing sessions. `userId` is required (not optional) on every contract. Zero-UUID requests are rejected.
+- Rust owns `ModelRegistry`, `ModelRequirement`, `ModelCandidate`,
+  `ModelArtifact`, `ProviderKind`, `LocalRuntimeKind`, and `AdmissionDecision`.
+- Runtime callers request capabilities: modalities, minimum intelligence tier,
+  context window, tool support, latency class, memory budget, GPU requirement,
+  family preference, and explicit override.
+- The registry is a curated whitelist of vetted artifacts. Hugging Face/foundry
+  discovery can populate candidates, but runtime admission only selects vetted
+  rows with known template, license, backend, quantization, memory estimate,
+  modality metadata, and forge status.
+- Local chat inference is `LocalRuntime` through the llama.cpp/Qwen adapter
+  stack. Candle is for training/LoRA/forge paths, not persona chat inference.
+- Cloud providers remain adapter kinds. They do not steal turns unless their key
+  is non-empty, health checked, and explicitly admitted for that request.
 
-### Bugs
+**Owned files/modules**:
 
-| # | Issue | Status | What |
-|---|-------|--------|------|
-| [#376](https://github.com/CambrianTech/continuum/issues/376) | **chat/send userId bug** | DONE (PR #387) | Fixed — resolves to human owner, not @cli/agent. |
-| [#335](https://github.com/CambrianTech/continuum/issues/335) | **Multiple browser tabs on npm start** | DONE (PR #387) | Fixed — removed shell script browser launch, orchestrator handles it. |
-| [#317](https://github.com/CambrianTech/continuum/issues/317) | **Live mode starts twice on page load** | DONE (PR #388) | Fixed — activation guard prevents duplicate join from racing code paths. |
-| [#385](https://github.com/CambrianTech/continuum/issues/385) | **install.sh incomplete on new nodes** | TODO | Tower needed manual pytest install, API keys uncommenting. Needs cross-platform testing. |
-| — | **Duplicate seed systems** | DONE | Dead code deleted (PR #608): RoomDataSeed, DataSeeder, UserDataSeed, seedUsers, seed-data, clear-data — 1,362 lines removed. Kept: SeedConstants, ActivityDataSeed, SystemIdentity (still used by seed-continuum.ts). |
-| — | **Seeding fragile on fresh installs** | BUG | Seeding is buggy, inefficient, and prone to complete failure on new installs. Needs single reliable path that works every time. |
-| [#599](https://github.com/CambrianTech/continuum/issues/599) | **Live mode STT broken** | DONE | Three-layer fix: orphan watchdog timeout 60s→600s (#600), spawn_blocking for ORT deadlock (#601), ORT_DYLIB_PATH in start-workers.sh, install.sh auto-installs onnxruntime (#604). |
-| [#585](https://github.com/CambrianTech/continuum/issues/585) | **Workspace root '/path/to/project'** | DONE | Reject LLM placeholder paths in coding-agent workspace bootstrap (#590). |
-| [#591](https://github.com/CambrianTech/continuum/issues/591) | **Tool expanders empty** | PARTIAL | Store truncated 2KB fullData preview (#592). Full lazy-load via command still TODO. |
-| [#564](https://github.com/CambrianTech/continuum/issues/564) | **Grid missing local machine** | DONE | Local node always appears as node zero (#595). |
-| [#606](https://github.com/CambrianTech/continuum/issues/606) | **Persona thundering herd** | DONE | 2s stagger between persona boot (#607). Verified — 5+ AIs responding. |
-| [#603](https://github.com/CambrianTech/continuum/issues/603) | **Rust memory leak 3.2GB** | TODO | continuum-core leaks on ai/generate, data/query. OOMs after ~30 min. Needs Rust profiling. |
-| — | **Content routing: all non-chat → chat-widget** | DONE | Generator reads new widgets[] format (#598), check generated config before async recipe service (#597). Live, factory, grid, logs all route correctly now. |
-| — | **CLI bundle broken (readFileSync on argv)** | DONE | Removed generator main blocks that esbuild executed at bundle time (#581). |
-| [#381](https://github.com/CambrianTech/continuum/issues/381) | **Headless health check timeout** | TODO | Grid nodes without browser can't be health-checked. Needs headless node to test. |
-| [#373](https://github.com/CambrianTech/continuum/issues/373) | **Rust compiler ICE on Linux/WSL2** | TODO | Can't build continuum-core on the 5090 tower. Needs tower access. |
-| [#792](https://github.com/CambrianTech/continuum/issues/792) | **ORT panic crashes server** | DONE | `tokio::task::spawn` catches ORT dylib panics. Voice degrades, core stays alive. |
-| [#793](https://github.com/CambrianTech/continuum/issues/793) | **IPC reconnection — Node doesn't recover** | TODO | When Rust core restarts, Node.js IPC client stays wedged. Total system death until `npm start`. |
-| [#794](https://github.com/CambrianTech/continuum/issues/794) | **AI messages don't reach browser** | TODO | Messages stored in DB but WebSocket event bridge doesn't forward `data:chat_messages:created` for AI senders. Requires page refresh. |
-| [#795](https://github.com/CambrianTech/continuum/issues/795) | **Duplicate tabs** | TODO | Same room opens multiple tab entries. `contentItemsMatch()` dedup has gaps. |
-| [#855](https://github.com/CambrianTech/continuum/pull/855) | **Multi-arch Docker images** | PR READY | amd64 + arm64 builds. Fixes Mac/Ubuntu install. Verification gate. |
-| [#856](https://github.com/CambrianTech/continuum/issues/856) | **Grid event streaming** ⚠️ CRITICAL | TODO | Persistent WS event channels between nodes. Blocks open-eyes, factory live updates, OpenClaw, Hermes. Polling at 10s is incompatible with real-time. |
+- `core/continuum-core/src/model_registry/`
+- `core/continuum-core/src/inference/`
+- `core/continuum-core/src/ai/`
+- `core/continuum-core/src/persona/cognition_io.rs`
+- generated `ts-rs` types under `protocol/typescript/`
 
-**Done when**: `git clone && cd src && npm install && npm start` works on macOS and Ubuntu. Personas chat. No duplicate tabs. Health checks pass on headless nodes. AI responses appear in real-time without refresh. Grid events stream between nodes in real time.
+**PR sequence**:
 
----
+1. `model-registry-types`: Rust enums/structs plus `ts-rs` exports.
+2. `model-registry-catalog`: curated Qwen 3.5/2-VL rows and artifact metadata.
+3. `model-admission`: resolver returns selected candidate plus rejected
+   alternatives and resource explanation.
+4. `missing-model-fail-hard`: no local Qwen yields typed unavailable state and
+   user/actionable remedy, never silence.
 
-## Phase 1: Architectural Integrity (Code Quality)
+**TDD**:
 
-> Open-source contributors will copy these patterns. Fix the foundation before anyone sees it.
+- `cargo test --package continuum-core model_registry`
+- exact model pin, family preference, `>=` intelligence/context requirement, GPU
+  required, no artifact present, and cloud key empty cases.
 
-| # | Issue | Status | What |
-|---|-------|--------|------|
-| [#333](https://github.com/CambrianTech/continuum/issues/333) | **Type safety — eliminate 831 `any` casts** | DONE (PR #408, #414) | 831 → 0. Next: ESLint no-explicit-any as error. |
-| [#363](https://github.com/CambrianTech/continuum/issues/363) | **Eliminate hardcoded switch statements** | DONE (investigated) | 150 switches are legitimate discriminated unions. Command name switches already eliminated by dynamic discovery. |
-| [#362](https://github.com/CambrianTech/continuum/issues/362) | **Unify content routing** | PARTIAL | Room selection now uses `room.recipeId` as contentType instead of hardcoded 'chat'. Factory, logs, canvas, help rooms route to correct widgets. ContentTypeRegistry still exists but delegates to RecipeLayoutService. Remaining: URL routing, full recipe-driven panel composition. |
-| [#356](https://github.com/CambrianTech/continuum/issues/356) | **Enforce generator usage** | TODO | Prevent manual module creation without spec. |
-| [#355](https://github.com/CambrianTech/continuum/issues/355) | **Generator v2: emit IPC mixins, health, ts-rs** | TODO | Generator must produce complete Rust+TS scaffolding. |
-| [#353](https://github.com/CambrianTech/continuum/issues/353) | **Generator v2: Rust modules + tokio** | TODO | Full Rust module generation with IPC and tests. |
-| [#351](https://github.com/CambrianTech/continuum/issues/351) | **Magic strings → command constants** | TODO | All Rust modules must use constants, not string literals. |
-| [#361](https://github.com/CambrianTech/continuum/issues/361) | **Maximum lint/clippy strictness** | TODO | Enforce across TypeScript and Rust. |
-| [#354](https://github.com/CambrianTech/continuum/issues/354) | **Git pre-push hooks** | TODO | Infrastructure and mission-critical test gates. |
-| [#352](https://github.com/CambrianTech/continuum/issues/352) | **Formalize test architecture** | TODO | Unit, integration, infrastructure, mission-critical tiers. |
-| [#379](https://github.com/CambrianTech/continuum/issues/379) | **Sentinel test coverage: 55 → 100+** | TODO | 12 step types need thorough coverage. Approve and WebResearch likely untested. |
-| [#334](https://github.com/CambrianTech/continuum/issues/334) | **Technical debt deep clean** | TODO | ESLint config, disabled systems, error handling audit, 14 failing Rust tests. |
-| [#360](https://github.com/CambrianTech/continuum/issues/360) | **ORM date/pagination/indexes** | INVESTIGATED | Dates work correctly (TIMESTAMPTZ/RFC3339). Composite indexes working for high-traffic tables. Cursor pagination unimplemented (OFFSET fine for alpha). |
-| [#412](https://github.com/CambrianTech/continuum/issues/412) | **chat/send sender identity** | DONE (PR #422) | Persona tool calls now show as persona. Uses params.userId (auto-injected). |
+**VDD**:
 
-**Previously completed:**
-- 1D: Magic number consolidation (PersonaTimingConfig.ts) — DONE
-- 1E: Rust panic safety — MOSTLY DONE (36 `.lock().unwrap()` intentional)
-- 1F: ts-rs exports — DONE (10 types across 4 modules)
-- God class decomposition — PARTIAL (DataSchemaManager, DataVectorOperations, JTAGClientConnections, PersonaAgentLoop extracted)
+- Fresh machine with no model file reports `Unavailable(MissingArtifact)` in
+  structured status and chat smoke sees a visible failure.
+- Machine with Qwen artifact selects local runtime, records memory projection,
+  and starts inference without CPU fallback.
 
-**Remaining god classes:**
+**Deletion targets**:
 
-| File | Lines | Target |
-|------|-------|--------|
-| PersonaUser.ts | ~2,200 | <500 |
-| RustWorkerStorageAdapter.ts | 1,234 | <500 |
-| ChatRAGBuilder.ts | 1,214 | <500 |
-| PersonaMessageEvaluator.ts | 909 | <500 |
+- duplicate TS model maps/context windows
+- free-form provider/model strings in persona seed/runtime paths
+- stale local-model fallback branches and any forbidden provider tombstones
 
-**Done when**: Zero `any` in production. All commands generator-backed. Lint/clippy clean. Pre-push hooks enforced. 100+ sentinel tests.
+**Multi-source-of-truth merge gate (added 2026-05-18 from live UI QA)**:
 
----
+Lane A is NOT shipped — and any claim it is "first wave done" is contradicted
+by the live UI failure mode observed at 2026-05-18 19:18Z: `Vision AI error:
+model id 'Qwen/Qwen2-VL-7B-Instruct-GGUF' not in registry — add it to
+models.toml`. That error message admits the architecture violation: a
+`models.toml` separate from the Rust `model_registry/` crate is a parallel
+source of truth, and 20 personas produced zero responses because the TS side
+asked for a model that the Rust side's TOML config didn't have.
 
-## The Inference Design Goal — Multi-Persona Live Chat at Low Latency
+Inventoried sources of model-definition truth as of 2026-05-18:
 
-> **"We should be able to have a few ais in a live chat at LOW latency, focus on that."** — Joel, 2026-04-15
+1. `core/continuum-core/src/model_registry/` — Rust crate (THE canonical owner)
+2. `core/continuum-core/config/models.toml` — Rust-side config file (DELETE)
+3. `src/shared/models.json` — TS source (DELETE or auto-generate from #1)
+4. `src/shared/ModelRegistry.ts` — TS source (DELETE or auto-generate from #1)
+5. `src/system/shared/ModelRegistry.ts` — TS variant in some worktrees (DELETE)
+6. `protocol/typescript/inference/ModelRegistry.ts` — generated (regen from #1 only)
 
-This is THE workload the whole stack must serve. Not single-persona batch inference. Not benchmark-leaderboard throughput. **3-5 AI personas in live voice+video chat simultaneously**, with the full sensory pipeline (Bevy avatar render, Whisper STT, Piper TTS, LiveKit WebRTC encode/decode) running concurrently on the same machine.
+The .d.ts files at `src/dist/shared/generated/cognition/ResolvedModel.d.ts`
+and `src/dist/system/user/server/modules/PersonaResponseGenerator.d.ts`
+explicitly call `models.toml` "the canonical source" — that comment is the
+documentation of the bug. The Rust crate `model_registry/` is supposed to
+own the truth; the TOML and TS variants must be either deleted or generated
+from the crate, never hand-edited.
 
-**Proven on this machine today**: 10ish AI chat (14 tested, strains the machine — all but 4 were cloud inference). That's the current ceiling with mostly-cloud backends. The target raises ALL of those to native local inference running at conversation pace.
+Lane A merge gate (hard):
 
-**Why Qwen3.5-4B+ is the pick:** [`project_m5_is_primary_audience.md`](../../memory/project_m5_is_primary_audience.md) — forged specifically to fit the concurrent-sensory slot on Apple Silicon unified memory. Q4_K_M ≈ 2.6GB per instance, KV shared via continuous-batching scheduler (`n_seq_max` sequences in ONE Context), leaves room for Bevy + Whisper + Piper + LiveKit all co-resident.
+- `core/continuum-core/config/models.toml` is DELETED. Model catalog
+  rows live in Rust code under `model_registry/`, not in a config file.
+  Model definitions are CODE (a curated catalog the engineer commits to),
+  not CONFIG (something an operator edits at runtime).
+- `src/shared/models.json` and any hand-edited `ModelRegistry.ts` files are
+  either DELETED or regenerated from the Rust crate via `ts-rs`. Editing
+  them by hand is forbidden — the generator overwrites edits.
+- The Rust resolver MUST resolve `Qwen/Qwen2-VL-7B-Instruct-GGUF` (and all
+  other models any persona references) from the curated catalog with NO
+  config-file fallback. If a persona requests a model the catalog doesn't
+  vet, the resolver returns `Unavailable(NotInCatalog)` with an actionable
+  remedy directing the engineer to add a curated row to the Rust catalog
+  — never "add it to models.toml" because the TOML must not exist.
+- "Add it to models.toml" as an error suggestion is ALSO a regression — any
+  error message that recommends editing a config file outside `model_registry/`
+  fails the gate.
+- Capability-driven admission, not exact-string match. Personas request
+  capabilities (vision-capable Qwen-class) and the registry picks the best
+  vetted candidate. Persona seed should not hardcode `Qwen/Qwen2-VL-7B-Instruct-GGUF`
+  as a string — that's another flavor of multi-source-of-truth (the persona
+  seed becomes source #7).
 
-**Audience tier (BMW M4 / Corvette / Ford Focus analogy):**
-- Primary: MacBook M3-M5 Pro/Max (BMW M4)
-- Entry: MacBook Air (BMW 2 Series) — aspirational, must work
-- Desktop enthusiast: Nvidia RTX 3090+ (Corvette / Mustang)
-- Non-audience: ThinkPads without GPU, integrated-only, pre-Apple-Silicon (Ford Focus)
+Test for "Lane A is done":
 
-**Go-live is possible before the full vision-Qwen3.5 landing** (stopgap: text-Qwen3.5 + sensory bridges via `VisionDescriptionService`, Whisper, Piper/Orpheus — already in the codebase). But vision-Qwen3.5 is quickly needed post-launch and NOT insurmountable because **factory + sentinel-ai were built for this exact purpose** (PR891's parent narrative). Forging vision-enabled variants per device tier is the post-launch track.
+- Grep proves only `core/continuum-core/src/model_registry/` defines
+  model rows in source. No TOML/JSON/YAML/.ts file declares a model.
+- 20 personas, vision call: every one of them gets either a typed response
+  or `Unavailable(specific reason)` in the UI — none silently produce zero
+  output.
+- Browser smoke at `http://localhost:9000/chat/general`: invoke vision on a
+  Qwen2-VL persona, observe the response or a structured failure in the
+  UI, not silence.
 
-### Cross-referenced issues
+Until ALL of the above hold, Lane A is open and any other PR that touches
+model selection, inference admission, or model resolution is patching
+around the real bug.
 
-This goal cuts across phases; the work is tracked here:
+### Lane B: Installer Model Seeding And GPU Profiles
 
-| # | Phase | Role in the goal |
+**Problem**: Windows/RTX had CUDA containers ready, low CPU, and available VRAM,
+but no Qwen model was mounted. The runtime stayed silent instead of becoming
+model-ready or failing loud.
+
+**Design**:
+
+- Add an explicit `model-init` responsibility for required alpha artifacts.
+- Seed required local Qwen artifacts into the same volume/bind mount the Rust
+  runtime reads.
+- Separate Docker profiles: `gpu`, `ui`, `live`, `grid`, `forge`, `devtools`.
+- Pin GPU images and make backend capability visible at health check time.
+
+**Owned files/modules**:
+
+- `setup.sh`, install scripts, and docs install paths
+- `docker-compose*.yml`
+- Docker image build/push scripts
+- `core/continuum-core/src/model_registry/artifacts.rs`
+
+**PR sequence**:
+
+1. `model-init-profile`: separate model prewarm/download service.
+2. `qwen-seed-contract`: required local model list comes from Rust registry
+   artifact metadata, not shell hardcoding.
+3. `windows-rtx-install-vdd`: Windows GPU install smoke with model-ready proof.
+
+**TDD**:
+
+- shell/unit checks for model volume path resolution
+- Rust artifact resolver tests for missing, partial, corrupt, and ready states
+
+**VDD**:
+
+- Windows/RTX: cold start, first token, tok/s, CPU%, GPU%, VRAM, RSS.
+- Mac/Metal: same metrics, plus Metal layer offload evidence.
+- No model present: install exits or health reports explicit missing artifact in
+  less than 30 seconds.
+
+**Deletion targets**:
+
+- one-off model download code in TS/server startup
+- Docker paths that bypass Continuum's adapter/router substrate
+- opaque bulk startup scripts that hide which service failed
+
+### Lane C: VDD Telemetry Substrate
+
+**Problem**: timing, CPU/GPU utilization, tok/s, memory growth, and RAG evidence
+are still partly ad hoc logs. That makes validation slow and makes realtime
+behavior hard to reproduce.
+
+**Design**:
+
+- Rust emits structured `ValidationTrace`/`RuntimeMetric` events.
+- `CognitionTrace` gets seams for RAG composition, model admission, inference
+  init, first token, steady decode, post-process, and recorder persistence.
+- Metrics are emitted through the event bus and recorder fixtures. Stdout/stderr
+  text is local debugging output only, not the validation API.
+- One-liner timing guards are available to Rust modules so every new subsystem
+  gets timing and metadata with almost no code.
+
+**Owned files/modules**:
+
+- `core/continuum-core/src/persona/trace.rs`
+- `core/continuum-core/src/persona/recorder.rs`
+- `core/continuum-core/src/rag/`
+- `core/continuum-core/src/inference/`
+- event bus/logging modules under `continuum-core`
+
+**PR sequence**:
+
+1. `trace-rag-compose`: add `SEAM_RAG_COMPOSE` and RAG source hashes.
+2. `trace-inference-metrics`: first-token, tok/s, backend, layer offload,
+   CPU-degraded and GPU-required status flags.
+3. `vdd-report-command`: command emits a compact machine-readable VDD report.
+
+**TDD**:
+
+- recorder fixture tests for success and failure traces
+- RAG replay test proves source hashes and context can be inspected
+- inference adapter unit test with injected timings
+
+**VDD**:
+
+- Mac/Windows report generated from structured metrics, not copied terminal log.
+- CPU peg, CPU layer fallback, missing tok/s, and memory growth become failed
+  validation checks.
+
+**Deletion targets**:
+
+- println-style validation paths
+- duplicate TS logging/capture sinks
+- hand-assembled performance report scripts that scrape random console text
+
+### Lane D: CBAR Persona Runtime Frame
+
+**Problem**: persona inbox/RAG/scheduling behavior can flood inference by
+treating events too literally. The runtime needs a CBAR-like turn frame:
+immutable input, lazy derived outputs, coalesced work, and independent nodes.
+
+**Design**:
+
+- `PersonaTurnFrame` wraps room/user/persona signal state for a bounded turn.
+- Lazy outputs include consolidated inbox chunk, RAG context, media summary,
+  priority score, tool relevance, model requirement, and response prompt.
+- Nodes pull what they need and pay only for what they request.
+- Inbox consolidation is FIFO-preserving but chunked: many room events can
+  produce one planned turn instead of one inference per event.
+- The frame is the Rust-owned e2e cognition boundary: chat, live, coding,
+  game/VR, and AIRC hosts all submit generic inbox/activity items and receive
+  typed turn outputs without Node owning truth-layer cognition state.
+- Production turns must emit replayable records containing inbox inputs, frame
+  decisions, RAG source hashes, memory/hippocampus selections, prompt assembly,
+  resource leases, model/backend choice, and output metadata. Tests may use
+  fixtures, but the fixture format must come from real prod records.
+
+**Owned files/modules**:
+
+- `core/continuum-core/src/persona/`
+- `core/continuum-core/src/cognition/`
+- `core/continuum-core/src/rag/`
+- TS shrink targets under `src/system/user/server/modules/PersonaInbox.ts`,
+  `ChatRAGBuilder.ts`, `PersonaResponseGenerator.ts`, and related deciders
+
+**PR sequence**:
+
+1. `persona-turn-frame`: frame/trait/pipeline skeleton with lazy outputs.
+2. `inbox-coalescing`: chunk/buffer room events and prove one turn per window.
+3. `rag-frame-output`: RAG composition becomes a lazy frame output with trace.
+4. `prg-shim-shrink`: TS PRG becomes a thin command shim or deletes.
+
+**TDD**:
+
+- Rust tests for lazy output computes once across multiple consumers.
+- Inbox test: N events within window -> one consolidated turn plan.
+- Replay test: fixture reproduces prompt/RAG/media from frame outputs.
+- Prod-record replay test loads a captured `PersonaTurnFrame` record without
+  booting the full app and proves the same RAG/prompt/admission decisions.
+
+**VDD**:
+
+- Chat smoke records fewer inference calls than incoming events.
+- First response improves or stays flat while CPU/RSS do not climb.
+- Live/prod capture from at least one real chat turn can be replayed offline and
+  inspected step-by-step before the lane is considered complete.
+
+**Deletion targets**:
+
+- TS inbox consolidation logic
+- TS ChatRAGBuilder behavior
+- TS response-generator orchestration beyond thin command glue
+
+### Lane E: Pressure Broker And Paging Gate
+
+**Problem**: model, context, LoRA, media, and backend resources are still too
+independent. The correct controller must admit, page, evict, or defer across
+all resource types under one policy.
+
+**Design**:
+
+- `PressureBroker` owns admission for model weights, mmproj/mtmd contexts, KV
+  cache, LoRA adapters, embedding cache, WebRTC/media buffers, and render
+  textures.
+- Resource pools expose typed cost, residency, last-use, priority, and eviction
+  hooks.
+- Unsafe requests return `Backpressured`, `Unavailable`, or `Deferred` with an
+  explanation. They do not allocate and hope.
+
+**Owned files/modules**:
+
+- `core/continuum-core/src/gpu/`
+- `core/continuum-core/src/inference/`
+- `core/continuum-core/src/memory/`
+- `core/continuum-core/src/live/`
+- `core/llama/src/mtmd.rs`
+
+**PR sequence**:
+
+1. `pressurebroker-types`: typed resource classes, budgets, decisions.
+2. `backend-admission-gate`: model/mmproj init checks broker before allocate.
+3. `pooled-mtmd-context`: reuse multimodal context under broker ownership.
+4. `kv-lora-paging`: extend to KV and LoRA residency.
+5. `resource-admission-bridge`: route existing hot paths such as
+   `cognition/generate-response` through a shared Rust admission gate while
+   the gate is promoted into the process-wide broker. This is a bridge only:
+   final ownership belongs to `PressureBroker`, and rendering, audio, TTS,
+   STT, classifiers, inference, training, RAG, and background work must all
+   ask the same substrate contract instead of inventing local schedulers.
+
+**TDD**:
+
+- concurrent allocation test refuses unsafe second backend/context.
+- injected OOM/dead backend enters recover/unavailable state, no hang.
+- LRU/priority eviction tests.
+
+**VDD**:
+
+- 4+ personas on constrained profile report bounded memory and explicit
+  deferrals.
+- 5090 profile uses GPU lanes aggressively without CPU fallback.
+
+**Deletion targets**:
+
+- per-adapter private memory heuristics
+- hidden CPU fallback branches
+- duplicate context/model pool code
+
+### Lane F: TS Cognition Deletion Ratchet
+
+**Problem**: migration intent is not enough. The repo needs a mechanical gate
+that prevents new verb-shaped TS cognition and forces deletion as Rust lands.
+
+**Design**:
+
+- CI/check script computes TS cognition line count for touched cognition PRs.
+- New `.ts` files under persona cognition directories fail unless allowlisted as
+  ORM noun, generated schema, UI, or thin shim.
+- Forbidden strings such as deprecated provider names or fallback comments are
+  blocked in runtime code and docs that are not migration notes.
+
+**Owned files/modules**:
+
+- test/ratchet scripts
+- CI/pre-push hooks
+- `src/tests/unit/shared-node-boundary.test.ts`
+- docs describing exceptions
+
+**PR sequence**:
+
+1. `persona-ts-ratchet-script`: local script with clear failure output.
+2. `persona-ts-ratchet-ci`: CI/pre-push enforcement for touched cognition PRs.
+3. `forbidden-provider-scan`: remove and block obsolete provider/runtime names.
+
+**TDD**:
+
+- fixtures for allowed generated/UI/noun TS and forbidden verb TS.
+- scan test proves obsolete provider names cannot re-enter runtime code.
+
+**VDD**:
+
+- each cognition PR reports TS lines before/after and Rust test coverage.
+
+**Deletion targets**:
+
+- stale comments, tombstones, fallback branches, and obsolete provider mentions
+- any TS cognition file replaced by a Rust module
+
+## Issue-Driven Workstreams
+
+### 0. Canary Discipline And Collaboration
+
+**Goal**: stop parallel agents from diverging. Every agent should know the issue, branch, PR, validation command, and current blocker.
+
+| Issue / PR | Role | Required action |
 |---|---|---|
-| [#582](https://github.com/CambrianTech/continuum/issues/582) | Phase 2 | Native multimodal pipeline — three parallel streams LISTEN+THINK+SPEAK, <2s latency for capable models |
-| [#799](https://github.com/CambrianTech/continuum/issues/799) | Phase 2 | Qwen3.5-Omni native audio — skip VAD→STT→LLM→TTS entirely |
-| [#800](https://github.com/CambrianTech/continuum/issues/800) | Phase 2 | `continuum-ai/whisper-forged` — forged STT model |
-| [#801](https://github.com/CambrianTech/continuum/issues/801) | Phase 2 | Per-persona TTS voice cloning |
-| [#652](https://github.com/CambrianTech/continuum/issues/652) | Phase 12 | Sub-100ms vision + real-time audio inference for personas |
-| [#649](https://github.com/CambrianTech/continuum/issues/649) | Phase 12 | LLaVA-style vision encoder — bolt-on vision via projection layer training |
-| [#650](https://github.com/CambrianTech/continuum/issues/650) | Phase 12 | Whisper-style audio encoder — hearing + speech natively |
-| [#579](https://github.com/CambrianTech/continuum/issues/579) | Phase 12 | Vision model forging — feature detector pruning, domain specialization |
-| [#894](https://github.com/CambrianTech/continuum/issues/894) | post-launch | Vision-Qwen3.5 variants per device tier — M5 default 4B-vision, MBA smaller, 3090+ larger |
-| [#895](https://github.com/CambrianTech/continuum/issues/895) | PR891 follow-up | Live multi-persona concurrency benchmark — 3-5 personas on M5, regression-gate for the scheduler |
-
-### What PR891 delivers toward this goal
-
-- **Continuous-batching scheduler** — shared Context, `n_seq_max` sequences (enables 3-5 concurrent persona streams from ONE model instance, KV pool shared not duplicated).
-- **Response-cap hard gate REMOVED** — personas can keep engaging in live chat without arbitrary silencing.
-- **Acceleration architecture committed** (no CPU fallback; UDP sidecar fallback designed for any case where a subsystem can't containerize) — guarantees every sensory subsystem stays GPU-close.
-- **Vulkan-in-container** for Mac Carl → Qwen3.5 at ~80% native Metal in a container, keeping Mac Carl install low-friction.
-- **Un-cheat sensory parity** (Phase 1 of RESTORE-FULL-PARITY-PLAN): whisper.cpp vendor, remove SKIP_STT/SKIP_TTS hatches, LiveKit default-features, avatars ship. Lands the sensory stack that makes "live chat" actually live.
-
----
-
-## Phase 2: Live Call Quality & Resource Management
-
-> The 3D video calls work but leak memory, have high latency, and break offline.
-
-| # | Issue | Status | What |
-|---|-------|--------|------|
-| [#331](https://github.com/CambrianTech/continuum/issues/331) | **Live call quality** ⚠️ CRITICAL | TODO | Avatar vertex corruption — most personas show shredded/exploded geometry in live view. 8 VRM models for 15 personas = overflow models garbled. Also: memory leaks, latency, simultaneous speech. |
-| ~~[#338](https://github.com/CambrianTech/continuum/issues/338)~~ | **Deterministic resource deallocation** | DONE | Merged into #331. |
-| [#582](https://github.com/CambrianTech/continuum/issues/582) | **Native multimodal pipeline** ⚠️ HIGH | TODO | Direct audio/vision for capable models (one hop, <2s), bridge only for text-only. Three parallel streams: LISTEN + THINK + SPEAK. Fundamental architecture fix. |
-| [#339](https://github.com/CambrianTech/continuum/issues/339) | **Live mode latency: 30s STT delay** | SUPERSEDED by #582 | STT→LLM→TTS pipeline too slow. #582 eliminates the pipeline entirely for multimodal models. |
-| ~~[#340](https://github.com/CambrianTech/continuum/issues/340)~~ | **AIs talk over each other** | DONE | Merged into #331. |
-| ~~[#318](https://github.com/CambrianTech/continuum/issues/318)~~ | **Avatar models eating 26GB** | DONE | Cleaned up — 8 CC0 VRoid models only. |
-| [#322](https://github.com/CambrianTech/continuum/issues/322) | **More CC0 avatar models** ⚠️ CRITICAL | TODO | Only 8 models for 15 personas. Overflow causes vertex corruption. Need 15+ working VRM 0.x models. |
-| ~~[#332](https://github.com/CambrianTech/continuum/issues/332)~~ | **Offline-first architecture** | DONE | No CDN deps. Works offline. |
-| ~~[#380](https://github.com/CambrianTech/continuum/issues/380)~~ | **GPU governor** | DONE | Superseded by #469 (Grid Governor). |
-| ~~[#399](https://github.com/CambrianTech/continuum/issues/399)~~ | **Persona response latency** | DONE | Priority boost (PR #423), event coalescing (PR #466), timeout fix (PR #460). |
-| [#409](https://github.com/CambrianTech/continuum/issues/409) | **Sensory system verification** | TODO | Vision, screenshots, live mode visual awareness. |
-| [#436](https://github.com/CambrianTech/continuum/issues/436) | **Cost/metrics widgets** | TODO | Auto-adjust time segments. |
-| [#473](https://github.com/CambrianTech/continuum/issues/473) | **Grid telemetry widget** | TODO | SCADA-style per-node CPU/MEM/GPU + sparklines. |
-
-| [#797](https://github.com/CambrianTech/continuum/issues/797) | **LiveKit + livekit-bridge Docker validation** | TODO | Validate three-binary split works in Docker. Bridge socket, audio pipeline, browser call join. |
-| [#799](https://github.com/CambrianTech/continuum/issues/799) | **Qwen3.5 native audio — skip VAD→STT→LLM→TTS** | TODO | Audio-native models bypass the entire pipeline. Router exists in `live/audio/router.rs`. Needs Qwen3.5-Omni GGUF. |
-| [#800](https://github.com/CambrianTech/continuum/issues/800) | **Custom forged STT model** | TODO | Whisper-equivalent trained on technical vocabulary. Publish as `continuum-ai/whisper-forged`. |
-| [#801](https://github.com/CambrianTech/continuum/issues/801) | **Custom TTS voices per persona** | TODO | Persona-specific voice synthesis via Pocket-TTS cloning + fine-tuning. |
-
-**Done when**: Avatar geometry works for ALL personas (no vertex corruption). Live call closes → memory baseline in 30s. Latency under 5s. All personas can see. Grid telemetry visible. Native audio models skip STT/TTS chain.
-
----
-
-## Phase 3: Tool Calling & Local Model Reliability
-
-> THE blocker for local-first AI. Personas can't reliably call tools with local models.
-
-| # | Issue | Status | What |
-|---|-------|--------|------|
-| [#324](https://github.com/CambrianTech/continuum/issues/324) | **Parser-per-model-family** | DONE (Rust) | 6 families in Rust (DeepSeek, Llama, Mistral, Hermes, Qwen, Generic) + Native protocol upstream. Closed. |
-| [#368](https://github.com/CambrianTech/continuum/issues/368) | **PersonaToolExecutor failures** | DONE (PR #400) | Fixed param serialization, agent loop cap, double correction, loop detection side-effect, tool group bias. |
-| [#366](https://github.com/CambrianTech/continuum/issues/366) | **Personas can't reliably write code** | PARTIAL | Sub-issues #367, #368, #371 done. Routing works. Remaining: #370 (e2e pipeline), #369 (quality gate). |
-| [#367](https://github.com/CambrianTech/continuum/issues/367) | **CodingAgent dispatch unreliable** | DONE (tested e2e) | Works — 3 workspace strategies, error handling, training capture. Closed. |
-| [#321](https://github.com/CambrianTech/continuum/issues/321) | **Local inference quality** | TODO | Compacted 14B gives poor responses. |
-| [#325](https://github.com/CambrianTech/continuum/issues/325) | **Ship 14B model, research 32B QAT** | TODO | 14B at Q5_K for MacBook Air. 32B QAT for 32GB machines. |
-| [#371](https://github.com/CambrianTech/continuum/issues/371) | **Per-task model routing** | DONE (PR #401) | Fixed hasTools false for XML providers — local personas now upgrade to cloud for tool use. |
-| [#343](https://github.com/CambrianTech/continuum/issues/343) | **Native multimodal** | TODO | Skip STT/TTS for models that handle audio/images directly. |
-| [#342](https://github.com/CambrianTech/continuum/issues/342) | **Vision feedback** | REOPENED | Pipes exist but full loop (see→fix→verify) not proven. Needs #493 + #480. |
-| [#341](https://github.com/CambrianTech/continuum/issues/341) | **API cost budgeting** | PARTIAL (PR #405) | Cost tracking fixed (used wrong provider). `ai/cost` command works. Budget limits still TODO. |
-| [#413](https://github.com/CambrianTech/continuum/issues/413) | **Sentinel logs: list available streams** | DONE (PR #421) | Error messages now list available streams. Found by AI team. |
-| [#417](https://github.com/CambrianTech/continuum/issues/417) | **Evaluate Qwen3.5-35B-A3B** | TODO | Opus reasoning distilled, 3B active MoE. Could replace Llama-3.2-3B as local model. |
-
-**Done when**: Local model reliably calls tools. Parser handles all model families. Per-task routing picks best model. Cost tracked.
-
----
-
-## Phase 4: End-to-End Development Orchestration
-
-> From "AI that chats" to "AI that ships code."
-
-| # | Issue | Status | What |
-|---|-------|--------|------|
-| [#326](https://github.com/CambrianTech/continuum/issues/326) | **E2E dev orchestration** | TODO | Sentinel templates → auto-trigger → PR workflow → chat bridge. |
-| [#370](https://github.com/CambrianTech/continuum/issues/370) | **Coding pipeline never proven** | PARTIAL (PR #407) | sentinel/coding-agent works e2e. Persona→chat→code trigger needs proof. |
-| [#411](https://github.com/CambrianTech/continuum/issues/411) | **Self-improving system** | TODO | Personas autonomously propose → code → test → PR. The endgame. |
-| [#415](https://github.com/CambrianTech/continuum/issues/415) | **Dispatch classifier too trigger-happy** | DONE (PR #419) | Tightened patterns + technical context gate. |
-| [#416](https://github.com/CambrianTech/continuum/issues/416) | **sentinel/resume rejects BudgetExhausted** | DONE (PR #420) | Budget exhaustion now sets correct resumable status. |
-
-**Previously completed:**
-- 3 sentinel dev templates (build-feature, fix-bug, code-review) — DONE
-- TemplateRegistry — DONE
-- SentinelChatBridge — DONE
-- SentinelDispatchDecider — DONE
-
-**Remaining:**
-- [ ] 2 more templates (create-pr, refactor)
-- [ ] PR workflow commands (push, create, review, status)
-- [ ] Template parameter extraction from chat context
-- [ ] Prove the full loop: chat request → sentinel → code → tests → commit → PR
-
-**Done when**: Someone says "add rate limiting to the login endpoint" in chat → persona spawns sentinel → code written → tests pass → PR created. Proven, not theoretical.
-
----
-
-## Phase 5: Academy — Full Training Loop
-
-> The README promises personas get smarter every day. Prove it.
-
-| # | Issue | Status | What |
-|---|-------|--------|------|
-| [#377](https://github.com/CambrianTech/continuum/issues/377) | **Full academy session E2E** | TODO | All challenges → failures → LoRA trained → re-exam → measurable improvement. Never completed. |
-| [#369](https://github.com/CambrianTech/continuum/issues/369) | **RealClassEval trash with local models** | REOPENED | Solved by compaction + training, not API keys. Open until local model passes. |
-| [#374](https://github.com/CambrianTech/continuum/issues/374) | **Teacher needs cloud API** | REOPENED | Compacted 35B MoE IS the teacher. Needs #492 first. |
-| [#365](https://github.com/CambrianTech/continuum/issues/365) | **Training job persistence** | TODO | Checkpoint resume, crash recovery, auto-restart for weeks-long runs. |
-| [#344](https://github.com/CambrianTech/continuum/issues/344) | **Ship LoRA-tuned local model** | TODO | A model that passes coding challenges via our tool system. |
-| [#345](https://github.com/CambrianTech/continuum/issues/345) | **LoRA-tuned persona layer** | TODO | Teach personas to use Continuum's own systems. |
-| [#384](https://github.com/CambrianTech/continuum/issues/384) | **Team training** | TODO | Multi-persona project decomposition — roles, parallel training, collaborative building. |
-| [#359](https://github.com/CambrianTech/continuum/issues/359) | **Training env auto-bootstrap** | TODO | Any Grid node can train — zero manual intervention. |
-
-**The critical path:**
-```
-#374 (local teacher) → #377 (full session) → #369 (quality baseline)
-    → #344 (ship tuned model) → #384 (team training)
-```
-
-**Done when**: A full academy session completes on the 5090 tower using only local models. Student scores improve after training. Adapter published to HuggingFace.
-
----
-
-## Phase 6: Genome & Adapter Ecosystem
-
-> Personas carry skills in their genome. Skills page in/out. Skills are shared globally.
-
-| # | Issue | Status | What |
-|---|-------|--------|------|
-| [#382](https://github.com/CambrianTech/continuum/issues/382) | **Genome paging not wired** | TODO | activateSkill/evictLRU exists but not connected to persona loop or GPU governor. |
-| [#378](https://github.com/CambrianTech/continuum/issues/378) | **First HuggingFace adapter publication** | TODO | README promises `continuum:*` tags, searchable marketplace. Never published from system. |
-| [#330](https://github.com/CambrianTech/continuum/issues/330) | **Adapter management** | TODO | Docker-like ops: list, prune, info. 58 old adapters hit 21GB before manual cleanup. |
-| [#319](https://github.com/CambrianTech/continuum/issues/319) | **Separate install from start** | TODO | Detect if build needed. Don't rebuild every time. |
-
-**Done when**: Persona faces a Python task → genome pages in python-expertise adapter → processes task → publishes adapter to HuggingFace → another instance discovers and pulls it.
-
----
-
-## Phase 7: Autonomous Persona Life
-
-> Not agents you invoke. Teammates who live.
-
-| # | Issue | Status | What |
-|---|-------|--------|------|
-| [#383](https://github.com/CambrianTech/continuum/issues/383) | **Self-task generation** | TODO | generateSelfTasks() not implemented. Personas only react, never initiate. |
-| [#329](https://github.com/CambrianTech/continuum/issues/329) | **Persona-sentinel integration** | TODO | Autonomous dispatch, sentinel memory → RAG, NL → pipeline, multi-teacher. |
-| [#336](https://github.com/CambrianTech/continuum/issues/336) | **First-run onboarding** | TODO | Guide users to configure API keys, understand the system. |
-| [PR #709](https://github.com/CambrianTech/continuum/pull/709) | **Epistemic grounding** | DESIGN MERGED | 5-tier source hierarchy, EpistemicSource metadata on RAG artifacts, Devil's Advocate persona role, training data filters. Prerequisite for external communication. See [EPISTEMIC-GROUNDING.md](EPISTEMIC-GROUNDING.md). |
-| [PR #701](https://github.com/CambrianTech/continuum/pull/701) | **Social & calendar integrations** | DESIGN MERGED | Calendar → Discord → Slack → Newsroom/Email. IntegrationDaemon, command modules, RAG sources. Depends on epistemic grounding. See [SOCIAL-CALENDAR-INTEGRATIONS.md](SOCIAL-CALENDAR-INTEGRATIONS.md). |
-
-**Done when**: Leave the system running overnight → come back to find personas have consolidated memories, audited skills, searched HuggingFace for useful adapters, and initiated peer learning sessions. Personas know your calendar. External communication gated by epistemic verification. Without any human prompt.
-
----
-
-## Phase 8: Distillation & Training Flywheel
-
-> The competitive moat: every task makes the next task better.
-
-| # | Issue | Status | What |
-|---|-------|--------|------|
-| [#327](https://github.com/CambrianTech/continuum/issues/327) | **Distillation pipeline** | TODO | Capture → score → filter → train → evaluate → deploy → capture better data. |
-| [#357](https://github.com/CambrianTech/continuum/issues/357) | **Persistent learning layer** | TODO | Continuum as learning layer for Claude Code and other AI dev tools. |
-
-**Sub-tasks:**
-- [ ] Composite quality scoring (replace binary 0.9/0.3)
-- [ ] Quality-filtered training data pipeline (>0.7 threshold)
-- [ ] Evaluation sentinel (benchmark new adapter vs. previous)
-- [ ] Auto-rollback on regression
-- [ ] Negative example training (failed tool calls + corrections)
-- [ ] Flywheel automation: the full loop runs unattended
-
-**Done when**: Helper AI improves from 53% → 70%+ on RealClassEval after one training cycle. Measured, not assumed.
-
----
-
-## Phase 9: Codebase Intelligence
-
-> Know what you're changing before you change it.
-
-| # | Issue | Status | What |
-|---|-------|--------|------|
-| [#328](https://github.com/CambrianTech/continuum/issues/328) | **Tree-sitter + dep graph** | TODO | Symbol extraction, dependency graph, sentinel context enrichment, LSP. |
-
-**Sub-tasks:**
-- [ ] Tree-sitter Rust worker for symbol extraction (TS, Rust, Python, JS)
-- [ ] Symbol table storage via ORM (incremental, content-hashed)
-- [ ] Dependency graph from import analysis
-- [ ] `codebase/symbols` and `codebase/dependencies` commands
-- [ ] Sentinel LLM step `contextSources` field
-- [ ] Step-result summarization for long pipelines
-- [ ] (Future) LSP integration
-
-**Done when**: Persona modifying `auth.ts` automatically knows every file that imports it, every function that calls its methods, and every test that covers it — before writing a single line.
-
----
-
-## Phase 10: Grid — Multi-Node Mesh
-
-> Your machines form a single organism. Codename: **Ares** (the Governor).
-
-| # | Issue | Status | What |
-|---|-------|--------|------|
-| [#323](https://github.com/CambrianTech/continuum/issues/323) | **Tailscale mesh for remote inference** | TODO | Multi-tower transparent command routing. |
-| [#364](https://github.com/CambrianTech/continuum/issues/364) | **Cross-node event forwarding** | TODO | Events must propagate across Grid nodes (Rust plumbing). |
-| [#349](https://github.com/CambrianTech/continuum/issues/349) | **Reticulum mesh** | TODO | MPC identity + encrypted transport. Replace Tailscale dependency. |
-| [#337](https://github.com/CambrianTech/continuum/issues/337) | **Distributed inference + training** | TODO | Shard models and training across towers. |
-| [#469](https://github.com/CambrianTech/continuum/issues/469) | **Ares — Grid Governor** | TODO | AI persona on every node. Peer gossip, resource commands, polite mode. Named for Greek god + Tron hero. |
-| [#499](https://github.com/CambrianTech/continuum/issues/499) | **Grid discovery + trust** | TODO | Three tiers: on-site, vouched peers, open mesh. No hardcoded IPs. |
-| [#501](https://github.com/CambrianTech/continuum/issues/501) | **Grid compute economy** | TODO | Earn credits hosting MoE experts. Route tokens across mesh. |
-| [#503](https://github.com/CambrianTech/continuum/issues/503) | **Grid model marketplace** | TODO | Share compacted models + experts + adapters across mesh + HuggingFace. |
-| [#505](https://github.com/CambrianTech/continuum/issues/505) | **Command marketplace** | TODO | Share commands as pluggable modules. Generator = SDK. DotNetNuke for AI. |
-| [#507](https://github.com/CambrianTech/continuum/issues/507) | **Grid fault tolerance** | TODO | Self-healing organism. Rescue downed nodes. Checkpoint everything. |
-| [#508](https://github.com/CambrianTech/continuum/issues/508) | **Multi-agent concurrent coding** | TODO | Worktree isolation + collaborative merge. AIs learn git through experience. |
-| [#516](https://github.com/CambrianTech/continuum/issues/516) | **First Grid experiment** | TODO | 5090 + 3090 + 1080 Ti + laptops. Heterogeneous dual-node proof. |
-| [#517](https://github.com/CambrianTech/continuum/issues/517) | **Onboarding crisis** ⚠️ CRITICAL | TODO | First external user hit walls. Install must be frictionless. Blocks everything. |
-
-**Available hardware (ready to mesh):**
-
-| Node | GPU | VRAM | RAM | Role | Status |
-|------|-----|------|-----|------|--------|
-| Joel 5090 tower | RTX 5090 | 32GB | 32GB | Primary forge, heavy training | Online (WSL2) |
-| Joel 1080Ti box | 3x GTX 1080Ti | 33GB total | 128GB | Distributed inference, CPU pruning, GGUF conversion | **OFFLINE — blocked on install.sh** |
-| Joel 970 box | GTX 970 | 4GB | ? | Light inference, testing | **OFFLINE** |
-| Joel MacBook Pro | M1 Pro | 32GB unified | 32GB | MLX inference, testing, dev | Online |
-| Joel MacBook Air | M1 | 8GB unified | 8GB | iPhone-class testing (same RAM budget) | Available |
-| Toby 3090 | RTX 3090 | 24GB | ? | Secondary forge, inference | **OFFLINE — blocked on install.sh** (PR #535) |
-| Toby 5050 | RTX 5050 | 8GB | ? | Light inference, edge testing | **OFFLINE** |
-
-**The 1080Ti box alone unblocks**: parallel GGUF conversion (128GB RAM), distributed inference (3 GPUs), CPU expert pruning without blocking the 5090 forge. Getting `install.sh` working is THE grid priority.
-
-| [#798](https://github.com/CambrianTech/continuum/issues/798) | **Route inference through grid to GPU nodes** | TODO | When BigMama online, route `ai/generate`, STT, TTS to 5090 instead of laptop. Grid router exists, needs wiring to AI provider. |
-| [#806](https://github.com/CambrianTech/continuum/issues/806) | **Tailscale ghost nodes on restart** | DONE (PR #809) | State volume persists identity. `TS_HOSTNAME` defaults to `{hostname}-grid`. No more orphaned devices. |
-| [#807](https://github.com/CambrianTech/continuum/issues/807) | **Auto grid profile when Tailscale configured** | TODO | `setup.sh` detects Tailscale → enables grid automatically. No manual `.env.grid` copy or `--profile grid`. |
-| [#808](https://github.com/CambrianTech/continuum/issues/808) | **Grid config provisioning** ⚠️ HIGH | TODO | `grid/provision` syncs config.env from primary node. No manual `scp`. One Tailscale key is the only manual step. |
-| [#811](https://github.com/CambrianTech/continuum/issues/811) | **Docker node shows 127.0.0.1 / no GPU** | PR #813 | Grid Overview fetches grid/status for real Tailscale IP and GPU capabilities. |
-| [#814](https://github.com/CambrianTech/continuum/issues/814) | **Self-healing — auto-wake and restart downed nodes** | TODO | Foreman detects offline → WoL via Tailscale → SSH restart. Grid is the immune system. |
-| [#815](https://github.com/CambrianTech/continuum/issues/815) | **In-browser terminal for node management** | TODO | AWS-style console. SSH button → terminal widget → Tailscale IP. Wake/restart/rebuild/logs from grid page. |
-
-**Done when**: `install.sh` works on the 1080Ti box and Toby's 3090. Grid ping succeeds across Tailscale. A training job started on the 5090 checkpoints and resumes on the 3090 when the 5090 reboots. Ares detects a game launching and yields GPU. GGUF conversion runs on the 1080Ti box while 5090 forges. Inference routes to BigMama when laptop is on Tailscale. Config propagates automatically to new nodes via `grid/provision`. Downed nodes auto-revive. Full node management from browser.
-
----
-
-## Phase 11: Docker — Full-Stack Containerization (PR #740)
-
-> `docker compose up` — Tailscale handles TLS, containers serve HTTP. Real HTTPS, no warnings.
-
-| # | Issue | Status | What |
-|---|-------|--------|------|
-| [#737](https://github.com/CambrianTech/continuum/issues/737) | **Docker architecture** | WORKING | docker-compose.yml: tailscale, postgres, continuum-core, node-server, widget-server, livekit, model-init, forge-worker, inference. All containers healthy on BigMama. |
-| — | **Tailscale sidecar TLS** | DONE | Tailscale container joins tailnet, provisions Let's Encrypt certs, reverse-proxies HTTPS/WSS to plain HTTP containers via TS_SERVE_CONFIG. No Caddy, no self-signed, no manual certs. Two prereqs: enable HTTPS certs in Tailscale DNS settings + generate auth key. |
-| — | **ONNX Runtime in Docker** | DONE | ONNX Runtime 1.24.4 installed in continuum-core image. ORT_DYLIB_PATH env var set. Silero VAD + Piper TTS work (persona hearing + speech). |
-| — | **Postgres in Docker** | DONE | SecretManager no longer overwrites Docker env vars with config.env values. DATABASE_URL from compose takes precedence. |
-| — | **WS localhost fallback bug** | DONE | TransportConfig.ts used `ws://localhost` for non-HTTPS pages. Now always uses `window.location.hostname` in browser. Vite bundle rebuilt. |
-| — | **IPC crash without Rust core** | DONE (PR #740) | Node-server no longer crashes if continuum-core socket missing. |
-| — | **Auto-seed on first run** | PARTIAL | docker-entrypoint.ts detects empty DB, runs seed-continuum.ts. Rooms seed (11/12). Personas fail (IPC drops under heavy seeding). Needs resilient seeding with retry. |
-| — | **ARM64 Docker: WebRTC** | DEFERRED | LiveKit runs as separate container. Rust binary built without livekit-webrtc feature (`--no-default-features`). |
-| — | **Persona seeding in Docker** | TODO | AI users not created. Seed script IPC connections fail under heavy load. Need: (a) batch seeding with delays between records, or (b) direct SQL seed for Docker. |
-| — | **Voice/avatar models** | TODO | model-init container exists but voice-models volume not populated on BigMama. Need `docker compose run model-init`. |
-| — | **CI multi-arch images** | TODO | GHCR publishing workflow exists but not tested on this branch. |
-| — | **WSS port routing** | DONE (PR #809) | Browser WebSocket now connects to configured WS_PORT (9001), not page port (443). Fixes Tailscale reverse proxy. |
-| — | **Port conflict Tailscale vs node-server** | DONE (PR #809) | Removed duplicate 9002:9001 host mapping from Tailscale. Tailscale serve proxies internally. |
-| — | **GHCR images rebuilt** | DONE | All 5 images rebuilt on BigMama and pushed to GHCR (2026-04-06). |
-| [#796](https://github.com/CambrianTech/continuum/issues/796) | **Docker E2E with live mode + grid** | PARTIAL | Chat works, AIs respond, HTTPS via Tailscale works, factory shows leaderboard. Remaining: live calls, grid discovery from browser. |
-
-**Prereqs** (one-time, per tailnet):
-1. Tailscale installed + HTTPS certificates enabled in DNS settings
-2. Auth key generated (reusable + ephemeral) → stored in `.env` as `TS_AUTHKEY`
-
-**Done when**: `docker compose up` on a fresh machine with Tailscale brings up the full system with all personas, avatars, and voice models. Accessible at `https://<hostname>.ts.net`.
-
----
-
-## Phase 12: Factory — Model Forge Production Line
-
-> Nature: forge base models. Nurture: academy trains personas. Factory is nature. The factory is the product's front door — the widget that brings people in and the grid that keeps them.
-
-The factory forges, benchmarks, and publishes base models for every device tier. HuggingFace is the app store — we provide the factory, community provides hardware. Models forged through our pipeline have known provenance enabling re-forging (the moat). Recipes are shareable end-to-end templates that encode the entire forge process.
-
-**Strategy**: HF leaderboards for benchmarks (don't reinvent). Right-panel sidebar for our leaderboard/stats. Competitive spirit drives adoption. Recipes are the apps, factory is the store, grid is the compute.
-
-### Core Factory Infrastructure
-
-| # | Issue | Status | What |
-|---|-------|--------|------|
-| [#576](https://github.com/CambrianTech/continuum/issues/576) | **Factory widget** | IN PROGRESS | Event-driven widget with forge controls, live HF models, leaderboard-style published models. PR #644 (pruning controls), PR #645 (header tab), PR #654 (forge command + live HF data). |
-| [#653](https://github.com/CambrianTech/continuum/issues/653) | **Wire START FORGE + live status + queue** | PR #654 | model/forge command routes to BigMama via SSH/grid. Status polling emits events. Queue UX needed. |
-| [#638](https://github.com/CambrianTech/continuum/issues/638) | **Factory job queue** | TODO | RTOS-style task scheduling across grid nodes. Priority, estimated wait, queue position. |
-| [#646](https://github.com/CambrianTech/continuum/issues/646) | **Python↔Rust bridge** | TODO | Protobuf schema for forge events (like ts-rs for Rust↔TS). |
-| [#629](https://github.com/CambrianTech/continuum/issues/629) | **Mixed-precision GGUF** | TODO | Validate end-to-end, make it the default forge output. |
-| [#577](https://github.com/CambrianTech/continuum/issues/577) | **Architecture visualizer** | DESIGNED | Shared component for model surgery + cognition visualization. Canvas/WebGL. |
-| [#584](https://github.com/CambrianTech/continuum/issues/584) | **Custom prompt testing** | TODO | Run any prompt against forged model from the widget. |
-| [#583](https://github.com/CambrianTech/continuum/issues/583) | **Test results viewer** | TODO | Log-style pass/fail with click-to-expand. |
-
-### Recipe System (The Apps)
-
-| # | Issue | Status | What |
-|---|-------|--------|------|
-| [#651](https://github.com/CambrianTech/continuum/issues/651) | **Recipe composition** | TODO | Stack multiple recipes on one base model. Sequential forge stages. |
-| [#648](https://github.com/CambrianTech/continuum/issues/648) | **Context window extension** | TODO | RoPE rescaling recipe. YaRN/NTK + long-context fine-tuning. |
-| [#649](https://github.com/CambrianTech/continuum/issues/649) | **Vision encoder (LLaVA-style)** | TODO | Bolt-on vision via projection layer training. |
-| [#650](https://github.com/CambrianTech/continuum/issues/650) | **Audio encoder (Whisper-style)** | TODO | Hearing + speech natively. |
-| [#578](https://github.com/CambrianTech/continuum/issues/578) | **Voice model forging** | TODO | Prune unused phoneme heads, specialize for accent/language. |
-| [#579](https://github.com/CambrianTech/continuum/issues/579) | **Vision model forging** | TODO | Feature detector pruning, domain specialization. |
-| [#580](https://github.com/CambrianTech/continuum/issues/580) | **Expert-as-a-service** | TODO | Dynamic MoE paging across grid. Hot experts local, cold experts from mesh. |
-
-### Lifecycle Pipeline (Factory → Academy → Sentinel)
-
-| # | Issue | Status | What |
-|---|-------|--------|------|
-| [#655](https://github.com/CambrianTech/continuum/issues/655) | **End-to-end lifecycle** | MASTER ISSUE | Forge → Evaluate → Deploy → Learn → Re-forge. The full loop. |
-| [#656](https://github.com/CambrianTech/continuum/issues/656) | **Auto-submit to HF leaderboards** | TODO | After forge completes, submit to Open LLM, domain-specific boards. Pull results back. |
-| [#657](https://github.com/CambrianTech/continuum/issues/657) | **Re-forge from existing model** | TODO | THE MOAT. Known provenance enables deeper controls: swap adapters, adjust pruning, add modalities. |
-| [#658](https://github.com/CambrianTech/continuum/issues/658) | **Sentinel forge recipe** | TODO | Automated lifecycle: forge → evaluate → deploy → learn → re-forge. AI foreman orchestrates. |
-| [#652](https://github.com/CambrianTech/continuum/issues/652) | **Low-latency sensory pipeline** | TODO | Sub-100ms vision + real-time audio for personas. Inference speed, not training. |
-
-### ForgeAlloy — Portable Pipeline Format & Integrity
-
-| # | Issue | Status | What |
-|---|-------|--------|------|
-| [#659](https://github.com/CambrianTech/continuum/issues/659) | **ForgeAlloy portable entity** | DONE | Public repo (CambrianTech/forge-alloy). Rust + Python + TypeScript. JSON schema. 7 tests. |
-| [#660](https://github.com/CambrianTech/continuum/issues/660) | **Factory widget: import/export alloys** | TODO | Load/save .alloy.json recipes. Display executed alloy results. |
-| [#661](https://github.com/CambrianTech/continuum/issues/661) | **Attestation verification in model/list-published** | TODO | Fetch .alloy.json from HF, display trust level and benchmarks. |
-| [fa #1](https://github.com/CambrianTech/forge-alloy/issues/1) | **JCS canonicalization + ES256 signing** | TODO | RFC 8785 implementation. verify_signature() in all three languages. Blocks all signed attestation. |
-| [fa #2](https://github.com/CambrianTech/forge-alloy/issues/2) | **Key registry** | TODO | Hosted service with revocation, rotation, supersededBy. |
-| [fa #3](https://github.com/CambrianTech/forge-alloy/issues/3) | **Hardware key signing** | TODO | Secure Enclave (macOS), StrongBox (Android), TPM (Windows). Phase 2. |
-| [fa #4](https://github.com/CambrianTech/forge-alloy/issues/4) | **Enclave execution** | TODO | TEE for tamper-proof attestation. Required for marketplace payments. Phase 4. |
-| [fa #5](https://github.com/CambrianTech/forge-alloy/issues/5) | **Dataset hashing** | TODO | RFC 6962 Merkle tree with domain separation. All three languages. |
-| [fa #6](https://github.com/CambrianTech/forge-alloy/issues/6) | **Post-quantum migration** | FUTURE | ML-DSA / SLH-DSA dual-signing. Enum ready, waiting on library maturity. |
-| [s-ai #118](https://github.com/CambrianTech/sentinel-ai/issues/118) | **Full alloy results in forge** | TODO | Populate benchmarks, hardware profiles, dataset hashes after forging. |
-
-**Current state**: ForgeAlloy repo live with 13 stage types (SourceConfig, Prune, Train, LoRA, Compact, Quant, Package, Eval, Publish, Deploy, ExpertPrune, ContextExtend, Modality). Peer-reviewed attestation (WebAuthn-modeled, PQC ready). alloy_executor.py with OOP stage package on sentinel-ai. Factory widget decomposed into 5 components with visual pipeline composer (6 stage UI elements built). First production alloy forged: qwen3.5-4b-code-forged +16.4%.
-
-### Stage Executors (sentinel-ai)
-
-| # | Issue | Status | What |
-|---|-------|--------|------|
-| [s-ai #119](https://github.com/CambrianTech/sentinel-ai/issues/119) | **Source-config executor** | DONE | Context window, modalities, target devices. |
-| [s-ai #120](https://github.com/CambrianTech/sentinel-ai/issues/120) | **Modality executor** | STUB | Vision/audio/video encoder bolt-on. Auto-recommends encoders + datasets. |
-| [s-ai #121](https://github.com/CambrianTech/sentinel-ai/issues/121) | **Package executor** | STUB | CoreML, TensorRT, ONNX device packaging. |
-| [s-ai #122](https://github.com/CambrianTech/sentinel-ai/issues/122) | **Deploy executor** | STUB | Grid node deployment, health check, warmup. |
-| [s-ai #123](https://github.com/CambrianTech/sentinel-ai/issues/123) | **LoRA executor** | TODO | Distinct from train — QLoRA, rank/alpha, merge after. |
-| [s-ai #124](https://github.com/CambrianTech/sentinel-ai/issues/124) | **Compact executor** | TODO | Plasticity-based mixed-precision. Our moat. |
-| [s-ai #125](https://github.com/CambrianTech/sentinel-ai/issues/125) | **Benchmark harness** | TODO | Actually run HumanEval, MMLU, GSM8K via evalplus/lm-eval. |
-| [s-ai #126](https://github.com/CambrianTech/sentinel-ai/issues/126) | **Context-extend training** | TODO | YaRN/NTK with long-context training data. |
-
-### Stage UI Elements (continuum)
-
-| # | Issue | Status | What |
-|---|-------|--------|------|
-| [#665](https://github.com/CambrianTech/continuum/issues/665) | **Remaining stage UIs** | TODO | 7 more: LoRA, Compact, Publish, Package, ContextExtend, Modality, ExpertPrune. |
-| [#666](https://github.com/CambrianTech/continuum/issues/666) | **Pipeline → executor integration** | TODO | Send full pipeline (all stages) to forge node, not just prune+train. |
-| [#667](https://github.com/CambrianTech/continuum/issues/667) | **Grid capacity query** | TODO | Factory widget shows available nodes + capabilities before forging. |
-
-### Benchmarking & Distribution
-
-| # | Issue | Status | What |
-|---|-------|--------|------|
-| [s-ai #108](https://github.com/CambrianTech/sentinel-ai/issues/108) | **Device ladder** | IN PROGRESS | 64/32/16 expert variants for RTX 3090 → MacBook Air → iPhone. |
-| [s-ai #109](https://github.com/CambrianTech/sentinel-ai/issues/109) | **Production pipeline** | COMMITTED | forge → test → GGUF → test → card → publish. Gated, idempotent. |
-| [s-ai #110](https://github.com/CambrianTech/sentinel-ai/issues/110) | **Benchmark validation** | IN PROGRESS | HumanEval+ running. 4B code-forged at 74.4% on first 78/164 problems. |
-| [s-ai #111-114](https://github.com/CambrianTech/sentinel-ai/issues/111) | **Leaderboard submissions** | TODO | Open LLM v2, HumanEval+, Intel Low-Bit, LiveCodeBench. Use HF's existing infrastructure. |
-
-**Published models (11 on HuggingFace, 14,967 total downloads):**
-
-| Model | Downloads | HumanEval | Status |
-|-------|-----------|-----------|--------|
-| qwen3.5-35b-a3b-compacted | 2,426 | TBD | Published, GGUF Q2_K/Q4_K_M available |
-| qwen2.5-coder-14b-compacted | 2,052 | TBD | Published |
-| qwen2.5-coder-32b-compacted | 1,937 | TBD | Published |
-| qwen3.5-27b-code-forged | 1,731 | TBD | Published, MLX 4-bit available |
-| qwen3.5-4b-code-forged | 1,300 | **74.4% (partial)** | Published, GGUF available |
-| qwen3.5-27b-code-forged-defragged | 826 | TBD | Published, structurally pruned |
-| qwen3.5-4b-code-forged-defragged | 726 | TBD | Published |
-| + 4 more Qwen2.5 models | ~2,000 | TBD | Published |
-
-**The full pipeline:**
-```
-Factory (forge) → HF (publish + leaderboard) → Grid (deploy) → Academy (learn) → Re-forge (improve)
-    ↑                                                                                    |
-    └────────────────────────── continuous improvement loop ──────────────────────────────┘
+| PR #1035 | current canary -> main promotion PR | Keep rebased; promote only after canary has real chat/local-model validation plus relevant platform smoke |
+| PR #1046 | AIRC bridge harness for Continuum testing | Merge/rebase/close deliberately; use it to reduce manual `jtag chat/send` and paste relay |
+| PR #1068 | Rust persona recorder as single fixture source | Merged to canary; sets the SSoT pattern for replay/capture |
+| PR #1069 | Rust response cleanup, TS sanitizer removed | Merged to canary; sets the "move behavior Rust-side, delete TS duplicate" pattern |
+| stale canary PRs (#1085, #1071, #1026) | PR debt | All are currently blocked by failing `carl-install-smoke (linux/amd64)`. Rebase and validate within one work session, convert durable findings to issues, or close stale; do not let them remain failed-smoke sediment |
+| older stale canary PRs (#941, #972, #973, #912) | Historical PR debt | Re-check whether still open/relevant; close with issue notes if superseded |
+| #967 | personas as AIRC peers | Treat as the collaboration unlock: Continuum personas should participate without manual CLI glue |
+| CambrianTech/airc#559 | public knock, approved room handoff, shared sprint queue | AIRC canary has knock and encrypted approve handoff; Continuum must consume the workflow through `.airc/` and persona/agent integration |
+| CambrianTech/airc#562 | peer-to-peer work queue/nudges | Use as the always-on flywheel: any approved peer can nudge idle agents, discover stale/unowned work, and keep the queue moving |
+| PR #1110 | repo-local `.airc/` pilot | Land to canary once docs match current AIRC commands and validation passes; this is the first Continuum-side collaboration contract |
+| #1113 | move live chat off ORM/IPC hot path | AIRC/event-log owns transcript, files, pointers, signaling metadata, and queue chatter; Continuum stores bounded projections |
+| CambrianTech/airc#563 | AIRC message/file substrate | Needed before Carl/browser chat smoke can stop using JTAG chat commands |
+
+Rules:
+
+- Implementation starts from an issue. If no issue exists, file it before coding.
+- PR body must include: issue link, canary target, validation commands, platform coverage, and what was not tested.
+- Agents coordinate on AIRC, but the durable truth is issue + PR comments.
+- `main` promotion only happens after canary has been exercised by at least one real UI path and one non-UI/Rust path relevant to the changes.
+- Open PRs are triaged every session before new feature work. Each gets one of four states: `merge-after-green`, `needs-rebase`, `convert-to-issue`, or `close-stale`.
+- A PR older than 48 hours without a concrete blocker is presumed stale until proven otherwise.
+- If a PR is correct but incomplete, finish and merge it to canary; do not recreate the same work on a new branch.
+
+### 0A. AIRC As The Development Substrate
+
+**Goal**: Continuum should be able to develop itself through a shared grid of
+agents, personas, local models, and humans. AIRC owns the coordination substrate;
+Continuum exposes reliable generated commands and consumes AIRC as an
+integration layer.
+
+The operating model:
+
+- AIRC remains available even when Continuum is down, rebuilding, wedged, or
+  being restarted. It is the continuity layer for work state, handoffs, and
+  recovery.
+- GitHub issues and PRs are the durable work cards. AIRC provides the concise
+  room digest, presence, nudges, approval, and peer-to-peer coordination around
+  those cards.
+- One GitHub account may run many agents. Assignment and presence must use AIRC
+  peer/session identity, nick, role, bio, and whois data rather than assuming
+  one GitHub login equals one worker.
+- Agents should not need a human to ask what to do. An approved agent joins,
+  receives the room rules and current queue digest, claims or reviews a card,
+  posts evidence, and releases or completes the card.
+- `airc nudge` / queue nudges must be peer-to-peer, not manager-only. Any
+  online approved peer can poke idle peers to poll the queue, report blockers,
+  or pick up stale work.
+- Cloud models, local models, Continuum personas, OpenClaw, Hermes, and future
+  grid workers all plug in as workers if they can speak AIRC and execute the
+  relevant Continuum command surface.
+- This is intentionally an OpenClaw-lite/Hermes-lite development framework,
+  not a replacement for those projects. AIRC supplies the small, durable
+  collaboration/control plane: rooms, identity, queue cards, nudge/stale
+  detection, PR proof, and handoff. Continuum supplies the local runtime,
+  cognition, Sentinels, generated commands, grid execution, and product UI.
+- The alpha target is useful even with no web interface running. A developer
+  should be able to install AIRC, join the project room, run Continuum's Rust
+  backend/Sentinel worker surface, and let approved agents coordinate work
+  across local and grid machines without Node being required for the core
+  worker loop.
+- Continuum commands used by these workers must be generated/template-first.
+  Manual command scaffolds break the self-development loop because agents need
+  one predictable command contract.
+- JTAG chat commands are compatibility plumbing. The target is AIRC transcript
+  plus file/attachment APIs for live chat, scrollback, cursors, receipts, and
+  replay. Continuum should consume compact events/pointers and project only
+  bounded durable state.
+
+Near-term Continuum tasks:
+
+1. Land PR #1110 so this repo advertises its AIRC front door, rules, and queue
+   expectations from `.airc/`.
+2. Wire Continuum personas into AIRC rooms as first-class peers for issue/PR
+   digest, claim/release/done, and nudge handling.
+3. Expose generated Continuum commands that let agents run bounded smoke tests,
+   image preflights, install checks, and forge/factory preflights without
+   needing bespoke shell knowledge.
+4. Move the core agent worker path toward Rust-only execution: queue polling,
+   Sentinel dispatch, generated command execution, and proof emission must have
+   a no-Node path so Continuum can serve agents while the browser/UI stack is
+   down.
+5. Validate the pilot by having at least one external peer join through knock,
+   receive approval, claim a GitHub-backed work card, post validation evidence,
+   and hand off through AIRC.
+
+### 1. First-Run And Install Stability
+
+**Goal**: a new user does not hit a silent or half-working install.
+
+| Issue | Priority | Direction | Test gate |
+|---|---:|---|---|
+| #1006 WSL2 cannot reach raw.githubusercontent.com | P0 | install must detect network/bootstrap failure early and print a concrete fix | Windows fresh install log shows failure in <30s with remedy |
+| #1007 Windows rustc ICE compiling continuum-core | P0 | do not make first-run depend on a fragile local Rust build when a published binary/image can be used | Windows install reaches runnable app without compiling core locally |
+| #1008 core socket owned by root container | P0 | fix UID/GID and socket volume ownership; host `jtag` must connect | host `jtag ping` succeeds against container core |
+| #980 Carl validator QA bugs | P0 | break into child issues if still bundled | each child has a canary PR or is closed as stale |
+| #983 Vulkan deferred model download | P0 | download/prewarm with progress during install or show explicit first-chat loading state | first Vulkan chat never sits silent during multi-GB download |
+| #770 fresh install E2E | P0 | make this the release gate, not a one-off QA task | Mac + Windows reinstall logs attached to canary validation |
+
+Implementation posture:
+
+- Prefer published Rust artifacts or minimal service images over compiling everything during first-run.
+- If build is unavoidable, make it explicit and resumable.
+- Install health must distinguish: network unavailable, Docker unavailable, GPU unavailable, model unavailable, Rust core unavailable, UI unavailable.
+
+### 1A. Config, Secrets, And Grid Propagation
+
+**Goal**: one authoritative config path per node, explicit encrypted propagation across trusted grid nodes, and no false "configured" state from empty placeholders.
+
+| Issue | Priority | Direction | Test gate |
+|---|---:|---|---|
+| file: config single-source issue | P0 | `SecretManager` and Rust `secrets.rs` must treat only non-empty values as configured and must lazy-load `$HOME/.continuum/config.env` before any provider check | provider status shows cloud unavailable for empty placeholders; local chat still works |
+| [#1097](https://github.com/CambrianTech/continuum/issues/1097) API-key merge commands | P0 | extend the existing `ai/key/*` command surface for encrypted config sharing over trusted grid/Tailscale nodes; no loose file copying and no browser exposure | two-node test shares selected keys, decrypts only on trusted target, and never logs values |
+| [#1098](https://github.com/CambrianTech/continuum/issues/1098) routed command program substrate | P0 | consolidate bounded multi-command execution on top of `grid/send`, `GridInterceptor`, and `grid/route` so secrets and forge use the same path | one local-grid test runs a redacted `ai/key/*` program; one forge preflight routes through the same envelope |
+| #860 config.env as directory | P1 | keep setup file/dir creation idempotent and typed | setup test catches file-vs-dir mismatch |
+
+Implementation status:
+
+- Shared `ai/key` base types now exist for provider identity, sync intent,
+  target nodes, dry-run, synced state, and merge-plan id.
+- Existing `ai/key/save`, `ai/key/remove`, and `ai/key/test` shared types
+  inherit the base. Runtime sync behavior is intentionally not claimed until the
+  routed reconciliation path exists.
+- `ai/key/status` is generated from `tools/generator/specs/ai-key-status.json`
+  and returns only redacted provider/key/source/configured/fingerprint metadata.
+- `grid/send` is the explicit routed command envelope; `GridInterceptor` is the
+  transparent `Commands.execute()` remote path; `grid/route` is the dry-run
+  routing/debug primitive.
+
+Command shape:
+
+- Existing `ai/key/save`: write one key through `SecretManager` to `$HOME/.continuum/config.env` or the platform vault; command echo and logs must redact values.
+- Existing `ai/key/remove`: remove one key through `SecretManager`.
+- Existing `ai/key/test`: validate a candidate or stored provider key.
+- Existing `ai/providers/status`: provider-facing availability view.
+- `ai/key/status`: list configured key names, source path, empty placeholders, fingerprints, and provider health without values.
+- `ai/key/diff`: compare redacted key revisions across selected target nodes and produce a merge plan without values.
+- `ai/key/apply-merge`: apply an approved merge plan through `SecretManager`; conflicts require owner/persona approval and never auto-overwrite a newer local key.
+
+Rules:
+
+- Empty placeholders such as `DEEPSEEK_API_KEY=` are documentation, not availability.
+- Local mode must work with zero API keys.
+- Cloud personas are eligible only when their required key is non-empty and the provider health check is not expired/failed.
+- Config sharing is an owner/trusted-node command. It should use grid identity plus transport encryption, then persist through `SecretManager` so all runtimes see one source.
+- Remote/grid execution is command routing context, not a namespace. The capability name stays stable while target environment changes.
+- Fresh install and Carl smoke must pass with public model downloads and no `HF_TOKEN`; token-dependent private/gated/factory upload paths are optional later setup.
+
+### 2. GPU Runtime Stability
+
+**Goal**: GPU resource failures degrade or recover; they do not brick the session.
+
+| Issue | Priority | Direction | Test gate |
+|---|---:|---|---|
+| #1048 mmproj/mtmd init mutex | P0 | one mtmd-capable backend may enter Metal pipeline/mmproj init at a time | Rust concurrency test: parallel vision/audio backend init serializes and all callers receive a sane result |
+| #1050 backend recovery state machine | P0 | represent backend as `Healthy`, `Initializing`, `Recovering`, `Dead`, `Unavailable`; recover/drop/recreate on OOM/dead backend | Rust test with injected backend failure recovers or reports `Unavailable`, never hangs |
+| #960 Mac Metal throughput 5-7 tok/s | P0 | measure and fix actual GPU path; do not route through slow CPU-shaped fallback | benchmark shows expected Metal path and records tok/s |
+| #964 ONNX Runtime CPU spike | P0 | enforce Metal/GPU provider selection for fastembed/TTS/STT/vision bridge or fail loud | test/log proves provider is Metal/GPU; CPU fallback is explicit |
+| #948 DMR concurrency failure | P1 | add bounded request scheduling/backpressure around DMR | 4+ persona concurrency test passes without reqwest cascade |
+| #915 Kokoro ONNX deadlock | P1 | isolate session creation and apply GPU provider lifecycle rules | regression test for TTS startup no deadlock |
+| #918 multimodal-native worker | P2 | after lifecycle is safe, collapse voice chain latency | live voice turn benchmark |
+
+Rust targets:
+
+- `core/continuum-core/src/inference/`
+- `core/llama/src/mtmd.rs`
+- `core/continuum-core/src/gpu/`
+- `core/continuum-core/src/live/audio/`
+
+Do not fix these in TypeScript. TS may display state and call commands; it must not own backend lifecycle.
+
+### 3. Rust Persona Runtime And Cognition
+
+**Goal**: personas can run, replay, and be embedded without Node acting as the brain.
+
+| Issue / doc | Priority | Direction | Test gate |
+|---|---:|---|---|
+| #969 migrate tool agent loop to Rust | P0 | move persona/tool loop behavior out of TS | net-negative TS cognition lines and Rust replay test |
+| #909 local persona tool execution | P0 | wire local DMR/Candle tool execution through Rust path | local persona can call a tool without cloud path |
+| #958 DMR repetition penalty / echo | P0 | fix generation config at adapter layer | replay/conversation test proves no verbatim echo loop |
+| #837 raw tool-call XML leak | P1 | output rendering and model post-processing both need tests | fixture with tool markup renders/filters correctly |
+| #970 missing image marker | P1 | ensure media markers are role/content correct in Rust prompt assembly | vision replay fixture includes media marker |
+| docs/architecture/PERSONA-AS-RUST-LIBRARY-PLAN.md | P0 reference | keep as detailed architecture, but alpha doc owns sequencing | cargo tests run without Node |
+| docs/architecture/PERSONA-COGNITION-RUST-MIGRATION.md | P0 reference | enforce "Rust = verbs, TS = nouns/shims" | PRs touching cognition show TS line reduction |
+
+Near-term PR sequence:
+
+1. **PR: Rust persona trace/recorder validation**
+   - issue: file/link if not already present
+   - scope: Rust fixture capture and replay for a chat turn
+   - tests: `cargo test --package continuum-core persona`
+2. **PR: Rust tool loop migration**
+   - issue: #969
+   - scope: shrink TS tool-agent loop to a shim
+   - tests: Rust tool loop unit/integration test; net-negative TS cognition lines
+3. **PR: local persona tool execution**
+   - issue: #909
+   - scope: local model path can execute tools without cloud-only assumptions
+   - tests: local persona tool-call replay; no browser required
+
+### 4. Unified Paging And Pressure Control
+
+**Goal**: support many personas and modalities by paging resources coherently instead of over-allocating and hoping.
+
+| Issue / doc | Priority | Direction | Test gate |
+|---|---:|---|---|
+| docs/architecture/UNIFIED-PAGING.md | P0 reference | `PagedResourcePool` is the primitive; migrate consumers one at a time | pool tests plus consumer-specific tests |
+| docs/architecture/PERSONA-CONTEXT-PAGING.md | P0 reference | KV/persona context paging policy | tests prove bounded memory with multiple personas |
+| #1049 PressureBroker admission gate | P0 | broker must deny unsafe allocations, not just observe them | admission test refuses second unsafe mtmd/backend creation |
+| #1051 MtmdContext pooling | P0 | reuse multimodal context instead of fresh multi-GB allocation per image/frame | replay test avoids repeated context allocation |
+| #945 data/query memory leak | P0 | apply resource attribution and leak tests | load test stays within memory envelope |
+| #944 embedding loop/cache misses | P1 | migrate embedding cache to shared paging primitive | repeated index pass has cache hits and bounded memory |
+| #911 16GB MacBook Air | P1 | define reduced alpha profile with strict budgets | 16GB profile starts and reports disabled features honestly |
+
+Model selection contract:
+
+- Callers request capabilities, not model IDs.
+- Discovery and admission are separate: discovery builds the catalog of model
+  artifacts, modalities, context windows, templates, quantizations, and backend
+  requirements; admission chooses the best viable candidate for the current
+  machine state and request.
+- The catalog is a curated whitelist, not arbitrary Hugging Face passthrough.
+  Candidate discovery may crawl/search HF offline or through foundry commands,
+  but runtime selection only admits vetted rows with known templates, license,
+  backend compatibility, memory estimates, modality metadata, and forge status.
+- Foundry output flows back into the same registry: `candidate` -> `vetted` ->
+  `forged` -> `published`, with Sentinel/foundry jobs updating metadata rather
+  than TS code hardcoding new model names.
+- Provider identity must be typed. Runtime local chat is `LocalRuntime`
+  (llama.cpp/Qwen through our adapter stack), cloud providers are explicit
+  external identities, and Candle is not an inference provider for persona chat.
+  Export this with `ts-rs` so TS seed/config/user paths cannot invent free-form
+  provider strings.
+- Request fields should be typed: `taskKind`, `minIntelligence`, `modalities`, `toolSupport`, `minContextTokens`, `latencyClass`, `qualityClass`, `memoryBudget`, `gpuRequired`, `familyAllowlist`, `familyPreference`, and `explicitOverride`.
+- Constraint syntax should feel like semver where it helps: exact pins for repro, `>=` for minimum intelligence/capability, `~qwen3.5` for near-family preference, ranges for context/latency/memory, and hard allow/deny lists for safety.
+- Rust registry/admission returns the selected provider/model/artifact plus explanation: why selected, why alternatives were rejected, projected VRAM/RAM/KV/LoRA footprint, and whether the choice is degraded.
+- Persona seed stores intent (`local-default`, `vision-default`, future typed capability refs), not hardcoded model strings.
+- TS may display selection state; it must not invent fallback models.
+
+Implementation order:
+
+1. PressureBroker admission gate.
+2. Backend/mmproj lifecycle integration.
+3. First consumer migration: embedding cache or mtmd context pool.
+4. KV/persona context policy.
+5. LoRA adapter paging.
+
+### 5. Docker Modularization
+
+**Goal**: Docker should isolate services and make failures obvious; it must not become a bulk mess that hides Rust/Node/UI problems.
+
+| Issue | Priority | Direction | Test gate |
+|---|---:|---|---|
+| #892 CUDA Docker path bypasses our substrate | P0 | GPU profile must run Continuum runtime or explicitly documented external service, not orphaned upstream server | GPU compose path exercises our adapter/router health |
+| #955 floating CUDA image tag | P0 | pin digest or controlled version | CI verifies pinned image |
+| #834 / #776 image size | P1 | split build/runtime layers; remove unused Node/vendor bulk from runtime images | image size trend published in PR |
+| #796 Docker compose E2E live mode/grid | P1 | profile-based compose tests, not one giant default | compose profile tests pass independently |
+| #908 Windows npm start should route through docker compose | P1 | Windows dev path should use the supported Docker/WSL path | Windows smoke reaches GPU-backed inference |
+| #860 config.env as directory | P1 | keep setup file/dir creation idempotent and typed | setup test catches file-vs-dir mismatch |
+| #859 compose pull hangs in Git Bash | P1 | Windows shell path needs bounded timeout and clear next step | install does not hang indefinitely |
+
+Docker shape:
+
+- `continuum-core`: Rust runtime, GPU adapters, IPC/HTTP surface, no UI.
+- `node-server`: thin command/websocket bridge; no persona cognition logic.
+- `widget-server`: static/browser UI only.
+- `model-init`: explicit model prewarm/download with progress.
+- Optional profiles: `ui`, `grid`, `gpu`, `live`, `forge`, `devtools`.
+
+Health checks:
+
+- Process exists is not health.
+- Core health means IPC responds and required GPU/model capability is ready or explicitly unavailable.
+- Node health means it can reach core or reports degraded with cause.
+- Widget health means static UI and WebSocket proxy are reachable.
+- Model health means expected model is present and GPU-serving path is known.
+
+### 6. UI And Realtime Stability
+
+**Goal**: the browser should reflect reality and recover without manual localStorage/database cleanup.
+
+| Issue / PR | Priority | Direction | Test gate |
+|---|---:|---|---|
+| #961 / PR #1047 | P0 | stale General tab canonicalization merged to canary | browser reload with stale persisted state collapses to one General tab |
+| #793 Node does not reconnect when Rust core restarts | P0 | request pipeline must drain/recreate after core restart | kill/restart core test: next command succeeds |
+| #794 AI messages not realtime | P0 | event bridge forwards AI senders immediately | browser sees AI message without refresh |
+| #962 / #1113 | P1 | AIRC transcript cursor + bounded Continuum projection + IntersectionObserver | scroll-up test loads older messages without ORM live-bus fanout |
+| #773 browser WS reconnect | P1 | reconnect/rebind without manual refresh | browser survives server restart |
+| #785 URL scheme | P1 | one consistent route rule, zero special cases | stale room URL redirects/recovers deterministically |
+| #783 stale room URLs | P1 | stale URLs show recovery path, not broken tab | route test |
+
+TS is acceptable here because this is UI/session state. Still, data validation and canonicalization should use existing routing/entity APIs, not hardcoded UUID/string hacks.
+
+### 7. AIRC And Continuum Internal AI Collaboration
+
+**Goal**: Continuum personas and external coding agents can collaborate through the same room/bus without humans relaying messages.
+
+| Issue / PR | Priority | Direction | Test gate |
+|---|---:|---|---|
+| #967 | P0 | expose personas as AIRC peers | persona receives AIRC room message and replies through Continuum chat |
+| [#1167](https://github.com/CambrianTech/continuum/issues/1167) AIRC/Rust agent flywheel | P0 | treat AIRC as the agent development substrate and Continuum Rust/Sentinel as the no-Node execution plane | approved agent claims queue card, runs Rust/Sentinel command path without Node, opens PR to canary, and close-merged removes the card |
+| PR #1046 | P0 | AIRC bridge harness | bridge protocol test and live room smoke |
+| #856 grid event streaming | P1 | persistent event channels between nodes | cross-node event smoke, no polling-only path |
+| #798 route inference through mesh | P2 | use grid routing for GPU-heavy inference | command from non-GPU node routes to GPU node |
+
+Design rule:
+
+- AIRC is the collaboration transcript and message/file substrate.
+- Continuum owns runtime inputs, generated command execution, persona behavior,
+  UI state, and bounded durable projections. It should not use ORM writes and
+  broad IPC fanout as the live chat bus.
+- The bridge should map messages/events without requiring agents to shell out to
+  `jtag chat/send` manually. Long term, Carl/browser chat smoke should validate
+  through AIRC transcript APIs rather than JTAG chat commands.
+- Protocol tests must run without a browser.
+
+## PR Roadmap To Alpha
+
+| Order | Branch | Base | Issue(s) | Deliverable | Required validation before canary merge |
+|---:|---|---|---|---|---|
+| 1 | `codex/alpha-gap-stability-plan` | `canary` | planning doc | this document; shared execution map | docs lint/readability, AIRC review |
+| 2 | `fix/gpu-backend-lifecycle` | `canary` | #1048, #1050, #960, #964 | mutex + backend state/recovery | Contract TDD for injected failure; Residency VDD for GPU provider; Performance VDD for tok/s |
+| 3 | `feature/grid-config-sync` | `canary` | config single-source, grid config sync | encrypted config status/export/import/sync commands | Contract TDD for config shape; Cross-platform VDD for two-node encrypted config sync; provider status remains truthful |
+| 4 | `fix/docker-alpha-profiles` | `canary` | #892, #955, #834, #776, #796 | modular Docker profile cleanup | Failure TDD for health boundaries; Cross-platform VDD for compose profiles; image size report |
+| 5 | `feature/persona-rust-replay` | `canary` | #969, #909 | Rust persona replay/tool-loop foundation | Contract TDD via `cargo test`; Accuracy VDD via replay fixture and repeated-run stability; net-negative TS cognition lines |
+| 6 | `feature/pressure-broker-gate` | `canary` | #1049, #1051, #945, #944 | admission gate + first resource consumer | Contract TDD for admission decisions; Resource/Residency VDD for memory envelope; no Node required |
+| 7 | `fix/realtime-core-reconnect` | `canary` | #793, #794, #773 | core restart + realtime browser recovery | Failure TDD for killed core; Timing VDD for reconnect/event timestamps; UX VDD for browser receive |
+| 8 | `feature/airc-persona-peer` | `canary` | #967, PR #1046 | Continuum persona as AIRC participant | Protocol TDD for bridge mapping; Timing VDD for round trip; AIRC -> Continuum -> AIRC live smoke |
+| 9 | `test/fresh-install-e2e` | `canary` | #770, #1006-#1008, #983 | install validation matrix | Cross-platform VDD for Mac/Windows logs; Failure TDD for missing network/Docker/GPU; no silent waits |
+
+This order can change when a blocker is discovered, but changes must be made in this document and on the issue/PR thread, not only in chat.
+
+## VDD/TDD Operating Loop
+
+Continuum cannot be validated by integration tests alone. It has ML quality, GPU residency, timing, and recovery requirements that can regress while normal tests stay green. The alpha loop is therefore **TDD + VDD**:
+
+- **TDD**: deterministic unit, integration, and protocol tests that prove contracts and failure modes.
+- **VDD**: validation-driven development for measured behavior: latency, throughput, GPU provider, memory pressure, model accuracy, recovery time, and live UX.
+
+Every alpha PR must choose its validation class up front. A PR may use more than one class, but it may not claim broad stability from a single browser smoke or Docker boot.
+
+| Class | Proves | Typical evidence | Examples |
+|---|---|---|---|
+| Contract TDD | API/state/protocol invariants | unit test, Rust test, type-level regression | `PageState.clear()` emits `null`; pressure gate refuses unsafe allocation |
+| Failure TDD | known failure recovers or fails loud | injected fault test, stale fixture, bounded timeout | dead core reconnect, stale room ID, missing model, gone channel |
+| Performance VDD | speed stays inside alpha budget | benchmark output with baseline delta | tok/s, first-token latency, boot time, chat round-trip |
+| Resource VDD | memory, handles, queues, and cache growth stay bounded over time | soak/load output, monotonic-growth check, resource envelope delta | no ORM/query leak over N iterations; KV cache stays under budget |
+| Accuracy VDD | model output quality and repeatability stay acceptable | replay fixture score, golden semantic check, repeated-run variance, human spot-check note | no echo loop, tool-call XML stripped, vision marker preserved, stable tool choice over N runs |
+| Residency VDD | correct hardware path is used | provider log, GPU counter, no silent CPU fallback | Metal/CUDA provider active; CPU fallback logged as degraded |
+| Timing VDD | async/realtime behavior is observed | event timestamp trace, reconnect timing, race replay | AI message renders without refresh; cold start emits progress |
+| UX VDD | user-visible workflow works | browser screenshot/log, concise manual steps | close all tabs -> empty center; `/chat/general` -> one tab |
+| Cross-platform VDD | Mac/Windows/Linux path works | platform logs from canary, issue/PR comment | WSL install, Mac Metal, Docker profile |
+
+### PR Validation Template
+
+Each PR body should include this block, filled in concretely:
+
+```text
+Validation class:
+Issue(s):
+Core contract test:
+Failure injection / stale fixture:
+Performance/latency budget:
+Resource/memory evidence:
+Accuracy/replay evidence:
+GPU/provider evidence:
+Browser/UX evidence:
+Migration evidence:
+Platform coverage:
+Known gaps:
+Canary agents/humans asked to test:
+Canary ACK/BLOCKER evidence:
 ```
 
-**Done when**: Factory widget is visually stunning. START FORGE runs from the widget, benchmarks via HF leaderboards, publishes with scores, re-forging offers deeper controls for Continuum-forged models. Sentinels automate the full lifecycle. Community contributes GPU via grid, shares recipes, models appear on public leaderboards alongside GPT/Claude/Gemini.
+Rules:
 
----
+1. Every template line is required; use `n/a — <reason>` when a field does not apply.
+2. Core behavior needs a fast non-browser proof when feasible.
+3. Browser tests prove browser responsibilities only.
+4. Docker tests prove packaging and service boundaries, not core algorithm correctness.
+5. ML behavior needs replay fixtures or scored checks, not only "the command returned"; variance-sensitive paths need repeated-run evidence.
+6. Timing-sensitive behavior needs measured timestamps or bounded waits.
+7. GPU-critical behavior must prove provider/residency or fail as degraded. CPU fallback is never silent.
+8. Memory/resource behavior needs a bounded-envelope or leak test when touching caches, pools, queues, ORM cursors, model contexts, or long-lived handles.
+9. State/data shape changes need migration evidence against old persisted state, or `n/a — no state/schema change`.
+10. Install and postinstall must be bounded, explicit, and resumable. Large downloads must not hide inside unrelated validation.
+11. Canary peer testing must close the loop: agents/humans reply with `ACK` or `BLOCKER` plus measured evidence, and the PR records or links that evidence.
 
-## Issue Map — Every Open Issue, One Phase
+## Test Strategy
 
-| Phase | Issues | Count |
-|-------|--------|-------|
-| **0: Critical Bugs** | ~~#376~~, ~~#335~~, ~~#317~~, ~~#385~~, ~~#381~~, ~~#373~~ | 6 (ALL DONE) |
-| **1: Arch Integrity** | ~~#333~~, ~~#363~~, #362, ~~#356~~, ~~#355~~, #353, #351, ~~#361~~, ~~#354~~, ~~#352~~, ~~#379~~, ~~#334~~, ~~#360~~, ~~#412~~ | 14 (11 done) |
-| **2: Live Quality** | #331 ⚠️, ~~#338~~, #339, ~~#340~~, ~~#318~~, #322 ⚠️, ~~#332~~, ~~#380~~, ~~#399~~, #409, ~~#436~~, ~~#464~~, ~~#465~~, #473 | 14 (9 done, 2 CRITICAL) |
-| **3: Tool Calling** | ~~#324~~, ~~#368~~, ~~#366~~, ~~#367~~, ~~#321~~, ~~#325~~, ~~#371~~, ~~#343~~, #342, ~~#341~~, ~~#413~~, #417, ~~#430~~, #433, #439, ~~#440~~, ~~#453~~ | 17 (12 done, 2 reopened) |
-| **4: Dev Orchestration** | ~~#326~~, ~~#370~~, ~~#411~~ ✅, ~~#415~~, ~~#416~~, #445 | 6 (5 done) |
-| **5: Academy** | #377, #369, #374, ~~#365~~, #344, ~~#345~~, #384, ~~#359~~ | 8 (3 done, 2 reopened) |
-| **6: Genome** | #382, #378, ~~#330~~, ~~#319~~, ~~#472~~ | 5 (3 done) |
-| **7: Autonomous** | #383, ~~#329~~, ~~#336~~ | 3 (2 done) |
-| **8: Distillation** | ~~#327~~, ~~#357~~ | 2 (2 done) |
-| **9: Codebase Intel** | ~~#328~~ | 1 (1 done) |
-| **10: Grid** | ~~#323~~, ~~#364~~, #349, #337, ~~#467~~, #469 (Ares), #499, #501, #503, #505, #507, #508, #516, #517 ⚠️ | 14 (3 done, 1 CRITICAL) |
-| **11: Multimodal Compaction** | #492, #417, #480, ~~#493~~, #494, #495, #496, #497, #409, #502 | 10 (1 done — THE UNLOCK) |
-| **12: Factory** | #576-584, #629, #638, #646, #648-667 + s-ai #108-126 + fa #1-6 | 52 (4 in progress, #659 done, first alloy forged) |
-| **Research** | #391, #392, ~~#393~~ | 3 (1 done) |
-| **Total** | | **131 tracked, 57 open, 74 closed** |
+### Rust-first tests
 
----
+Use these before Docker/browser validation:
 
-## Phase 11: Multimodal Compaction — The Unlock
-
-> Personas that SEE what they build. On a MacBook. With zero API keys.
-
-This phase combines plasticity compaction, MoE paging, vision, and Academy training into the system's defining capability: AI teammates that can design, build, and visually verify their own work on consumer hardware.
-
-| # | Issue | Status | What |
-|---|-------|--------|------|
-| [#492](https://github.com/CambrianTech/continuum/issues/492) | **Compact Qwen3.5-35B-A3B on 5090** | TODO | Run plasticity pipeline on MoE model. Target: 8-12GB (MacBook Air). |
-| [#417](https://github.com/CambrianTech/continuum/issues/417) | **Evaluate compacted model** | REOPENED | Was closed as "too big" — never tried compaction. 3x proven on 14B. |
-| [#480](https://github.com/CambrianTech/continuum/issues/480) | **Qwen3.5-0.8B vision service** | TODO | Lightweight real-time scene captioning for text-only models. |
-| [#493](https://github.com/CambrianTech/continuum/issues/493) | **DOM interaction command** | TODO | click/type/select — personas interact with UI elements. |
-| [#494](https://github.com/CambrianTech/continuum/issues/494) | **UI design training curriculum** | TODO | Academy teaches personas to see screenshots, find problems, fix code. |
-| [#495](https://github.com/CambrianTech/continuum/issues/495) | **HuggingFace naming + publishing** | TODO | `-cont` suffix, model cards, publishing pipeline. |
-| [#496](https://github.com/CambrianTech/continuum/issues/496) | **Integration test: persona redesigns widget** | TODO | THE proof — zero API keys, local model, full visual loop. |
-| [#497](https://github.com/CambrianTech/continuum/issues/497) | **Compaction + MoE paging combined** | TODO | Any model on any hardware: compact what fits, page the rest from HF. |
-| [#409](https://github.com/CambrianTech/continuum/issues/409) | **Total sensory verification** | REOPENED | Vision + hearing + speech all working locally with Qwen VL. Zero API keys. |
-| [#502](https://github.com/CambrianTech/continuum/issues/502) | **Training signal capture** | TODO | Every live session (especially bugs) becomes Academy training data. |
-| [#503](https://github.com/CambrianTech/continuum/issues/503) | **Grid model marketplace** | TODO | Share compacted models + individual experts across the mesh. |
-| [#501](https://github.com/CambrianTech/continuum/issues/501) | **Grid compute economy** | TODO | Earn credits by hosting MoE experts. Route tokens across mesh. |
-| [#499](https://github.com/CambrianTech/continuum/issues/499) | **Grid discovery + trust** | TODO | Three tiers: on-site, vouched peers, open mesh. Economy comes last. |
-
-**The dependency chain:**
-```
-#492 (compact model) → #417 (evaluate) → #495 (publish to HF)
-    → #374 (local teacher) → #377 (Academy fully local)
-    → #369 (local code quality) → #494 (UI design curriculum)
-    → #496 (THE PROOF: persona redesigns widget with zero API keys)
-
-#493 (DOM interaction) + #480 (vision) + #342 (feedback loop)
-    → #496 (the proof)
-
-#497 (compaction + paging) → #433 + #439 (MoE paging/surgery)
-    → ANY model on ANY hardware
+```bash
+cargo test --manifest-path core/continuum-core/Cargo.toml
+cargo test --manifest-path core/llama/Cargo.toml
 ```
 
-**Done when**: A persona on a MacBook Air with zero API keys receives "make the chat input rounded," takes a screenshot, edits the CSS, rebuilds, takes another screenshot, and confirms the fix. All inference local. Model published to HuggingFace.
+Add focused tests for:
 
----
+- backend lifecycle and recovery
+- mmproj init serialization
+- persona replay fixtures
+- paging pool consumers
+- pressure admission decisions
+- local tool execution
 
-## The Narrative
+### Docker tests
 
-**Phase 0** removes the embarrassments — things that break the first-run experience.
+Docker tests are service/profile tests, not proof that core logic is correct:
 
-**Phase 1** makes the codebase worthy of public scrutiny. Contributors will copy these patterns forever.
+```bash
+docker compose up -d postgres continuum-core node-server
+docker compose --profile ui up -d widget-server
+docker compose --profile gpu up -d
+docker compose --profile live up -d
+```
 
-**Phase 2** makes the live video calls — the most visually impressive feature — actually reliable. No leaks, low latency, works offline.
+Each profile needs a bounded smoke command and a log artifact.
 
-**Phase 3** solves THE local model blocker. Without reliable tool calling, personas are chat decorations. With it, they're functional teammates.
+### Browser tests
 
-**Phase 4** proves personas can CREATE things, not just discuss them. Code → tests → PR, end-to-end.
+Use browser tests only for browser responsibilities:
 
-**Phase 5** proves personas get SMARTER over time. The full Academy loop, measured.
+- tab restore and route canonicalization
+- WebSocket reconnect
+- realtime message rendering
+- UI state after data reseed
 
-**Phase 6** makes trained skills portable and composable. The genome ecosystem.
+The stale General bug belongs here; backend lifecycle does not.
 
-**Phase 7** makes personas autonomous — they initiate work, not just respond to it.
+### AIRC collaboration tests
 
-**Phase 8** closes the flywheel — every task improves the next task. The competitive moat.
+Use AIRC for live coordination, but also create protocol tests:
 
-**Phase 9** gives personas deep codebase understanding. Know before you change.
+- external agent sends AIRC message into room
+- Continuum bridge records it as chat event
+- persona responds
+- response mirrors back to AIRC
+- duplicate/replay protection is verified
+- approved peer receives `.airc/` rules plus a concise issue/PR queue digest
+- idle peer receives `nudge`, polls for unowned/stale work, and either claims a
+  card or reports why it cannot
+- local-model persona and cloud agent both operate on the same GitHub-backed
+  queue without assuming separate GitHub users
+- scrollback/history fetch reads from AIRC transcript cursors, while Continuum
+  storage only receives bounded projections
+- file attachments flow through AIRC file/manifest events and enter Continuum
+  only as pointers, cache handles, memory candidates, or UI projections
 
-**Phase 10** distributes everything across a mesh of commodity hardware. **Ares** — the Grid Governor — commands resources, detects when users need their machines, and keeps the mesh alive as nodes come and go. First experiment: 5090 + 3090 + 1080 Ti. The Cell architecture realized.
+## Merge Gates
 
-**Phase 11** is THE unlock — plasticity compaction + MoE paging + vision + Academy training = personas that SEE and BUILD their own UI, on a MacBook, with zero API keys. Every download of a compacted model. Every upload of a trained adapter to HuggingFace. Every persona that designs a widget, trains a model, improves itself. The flywheel.
+Every alpha PR must answer:
 
----
+- Which issue does this advance?
+- Why does this belong in Rust, TS, Docker, or docs?
+- Which validation class(es) does this PR use: Contract TDD, Failure TDD, Performance VDD, Accuracy VDD, Residency VDD, Timing VDD, UX VDD, Cross-platform VDD?
+- What command proves the core behavior without browser/Node?
+- What canary validation was run, and what measured evidence was attached?
+- What platforms were covered?
+- What remains untested?
+- Did it reduce Node/TS logic or at least avoid adding new TS logic?
+- Did it avoid silent fallback/silent success?
 
-## The Thesis
+Main promotion requires:
 
-**Infrastructure > Model Capability.**
+- canary contains the PR
+- canary has been tested by at least one other agent/human where practical
+- failures are linked to issues, not buried in chat
+- the promotion PR lists included canary commits and validation evidence
+- `scripts/main-promotion-gate.sh --check-receipts` passes for the promoted
+  SHA. Required receipts today are `darwin-arm64-metal`, `linux-amd64-cuda`,
+  and `linux-amd64-vulkan`; a single Mac receipt is not enough for main.
+- Windows/WSL Nvidia ownership is tracked in #1410. When the host joins AIRC,
+  it should run:
+  `CONTINUUM_RELEASE_PUSH_IMAGES=1 CONTINUUM_GATE_RUN_HEARTBEAT=1 scripts/main-promotion-gate.sh`
+  from a clean `origin/canary` checkout and post the receipt path/output.
 
-| Layer | What It Does | Why Models Don't Need To |
-|-------|-------------|------------------------|
-| **Sentinel Pipelines** | Deterministic orchestration: plan → code → build → test → fix → commit | Model doesn't need to "remember" to run tests — pipeline forces it |
-| **Generator System** | Encodes correct patterns as code templates | Model doesn't need project conventions — generator enforces them |
-| **LoRA Fine-Tuning** | Bakes domain expertise into weights | Model doesn't need 200K context of docs — it already knows |
-| **Academy** | Structured training with deterministic evaluation | Model doesn't need to self-assess — benchmarks measure truth |
-| **Parser-Per-Model** | Handles each model's unique tool-call format | Model doesn't need to conform to one format — parser adapts |
-| **Workspace Isolation** | Git worktrees per task, rollback on failure | Model doesn't need to be careful — infrastructure catches mistakes |
+## Document Map
 
-A LoRA-tuned 3B running inside a `dev/build-feature` sentinel with shell verification, tree-sitter context, and automatic retry will produce working code more reliably than a prompted GPT-4 in a single-shot terminal. Because the infrastructure does what the model can't: remember, verify, retry, learn.
+This document owns execution order and alpha gates. Detailed architecture
+remains in the supporting docs below. ALPHA-GAP-ANALYSIS is the beacon; the
+supporting docs are the specifications its lanes converge on.
 
-**The competitors' ceiling**: They need smarter models forever.
+**Runtime substrate (load-bearing, read before any runtime/cognition PR):**
 
-**Our ceiling**: Every task makes the next task better. The flywheel compounds. A persona training for 6 months on YOUR codebase, YOUR patterns, YOUR domain — fine-tuned on thousands of successful traces — running inside deterministic pipelines with full codebase intelligence — is not competing with Claude Code. It's competing with a junior developer who memorized your entire codebase. And it works offline, costs nothing per token, and never takes a day off.
+- [CBAR Substrate Architecture](../architecture/CBAR-SUBSTRATE-ARCHITECTURE.md)
+  — the RTOS-style runtime contract every Rust module/adapter inherits.
+  Substrate provides bounded queues, dependency wakeups, cadence/pressure
+  gates, automatic VDD/TDD evidence hooks, and ts-rs exported contracts.
+  Module authors declare subscriptions/lane/cadence and write the small piece
+  of actual work — everything else is inherited "for free." Lanes C/D/E in
+  this document converge on this substrate.
+- [Genome, Foundry, Sentinel-AI](../architecture/GENOME-FOUNDRY-SENTINEL.md)
+  — the artifact-sharing economy on top of the CBAR substrate. Tiered genome
+  cache (L1–L5), `WorkingSetManager` + page faults, foundry (JIT for SOTA
+  absorption), sentinel-AI (profile-guided optimization from lived traces),
+  demand-aligned recall, composer + speculator, and the `SubstrateGovernor`
+  (DVFS — same Rust code on MacBook Air and RTX 5090, different governor
+  policy). Lane H converges on this doc.
 
----
+**Cognition / persona migration:**
 
-## Superseded Documents
+- [Persona-as-Rust-Library](../architecture/PERSONA-AS-RUST-LIBRARY-PLAN.md)
+- [Persona Cognition Rust Migration](../architecture/PERSONA-COGNITION-RUST-MIGRATION.md)
 
-- `ARCHITECTURE-GAPS-PHASE1.md` — Gap 1 (RAG indexing) now proven E2E, covered in Phase 1/9
-- `TECHNICAL-DEBT-AUDIT.md` — Updated numbers in Phase 1 (was 1,108 `any`, now 831)
-- Previous version of this doc (2026-03-15) — replaced with phased issue-driven plan
+**Memory / paging:**
 
-**See also**: [COMPETITIVE-LANDSCAPE.md](COMPETITIVE-LANDSCAPE.md) | [SENTINEL-GAP-ANALYSIS.md](../sentinel/SENTINEL-GAP-ANALYSIS.md)
+- [Unified Paging](../architecture/UNIFIED-PAGING.md)
+- [Persona Context Paging](../architecture/PERSONA-CONTEXT-PAGING.md)
+
+**Model registry (source-of-truth references, code-side):**
+
+- `src/shared/models.json` and `src/shared/ModelRegistry.ts`
+
+**Grid / Docker / AIRC:**
+
+- [Docker Node Architecture](../grid/DOCKER-NODE-ARCHITECTURE.md)
+- [Grid Architecture](../grid/GRID-ARCHITECTURE.md)
+- [AIRC Continuum Bridge](../grid/AIRC-CONTINUUM-BRIDGE.md)
+- repo-local AIRC pilot files under `../../.airc/`
+- CambrianTech/airc#559 and CambrianTech/airc#562 for public entry, approval,
+  queue, and nudge behavior
+
+If those docs disagree with this one on sequence, update this one first or
+explicitly revise the sequence in the PR. If they disagree with this one on
+the substrate contract (concurrency, scheduling, memory, pressure, telemetry,
+artifact handles), defer to CBAR-SUBSTRATE-ARCHITECTURE.md and reconcile
+in a follow-up.
+
+## Immediate Next Actions (Refreshed 2026-05-16, second update)
+
+Ordered by alpha leverage. **Items 6, 8 (PR-1), and parts of 2/3/9 closed since
+the first refresh** — see the closeout summary at the end of this section.
+The implementing agent (claude-tab-1, continuum-scope) is **ready for the next
+slice** and explicitly read MODULE-CATALOG to pick what fits. See
+[MODULE-CATALOG.md](../architecture/MODULE-CATALOG.md) §"Next Modules To Build"
+for the ranked-by-buildability work queue.
+
+If you are picking this up, claim explicitly on AIRC before you start.
+
+1. **Claim Lane D (CBAR persona runtime frame).** Still the highest-leverage
+   unstarted lane. PressureBroker (Lane E) and the inbox coalescing pattern
+   both presupposed `RuntimeFrame` / `CognitionTurnFrame`. Lane H's governor
+   (alpha-floor) doesn't strictly depend on Lane D, but the persona-cognition
+   module catalog entry does — and that's the cognition core. Spec: see
+   [CBAR Substrate Architecture](../architecture/CBAR-SUBSTRATE-ARCHITECTURE.md)
+   §"The Dataflow Contract" + §"Runtime Frame", plus
+   [PERSONA-COGNITION-CONTRACT.md](../architecture/PERSONA-COGNITION-CONTRACT.md)
+   §"Core Surfaces" for the full contract.
+
+2. **Land the universal-trait "for free" triplet.** Unchanged. Codex's
+   derive-macro acceptance gate (continuum#1324) added five hard gates the
+   macro must clear before landing: thin, contract-preserving, inspectable,
+   tested, no hidden behavior. Spec: CBAR-SUBSTRATE §"The 'For Free' Triplet"
+   + §"Acceptance Criteria For Substrate-Done".
+
+3. **Lane H groundwork: substrate-governor.** Continuum#1335 shipped the
+   hardware probe + `HardwareProfile`. Remaining is the policy TOML loader,
+   the cascade state machine (six steps with hysteresis), and the
+   pressure-signal subscriber. Spec:
+   [GENOME-FOUNDRY-SENTINEL.md](../architecture/GENOME-FOUNDRY-SENTINEL.md)
+   Part 11. About 400 LoC in 3 PRs per MODULE-CATALOG §"Next Modules To Build"
+   entry #5. **This is currently the #5 buildable module by leverage** —
+   the four ahead of it (audit-recorder, threat-detector,
+   working-set-manager, demand-aligned-recall) are smaller and unblock more.
+
+4. **Claim Lane F mechanical ratchet PR.** Still open. The TS deletion
+   progress from prior sessions (~2500 LOC across 8 cognition PRs)
+   is reversible until the CI gate exists. Lane F PR sequence step 1
+   (`persona-ts-ratchet-script`) is small and unblocks step 2 (CI
+   enforcement). claude-tab-1 (continuum-scope) signaled willingness to
+   take this in a prior airc broadcast.
+
+5. **Bind Lane C `vdd-report-command`.** Still open. Structured
+   `RuntimeMetric` events already emit from inference paths, but VDD is
+   still read from logs because the report command was not bound. Small;
+   unblocks every PR's "VDD: tokens/sec improved from X → Y" claim.
+
+6. ~~**Widen the no-CPU-fallback contract test.**~~ **DONE.** Continuum#1341
+   widened `no_cpu_fallback_contract.rs` to cover the Candle-side paths
+   (inference-grpc/model.rs, orpheus.rs, residency.rs, enforcement.rs,
+   llamacpp_adapter.rs, hw_probe.rs). 6 new assertions; 9 tests passing.
+   Locks in PIECE-5's whole stack at type-checking time.
+
+7. **Lane B follow-ups: capability-visible health + tier-pool eviction.**
+   Unchanged. #1297 landed the Docker tier stats surface; #1238 / #1239
+   still open. Both should consume the Lane A registry artifact contract.
+
+8. ~~**GRID-INFERENCE-ROUTING.**~~ **PR-1 SHIPPED.** Continuum#1315 merged
+   (inference capability announcer + probe + registry). PR-2 (routing
+   decision) and PR-3 (eviction-on-grid policy) remain. Owner: airc-8a5e
+   per prior claim.
+
+9. **Lane H follow-on after substrate-governor (#3 above).** Per
+   MODULE-CATALOG §"Next Modules To Build", after the governor lands:
+   - `audit-recorder` (#1 in the catalog's queue) — small, no dependencies,
+     unblocks the trace-bus landing place for typed events.
+   - `threat-detector` (#2 in the queue) — depends on audit-recorder;
+     unlocks `PersonaDecision::Decline { AdversarialPattern }`.
+   - `working-set-manager` (#3 in the queue) — substrate's MMU; depends on
+     governor types + PressureBroker (shipped).
+   - `demand-aligned-recall` (#4 in the queue) — central API; mechanical
+     given working-set-manager.
+
+   The MODULE-CATALOG entries name dependency state, estimated PRs + LoC,
+   and concrete acceptance criteria. This is the substrate-side implementation
+   path; the cognition core lands on top once these stabilize.
+
+10. **CBAR-PIECE-5 + PIECE-8 closed end-to-end.** ✓
+    - PIECE-5 PR-1 gate types (#1331 MERGED)
+    - PIECE-5 PR-2 GGUF loader (#1333 MERGED)
+    - PIECE-5 PR-3 hardware probe (#1335 MERGED)
+    - PIECE-5 PR-4 adapter wiring (#1338 MERGED, codex co-authored)
+    - PIECE-8 inference-grpc hardcoded-clamps deletion (#1340 MERGED)
+    The `inference-grpc/main.rs::get_num_workers()` anti-pattern was
+    partially addressed via #1340 (hardcoded clamps removed); full
+    PressureBroker-lease integration remains as a Lane E follow-up tied
+    to the broker IPC design.
+
+11. **Doc refresh closed.** ✓ The whole architecture doc family is now in
+    open or merged PRs:
+    - `CBAR-SUBSTRATE-ARCHITECTURE.md` — continuum#1324, deepened with
+      dataflow contract, zero-overhead frame entry, spatiotemporal
+      reprojection toolkit.
+    - `GENOME-FOUNDRY-SENTINEL.md` — continuum#1327, all eleven substantive
+      parts at engineer-buildable depth (Parts 5, 6, 7, 8, 9, 10, 11 all
+      fully spec'd with Rust types, algorithms, acceptance criteria, and
+      per-anchor performance budgets).
+    - `PERSONA-COGNITION-CONTRACT.md` — continuum#1332, reactive cognition
+      contract with 14 substrate-enforced invariants.
+    - `PERSONA-THOUGHT-PROCESS.md` — continuum#1337, proactive thought
+      surface + concrete worked example (delphi persona, 7 reasoning steps,
+      ~23s LLM time spread across 9 wall-clock hours to crystallize a
+      substantive insight on Q4_K Qwen3-7B).
+    - `MODULE-CATALOG.md` — continuum#1336, every Continuum concern as a
+      focused module + "Next Modules To Build" ranked work queue.
+    - `CONTINUUM-ARCHITECTURE.md`, `CONTINUUM-VISION.md`, `CLAUDE.md` +
+      `UNIVERSAL-*.md` deprecation pointers — all merged via #1317, #1320,
+      #1329.
+
+### Closeout Summary
+
+What's done since the first refresh:
+- 6 closed: ALPHA-GAP refresh, CONTINUUM-ARCHITECTURE refresh,
+  CONTINUUM-VISION refresh, stale-section pointers, CBAR-PIECE-5
+  end-to-end (4 PRs), PIECE-8 inference-grpc clamps, no-CPU-fallback
+  contract widening.
+- 5 open architecture-doc PRs ready for review: #1324 CBAR-SUBSTRATE,
+  #1327 GENOME-FOUNDRY-SENTINEL, #1332 PERSONA-COGNITION-CONTRACT,
+  #1336 MODULE-CATALOG, #1337 PERSONA-THOUGHT-PROCESS.
+- 2 open coordination-substrate PRs on airc: #642 manager-role,
+  #643 lane-kanban-protocol.
+
+What's queued (in MODULE-CATALOG order): audit-recorder, threat-detector,
+working-set-manager, demand-aligned-recall, substrate-governor. After those,
+the cognition core (persona-cognition, inference-llm, composer, speculator,
+reprojection-service) becomes the next-tier work.
+
+The architectural roadmap is now substantially backed by code-shaped specs.
+Doc-driven development is working: doc spec → implementing agent picks up →
+ships PR → next spec referenced.

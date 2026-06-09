@@ -138,7 +138,7 @@ export const DEFAULT_MODEL_CONFIGS: Record<string, ModelConfig> = {
  *   `modelId` in `PersonaConfig` (e.g. Vision AI → `qwen2-vl-7b-instruct`); without
  *   this override the silently-overwriting `syncPersonaProviders` resync flow
  *   demoted Vision AI to the universal text-only default and vision broke on
- *   docker carl. Issue #957. Rule-2 violation (silent fallback) closed.
+ *   docker carl. Issue #957. Rule-2 violation (silent default-substitution) closed.
  */
 export function getModelConfigForProvider(
   provider: string,

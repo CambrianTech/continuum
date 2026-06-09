@@ -16,7 +16,7 @@ import type { JTAGContext } from '../../../system/core/types/JTAGTypes';
 import type { JTAGRouter } from '../../../system/core/router/shared/JTAGRouter';
 import { Logger, type ComponentLogger } from '../../../system/core/logging/Logger';
 import { LoggerWorkerClient } from '../../../shared/ipc/logger/LoggerWorkerClient';
-import { resolveCoreEndpointString } from '../../../workers/continuum-core/bindings/modules/base';
+import { resolveCoreEndpointString } from '../../../../core/continuum-core/bindings/modules/base';
 
 export class LoggerDaemonServer extends LoggerDaemon {
   protected log: ComponentLogger;

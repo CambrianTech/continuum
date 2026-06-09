@@ -305,7 +305,7 @@ export class DecisionProposeServerCommand extends DecisionProposeCommand {
 
     const proposerId: UUID = params.userId;
     const proposerName: string = proposerResult.data.displayName;
-    const scope = params.scope || 'all';
+    const scope = params.proposalScope || 'all';
     const significanceLevel = params.significanceLevel || 'medium';
     const proposalId = generateUUID();
 

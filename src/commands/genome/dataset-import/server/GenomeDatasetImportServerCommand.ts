@@ -16,7 +16,7 @@ import type { JTAGContext } from '@system/core/types/JTAGTypes';
 import { ValidationError } from '@system/core/types/ErrorTypes';
 import type { GenomeDatasetImportParams, GenomeDatasetImportResult } from '../shared/GenomeDatasetImportTypes';
 import { createGenomeDatasetImportResultFromParams } from '../shared/GenomeDatasetImportTypes';
-import RustCoreIPCClient from '../../../../workers/continuum-core/bindings/RustCoreIPC';
+import RustCoreIPCClient from '../../../../../core/continuum-core/bindings/RustCoreIPC';
 
 /** Standard location for raw RealClassEval download */
 const REALCLASSEVAL_RAW_DIR = path.join(SystemPaths.datasets.root, 'realclasseval-raw');

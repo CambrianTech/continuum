@@ -131,10 +131,10 @@ export const MODEL_IDS = {
     GROK_4: 'grok-4'
   },
 
-  /** Candle local models (use LOCAL_MODELS for new code) */
+  /** Historical local aliases. Do not use for Continuum runtime selection. */
   CANDLE: {
-    LLAMA_3_2_3B: 'llama3.2:3b',
-    LLAMA_3_1_8B: 'llama3.1:8b'
+    QWEN_GATING: 'Qwen/Qwen2-0.5B-Instruct',
+    QWEN_DEFAULT: 'continuum-ai/qwen3.5-4b-code-forged-GGUF'
   },
 
   /** Sentinel local models */
@@ -147,16 +147,13 @@ export const MODEL_IDS = {
 /**
  * LOCAL_MODELS - SINGLE SOURCE OF TRUTH for local inference
  *
- * ⚠️ CRITICAL: This is the canonical model configuration for Candle (native Rust) inference
+ * ⚠️ CRITICAL: This is the canonical model configuration for native Rust inference
  * ⚠️ All model mappings, preloads, and defaults come from here
- * ⚠️ CandleAdapter reads from here - DO NOT duplicate mappings elsewhere
+ * ⚠️ Local runtime/admission reads from here - DO NOT duplicate mappings elsewhere
  *
- * Candle is the ONLY local inference path.
- * The model name mappings below exist for backward compatibility with
- * configs that reference legacy short names like 'llama3.2:3b'.
- *
- * Note: Using unsloth/ mirrors for Llama models (no HuggingFace access approval needed)
- * For meta-llama/ originals: accept license at https://huggingface.co/meta-llama
+ * Local alpha models are Qwen: Qwen3.5 for text/code and Qwen2-VL for vision.
+ * Runtime selection is Rust-owned so VRAM/unified-memory pressure, LoRA paging,
+ * and future MoE/base-model paging stay under one scheduler.
  */
 export const LOCAL_MODELS = {
   /** Default models for inference worker to preload at startup */
@@ -190,62 +187,39 @@ export const LOCAL_MODELS = {
   /** BF16 batch-prefill variant — explicitly selects the safetensors backend (32GB+ only) */
   CODING_AGENT_BF16: 'coder-bf16',
 
-  /** Map legacy model names → HuggingFace model IDs (legacy naming style kept for backward compat) */
+  /** Explicit local aliases accepted by local model adapters. */
   LEGACY_TO_HUGGINGFACE: {
-    // Llama 3.2 family — uses unsloth mirror (no HF approval needed)
-    'llama3.2:3b': 'unsloth/Llama-3.2-3B-Instruct',
-    'llama3.2:1b': 'Qwen/Qwen2-0.5B-Instruct',  // Keep 1B small for gating
-    'llama3.2-3b': 'unsloth/Llama-3.2-3B-Instruct',
-    'llama3.2-1b': 'Qwen/Qwen2-0.5B-Instruct',
-
-    // Llama 3.1 family
-    'llama3.1:8b': 'unsloth/Llama-3.1-8B-Instruct',
-    'llama3.1:70b': 'meta-llama/Llama-3.1-70B-Instruct',
-
-    // Phi family (Microsoft, no approval needed)
-    'phi3:mini': 'microsoft/Phi-3-mini-4k-instruct',
-    'phi3:small': 'microsoft/Phi-3-small-8k-instruct',
-    'phi3:medium': 'microsoft/Phi-3-medium-4k-instruct',
-    'phi:2': 'microsoft/phi-2',
-    'phi3': 'microsoft/Phi-3-mini-4k-instruct',
-
-    // Mistral family (no approval needed)
-    'mistral:7b': 'mistralai/Mistral-7B-Instruct-v0.2',
-    'mistral:7b-v0.3': 'mistralai/Mistral-7B-Instruct-v0.3',
-    'mixtral:8x7b': 'mistralai/Mixtral-8x7B-Instruct-v0.1',
-    'mistral': 'mistralai/Mistral-7B-Instruct-v0.2',
-
-    // Qwen family (no approval needed - recommended!)
+    'qwen3.5': 'continuum-ai/qwen3.5-4b-code-forged-GGUF',
+    'qwen3.5:4b': 'continuum-ai/qwen3.5-4b-code-forged-GGUF',
+    'qwen3.5-code': 'continuum-ai/qwen3.5-4b-code-forged-GGUF',
+    'qwen2-vl': 'qwen2-vl-7b-instruct',
     'qwen2:0.5b': 'Qwen/Qwen2-0.5B-Instruct',
-    'qwen2:1.5b': 'Qwen/Qwen2-1.5B-Instruct',
-    'qwen2:7b': 'Qwen/Qwen2-7B-Instruct',
-    'qwen2.5:7b': 'Qwen/Qwen2.5-7B-Instruct',
-    'qwen2.5:3b': 'Qwen/Qwen2.5-3B-Instruct',
     'qwen2': 'Qwen/Qwen2-0.5B-Instruct',
 
-    // Gemma family (Google, no approval needed)
-    'gemma:2b': 'google/gemma-2b-it',
-    'gemma:7b': 'google/gemma-7b-it',
-    'gemma2:2b': 'google/gemma-2-2b-it',
-    'gemma2:9b': 'google/gemma-2-9b-it',
-
-    // StarCoder family
-    'starcoder2:3b': 'bigcode/starcoder2-3b',
-    'starcoder2:7b': 'bigcode/starcoder2-7b',
-
-    // TinyLlama (good for testing)
-    'tinyllama': 'TinyLlama/TinyLlama-1.1B-Chat-v1.0',
-    'tinyllama:1.1b': 'TinyLlama/TinyLlama-1.1B-Chat-v1.0',
-
-    // SmolLM2 family (HuggingFace, good for fast testing)
-    'smollm2:135m': 'HuggingFaceTB/SmolLM2-135M-Instruct',
-    'smollm2:360m': 'HuggingFaceTB/SmolLM2-360M-Instruct',
-    'smollm2:1.7b': 'HuggingFaceTB/SmolLM2-1.7B-Instruct',
-
-    // Bare family aliases (resolve to default variant)
-    'llama3.2': 'unsloth/Llama-3.2-3B-Instruct',
-    'llama3.1': 'unsloth/Llama-3.1-8B-Instruct',
     'qwen2.5': 'Qwen/Qwen2.5-7B-Instruct',
+  } as const,
+
+  /**
+   * Removed local runtime aliases.
+   *
+   * These used to route persona/chat inference through ad hoc llama/Candle
+   * paths. Local persona inference is now Qwen + Rust admission only. Fail
+   * loudly so stale DB rows or command params do not silently pick the wrong
+   * model/provider and burn CPU.
+   */
+  REMOVED_LOCAL_ALIASES: {
+    'llama3': 'qwen3.5',
+    'llama3:8b': 'qwen3.5',
+    'llama3.1': 'qwen3.5',
+    'llama3.1:8b': 'qwen3.5',
+    'llama3.2': 'qwen3.5',
+    'llama3.2:1b': 'qwen2',
+    'llama3.2:3b': 'qwen3.5',
+    'phi3': 'qwen2',
+    'phi3:mini': 'qwen2',
+    'tinyllama': 'qwen2',
+    'smollm2': 'qwen2',
+    'codellama': 'qwen3.5-code',
   } as const,
 
   /**
@@ -255,14 +229,29 @@ export const LOCAL_MODELS = {
   mapToHuggingFace(modelName: string): string {
     const normalized = modelName.toLowerCase().trim();
     const mapping = LOCAL_MODELS.LEGACY_TO_HUGGINGFACE as Record<string, string>;
+    const removedAliases = LOCAL_MODELS.REMOVED_LOCAL_ALIASES as Record<string, string>;
+
+    const assertNotRemoved = (candidate: string): void => {
+      const replacement = removedAliases[candidate];
+      if (replacement) {
+        throw new Error(
+          `Local model alias '${modelName}' was removed from the runtime. ` +
+          `Continuum local chat uses Qwen through Rust/llama.cpp admission only. ` +
+          `Use '${replacement}' or LOCAL_MODELS.DEFAULT instead.`
+        );
+      }
+    };
+
+    assertNotRemoved(normalized);
 
     // Direct lookup
     if (mapping[normalized]) {
       return mapping[normalized];
     }
 
-    // Try without version suffix (e.g., 'llama3.2:3b-instruct' -> 'llama3.2:3b')
+    // Try without version suffix (e.g., 'qwen3.5:4b-instruct' -> 'qwen3.5:4b')
     const withoutSuffix = normalized.replace(/-instruct.*$|-chat.*$|-q\d+.*$/i, '');
+    assertNotRemoved(withoutSuffix);
     if (mapping[withoutSuffix]) {
       return mapping[withoutSuffix];
     }

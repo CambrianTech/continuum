@@ -29,7 +29,7 @@
 | [PHASE3B-WORKING-MEMORY-PLAN.md](PHASE3B-WORKING-MEMORY-PLAN.md) | Working memory and lean RAG context design |
 | [PHASE3C-MODEL-TIER-PERMISSIONS.md](PHASE3C-MODEL-TIER-PERMISSIONS.md) | Model-tier tool permissions and safe file writing |
 | [PHASE3C-E-COST-EFFECTIVE-COLLABORATION.md](PHASE3C-E-COST-EFFECTIVE-COLLABORATION.md) | Cost-effective collaborative AI ecosystem -- 450x lower cost via local models + LoRA |
-| [ARCHITECTURE-GAPS-PHASE1.md](ARCHITECTURE-GAPS-PHASE1.md) | Gap analysis for Phase 1 "AI answers architecture questions" goal |
+| [ALPHA-GAP-ANALYSIS.md](ALPHA-GAP-ANALYSIS.md) | Current alpha/gap source of truth for release blockers and active workstreams |
 
 ### Technical Debt & Performance
 

@@ -1,0 +1,10 @@
+{
+  "tierId": "m1_uma_8gb",
+  "label": "M1 8GB Unified Memory",
+  "category": "mseries",
+  "localVideoCapable": true,
+  "minParamsBMeaningful": 1.0,
+  "maxParamsBFits": 3.0,
+  "unifiedMemoryGib": 8,
+  "note": "Base tier floor. The minimum M-series MacBook — Helper + Coder both run locally at 1.5B-3B quantized; live avatars work locally; the design center starts here."
+}

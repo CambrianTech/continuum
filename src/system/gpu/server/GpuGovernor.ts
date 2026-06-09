@@ -19,8 +19,8 @@
 import { Events } from '@system/core/shared/Events';
 import { GpuPressureWatcher, type PressureLevel, type PressureUpdate } from './GpuPressureWatcher';
 import { ResourcePressureWatcher } from '../../resources/server/ResourcePressureWatcher';
-import { RustCoreIPCClient } from '../../../workers/continuum-core/bindings/RustCoreIPC';
-import type { GpuStatsResponse, SubsystemInfo } from '../../../workers/continuum-core/bindings/modules/gpu';
+import { RustCoreIPCClient } from '../../../../core/continuum-core/bindings/RustCoreIPC';
+import type { GpuStatsResponse, SubsystemInfo } from '../../../../core/continuum-core/bindings/modules/gpu';
 
 // ============================================================================
 // Types

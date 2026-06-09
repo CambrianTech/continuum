@@ -18,7 +18,7 @@
  */
 
 import WebSocket from 'ws';
-import { RustCoreIPCClient, getContinuumCoreSocketPath } from '../../workers/continuum-core/bindings/RustCoreIPC';
+import { RustCoreIPCClient, getContinuumCoreSocketPath } from '../../../core/continuum-core/bindings/RustCoreIPC';
 import { CALL_SERVER_URL } from '../../shared/AudioConstants';
 import * as fs from 'fs';
 

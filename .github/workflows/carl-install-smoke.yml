@@ -1,0 +1,176 @@
+# Carl-install smoke — runs the EXACT install command Carl runs, then
+# verifies the page Carl opens after install actually serves usable HTML.
+#
+# Closes the gap that let #950 merge with the Mac install path doing a
+# hidden 5-15min Rust source build despite the README claiming "Docker-
+# first: no compilation needed." Existing CI gates (verify-architectures,
+# verify-after-rebuild, validate, install-and-run-gate) all passed because
+# they validate image presence + revision label + service health on a
+# CI-only docker compose. They never exercised `curl install.sh | bash`.
+#
+# Status: ADVISORY for the first week of operation (per docs/CARL-CI-PLAN.md
+# rollout section). Once we have <2% false-fail rate over 1 week, flip to
+# REQUIRED via the PrimaryBranches ruleset PUT. Until then, this workflow
+# runs but doesn't block merge — letting us tune the smoke without locking
+# the merge button on flakes.
+
+name: Carl Install Smoke
+
+on:
+  pull_request:
+    branches: [canary, main]
+    paths:
+      # Run when anything that affects Carl's install path changes.
+      # No need to re-run on TS-only widget changes that don't touch
+      # install/docker; those are covered by other gates.
+      - 'install.sh'
+      - 'install.ps1'
+      - 'setup.sh'
+      - 'bootstrap.sh'
+      - 'tools/scripts/install*.sh'
+      - 'tools/scripts/lib/install-common.sh'
+      - 'docker/**'
+      - 'docker-compose*.yml'
+      - 'src/.dockerignore'
+      - 'core/.dockerignore'
+      - 'scripts/ci/carl-install-smoke.sh'
+      - '.github/workflows/carl-install-smoke.yml'
+  push:
+    branches: [canary, main]
+  # Manual trigger so anyone can validate Carl's path against any branch
+  # without opening a throwaway PR.
+  workflow_dispatch:
+    inputs:
+      install_ref:
+        description: 'Git ref to fetch install.sh from (sha / branch / tag)'
+        required: false
+        default: ''
+      image_tag:
+        description: 'Docker image tag to pull (default: canary). Useful values: canary, latest, pr-<N>, <sha-prefix>.'
+        required: false
+        default: 'canary'
+
+jobs:
+  carl-install-smoke-amd64:
+    name: carl-install-smoke (linux/amd64)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # PR HEAD, not the synthetic merge commit. Otherwise github.sha
+          # is the merge commit and the install.sh we'd fetch from raw.
+          # githubusercontent.com wouldn't be the one in this PR. Same
+          # rationale as docker-images.yml's ref pattern.
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          # Smoke uses the local script directly; no need for full history.
+          fetch-depth: 1
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Install mesa-vulkan-drivers (llvmpipe ICD for no-GPU CI runner)
+        # The default continuum-core-vulkan binary calls Vulkan via the loader.
+        # On ubuntu-latest there's no GPU hardware → no real ICD → loader returns
+        # zero devices → binary panics per Joel's "lack of GPU integration is
+        # forbidden" rule. mesa-vulkan-drivers installs the llvmpipe software
+        # ICD so the loader returns a (software) device, the binary sees a real
+        # Vulkan API surface, and the GPU code path is exercised exactly like
+        # it would be on a hardware-GPU host. vulkan-tools provides vulkaninfo
+        # for the slice probes (test-slices.sh).
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y mesa-vulkan-drivers vulkan-tools
+          echo "vulkaninfo summary:"
+          vulkaninfo --summary 2>&1 | head -20 || true
+
+      - name: Login to ghcr.io (so install.sh can pull pre-built images)
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Run carl-install smoke
+        env:
+          # PR HEAD sha so smoke fetches install.sh from THIS PR.
+          CARL_INSTALL_REF: ${{ github.event.pull_request.head.sha || inputs.install_ref || github.sha }}
+          # Default to the canary image tag for ALL PR runs (and manual
+          # triggers). Per Joel 2026-05-30: per-PR docker rebuilds aren't
+          # worthwhile at the canary level — image publishing takes a lot of
+          # machines and the build is currently bloated by Node-legacy
+          # surface that the longer-term Rust-core / thin-Node-client
+          # extraction will remove. Image rebuilds are a main-promotion
+          # gate, not a per-PR check.
+          #
+          # The previous logic set pr-${PR_NUMBER} for PR runs, which
+          # required `scripts/push-current-arch.sh` to have run for the PR
+          # before the smoke would pass. That published images per PR which
+          # we don't actually need — it just generated "image missing →
+          # silent compose build → 25-min timeout" failures (observed on
+          # #1476 at 25m45s; #1085 from May 11 also has this exact failure
+          # signature). Defaulting to :canary tests the install path
+          # against canary's binary, which is the correct semantic for the
+          # PR-stage gate: validate THIS PR's install.sh + docker-compose
+          # changes; validate the binary at main promotion when fresh
+          # images get built.
+          #
+          # Manual triggers + workflow_dispatch can still override via the
+          # `image_tag` input (useful for explicit pr-N testing when a dev
+          # has pushed pr-N for binary regression work, or for testing a
+          # specific historical canary tag).
+          CONTINUUM_IMAGE_TAG: ${{ inputs.image_tag || 'canary' }}
+          # 25-min cap on the docker-only install. Hybrid (Mac source-build)
+          # path would exceed this — by design, that's the gate firing on
+          # the README/install mismatch.
+          CARL_INSTALL_TIMEOUT_SEC: '1500'
+          # Generous health wait — model-init can take 3-5min on cold pull.
+          CARL_HEALTH_TIMEOUT_SEC: '300'
+          # Cold persona load on no-GPU CI runner (Linux ubuntu-latest, no
+          # --gpus passthrough) takes 2-5min for first inference. Default 90s
+          # in the smoke script is fine for local runs but tight for CI.
+          CARL_CHAT_TIMEOUT_SEC: '300'
+          # CI shouldn't leave docker compose stacks running.
+          SKIP_TEARDOWN: '0'
+        run: bash scripts/ci/carl-install-smoke.sh
+
+      - name: Capture docker logs from all containers on failure (continuum-core,
+          node-server, model-init, widget-server, livekit-bridge)
+        if: failure()
+        run: |
+          # Find the carl-smoke compose project and dump every container's
+          # logs. Without this we get install.log + page + chat — all OUTSIDE
+          # the containers — but never see WHY continuum-core / node-server
+          # didn't reply (silent inference failure was the actual blocker
+          # 2026-05-04 on PR #1038). Capture per-container so the artifact
+          # shows the inference path, not just the smoke wrapper output.
+          set +e
+          for dir in /tmp/carl-smoke-*; do
+            [ -d "$dir" ] || continue
+            [ -f "$dir/docker-compose.yml" ] || continue
+            for svc in continuum-core node-server model-init widget-server livekit-bridge; do
+              docker compose -f "$dir/docker-compose.yml" logs --no-color --timestamps "$svc" \
+                > "${dir}.${svc}.log" 2>&1
+              docker compose -f "$dir/docker-compose.yml" ps "$svc" \
+                > "${dir}.${svc}.ps" 2>&1
+            done
+            docker compose -f "$dir/docker-compose.yml" ps -a > "${dir}.compose-ps.log" 2>&1
+          done
+      - name: Upload install + page + chat + docker logs + screenshot artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: carl-install-debug-${{ github.event.pull_request.head.sha || github.sha }}
+          path: |
+            /tmp/carl-smoke-*.install.log
+            /tmp/carl-smoke-*.page.html
+            /tmp/carl-smoke-*.page.png
+            /tmp/carl-smoke-*.chat.log
+            /tmp/carl-smoke-*.continuum-core.log
+            /tmp/carl-smoke-*.node-server.log
+            /tmp/carl-smoke-*.model-init.log
+            /tmp/carl-smoke-*.widget-server.log
+            /tmp/carl-smoke-*.livekit-bridge.log
+            /tmp/carl-smoke-*.compose-ps.log
+            /tmp/carl-smoke-*.*.ps
+          retention-days: 7
+          if-no-files-found: ignore

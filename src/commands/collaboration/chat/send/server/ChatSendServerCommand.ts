@@ -24,9 +24,18 @@ import { FileMimeType } from '../../../../file/mime-type/shared/FileMimeTypeType
 import { FileLoad } from '../../../../file/load/shared/FileLoadTypes';
 import { MediaPrewarm } from '../../../../media/prewarm/shared/MediaPrewarmTypes';
 import { MediaBlobService } from '@system/storage/MediaBlobService';
+import {
+  AircChatDualWriteService,
+  type AircChatDualWriteResult,
+} from '@system/airc-chat/server/AircChatDualWriteService';
 export class ChatSendServerCommand extends ChatSendCommand {
 
-  constructor(context: JTAGContext, subpath: string, commander: ICommandDaemon) {
+  constructor(
+    context: JTAGContext,
+    subpath: string,
+    commander: ICommandDaemon,
+    private readonly aircDualWrite: AircChatDualWriteService = new AircChatDualWriteService(),
+  ) {
     super(context, subpath, commander);
   }
 
@@ -58,14 +67,17 @@ export class ChatSendServerCommand extends ChatSendCommand {
     }
 
     // 2. Get sender — resolve identity from whoever initiated the command.
-    // Priority: explicit senderId > params.userId (auto-injected) > human owner fallback.
+    // Priority: explicit senderId (if it resolves) > seeded human owner.
     // Skip system UUID (00000...) — sentinels/Academy run as SYSTEM but can't be a chat sender.
+    // CLI and agent sessions inject session-scoped UUIDs in params.userId that are
+    // NOT seeded users — attempting to find them throws. Fall back to the seeded
+    // human owner instead so attribution lands on the actual person, not on an
+    // ephemeral session ID. Caught by carl-install-smoke 2026-05-04 (PR #1038).
     const { isSystemUUID } = await import('@system/core/types/SystemScopes');
     const rawSenderId = params.senderId || params.userId;
     const senderId = rawSenderId && !isSystemUUID(rawSenderId as UUID) ? rawSenderId : undefined;
-    const sender = senderId
-      ? await this.findUserById(senderId as UUID, params)
-      : await this.findHumanOwnerOrFallback(params);
+    const explicit = senderId ? await this.findUserByIdOrNull(senderId as UUID, params) : null;
+    const sender = explicit ?? await this.findHumanOwnerOrFallback(params);
 
     // 3. Create message entity
     const messageEntity = new ChatMessageEntity();
@@ -169,6 +181,7 @@ export class ChatSendServerCommand extends ChatSendCommand {
     }
 
     const storedEntity = createResult.data;
+    const airc = await this.publishToAirc(resolved.displayName, storedEntity);
 
     // 5. Pre-warm vision description cache for image media (fire-and-forget).
     // LLaVA takes 60-70s. Starting inference NOW means the description is cached
@@ -181,12 +194,56 @@ export class ChatSendServerCommand extends ChatSendCommand {
     // 7. Generate short ID (last 6 chars of UUID - from BaseEntity.id)
     const shortId = storedEntity.id.slice(-6);
 
+    // 8. No-listener warning (#980 Bug 8): if zero persona-users exist in
+    // the system, the message is stored successfully but no AI will ever
+    // respond to it. Carl's #980 caught this: chat-send returned success,
+    // user typed "hello" + got nothing back, no signal anywhere that the
+    // message had no listener. Cascade from seed-failure (Bug 3): no
+    // personas seeded → agent/list returns []. Surface a clear "stored
+    // but no listener" warning so the user knows to investigate.
+    //
+    // Cheap query: count how many persona-type users exist (limit 1 — we
+    // only need to distinguish 0 vs ≥1). Non-blocking on the result
+    // payload — message is still stored either way; this just adds a
+    // warning string when listeners are absent.
+    const personaCheck = await DataList.execute<UserEntity>({
+      dbHandle: 'default',
+      collection: UserEntity.collection,
+      filter: { type: 'persona' },
+      limit: 1,
+      context: params.context,
+      sessionId: params.sessionId,
+    });
+    const hasListener = personaCheck.success && (personaCheck.items?.length ?? 0) > 0;
+    const baseMessage = hasListener
+      ? `Message sent to ${resolved.displayName} (#${shortId})`
+      : `Message sent to ${resolved.displayName} (#${shortId}) ⚠️ No AI personas in system — message stored but won't get a reply. Check: ./jtag data/list --collection=users --filter='{"type":"persona"}'  (likely cascade from a failed seed; re-run: npm run data:seed)`;
+    const successMessage = airc.ok
+      ? baseMessage
+      : `${baseMessage} ⚠️ AIRC dual-write failed: ${airc.publish.ok ? 'unknown error' : airc.publish.error}`;
+
     return transformPayload(params, {
       success: true,
-      message: `Message sent to ${resolved.displayName} (#${shortId})`,
+      message: successMessage,
       messageEntity: storedEntity,
       shortId: shortId,
-      roomId: resolved.id
+      roomId: resolved.id,
+      airc: {
+        ok: airc.ok,
+        eventId: airc.publish.eventId,
+        roomId: airc.publish.roomId as UUID,
+        error: airc.publish.ok ? undefined : airc.publish.error,
+      },
+    });
+  }
+
+  private async publishToAirc(
+    roomName: string,
+    storedEntity: ChatMessageEntity,
+  ): Promise<AircChatDualWriteResult> {
+    return this.aircDualWrite.publishStoredChatMessage({
+      roomName,
+      storedMessage: storedEntity,
     });
   }
 
@@ -211,14 +268,22 @@ export class ChatSendServerCommand extends ChatSendCommand {
       return { id: owner.id, entity: owner };
     }
 
-    // No human owner seeded yet — fall back to session userId
-    return this.findUserById(params.userId, params);
+    // No human owner seeded yet — try the session userId one more time.
+    // If that's also missing, fail loudly with a clear message — chat without
+    // any seeded user is broken state worth surfacing.
+    const fallback = await this.findUserByIdOrNull(params.userId, params);
+    if (fallback) return fallback;
+    throw new Error(
+      `No seeded human owner found and session userId ${params.userId} doesn't exist either. ` +
+      `Seed appears broken — run 'npm run data:seed' or check orchestrator logs.`
+    );
   }
 
   /**
-   * Find user by ID
+   * Find user by ID, returning null if not found (no throw).
+   * Callers compose with `?? fallback`.
    */
-  private async findUserById(userId: UUID, params: ChatSendParams): Promise<{ id: UUID; entity: UserEntity }> {
+  private async findUserByIdOrNull(userId: UUID, params: ChatSendParams): Promise<{ id: UUID; entity: UserEntity } | null> {
     const result = await DataList.execute<UserEntity>({
         dbHandle: 'default',
         collection: UserEntity.collection,
@@ -233,8 +298,7 @@ export class ChatSendServerCommand extends ChatSendCommand {
       const user = result.items[0];
       return { id: user.id, entity: user };
     }
-
-    throw new Error(`User not found: ${userId}`);
+    return null;
   }
 
 
