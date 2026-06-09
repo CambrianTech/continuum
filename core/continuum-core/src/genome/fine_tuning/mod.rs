@@ -89,6 +89,7 @@ pub mod local_candle_adapter;
 pub mod lora_module;
 pub mod openai_adapter;
 pub mod registry;
+pub mod training_loop;
 pub mod types;
 
 pub use adapter::{ArcFineTuningAdapter, FineTuningAdapter, FineTuningCapabilities, FineTuningError};
@@ -97,6 +98,10 @@ pub use local_candle_adapter::LocalCandleFineTuner;
 pub use lora_module::{LoRAError, LoRAModule};
 pub use openai_adapter::OpenAIFineTuningAdapter;
 pub use registry::FineTuningRegistry;
+pub use training_loop::{
+    DataLoader, LoRATrainer, TokenizedBatch, TokenizedExample, Tokenizer, TrainingError,
+    TrainingMetrics,
+};
 pub use types::{
     JobHandle, JobMetrics, LoRAHyperparams, ScheduleParams, TrainingArtifact, TrainingDataset,
     TrainingExample, TrainingJobRequest, TrainingSource, TrainingStatus,
