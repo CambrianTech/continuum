@@ -21,12 +21,4 @@ task_poll_enabled: boolean,
 /**
  * Whether to generate self-tasks (memory consolidation, skill audit, etc).
  */
-self_task_enabled: boolean, 
-/**
- * Whether to check training data readiness each tick.
- */
-training_check_enabled: boolean, 
-/**
- * Training data threshold before triggering genome/job-create (default: 50).
- */
-training_threshold: number, };
+self_task_enabled: boolean, };
