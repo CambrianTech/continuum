@@ -61,6 +61,7 @@
 
 pub mod blob;
 pub mod bus;
+pub mod fine_tuning;
 pub mod local_manager;
 pub mod manager;
 pub mod recall;

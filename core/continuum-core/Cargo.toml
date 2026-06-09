@@ -37,7 +37,7 @@ uuid.workspace = true
 # dev loop tight (no version juggle while the macro evolves).
 continuum-orm-derive = { path = "../continuum-orm-derive" }
 continuum-airc-protocol = { path = "../continuum-airc-protocol" }
-reqwest = { version = "0.12", features = ["json"] }
+reqwest = { version = "0.12", features = ["json", "multipart"] }
 thiserror.workspace = true
 dashmap = "6.1"  # Lock-free concurrent HashMap
 tikv-jemallocator = "0.6"  # jemalloc: returns memory to OS aggressively, reduces fragmentation

@@ -1312,10 +1312,56 @@ pub fn start_server(
 
     // AIProviderModule: Unified AI provider for cloud and local inference
     // Provides ai/generate, ai/providers/list, ai/providers/health
-    // Routes to DeepSeek, Anthropic, OpenAI, Together, Groq, Fireworks, XAI, Google
+    // Routes to DeepSeek, Anthropic, OpenAI, Together, Groq, Fireworks, XAI, Google, Mistral
     runtime.register(Arc::new(AIProviderModule::with_gpu_manager(
         gpu_manager.clone(),
     )));
+
+    // GenomeModule: substrate-side dispatch for `genome/*` commands.
+    // genome/job-create, genome/job-status, genome/job-cancel route
+    // through the FineTuningCoordinator + a registry seeded with
+    // whichever cloud LoRA-trainer adapters have credentials, plus
+    // the LocalCandleFineTuner skeleton (always registered — slot
+    // is visible to the coordinator even before tasks #231-#233
+    // implement the optimizer loop). Per
+    // [[commands-are-dumb-daemons-are-smart]] the module is narrow;
+    // selection logic lives in the coordinator.
+    {
+        use crate::genome::fine_tuning::{
+            FineTuningRegistry, LocalCandleFineTuner, OpenAIFineTuningAdapter,
+        };
+        let ft_registry = std::sync::Arc::new(FineTuningRegistry::new());
+
+        // OpenAI when credentials present. Other cloud LoRA-trainer
+        // adapters (Mistral, Anthropic, Fireworks, DeepSeek,
+        // Together) plug in here as their impls land — same pattern,
+        // gate on the matching `*_API_KEY` secret.
+        if crate::secrets::get_secret("OPENAI_API_KEY").is_some() {
+            ft_registry.register(std::sync::Arc::new(OpenAIFineTuningAdapter::new()));
+            log_info!(
+                "ipc",
+                "server",
+                "GenomeModule: registered OpenAIFineTuningAdapter"
+            );
+        }
+
+        // LocalCandleFineTuner always registered. The skeleton
+        // returns LocalTrainerFailed with a pointer to follow-up
+        // tasks until the math lands; making the slot present means
+        // the coordinator + operator + telemetry can see the
+        // architectural seam.
+        ft_registry.register(std::sync::Arc::new(LocalCandleFineTuner::new()));
+        log_info!(
+            "ipc",
+            "server",
+            "GenomeModule: registered LocalCandleFineTuner (skeleton — tasks #231-#233 \
+             track the optimizer-loop landing)"
+        );
+
+        runtime.register(Arc::new(crate::modules::genome::GenomeModule::new(
+            ft_registry,
+        )));
+    }
 
     // SentinelModule: Concurrent, fault-tolerant build/task execution
     // Provides sentinel/execute, sentinel/status, sentinel/cancel, sentinel/list
