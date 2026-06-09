@@ -10,9 +10,41 @@
 import { readFileSync } from 'fs';
 import { writeIfChanged } from './core/writeIfChanged';
 import { join } from 'path';
-import * as dotenv from 'dotenv';
 
 const rootDir = process.cwd();
+
+// Inline `KEY=value` parser — replaces the previous `import * as dotenv
+// from 'dotenv'` dependency. The layout sweep (PR #1557, task #214)
+// moved this script from `src/generator/` to `tools/generator/`, which
+// put it OUTSIDE the upward `node_modules` walk that resolves
+// `src/node_modules/dotenv`. Node's resolution walks ancestors of the
+// SCRIPT location, not `process.cwd()`, so `dotenv` was unfindable
+// from `tools/generator/`. We only ever called `dotenv.parse()` (the
+// pure string→KV transform), not the `.config()` side-effect path, so
+// the inline parser is a like-for-like replacement at zero
+// architectural cost. Bonus: generator scripts now have a node-stdlib-
+// only footprint, matching `generate-version.ts`'s shape.
+function parseEnvText(text: string): Record<string, string> {
+  const result: Record<string, string> = {};
+  for (const line of text.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) continue;
+    const eq = trimmed.indexOf('=');
+    if (eq === -1) continue;
+    const key = trimmed.slice(0, eq).trim();
+    let value = trimmed.slice(eq + 1).trim();
+    // Strip a single matched pair of surrounding quotes — matches
+    // dotenv's behavior for `KEY="value"` and `KEY='value'`.
+    if (
+      (value.startsWith('"') && value.endsWith('"')) ||
+      (value.startsWith("'") && value.endsWith("'"))
+    ) {
+      value = value.slice(1, -1);
+    }
+    result[key] = value;
+  }
+  return result;
+}
 
 // Read config.env (follow SecretManager pattern for file locations)
 function loadConfigEnv(): Record<string, string> {
@@ -25,7 +57,7 @@ function loadConfigEnv(): Record<string, string> {
 
   for (const configPath of configPaths) {
     try {
-      const parsed = dotenv.parse(readFileSync(configPath, 'utf-8'));
+      const parsed = parseEnvText(readFileSync(configPath, 'utf-8'));
       config = { ...config, ...parsed };
     } catch {
       // File doesn't exist, continue
