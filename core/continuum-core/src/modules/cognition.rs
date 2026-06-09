@@ -120,11 +120,15 @@ impl CognitionState {
 
 pub struct CognitionModule {
     state: Arc<CognitionState>,
+    executor: std::sync::OnceLock<Arc<crate::runtime::CommandExecutor>>,
 }
 
 impl CognitionModule {
     pub fn new(state: Arc<CognitionState>) -> Self {
-        Self { state }
+        Self {
+            state,
+            executor: std::sync::OnceLock::new(),
+        }
     }
 }
 
@@ -637,7 +641,11 @@ impl ServiceModule for CognitionModule {
                 let request: crate::cognition::vision_describe::VisionDescribeRequest =
                     serde_json::from_value(params)
                         .map_err(|e| format!("invalid vision-describe params: {e}"))?;
-                let result = crate::cognition::vision_describe::describe_image(request).await?;
+                let executor = self.executor.get().ok_or_else(|| {
+                    "cognition/vision-describe: CommandExecutor not installed".to_string()
+                })?;
+                let result =
+                    crate::cognition::vision_describe::describe_image(request, executor).await?;
                 Ok(CommandResult::Json(serde_json::to_value(result).map_err(
                     |e| format!("vision-describe serialize result: {e}"),
                 )?))
@@ -1760,6 +1768,10 @@ impl ServiceModule for CognitionModule {
 
             _ => Err(format!("Unknown cognition command: {command}")),
         }
+    }
+
+    fn install_executor(&self, executor: Arc<crate::runtime::CommandExecutor>) {
+        let _ = self.executor.set(executor);
     }
 
     fn as_any(&self) -> &dyn Any {

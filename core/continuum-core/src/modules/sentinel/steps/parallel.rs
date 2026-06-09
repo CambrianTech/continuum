@@ -61,6 +61,7 @@ pub async fn execute(
         let bus = pipeline_ctx.bus.cloned();
         let log_path = pipeline_ctx.steps_log_path.map(|p| p.to_path_buf());
         let branch_steps = branch_steps.clone();
+        let executor_for_branch = pipeline_ctx.executor.cloned();
 
         let handle = tokio::spawn(async move {
             let pipeline_ctx = PipelineContext {
@@ -68,6 +69,7 @@ pub async fn execute(
                 registry: &registry,
                 bus: bus.as_ref(),
                 steps_log_path: log_path.as_deref(),
+                executor: executor_for_branch.as_ref(),
             };
 
             let mut branch_results: Vec<StepResult> = Vec::new();
@@ -201,6 +203,7 @@ mod tests {
             registry,
             bus: Some(bus),
             steps_log_path: None,
+            executor: None,
         }
     }
 

@@ -242,6 +242,7 @@ fn parse_response(text: &str) -> ParsedResponse {
 /// `runtime::execute_json` failure, etc.).
 pub async fn describe_image(
     req: VisionDescribeRequest,
+    executor: &std::sync::Arc<crate::runtime::CommandExecutor>,
 ) -> Result<Option<VisionDescription>, String> {
     let start = Instant::now();
 
@@ -301,7 +302,7 @@ pub async fn describe_image(
         "temperature": 0.3,
     });
 
-    let response_value = runtime::execute_command_json("ai/generate", generate_params).await?;
+    let response_value = executor.execute_json("ai/generate", generate_params).await?;
 
     // ai/generate's wire format serializes FinishReason via Display
     // (`modules/ai_provider.rs::response_to_json`); the sentinel string

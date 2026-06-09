@@ -59,10 +59,7 @@ pub use airc_interceptor::AircInterceptor;
 pub use cell_shapes::{HandleRef, LambdaPlaceholder, StreamPlaceholder};
 pub use command_envelope::{CommandRequest, CommandResponse};
 pub use command_events::{CommandCompletedEvent, COMMAND_COMPLETED_TOPIC};
-pub use command_executor::{
-    execute as execute_command, execute_json as execute_command_json, executor, init_executor,
-    init_executor_with_bus_and_interceptors, init_executor_with_interceptors, CommandExecutor,
-};
+pub use command_executor::CommandExecutor;
 pub use command_interceptor::{CommandInterceptor, InterceptorOutcome};
 pub use grid_interceptor::GridInterceptor;
 pub use control::{ModuleInfo, RuntimeControl};

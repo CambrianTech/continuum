@@ -1396,9 +1396,10 @@ pub fn start_server(
         runtime.registry().list_modules()
     );
 
-    // Initialize global CommandExecutor for all spawned processes (sentinels, agents, etc.)
-    // This allows ANY async task to execute ANY command (Rust or TypeScript)
-    // TypeScript commands route via Unix socket to /tmp/jtag-command-router.sock
+    // Build the substrate-wide `CommandExecutor` and install it on every
+    // registered module via the typed `ServiceModule::install_executor`
+    // path (task #224 — replaces the deleted `GLOBAL_EXECUTOR` +
+    // `executor()` panic accessor).
     //
     // Interceptor chain order (per MODULE-ARCHITECTURE.md §5): airc
     // sits at the head so explicit aircPeer/aircRoom targeting beats
@@ -1407,19 +1408,22 @@ pub fn start_server(
     // before the kernel tries local Rust dispatch. Both interceptors
     // decline cleanly when their routing decision is "local," so
     // existing commands see zero behavior change.
-    let interceptors: Vec<std::sync::Arc<dyn crate::runtime::CommandInterceptor>> = vec![
-        std::sync::Arc::new(crate::runtime::AircInterceptor::new()),
-        std::sync::Arc::new(crate::runtime::GridInterceptor::new(grid_state)),
-    ];
-    crate::runtime::init_executor_with_interceptors(runtime.registry_arc(), interceptors);
+    let executor = Arc::new(
+        crate::runtime::CommandExecutor::new(runtime.registry_arc())
+            .with_interceptor(Arc::new(crate::runtime::AircInterceptor::new()))
+            .with_interceptor(Arc::new(crate::runtime::GridInterceptor::new(grid_state))),
+    );
+    runtime
+        .registry()
+        .install_executor_on_all(Arc::clone(&executor));
 
     // Round-2 verifier fix on PR #1568: now that the executor is
-    // initialized, release the persona-supervisor task (if it was
-    // wired). The spawned task at line ~1239 has been awaiting this
-    // signal; it can now safely call `executor()` in its eventual
-    // `bootstrap_one` path. Send-failure means the receiver was
-    // dropped — substrate shutdown mid-boot — and the supervisor
-    // already exited; ignoring is correct.
+    // installed on every module, release the persona-supervisor task
+    // (if wired). The spawned task at line ~1239 has been awaiting
+    // this signal; it can now safely dispatch through `bootstrap_one`,
+    // whose PIM has just been populated with the executor. Send-failure
+    // means the receiver was dropped — substrate shutdown mid-boot —
+    // and the supervisor already exited; ignoring is correct.
     if let Some(tx) = persona_supervisor_executor_ready_tx.take() {
         let _ = tx.send(());
     }

@@ -154,6 +154,24 @@ impl ModuleRegistry {
     pub fn module_names(&self) -> Vec<String> {
         self.modules.iter().map(|e| e.key().to_string()).collect()
     }
+
+    /// Install the substrate-wide `CommandExecutor` into every registered
+    /// module. Modules opt in by overriding `ServiceModule::install_executor`;
+    /// the default impl is a no-op so this call is cheap for modules that
+    /// don't dispatch commands.
+    ///
+    /// Called once by `start_server` after the executor is built. Replaces
+    /// the deleted `GLOBAL_EXECUTOR` + `executor()` panic accessor pattern
+    /// (task #224). Pure dependency injection — no global state, no boot-
+    /// order racing.
+    pub fn install_executor_on_all(
+        &self,
+        executor: Arc<super::command_executor::CommandExecutor>,
+    ) {
+        for entry in self.modules.iter() {
+            entry.value().install_executor(Arc::clone(&executor));
+        }
+    }
 }
 
 #[cfg(test)]

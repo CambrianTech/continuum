@@ -530,135 +530,45 @@ impl CommandExecutor {
     }
 }
 
-// Global executor instance - initialized once at startup
-static GLOBAL_EXECUTOR: std::sync::OnceLock<Arc<CommandExecutor>> = std::sync::OnceLock::new();
-
-/// Initialize the global command executor with no interceptors.
-///
-/// Back-compat shim around [`init_executor_with_interceptors`] for
-/// callers that don't have transports to wire. Prefer the
-/// `_with_interceptors` form in production startup so commands can
-/// transparently route to remote peers via grid / airc / future
-/// transports.
-pub fn init_executor(registry: Arc<ModuleRegistry>) {
-    init_executor_with_interceptors(registry, Vec::new());
-}
-
-/// Initialize the global command executor with a wired interceptor
-/// chain.
-///
-/// Production startup (`ipc::start_server`) calls this with
-/// `[AircInterceptor, GridInterceptor]` so capability-based routing
-/// and explicit airc-targeted commands work transparently from any
-/// caller. The chain order is policy: the earlier an interceptor
-/// sits, the higher its priority (airc beats grid because explicit
-/// peer targets shouldn't be overridden by grid's capability heuristic).
-///
-/// Idempotent: only the first call wins (per the underlying
-/// `OnceLock`). A subsequent call is silently a no-op — useful for
-/// test fixtures that may try to init multiple times but should
-/// preserve the production wiring.
-pub fn init_executor_with_interceptors(
-    registry: Arc<ModuleRegistry>,
-    interceptors: Vec<Arc<dyn CommandInterceptor>>,
-) {
-    init_executor_full(registry, interceptors, None);
-}
-
-/// Initialize the global executor with interceptors AND a wired
-/// message bus, so every dispatch emits a `command:completed` event.
-///
-/// Production startup should prefer this form — the event stream is
-/// what lets the persona autonomous loop stay reactive (per RTOS
-/// doctrine) instead of poll-blocking on `code/shell/watch` style
-/// surfaces. See
-/// [docs/planning/PERSONA-AS-DEVELOPER-GAP.md](../../../../../docs/planning/PERSONA-AS-DEVELOPER-GAP.md)
-/// Priority 3.
-pub fn init_executor_with_bus_and_interceptors(
-    registry: Arc<ModuleRegistry>,
-    bus: Arc<MessageBus>,
-    interceptors: Vec<Arc<dyn CommandInterceptor>>,
-) {
-    init_executor_full(registry, interceptors, Some(bus));
-}
-
-/// Internal: full init taking optional bus. Single OnceLock-set call
-/// path so production + back-compat paths share one source of truth.
-fn init_executor_full(
-    registry: Arc<ModuleRegistry>,
-    interceptors: Vec<Arc<dyn CommandInterceptor>>,
-    bus: Option<Arc<MessageBus>>,
-) {
-    let log = super::logger("command-executor");
-    let interceptor_count = interceptors.len();
-    let has_bus = bus.is_some();
-    let mut executor = CommandExecutor::new(registry);
-    for interceptor in interceptors {
-        executor = executor.with_interceptor(interceptor);
-    }
-    if let Some(b) = bus {
-        executor = executor.with_message_bus(b);
-    }
-    let _ = GLOBAL_EXECUTOR.set(Arc::new(executor));
-    log.info(&format!(
-        "Initialized with {} interceptor(s), bus={} (TS bridge: {})",
-        interceptor_count, has_bus, TS_COMMAND_SOCKET
-    ));
-}
-
-/// Get the global command executor
-/// Panics if not initialized - this is intentional, executor MUST be initialized at startup
-pub fn executor() -> Arc<CommandExecutor> {
-    GLOBAL_EXECUTOR
-        .get()
-        .expect("CommandExecutor not initialized - call init_executor() at startup")
-        .clone()
-}
-
-/// Execute a command from anywhere, returning CommandResult
-///
-/// Usage:
-/// ```ignore
-/// use crate::runtime::command_executor;
-/// use crate::routing::CommandUri;
-///
-/// let result = command_executor::execute(
-///     CommandUri::local("code/edit"),
-///     params,
-/// ).await?;
-/// ```
-pub async fn execute(
-    command: impl Into<CommandUri>,
-    params: Value,
-) -> Result<CommandResult, String> {
-    executor().execute(command, params).await
-}
-
-/// Execute a command and extract JSON result (convenience for most use cases)
-pub async fn execute_json(
-    command: impl Into<CommandUri>,
-    params: Value,
-) -> Result<Value, String> {
-    executor().execute_json(command, params).await
-}
-
-/// Execute a command ONLY via TypeScript, bypassing Rust registry.
-/// Use when a Rust module needs to forward to a TypeScript command
-/// that shares the same prefix (e.g., ai_provider forwarding ai/agent).
-pub async fn execute_ts(
-    command: impl Into<CommandUri>,
-    params: Value,
-) -> Result<CommandResult, String> {
-    executor().execute_ts(command, params).await
-}
-
-/// Execute via TypeScript only and extract JSON (convenience)
-pub async fn execute_ts_json(
-    command: impl Into<CommandUri>,
-    params: Value,
-) -> Result<Value, String> {
-    executor().execute_ts_json(command, params).await
-}
+// GLOBAL_EXECUTOR + init_executor* + executor() + execute_command* +
+// execute_ts* free functions were deleted in task #224 — the
+// substrate refactor that eliminated the OnceLock + panicking
+// accessor pattern. Modules that need to dispatch commands now hold
+// an `Arc<CommandExecutor>` explicitly, installed at construction or
+// via `install_executor()` after the executor is built.
+//
+// The dispatch entry points still exist as METHODS on `CommandExecutor`
+// itself (`execute`, `execute_json`, `execute_ts`, `execute_ts_json`)
+// — see the impl block above. Production code calls
+// `self.executor.execute(...)` directly on its stored Arc instead of
+// the deleted free helpers.
+//
+// Why removed:
+//   - The global `OnceLock<Arc<CommandExecutor>>` made "is X
+//     initialized before Y" an unsolvable-by-types property. Today's
+//     PR #1568 round-1 BLOCK was caused by exactly this: eager
+//     `executor()` lookup at PIM construction panicked because
+//     `init_executor` ran 265 lines later in start_server.
+//   - `[[no-fallbacks-ever]]`: the panic accessor swapped for the
+//     correct shape, where the type system enforces "if you have
+//     `Arc<CommandExecutor>`, the executor exists."
+//   - `[[headless-success-is-personas-talking-over-airc]]`: the
+//     deleted `execute_ts*` free helpers were the silent-fallback
+//     into the legacy TS bridge for unmigrated commands. The
+//     `CommandExecutor::execute_ts*` methods remain (the bridge
+//     itself isn't dead yet) but every call site is now an explicit
+//     `executor.execute_ts(...)` — a legible smell that task #219's
+//     follow-up slices can pick off one command at a time.
+//
+// Construction pattern (see ipc/mod.rs::start_server):
+//   1. Build `Arc<ModuleRegistry>`
+//   2. Register every ServiceModule that DOESN'T need the executor
+//   3. Build `Arc<CommandExecutor>` with the registry + interceptors
+//   4. Register modules that need the executor, threading the Arc
+//      into their constructor (or call `install_executor()` on
+//      already-registered modules)
+//
+// Pure dependency injection. No global. No panic-if-uninitialized.
 
 #[cfg(test)]
 mod tests {

@@ -399,6 +399,24 @@ pub trait ServiceModule: Send + Sync + Any {
         None
     }
 
+    /// Install the substrate-wide `CommandExecutor` into this module.
+    ///
+    /// Modules that need to dispatch commands (channel sends a chat message;
+    /// PIM bootstraps a persona; sentinel runs nested steps) store an
+    /// `OnceLock<Arc<CommandExecutor>>` and override this method to populate
+    /// it. Default: no-op (most modules don't dispatch commands).
+    ///
+    /// Called by `start_server` AFTER the executor is built and BEFORE any
+    /// dispatch can reach this module — `Runtime::install_executor_on_all`
+    /// walks every registered module exactly once. Per [[no-fallbacks-ever]]:
+    /// when a module's command handler needs the executor and it isn't there,
+    /// the right answer is a typed error at that call site, NOT a global
+    /// panicking accessor. See task #224 for the GLOBAL_EXECUTOR removal
+    /// rationale.
+    fn install_executor(&self, _executor: std::sync::Arc<super::command_executor::CommandExecutor>) {
+        // Default: module doesn't dispatch commands.
+    }
+
     /// Downcast support for typed discovery.
     /// Enables registry.module_as::<VoiceModule>() — like CBAR's getAnalyzerOfType<T>().
     fn as_any(&self) -> &dyn Any;

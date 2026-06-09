@@ -51,7 +51,7 @@ use serde_json::{json, Value};
 use uuid::Uuid;
 
 use crate::runtime::{
-    command_executor::{self, CommandExecutor},
+    command_executor::CommandExecutor,
     CommandRequest, CommandResponse, CommandResult, ModuleConfig, ModulePriority, ServiceModule,
 };
 
@@ -80,47 +80,49 @@ const CHAT_DATA_HANDLE: &str = "main";
 /// `RwLock` choice over `Mutex` is purely for read-side concurrency
 /// when multiple commands fire concurrently.
 pub struct ChatModule {
-    /// Optional executor override. `None` in production — reads default
-    /// to `command_executor::executor()` (the kernel-global).
-    /// `Some(...)` in tests so each test can spin up its own registry
-    /// without trampling the global `OnceLock`.
-    executor_override: RwLock<Option<Arc<CommandExecutor>>>,
+    /// Substrate-wide command executor. Installed by `start_server`
+    /// via `install_executor` (the same path every other module uses).
+    /// `with_executor` lets tests inject a custom chain without
+    /// installing into the global registry.
+    executor_slot: RwLock<Option<Arc<CommandExecutor>>>,
 }
 
 impl ChatModule {
-    /// Construct a chat module that uses the kernel-global executor.
-    /// This is the production constructor — register the resulting
-    /// module at runtime startup with `Arc::new(ChatModule::new())`.
+    /// Construct a chat module. The executor is installed later by
+    /// `start_server` via `ServiceModule::install_executor` (task #224).
     pub fn new() -> Self {
         Self {
-            executor_override: RwLock::new(None),
+            executor_slot: RwLock::new(None),
         }
     }
 
     /// Test-only constructor — inject an explicit executor instance so
     /// the test owns its dispatch chain (commonly a registry with a
     /// stub DataModule). Lets the chat module's tests exercise the
-    /// real cross-module call path without standing up the global
-    /// `OnceLock`.
+    /// real cross-module call path without going through `start_server`.
     #[cfg(test)]
     pub fn with_executor(executor: Arc<CommandExecutor>) -> Self {
         Self {
-            executor_override: RwLock::new(Some(executor)),
+            executor_slot: RwLock::new(Some(executor)),
         }
     }
 
-    /// Resolve the executor for the current call. Tests get the
-    /// injected one; production gets the kernel-global.
+    /// Resolve the executor for the current call. Panics if the
+    /// executor was never installed — that's a boot ordering bug
+    /// (`start_server` must call `install_executor_on_all` BEFORE
+    /// any chat command can dispatch). Per [[no-fallbacks-ever]]:
+    /// the panic message names the contract so the operator sees
+    /// the actual problem.
     fn executor(&self) -> Arc<CommandExecutor> {
-        if let Some(ex) = self
-            .executor_override
+        self.executor_slot
             .read()
             .unwrap_or_else(|e| e.into_inner())
             .clone()
-        {
-            return ex;
-        }
-        command_executor::executor()
+            .expect(
+                "ChatModule: CommandExecutor not installed — \
+                 start_server must call install_executor_on_all \
+                 before any chat command can dispatch (task #224)",
+            )
     }
 
     /// `chat/poll` — return recent messages, optionally filtered by
@@ -509,6 +511,17 @@ impl ServiceModule for ChatModule {
             other => Err(format!(
                 "{other}: not handled by chat module — known commands are chat/poll, chat/send, chat/analyze (stub), chat/export (stub)"
             )),
+        }
+    }
+
+    fn install_executor(&self, executor: Arc<CommandExecutor>) {
+        // Don't clobber a `with_executor()`-injected test executor.
+        let mut slot = self
+            .executor_slot
+            .write()
+            .unwrap_or_else(|e| e.into_inner());
+        if slot.is_none() {
+            *slot = Some(executor);
         }
     }
 

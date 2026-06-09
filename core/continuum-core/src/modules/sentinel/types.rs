@@ -474,6 +474,12 @@ pub struct PipelineContext<'a> {
     /// Path to steps.jsonl for real-time sub-step logging.
     /// When set, loop/condition/parallel steps flush results as they complete.
     pub steps_log_path: Option<&'a std::path::Path>,
+    /// Substrate-wide command executor — threaded through from the
+    /// owning `SentinelModule` so steps that delegate to TS (web-research,
+    /// escalation) call `executor.execute_ts_json(...)` instead of the
+    /// deleted free-function helper (task #224). `None` only in tests
+    /// that don't exercise the TS bridge.
+    pub executor: Option<&'a std::sync::Arc<crate::runtime::CommandExecutor>>,
 }
 
 /// Escalation metadata — owned by Rust, pushed to TypeScript on completion.

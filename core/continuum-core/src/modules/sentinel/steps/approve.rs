@@ -202,6 +202,7 @@ mod tests {
             registry: &registry,
             bus: Some(&bus),
             steps_log_path: None,
+            executor: None,
         };
         let mut ctx = ExecutionContext::default();
 
@@ -244,6 +245,7 @@ mod tests {
             registry: &registry,
             bus: Some(&bus),
             steps_log_path: None,
+            executor: None,
         };
         let mut ctx = ExecutionContext::default();
 
@@ -277,6 +279,7 @@ mod tests {
             registry: &registry,
             bus: Some(&bus),
             steps_log_path: None,
+            executor: None,
         };
         let mut ctx = ExecutionContext::default();
 

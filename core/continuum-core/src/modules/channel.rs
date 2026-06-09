@@ -117,11 +117,25 @@ impl ChannelState {
 
 pub struct ChannelModule {
     state: Arc<ChannelState>,
+    executor: std::sync::OnceLock<Arc<crate::runtime::CommandExecutor>>,
 }
 
 impl ChannelModule {
     pub fn new(state: Arc<ChannelState>) -> Self {
-        Self { state }
+        Self {
+            state,
+            executor: std::sync::OnceLock::new(),
+        }
+    }
+
+    /// Executor accessor for the tick body. Returns an error string when the
+    /// executor hasn't been installed yet (boot race) so the tick can record
+    /// it via `record_db_tick_failure` instead of panicking.
+    fn executor_or_err(&self) -> Result<Arc<crate::runtime::CommandExecutor>, String> {
+        self.executor
+            .get()
+            .cloned()
+            .ok_or_else(|| "channel tick: CommandExecutor not yet installed".to_string())
     }
 
     fn tick_db_handle_from_env(override_value: Option<String>) -> String {
@@ -469,7 +483,13 @@ impl ServiceModule for ChannelModule {
             return Ok(());
         }
 
-        let executor = crate::runtime::command_executor::executor();
+        let executor = match self.executor_or_err() {
+            Ok(e) => e,
+            Err(e) => {
+                self.record_db_tick_failure(&e);
+                return Ok(());
+            }
+        };
         let mut total_enqueued = 0u32;
         let mut total_self_tasks = 0u32;
 
@@ -613,14 +633,15 @@ impl ServiceModule for ChannelModule {
 
                         if count >= config.training_threshold {
                             log.info(&format!("Training threshold met for {} ({} examples), triggering genome/job-create", persona_id, count));
-                            let _ = crate::runtime::command_executor::execute_ts_json(
-                                "genome/job-create",
-                                serde_json::json!({
-                                    "personaId": persona_id.to_string(),
-                                    "trainingExamples": count,
-                                }),
-                            )
-                            .await;
+                            let _ = executor
+                                .execute_ts_json(
+                                    "genome/job-create",
+                                    serde_json::json!({
+                                        "personaId": persona_id.to_string(),
+                                        "trainingExamples": count,
+                                    }),
+                                )
+                                .await;
                         }
                     }
                     Err(e) => {
@@ -643,6 +664,10 @@ impl ServiceModule for ChannelModule {
         }
 
         Ok(())
+    }
+
+    fn install_executor(&self, executor: Arc<crate::runtime::CommandExecutor>) {
+        let _ = self.executor.set(executor);
     }
 
     fn as_any(&self) -> &dyn Any {

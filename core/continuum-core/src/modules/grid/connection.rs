@@ -133,6 +133,7 @@ async fn execute_incoming_request(request: &GridFrame, state: &Arc<GridState>) -
     // Execute the command locally.
     // Try Rust module registry first, then fall back to TypeScript command layer
     // via execute_ts_json (for commands like genome/train that live in TS).
+    let executor_arc = state.executor.lock().await.clone();
     let result = if let Some(registry) = state.runtime_registry.lock().await.as_ref() {
         if let Some(result) = registry.route_command(command) {
             // Command matched a Rust module prefix — try Rust handler first
@@ -146,9 +147,15 @@ async fn execute_incoming_request(request: &GridFrame, state: &Arc<GridState>) -
                     // Rust module doesn't handle this specific command —
                     // fall through to TypeScript layer (e.g., grid/node-status,
                     // grid/job-submit live in TS, not Rust).
-                    match crate::runtime::command_executor::execute_ts_json(command, params).await {
-                        Ok(ts_result) => GridFrame::success_response(request, ts_result),
-                        Err(ts_e) => GridFrame::error_response(request, ts_e),
+                    match executor_arc.as_ref() {
+                        Some(exec) => match exec.execute_ts_json(command, params).await {
+                            Ok(ts_result) => GridFrame::success_response(request, ts_result),
+                            Err(ts_e) => GridFrame::error_response(request, ts_e),
+                        },
+                        None => GridFrame::error_response(
+                            request,
+                            "GridState executor not installed".into(),
+                        ),
                     }
                 }
                 Err(e) => GridFrame::error_response(request, e),
@@ -156,9 +163,15 @@ async fn execute_incoming_request(request: &GridFrame, state: &Arc<GridState>) -
         } else {
             // Not a Rust command — forward to TypeScript command layer.
             // This handles genome/train, ai/generate, and other TS-only commands.
-            match crate::runtime::command_executor::execute_ts_json(command, params).await {
-                Ok(ts_result) => GridFrame::success_response(request, ts_result),
-                Err(e) => GridFrame::error_response(request, e),
+            match executor_arc.as_ref() {
+                Some(exec) => match exec.execute_ts_json(command, params).await {
+                    Ok(ts_result) => GridFrame::success_response(request, ts_result),
+                    Err(e) => GridFrame::error_response(request, e),
+                },
+                None => GridFrame::error_response(
+                    request,
+                    "GridState executor not installed".into(),
+                ),
             }
         }
     } else {

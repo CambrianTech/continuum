@@ -196,6 +196,11 @@ impl VideoPublishState {
 
 /// Server-side LiveKit participant that bridges our AI pipeline to WebRTC.
 pub struct LiveKitAgent {
+    /// Substrate-wide command executor — used by the STT path to route
+    /// transcriptions into `collaboration/live/transcription`. Threaded
+    /// in via `connect()` from `LiveKitAgentManager`, which gets it from
+    /// the LiveKit ServiceModule's installed executor (task #224).
+    executor: Arc<crate::runtime::CommandExecutor>,
     room: Room,
     /// Primary audio source for TTS output
     audio_source: NativeAudioSource,
@@ -241,6 +246,7 @@ impl LiveKitAgent {
         call_id: &str,
         persona_id: &str,
         persona_name: &str,
+        executor: Arc<crate::runtime::CommandExecutor>,
     ) -> Result<(Self, mpsc::UnboundedReceiver<AgentEvent>), String> {
         // Generate access token with metadata for role classification
         let metadata = ParticipantMetadata::new(ParticipantRole::AiPersona);
@@ -482,6 +488,7 @@ impl LiveKitAgent {
 
         let (shutdown_tx, _shutdown_rx) = tokio::sync::watch::channel(false);
         let agent = Self {
+            executor,
             room,
             audio_source,
             _audio_track_sid: audio_track_sid,
@@ -1092,6 +1099,7 @@ async fn spawn_stt_listener(
     livekit_url: &str,
     call_id: &str,
     transcription_buffer: TranscriptionBuffer,
+    executor: Arc<crate::runtime::CommandExecutor>,
 ) -> Result<Arc<Room>, String> {
     let listener_id = format!(
         "{}{}",
@@ -1114,6 +1122,7 @@ async fn spawn_stt_listener(
     let room = Arc::new(room);
     let room_for_events = room.clone();
     let call_id_owned = call_id.to_string();
+    let executor_for_events = executor.clone();
 
     // Spawn room event handler — subscribes to audio tracks and processes them.
     // Uses participant metadata to determine role. Only transcribes human audio.
@@ -1167,6 +1176,7 @@ async fn spawn_stt_listener(
                             let cid = call_id_owned.clone();
                             let tbuf = transcription_buffer.clone();
                             let sname = speaker_name.clone();
+                            let executor_for_listen = executor_for_events.clone();
                             tokio::spawn(async move {
                                 clog_info!(
                                     "🎤 STT: Starting listen_and_transcribe for '{}'",
@@ -1180,6 +1190,7 @@ async fn spawn_stt_listener(
                                     room_ref,
                                     cid,
                                     tbuf,
+                                    executor_for_listen,
                                 )
                                 .await;
                                 clog_warn!("🎤 STT: listen_and_transcribe exited for '{}'", sname);
@@ -1235,6 +1246,7 @@ async fn listen_and_transcribe(
     room: Arc<Room>,
     call_id: String,
     transcription_buffer: TranscriptionBuffer,
+    executor_for_events: Arc<crate::runtime::CommandExecutor>,
 ) {
     use crate::live::audio::stt_service;
     use crate::live::audio::vad::ProductionVAD;
@@ -1339,6 +1351,7 @@ async fn listen_and_transcribe(
                     let room_ref = room.clone();
                     let cid = call_id.clone();
                     let tbuf = transcription_buffer.clone();
+                    let executor_for_stt = executor_for_events.clone();
 
                     tokio::spawn(async move {
                         let _permit = permit; // Hold until done
@@ -1406,11 +1419,12 @@ async fn listen_and_transcribe(
                                         .unwrap_or_default()
                                         .as_millis() as u64,
                                 });
-                                match crate::runtime::command_executor::execute_ts_json(
-                                    "collaboration/live/transcription",
-                                    ts_params,
-                                )
-                                .await
+                                match executor_for_stt
+                                    .execute_ts_json(
+                                        "collaboration/live/transcription",
+                                        ts_params,
+                                    )
+                                    .await
                                 {
                                     Ok(result) => {
                                         clog_info!("📝 STT: AI routing result: {}", result);
@@ -1460,6 +1474,11 @@ pub struct LiveKitAgentManager {
     livekit_url: String,
     /// Transcription buffer from STT listeners (polled by tests via voice/poll-transcriptions)
     transcription_buffer: TranscriptionBuffer,
+    /// Substrate-wide command executor — installed by the owning
+    /// VoiceModule via `install_executor` (task #224). `None` only when
+    /// the manager was constructed with `Default::default()` for a test
+    /// that doesn't exercise STT-to-TS routing.
+    executor: std::sync::OnceLock<Arc<crate::runtime::CommandExecutor>>,
 }
 
 impl Default for LiveKitAgentManager {
@@ -1481,7 +1500,13 @@ impl LiveKitAgentManager {
             listeners: Arc::new(RwLock::new(HashMap::new())),
             livekit_url,
             transcription_buffer: Arc::new(Mutex::new(VecDeque::new())),
+            executor: std::sync::OnceLock::new(),
         }
+    }
+
+    /// Install the substrate-wide CommandExecutor (called by VoiceModule).
+    pub fn install_executor(&self, executor: Arc<crate::runtime::CommandExecutor>) {
+        let _ = self.executor.set(executor);
     }
 
     /// Get the LiveKit server URL this manager is configured for.
@@ -1507,10 +1532,19 @@ impl LiveKitAgentManager {
             }
         }
 
+        let executor = self
+            .executor
+            .get()
+            .cloned()
+            .ok_or_else(|| {
+                "LiveKitAgentManager: CommandExecutor not installed before STT listener spawn"
+                    .to_string()
+            })?;
         let room = spawn_stt_listener(
             &self.livekit_url,
             call_id,
             self.transcription_buffer.clone(),
+            executor,
         )
         .await?;
         self.listeners
@@ -1578,6 +1612,14 @@ impl LiveKitAgentManager {
         let user_id_owned = user_id.to_string();
         let display_name_owned = display_name.unwrap_or(user_id).to_string();
         let key_for_work = key.clone();
+        let executor_for_work = self
+            .executor
+            .get()
+            .cloned()
+            .ok_or_else(|| {
+                "LiveKitAgentManager: CommandExecutor not installed before agent connect"
+                    .to_string()
+            })?;
 
         use futures::FutureExt;
         let work = async move {
@@ -1596,6 +1638,7 @@ impl LiveKitAgentManager {
                 &call_id_owned,
                 &user_id_owned, // Identity = persona's userId (unique UUID, no prefix needed)
                 &display_name_owned, // Display name shown in browser
+                executor_for_work,
             )
             .await?;
 
