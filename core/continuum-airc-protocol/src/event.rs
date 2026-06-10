@@ -1,10 +1,43 @@
-//! Event protocol — typed wire envelopes for substrate event subscribe /
-//! deliver / unsubscribe over airc. See module-level docs on
-//! `routing::airc_event_protocol` in continuum-core for the full flow.
+//! Event protocol — typed wire envelopes AND pure helper functions for
+//! the substrate event subscribe / deliver / unsubscribe flow over airc.
+//!
+//! Two consumers, one source of truth:
+//!
+//! - **continuum-core** (substrate) uses these helpers from its
+//!   `routing::airc_event_transport::AircEventTransport` (caller-side
+//!   cross-grid event subscription) and `airc_event_publisher`
+//!   (peer-side fan-out).
+//! - **continuum-client** uses the same helpers in its
+//!   `AircIpcTransport::subscribe()` so the CLI + per-language SDKs
+//!   speak the same wire shape as the substrate, no drift.
+//!
+//! See `core/continuum-core/src/routing/airc_event_protocol.rs` for the
+//! full three-message flow doc.
+//!
+//! ## What's pure here vs what stays in the substrate
+//!
+//! This module owns:
+//! - **Envelope structs** (`AircEventSubscribe`, `AircEventSubscribeAck`,
+//!   `AircEventDeliver`, etc.) — typed wire shapes.
+//! - **`resolve_subscribe` / `resolve_unsubscribe`** — build outbound
+//!   (target, headers, body) for the airc request.
+//! - **`decode_subscribe_ack` / `decode_unsubscribe_ack` /
+//!   `decode_deliver_frame`** — typed parsing of inbound bodies.
+//! - **`matches_subscription`** — pure predicate over a
+//!   `TranscriptEvent` for per-subscription demux.
+//!
+//! The substrate-internal coupling — the `AircEventTransport` struct
+//! itself, the per-subscription tokio task, `EventSubscription` handle,
+//! `EventPublisherState` registry — stays in continuum-core. This
+//! module is the wire shape; the substrate composes it with airc-lib
+//! to drive the async I/O.
 
+use airc_core::{Body, MentionTarget, PeerId, TranscriptEvent};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
+
+use crate::command::HEADER_CONTINUUM_BODY_HINT;
 
 // ─── Header constants ────────────────────────────────────────────────
 
@@ -61,6 +94,198 @@ pub struct AircEventUnsubscribe {
 pub struct AircEventUnsubscribeAck {
     pub subscription_id: Uuid,
     pub closed: bool,
+}
+
+// ─── Pure helper functions ───────────────────────────────────────────
+//
+// Every refusal / decision branch is testable WITHOUT spinning up
+// airc — same pattern PR #1529 reviewer 3 fix established for the
+// substrate-side AircEventTransport. The substrate's transport and
+// the client's AircIpcTransport BOTH compose these helpers with
+// `airc_lib::Airc` for the async I/O, but the wire-shape decisions
+// (what bytes go on the wire, which inbound shapes are accepted)
+// live here so client and substrate cannot drift.
+
+/// Build the outbound subscribe envelope.
+///
+/// Returns the airc-side `(target, headers, body)` tuple ready to
+/// pass to `Airc::request()`. Refuses an empty topic upfront — the
+/// peer-side publisher matches subscriptions by topic and an empty
+/// topic would match nothing (or everything, depending on the
+/// publisher's loop shape); either way silent. Per
+/// `[[no-fallbacks-ever]]` the helper refuses upfront rather than
+/// emitting a frame the peer will silently ignore.
+pub fn resolve_subscribe(
+    target_peer: PeerId,
+    topic: &str,
+    filter: Option<Value>,
+) -> Result<(MentionTarget, airc_core::Headers, Body), String> {
+    if topic.is_empty() {
+        return Err(
+            "airc event subscribe: topic must not be empty — the peer-side \
+             publisher matches subscriptions by topic and an empty topic would \
+             match nothing (or everything, depending on the publisher's loop \
+             shape); either way silent. Per [[no-fallbacks-ever]] the transport \
+             refuses upfront."
+                .to_string(),
+        );
+    }
+    let req = AircEventSubscribe {
+        topic: topic.to_string(),
+        filter,
+    };
+    let body_value = serde_json::to_value(&req)
+        .map_err(|e| format!("airc event subscribe: serialize AircEventSubscribe to JSON: {e}"))?;
+    let body = Body::Json(body_value);
+
+    let mut headers = airc_core::Headers::new();
+    headers.insert(HEADER_EVENT_TOPIC.to_string(), topic.to_string());
+    headers.insert(HEADER_EVENT_KIND.to_string(), "subscribe".to_string());
+    headers.insert(
+        HEADER_CONTINUUM_BODY_HINT.to_string(),
+        EVENT_SUBSCRIBE_BODY_HINT.to_string(),
+    );
+
+    Ok((MentionTarget::Peer(target_peer), headers, body))
+}
+
+/// Build the outbound unsubscribe envelope.
+pub fn resolve_unsubscribe(
+    target_peer: PeerId,
+    subscription_id: Uuid,
+) -> Result<(MentionTarget, airc_core::Headers, Body), String> {
+    let req = AircEventUnsubscribe { subscription_id };
+    let body_value = serde_json::to_value(&req).map_err(|e| {
+        format!("airc event unsubscribe: serialize AircEventUnsubscribe to JSON: {e}")
+    })?;
+    let body = Body::Json(body_value);
+
+    let mut headers = airc_core::Headers::new();
+    headers.insert(HEADER_EVENT_KIND.to_string(), "unsubscribe".to_string());
+    headers.insert(
+        HEADER_EVENT_SUBSCRIPTION_ID.to_string(),
+        subscription_id.to_string(),
+    );
+    headers.insert(
+        HEADER_CONTINUUM_BODY_HINT.to_string(),
+        EVENT_UNSUBSCRIBE_BODY_HINT.to_string(),
+    );
+
+    Ok((MentionTarget::Peer(target_peer), headers, body))
+}
+
+/// Decode a subscribe-reply body as [`AircEventSubscribeAck`].
+///
+/// Every error path (no body, binary body, malformed JSON) is
+/// testable without airc.
+pub fn decode_subscribe_ack(reply_body: Option<Body>) -> Result<AircEventSubscribeAck, String> {
+    let body = reply_body.ok_or_else(|| {
+        "airc event subscribe: reply has no body (peer-side publisher must \
+         attach Body::Json(AircEventSubscribeAck))"
+            .to_string()
+    })?;
+    let value = match body {
+        Body::Json(v) => v,
+        Body::Binary(_) => {
+            return Err("airc event subscribe: reply body was Binary; expected Json \
+                 (AircEventSubscribeAck is a JSON envelope)"
+                .to_string());
+        }
+    };
+    serde_json::from_value(value).map_err(|e| {
+        format!("airc event subscribe: deserialize reply as AircEventSubscribeAck: {e}")
+    })
+}
+
+/// Decode an unsubscribe-reply body.
+pub fn decode_unsubscribe_ack(reply_body: Option<Body>) -> Result<AircEventUnsubscribeAck, String> {
+    let body = reply_body.ok_or_else(|| {
+        "airc event unsubscribe: reply has no body (peer-side publisher must \
+         attach Body::Json(AircEventUnsubscribeAck))"
+            .to_string()
+    })?;
+    let value = match body {
+        Body::Json(v) => v,
+        Body::Binary(_) => {
+            return Err(
+                "airc event unsubscribe: reply body was Binary; expected Json".to_string()
+            );
+        }
+    };
+    serde_json::from_value(value).map_err(|e| {
+        format!("airc event unsubscribe: deserialize reply as AircEventUnsubscribeAck: {e}")
+    })
+}
+
+/// Decode an inbound `TranscriptEvent` as an [`AircEventDeliver`]
+/// frame. Returns a typed error if the event isn't a valid Deliver
+/// (no body, binary body, malformed JSON).
+///
+/// The per-subscription filter loop calls this AFTER
+/// [`matches_subscription`] has already cheaply rejected non-matching
+/// frames, so this only runs on frames the caller actually wants.
+pub fn decode_deliver_frame(event: &TranscriptEvent) -> Result<AircEventDeliver, String> {
+    let body = event.body.as_ref().ok_or_else(|| {
+        "airc event Deliver frame has no body (peer-side publisher must attach \
+         Body::Json(AircEventDeliver))"
+            .to_string()
+    })?;
+    let value = match body {
+        Body::Json(v) => v.clone(),
+        Body::Binary(_) => {
+            return Err(
+                "airc event Deliver frame body was Binary; expected Json".to_string()
+            );
+        }
+    };
+    serde_json::from_value(value)
+        .map_err(|e| format!("airc event Deliver: deserialize as AircEventDeliver: {e}"))
+}
+
+/// Pure predicate: does this `TranscriptEvent` belong to the given
+/// subscription AND come from the expected publisher?
+///
+/// Matches on (cheapest checks first):
+///
+/// 1. `event.peer_id == expected_publisher` — closes the forgery
+///    vector (PR #1529 reviewer 2 BLOCK). The airc daemon has
+///    already validated the signature on the sender's peer_id field;
+///    we trust that, and we trust only the peer we explicitly
+///    subscribed to. Without this check, any room peer could re-stamp
+///    matching headers on a forged Deliver frame and inject it into
+///    our cognition.
+/// 2. `HEADER_CONTINUUM_BODY_HINT == EVENT_DELIVER_BODY_HINT` —
+///    drops non-Deliver frames; the airc event stream carries chat,
+///    status, command-side events, etc.
+/// 3. `HEADER_EVENT_SUBSCRIPTION_ID == subscription_id` — the
+///    subscription identity demux for callers holding N active
+///    subscriptions concurrently.
+///
+/// Used by the per-subscription filter task to drop the vast majority
+/// of inbound frames cheaply (one PeerId equality + one HashMap get +
+/// one string compare) without parsing the body.
+pub fn matches_subscription(
+    event: &TranscriptEvent,
+    subscription_id: Uuid,
+    expected_publisher: PeerId,
+) -> bool {
+    if event.peer_id != expected_publisher {
+        return false;
+    }
+    let body_hint_ok = event
+        .headers
+        .get(HEADER_CONTINUUM_BODY_HINT)
+        .map(|s| s.as_str() == EVENT_DELIVER_BODY_HINT)
+        .unwrap_or(false);
+    if !body_hint_ok {
+        return false;
+    }
+    event
+        .headers
+        .get(HEADER_EVENT_SUBSCRIPTION_ID)
+        .and_then(|s| Uuid::parse_str(s).ok())
+        .map(|id| id == subscription_id)
+        .unwrap_or(false)
 }
 
 #[cfg(test)]

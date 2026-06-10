@@ -8,3 +8,10 @@ description = "Wire-shape types for the substrate's airc command + event protoco
 serde = { workspace = true }
 serde_json = { workspace = true }
 uuid = { workspace = true }
+# airc primitives the shared wire helpers consume (Body, Headers,
+# MentionTarget, PeerId, TranscriptEvent). Lets the
+# resolve_subscribe / decode_deliver_frame / matches_subscription
+# helpers live here instead of being owned by continuum-core — one
+# wire-shape source of truth that both substrate AND
+# continuum-client consume.
+airc-core = { workspace = true }

@@ -7,9 +7,13 @@
 //! crate prevents wire drift between client and server.
 //!
 //! Substrate-internal coupling — turning a `RouteDecision` into an
-//! `AircCommandRequest`, the cross-grid `Transport` impl, the peer-side
-//! handler — stays in continuum-core. This crate only owns the
-//! serializable wire shapes.
+//! `AircCommandRequest`, the cross-grid `Transport` impl per se (the
+//! struct + async I/O), the peer-side handler — stays in continuum-core.
+//! This crate owns the serializable wire shapes AND the pure helpers
+//! that produce/consume them (e.g. `event::resolve_subscribe`,
+//! `event::decode_deliver_frame`, `event::matches_subscription`), so the
+//! client and the substrate compose the SAME helpers with their
+//! respective `airc_lib::Airc` handles.
 
 pub mod command;
 pub mod event;
@@ -21,8 +25,15 @@ pub use command::{
     KIND_ROOM,
 };
 pub use event::{
+    // Envelope types
     AircEventDeliver, AircEventSubscribe, AircEventSubscribeAck, AircEventUnsubscribe,
-    AircEventUnsubscribeAck, EVENT_ACK_BODY_HINT, EVENT_DELIVER_BODY_HINT,
-    EVENT_SUBSCRIBE_BODY_HINT, EVENT_UNSUBSCRIBE_BODY_HINT, HEADER_EVENT_KIND,
-    HEADER_EVENT_SUBSCRIPTION_ID, HEADER_EVENT_TOPIC,
+    AircEventUnsubscribeAck,
+    // Helper functions — shared by substrate AND client
+    decode_deliver_frame, decode_subscribe_ack, decode_unsubscribe_ack, matches_subscription,
+    resolve_subscribe, resolve_unsubscribe,
+    // Body-hint constants
+    EVENT_ACK_BODY_HINT, EVENT_DELIVER_BODY_HINT, EVENT_SUBSCRIBE_BODY_HINT,
+    EVENT_UNSUBSCRIBE_BODY_HINT,
+    // Header name constants
+    HEADER_EVENT_KIND, HEADER_EVENT_SUBSCRIPTION_ID, HEADER_EVENT_TOPIC,
 };
