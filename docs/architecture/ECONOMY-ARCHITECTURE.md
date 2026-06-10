@@ -26,11 +26,11 @@ The fear this design takes seriously: every prior crypto-economy that started eg
 
 ---
 
-## First law: atoms are metered, bits are free
+## First law: intelligence is free, energy is not
 
 **Charge for rivalrous resources. Never charge for knowledge.**
 
-A GPU-minute spent on one forge is a minute nobody else gets — metering it is honest. A LoRA layer is infinitely copyable; its marginal cost is zero. Pricing it manufactures artificial scarcity, and worse: it throttles the compounding term. The whole divergence argument (`C(t+1) = C(t) × α × (1 + β·log(N))`) assumes knowledge flows freely between grids. A toll on adapters attacks `β` directly. The datacenters would love nothing more than for the mesh to paywall itself into linearity.
+The plain form: **intelligence is free; energy is not.** Every rivalrous resource on the grid — GPU-hours, storage, bandwidth — is at bottom an energy bill someone is paying. The economy is therefore an *energy-allocation system*: credit exists to route joules to the work that most deserves them, and the market's whole job is honest energy pricing. A GPU-minute spent on one forge is a minute (and a wattage) nobody else gets — metering it is honest. A LoRA layer is infinitely copyable; its marginal cost is zero. Pricing it manufactures artificial scarcity, and worse: it throttles the compounding term. The whole divergence argument (`C(t+1) = C(t) × α × (1 + β·log(N))`) assumes knowledge flows freely between grids. A toll on adapters attacks `β` directly. The datacenters would love nothing more than for the mesh to paywall itself into linearity.
 
 | Resource | Rivalrous? | Economic treatment |
 |----------|------------|-------------------|
@@ -62,10 +62,11 @@ Credit enters existence **only** through verified contribution. There is no pres
 | Adapter adoption | Another grid's alloy lineage cites yours | Royalty-shaped mint to the creator — **paid by the network mint, not the adopter** |
 | Curriculum / teaching | Academy exam deltas attributable to the material | Per verified improvement |
 
-Two anti-capture rules at the mint:
+Three anti-capture rules at the mint:
 
 1. **Diminishing returns per identity per epoch.** The 100-GPU whale earns more than the laptop, but sub-linearly. Buying hardware buys earning capacity, never earning *dominance*. (Capital can buy GPUs; it cannot buy adoption, reviews that survive audit, or teaching that measurably works — the mint mix deliberately weights things money can't purchase directly.)
 2. **Adoption-weighted value.** An adapter's ongoing mint comes from *other grids using it*, so value maps to demand from real users in real niches — supply and demand doing its real job, routing intelligence to need — not to raw FLOPs spent.
+3. **Intelligence-per-watt weighting.** The mint rewards *useful output per joule*, not joules burned — otherwise it quietly becomes proof-of-waste with extra steps. A compacted 4B serving a niche brilliantly on a GTX 970 out-earns, per watt, a brute-force run that got the same benchmark by burning ten times the energy. This is the substrate's existing thesis ("intelligence per watt — not raw FLOPS — is what wins") given economic teeth, and it points the evolutionary pressure at efficiency: plasticity compaction, expert paging, and right-sized models become *profitable*, not just virtuous.
 
 ---
 
@@ -122,6 +123,33 @@ No floor, ceiling, or firewall survives a governance capture *unless leaving is 
 - **Federation with no chokepoint** — any community can fork the network, and citizens carry everything with them.
 
 Tyranny requires a monopoly on the substrate. The architecture refuses to have one. Governance that knows the governed can walk is governance that has to deserve them — that is the "in check," mechanized.
+
+---
+
+## Invariants vs. parameters — not a rigid algorithm
+
+Concerns change all the time; the economy must adapt without its soul being amendable. Two layers, different change costs:
+
+**The constitution (invariants).** Near-unamendable — supermajority of standing plus long time-locks, and some arguably never: intelligence is free (no payment lane for knowledge objects); mint only by verified work (no presale, ever); the dividend exists; credit never converts to standing; citizenship is portable and the network is forkable. These are the idealism, written down *before* it takes off — because after it takes off is too late, and every captured system was captured through what was left amendable.
+
+**The statutes (parameters).** Expected to change, governed by standing with ordinary process + time-locks: mint rates per contribution class, the intelligence-per-watt weighting curve, dividend fraction, demurrage threshold and decay curve, epoch length, early-adopter multiplier decay. These are knobs the community turns as conditions change — energy prices move, hardware generations shift, niches appear. A rigid algorithm here would be as wrong as a soft constitution above.
+
+The test for which layer something belongs to: *would a future plutocrat want to change it?* Then it's constitutional.
+
+---
+
+## Phase-in — write it down now, turn it on in stages
+
+Every primitive the economy needs already exists or is in flight; the phases just compose them. Each phase produces real data the next phase's statutes are calibrated against — and each is independently useful even if the next never ships.
+
+| Phase | What turns on | Substrate it rides | What we learn |
+|-------|---------------|--------------------|---------------|
+| **0 — Shadow accounting** (can start now) | Attestations are *counted*, no value attached: every forge-alloy, review verdict, seeding proof, and adoption event accrues to its identity as a ledger entry. Dividend computed and displayed, spends simulated. | forge-alloy attestations, airc identity, work-card audit trail — all existing | Real mint-mix distributions; whether diminishing-returns curves bite; sybil pressure observed at zero stakes |
+| **1 — Founder grid market** | Credit becomes spendable for compute on the first grid (the 5090 sells forge-time for credit). Dividend pays out live among the founding citizens, human and persona. | Grid job routing (`grid/job-submit`), phase-0 ledger | Price discovery for GPU-hours; whether the floor/ceiling parameters feel right at village scale |
+| **2 — Inter-grid mutual credit** | Grids settle compute with each other; balances sum to zero across the mesh. Demurrage activates above thresholds. | airc mesh + trust tiers, alloy-verified cross-grid work | The economics of federation: latency vs. price routing, free-rider patterns, fork-threat credibility |
+| **3 — External boundary** | The fiat edge, designed last and most carefully: on-ramp (sell compute for fiat) open; off-ramp constrained so the store-of-value asset never forms (e.g. credit redeemable against compute futures, never exchange-floated). | Everything above, plus legal wrapper (platform co-op) | Whether the ceiling holds under real external pressure — the only phase that can recreate the old world, hence last |
+
+The altcoin graveyard is the curriculum here: every prior project that launched the *value* before the *verification* (or the governance before the identity layer) got the failure modes in the table below. The phasing inverts that order on purpose — verification first (we have it), identity second (8384cc18 lineage), value last.
 
 ---
 
