@@ -70,6 +70,7 @@ const FORBIDDEN_TYPE_PATTERNS: &[&str] = &[
     ": OnceCell<Arc<",
     ": std::sync::OnceLock<Arc<",
     ": once_cell::sync::OnceCell<Arc<",
+    ": tokio::sync::OnceCell<Arc<",
 ];
 
 #[derive(Debug)]
@@ -101,10 +102,25 @@ fn scan_for_singletons(src_root: &Path) -> Vec<Violation> {
         for (idx, raw_line) in content.lines().enumerate() {
             let trimmed = raw_line.trim_start();
 
-            // `#[cfg(test)]` on its own line — next `mod NAME {` opens
-            // the test mod.
+            // `#[cfg(test)]` on its own line OR collapsed inline with
+            // the `mod NAME {` opener. The inline form
+            // `#[cfg(test)] mod tests { ... }` is rare but legal — handle
+            // it on the same line so the test mod still gets exempted.
             if trimmed.starts_with("#[cfg(test)]") {
-                prev_was_cfg_test = true;
+                let rest_of_line = &trimmed["#[cfg(test)]".len()..];
+                if rest_of_line.contains("mod ") && raw_line.contains('{') {
+                    in_test_mod = true;
+                    test_mod_depth =
+                        (raw_line.matches('{').count() as i32) - (raw_line.matches('}').count() as i32);
+                    if test_mod_depth <= 0 {
+                        // Single-line mod block (`#[cfg(test)] mod x {}`),
+                        // already balanced — nothing to exempt.
+                        in_test_mod = false;
+                        test_mod_depth = 0;
+                    }
+                } else {
+                    prev_was_cfg_test = true;
+                }
                 continue;
             }
             if prev_was_cfg_test {
@@ -127,12 +143,20 @@ fn scan_for_singletons(src_root: &Path) -> Vec<Violation> {
 
             // Match `static NAME: <forbidden-pattern>` — covers module
             // scope and function-local `static`s (both are process-global
-            // singletons; function-local just narrows visibility).
-            if !trimmed.starts_with("static ") {
+            // singletons; function-local just narrows visibility). Strip
+            // any leading visibility modifier so `pub static`,
+            // `pub(crate) static`, and `pub(super) static` are caught
+            // too. Order matters: longer prefixes first.
+            let after_vis = trimmed
+                .trim_start_matches("pub(crate) ")
+                .trim_start_matches("pub(super) ")
+                .trim_start_matches("pub ");
+            if !after_vis.starts_with("static ") {
                 continue;
             }
+            let line_for_matching = after_vis;
             for pat in FORBIDDEN_TYPE_PATTERNS {
-                if trimmed.contains(pat) {
+                if line_for_matching.contains(pat) {
                     violations.push(Violation {
                         file: path.to_path_buf(),
                         line_num: idx + 1,
