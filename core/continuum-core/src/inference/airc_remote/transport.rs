@@ -274,34 +274,35 @@ impl AircInferenceTransport for AircLiveTransport {
                 message: format!("airc.request to {target:?}: {e}"),
             })?;
 
-        let reply = self.airc.await_reply(pending).await.map_err(|e| {
-            // airc-lib surfaces a single error type for timeout +
-            // transport break + correlation drop. Classify by
-            // substring rather than swallow the variant — the
-            // distinction matters for the coordinator's retry policy.
-            //
-            // airc-lib's deadline-elapsed message is literally
-            // "command deadline elapsed (correlation_id=...)" today —
-            // caught by `architecture_cross_grid_chaos.rs` when the
-            // original `timeout`/`timed out` substrings missed it and
-            // mis-classified the timeout as a generic Transport error.
-            // The phrase list below is the canonical answer to "what
-            // does airc-lib actually emit when a deadline fires?" and
-            // grows here, not in every consumer, when airc-lib's
-            // message changes.
-            let message = format!("{e}");
-            let is_deadline = message.contains("timeout")
-                || message.contains("timed out")
-                || message.contains("deadline elapsed")
-                || message.contains("deadline exceeded");
-            if is_deadline {
-                RemoteInferenceError::Timeout {
+        // airc-lib's `AircError` is a typed enum with a dedicated
+        // `CommandDeadline { correlation_id }` variant for the
+        // deadline-elapsed case. The coordinator's retry policy
+        // distinguishes Timeout from generic Transport errors, so we
+        // classify on the VARIANT — not on the Display string.
+        //
+        // History: an earlier version of this classifier substring-
+        // matched `format!("{e}")` for "timeout" / "timed out" and
+        // mis-classified every real deadline (airc-lib's Display is
+        // "command deadline elapsed (correlation_id=…)") as
+        // `RemoteInferenceError::Transport`, silently breaking the
+        // coordinator's retry path. The `architecture_cross_grid_chaos`
+        // Shape-4 test caught it; the variant-based match here is the
+        // structural fix per `[[every-error-is-an-opportunity-to-
+        // battle-harden]]`. New AircError variants surfaced from
+        // await_reply land here, not in every downstream consumer.
+        let reply = match self.airc.await_reply(pending).await {
+            Ok(reply) => reply,
+            Err(airc_lib::AircError::CommandDeadline { .. }) => {
+                return Err(RemoteInferenceError::Timeout {
                     elapsed_ms: self.deadline.as_millis() as u64,
-                }
-            } else {
-                RemoteInferenceError::Transport { message }
+                });
             }
-        })?;
+            Err(other) => {
+                return Err(RemoteInferenceError::Transport {
+                    message: format!("{other}"),
+                });
+            }
+        };
 
         let reply_body = reply
             .body
