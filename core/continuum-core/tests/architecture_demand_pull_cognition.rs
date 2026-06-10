@@ -67,6 +67,7 @@ use continuum_core::persona::channel_items::ChatQueueItem;
 use continuum_core::persona::channel_registry::{ChannelRegistry, DEFAULT_BURST_WINDOW_MS};
 use continuum_core::persona::channel_types::QueueItemBehavior;
 use continuum_core::persona::channel_view::CoherentInput;
+use continuum_core::persona::persona_identity::PersonaIdentity;
 use continuum_core::persona::types::{PersonaState, SenderType};
 
 fn now_ms() -> u64 {
@@ -140,8 +141,7 @@ fn service_cycle_with_n_chat_messages_yields_one_input() {
 
     let inputs = registry.service_cycle_batched(
         &mut state,
-        persona_id,
-        "Helper",
+        &PersonaIdentity::new(persona_id, "Helper"),
         DEFAULT_BURST_WINDOW_MS,
     );
 
@@ -223,8 +223,7 @@ fn service_cycle_multi_window_yields_one_input_with_remainder_deferred() {
 
     let inputs = registry.service_cycle_batched(
         &mut state,
-        persona_id,
-        "Helper",
+        &PersonaIdentity::new(persona_id, "Helper"),
         DEFAULT_BURST_WINDOW_MS,
     );
 
@@ -327,8 +326,7 @@ fn service_cycle_wallclock_independent_of_arrival_count() {
                 let start = Instant::now();
                 let inputs = registry.service_cycle_batched(
                     &mut state,
-                    persona_id,
-                    "Helper",
+                    &PersonaIdentity::new(persona_id, "Helper"),
                     DEFAULT_BURST_WINDOW_MS,
                 );
                 let elapsed = start.elapsed();

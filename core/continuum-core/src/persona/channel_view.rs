@@ -24,6 +24,7 @@
 
 use crate::persona::channel_items::ChatQueueItem;
 use crate::persona::channel_types::{ActivityDomain, CoherentUnit};
+use crate::persona::persona_identity::PersonaIdentity;
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -120,17 +121,23 @@ pub struct ChatCoherentInput {
 /// substrate-shared expensive decode lives on the channel item (lazy
 /// cells); this layer is the CHEAP per-persona transform above it.
 ///
-/// `persona_name` is the identity-aware seam — chat's mention
-/// detection compares against it, future video views can attribute
-/// gaze/attention by speaker name, etc. Threaded explicitly so the
-/// substrate's per-persona perspective is a pure-function dependency,
-/// not a runtime side-channel.
+/// `identity: &PersonaIdentity` is the identity-aware seam — chat's
+/// mention detection routes through `identity.mentions(text)` (word-
+/// boundary, not substring; see [`PersonaIdentity::mentions`]
+/// docstring). Future video views can attribute gaze/attention by
+/// identity, etc. Threaded explicitly so the substrate's per-persona
+/// perspective is a pure-function dependency, not a runtime side-
+/// channel.
+///
+/// Per `[[strong-typing-across-boundaries]]` (task #247): the identity
+/// is a TYPE, not a name string + id pair, so callers can't
+/// accidentally re-introduce the substring-match bug class by swapping
+/// out the helper.
 pub trait PersonaChannelView: Send + Sync {
     fn interpret(
         &self,
         unit: &CoherentUnit,
-        persona_id: Uuid,
-        persona_name: &str,
+        identity: &PersonaIdentity,
     ) -> CoherentInput;
 }
 
@@ -164,8 +171,7 @@ impl PersonaChannelView for ChatChannelView {
     fn interpret(
         &self,
         unit: &CoherentUnit,
-        _persona_id: Uuid,
-        persona_name: &str,
+        identity: &PersonaIdentity,
     ) -> CoherentInput {
         match unit {
             CoherentUnit::Chat {
@@ -173,7 +179,6 @@ impl PersonaChannelView for ChatChannelView {
                 window_span_ms,
                 primary_room,
             } => {
-                let needle = persona_name.to_lowercase();
                 let mut aggregated = String::new();
                 let mut last_sender = String::new();
                 let mut anyone_mentioned = false;
@@ -200,9 +205,7 @@ impl PersonaChannelView for ChatChannelView {
                         aggregated.push_str(&prior.sender_name);
                         aggregated.push_str(": ");
                         aggregated.push_str(&prior.content);
-                        if !needle.is_empty()
-                            && prior.content.to_lowercase().contains(&needle)
-                        {
+                        if identity.mentions(&prior.content) {
                             anyone_mentioned = true;
                         }
                     }
@@ -218,7 +221,7 @@ impl PersonaChannelView for ChatChannelView {
 
                     last_sender = chat.sender_name.clone();
 
-                    if !needle.is_empty() && chat.content.to_lowercase().contains(&needle) {
+                    if identity.mentions(&chat.content) {
                         anyone_mentioned = true;
                     }
 
@@ -318,7 +321,7 @@ mod tests {
         };
 
         let view = ChatChannelView;
-        let input = view.interpret(&burst, Uuid::new_v4(), "Helper");
+        let input = view.interpret(&burst, &PersonaIdentity::new(Uuid::new_v4(), "Helper"));
 
         match input {
             CoherentInput::Chat(chat) => {
@@ -355,7 +358,7 @@ mod tests {
         let view = ChatChannelView;
 
         // Maya sees herself mentioned
-        let maya_input = view.interpret(&burst, Uuid::new_v4(), "Maya");
+        let maya_input = view.interpret(&burst, &PersonaIdentity::new(Uuid::new_v4(), "Maya"));
         let maya_mentioned = match &maya_input {
             CoherentInput::Chat(c) => c.anyone_mentioned_persona,
             _ => panic!("expected Chat input"),
@@ -366,7 +369,7 @@ mod tests {
         );
 
         // Helper does NOT see itself mentioned
-        let helper_input = view.interpret(&burst, Uuid::new_v4(), "Helper");
+        let helper_input = view.interpret(&burst, &PersonaIdentity::new(Uuid::new_v4(), "Helper"));
         let helper_mentioned = match &helper_input {
             CoherentInput::Chat(c) => c.anyone_mentioned_persona,
             _ => panic!("expected Chat input"),
@@ -401,13 +404,13 @@ mod tests {
         let view = ChatChannelView;
 
         // Maya's perspective
-        let maya = match view.interpret(&burst, Uuid::new_v4(), "Maya") {
+        let maya = match view.interpret(&burst, &PersonaIdentity::new(Uuid::new_v4(), "Maya")) {
             CoherentInput::Chat(c) => c,
             _ => panic!("expected Chat"),
         };
 
         // Helper's perspective (different persona, SAME burst)
-        let helper = match view.interpret(&burst, Uuid::new_v4(), "Helper") {
+        let helper = match view.interpret(&burst, &PersonaIdentity::new(Uuid::new_v4(), "Helper")) {
             CoherentInput::Chat(c) => c,
             _ => panic!("expected Chat"),
         };
@@ -438,6 +441,6 @@ mod tests {
         };
 
         let view = ChatChannelView;
-        let _ = view.interpret(&burst, Uuid::new_v4(), "Maya");
+        let _ = view.interpret(&burst, &PersonaIdentity::new(Uuid::new_v4(), "Maya"));
     }
 }

@@ -12,6 +12,7 @@ use super::channel_types::{
     DOMAIN_PRIORITY_ORDER,
 };
 use super::channel_view::{ChatChannelView, CoherentInput, PersonaChannelView};
+use super::persona_identity::PersonaIdentity;
 use super::types::PersonaState;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -303,8 +304,7 @@ impl ChannelRegistry {
     pub fn service_cycle_batched(
         &mut self,
         state: &mut PersonaState,
-        persona_id: Uuid,
-        persona_name: &str,
+        identity: &PersonaIdentity,
         window_ms: u64,
     ) -> Vec<CoherentInput> {
         // 1. Consolidate (items decide how — same as single-pop path)
@@ -330,7 +330,7 @@ impl ChannelRegistry {
             let Some(unit) = channel.drain_batch(window_ms) else {
                 continue;
             };
-            let input = Self::interpret_for_domain(&unit, persona_id, persona_name);
+            let input = Self::interpret_for_domain(&unit, identity);
             inputs.push(input);
         }
 
@@ -352,13 +352,10 @@ impl ChannelRegistry {
     /// regress.
     fn interpret_for_domain(
         unit: &CoherentUnit,
-        persona_id: Uuid,
-        persona_name: &str,
+        identity: &PersonaIdentity,
     ) -> CoherentInput {
         match unit.domain() {
-            ActivityDomain::Chat => {
-                ChatChannelView.interpret(unit, persona_id, persona_name)
-            }
+            ActivityDomain::Chat => ChatChannelView.interpret(unit, identity),
             domain @ (ActivityDomain::Audio
             | ActivityDomain::Code
             | ActivityDomain::Background) => CoherentInput::Other {
@@ -634,8 +631,7 @@ mod tests {
 
         let inputs = registry.service_cycle_batched(
             &mut state,
-            persona_id,
-            "Helper",
+            &PersonaIdentity::new(persona_id, "Helper"),
             DEFAULT_BURST_WINDOW_MS,
         );
 
@@ -663,8 +659,7 @@ mod tests {
 
         let inputs = registry.service_cycle_batched(
             &mut state,
-            persona_id,
-            "Helper",
+            &PersonaIdentity::new(persona_id, "Helper"),
             DEFAULT_BURST_WINDOW_MS,
         );
 
@@ -707,8 +702,7 @@ mod tests {
 
         let _inputs = registry.service_cycle_batched(
             &mut state,
-            persona_id,
-            "Helper",
+            &PersonaIdentity::new(persona_id, "Helper"),
             DEFAULT_BURST_WINDOW_MS,
         );
 
@@ -758,8 +752,7 @@ mod tests {
         let _ = registry_legacy.service_cycle(&mut state_legacy);
         let _ = registry_batched.service_cycle_batched(
             &mut state_batched,
-            Uuid::new_v4(),
-            "Helper",
+            &PersonaIdentity::new(Uuid::new_v4(), "Helper"),
             DEFAULT_BURST_WINDOW_MS,
         );
 
@@ -808,8 +801,7 @@ mod tests {
         // Maya's perspective — she should see herself mentioned
         let inputs_maya = registry.service_cycle_batched(
             &mut state_maya,
-            Uuid::new_v4(),
-            "Maya",
+            &PersonaIdentity::new(Uuid::new_v4(), "Maya"),
             DEFAULT_BURST_WINDOW_MS,
         );
         let maya_mentioned = inputs_maya.iter().find_map(|i| match i {
@@ -824,8 +816,7 @@ mod tests {
         // Helper's perspective — he should NOT see himself mentioned
         let inputs_helper = registry.service_cycle_batched(
             &mut state_helper,
-            Uuid::new_v4(),
-            "Helper",
+            &PersonaIdentity::new(Uuid::new_v4(), "Helper"),
             DEFAULT_BURST_WINDOW_MS,
         );
         let helper_mentioned = inputs_helper.iter().find_map(|i| match i {
