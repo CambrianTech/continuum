@@ -19,25 +19,35 @@
 //! sees the new value at its own pace. Slow consumers see the latest;
 //! fast consumers see every distinct revision.
 //!
-//! ## Lazy per-kind init
+//! ## Lazy per-kind init — BOTH sides
 //!
 //! `tokio::sync::watch::channel(initial)` requires an initial value, so
-//! we don't pre-allocate senders for kinds that may never produce
-//! state. Instead the first `send()` for a kind creates that kind's
-//! sender (using the new envelope as the initial value). Subsequent
-//! sends update through the existing sender.
+//! the watched type is `Option<Arc<StateEnvelope>>`, with `None` as the
+//! cold-start placeholder. Lazy-init fires from EITHER side:
 //!
-//! `subscribe(kind)` returns `None` if no envelope has ever been sent
-//! for `kind` — honest answer per `[[no-fallbacks-ever]]`. Callers
-//! pair `subscribe` with the snapshot-then-live flow:
-//! 1. `apply_subscribe` retrieves the current snapshot from
+//! - First `send()` for a kind creates the sender with the new
+//!   envelope wrapped in `Some`.
+//! - First `subscribe()` for a kind that has never been sent creates
+//!   the sender with `None`. The first send AFTER that subscribe
+//!   transitions `None` → `Some(env)` — which IS a `watch::changed()`
+//!   notification, so the subscriber that arrived first wakes up.
+//!
+//! Without symmetric lazy-init (the original sketch only lazy-init'd
+//! on send), a renderer that subscribed BEFORE the substrate ever
+//! produced state for that kind would get `None` from this function,
+//! with no path to ever wake up when state finally arrived — the
+//! cold-start hole the Sentinel verdict on #1603 caught.
+//!
+//! `subscribe(kind)` therefore always returns a `Receiver`. Callers
+//! pair this with the snapshot-then-live flow:
+//! 1. `apply_subscribe(cache, msg)` retrieves the current snapshot from
 //!    [`SubstrateStateCache`] (which itself returns `None` for
-//!    no-state-yet kinds).
-//! 2. `Broadcast::subscribe(kind)` attaches a `watch::Receiver` for
-//!    subsequent updates. If both return `None`, the connection
-//!    silently waits — the first state-store for that kind will both
-//!    populate the cache and (re-creating the sender if needed) emit
-//!    the first watch update.
+//!    no-state-yet kinds — that's correct; no snapshot to send).
+//! 2. `Broadcast::subscribe(kind)` attaches a `watch::Receiver`. The
+//!    initial value may be `None` (no state yet) or `Some(env)` (state
+//!    exists). Session tasks filter `None` (cold-start placeholder is
+//!    not a renderer-bound frame) and forward `Some(env)` as a live
+//!    `ServerMessage::State` frame on every `changed()` tick.
 //!
 //! ## Coordination with [`crate::SubstrateStateCache`]
 //!
@@ -64,14 +74,24 @@ use std::sync::{Arc, Mutex};
 use positron_core::wire::StateEnvelope;
 use tokio::sync::watch;
 
-/// Per-kind live broadcast — `tokio::sync::watch::Sender<Arc<StateEnvelope>>`
-/// per kind, lazy-initialized on first send for that kind.
+/// Per-kind live broadcast —
+/// `tokio::sync::watch::Sender<Option<Arc<StateEnvelope>>>` per kind,
+/// lazy-initialized by EITHER first-send or first-subscribe.
+///
+/// The `Option` wrapper is the cold-start placeholder: a subscriber
+/// that arrives before any state exists gets a `Receiver` whose
+/// initial value is `None`. The first `send` after that flips the
+/// watched value to `Some(env)`, which is a normal
+/// `watch::Receiver::changed()` notification — the early subscriber
+/// wakes up exactly when state finally arrives. Without this,
+/// renderers that subscribe before the first state-store would
+/// silently wait forever (the Sentinel-caught hole on #1603).
 ///
 /// Cheap to share via `Arc`. Internal `Mutex<HashMap>` is held only
 /// briefly during send/subscribe — not across `await`.
 #[derive(Debug, Default)]
 pub struct Broadcast {
-    by_kind: Mutex<HashMap<String, watch::Sender<Arc<StateEnvelope>>>>,
+    by_kind: Mutex<HashMap<String, watch::Sender<Option<Arc<StateEnvelope>>>>>,
 }
 
 impl Broadcast {
@@ -82,59 +102,71 @@ impl Broadcast {
     /// Send `envelope` as the latest state for its kind. The kind is
     /// read from `envelope.kind` — no need to pass it separately.
     ///
-    /// First send for a kind lazy-initializes that kind's
-    /// `watch::Sender` (using `envelope` as the initial value). The
-    /// initial receiver from `watch::channel` is immediately dropped
-    /// — actual subscribers attach via [`Broadcast::subscribe`] and
-    /// always get a fresh `Receiver` keyed off the persisted Sender.
+    /// If a sender already exists (created by a prior `send` OR by an
+    /// early `subscribe` waiting on cold-start), this transitions the
+    /// watched value to `Some(envelope)`. If `subscribe` had set the
+    /// initial value to `None`, that transition fires `changed()` for
+    /// the waiting subscribers. Otherwise it just replaces an older
+    /// `Some(_)`.
     ///
-    /// Subsequent sends for the same kind update the existing watch
-    /// sender. Subscribers see the latest value; slow subscribers
-    /// see fewer-than-N intermediates, which is correct per the
-    /// protocol's snapshot semantics.
+    /// If no sender exists yet, lazy-init with `Some(envelope)` as the
+    /// initial value — same shape as the original slice 2D-1.
+    ///
+    /// Uses `send_replace` (not `send`) so updates persist even when
+    /// no subscribers are currently attached — the substrate's event
+    /// bus does not block on consumer presence.
     pub fn send(&self, envelope: Arc<StateEnvelope>) {
         let kind = envelope.kind.clone();
         let mut by_kind = self.by_kind.lock().expect("Broadcast mutex poisoned");
         match by_kind.get(&kind) {
             Some(sender) => {
-                // `send_replace` always updates the watched value
-                // and notifies any current receivers, regardless of
-                // whether receivers exist. `send` (the other method)
-                // is a no-op when the channel is closed (no live
-                // receivers) — that would silently lose state-no-
-                // subscribers-yet updates, which is precisely the
-                // moment between substrate-start and first-session-
-                // attach we MUST get right per `[[no-fallbacks-ever]]`.
-                // Returns the old value; we drop it.
-                let _ = sender.send_replace(envelope);
+                let _ = sender.send_replace(Some(envelope));
             }
             None => {
-                let (sender, _rx) = watch::channel(envelope);
+                let (sender, _rx) = watch::channel(Some(envelope));
                 by_kind.insert(kind, sender);
             }
         }
     }
 
-    /// Attach a receiver for `kind`'s live updates. Returns `None` if
-    /// no envelope has ever been sent for this kind — honest answer
-    /// per `[[no-fallbacks-ever]]`. Sessions pair this with
-    /// `apply_subscribe` snapshot frames; the typical control flow:
+    /// Attach a receiver for `kind`'s live updates. ALWAYS returns a
+    /// `Receiver` — if no envelope has ever been sent for `kind`,
+    /// lazy-init a sender with initial value `None` and hand back a
+    /// receiver pinned to that None. The first `send` for this kind
+    /// will transition the watched value to `Some(env)` and wake the
+    /// subscriber via `changed()`.
     ///
-    /// 1. Run `apply_subscribe(cache, msg)` — returns snapshot frames
-    ///    if the cache has state for the requested kinds.
-    /// 2. For each kind in the new subscription, call
-    ///    `broadcast.subscribe(kind)`. If `Some`, spawn the live-
-    ///    forwarding task. If `None`, no live stream yet — the next
-    ///    substrate `store()` for that kind will create both the
-    ///    cache entry AND the watch sender, and a future resubscribe
-    ///    catches up via the snapshot path.
-    pub fn subscribe(&self, kind: &str) -> Option<watch::Receiver<Arc<StateEnvelope>>> {
-        let by_kind = self.by_kind.lock().expect("Broadcast mutex poisoned");
-        by_kind.get(kind).map(|s| s.subscribe())
+    /// Session tasks consume the stream as:
+    /// ```ignore
+    /// let mut rx = broadcast.subscribe(kind);
+    /// while rx.changed().await.is_ok() {
+    ///     if let Some(env) = rx.borrow_and_update().clone() {
+    ///         // forward Some(env) as ServerMessage::State
+    ///     }
+    ///     // None is the cold-start placeholder — not a frame.
+    /// }
+    /// ```
+    ///
+    /// The cache-and-broadcast pair stays decoupled: `apply_subscribe`
+    /// reads the cache for snapshot frames (returning `None` if no
+    /// cached state — correct silence per `[[no-fallbacks-ever]]`);
+    /// this method handles the live edge.
+    pub fn subscribe(&self, kind: &str) -> watch::Receiver<Option<Arc<StateEnvelope>>> {
+        let mut by_kind = self.by_kind.lock().expect("Broadcast mutex poisoned");
+        match by_kind.get(kind) {
+            Some(sender) => sender.subscribe(),
+            None => {
+                let (sender, rx) = watch::channel(None);
+                by_kind.insert(kind.to_string(), sender);
+                rx
+            }
+        }
     }
 
-    /// Diagnostic: how many kinds have at least one envelope sent.
-    /// Used by tests; not part of the hot path.
+    /// Diagnostic: how many kinds the broadcast knows about (either
+    /// because state has been sent for them OR because a subscriber
+    /// has lazy-init'd a cold-start placeholder). Used by tests; not
+    /// part of the hot path.
     pub fn kinds_active(&self) -> usize {
         self.by_kind.lock().expect("Broadcast mutex poisoned").len()
     }
@@ -155,16 +187,35 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn subscribe_before_any_send_returns_none() {
-        // what this catches: regression where the broadcast lazy-
-        // initializes a sender on subscribe. That would let
-        // subscribers attach against an empty stream and wait
-        // forever for an initial value — looks like a bug at the
-        // session-task layer but is actually a broadcast-layer
-        // anti-fallback violation here.
+    async fn subscribe_before_any_send_yields_none_then_wakes_on_first_send() {
+        // what this catches: the cold-start hole the Sentinel verdict
+        // on #1603 surfaced. A renderer that opens its Subscribe BEFORE
+        // the substrate has ever produced state for that kind needs a
+        // path to wake when state finally arrives. Previously subscribe
+        // returned None and the renderer waited forever — looked like
+        // a bug at the session-task layer but was actually a broadcast-
+        // primitive hole. With Option<Arc<StateEnvelope>> as the
+        // watched type and lazy-init from subscribe(), the early
+        // subscriber sees None initially, then changed() fires when
+        // the first send transitions None → Some(env).
         let b = Broadcast::new();
-        assert!(b.subscribe("chat").is_none());
-        assert_eq!(b.kinds_active(), 0);
+        let mut rx = b.subscribe("chat");
+        assert!(
+            rx.borrow_and_update().is_none(),
+            "cold-start placeholder is None"
+        );
+        // Lazy-init from subscribe counts the kind as known.
+        assert_eq!(b.kinds_active(), 1);
+
+        // The first send transitions None → Some(env). The waiting
+        // receiver wakes through normal watch semantics.
+        b.send(envelope("chat", 1));
+        rx.changed().await.expect("first send wakes early subscriber");
+        let first = rx
+            .borrow_and_update()
+            .clone()
+            .expect("first send populates Some(env)");
+        assert_eq!(first.revision, Some(1));
     }
 
     #[tokio::test]
@@ -178,20 +229,29 @@ mod tests {
         b.send(envelope("chat", 1));
         assert_eq!(b.kinds_active(), 1);
 
-        let mut rx = b.subscribe("chat").expect("attach after first send");
+        let mut rx = b.subscribe("chat");
         // borrow_and_update marks current value as seen so the next
         // changed() actually awaits the NEXT change.
-        let initial = rx.borrow_and_update().clone();
+        let initial = rx
+            .borrow_and_update()
+            .clone()
+            .expect("first send populated Some(env)");
         assert_eq!(initial.revision, Some(1));
 
         b.send(envelope("chat", 2));
         rx.changed().await.expect("change signal");
-        let next = rx.borrow_and_update().clone();
+        let next = rx
+            .borrow_and_update()
+            .clone()
+            .expect("Some(env) after send");
         assert_eq!(next.revision, Some(2));
 
         b.send(envelope("chat", 3));
         rx.changed().await.expect("change signal");
-        let next = rx.borrow_and_update().clone();
+        let next = rx
+            .borrow_and_update()
+            .clone()
+            .expect("Some(env) after send");
         assert_eq!(next.revision, Some(3));
 
         // Still one kind active — sends didn't create new entries.
@@ -207,8 +267,8 @@ mod tests {
         let b = Broadcast::new();
         b.send(envelope("chat", 1));
 
-        let mut a = b.subscribe("chat").unwrap();
-        let mut c = b.subscribe("chat").unwrap();
+        let mut a = b.subscribe("chat");
+        let mut c = b.subscribe("chat");
 
         // Reset their watermarks so the next .changed() awaits.
         a.borrow_and_update();
@@ -217,8 +277,8 @@ mod tests {
         b.send(envelope("chat", 2));
         a.changed().await.unwrap();
         c.changed().await.unwrap();
-        assert_eq!(a.borrow().revision, Some(2));
-        assert_eq!(c.borrow().revision, Some(2));
+        assert_eq!(a.borrow().as_ref().unwrap().revision, Some(2));
+        assert_eq!(c.borrow().as_ref().unwrap().revision, Some(2));
     }
 
     #[tokio::test]
@@ -233,9 +293,9 @@ mod tests {
         b.send(envelope("chat", 2)); // no-subscribers state
         b.send(envelope("chat", 3));
         // After: a fresh subscriber sees the latest, not history.
-        let rx = b.subscribe("chat").unwrap();
+        let rx = b.subscribe("chat");
         assert_eq!(
-            rx.borrow().revision,
+            rx.borrow().as_ref().unwrap().revision,
             Some(3),
             "fresh subscriber sees latest, no history replay"
         );
@@ -252,15 +312,15 @@ mod tests {
         b.send(envelope("user-list", 1));
         assert_eq!(b.kinds_active(), 2);
 
-        let mut chat_rx = b.subscribe("chat").unwrap();
-        let mut user_rx = b.subscribe("user-list").unwrap();
+        let mut chat_rx = b.subscribe("chat");
+        let mut user_rx = b.subscribe("user-list");
         chat_rx.borrow_and_update();
         user_rx.borrow_and_update();
 
         // Send only on chat — user-list receiver MUST NOT wake.
         b.send(envelope("chat", 2));
         chat_rx.changed().await.unwrap();
-        assert_eq!(chat_rx.borrow().revision, Some(2));
+        assert_eq!(chat_rx.borrow().as_ref().unwrap().revision, Some(2));
         // user_rx.changed() would hang — assert it's NOT ready.
         // tokio::select with a deadline is the right shape for a
         // negative test.
@@ -284,7 +344,7 @@ mod tests {
         // lifecycles.
         let b = Broadcast::new();
         b.send(envelope("chat", 1));
-        let rx = b.subscribe("chat").unwrap();
+        let rx = b.subscribe("chat");
         drop(rx);
 
         // Send again; no receivers but the Sender persists.
@@ -292,7 +352,43 @@ mod tests {
 
         // A fresh subscribe attaches to the SAME persistent Sender,
         // sees the latest revision (2), not stale (1).
-        let rx = b.subscribe("chat").unwrap();
-        assert_eq!(rx.borrow().revision, Some(2));
+        let rx = b.subscribe("chat");
+        assert_eq!(rx.borrow().as_ref().unwrap().revision, Some(2));
+    }
+
+    #[tokio::test]
+    async fn cold_start_subscribers_for_different_kinds_wake_independently() {
+        // what this catches: regression where lazy-init from subscribe
+        // accidentally coalesces multiple kinds onto one sender, or
+        // where the first send for ANY kind wakes all cold-start
+        // subscribers. Each kind's None → Some transition is its own
+        // event.
+        let b = Broadcast::new();
+        let mut chat_rx = b.subscribe("chat");
+        let mut user_rx = b.subscribe("user-list");
+        assert_eq!(b.kinds_active(), 2);
+        assert!(chat_rx.borrow_and_update().is_none());
+        assert!(user_rx.borrow_and_update().is_none());
+
+        b.send(envelope("chat", 1));
+        chat_rx.changed().await.expect("chat wakes");
+        assert_eq!(
+            chat_rx.borrow().as_ref().unwrap().revision,
+            Some(1),
+            "chat saw its own first send"
+        );
+
+        // user-list cold-start subscriber MUST still be at None — no
+        // user-list send has happened yet.
+        let did_change = tokio::time::timeout(
+            std::time::Duration::from_millis(50),
+            user_rx.changed(),
+        )
+        .await;
+        assert!(
+            did_change.is_err(),
+            "user-list cold-start subscriber must not wake on chat's send"
+        );
+        assert!(user_rx.borrow().is_none());
     }
 }
