@@ -13,6 +13,7 @@ use super::channel_types::{
 };
 use super::types::PersonaState;
 use std::collections::HashMap;
+use std::sync::Arc;
 use tracing::{debug, info};
 
 /// Channel registry — routes items to per-domain queues.
@@ -67,7 +68,12 @@ impl ChannelRegistry {
 
     /// Route an item to its channel based on item.routing_domain().
     /// Returns Ok(domain) on success, Err if no channel registered.
-    pub fn route(&mut self, item: Box<dyn QueueItemBehavior>) -> Result<ActivityDomain, String> {
+    ///
+    /// Items are Arc-shared per `[[pass-by-reference-lazy-metadata-with-data]]`
+    /// so multiple consumers (cognition + observers + future per-persona
+    /// channel views) can hold references to the same item; lazy-cached
+    /// derived state on the item is shared across all consumers.
+    pub fn route(&mut self, item: Arc<dyn QueueItemBehavior>) -> Result<ActivityDomain, String> {
         let domain = item.routing_domain();
         match self.channels.get_mut(&domain) {
             Some(queue) => {
@@ -275,8 +281,8 @@ mod tests {
             .as_millis() as u64
     }
 
-    fn boxed_chat(room: Uuid, mentions: bool, priority: f32) -> Box<dyn QueueItemBehavior> {
-        Box::new(ChatQueueItem {
+    fn arc_chat(room: Uuid, mentions: bool, priority: f32) -> Arc<dyn QueueItemBehavior> {
+        Arc::new(ChatQueueItem {
             id: Uuid::new_v4(),
             room_id: room,
             content: format!("Message p={priority}"),
@@ -292,8 +298,8 @@ mod tests {
         })
     }
 
-    fn boxed_voice() -> Box<dyn QueueItemBehavior> {
-        Box::new(VoiceQueueItem {
+    fn arc_voice() -> Arc<dyn QueueItemBehavior> {
+        Arc::new(VoiceQueueItem {
             id: Uuid::new_v4(),
             room_id: Uuid::new_v4(),
             content: "Voice".into(),
@@ -322,12 +328,12 @@ mod tests {
         let mut registry = ChannelRegistry::new();
         let room = Uuid::new_v4();
 
-        let domain = registry.route(boxed_chat(room, false, 0.5)).unwrap();
+        let domain = registry.route(arc_chat(room, false, 0.5)).unwrap();
         assert_eq!(domain, ActivityDomain::Chat);
         assert_eq!(registry.get(ActivityDomain::Chat).unwrap().size(), 1);
         assert_eq!(registry.get(ActivityDomain::Audio).unwrap().size(), 0);
 
-        let domain = registry.route(boxed_voice()).unwrap();
+        let domain = registry.route(arc_voice()).unwrap();
         assert_eq!(domain, ActivityDomain::Audio);
         assert_eq!(registry.get(ActivityDomain::Audio).unwrap().size(), 1);
     }
@@ -337,9 +343,9 @@ mod tests {
         let mut registry = ChannelRegistry::new();
         let room = Uuid::new_v4();
 
-        registry.route(boxed_chat(room, false, 0.5)).unwrap();
-        registry.route(boxed_chat(room, false, 0.7)).unwrap();
-        registry.route(boxed_voice()).unwrap();
+        registry.route(arc_chat(room, false, 0.5)).unwrap();
+        registry.route(arc_chat(room, false, 0.7)).unwrap();
+        registry.route(arc_voice()).unwrap();
 
         assert_eq!(registry.total_size(), 3);
     }
@@ -351,10 +357,10 @@ mod tests {
 
         assert!(!registry.has_urgent_work());
 
-        registry.route(boxed_chat(room, false, 0.5)).unwrap();
+        registry.route(arc_chat(room, false, 0.5)).unwrap();
         assert!(!registry.has_urgent_work()); // No mentions
 
-        registry.route(boxed_voice()).unwrap();
+        registry.route(arc_voice()).unwrap();
         assert!(registry.has_urgent_work()); // Voice is always urgent
     }
 
@@ -363,8 +369,8 @@ mod tests {
         let mut registry = ChannelRegistry::new();
         let room = Uuid::new_v4();
 
-        registry.route(boxed_chat(room, false, 0.5)).unwrap();
-        registry.route(boxed_voice()).unwrap();
+        registry.route(arc_chat(room, false, 0.5)).unwrap();
+        registry.route(arc_voice()).unwrap();
 
         let status = registry.status();
         assert_eq!(status.total_size, 2);
@@ -380,9 +386,9 @@ mod tests {
         let room = Uuid::new_v4();
 
         // Add chat first (non-urgent)
-        registry.route(boxed_chat(room, false, 0.5)).unwrap();
+        registry.route(arc_chat(room, false, 0.5)).unwrap();
         // Add voice (urgent)
-        registry.route(boxed_voice()).unwrap();
+        registry.route(arc_voice()).unwrap();
 
         // Service cycle should return voice first (urgent)
         let result = registry.service_cycle(&mut state);
@@ -407,7 +413,7 @@ mod tests {
         let room = Uuid::new_v4();
 
         // Low priority chat
-        registry.route(boxed_chat(room, false, 0.3)).unwrap();
+        registry.route(arc_chat(room, false, 0.3)).unwrap();
 
         // Active mood — should engage with everything
         let result = registry.service_cycle(&mut state);
@@ -416,7 +422,7 @@ mod tests {
         // Force overwhelmed: compute_budget < 0.2 triggers Overwhelmed in calculate_mood()
         // (can't just set mood directly since service_cycle calls calculate_mood)
         state.compute_budget = 0.1;
-        registry.route(boxed_chat(room, false, 0.3)).unwrap();
+        registry.route(arc_chat(room, false, 0.3)).unwrap();
 
         let result = registry.service_cycle(&mut state);
         // Overwhelmed skips low priority (0.3 < 0.8)
@@ -430,9 +436,9 @@ mod tests {
         let room = Uuid::new_v4();
 
         // 3 messages from same room
-        registry.route(boxed_chat(room, false, 0.5)).unwrap();
-        registry.route(boxed_chat(room, false, 0.7)).unwrap();
-        registry.route(boxed_chat(room, false, 0.3)).unwrap();
+        registry.route(arc_chat(room, false, 0.5)).unwrap();
+        registry.route(arc_chat(room, false, 0.7)).unwrap();
+        registry.route(arc_chat(room, false, 0.3)).unwrap();
 
         assert_eq!(registry.total_size(), 3);
 
@@ -449,8 +455,8 @@ mod tests {
         let mut registry = ChannelRegistry::new();
         let room = Uuid::new_v4();
 
-        registry.route(boxed_chat(room, false, 0.5)).unwrap();
-        registry.route(boxed_voice()).unwrap();
+        registry.route(arc_chat(room, false, 0.5)).unwrap();
+        registry.route(arc_voice()).unwrap();
 
         assert_eq!(registry.total_size(), 2);
 

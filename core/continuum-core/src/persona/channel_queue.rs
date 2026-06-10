@@ -10,6 +10,7 @@
 
 use super::channel_items::{ChatQueueItem, TaskQueueItem};
 use super::channel_types::{ActivityDomain, ChannelStatus, QueueItemBehavior};
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::debug;
 
@@ -28,11 +29,27 @@ pub struct ChannelQueueConfig {
 }
 
 /// Generic queue container — delegates ALL behavioral decisions to items.
+///
+/// Items are held as `Arc<dyn QueueItemBehavior>` so multiple consumers
+/// (cognition + observers + future per-persona channel views) can share
+/// references to the same item. Per
+/// `[[pass-by-reference-lazy-metadata-with-data]]`: items are
+/// immutable after enqueue; lazy-cached derived state (embedding,
+/// RAG chunks, future STT/video decode) rides on the item itself as
+/// `OnceLock<Arc<T>>` cells, so the first consumer that demands the
+/// decoded form triggers compute and every subsequent consumer gets
+/// the cached Arc clone.
+///
+/// Consolidation produces NEW Arc'd items (see `consolidate_chat_group`
+/// / `consolidate_task_group`); originals are dropped along with the
+/// old `items` vec when `consolidate_rebuild` swaps in the new list,
+/// which is sound because Arc refcounts drop only when the LAST
+/// consumer releases.
 pub struct ChannelQueue {
     domain: ActivityDomain,
     name: String,
     max_size: usize,
-    items: Vec<Box<dyn QueueItemBehavior>>,
+    items: Vec<Arc<dyn QueueItemBehavior>>,
 }
 
 impl ChannelQueue {
@@ -52,7 +69,7 @@ impl ChannelQueue {
     /// Add item to this channel's queue.
     /// Sorts by effective_priority. If over capacity, kicks items that allow it
     /// (lowest kick_resistance first).
-    pub fn enqueue(&mut self, item: Box<dyn QueueItemBehavior>) {
+    pub fn enqueue(&mut self, item: Arc<dyn QueueItemBehavior>) {
         self.items.push(item);
         self.sort();
 
@@ -137,7 +154,7 @@ impl ChannelQueue {
         }
 
         // Phase 2: build consolidated items
-        let mut consolidated_items: Vec<Box<dyn QueueItemBehavior>> = Vec::new();
+        let mut consolidated_items: Vec<Arc<dyn QueueItemBehavior>> = Vec::new();
         let mut all_consumed: Vec<bool> = vec![false; self.items.len()];
 
         for (anchor_idx, group_indices) in &groups {
@@ -170,7 +187,7 @@ impl ChannelQueue {
 
         // Phase 3: rebuild items list
         let old_items = std::mem::take(&mut self.items);
-        let mut new_items: Vec<Box<dyn QueueItemBehavior>> = Vec::new();
+        let mut new_items: Vec<Arc<dyn QueueItemBehavior>> = Vec::new();
 
         // Add unconsumed items (singletons)
         for (i, item) in old_items.into_iter().enumerate() {
@@ -191,7 +208,7 @@ impl ChannelQueue {
         &self,
         anchor_idx: usize,
         group_indices: &[usize],
-    ) -> Option<Box<dyn QueueItemBehavior>> {
+    ) -> Option<Arc<dyn QueueItemBehavior>> {
         let anchor = self.items[anchor_idx]
             .as_any()
             .downcast_ref::<ChatQueueItem>()?;
@@ -200,7 +217,7 @@ impl ChannelQueue {
             .filter_map(|&idx| self.items[idx].as_any().downcast_ref::<ChatQueueItem>())
             .collect();
 
-        Some(Box::new(anchor.consolidate_with_items(&others)))
+        Some(Arc::new(anchor.consolidate_with_items(&others)))
     }
 
     /// Consolidate a group of task items
@@ -208,7 +225,7 @@ impl ChannelQueue {
         &self,
         anchor_idx: usize,
         group_indices: &[usize],
-    ) -> Option<Box<dyn QueueItemBehavior>> {
+    ) -> Option<Arc<dyn QueueItemBehavior>> {
         let anchor = self.items[anchor_idx]
             .as_any()
             .downcast_ref::<TaskQueueItem>()?;
@@ -217,7 +234,7 @@ impl ChannelQueue {
             .filter_map(|&idx| self.items[idx].as_any().downcast_ref::<TaskQueueItem>())
             .collect();
 
-        Some(Box::new(anchor.consolidate_with_items(&others)))
+        Some(Arc::new(anchor.consolidate_with_items(&others)))
     }
 
     // =========================================================================
@@ -239,8 +256,17 @@ impl ChannelQueue {
         self.items.len()
     }
 
-    /// Look at the highest-priority item without removing it
-    pub fn peek(&self) -> Option<&dyn QueueItemBehavior> {
+    /// Look at the highest-priority item without removing it.
+    /// Returns `&Arc<dyn>` so callers can clone for shared reference if
+    /// needed without removing from the queue.
+    pub fn peek(&self) -> Option<&Arc<dyn QueueItemBehavior>> {
+        self.items.first()
+    }
+
+    /// Look at the highest-priority item as a trait-object reference
+    /// (no Arc handle). Cheap accessor for callers that only need to
+    /// read item state.
+    pub fn peek_ref(&self) -> Option<&dyn QueueItemBehavior> {
         self.items.first().map(|i| i.as_ref())
     }
 
@@ -254,7 +280,7 @@ impl ChannelQueue {
     }
 
     /// Remove and return the highest-priority item
-    pub fn pop(&mut self) -> Option<Box<dyn QueueItemBehavior>> {
+    pub fn pop(&mut self) -> Option<Arc<dyn QueueItemBehavior>> {
         if self.items.is_empty() {
             return None;
         }
@@ -318,8 +344,8 @@ mod tests {
         })
     }
 
-    fn boxed_chat(room: Uuid, mentions: bool, priority: f32) -> Box<dyn QueueItemBehavior> {
-        Box::new(ChatQueueItem {
+    fn arc_chat(room: Uuid, mentions: bool, priority: f32) -> Arc<dyn QueueItemBehavior> {
+        Arc::new(ChatQueueItem {
             id: Uuid::new_v4(),
             room_id: room,
             content: format!("Message p={priority}"),
@@ -335,8 +361,8 @@ mod tests {
         })
     }
 
-    fn boxed_voice() -> Box<dyn QueueItemBehavior> {
-        Box::new(VoiceQueueItem {
+    fn arc_voice() -> Arc<dyn QueueItemBehavior> {
+        Arc::new(VoiceQueueItem {
             id: Uuid::new_v4(),
             room_id: Uuid::new_v4(),
             content: "Voice".into(),
@@ -356,9 +382,9 @@ mod tests {
         let mut queue = make_chat_queue();
         let room = Uuid::new_v4();
 
-        queue.enqueue(boxed_chat(room, false, 0.3));
-        queue.enqueue(boxed_chat(room, false, 0.9));
-        queue.enqueue(boxed_chat(room, false, 0.5));
+        queue.enqueue(arc_chat(room, false, 0.3));
+        queue.enqueue(arc_chat(room, false, 0.9));
+        queue.enqueue(arc_chat(room, false, 0.5));
 
         assert_eq!(queue.size(), 3);
         assert!(queue.has_work());
@@ -385,13 +411,13 @@ mod tests {
         });
         let room = Uuid::new_v4();
 
-        queue.enqueue(boxed_chat(room, false, 0.9));
-        queue.enqueue(boxed_chat(room, false, 0.5));
-        queue.enqueue(boxed_chat(room, false, 0.3));
+        queue.enqueue(arc_chat(room, false, 0.9));
+        queue.enqueue(arc_chat(room, false, 0.5));
+        queue.enqueue(arc_chat(room, false, 0.3));
         assert_eq!(queue.size(), 3);
 
         // Adding a 4th should kick the lowest priority
-        queue.enqueue(boxed_chat(room, false, 0.7));
+        queue.enqueue(arc_chat(room, false, 0.7));
         assert_eq!(queue.size(), 3); // Still 3 after kick
     }
 
@@ -403,9 +429,9 @@ mod tests {
             name: "audio".into(),
         });
 
-        queue.enqueue(boxed_voice());
-        queue.enqueue(boxed_voice());
-        queue.enqueue(boxed_voice()); // Over capacity
+        queue.enqueue(arc_voice());
+        queue.enqueue(arc_voice());
+        queue.enqueue(arc_voice()); // Over capacity
 
         // Voice items can't be kicked, so queue stays oversized
         assert_eq!(queue.size(), 3);
@@ -416,10 +442,10 @@ mod tests {
         let mut queue = make_chat_queue();
         let room = Uuid::new_v4();
 
-        queue.enqueue(boxed_chat(room, false, 0.5));
+        queue.enqueue(arc_chat(room, false, 0.5));
         assert!(!queue.has_urgent_work());
 
-        queue.enqueue(boxed_chat(room, true, 0.8)); // mention = urgent
+        queue.enqueue(arc_chat(room, true, 0.8)); // mention = urgent
         assert!(queue.has_urgent_work());
     }
 
@@ -429,10 +455,10 @@ mod tests {
         let room = Uuid::new_v4();
         let other_room = Uuid::new_v4();
 
-        queue.enqueue(boxed_chat(room, false, 0.5));
-        queue.enqueue(boxed_chat(room, false, 0.7));
-        queue.enqueue(boxed_chat(room, false, 0.3));
-        queue.enqueue(boxed_chat(other_room, false, 0.6));
+        queue.enqueue(arc_chat(room, false, 0.5));
+        queue.enqueue(arc_chat(room, false, 0.7));
+        queue.enqueue(arc_chat(room, false, 0.3));
+        queue.enqueue(arc_chat(other_room, false, 0.6));
 
         assert_eq!(queue.size(), 4);
 
@@ -447,8 +473,8 @@ mod tests {
         let mut queue = make_chat_queue();
         let room = Uuid::new_v4();
 
-        queue.enqueue(boxed_chat(room, false, 0.3));
-        queue.enqueue(boxed_chat(room, false, 0.9));
+        queue.enqueue(arc_chat(room, false, 0.3));
+        queue.enqueue(arc_chat(room, false, 0.9));
 
         let p = queue.peek_priority();
         assert!((p - 0.9).abs() < 0.05, "Expected ~0.9, got {p}");
@@ -464,7 +490,7 @@ mod tests {
         assert!(!status.has_work);
         assert!(!status.has_urgent);
 
-        queue.enqueue(boxed_chat(room, true, 0.8));
+        queue.enqueue(arc_chat(room, true, 0.8));
         let status = queue.status();
         assert_eq!(status.size, 1);
         assert!(status.has_work);

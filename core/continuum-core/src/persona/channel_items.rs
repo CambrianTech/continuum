@@ -632,7 +632,7 @@ pub enum ChannelEnqueueRequest {
 impl ChannelEnqueueRequest {
     /// Convert IPC request to a boxed queue item.
     /// Returns Err if UUIDs are invalid.
-    pub fn to_queue_item(&self) -> Result<Box<dyn QueueItemBehavior>, String> {
+    pub fn to_queue_item(&self) -> Result<std::sync::Arc<dyn QueueItemBehavior>, String> {
         let now = now_ms();
         match self {
             ChannelEnqueueRequest::Voice {
@@ -646,7 +646,7 @@ impl ChannelEnqueueRequest {
                 timestamp,
                 priority,
                 media,
-            } => Ok(Box::new(VoiceQueueItem {
+            } => Ok(std::sync::Arc::new(VoiceQueueItem {
                 id: parse_uuid(id, "id")?,
                 room_id: parse_uuid(room_id, "room_id")?,
                 content: content.clone(),
@@ -670,7 +670,7 @@ impl ChannelEnqueueRequest {
                 timestamp,
                 priority,
                 media,
-            } => Ok(Box::new(ChatQueueItem {
+            } => Ok(std::sync::Arc::new(ChatQueueItem {
                 id: parse_uuid(id, "id")?,
                 room_id: parse_uuid(room_id, "room_id")?,
                 content: content.clone(),
@@ -693,7 +693,7 @@ impl ChannelEnqueueRequest {
                 priority,
                 is_review,
                 timestamp,
-            } => Ok(Box::new(CodeQueueItem {
+            } => Ok(std::sync::Arc::new(CodeQueueItem {
                 id: parse_uuid(id, "id")?,
                 room_id: parse_uuid(room_id, "room_id")?,
                 persona_id: parse_uuid(persona_id, "persona_id")?,
@@ -730,7 +730,7 @@ impl ChannelEnqueueRequest {
                     .map(|s| parse_uuid(s, "blocked_by"))
                     .collect();
 
-                Ok(Box::new(TaskQueueItem {
+                Ok(std::sync::Arc::new(TaskQueueItem {
                     id: parse_uuid(id, "id")?,
                     task_id: parse_uuid(task_id, "task_id")?,
                     assignee_id: parse_uuid(assignee_id, "assignee_id")?,
