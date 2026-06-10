@@ -279,8 +279,22 @@ impl AircInferenceTransport for AircLiveTransport {
             // transport break + correlation drop. Classify by
             // substring rather than swallow the variant — the
             // distinction matters for the coordinator's retry policy.
+            //
+            // airc-lib's deadline-elapsed message is literally
+            // "command deadline elapsed (correlation_id=...)" today —
+            // caught by `architecture_cross_grid_chaos.rs` when the
+            // original `timeout`/`timed out` substrings missed it and
+            // mis-classified the timeout as a generic Transport error.
+            // The phrase list below is the canonical answer to "what
+            // does airc-lib actually emit when a deadline fires?" and
+            // grows here, not in every consumer, when airc-lib's
+            // message changes.
             let message = format!("{e}");
-            if message.contains("timeout") || message.contains("timed out") {
+            let is_deadline = message.contains("timeout")
+                || message.contains("timed out")
+                || message.contains("deadline elapsed")
+                || message.contains("deadline exceeded");
+            if is_deadline {
                 RemoteInferenceError::Timeout {
                     elapsed_ms: self.deadline.as_millis() as u64,
                 }
