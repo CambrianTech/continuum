@@ -195,7 +195,15 @@ pub fn apply_subscribe(
 ///   mismatch in either direction sends.
 /// - Client's revision == current revision: skip — the renderer is
 ///   already at the latest.
-fn should_skip(current: &Arc<StateEnvelope>, kind: &str, last_seen: &[KindRevision]) -> bool {
+///
+/// `pub(crate)` so [`crate::observer::apply_observe`] can reuse the
+/// identical rule — there is ONE skip rule across Subscribe and
+/// Observe per positron protocol §"Observers resync identically".
+pub(crate) fn should_skip(
+    current: &Arc<StateEnvelope>,
+    kind: &str,
+    last_seen: &[KindRevision],
+) -> bool {
     let Some(current_rev) = current.revision else {
         return false;
     };
