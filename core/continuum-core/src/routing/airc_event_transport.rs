@@ -243,6 +243,7 @@ impl AircEventTransport {
         )
     }
 
+
     // ─── airc-touching methods (covered by LAN-loopback in #188) ──
 
     /// Send a subscribe request and return a typed
