@@ -7694,7 +7694,7 @@ dependencies = [
 
 [[package]]
 name = "positron-core"
-version = "0.0.1"
+version = "0.1.1"
 dependencies = [
  "serde",
  "serde_json",
