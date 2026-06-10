@@ -7,9 +7,15 @@ description = "Continuum's positron substrate — produces typed StateEnvelopes 
 [dependencies]
 # positron-core (the cross-language UI contract — substrate-produces-state /
 # host-consumes-it; AI observers perceive the same ViewState humans see).
-# Path dep until positron tags v0.1; switch to git rev pin on first cut.
-# Operator must have both repos cloned side-by-side under the same parent dir.
-positron-core = { path = "../../../positron/positron-core" }
+# Pinned to the v0.1.1 git tag. The path dep was deliberately temporary per
+# the original comment ("Path dep until positron tags v0.1; switch to git rev
+# pin on first cut"). v0.1.1 is cut. Without the pin, the build silently
+# follows whatever positron checkout lives under the operator's side-by-side
+# parent dir; that ambiguity is what produced #1601's compile break (slice
+# 2A's head compiled only against a stale local checkout — a tagged dep would
+# have surfaced the protocol drift at `cargo check` instead of as a sentinel
+# BLOCK at review time).
+positron-core = { git = "https://github.com/CambrianTech/positron", tag = "v0.1.1" }
 
 serde = { workspace = true }
 serde_json = { workspace = true }
