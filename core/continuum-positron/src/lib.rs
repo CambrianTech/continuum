@@ -64,14 +64,18 @@
 
 pub mod cache;
 pub mod chat;
+pub mod dispatch;
 pub mod kinds;
+pub mod observer;
 pub mod revisions;
 pub mod session;
 pub mod state;
 
 pub use cache::SubstrateStateCache;
 pub use chat::{ChatMessageView, ChatViewState, PersonaSlotView, SenderKind};
+pub use dispatch::{apply_command, CommandDispatch};
 pub use kinds::{KnownKind, RevisionKey};
+pub use observer::{apply_observe, ObserverRegistration};
 pub use revisions::Revisions;
 pub use session::{apply_subscribe, Subscription};
 pub use state::StateBuilder;
