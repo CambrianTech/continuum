@@ -96,11 +96,17 @@ fn scan_for_violations(src_root: &Path) -> Vec<Violation> {
         };
         for (idx, raw_line) in content.lines().enumerate() {
             let trimmed = raw_line.trim_start();
-            // Strip a leading `pub ` so `pub use crate::runtime::<sub>::*`
-            // (re-export from an intermediate module) is also caught — that
-            // shape leaks the same engine-internal path through the consumer's
-            // public surface.
-            let trimmed = trimmed.trim_start_matches("pub ");
+            // Strip any leading visibility modifier so all four shapes are
+            // caught: `use ...`, `pub use ...`, `pub(crate) use ...`,
+            // `pub(super) use ...`. Each one leaks the same engine-internal
+            // path through the consumer's (re-)export surface. Order matters:
+            // strip the longer `pub(crate)` / `pub(super)` forms first so
+            // they don't fall through to the shorter `pub ` matcher with a
+            // leftover `(crate) ` / `(super) ` prefix.
+            let trimmed = trimmed
+                .trim_start_matches("pub(crate) ")
+                .trim_start_matches("pub(super) ")
+                .trim_start_matches("pub ");
             // Match both `use crate::runtime::<sub>::*` and
             // `use super::runtime::<sub>::*` (the latter is unusual
             // but possible from intermediate modules).
@@ -262,10 +268,15 @@ fn every_runtime_submodule_is_tracked() {
         let Some(rest) = line.strip_prefix("pub mod ") else {
             continue;
         };
-        let Some(name) = rest.split(';').next() else {
+        // Take the first whitespace-delimited token, then strip a trailing
+        // `;`. This handles `pub mod X;`, `pub mod X; // comment`, AND the
+        // inline `pub mod X { ... }` shape (mod with body) — extracting just
+        // `X` in all three cases. Plain `split(';')` alone would yield
+        // `X { ... }` for the inline-body case.
+        let Some(name) = rest.split_whitespace().next() else {
             continue;
         };
-        let name = name.trim();
+        let name = name.trim_end_matches(';');
         if name.is_empty() {
             continue;
         }
