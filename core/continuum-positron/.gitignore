@@ -1,0 +1,4 @@
+# ts-rs generated bindings — substrate types are source of truth (src/*.rs).
+# Generated per cargo test; never hand-edited; not part of the crate's
+# wire-stable source.
+/bindings/

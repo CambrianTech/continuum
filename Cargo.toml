@@ -16,6 +16,7 @@ members = [
     "core/archive",
     "core/continuum-core",
     "core/continuum-orm-derive",
+    "core/continuum-positron",
     "core/inference-grpc",
     "core/jtag-mcp",
     "core/livekit-bridge",
