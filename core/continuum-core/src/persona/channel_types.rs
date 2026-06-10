@@ -287,6 +287,19 @@ impl CoherentUnit {
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
+
+    /// Temporal span of the burst (largest `item.timestamp - anchor`).
+    /// Lifted into a method so per-domain dispatch tables can construct
+    /// `CoherentInput::Other` for un-typed-view domains without
+    /// re-matching the enum.
+    pub fn window_span_ms(&self) -> u64 {
+        match self {
+            CoherentUnit::Chat { window_span_ms, .. }
+            | CoherentUnit::Voice { window_span_ms, .. }
+            | CoherentUnit::Task { window_span_ms, .. }
+            | CoherentUnit::Background { window_span_ms, .. } => *window_span_ms,
+        }
+    }
 }
 
 /// Result from service_cycle() — what the TS loop should do next

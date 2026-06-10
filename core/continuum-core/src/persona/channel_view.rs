@@ -147,6 +147,17 @@ pub trait PersonaChannelView: Send + Sync {
 /// flag. Two personas viewing the SAME burst can get different
 /// CoherentInput values for that field — the per-persona perspective
 /// in action.
+///
+/// ## Trait contract: only handles `CoherentUnit::Chat`
+///
+/// Per `[[no-fallbacks-ever]]`: this view is responsible ONLY for the
+/// Chat domain. The dispatch layer (`ChannelRegistry::interpret_for_domain`)
+/// MUST route Voice/Task/Background units to a different view (or to
+/// the typed `CoherentInput::Other` construction inline). Calling
+/// `ChatChannelView::interpret` on a non-Chat unit is a programmer
+/// error and panics — silent fallthrough to `Other` was the original
+/// shape but adversarial review flagged it as a fallback that hides
+/// dispatch bugs.
 pub struct ChatChannelView;
 
 impl PersonaChannelView for ChatChannelView {
@@ -232,16 +243,21 @@ impl PersonaChannelView for ChatChannelView {
                     burst_embedding: burst_embedding.unwrap_or_else(|| Arc::new(Vec::new())),
                 })
             }
-            other => CoherentInput::Other {
-                domain: other.domain(),
-                item_count: other.len(),
-                window_span_ms: match other {
-                    CoherentUnit::Chat { window_span_ms, .. }
-                    | CoherentUnit::Voice { window_span_ms, .. }
-                    | CoherentUnit::Task { window_span_ms, .. }
-                    | CoherentUnit::Background { window_span_ms, .. } => *window_span_ms,
-                },
-            },
+            // Programmer-error guard, NOT a fallback. The dispatch
+            // contract (channel_registry::interpret_for_domain) MUST
+            // route non-Chat units away from this view. Reaching this
+            // branch means the registry's match is broken — silent
+            // construction of `CoherentInput::Other` here would mask
+            // the dispatch bug.
+            other => unreachable!(
+                "ChatChannelView::interpret called on non-Chat unit ({:?}). \
+                 This is a registry dispatch bug — check \
+                 ChannelRegistry::interpret_for_domain. \
+                 Per [[no-fallbacks-ever]], the Other variant must be \
+                 constructed directly by the dispatcher, not via this \
+                 view falling through.",
+                other.domain()
+            ),
         }
     }
 }
@@ -406,24 +422,22 @@ mod tests {
         );
     }
 
-    /// proves: non-chat domains fall through to CoherentInput::Other
-    /// — ChatChannelView only handles Chat; future Voice/Task/Background
-    /// channel views replace this branch with their own typed shapes
+    /// proves: ChatChannelView is responsible ONLY for Chat units.
+    /// Calling it on a non-Chat unit panics with a programmer-error
+    /// message — adversarial review (Reviewer 1 C4 / Reviewer 3 C6)
+    /// flagged the prior silent-fallthrough-to-Other shape as a
+    /// `[[no-fallbacks-ever]]` violation. The dispatch layer
+    /// (`ChannelRegistry::interpret_for_domain`) now constructs
+    /// `CoherentInput::Other` directly for non-Chat domains.
     #[test]
-    fn chat_view_on_voice_unit_returns_other() {
+    #[should_panic(expected = "ChatChannelView::interpret called on non-Chat unit")]
+    fn chat_view_panics_on_non_chat_unit() {
         let burst = CoherentUnit::Voice {
             items: Vec::new(),
             window_span_ms: 0,
         };
 
         let view = ChatChannelView;
-        let input = view.interpret(&burst, Uuid::new_v4(), "Maya");
-
-        match input {
-            CoherentInput::Other { domain, .. } => {
-                assert_eq!(domain, ActivityDomain::Audio);
-            }
-            other => panic!("expected CoherentInput::Other, got {other:?}"),
-        }
+        let _ = view.interpret(&burst, Uuid::new_v4(), "Maya");
     }
 }
