@@ -69,8 +69,8 @@
 //! - Verdict-string compression at the wire crossing. The substrate
 //!   carries `Verdict::Forbidden { reason }` typed end-to-end inside
 //!   one process, but `AircCommandResponse::Error { message: String }`
-//!   flattens to prose. That's a known cost — closing it is a
-//!   follow-up PR (typed `AircCommandResponse::Verdict { ... }`).
+//!   flattens to prose. That's a known cost — closing it is task #243
+//!   (typed `AircCommandResponse::Verdict { ... }` variant).
 //!
 //! ## Tag
 //!
@@ -311,10 +311,10 @@ async fn hostile_peer_dispatch_is_refused_with_typed_forbidden_verdict() {
     // where `{reason}` uses ForbiddenReason's thiserror Display. For
     // UnknownPeer that's "caller peer not enrolled in this
     // substrate" — so we assert on the Display prose, not the
-    // variant name. A future typed `AircCommandResponse::Verdict`
-    // variant (tracked follow-up; same antipattern PR #1593 closed
-    // for the deadline classifier) would let us match the variant
-    // directly; today's wire compression is prose.
+    // variant name. Task #243 (typed `AircCommandResponse::Verdict`
+    // variant; same antipattern PR #1593 closed for the deadline
+    // classifier) would let us match the variant directly; today's
+    // wire compression is prose.
     assert!(
         message.contains("not enrolled"),
         "the Forbidden reason must surface to the wire — caller should \
