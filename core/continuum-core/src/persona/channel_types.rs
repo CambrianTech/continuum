@@ -58,7 +58,7 @@ pub const DOMAIN_PRIORITY_ORDER: &[ActivityDomain] = &[
 ///
 /// Default implementations provide sensible RTOS-style behavior.
 /// Subclasses override only what differs (e.g., Voice: always urgent, never kicked).
-pub trait QueueItemBehavior: Send + Sync + Any {
+pub trait QueueItemBehavior: Send + Sync + Any + std::fmt::Debug {
     /// Runtime type discriminator (e.g., "voice", "chat", "task")
     fn item_type(&self) -> &'static str;
 
@@ -199,6 +199,94 @@ pub struct ChannelRegistryStatus {
     pub total_size: u32,
     pub has_urgent_work: bool,
     pub has_work: bool,
+}
+
+//=============================================================================
+// COHERENT UNIT — one batch per channel-tick, the per-channel-typed shape
+// cognition's analyze() consumes
+//=============================================================================
+
+/// One coherent batch drained from a channel per service cycle. Each
+/// variant carries the domain-specific metadata cognition needs to
+/// reason about it WITHOUT re-traversing the items.
+///
+/// Items are held as `Arc<dyn QueueItemBehavior>` per
+/// `[[pass-by-reference-lazy-metadata-with-data]]`: lazy-cached derived
+/// state (e.g. `ChatQueueItem::embedding()`) lives on each Arc-shared
+/// item, so consumers across N personas share compute. Consumers that
+/// need domain-specific access downcast individual items via
+/// `as_any().downcast_ref::<ChatQueueItem>()`; `&self` is enough to
+/// drive the lazy cells, no `Arc<ChatQueueItem>` needed.
+///
+/// Per `[[cognition-batches-per-channel-adapter]]`: cognition fires
+/// `analyze()` ONCE per cycle with a `Vec<CoherentUnit>` (one per
+/// channel-with-work), not per item. CBAR catch-up doesn't compound;
+/// the slowest persona on the LCD tier sees the CURRENT batched state
+/// per cycle, not a backlog of every missed item.
+///
+/// Per `[[strong-typing-across-boundaries]]`: variants discriminate on
+/// `ActivityDomain` at compile-time so cognition's match is exhaustive.
+/// When the next channel type lands (Code, future Video) a new variant
+/// is added and every consumer's match is forced to extend coverage.
+#[derive(Debug, Clone)]
+pub enum CoherentUnit {
+    /// A burst of chat items from one room within a temporal window.
+    /// `primary_room` is the room shared by all items in this burst
+    /// (the queue's consolidation enforces same-room grouping).
+    Chat {
+        items: Vec<std::sync::Arc<dyn QueueItemBehavior>>,
+        window_span_ms: u64,
+        primary_room: uuid::Uuid,
+    },
+    /// A voice clip ready for processing. Voice never consolidates
+    /// (one item per burst); the variant still exists so cognition
+    /// dispatches uniformly across domains.
+    Voice {
+        items: Vec<std::sync::Arc<dyn QueueItemBehavior>>,
+        window_span_ms: u64,
+    },
+    /// A task batch — related work items consolidated by the
+    /// `should_consolidate_with` predicate.
+    Task {
+        items: Vec<std::sync::Arc<dyn QueueItemBehavior>>,
+        window_span_ms: u64,
+    },
+    /// Background work — periodic checks, low-urgency maintenance.
+    Background {
+        items: Vec<std::sync::Arc<dyn QueueItemBehavior>>,
+        window_span_ms: u64,
+    },
+}
+
+impl CoherentUnit {
+    /// Which `ActivityDomain` this batch came from.
+    pub fn domain(&self) -> ActivityDomain {
+        match self {
+            CoherentUnit::Chat { .. } => ActivityDomain::Chat,
+            CoherentUnit::Voice { .. } => ActivityDomain::Audio,
+            CoherentUnit::Task { .. } => ActivityDomain::Code,
+            CoherentUnit::Background { .. } => ActivityDomain::Background,
+        }
+    }
+
+    /// Number of items in this batch. Useful for the demand-pull
+    /// architecture proof: cognition's `analyze()` is called ONCE
+    /// per batch, regardless of `len()`.
+    pub fn len(&self) -> usize {
+        match self {
+            CoherentUnit::Chat { items, .. }
+            | CoherentUnit::Voice { items, .. }
+            | CoherentUnit::Task { items, .. }
+            | CoherentUnit::Background { items, .. } => items.len(),
+        }
+    }
+
+    /// `true` iff this batch has no items. `drain_batch` returns `None`
+    /// for empty queues so this is rarely true in practice, but the
+    /// predicate keeps callers' match arms honest.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
 }
 
 /// Result from service_cycle() — what the TS loop should do next

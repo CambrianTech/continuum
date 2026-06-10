@@ -9,7 +9,7 @@
 //! One ChannelQueue per ActivityDomain. The CNS iterates channels in priority order.
 
 use super::channel_items::{ChatQueueItem, TaskQueueItem};
-use super::channel_types::{ActivityDomain, ChannelStatus, QueueItemBehavior};
+use super::channel_types::{ActivityDomain, ChannelStatus, CoherentUnit, QueueItemBehavior};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::debug;
@@ -289,6 +289,113 @@ impl ChannelQueue {
         Some(self.items.remove(0))
     }
 
+    /// Drain a coherent batch from this channel: run consolidation,
+    /// then pull items within `window_ms` of the highest-priority
+    /// anchor into a typed `CoherentUnit`. Returns `None` when the
+    /// queue is empty.
+    ///
+    /// This is the cognition-side consumption primitive per
+    /// `[[cognition-batches-per-channel-adapter]]`: one drain per
+    /// channel-tick yields one `CoherentUnit` that cognition's
+    /// `analyze()` consumes ONCE — not N times for N items. Items
+    /// within the window come out together; items outside it stay
+    /// in the queue for the next cycle (RTOS catch-up doesn't
+    /// compound — slow personas see CURRENT state, not a backlog).
+    ///
+    /// Items are returned as `Vec<Arc<dyn QueueItemBehavior>>` to
+    /// preserve the lazy-cell sharing per
+    /// `[[pass-by-reference-lazy-metadata-with-data]]` — consumers
+    /// across multiple personas in the same room share the same
+    /// items and thus the same lazy-cached derived state (embedding,
+    /// future STT, etc.).
+    ///
+    /// The `window_ms` is anchored to the highest-priority item's
+    /// timestamp; this mirrors `PersonaInbox::drain_frame`'s shape so
+    /// the cognition layer sees one consistent "burst boundary"
+    /// semantic across both the legacy inbox and the per-channel
+    /// queues.
+    pub fn drain_batch(&mut self, window_ms: u64) -> Option<CoherentUnit> {
+        // Run the existing item-driven consolidation FIRST so the
+        // drain operates on already-merged items. Items that decided
+        // to merge (per `should_consolidate_with`) collapse into new
+        // Arc'd consolidated items before the window-based pull.
+        self.consolidate();
+
+        if self.items.is_empty() {
+            return None;
+        }
+
+        // Sort by current effective priority (aging matters — items
+        // that have waited get boosted toward the front).
+        self.sort();
+
+        // Anchor = highest-priority item. Its timestamp defines the
+        // window's pivot.
+        let anchor_ts = self.items[0].timestamp();
+        let window_lo = anchor_ts.saturating_sub(window_ms);
+        let window_hi = anchor_ts.saturating_add(window_ms);
+
+        // Partition: items inside the window come out as the batch;
+        // items outside stay in the queue.
+        let mut in_window: Vec<Arc<dyn QueueItemBehavior>> = Vec::new();
+        let mut retained: Vec<Arc<dyn QueueItemBehavior>> = Vec::new();
+        for item in self.items.drain(..) {
+            let ts = item.timestamp();
+            if ts >= window_lo && ts <= window_hi {
+                in_window.push(item);
+            } else {
+                retained.push(item);
+            }
+        }
+        self.items = retained;
+
+        if in_window.is_empty() {
+            return None;
+        }
+
+        // Compute window span. anchor is at index 0 by definition; the
+        // others are bounded by ±window_ms around it.
+        let window_span_ms = in_window
+            .iter()
+            .map(|i| i.timestamp().abs_diff(anchor_ts))
+            .max()
+            .unwrap_or(0);
+
+        // Build the typed CoherentUnit. Each queue is per-domain
+        // (routing enforces it), so we discriminate on `self.domain`.
+        let unit = match self.domain {
+            ActivityDomain::Chat => {
+                // Pull the primary_room from the anchor. Consolidation
+                // guarantees same-room grouping for chat items, so the
+                // anchor's room is the burst's room.
+                let primary_room = in_window
+                    .first()
+                    .and_then(|i| i.as_any().downcast_ref::<ChatQueueItem>())
+                    .map(|c| c.room_id)
+                    .unwrap_or_else(uuid::Uuid::nil);
+                CoherentUnit::Chat {
+                    items: in_window,
+                    window_span_ms,
+                    primary_room,
+                }
+            }
+            ActivityDomain::Audio => CoherentUnit::Voice {
+                items: in_window,
+                window_span_ms,
+            },
+            ActivityDomain::Code => CoherentUnit::Task {
+                items: in_window,
+                window_span_ms,
+            },
+            ActivityDomain::Background => CoherentUnit::Background {
+                items: in_window,
+                window_span_ms,
+            },
+        };
+
+        Some(unit)
+    }
+
     /// Get channel status snapshot
     pub fn status(&self) -> ChannelStatus {
         ChannelStatus {
@@ -420,6 +527,60 @@ mod tests {
         // Adding a 4th should kick the lowest priority
         queue.enqueue(arc_chat(room, false, 0.7));
         assert_eq!(queue.size(), 3); // Still 3 after kick
+    }
+
+    /// proves: cognition-batches-per-channel — one drain returns one
+    /// `CoherentUnit` regardless of how many items match the window.
+    ///
+    /// Enqueue N chat items in the same room within a tight window;
+    /// `drain_batch` must return ONE `CoherentUnit::Chat` containing
+    /// the consolidated post-merge items. Cognition's `analyze()`
+    /// then fires ONCE per cycle on this batch — not N times.
+    #[test]
+    fn drain_batch_returns_one_coherent_unit_for_n_arrivals() {
+        let mut queue = make_chat_queue();
+        let room = Uuid::new_v4();
+
+        // 5 chat items in the same room. ChatQueueItem's
+        // should_consolidate_with returns true for same-room chat,
+        // so consolidate() will collapse them.
+        for priority in [0.3_f32, 0.5, 0.7, 0.4, 0.6] {
+            queue.enqueue(arc_chat(room, false, priority));
+        }
+        assert_eq!(queue.size(), 5);
+
+        // 1-second window — generous enough to catch all items
+        // enqueued back-to-back in the test.
+        let unit = queue.drain_batch(1_000).expect("drain returns Some");
+
+        // The batch carries the typed Chat variant.
+        match unit {
+            CoherentUnit::Chat {
+                ref items,
+                primary_room,
+                ..
+            } => {
+                // After consolidation, the items collapse into the
+                // anchor's consolidated form — 5 originals become 1
+                // post-merge item carrying the others as
+                // `consolidated_context`. The cognition layer
+                // analyzes ONE coherent unit even though 5 raw
+                // messages arrived.
+                assert!(
+                    !items.is_empty(),
+                    "drain returned an empty batch — consolidation should preserve at least the anchor"
+                );
+                assert_eq!(primary_room, room, "primary_room must equal the chat room");
+            }
+            other => panic!("expected CoherentUnit::Chat, got {other:?}"),
+        }
+    }
+
+    /// proves: cognition-batches-per-channel — empty queue returns None
+    #[test]
+    fn drain_batch_on_empty_queue_returns_none() {
+        let mut queue = make_chat_queue();
+        assert!(queue.drain_batch(1_000).is_none());
     }
 
     #[test]
