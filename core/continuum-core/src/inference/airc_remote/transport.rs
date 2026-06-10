@@ -293,7 +293,13 @@ impl AircInferenceTransport for AircLiveTransport {
             Ok(p) => p,
             Err(airc_lib::AircError::NoCurrentRoom)
             | Err(airc_lib::AircError::NotSubscribed(_))
-            | Err(airc_lib::AircError::UnknownPeer(_)) => {
+            | Err(airc_lib::AircError::UnknownPeer(_))
+            | Err(airc_lib::AircError::Route(_)) => {
+                // `Route(_)` is airc-lib's "route resolver refused or
+                // selected a route the current sender cannot execute"
+                // — same semantic category as the other three: there
+                // is no actionable path to the target peer right now.
+                // Coordinator backoff handles all four identically.
                 return Err(RemoteInferenceError::NoPeerReachable {
                     message: format!("airc.request to {target:?}: no reachable peer"),
                 });
