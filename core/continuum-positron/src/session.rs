@@ -244,6 +244,7 @@ mod tests {
                 assert_eq!(e.kind, "chat");
                 assert_eq!(e.revision, Some(7));
             }
+            other => panic!("expected State frame, got {other:?}"),
         }
     }
 
@@ -372,6 +373,7 @@ mod tests {
         assert_eq!(frames.len(), 1, "chat skipped, user-list sent");
         match &frames[0] {
             ServerMessage::State(e) => assert_eq!(e.kind, "user-list"),
+            other => panic!("expected State frame, got {other:?}"),
         }
     }
 
