@@ -119,84 +119,128 @@ impl ChannelQueue {
         self.consolidate_rebuild();
     }
 
-    /// Cleaner consolidation: collect groups, then rebuild in one pass.
+    /// O(N) consolidation via single HashMap-by-key pass.
+    ///
+    /// Replaces the prior O(N²) pairwise `should_consolidate_with`
+    /// check (task #246). The old shape ran N(N-1)/2 vtable calls per
+    /// service tick; on N=500 that's 124,750 calls per tick — the
+    /// dominant cost in the demand-pull architecture proof's wall-clock
+    /// measurement (architecture_demand_pull_cognition.rs).
+    ///
+    /// ## Algorithm
+    ///
+    /// 1. **Single pass**: bucket items by `item.consolidation_key()`.
+    ///    `None` → singleton bucket (kept as-is). `Some(k)` → group
+    ///    bucket keyed by k. O(N) work, O(N) memory.
+    /// 2. **Per-bucket consolidation**: groups with ≥2 items merge via
+    ///    the item-type's typed consolidator. Singletons and lone-key
+    ///    groups pass through.
+    /// 3. **Rebuild**: assemble `new_items` from singletons +
+    ///    consolidated anchors. Sort restores priority order.
+    ///
+    /// Total cost: O(N) hash inserts + O(K) per-group consolidation
+    /// where K is the largest bucket size. Realistic K is bounded by
+    /// arrival burst size (e.g. ~50 same-room messages between ticks),
+    /// not by total inbox.
+    ///
+    /// ## Contract preservation
+    ///
+    /// The legacy `should_consolidate_with` trait method now defaults
+    /// to `a.key() == b.key() && key.is_some()` so existing tests
+    /// asserting the predicate keep passing. New per-type impls
+    /// override `consolidation_key`; the predicate derives for free.
+    ///
+    /// ## Anchor selection
+    ///
+    /// Within each group, the anchor is the LOWEST-INDEX item — same
+    /// semantics as the legacy O(N²) impl's outer-loop-wins behavior.
+    /// Consolidators are called with `(anchor_idx, &member_indices)`
+    /// matching the prior signature.
     fn consolidate_rebuild(&mut self) {
         if self.items.len() <= 1 {
             return;
         }
 
-        let mut consumed = vec![false; self.items.len()];
-        let mut groups: Vec<(usize, Vec<usize>)> = Vec::new(); // (anchor_idx, group_member_indices)
+        use std::collections::HashMap;
 
-        // Phase 1: identify groups
-        for i in 0..self.items.len() {
-            if consumed[i] {
+        // Phase 1: single-pass group-by-key (O(N) hash inserts).
+        // Items with `None` keys are singletons and skip the bucket
+        // dance entirely. For grouped items, the FIRST item per key
+        // becomes the anchor (lowest-index = same anchor selection
+        // semantics as the legacy O(N²) impl's outer-loop).
+        struct Bucket {
+            anchor_idx: usize,
+            members: Vec<usize>,
+        }
+        let mut buckets: HashMap<u64, Bucket> = HashMap::new();
+        for (i, item) in self.items.iter().enumerate() {
+            let Some(key) = item.consolidation_key() else {
                 continue;
-            }
-
-            let mut group: Vec<usize> = Vec::new();
-            #[allow(clippy::needless_range_loop)] // j indexes both consumed[] and self.items[]
-            for j in (i + 1)..self.items.len() {
-                if !consumed[j] && self.items[i].should_consolidate_with(self.items[j].as_ref()) {
-                    group.push(j);
-                    consumed[j] = true;
-                }
-            }
-
-            if !group.is_empty() {
-                consumed[i] = true;
-                groups.push((i, group));
-            }
+            };
+            buckets
+                .entry(key)
+                .and_modify(|b| b.members.push(i))
+                .or_insert(Bucket {
+                    anchor_idx: i,
+                    members: Vec::new(),
+                });
         }
 
-        if groups.is_empty() {
-            return; // Nothing to consolidate
-        }
-
-        // Phase 2: build consolidated items
+        // Phase 2: per-bucket consolidation (only buckets with ≥1
+        // member beyond the anchor actually merge). The same per-type
+        // dispatch as the legacy impl — chat / task / unknown.
         let mut consolidated_items: Vec<Arc<dyn QueueItemBehavior>> = Vec::new();
         let mut all_consumed: Vec<bool> = vec![false; self.items.len()];
 
-        for (anchor_idx, group_indices) in &groups {
-            all_consumed[*anchor_idx] = true;
-            for &idx in group_indices {
+        for bucket in buckets.values() {
+            if bucket.members.is_empty() {
+                // Lone item with a key — no one to consolidate with;
+                // pass through as a singleton. Don't mark consumed so
+                // it flows through Phase 3's pass-through path.
+                continue;
+            }
+
+            // Tentatively mark the whole bucket consumed; if the
+            // per-type consolidator declines (unknown item type), we
+            // un-mark them below so they pass through as singletons.
+            all_consumed[bucket.anchor_idx] = true;
+            for &idx in &bucket.members {
                 all_consumed[idx] = true;
             }
 
-            let item_type = self.items[*anchor_idx].item_type();
-            match item_type {
-                "chat" => {
-                    if let Some(c) = self.consolidate_chat_group(*anchor_idx, group_indices) {
-                        consolidated_items.push(c);
-                    }
-                }
-                "task" => {
-                    if let Some(c) = self.consolidate_task_group(*anchor_idx, group_indices) {
-                        consolidated_items.push(c);
-                    }
-                }
-                _ => {
-                    // Can't consolidate unknown types — they stay unconsumed
-                    all_consumed[*anchor_idx] = false;
-                    for &idx in group_indices {
+            let item_type = self.items[bucket.anchor_idx].item_type();
+            let consolidated = match item_type {
+                "chat" => self.consolidate_chat_group(bucket.anchor_idx, &bucket.members),
+                "task" => self.consolidate_task_group(bucket.anchor_idx, &bucket.members),
+                _ => None,
+            };
+            match consolidated {
+                Some(c) => consolidated_items.push(c),
+                None => {
+                    // Per-type consolidator declined — un-consume the
+                    // bucket so its items pass through as singletons.
+                    all_consumed[bucket.anchor_idx] = false;
+                    for &idx in &bucket.members {
                         all_consumed[idx] = false;
                     }
                 }
             }
         }
 
-        // Phase 3: rebuild items list
-        let old_items = std::mem::take(&mut self.items);
-        let mut new_items: Vec<Arc<dyn QueueItemBehavior>> = Vec::new();
+        if consolidated_items.is_empty() {
+            // No groups merged — nothing to rebuild.
+            return;
+        }
 
-        // Add unconsumed items (singletons)
+        // Phase 3: rebuild items list — singletons + consolidated.
+        let old_items = std::mem::take(&mut self.items);
+        let mut new_items: Vec<Arc<dyn QueueItemBehavior>> =
+            Vec::with_capacity(old_items.len() - consolidated_items.len() + consolidated_items.len());
         for (i, item) in old_items.into_iter().enumerate() {
             if !all_consumed[i] {
                 new_items.push(item);
             }
         }
-
-        // Add consolidated items
         new_items.extend(consolidated_items);
 
         self.items = new_items;

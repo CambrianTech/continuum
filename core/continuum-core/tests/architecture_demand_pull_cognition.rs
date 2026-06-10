@@ -286,14 +286,14 @@ fn service_cycle_multi_window_yields_one_input_with_remainder_deferred() {
 ///
 /// ## Honest bound
 ///
-/// Per Reviewer 2's catch: `consolidate_rebuild` is O(N²) today
-/// (`channel_queue.rs:131-150` — N(N-1)/2 `should_consolidate_with`
-/// vtable calls). That makes "ε" itself super-linear in N. The
-/// `BOUNDED_RATIO = 30.0` here acknowledges this — N=500 vs N=5 may
-/// see ~30× from quadratic consolidation alone — but stays well below
-/// the per-item-explosion counterfactual (100×). A separate
-/// follow-up task tracks O(N) consolidation; once it lands, this
-/// threshold tightens to ~10×.
+/// `consolidate_rebuild` is now O(N) via per-key HashMap bucketing
+/// (task #246). The prior O(N²) `should_consolidate_with` pairwise
+/// check that motivated a 30× ceiling has been replaced; `ε` is now
+/// dominated by linear hash inserts + linear interpret. The
+/// `BOUNDED_RATIO = 10.0` here pins the demand-pull doctrine
+/// honestly: even under measurement noise the ratio should stay
+/// well below per-item-explosion (100×) and under a small constant
+/// factor of true linear scaling.
 ///
 /// We also gate on a minimum t5 of 50µs to avoid the
 /// divide-by-near-zero failure mode where t5 reaches clock resolution
@@ -361,12 +361,11 @@ fn service_cycle_wallclock_independent_of_arrival_count() {
 
     // The honest bound. Per the docstring above:
     // - per-item-explosion counterfactual: ~100× at N=500/N=5
-    // - current O(N²) consolidation: ~30× ceiling realistic
-    // - target after O(N) consolidation lands: <10×
+    // - target with O(N) consolidation (task #246, now live): <10×
     //
-    // 30× distinguishes "we're not per-item" from "we're linear in N",
-    // honestly, given today's consolidation cost.
-    const BOUNDED_RATIO: f64 = 30.0;
+    // 10× distinguishes "true linear scaling under measurement noise"
+    // from "per-item processing" with a comfortable safety margin.
+    const BOUNDED_RATIO: f64 = 10.0;
     let ratio = t500.as_nanos() as f64 / t5.as_nanos() as f64;
 
     assert!(

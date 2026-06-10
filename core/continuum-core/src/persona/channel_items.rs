@@ -372,17 +372,17 @@ impl QueueItemBehavior for ChatQueueItem {
         self.mentions
     }
 
-    // Consolidate with other chat items from the SAME ROOM
-    fn should_consolidate_with(&self, other: &dyn QueueItemBehavior) -> bool {
-        if other.item_type() != "chat" {
-            return false;
-        }
-        // Downcast to check room_id
-        if let Some(other_chat) = other.as_any().downcast_ref::<ChatQueueItem>() {
-            other_chat.room_id == self.room_id
-        } else {
-            false
-        }
+    // Consolidate with other chat items from the SAME ROOM. The
+    // `should_consolidate_with` default impl on the trait derives this
+    // from `consolidation_key` — same-key items merge.
+    fn consolidation_key(&self) -> Option<u64> {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        // Mix in the item type first so chat-with-room=X cannot
+        // key-collide with task-with-context=X (per trait docstring).
+        "chat".hash(&mut h);
+        self.room_id.hash(&mut h);
+        Some(h.finish())
     }
 
     fn as_any(&self) -> &dyn Any {
@@ -559,16 +559,16 @@ impl QueueItemBehavior for TaskQueueItem {
         self.effective_priority(now_ms, enqueued_at_ms)
     }
 
-    // Consolidate related tasks: same task domain AND same context
-    fn should_consolidate_with(&self, other: &dyn QueueItemBehavior) -> bool {
-        if other.item_type() != "task" {
-            return false;
-        }
-        if let Some(other_task) = other.as_any().downcast_ref::<TaskQueueItem>() {
-            other_task.task_domain == self.task_domain && other_task.context_id == self.context_id
-        } else {
-            false
-        }
+    // Consolidate related tasks: same task domain AND same context.
+    // The `should_consolidate_with` default impl on the trait derives
+    // this from `consolidation_key` — same-key items merge.
+    fn consolidation_key(&self) -> Option<u64> {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        "task".hash(&mut h);
+        self.task_domain.hash(&mut h);
+        self.context_id.hash(&mut h);
+        Some(h.finish())
     }
 
     fn as_any(&self) -> &dyn Any {

@@ -149,14 +149,54 @@ pub trait QueueItemBehavior: Send + Sync + Any + std::fmt::Debug {
     // CONSOLIDATION
     // =========================================================================
 
-    /// Can this item be merged with another item in the same channel?
-    /// Items decide their own consolidation rules.
+    /// Opaque consolidation key — items returning the SAME key
+    /// consolidate together. `None` means "this item is always a
+    /// singleton" (matches the default `should_consolidate_with`
+    /// shape: never).
     ///
-    /// Default: false (no consolidation).
-    /// Chat overrides to consolidate same-room messages.
-    /// Task overrides to consolidate related tasks.
-    fn should_consolidate_with(&self, _other: &dyn QueueItemBehavior) -> bool {
-        false
+    /// Replaces the legacy O(N²) `should_consolidate_with` pairwise
+    /// check with a single HashMap pass in `ChannelQueue::consolidate`:
+    /// identical keys land in the same bucket. The trait now expresses
+    /// the consolidation rule as a key the queue can hash, not as a
+    /// pairwise predicate the queue has to N²-poll.
+    ///
+    /// ## Contract
+    ///
+    /// `a.consolidation_key() == b.consolidation_key()` iff
+    /// `a.should_consolidate_with(b)` would have returned `true`.
+    /// The default `should_consolidate_with` implementation below
+    /// reads `consolidation_key` so implementing one for free gives
+    /// the other; concrete impls should override `consolidation_key`
+    /// only (and let `should_consolidate_with` default-derive).
+    ///
+    /// ## Why u64 (not String / typed enum)
+    ///
+    /// - Zero allocation per call (substring of the hot path).
+    /// - No enum sprawl across the trait — each item folds its
+    ///   criteria through a stable hasher.
+    /// - HashMap<u64, _> is the substrate's idiomatic key-group shape.
+    ///
+    /// Stable-hash by feeding the item's `item_type()` + its
+    /// consolidation criteria into a fresh `DefaultHasher`. Mixing
+    /// `item_type` first prevents cross-type collisions (a chat with
+    /// room_id=X must NOT key-match a task with context_id=X).
+    fn consolidation_key(&self) -> Option<u64> {
+        None
+    }
+
+    /// Can this item be merged with another item in the same channel?
+    /// Default implementation derives from `consolidation_key`: items
+    /// merge iff their keys are equal AND non-None.
+    ///
+    /// Concrete impls should override `consolidation_key` rather than
+    /// this method — the queue's hot path uses `consolidation_key`
+    /// directly for its O(N) HashMap grouping; `should_consolidate_with`
+    /// stays for ad-hoc predicate checks (tests, ext consumers).
+    fn should_consolidate_with(&self, other: &dyn QueueItemBehavior) -> bool {
+        match (self.consolidation_key(), other.consolidation_key()) {
+            (Some(a), Some(b)) => a == b,
+            _ => false,
+        }
     }
 
     /// Downcast to Any for type-specific consolidation checks
