@@ -65,22 +65,26 @@
 pub mod broadcast;
 pub mod cache;
 pub mod chat;
+pub mod connection;
 pub mod dispatch;
 pub mod kinds;
 pub mod observer;
 pub mod revisions;
 pub mod session;
 pub mod state;
+pub mod substrate;
 
 pub use broadcast::Broadcast;
 pub use cache::SubstrateStateCache;
 pub use chat::{ChatMessageView, ChatViewState, PersonaSlotView, SenderKind};
+pub use connection::Connection;
 pub use dispatch::{apply_command, CommandDispatch};
 pub use kinds::{KnownKind, RevisionKey};
 pub use observer::{apply_observe, ObserverRegistration};
 pub use revisions::Revisions;
 pub use session::{apply_subscribe, Subscription};
 pub use state::StateBuilder;
+pub use substrate::Substrate;
 
 // Re-export positron's wire + session types so consumers get them
 // under one path. The typed payloads in this crate fill
