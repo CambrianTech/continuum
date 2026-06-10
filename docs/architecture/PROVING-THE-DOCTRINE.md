@@ -148,7 +148,7 @@ needed)  `🔴` not yet proven, work item
 | `LateBound<T>` install-once semantics | `late_bound::tests::second_install_is_silent_noop_original_wins` | — | — | — | static_assert `Send + Sync` | ✅ |
 | Flow scales geometrically (events > RPC under N consumers) | — | TODO: proptest over `(N, M, K)` | TODO: criterion event-fanout vs RPC-equivalent | — | — | 🔴 |
 | Demand-pull eliminates idle work | — | — | TODO: bench vision encoder CPU = 0 with no subscribers | — | — | 🔴 |
-| Backpressure is intrinsic (no unbounded queue growth) | — | TODO: proptest slow-consumer scenarios | — | `tests/architecture_backpressure_chaos.rs` (2 fns: flooding-producer-surfaces-typed-LiveLag-to-slow-consumer, consumer-recovers-after-lag — proves bounded queue, typed lag signal, no silent loss, recoverable subscription) | — | 🟡 |
+| Backpressure is intrinsic (no unbounded queue growth) | — | TODO: proptest slow-consumer scenarios | — | `tests/architecture_backpressure_chaos.rs` (2 fns: `flooding_producer_surfaces_typed_lag_to_slow_consumer`, `consumer_makes_progress_after_lag` — proves bounded queue, typed `LiveLag` signal, no silent loss, recoverable subscription) | — | 🟡 |
 | Federated alignment (hostile peer cannot dominate) | — | — | — | TODO: `TwoAircLoopback` + malicious peer harness | — | 🔴 |
 | Every scorer has VDD baseline + ML upgrade path | per-scorer baseline test | — | — | — | TODO: registry walk asserting every scorer has `Baseline + MlCandidate` impls | 🔴 |
 | Sentinels observe at zero added latency | — | — | TODO: bench main-flow latency with 0 vs N sentinels | — | — | 🔴 |

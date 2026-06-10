@@ -25,8 +25,8 @@
 //!    - Wire two peers via `TwoAircLoopback`.
 //!    - peer_a subscribes EAGERLY but DOES NOT consume — simulates a
 //!      stalled consumer (could be a slow disk, a paused thread, etc).
-//!    - peer_b floods peer_a with FLOOD_COUNT = 5000 events (far past
-//!      airc-lib's `LIVE_BROADCAST_CAPACITY = 1024`).
+//!    - peer_b floods peer_a with FLOOD_COUNT = 1500 events (past
+//!      airc-lib's `LIVE_BROADCAST_CAPACITY = 1024` by ~50% margin).
 //!    - After the flood, peer_a drains its stream.
 //!    - Asserts: stream surfaces at least one `Err(LiveLag { skipped })`
 //!      — the typed signal that overflow happened, NOT silent loss.
@@ -59,6 +59,12 @@
 //!   Process-level memory bounding is environmental (kernel cgroups);
 //!   this test bounds via the channel capacity proof, which is the
 //!   substrate's own guarantee.
+//! - Sustained throughput under CONTINUOUS flood. This test ends after
+//!   one flood-then-drain cycle; it doesn't prove the substrate stays
+//!   bounded if a producer keeps flooding indefinitely. The channel
+//!   capacity guarantee implies it should, but a long-running stress
+//!   harness (gated behind the `stress-tests` feature) would prove it
+//!   empirically.
 //!
 //! ## Tag
 //!
@@ -72,12 +78,19 @@ use airc_core::{Body, Headers};
 use airc_test_fixtures::TwoAircLoopback;
 use futures::stream::StreamExt;
 
+/// airc-lib's broadcast channel capacity, mirrored here as a const so
+/// the conservation/survival assertions reference the same number the
+/// substrate guarantees. If airc-lib changes this, the test will
+/// surface the mismatch via the survival_ceiling assertion (and we
+/// update both ends together).
+const LIVE_BROADCAST_CAPACITY: usize = 1_024;
+
 /// Total events flooded into the broadcast channel. Must exceed
-/// airc-lib's `LIVE_BROADCAST_CAPACITY = 1024` by enough margin that
-/// the overflow signal is unambiguous, but small enough that CI
-/// wall-clock stays reasonable. 1500 = ~50% margin over capacity;
-/// any send rate beats the (paused) consumer rate of zero, so the
-/// overflow IS the assertion, not the producer's burst rate.
+/// `LIVE_BROADCAST_CAPACITY` by enough margin that the overflow
+/// signal is unambiguous, but small enough that CI wall-clock stays
+/// reasonable. 1500 = ~50% margin over capacity; any send rate beats
+/// the (paused) consumer rate of zero, so the overflow IS the
+/// assertion, not the producer's burst rate.
 const FLOOD_COUNT: u64 = 1_500;
 
 /// How long the consumer drains, measured from after the flood
@@ -99,8 +112,10 @@ const SUBSCRIPTION_SETTLE: Duration = Duration::from_millis(100);
 
 /// How many concurrent in-flight sends the producer keeps in the
 /// air. Sequential awaits get bottlenecked by airc's per-send
-/// signing + framing latency (~6ms each on Intel Mac); 32 concurrent
-/// sends let the producer outrun a slow consumer in ~5s vs ~30s.
+/// signing + framing latency (~6ms each on Intel Mac, measured during
+/// PR #1594 development). 32 concurrent sends modestly reduces
+/// wall-clock; airc-lib's internal serialization caps the actual
+/// parallelism, so this is a tuning knob, not a load multiplier.
 /// The proof shape is "producer outpaces consumer," not "single
 /// thread sends as fast as possible," so concurrency is honest.
 const PRODUCER_CONCURRENCY: usize = 32;
@@ -211,27 +226,36 @@ async fn flooding_producer_surfaces_typed_lag_to_slow_consumer() {
 
     // Conservation: events seen + skipped never exceeds events sent.
     // peer_a's stream sees its OWN sends too (broadcast echoes locally),
-    // but here peer_a sends nothing — only peer_b floods. Allow some
-    // headroom for internal control / keepalive events that share the
-    // stream by asserting <= FLOOD_COUNT + 1000 (very loose).
+    // but here peer_a sends nothing — only peer_b floods. airc-lib
+    // emits a small number of lifecycle events (joins, subscription
+    // advances) on the same broadcast channel; in a fresh 2-peer
+    // fixture that's single digits, not hundreds. +CONSERVATION_SLACK
+    // catches the real fabrication class while staying tight enough
+    // that a future bug doubling event counts would surface here.
+    const CONSERVATION_SLACK: u64 = 64;
     let observed = events + total_skipped;
     assert!(
-        observed <= FLOOD_COUNT + 1_000,
+        observed <= FLOOD_COUNT + CONSERVATION_SLACK,
         "events ({events}) + skipped ({total_skipped}) = {observed} \
-         exceeds FLOOD_COUNT ({FLOOD_COUNT}) + 1000 headroom — \
-         substrate is fabricating events or accounting is wrong"
+         exceeds FLOOD_COUNT ({FLOOD_COUNT}) + {CONSERVATION_SLACK} \
+         lifecycle-event headroom — substrate is fabricating events \
+         or accounting is wrong"
     );
 
-    // Bounded recovery: the surviving event count should be <= the
-    // broadcast capacity. broadcast::channel(1024) means at most 1024
-    // events survive in the channel when the consumer finally drains.
-    // We accept up to 2× to absorb timing variance + the channel's
-    // own internal buffering.
+    // Bounded recovery: the surviving event count is what's left in
+    // the bounded broadcast ring when the consumer drains, plus at
+    // most one in-flight item the BroadcastStream wrapper may have
+    // buffered between polls. 1024 (capacity) + 128 (slack for
+    // ordering races + the wrapper's internal state) is the honest
+    // upper bound; if survival exceeds this, the channel's
+    // capacity guarantee has been violated.
+    const SURVIVAL_SLACK: u64 = 128;
+    let survival_ceiling = (LIVE_BROADCAST_CAPACITY as u64) + SURVIVAL_SLACK;
     assert!(
-        events <= 2_048,
-        "events delivered to slow consumer ({events}) exceeds 2× the \
-         broadcast capacity (1024). The channel should bound what \
-         survives overflow."
+        events <= survival_ceiling,
+        "events delivered to slow consumer ({events}) exceeds the \
+         broadcast capacity (1024) + {SURVIVAL_SLACK} slack. The \
+         channel's bounded guarantee should cap what survives overflow."
     );
 }
 
@@ -263,6 +287,13 @@ async fn consumer_makes_progress_after_lag() {
     let mut total_events = 0u64;
     let recovery_deadline = Instant::now() + DRAIN_BUDGET;
 
+    // After the lag fires, the 1024-slot broadcast ring still holds
+    // ~capacity surviving events — the consumer drains them on the
+    // very next polls. So in practice the `seen_post_lag_success`
+    // flips on the first Ok read after `seen_lag`. The timeout arm
+    // exists as defense-in-depth for very-slow-CI cases where polls
+    // legitimately stall; if it ever fires, send a tiny fresh batch
+    // to prove the subscription stayed alive across the stall window.
     while Instant::now() < recovery_deadline {
         match tokio::time::timeout(POLL_TIMEOUT, stream_a.next()).await {
             Ok(Some(Ok(_event))) => {
@@ -277,9 +308,9 @@ async fn consumer_makes_progress_after_lag() {
             }
             Ok(None) => break,
             Err(_) => {
-                // If we've already seen a lag, send a small new batch
-                // to make sure there's something fresh to consume —
-                // proving the subscription stayed alive.
+                // Defense-in-depth: poll timed out without a result.
+                // If we've already seen a lag, send a small fresh batch
+                // to test whether the subscription survived the stall.
                 if seen_lag && !seen_post_lag_success {
                     let recovery_producer =
                         spawn_flooding_producer(Arc::clone(loopback.peer_b()), 5).await;
