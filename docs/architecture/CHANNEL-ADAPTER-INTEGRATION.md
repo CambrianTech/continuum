@@ -277,11 +277,137 @@ If this session ends before PR A is merged, the resumption checklist:
 ## What this PR does NOT do (intentional follow-ups)
 
 - **PR B**: `DecisionEvent` channel variant + `DecisionBatchAdapter` (votes consolidate into one tally per cycle; ranked-choice cooperation gets cheap)
-- **PR C**: `airc_chat_demo` reshape to use the new contract end-to-end (kills the legacy per-message path; killer-loop integration test)
-- **PR D**: Audio channel — first real exercise of `decode_once` (STT shared across listeners) + per-persona TTS encode (Maya's voice ≠ Helper's voice)
+- **PR C**: `airc_chat_demo` reshape to use the new contract end-to-end (kills the legacy per-message path; killer-loop integration test). **OPEN QUESTION before PR C starts** — see [Decision: how does `CoherentInput` port into `FullEvaluateRequest`?](#decision-how-does-coherentinput-port-into-fullevaluaterequest) below.
+- **PR D**: Audio channel — first real exercise of `decode_once` (STT shared across listeners) + per-persona TTS encode (Maya's voice ≠ Helper's voice). Also where `compute_chat_embedding` placeholder gets routed through the existing `EmbeddingModule` (task #246).
 - **PR E**: Video frames — Bevy/WebRTC-style lazy GPU texture handles on `VideoItem`
 
 Each subsequent PR slots in by ADDING channels and adapters, not retrofitting the trait. That's the test of whether PR A's seam was right.
+
+## Decision: how does `CoherentInput` port into `FullEvaluateRequest`?
+
+(Added after PR A's adversarial review surfaced this as an unresolved
+load-bearing question — Reviewer 1 B1.)
+
+`service_cycle_batched` returns `Vec<CoherentInput>` per channel-tick.
+The legacy production cognition path (`service_module::service_once_for`,
+`modules/channel.rs::channel/service-cycle{,-full}`) consumes one
+`ChatItemWire`-per-call and constructs a `FullEvaluateRequest` from it:
+
+```rust
+pub struct FullEvaluateRequest {
+    pub message_id: Uuid,
+    pub room_id: Uuid,
+    pub sender_id: Uuid,
+    pub sender_name: String,
+    pub content: String,          // ← single message's content
+    pub timestamp: u64,
+    // ...
+}
+```
+
+`ChatCoherentInput` has:
+```rust
+pub struct ChatCoherentInput {
+    pub primary_room: Uuid,
+    pub burst_message_count: usize,
+    pub window_span_ms: u64,
+    pub aggregated_content: String,   // ← N messages joined with \n
+    pub last_sender_name: String,
+    pub anyone_mentioned_persona: bool,
+    pub burst_embedding: Arc<Vec<f32>>,
+}
+```
+
+**There is no `message_id` / `sender_id` on the burst** — the burst
+abstracts past them. So PR C cannot trivially construct one
+`FullEvaluateRequest` from one `ChatCoherentInput`. Three candidate
+shapes:
+
+1. **Reshape `FullEvaluateRequest`** to accept either a single message
+   OR a burst — either via an enum variant (`FullEvaluateInput::Single`
+   / `FullEvaluateInput::Burst`) or by making the per-message fields
+   `Option<_>`. Most disruptive, but pins the doctrine in the type
+   system: cognition's evaluate gate is BURST-AWARE, not message-aware.
+2. **Fan the burst back out per-item** before calling `full_evaluate` —
+   each item in the burst produces its own `FullEvaluateRequest`. Cheap
+   to implement (the trait doesn't change), but defeats the doctrine:
+   we'd be back to N analyze calls per burst, undoing what PR A built.
+3. **Add `analyze_burst(&CoherentInput) -> BurstDecision`** alongside
+   the existing per-item path. The new entry point IS the demand-pull
+   doctrine; the old per-item path stays for compatibility, gets
+   `#[deprecated]`'d, and gets ripped in PR C+1. Most additive shape,
+   matches PR A's pattern (`service_cycle_batched` ships alongside
+   legacy `service_cycle`).
+
+**Recommended: option 3.** It preserves the existing wire shape, lets
+PR C ship the killer-loop test against `analyze_burst`, and gives a
+clean migration path. The fan-out option silently regresses the
+doctrine; the reshape option churns too many call sites at once.
+
+PR C's first commit should be this decision PLUS the `analyze_burst`
+trait skeleton (panic / unimplemented OK at the seam). PR C's last
+commit is the killer-loop integration test.
+
+## Design-doc divergence: `ConsolidatedChatItem<T>` wrapper was dropped
+
+(Added after PR A's adversarial review caught this — Reviewer 1 C3.)
+
+The Delta 1 design block (above) prescribed a `ConsolidatedChatItem`
+wrapper struct:
+
+```rust
+pub struct ConsolidatedChatItem {
+    items: Vec<Arc<ChatItem>>,
+    aggregate_summary_cell: OnceLock<Arc<str>>,
+}
+```
+
+with its own lazy cell aggregating across the wrapped originals. The
+shipped implementation **does not include this wrapper**. The chosen
+path:
+
+- `ChatQueueItem::consolidate_with_items(&self, others: &[&ChatQueueItem])
+  -> ChatQueueItem` produces a NEW anchor item with a
+  `consolidated_context: Vec<ConsolidatedContext>` Vec of the absorbed
+  messages' prose.
+- `ChatChannelView::interpret` reads the anchor's
+  `consolidated_context` to count `burst_message_count` honestly (sum
+  of `1 + consolidated_context.len()` across the burst's anchors).
+- The absorbed messages' `embedding_cell`s are dropped on the floor;
+  only the anchor's cell survives consolidation.
+
+### Why this trade-off was chosen
+
+- The existing `consolidate_with_items` already returned a new item
+  (not a mutation), so the immutability requirement Arc-sharing imposes
+  was already satisfied. Adding a wrapper would have been
+  belt-and-suspenders.
+- `aggregate_summary_cell` would need a real `summarize(items)`
+  function to be useful, which isn't on the PR A critical path.
+- The current shape is simpler: one type (`ChatQueueItem`), one cache
+  (`embedding_cell`), one accumulation field (`consolidated_context`).
+
+### What this trade-off costs
+
+- **Lazy cells on absorbed messages are wasted** — if 49 of the 50
+  burst items had embeddings cached pre-consolidation, the
+  post-consolidation anchor has only ONE cell. The substrate-shared
+  decode property holds per-burst-anchor, not per-original-message.
+  Currently invisible because `compute_chat_embedding` is a placeholder;
+  becomes visible when PR D / #246 routes through `EmbeddingModule`
+  and embedding compute is expensive.
+- **No aggregate summary cell yet** — cognition's prompt assembly will
+  re-derive the burst summary every tick from
+  `aggregated_content`. Cheap today (string concat); could matter at
+  scale.
+
+### Reopen condition
+
+When PR D ships real embedding compute, re-evaluate whether the wrapper
+shape (preserving per-original cells through consolidation) becomes
+load-bearing. If a 50-message burst pays 50× the embedding cost because
+consolidation discarded 49 cells, the wrapper comes back as a follow-up
+PR. Until then, the simpler shape stands.
 
 ## Doctrine alignment
 

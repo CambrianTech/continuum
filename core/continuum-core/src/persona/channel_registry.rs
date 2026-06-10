@@ -20,13 +20,26 @@ use uuid::Uuid;
 
 /// Default burst window for [`ChannelRegistry::service_cycle_batched`].
 ///
-/// Five seconds matches the typical conversational latency budget — bursts
-/// arriving within ~5s of an anchor get collapsed into a single coherent
-/// input for cognition's `analyze()`. Wider windows aggregate more (one
-/// fewer analyze per tick) but reduce reactivity; narrower windows
-/// reverse that trade-off. PR D (audio) is where this gets mood-tuned via
-/// `PersonaState`. PR A stays with a const so the seam is testable
-/// without state plumbing.
+/// **Window is BIDIRECTIONAL** — drain_batch pulls items within
+/// `[anchor_ts - 5_000, anchor_ts + 5_000]` ms, i.e. a 10-second total
+/// span centered on the highest-priority item's timestamp. Future
+/// arrivals (timestamps after the anchor) AND prior arrivals within
+/// the same window all collapse into the same burst.
+///
+/// Why bidirectional: anchor-defined ranges should be symmetric so the
+/// burst boundary doesn't depend on which item happened to win the
+/// priority tiebreak. The 5s value targets typical conversational
+/// latency — bursts arriving within ~5s of an anchor get collapsed into
+/// a single coherent input for cognition's `analyze()`. Wider windows
+/// aggregate more (one fewer analyze per tick) but reduce reactivity.
+///
+/// PR D (audio) is where this gets mood-tuned via `PersonaState`. PR A
+/// stays with a const so the seam is testable without state plumbing.
+///
+/// Per Reviewer 1 C6: the doc previously said "5 seconds" without
+/// disambiguating one-sided vs bidirectional; this docstring resolves
+/// that as bidirectional matching the `drain_batch` implementation in
+/// `channel_queue.rs`.
 pub const DEFAULT_BURST_WINDOW_MS: u64 = 5_000;
 
 /// Channel registry — routes items to per-domain queues.

@@ -314,6 +314,19 @@ impl ChannelQueue {
     /// the cognition layer sees one consistent "burst boundary"
     /// semantic across both the legacy inbox and the per-channel
     /// queues.
+    ///
+    /// **Window is BIDIRECTIONAL** — items with timestamp in
+    /// `[anchor_ts.saturating_sub(window_ms), anchor_ts.saturating_add(window_ms)]`
+    /// come out as the burst; items outside that range stay in the
+    /// queue for the next tick. The range is INCLUSIVE on both ends.
+    ///
+    /// Edge cases:
+    /// - Items with `ts == anchor_ts ± window_ms` are IN the burst.
+    /// - Items with `ts == anchor_ts ± (window_ms + 1)` are deferred.
+    /// - With `window_ms == 0`, only items sharing the anchor's exact
+    ///   timestamp are drained.
+    /// - `saturating_sub` / `saturating_add` prevent overflow at
+    ///   extreme timestamps.
     pub fn drain_batch(&mut self, window_ms: u64) -> Option<CoherentUnit> {
         // Run the existing item-driven consolidation FIRST so the
         // drain operates on already-merged items. Items that decided
