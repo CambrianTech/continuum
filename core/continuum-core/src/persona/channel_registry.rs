@@ -295,6 +295,7 @@ mod tests {
             priority,
             consolidated_context: Vec::new(),
             media: Vec::new(),
+            embedding_cell: std::sync::OnceLock::new(),
         })
     }
 

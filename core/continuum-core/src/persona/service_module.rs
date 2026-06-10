@@ -953,6 +953,7 @@ mod tests {
             priority: 0.5,
             consolidated_context: vec![],
             media: vec![],
+            embedding_cell: std::sync::OnceLock::new(),
         }
     }
 
