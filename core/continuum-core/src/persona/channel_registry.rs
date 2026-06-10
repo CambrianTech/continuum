@@ -297,10 +297,10 @@ impl ChannelRegistry {
     /// same burst.
     ///
     /// Existing [`Self::service_cycle`] stays for the legacy single-pop
-    /// production path (`service_module::service_once_for`,
-    /// `modules/channel::channel/service-cycle{,-full}`). Migration to
-    /// the batched path lands in PR C alongside `airc_chat_demo`
-    /// reshape, per the design doc's intentional follow-up list.
+    /// surface (`modules/channel::channel/service-cycle{,-full}` + a
+    /// handful of architecture-proof tests). Persona production has
+    /// cut over to this batched path via
+    /// `service_module::service_burst_for` (task #249).
     pub fn service_cycle_batched(
         &mut self,
         state: &mut PersonaState,
@@ -729,11 +729,12 @@ mod tests {
     ///
     /// This is the "consumers swapping should observe no delta" claim
     /// the prior `batched_updates_state_load_and_mood` test made in
-    /// prose but never pinned. Per Reviewer 3 C7: while both methods
-    /// live in production (legacy single-pop wired through
-    /// `service_module::service_once_for`, batched ships as the new
-    /// seam), silent drift between them is the most likely regression.
-    /// This test pins parity.
+    /// prose but never pinned. Per Reviewer 3 C7: persona production
+    /// has migrated to the batched seam via
+    /// `service_module::service_burst_for` (task #249), but the
+    /// legacy single-pop `service_cycle` still ships for other
+    /// callers; silent drift between them is the most likely
+    /// regression. This test pins parity.
     #[test]
     fn service_cycle_and_batched_produce_identical_state_side_effects() {
         let room = Uuid::new_v4();

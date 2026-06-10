@@ -151,9 +151,10 @@ impl PersonaConversation for AircPersonaConversation {
                 None => return Ok(None),
                 Some(Err(lag)) => {
                     // Lag is a transient — surface as Err so the loop
-                    // increments turns_errored and continues. Matches
-                    // the demo binary's `eprintln + continue` shape
-                    // (bin/airc_chat_demo.rs:346) but typed.
+                    // increments turns_errored and continues. The typed
+                    // Err shape lets the loop log + resume per
+                    // `[[no-fallbacks-ever]]` without silently masking
+                    // the gap.
                     return Err(format!("live stream lag: {lag}"));
                 }
                 Some(Ok(event)) => {

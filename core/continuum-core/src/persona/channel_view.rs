@@ -35,10 +35,11 @@ use uuid::Uuid;
 /// Per-channel typed input cognition's `analyze()` receives.
 ///
 /// One `CoherentInput` per channel-with-work per service cycle, per
-/// `[[cognition-batches-per-channel-adapter]]`. `analyze()` fires ONCE
-/// on the aggregate (the existing analyze surface still takes per-item
-/// today; Delta 5's `service_cycle` rewrite is what calls analyze with
-/// a `Vec<CoherentInput>` instead of iterating items).
+/// `[[cognition-batches-per-channel-adapter]]`. Production callers go
+/// through `evaluator::analyze_burst` (task #248) which takes a single
+/// `CoherentInput` and fires the gate ONCE per burst; the service-loop
+/// integration that drives this from
+/// `service_module::service_burst_for` is task #249.
 ///
 /// Per `[[strong-typing-across-boundaries]]`: each variant carries the
 /// per-domain shape cognition needs. Adding a new channel adds a new
