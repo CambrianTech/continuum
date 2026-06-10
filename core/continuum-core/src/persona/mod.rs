@@ -37,6 +37,7 @@ pub mod channel_items;
 pub mod channel_queue;
 pub mod channel_registry;
 pub mod channel_types;
+pub mod channel_view;
 pub mod cognition;
 pub mod cognition_io;
 pub mod decay_tick;
