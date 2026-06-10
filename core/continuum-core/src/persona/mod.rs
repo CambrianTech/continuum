@@ -110,8 +110,8 @@ pub use engram::{
     EngramKind, EngramOrigin, ToolInvocationRef, TrustState,
 };
 pub use evaluator::{
-    AdequacyResult, FullEvaluateRequest, FullEvaluateResult, GateDetails, RateLimiterState,
-    RecentResponse, SleepMode, SleepState,
+    analyze_burst, AdequacyResult, BurstEvaluateResult, BurstRespondContext, FullEvaluateRequest,
+    FullEvaluateResult, GateDetails, RateLimiterState, RecentResponse, SleepMode, SleepState,
 };
 pub use genome_paging::{
     ActivateSkillResult, CoverageReport, DomainActivity, GenomeAdapterInfo, GenomePagingEngine,
