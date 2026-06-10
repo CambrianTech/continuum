@@ -1,0 +1,22 @@
+[package]
+name = "continuum-positron"
+version = "0.1.0"
+edition = "2021"
+description = "Continuum's positron substrate — produces typed StateEnvelopes from continuum's event bus and dispatches CommandEnvelopes through the substrate's CommandExecutor. Implements the substrate side of the positron contract (positron-core@0.1)."
+
+[dependencies]
+# positron-core (the cross-language UI contract — substrate-produces-state /
+# host-consumes-it; AI observers perceive the same ViewState humans see).
+# Path dep until positron tags v0.1; switch to git rev pin on first cut.
+# Operator must have both repos cloned side-by-side under the same parent dir.
+positron-core = { path = "../../../positron/positron-core" }
+
+serde = { workspace = true }
+serde_json = { workspace = true }
+ts-rs = { workspace = true }
+uuid = { workspace = true }
+tracing = { workspace = true }
+async-trait = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
