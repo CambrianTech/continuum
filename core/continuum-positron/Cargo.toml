@@ -17,6 +17,7 @@ ts-rs = { workspace = true }
 uuid = { workspace = true }
 tracing = { workspace = true }
 async-trait = { workspace = true }
-
-[dev-dependencies]
+# `tokio::sync::watch` is the per-kind live-broadcast primitive (Fable's
+# design call on the positron protocol — latest-wins coalescing IS the
+# spec; broadcast's ring buffer would buffer needless copies).
 tokio = { workspace = true }
