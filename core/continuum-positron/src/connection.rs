@@ -135,7 +135,6 @@ mod tests {
     use positron_core::wire::{
         CommandEnvelope, CommandSource, ObserverSpec, StateEnvelope, StateLayer,
     };
-    use serde_json::Value;
     use std::sync::Mutex;
     use uuid::Uuid;
 
@@ -149,7 +148,7 @@ mod tests {
     }
 
     struct ScriptedDispatcher {
-        calls: Mutex<Vec<(String, Value)>>,
+        calls: Mutex<Vec<CommandEnvelope>>,
         outcome: Result<(), String>,
     }
 
@@ -173,8 +172,8 @@ mod tests {
 
     #[async_trait]
     impl CommandDispatch for ScriptedDispatcher {
-        async fn dispatch(&self, command: String, params: Value) -> Result<(), String> {
-            self.calls.lock().unwrap().push((command, params));
+        async fn dispatch(&self, envelope: CommandEnvelope) -> Result<(), String> {
+            self.calls.lock().unwrap().push(envelope);
             self.outcome.clone()
         }
     }

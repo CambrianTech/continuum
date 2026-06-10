@@ -99,9 +99,15 @@ mod tests {
         assert_eq!(cached.revision, Some(1));
 
         // Broadcast reflects it — a subscriber attaches and sees
-        // the latest value.
-        let rx = substrate.broadcast().subscribe("chat").expect("broadcast populated");
-        assert_eq!(rx.borrow().revision, Some(1));
+        // the latest value. Per the cold-start fix on #1603, subscribe
+        // always returns a Receiver; the value is wrapped in Option to
+        // distinguish "no state yet" (None) from "state exists" (Some).
+        let rx = substrate.broadcast().subscribe("chat");
+        let env = rx
+            .borrow()
+            .clone()
+            .expect("broadcast populated by store");
+        assert_eq!(env.revision, Some(1));
     }
 
     #[tokio::test]
@@ -115,9 +121,10 @@ mod tests {
         }
 
         let cached = substrate.cache().get("chat").unwrap();
-        let rx = substrate.broadcast().subscribe("chat").unwrap();
+        let rx = substrate.broadcast().subscribe("chat");
+        let live = rx.borrow().clone().expect("broadcast populated");
         assert_eq!(cached.revision, Some(5));
-        assert_eq!(rx.borrow().revision, Some(5));
+        assert_eq!(live.revision, Some(5));
     }
 
     #[tokio::test]
@@ -143,9 +150,11 @@ mod tests {
         // And new store flows through the shared parts.
         substrate.store(envelope("chat", 100));
         assert_eq!(cache.get("chat").unwrap().revision, Some(100));
-        assert_eq!(
-            broadcast.subscribe("chat").unwrap().borrow().revision,
-            Some(100)
-        );
+        let live = broadcast
+            .subscribe("chat")
+            .borrow()
+            .clone()
+            .expect("broadcast populated");
+        assert_eq!(live.revision, Some(100));
     }
 }
