@@ -52,7 +52,7 @@
 
 use async_trait::async_trait;
 use positron_core::session::{ClientMessage, ServerMessage};
-use serde_json::Value;
+use positron_core::wire::CommandEnvelope;
 
 /// The substrate-side seam to continuum's command surface.
 /// Production implementations wrap continuum-core's
@@ -64,9 +64,20 @@ use serde_json::Value;
 /// - `Err(message)` on failure: the substrate emits
 ///   `ServerMessage::CommandFailed { correlation_id, error: message }`
 ///   on the failing connection.
+///
+/// ## Why the whole envelope, not `(command, params)`
+///
+/// Per positron's wire doctrine, `CommandEnvelope` is "first-class but
+/// never anonymous" — every call carries its `source` (`Human` vs
+/// `Observer { observer_id }`) and the `kind` of state it mutates.
+/// Decomposing the envelope at this seam erases that provenance before
+/// the dispatcher gets to see it, which kills authorization decisions
+/// + audit trails downstream. The seam takes the typed envelope so
+/// every implementor sees what the client actually sent. Per
+/// `[[strong-typing-across-boundaries]]`.
 #[async_trait]
 pub trait CommandDispatch: Send + Sync {
-    async fn dispatch(&self, command: String, params: Value) -> Result<(), String>;
+    async fn dispatch(&self, envelope: CommandEnvelope) -> Result<(), String>;
 }
 
 /// Bridge one `ClientMessage::Command` through a [`CommandDispatch`]
@@ -93,10 +104,7 @@ pub async fn apply_command(
         }
     };
     let correlation_id = envelope.correlation_id;
-    match dispatcher
-        .dispatch(envelope.command, envelope.params)
-        .await
-    {
+    match dispatcher.dispatch(envelope).await {
         Ok(()) => Ok(Vec::new()),
         Err(err) => Ok(vec![ServerMessage::CommandFailed {
             correlation_id,
@@ -116,7 +124,7 @@ mod tests {
     /// Per the test-fixtures doctrine: keep mocks narrow + scripted
     /// rather than half-implementing the real executor.
     struct ScriptedDispatcher {
-        calls: Mutex<Vec<(String, Value)>>,
+        calls: Mutex<Vec<CommandEnvelope>>,
         outcome: Result<(), String>,
     }
 
@@ -133,15 +141,15 @@ mod tests {
                 outcome: Err(msg.to_string()),
             }
         }
-        fn calls(&self) -> Vec<(String, Value)> {
+        fn calls(&self) -> Vec<CommandEnvelope> {
             self.calls.lock().unwrap().clone()
         }
     }
 
     #[async_trait]
     impl CommandDispatch for ScriptedDispatcher {
-        async fn dispatch(&self, command: String, params: Value) -> Result<(), String> {
-            self.calls.lock().unwrap().push((command, params));
+        async fn dispatch(&self, envelope: CommandEnvelope) -> Result<(), String> {
+            self.calls.lock().unwrap().push(envelope);
             self.outcome.clone()
         }
     }
@@ -172,8 +180,9 @@ mod tests {
             frames.is_empty(),
             "success → no protocol frame; got {frames:?}"
         );
-        assert_eq!(dispatcher.calls().len(), 1);
-        assert_eq!(dispatcher.calls()[0].0, "chat/send");
+        let calls = dispatcher.calls();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].command, "chat/send");
     }
 
     #[tokio::test]
@@ -240,8 +249,44 @@ mod tests {
             .await
             .unwrap();
         let calls = dispatcher.calls();
-        assert_eq!(calls[0].0, "chat/send");
-        assert_eq!(calls[0].1["text"], "specific text");
-        assert_eq!(calls[0].1["room_id"], "abc");
+        assert_eq!(calls[0].command, "chat/send");
+        assert_eq!(calls[0].params["text"], "specific text");
+        assert_eq!(calls[0].params["room_id"], "abc");
+    }
+
+    #[tokio::test]
+    async fn dispatcher_receives_envelope_source_and_kind_intact() {
+        // what this catches: regression where the dispatch seam erases
+        // CommandEnvelope.source or .kind before reaching the
+        // dispatcher. Per positron wire doctrine, commands are
+        // "first-class but never anonymous" — the source (Human vs
+        // Observer { observer_id }) drives authorization and audit
+        // downstream; the kind tags WHICH state the command mutates.
+        // Decomposing the envelope at this seam would silently strip
+        // both, leaving the dispatcher unable to tell a human edit
+        // from an AI observer edit and unable to scope authority by
+        // kind. Sentinel BLOCK on #1602.
+        let dispatcher = ScriptedDispatcher::ok();
+        let observer_id = "ares-1".to_string();
+        let env = CommandEnvelope {
+            kind: "chat".into(),
+            command: "chat/send".into(),
+            params: serde_json::json!({"text": "from observer"}),
+            correlation_id: Uuid::from_u128(0x1234),
+            source: CommandSource::Observer {
+                observer_id: observer_id.clone(),
+            },
+        };
+        let _ = apply_command(&dispatcher, ClientMessage::Command(env))
+            .await
+            .unwrap();
+        let calls = dispatcher.calls();
+        assert_eq!(calls[0].kind, "chat", "kind must round-trip");
+        match &calls[0].source {
+            CommandSource::Observer { observer_id: got } => {
+                assert_eq!(*got, observer_id, "observer_id must round-trip");
+            }
+            other => panic!("source must round-trip as Observer, got {other:?}"),
+        }
     }
 }
