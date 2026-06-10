@@ -75,9 +75,19 @@ impl SubstrateStateCache {
     /// bug upstream of the cache — the cache is honest about what it
     /// was told to remember.
     pub fn store(&self, envelope: StateEnvelope) {
+        self.store_arc(Arc::new(envelope));
+    }
+
+    /// Like [`Self::store`] but accepts an `Arc<StateEnvelope>`
+    /// directly. Used by [`crate::Substrate::store`] so the cache
+    /// and broadcast layers share the SAME allocation rather than
+    /// each wrapping their own clone. Per
+    /// `[[shared-decode-per-persona-perspective]]`: one decoded
+    /// envelope, every consumer reads the same bytes.
+    pub fn store_arc(&self, envelope: Arc<StateEnvelope>) {
         let kind = envelope.kind.clone();
         let mut by_kind = self.by_kind.lock().expect("cache mutex poisoned");
-        by_kind.insert(kind, Arc::new(envelope));
+        by_kind.insert(kind, envelope);
     }
 
     /// Read the latest envelope for `kind`. `None` if the substrate
