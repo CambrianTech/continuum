@@ -167,11 +167,35 @@ impl PersonaChannelView for ChatChannelView {
                 let mut last_sender = String::new();
                 let mut anyone_mentioned = false;
                 let mut burst_embedding: Option<Arc<Vec<f32>>> = None;
+                // Sum across consolidated anchors — an item carrying
+                // `consolidated_context: Vec<ConsolidatedContext>` represents
+                // itself PLUS all the prior messages it absorbed. The doctrine's
+                // load-bearing count is the underlying message count, not the
+                // post-consolidation Vec length.
+                let mut total_messages: usize = 0;
 
                 for item in items {
                     let Some(chat) = item.as_any().downcast_ref::<ChatQueueItem>() else {
                         continue;
                     };
+
+                    // Prior consolidated messages first, then the anchor itself —
+                    // matches the order ChatQueueItem.consolidate_with_items
+                    // produces the absorption in.
+                    for prior in &chat.consolidated_context {
+                        if !aggregated.is_empty() {
+                            aggregated.push('\n');
+                        }
+                        aggregated.push_str(&prior.sender_name);
+                        aggregated.push_str(": ");
+                        aggregated.push_str(&prior.content);
+                        if !needle.is_empty()
+                            && prior.content.to_lowercase().contains(&needle)
+                        {
+                            anyone_mentioned = true;
+                        }
+                    }
+                    total_messages += chat.consolidated_context.len();
 
                     if !aggregated.is_empty() {
                         aggregated.push('\n');
@@ -179,6 +203,7 @@ impl PersonaChannelView for ChatChannelView {
                     aggregated.push_str(&chat.sender_name);
                     aggregated.push_str(": ");
                     aggregated.push_str(&chat.content);
+                    total_messages += 1;
 
                     last_sender = chat.sender_name.clone();
 
@@ -196,7 +221,7 @@ impl PersonaChannelView for ChatChannelView {
 
                 CoherentInput::Chat(ChatCoherentInput {
                     primary_room: *primary_room,
-                    burst_message_count: items.len(),
+                    burst_message_count: total_messages,
                     window_span_ms: *window_span_ms,
                     aggregated_content: aggregated,
                     last_sender_name: last_sender,

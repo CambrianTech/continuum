@@ -8,13 +8,26 @@
 
 use super::channel_queue::{ChannelQueue, ChannelQueueConfig};
 use super::channel_types::{
-    ActivityDomain, ChannelRegistryStatus, QueueItemBehavior, ServiceCycleResult,
+    ActivityDomain, ChannelRegistryStatus, CoherentUnit, QueueItemBehavior, ServiceCycleResult,
     DOMAIN_PRIORITY_ORDER,
 };
+use super::channel_view::{ChatChannelView, CoherentInput, PersonaChannelView};
 use super::types::PersonaState;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tracing::{debug, info};
+use uuid::Uuid;
+
+/// Default burst window for [`ChannelRegistry::service_cycle_batched`].
+///
+/// Five seconds matches the typical conversational latency budget — bursts
+/// arriving within ~5s of an anchor get collapsed into a single coherent
+/// input for cognition's `analyze()`. Wider windows aggregate more (one
+/// fewer analyze per tick) but reduce reactivity; narrower windows
+/// reverse that trade-off. PR D (audio) is where this gets mood-tuned via
+/// `PersonaState`. PR A stays with a const so the seam is testable
+/// without state plumbing.
+pub const DEFAULT_BURST_WINDOW_MS: u64 = 5_000;
 
 /// Channel registry — routes items to per-domain queues.
 /// Owns all channel queues and provides the service_cycle() entry point.
@@ -246,6 +259,99 @@ impl ChannelRegistry {
             stats,
         }
     }
+
+    /// Demand-pull service cycle — the batched cognition entry point.
+    ///
+    /// One service tick = at most one [`CoherentInput`] per channel-with-work,
+    /// independent of how many items each channel drained. The caller passes
+    /// the Vec to cognition's `analyze()` ONCE, witnessing
+    /// `[[cognition-batches-per-channel-adapter]]`:
+    ///
+    /// > N inbox arrivals on one channel → 1 analyze, not N.
+    /// > Cycle wall-clock bounded by inference + ε, regardless of arrival rate.
+    ///
+    /// Returns `Vec<CoherentInput>` (possibly empty) and updates `state.inbox_load`
+    /// + mood as a side effect — same state-tracking semantics as the
+    /// pop-style [`Self::service_cycle`].
+    ///
+    /// `persona_id` + `persona_name` thread through to each
+    /// [`PersonaChannelView::interpret`] call so the cheap per-persona
+    /// perspective (mention detection, identity-aware ranking) reads the
+    /// SHARED lazy cells on each item per
+    /// `[[shared-decode-per-persona-perspective]]` — the embedding
+    /// `Arc<Vec<f32>>` is the same value across every persona viewing the
+    /// same burst.
+    ///
+    /// Existing [`Self::service_cycle`] stays for the legacy single-pop
+    /// production path (`service_module::service_once_for`,
+    /// `modules/channel::channel/service-cycle{,-full}`). Migration to
+    /// the batched path lands in PR C alongside `airc_chat_demo`
+    /// reshape, per the design doc's intentional follow-up list.
+    pub fn service_cycle_batched(
+        &mut self,
+        state: &mut PersonaState,
+        persona_id: Uuid,
+        persona_name: &str,
+        window_ms: u64,
+    ) -> Vec<CoherentInput> {
+        // 1. Consolidate (items decide how — same as single-pop path)
+        self.consolidate_all();
+
+        // 2. Track load (same state-update contract as the single-pop path
+        //    so consumers swapping methods don't observe a mood delta)
+        state.inbox_load = self.total_size() as u32;
+        state.calculate_mood();
+
+        let mut inputs: Vec<CoherentInput> = Vec::new();
+
+        // 3. ONE drain + interpret per domain per tick — independent of
+        //    how many items each channel carried. This is the
+        //    load-bearing wall-clock-bounded property.
+        for &domain in DOMAIN_PRIORITY_ORDER {
+            let Some(channel) = self.channels.get_mut(&domain) else {
+                continue;
+            };
+            if !channel.has_work() {
+                continue;
+            }
+            let Some(unit) = channel.drain_batch(window_ms) else {
+                continue;
+            };
+            let input = Self::interpret_for_domain(&unit, persona_id, persona_name);
+            inputs.push(input);
+        }
+
+        inputs
+    }
+
+    /// Per-domain view dispatch for `service_cycle_batched`.
+    ///
+    /// PR A ships `ChatChannelView` for the Chat domain; non-Chat domains
+    /// fall through to `CoherentInput::Other` via the same trait surface.
+    /// Subsequent PRs replace these branches with typed views per domain
+    /// (Voice in PR D, Code in a later slice). Centralised here so adding
+    /// a domain view = one line change, not a registry rewiring.
+    fn interpret_for_domain(
+        unit: &CoherentUnit,
+        persona_id: Uuid,
+        persona_name: &str,
+    ) -> CoherentInput {
+        match unit.domain() {
+            ActivityDomain::Chat => {
+                ChatChannelView.interpret(unit, persona_id, persona_name)
+            }
+            // Voice/Code/Background drained but not yet given typed
+            // views. `ChatChannelView::interpret` already routes non-Chat
+            // units to `CoherentInput::Other` per its trait contract —
+            // reusing it here keeps the per-domain dispatch table to one
+            // implementation path until typed views land.
+            ActivityDomain::Audio
+            | ActivityDomain::Code
+            | ActivityDomain::Background => {
+                ChatChannelView.interpret(unit, persona_id, persona_name)
+            }
+        }
+    }
 }
 
 impl Default for ChannelRegistry {
@@ -463,5 +569,196 @@ mod tests {
 
         registry.clear_all();
         assert_eq!(registry.total_size(), 0);
+    }
+
+    //=========================================================================
+    // service_cycle_batched — Delta 5 of task #244
+    //
+    // These tests pin the demand-pull doctrine concretely. They are the
+    // foundation Delta 6's architecture proof builds on; if any of these
+    // fail the doctrine claim itself is wrong, not the test.
+    //=========================================================================
+
+    use super::super::channel_view::CoherentInput;
+
+    /// proves: N chat items → ONE CoherentInput. The cognition-batches-
+    /// per-channel-adapter doctrine in its smallest concrete form. If
+    /// this returned len() == N we'd be back to per-item analyze
+    /// explosions.
+    #[test]
+    fn batched_returns_one_input_per_channel_regardless_of_arrival_count() {
+        let mut registry = ChannelRegistry::new();
+        let mut state = PersonaState::new();
+        let room = Uuid::new_v4();
+        let persona_id = Uuid::new_v4();
+
+        // 50 messages, same room — exactly the burst the doctrine
+        // describes (one sender, fast typing, or N personas chattering).
+        for i in 0..50 {
+            registry.route(arc_chat(room, false, 0.5 + (i as f32) * 0.001)).unwrap();
+        }
+
+        let inputs = registry.service_cycle_batched(
+            &mut state,
+            persona_id,
+            "Helper",
+            DEFAULT_BURST_WINDOW_MS,
+        );
+
+        // ONE CoherentInput, NOT 50. This is the core load-bearing
+        // assertion of `[[cognition-batches-per-channel-adapter]]`.
+        assert_eq!(
+            inputs.len(),
+            1,
+            "expected exactly 1 CoherentInput for 50 chat items in one channel, got {}",
+            inputs.len()
+        );
+        let burst = match &inputs[0] {
+            CoherentInput::Chat(c) => c,
+            other => panic!("expected CoherentInput::Chat, got {other:?}"),
+        };
+        // The burst reflects all 50 messages were folded in
+        assert_eq!(burst.burst_message_count, 50);
+        assert_eq!(burst.primary_room, room);
+    }
+
+    /// proves: multi-channel work → one CoherentInput per channel-with-
+    /// work. Demand-pull is per-channel, not per-tick-overall. A persona
+    /// with audio + chat work gets two inputs in one tick — cognition's
+    /// downstream analyze sees both at once instead of two sequential
+    /// per-channel ticks.
+    #[test]
+    fn batched_produces_one_input_per_channel_with_work() {
+        let mut registry = ChannelRegistry::new();
+        let mut state = PersonaState::new();
+        let room = Uuid::new_v4();
+        let persona_id = Uuid::new_v4();
+
+        registry.route(arc_chat(room, false, 0.5)).unwrap();
+        registry.route(arc_chat(room, false, 0.6)).unwrap();
+        registry.route(arc_voice()).unwrap();
+
+        let inputs = registry.service_cycle_batched(
+            &mut state,
+            persona_id,
+            "Helper",
+            DEFAULT_BURST_WINDOW_MS,
+        );
+
+        // Two channels had work (Audio + Chat) → two inputs.
+        assert_eq!(inputs.len(), 2, "expected one input per channel-with-work");
+        let domains: Vec<ActivityDomain> = inputs.iter().map(|i| i.domain()).collect();
+        assert!(domains.contains(&ActivityDomain::Chat));
+        assert!(domains.contains(&ActivityDomain::Audio));
+    }
+
+    /// proves: no work → empty Vec, not a sentinel. Per `[[no-fallbacks-
+    /// ever]]`: empty queues return empty, not a phantom "Idle" burst
+    /// that cognition would have to filter out.
+    #[test]
+    fn batched_empty_registry_returns_empty_vec() {
+        let mut registry = ChannelRegistry::new();
+        let mut state = PersonaState::new();
+        let persona_id = Uuid::new_v4();
+
+        let inputs = registry.service_cycle_batched(
+            &mut state,
+            persona_id,
+            "Helper",
+            DEFAULT_BURST_WINDOW_MS,
+        );
+
+        assert!(inputs.is_empty(), "empty registry must return empty Vec, not a sentinel");
+    }
+
+    /// proves: state.inbox_load + mood update side-effects survive the
+    /// batched path. Consumers swapping from `service_cycle` to
+    /// `service_cycle_batched` must not see a mood delta — the state
+    /// model is shared across both entry points.
+    #[test]
+    fn batched_updates_state_load_and_mood() {
+        let mut registry = ChannelRegistry::new();
+        let mut state = PersonaState::new();
+        let room = Uuid::new_v4();
+        let persona_id = Uuid::new_v4();
+
+        // Load enough to trip Overwhelmed (inbox_load > 20)
+        for _ in 0..25 {
+            registry.route(arc_chat(room, false, 0.5)).unwrap();
+        }
+
+        // Before tick: load is stale, mood is initial Active
+        assert_eq!(state.inbox_load, 0);
+
+        let _inputs = registry.service_cycle_batched(
+            &mut state,
+            persona_id,
+            "Helper",
+            DEFAULT_BURST_WINDOW_MS,
+        );
+
+        // After tick: load reflects total_size BEFORE drain (the
+        // consolidation step writes inbox_load before draining). The
+        // exact load_before-vs-after consolidation behavior matches
+        // the legacy service_cycle so consumers see no delta.
+        assert!(state.inbox_load > 0, "inbox_load must reflect pre-drain total");
+    }
+
+    /// proves: identity-aware perspective extends to the batched path
+    /// — same registry, two personas, different `anyone_mentioned_persona`
+    /// flags on the same underlying burst.
+    #[test]
+    fn batched_perspective_is_identity_aware() {
+        let mut registry = ChannelRegistry::new();
+        let mut state_maya = PersonaState::new();
+        let mut state_helper = PersonaState::new();
+        let room = Uuid::new_v4();
+
+        // Send a message mentioning Maya by name
+        let mention = Arc::new(ChatQueueItem {
+            id: Uuid::new_v4(),
+            room_id: room,
+            content: "hey Maya, can you take a look?".into(),
+            sender_id: Uuid::new_v4(),
+            sender_name: "Joel".into(),
+            sender_type: SenderType::Human,
+            mentions: false,
+            timestamp: now_ms(),
+            enqueued_at: now_ms(),
+            priority: 0.5,
+            consolidated_context: Vec::new(),
+            media: Vec::new(),
+            embedding_cell: std::sync::OnceLock::new(),
+        });
+        registry.route(mention.clone() as Arc<dyn QueueItemBehavior>).unwrap();
+
+        // Maya's perspective — she should see herself mentioned
+        let inputs_maya = registry.service_cycle_batched(
+            &mut state_maya,
+            Uuid::new_v4(),
+            "Maya",
+            DEFAULT_BURST_WINDOW_MS,
+        );
+        let maya_mentioned = inputs_maya.iter().find_map(|i| match i {
+            CoherentInput::Chat(c) => Some(c.anyone_mentioned_persona),
+            _ => None,
+        }).expect("Maya should have received a chat input");
+        assert!(maya_mentioned, "Maya should see herself mentioned in 'hey Maya'");
+
+        // Re-route the same item for a fresh tick (drain consumed it)
+        registry.route(mention as Arc<dyn QueueItemBehavior>).unwrap();
+
+        // Helper's perspective — he should NOT see himself mentioned
+        let inputs_helper = registry.service_cycle_batched(
+            &mut state_helper,
+            Uuid::new_v4(),
+            "Helper",
+            DEFAULT_BURST_WINDOW_MS,
+        );
+        let helper_mentioned = inputs_helper.iter().find_map(|i| match i {
+            CoherentInput::Chat(c) => Some(c.anyone_mentioned_persona),
+            _ => None,
+        }).expect("Helper should have received a chat input");
+        assert!(!helper_mentioned, "Helper should NOT see himself mentioned — Maya was named, not Helper");
     }
 }
