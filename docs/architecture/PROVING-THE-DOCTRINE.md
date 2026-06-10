@@ -154,7 +154,7 @@ needed)  `🔴` not yet proven, work item
 | Sentinels observe at zero added latency | — | — | TODO: bench main-flow latency with 0 vs N sentinels | — | — | 🔴 |
 | Cross-grid composition (peer subscriptions work over airc) | `tests/integration/airc_remote_inference_roundtrip.rs` (existing) | — | — | TODO: peer disconnect mid-stream chaos | — | 🟡 |
 | `Observability is half the substrate` (every load-bearing decision capturable) | per-module CaptureSink test | — | — | — | TODO: build-graph check that load-bearing modules implement the capture trait | 🟡 |
-| Module compose-by-event (no Commands.execute inside substrate-internal logic) | — | — | — | — | TODO: grep/AST check banning `Commands.execute` inside `cognition::*` (post-migration) | 🔴 |
+| Module compose-by-event (no Commands.execute inside substrate-internal logic) | — | — | — | — | `tests/architecture_compose_by_event.rs` (ratchet: 1 grandfathered `executor.execute_json` in `cognition/vision_describe.rs`; NEW BLOCK; migration tracked under #112-#114, graduates to ✅ when ratchet hits 0) | 🟡 |
 | RAII Lease drop ordering (PerKeyGate doctrine v2) | `per_key_gate::tests::lease_drop_evicts_gate_when_no_other_holders` + `gate_survives_first_lease_drop_while_second_holds` | — | — | — | `#[must_use]` on `Lease` | ✅ |
 
 The matrix has gaps. Gaps are the substrate's next architecture-test
