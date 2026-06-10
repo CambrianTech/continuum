@@ -143,7 +143,7 @@ needed)  `🔴` not yet proven, work item
 |---|---|---|---|---|---|---|
 | No silent TS fallthrough | `command_executor::tests::unknown_command_returns_typed_no_fallback_error_not_ts_attempt` + `tests/architecture_no_fallbacks.rs` (3 fns: single-command, structural-across-shapes, positive-path-preserved) | — | — | — | (could add: forbidden import of TS socket from non-bridge modules) | ✅ |
 | Engine-OS layering (cognition doesn't depend on runtime internals) | — | — | — | — | `tests/architecture_engine_os_layering.rs` (ratchet: 29 grandfathered, NEW violations BLOCK) | 🟡 |
-| Localized state per citizen (no singleton substrate state) | per-module field type check | — | — | — | TODO: grep-style check banning `OnceLock<Arc<*>>` outside `runtime::late_bound` | 🟡 |
+| Localized state per citizen (no singleton substrate state) | per-module field type check | — | — | — | `tests/architecture_no_singleton_state.rs` (ratchet: 12 grandfathered `static OnceLock<Arc<T>>` / `OnceCell<Arc<T>>` singletons; NEW ones BLOCK; positive test pins `LateBound<T>` at its canonical location) | 🟡 |
 | `PerKeyGate` structural eviction (no leak) | `training_trigger::tests::submit_at_threshold_dispatches_and_clears` (asserts `submit_gates.len() == 0`) | `per_key_gate::tests::stress::concurrent_acquire_drop_cycles_actually_serialize_critical_sections` | — | — | — | ✅ |
 | `LateBound<T>` install-once semantics | `late_bound::tests::second_install_is_silent_noop_original_wins` | — | — | — | static_assert `Send + Sync` | ✅ |
 | Flow scales geometrically (events > RPC under N consumers) | — | TODO: proptest over `(N, M, K)` | TODO: criterion event-fanout vs RPC-equivalent | — | — | 🔴 |
