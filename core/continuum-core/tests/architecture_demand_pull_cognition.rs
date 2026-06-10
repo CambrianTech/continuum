@@ -61,7 +61,6 @@
 //! per item across N concurrent personas.
 
 use std::sync::Arc;
-use std::time::{Duration, Instant};
 use uuid::Uuid;
 
 use continuum_core::persona::channel_items::ChatQueueItem;
@@ -92,6 +91,8 @@ fn make_chat(room: Uuid, sender: &str, content: &str) -> Arc<dyn QueueItemBehavi
         consolidated_context: Vec::new(),
         media: Vec::new(),
         embedding_cell: std::sync::OnceLock::new(),
+        #[cfg(any(test, feature = "test-fixtures"))]
+        compute_calls: std::sync::atomic::AtomicUsize::new(0),
     })
 }
 
@@ -162,34 +163,61 @@ fn service_cycle_with_n_chat_messages_yields_one_input() {
     assert_eq!(burst.primary_room, room);
 }
 
-/// Wall-clock bounded — the cycle's cost does NOT compound with
-/// arrival count.
+/// Wall-clock bounded — the cycle's cost does NOT compound linearly
+/// with arrival count.
 ///
-/// We measure two service-cycle wall-clocks, one with N=5 and one with
-/// N=500 chat items, then assert the ratio stays well below the
-/// per-item-explosion counterfactual. The doctrine claim:
+/// Gated behind the `stress-tests` feature per the CLAUDE.md doctrine
+/// "stress / multi-thread tests go behind `#[cfg(feature = "stress-tests")]
+/// mod stress {…}`". Wall-clock measurements on the LCD Intel Mac
+/// (MBP15,1) flap under `cargo test` concurrency with `npm start`
+/// running; gating keeps the default `cargo test` fast and reliable
+/// while CI's `--features stress-tests` run pins the bound honestly.
 ///
-/// > Cycle wall-clock = consolidate (linear, cheap) + interpret
-/// > (linear, cheap) + analyze (O(1) per channel, dominant if inference
-/// > is real). Without analyze, the cycle's runtime is pure aggregation
-/// > overhead.
+/// ## What the bound actually pins
 ///
-/// If the cycle were per-item analyze, the ratio would be ~100× (500 vs
-/// 5 items). The bound `BOUNDED_RATIO = 100` is generous — in practice
-/// the ratio is much smaller on the consolidation-only path — but it's
-/// the threshold that distinguishes "demand-pull batching" from
-/// "per-item processing".
+/// The doctrine's "wall-clock = analyze + ε" claim has two components:
+/// 1. **The structural part** — `inputs.len() == channels_with_work`,
+///    regardless of N. Pinned by
+///    [`service_cycle_with_n_chat_messages_yields_one_input`] above
+///    (always runs).
+/// 2. **The cost part** — without analyze wired in (`analyze()` lands
+///    in PR C), the cycle's measured cost is consolidation + interpret.
+///    That's still bounded but it's NOT "analyze + ε" — it's "ε" alone.
 ///
-/// We sample 5 runs and take the median to absorb scheduler noise.
+/// Honest framing: this test pins that `ε` (the substrate-side
+/// aggregation overhead) is bounded, not that the doctrine's full
+/// inference-cost claim holds. The full claim becomes testable when
+/// PR C ships the killer-loop integration test with `analyze()` in the
+/// hot path.
 ///
-/// proves: wall-clock bounded — service_cycle_batched runtime is
-/// dominated by per-channel analyze (O(1) per channel-tick), NOT by
-/// per-item processing (O(N)). Cycle scales sub-linearly in arrival
-/// rate.
+/// ## Honest bound
+///
+/// Per Reviewer 2's catch: `consolidate_rebuild` is O(N²) today
+/// (`channel_queue.rs:131-150` — N(N-1)/2 `should_consolidate_with`
+/// vtable calls). That makes "ε" itself super-linear in N. The
+/// `BOUNDED_RATIO = 30.0` here acknowledges this — N=500 vs N=5 may
+/// see ~30× from quadratic consolidation alone — but stays well below
+/// the per-item-explosion counterfactual (100×). A separate
+/// follow-up task tracks O(N) consolidation; once it lands, this
+/// threshold tightens to ~10×.
+///
+/// We also gate on a minimum t5 of 50µs to avoid the
+/// divide-by-near-zero failure mode where t5 reaches clock resolution
+/// and the ratio becomes meaningless.
+///
+/// proves: under the stress-tests feature, service_cycle_batched's
+/// substrate-side aggregation cost (consolidate + interpret) scales
+/// well below the per-item-explosion counterfactual. Full doctrine
+/// (analyze + ε) becomes testable when PR C wires analyze.
+#[cfg(feature = "stress-tests")]
 #[test]
 fn service_cycle_wallclock_independent_of_arrival_count() {
+    use std::time::{Duration, Instant};
+
     fn measure(n: usize) -> Duration {
-        let mut samples: Vec<Duration> = (0..5)
+        // 9 samples median (was 5) — absorbs scheduler noise better
+        // on Intel Mac under load. Cheap because each sample is fast.
+        let mut samples: Vec<Duration> = (0..9)
             .map(|_| {
                 let mut registry = ChannelRegistry::new();
                 let mut state = PersonaState::new();
@@ -221,21 +249,41 @@ fn service_cycle_wallclock_independent_of_arrival_count() {
     let t5 = measure(5);
     let t500 = measure(500);
 
-    // The counterfactual: if the cycle were per-item, the ratio would
-    // approach 100× (500/5). Demand-pull batching keeps it bounded.
-    // 100× is the failure threshold; the doctrine claim is that
-    // BOUNDED_RATIO is reachable.
-    const BOUNDED_RATIO: f64 = 100.0;
-    let ratio = t500.as_nanos() as f64 / t5.as_nanos().max(1) as f64;
+    // Minimum t5 guard: at clock-resolution depths the ratio becomes
+    // meaningless. Skip the assertion with an explicit log rather than
+    // pass-by-accident with `t5.as_nanos().max(1)`.
+    const MIN_USEFUL_T5: Duration = Duration::from_micros(50);
+    if t5 < MIN_USEFUL_T5 {
+        eprintln!(
+            "SKIP: t5={t5:?} below minimum useful resolution {MIN_USEFUL_T5:?} \
+             — measurement is in clock-noise territory, ratio assertion \
+             would be meaningless. The cycle is fast enough on this host \
+             that the wall-clock test is structurally unfalsifiable here. \
+             Run on a slower host (e.g. Joel's MBP15,1) for a useful \
+             measurement."
+        );
+        return;
+    }
+
+    // The honest bound. Per the docstring above:
+    // - per-item-explosion counterfactual: ~100× at N=500/N=5
+    // - current O(N²) consolidation: ~30× ceiling realistic
+    // - target after O(N) consolidation lands: <10×
+    //
+    // 30× distinguishes "we're not per-item" from "we're linear in N",
+    // honestly, given today's consolidation cost.
+    const BOUNDED_RATIO: f64 = 30.0;
+    let ratio = t500.as_nanos() as f64 / t5.as_nanos() as f64;
 
     assert!(
         ratio < BOUNDED_RATIO,
-        "service_cycle_batched scales linearly with arrival count: \
-         t5={t5:?}, t500={t500:?}, ratio={ratio:.2}× ≥ {BOUNDED_RATIO}×. \
-         The demand-pull doctrine claims cycle wall-clock is bounded \
-         by analyze (per-channel-tick, O(1)), not by per-item \
-         processing (O(N)). This ratio suggests the cycle has regressed \
-         to per-item cost."
+        "service_cycle_batched substrate-side cost grew faster than \
+         expected: t5={t5:?}, t500={t500:?}, ratio={ratio:.2}× \
+         ≥ {BOUNDED_RATIO}×. Either (a) consolidation regressed past \
+         the known O(N²) ceiling, (b) interpret() grew an N-dependent \
+         cost, or (c) some new per-item work crept in. The \
+         per-item-explosion counterfactual is ~100×; this bound is \
+         tighter to catch cost regressions earlier."
     );
 }
 
@@ -246,21 +294,48 @@ fn service_cycle_wallclock_independent_of_arrival_count() {
 /// other persona gets a clone of the cached `Arc<Vec<f32>>`. NOT 16
 /// independent computes.
 ///
-/// The witness: after 16 concurrent calls, the item's `embedding_cell`
-/// is populated with exactly ONE `Arc<Vec<f32>>`, and all 16 calls
-/// returned `Arc::ptr_eq` clones of that value. If compute had fired
-/// independently per persona, we'd see 16 different Arc values — the
-/// shared-decode property would be a lie and the substrate's
-/// "many personas in one room" cost claim would be wishful thinking.
+/// ## Why two assertions, not one
+///
+/// Per Reviewer 3's catch: `Arc::ptr_eq` alone proves only the
+/// `OnceLock::get_or_init` contract (already in std) — a refactor that
+/// bypasses OnceLock entirely (re-compute every call but return
+/// `Arc::clone(&first)`) would still pass `ptr_eq`. The DOCTRINE claim
+/// is "compute fires exactly once," which is a structural property
+/// about our code, not a property about std.
+///
+/// So we assert BOTH:
+/// - **Structural**: `embedding_compute_counter::count()` increments
+///   by exactly 1 across N concurrent calls. This pins the doctrine
+///   claim directly — if anyone refactors `embedding()` to bypass the
+///   lazy cell, this fails.
+/// - **Sharing**: all returned Arcs `Arc::ptr_eq` to the cached value.
+///   This pins that consumers actually share the cache, not just that
+///   compute fired once.
+///
+/// ## Why a Barrier
+///
+/// Per Reviewer 3's catch: 16 `spawn_blocking` on a 4-thread runtime
+/// likely serialize (first task finishes init before task 2 even
+/// schedules), so the test was a single-threaded test wearing
+/// concurrency clothing. The `tokio::sync::Barrier::new(N_PERSONAS)`
+/// forces all N tasks to wait at the gate before any call
+/// `item.embedding()` — when the gate releases, all N are racing to
+/// the OnceLock at once. THAT is the doctrine-relevant race.
 ///
 /// proves: `[[shared-decode-per-persona-perspective]]` — the
-/// substrate-shared expensive decode (here: embedding) runs ONCE per
-/// item, amortized across N concurrent persona consumers. The lazy
-/// cell on the item is the cost-split primitive.
+/// substrate-shared expensive decode runs EXACTLY ONCE per item
+/// (counter), amortized across N concurrent persona consumers (Arc
+/// share). The lazy cell on the item is the cost-split primitive.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn embedding_computed_once_across_concurrent_personas() {
+    use tokio::sync::Barrier;
+
     let room = Uuid::new_v4();
-    let item = Arc::new(ChatQueueItem {
+    // Typed `Arc<ChatQueueItem>` (not `Arc<dyn QueueItemBehavior>`) so
+    // we can read the per-item `compute_call_count()` instrumentation
+    // directly. Production code paths use the trait object; this test
+    // owns its own item type at construction time.
+    let item: Arc<ChatQueueItem> = Arc::new(ChatQueueItem {
         id: Uuid::new_v4(),
         room_id: room,
         content: "the shared content for this concurrent test".into(),
@@ -274,23 +349,42 @@ async fn embedding_computed_once_across_concurrent_personas() {
         consolidated_context: Vec::new(),
         media: Vec::new(),
         embedding_cell: std::sync::OnceLock::new(),
+        compute_calls: std::sync::atomic::AtomicUsize::new(0),
     });
 
     // Sanity: before any persona observes the item, the lazy cell is
-    // un-populated. If this fails, the test fixture itself is broken
-    // (item was pre-warmed somewhere).
+    // un-populated and the counter is zero. If either fails, the test
+    // fixture itself is broken.
     assert!(
         item.embedding_cell.get().is_none(),
         "lazy cell pre-populated — test fixture invalid"
     );
+    assert_eq!(
+        item.compute_call_count(),
+        0,
+        "compute counter pre-incremented — test fixture invalid"
+    );
 
     // 16 personas concurrently demand the embedding. The "many
-    // personas in one room" cost-split case.
+    // personas in one room" cost-split case — with a Barrier so they
+    // ACTUALLY race the OnceLock init, not serialize past it.
     const N_PERSONAS: usize = 16;
+    let barrier = Arc::new(Barrier::new(N_PERSONAS));
     let mut handles = Vec::with_capacity(N_PERSONAS);
     for _ in 0..N_PERSONAS {
         let item = Arc::clone(&item);
-        handles.push(tokio::task::spawn_blocking(move || item.embedding()));
+        let barrier = Arc::clone(&barrier);
+        handles.push(tokio::spawn(async move {
+            // Wait at the gate. When all N tasks arrive here, the
+            // gate releases and all N race to embedding() at once.
+            barrier.wait().await;
+            // Spawn-blocking so the synchronous embedding compute
+            // doesn't block the async runtime, but the race-to-init
+            // is real because all N hit the OnceLock at gate-release.
+            tokio::task::spawn_blocking(move || item.embedding())
+                .await
+                .expect("join")
+        }));
     }
     let mut returned_arcs: Vec<Arc<Vec<f32>>> = Vec::with_capacity(N_PERSONAS);
     for h in handles {
@@ -303,21 +397,37 @@ async fn embedding_computed_once_across_concurrent_personas() {
         .get()
         .expect("lazy cell must be populated after N persona reads");
 
-    // Every persona's returned Arc points to the SAME cached value.
-    // If any returned a different Arc, compute fired independently
-    // for that persona — the shared-decode property is broken.
+    // STRUCTURAL claim — compute fired exactly once on THIS item.
+    // Per-item counter (not global) so concurrent integration tests
+    // don't contaminate the measurement. This is the doctrine
+    // assertion that survives refactors of `embedding()`'s
+    // implementation: even if someone bypassed OnceLock, this would
+    // catch it.
+    let compute_calls = item.compute_call_count();
+    assert_eq!(
+        compute_calls, 1,
+        "compute_chat_embedding fired {compute_calls} times for this \
+         item across {N_PERSONAS} concurrent persona reads — doctrine \
+         says ONE. Shared-decode has regressed; N personas in one room \
+         now pay N× embedding cost instead of 1× shared."
+    );
+
+    // SHARING claim — every persona's returned Arc points to the SAME
+    // cached value. Pins the share semantic on top of the compute count.
     for (i, persona_arc) in returned_arcs.iter().enumerate() {
         assert!(
             Arc::ptr_eq(persona_arc, cached),
-            "persona {i} received a different Arc from the cached cell — \
-             compute fired multiple times. \
-             Shared-decode doctrine has regressed; N personas in one \
-             room now pay N× embedding cost instead of 1× shared."
+            "persona {i} received a different Arc from the cached cell \
+             — the compute count was 1 but the sharing is broken \
+             somehow. Investigate the embedding() implementation."
         );
     }
 
     // Also: the cached Vec has nonzero len (the placeholder compute
-    // produced a real embedding, didn't silently no-op).
+    // produced a real embedding, didn't silently no-op). NOTE: this
+    // assertion becomes ~vacuous when the real EmbeddingModule path
+    // ships (task #246) — at that point delete the check or replace
+    // with dimension-correct assertion against the model's d_embed.
     assert!(
         !cached.is_empty(),
         "cached embedding is empty — compute silently produced no output"

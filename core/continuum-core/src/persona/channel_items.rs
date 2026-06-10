@@ -208,14 +208,42 @@ pub struct ChatQueueItem {
     /// if already populated, can't corrupt the cache).
     #[serde(skip, default)]
     pub embedding_cell: std::sync::OnceLock<std::sync::Arc<Vec<f32>>>,
+
+    /// Per-item compute-call counter, used by architecture proofs to
+    /// witness `[[shared-decode-per-persona-perspective]]` structurally:
+    /// N concurrent persona reads on this item must increment this by
+    /// exactly 1 (compute fires once; subsequent demands hit the cache).
+    ///
+    /// Per-item (not global) so concurrent integration tests don't
+    /// contaminate each other's measurements — the doctrine claim is
+    /// "compute fires once per ITEM," and the witness is per-item.
+    /// Arc-shared via `Arc<ChatQueueItem>` automatically; clones get a
+    /// fresh counter (consistent with the fresh `embedding_cell` on
+    /// clone — Clone semantics align across both lazy-state fields).
+    ///
+    /// `#[cfg(any(test, feature = "test-fixtures"))]` so production
+    /// binaries cannot link the field — zero hot-path cost.
+    #[cfg(any(test, feature = "test-fixtures"))]
+    #[serde(skip, default)]
+    pub compute_calls: std::sync::atomic::AtomicUsize,
 }
 
 impl Clone for ChatQueueItem {
-    /// Clone creates a fresh `embedding_cell` — direct struct clones
-    /// are rare (queue items are normally shared via `Arc<ChatQueueItem>`)
-    /// and a fresh cache aligns with the "I want a fresh copy" intent.
-    /// The Arc-shared path automatically shares the cache via Arc clone,
-    /// no struct-level clone happens there.
+    /// Clone creates a fresh `embedding_cell` (and a fresh
+    /// `compute_calls` counter when the instrumentation feature is on).
+    ///
+    /// ⚠️ **Foot-gun warning**: cloning silently drops the lazy cache.
+    /// If you clone a `ChatQueueItem` whose `embedding_cell` is
+    /// populated and then call `.embedding()` on the clone, the compute
+    /// fires AGAIN — you pay the cost a second time. The doctrine
+    /// (`[[pass-by-reference-lazy-metadata-with-data]]`) says items
+    /// should be SHARED via `Arc<ChatQueueItem>`, not cloned. Clone
+    /// here is for the rare "I genuinely want a separate copy" case
+    /// (e.g. consolidation building a new anchor from absorbed items).
+    ///
+    /// If you find yourself reaching for `.clone()` to pass an item
+    /// to another consumer, you almost certainly want `Arc::clone(&arc)`
+    /// instead — that's the cache-preserving path.
     fn clone(&self) -> Self {
         Self {
             id: self.id,
@@ -231,6 +259,8 @@ impl Clone for ChatQueueItem {
             consolidated_context: self.consolidated_context.clone(),
             media: self.media.clone(),
             embedding_cell: std::sync::OnceLock::new(),
+            #[cfg(any(test, feature = "test-fixtures"))]
+            compute_calls: std::sync::atomic::AtomicUsize::new(0),
         }
     }
 }
@@ -251,19 +281,54 @@ impl ChatQueueItem {
     /// (lands in Delta 4 as `PersonaChannelView::interpret`).
     pub fn embedding(&self) -> std::sync::Arc<Vec<f32>> {
         self.embedding_cell
-            .get_or_init(|| std::sync::Arc::new(compute_chat_embedding(&self.content)))
+            .get_or_init(|| {
+                // Per-item compute-call instrumentation (test-fixtures
+                // only). Bumped INSIDE the OnceLock closure so it
+                // tracks closure-execution count, not call-site count.
+                // `std::sync::OnceLock::get_or_init` guarantees only
+                // one closure runs even under N-way contention (uses
+                // `Once::call_once_force` internally) — so this counter
+                // pins the doctrine claim "compute fires once per item
+                // regardless of concurrent reads."
+                #[cfg(any(test, feature = "test-fixtures"))]
+                self.compute_calls
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                std::sync::Arc::new(compute_chat_embedding(&self.content))
+            })
             .clone()
+    }
+
+    /// Test-only accessor: how many times has `compute_chat_embedding`
+    /// fired for THIS item? Used by architecture proofs to witness
+    /// `[[shared-decode-per-persona-perspective]]` structurally.
+    ///
+    /// Per-item (not global) so concurrent integration tests don't
+    /// contaminate each other's measurements.
+    #[cfg(any(test, feature = "test-fixtures"))]
+    pub fn compute_call_count(&self) -> usize {
+        self.compute_calls
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 }
 
-/// Pure content → embedding decoder. PR A ships a deterministic
-/// placeholder (small hash-derived vector) so the lazy-cell SEAM is
-/// observable in tests; the real production embedding compute lands
-/// when cognition wires through to the `EmbeddingModule` (currently
-/// a TODO for a follow-up PR — task #244 captures the integration
-/// order). The placeholder is sized so it can stand in for typical
-/// embedding dimension counts without allocating huge vectors in
-/// tests.
+/// Pure content → embedding decoder. **SEAM, not the production
+/// embedding path.** PR A ships a deterministic 8-dim hash-derived
+/// placeholder so the lazy-cell substrate is observable in tests; the
+/// real production path routes through the existing `EmbeddingModule`
+/// at `modules/embedding.rs` and lands in a follow-up PR (tracked as
+/// task #246 — substrate-wide `ChatItem::embedding()` async + wired
+/// through ai::embedding).
+///
+/// Why this matters for the doctrine: the `[[shared-decode-per-
+/// persona-perspective]]` claim is currently proven against this
+/// placeholder. The lazy-cell PROPERTY (one OnceLock fires once,
+/// N consumers share the Arc) holds under any pure decoder, so the
+/// architectural seam is sound. But the COST claim (compute is
+/// expensive; sharing it saves N-1× of compute) only becomes
+/// meaningful when the real embedding compute is in place — until
+/// then, the "expensive" decode is microsecond-cheap and the saving
+/// is theoretical. PR D / #246 closure must keep the lazy-cell
+/// contract AND route through EmbeddingModule.
 ///
 /// CRITICAL property: this function is PURE. Caching is on the item's
 /// OnceLock cell, not in the function. That keeps the decoder
@@ -273,7 +338,9 @@ fn compute_chat_embedding(content: &str) -> Vec<f32> {
     // Deterministic 8-dim placeholder: rotate content bytes into f32
     // buckets so different content produces visibly different vectors.
     // Real implementation routes through ai::embedding when the
-    // adapter integration lands.
+    // adapter integration lands (task #246). Per-item instrumentation
+    // lives on `ChatQueueItem::compute_calls`, NOT here, so this
+    // function stays pure.
     let mut v = vec![0.0_f32; 8];
     for (i, b) in content.bytes().enumerate() {
         v[i % 8] += (b as f32) / 255.0;
@@ -424,6 +491,8 @@ impl ChatQueueItem {
             // member's content, so a fresh embedding cell is correct —
             // it'll be computed on first demand against the new content.
             embedding_cell: std::sync::OnceLock::new(),
+            #[cfg(any(test, feature = "test-fixtures"))]
+            compute_calls: std::sync::atomic::AtomicUsize::new(0),
         }
     }
 }
@@ -787,6 +856,8 @@ impl ChannelEnqueueRequest {
                 consolidated_context: Vec::new(),
                 media: media.clone(),
                 embedding_cell: std::sync::OnceLock::new(),
+                #[cfg(any(test, feature = "test-fixtures"))]
+                compute_calls: std::sync::atomic::AtomicUsize::new(0),
             })),
             ChannelEnqueueRequest::Code {
                 id,
@@ -912,6 +983,8 @@ mod tests {
             consolidated_context: Vec::new(),
             media: Vec::new(),
             embedding_cell: std::sync::OnceLock::new(),
+            #[cfg(any(test, feature = "test-fixtures"))]
+            compute_calls: std::sync::atomic::AtomicUsize::new(0),
         }
     }
 
@@ -1172,6 +1245,8 @@ mod tests {
             consolidated_context: Vec::new(),
             media: Vec::new(),
             embedding_cell: std::sync::OnceLock::new(),
+            #[cfg(any(test, feature = "test-fixtures"))]
+            compute_calls: std::sync::atomic::AtomicUsize::new(0),
         });
 
         let e1 = item.embedding();
@@ -1220,6 +1295,8 @@ mod tests {
             consolidated_context: Vec::new(),
             media: Vec::new(),
             embedding_cell: std::sync::OnceLock::new(),
+            #[cfg(any(test, feature = "test-fixtures"))]
+            compute_calls: std::sync::atomic::AtomicUsize::new(0),
         });
 
         // Simulate 4 personas each holding their own Arc to the same item.

@@ -466,6 +466,8 @@ mod tests {
             consolidated_context: Vec::new(),
             media: Vec::new(),
             embedding_cell: std::sync::OnceLock::new(),
+            #[cfg(any(test, feature = "test-fixtures"))]
+            compute_calls: std::sync::atomic::AtomicUsize::new(0),
         })
     }
 
