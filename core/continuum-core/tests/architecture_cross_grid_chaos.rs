@@ -267,21 +267,31 @@ async fn silent_peer_request_times_out_with_typed_error() {
     let err = result.expect_err("silent peer should not produce a successful response");
     match err {
         RemoteInferenceError::Timeout { elapsed_ms } => {
-            // Sanity: elapsed_ms should be in the deadline neighborhood,
-            // not zero (would indicate the transport returned immediately
-            // without waiting) and not absurdly larger (would indicate
-            // deadline plumbing isn't honored end-to-end).
+            // `elapsed_ms` is the TRUE wall-clock since `send_request`
+            // entry — so it should be >= the configured deadline
+            // (the transport waited at least that long) and not
+            // dramatically larger (deadline must actually fire, not
+            // get exceeded by airc-lib's own internal poll cycle).
+            //
+            // Bounds: deadline (300ms) <= elapsed_ms < deadline + 500ms
+            // window for CI noise on loopback. A bug where the deadline
+            // is silently ignored AND something else bounds the wait
+            // would fail this assertion loudly, where the previous
+            // 100..=2000ms range would have absorbed it.
+            let deadline_ms = CHAOS_DEADLINE.as_millis() as u64;
             assert!(
-                elapsed_ms >= 100,
-                "Timeout.elapsed_ms = {elapsed_ms} is suspiciously low; \
-                 the deadline-honoring path should have waited at least \
-                 ~100ms before giving up"
+                elapsed_ms >= deadline_ms.saturating_sub(50),
+                "Timeout.elapsed_ms = {elapsed_ms} is below the \
+                 {deadline_ms}ms deadline (allowing 50ms scheduling \
+                 slop) — the transport returned before the deadline \
+                 fired, meaning the deadline plumbing isn't honored \
+                 end-to-end"
             );
             assert!(
-                elapsed_ms <= 2_000,
-                "Timeout.elapsed_ms = {elapsed_ms} is suspiciously high; \
-                 the {CHAOS_DEADLINE:?} deadline should have fired well \
-                 before 2s"
+                elapsed_ms <= deadline_ms + 500,
+                "Timeout.elapsed_ms = {elapsed_ms} is too far past the \
+                 {deadline_ms}ms deadline; airc-lib's own poll cycle \
+                 should bound overshoot"
             );
         }
         other => panic!(
@@ -289,13 +299,16 @@ async fn silent_peer_request_times_out_with_typed_error() {
         ),
     }
 
-    // Wall-clock sanity: even with a 2s upper bound on elapsed_ms,
-    // the total `send_request` call shouldn't take longer than that.
+    // Wall-clock sanity: deadline (300ms) + generous CI fudge.
+    // A future bug where the deadline arg is silently dropped AND
+    // airc-lib falls back to its internal multi-second default would
+    // PASS a 2s upper bound — so cap at 800ms (deadline + 500ms).
     assert!(
-        elapsed < Duration::from_secs(2),
+        elapsed < Duration::from_millis(800),
         "send_request against silent peer took {elapsed:?} — \
-         deadline must bound the wall-clock, not just the reported \
-         elapsed_ms"
+         the {CHAOS_DEADLINE:?} deadline must bound the wall-clock; \
+         drift past this window means deadline plumbing isn't \
+         honored end-to-end"
     );
 
     responder.await.expect("silent responder task joined");
