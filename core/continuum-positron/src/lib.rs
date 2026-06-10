@@ -62,6 +62,7 @@
 //! positron's session protocol PR merges. The seam stays narrow on
 //! purpose so the wire layer drops in cleanly.
 
+pub mod broadcast;
 pub mod cache;
 pub mod chat;
 pub mod dispatch;
@@ -71,6 +72,7 @@ pub mod revisions;
 pub mod session;
 pub mod state;
 
+pub use broadcast::Broadcast;
 pub use cache::SubstrateStateCache;
 pub use chat::{ChatMessageView, ChatViewState, PersonaSlotView, SenderKind};
 pub use dispatch::{apply_command, CommandDispatch};
