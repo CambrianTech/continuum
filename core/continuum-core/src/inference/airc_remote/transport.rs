@@ -233,6 +233,15 @@ impl AircInferenceTransport for AircLiveTransport {
         &self,
         request: RemoteInferenceRequest,
     ) -> Result<RemoteInferenceResponse, RemoteInferenceError> {
+        // Stamp the send-entry instant up-front so the eventual Timeout
+        // surfaces TRUE elapsed wall-clock, not a parroted copy of the
+        // deadline constant. Caught by adversarial review on PR #1593:
+        // reporting `self.deadline.as_millis()` regardless of how long
+        // we actually waited makes the metric a tautology — a future
+        // deadline-plumbing bug that returned immediately with
+        // `elapsed_ms = self.deadline` would still look "honest" in
+        // probes. The honest read is `start.elapsed()`.
+        let start = std::time::Instant::now();
         let target = self.resolve_target(&request)?;
         let correlation_id = request.correlation_id;
 
@@ -266,28 +275,82 @@ impl AircInferenceTransport for AircLiveTransport {
         // env-header branch is a no-op.
         let headers = AircTransport::build_headers(&envelope);
 
-        let pending = self
+        // Send-side classification: airc-lib's `request()` cannot
+        // surface `CommandDeadline` (the deadline only fires while
+        // waiting in `await_reply`). It CAN surface routing/setup
+        // failures that semantically mean "no peer is reachable" —
+        // `NoCurrentRoom`, `NotSubscribed`, `UnknownPeer` — which
+        // belong in `RemoteInferenceError::NoPeerReachable` so the
+        // coordinator's retry policy backs off the right way.
+        // Anything else lands in `Transport { message }` per
+        // [[strong-typing-across-boundaries]]: match the variant,
+        // not the Display string.
+        let pending = match self
             .airc
             .request(MentionTarget::Peer(target), headers, body, self.deadline)
             .await
-            .map_err(|e| RemoteInferenceError::Transport {
-                message: format!("airc.request to {target:?}: {e}"),
-            })?;
-
-        let reply = self.airc.await_reply(pending).await.map_err(|e| {
-            // airc-lib surfaces a single error type for timeout +
-            // transport break + correlation drop. Classify by
-            // substring rather than swallow the variant — the
-            // distinction matters for the coordinator's retry policy.
-            let message = format!("{e}");
-            if message.contains("timeout") || message.contains("timed out") {
-                RemoteInferenceError::Timeout {
-                    elapsed_ms: self.deadline.as_millis() as u64,
-                }
-            } else {
-                RemoteInferenceError::Transport { message }
+        {
+            Ok(p) => p,
+            Err(airc_lib::AircError::NoCurrentRoom)
+            | Err(airc_lib::AircError::NotSubscribed(_))
+            | Err(airc_lib::AircError::UnknownPeer(_))
+            | Err(airc_lib::AircError::Route(_)) => {
+                // `Route(_)` is airc-lib's "route resolver refused or
+                // selected a route the current sender cannot execute"
+                // — same semantic category as the other three: there
+                // is no actionable path to the target peer right now.
+                // Coordinator backoff handles all four identically.
+                return Err(RemoteInferenceError::NoPeerReachable {
+                    message: format!("airc.request to {target:?}: no reachable peer"),
+                });
             }
-        })?;
+            Err(other) => {
+                return Err(RemoteInferenceError::Transport {
+                    message: format!("airc.request to {target:?}: {other}"),
+                });
+            }
+        };
+
+        // Reply-side classification: airc-lib's `AircError` is a
+        // typed enum with a dedicated `CommandDeadline` variant for
+        // the deadline-elapsed case. The coordinator's retry policy
+        // distinguishes Timeout from generic Transport errors, so we
+        // classify on the VARIANT — not on the Display string —
+        // per [[strong-typing-across-boundaries]].
+        //
+        // History: an earlier classifier substring-matched
+        // `format!("{e}")` for "timeout" / "timed out" and
+        // mis-classified every real deadline (airc-lib's Display is
+        // "command deadline elapsed (correlation_id=…)") as
+        // `RemoteInferenceError::Transport`, silently breaking the
+        // coordinator's retry path. The `architecture_cross_grid_chaos`
+        // Shape-4 test caught it.
+        //
+        // The reported `elapsed_ms` is the TRUE wall-clock since
+        // `send_request` entry — not a parroted copy of the deadline
+        // constant. Probes downstream (latency histograms, sentinel
+        // verdicts) need the honest value.
+        //
+        // TODO: classify `AircError::Subscription(_)` if/when
+        // await_reply starts surfacing it (today the substrate
+        // pre-arms the reply_stream so this path is unreachable
+        // through `Airc::request`; a future caller that bypasses
+        // the pre-arm would land in the `Err(other)` catch-all and
+        // get classified as Transport when NoPeerReachable would
+        // be more semantically accurate).
+        let reply = match self.airc.await_reply(pending).await {
+            Ok(reply) => reply,
+            Err(airc_lib::AircError::CommandDeadline { .. }) => {
+                return Err(RemoteInferenceError::Timeout {
+                    elapsed_ms: start.elapsed().as_millis() as u64,
+                });
+            }
+            Err(other) => {
+                return Err(RemoteInferenceError::Transport {
+                    message: format!("{other}"),
+                });
+            }
+        };
 
         let reply_body = reply
             .body

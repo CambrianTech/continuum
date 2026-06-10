@@ -152,7 +152,7 @@ needed)  `🔴` not yet proven, work item
 | Federated alignment (hostile peer cannot dominate) | — | — | — | TODO: `TwoAircLoopback` + malicious peer harness | — | 🔴 |
 | Every scorer has VDD baseline + ML upgrade path | per-scorer baseline test | — | — | — | TODO: registry walk asserting every scorer has `Baseline + MlCandidate` impls | 🔴 |
 | Sentinels observe at zero added latency | — | — | TODO: bench main-flow latency with 0 vs N sentinels | — | — | 🔴 |
-| Cross-grid composition (peer subscriptions work over airc) | `tests/integration/airc_remote_inference_roundtrip.rs` (existing) | — | — | TODO: peer disconnect mid-stream chaos | — | 🟡 |
+| Cross-grid composition (peer subscriptions work over airc) | `tests/integration/airc_remote_inference_roundtrip.rs` (existing) | — | — | `tests/architecture_cross_grid_chaos.rs` (2 fns: silent-peer-timeout-surfaces-typed-error, transport-remains-callable-after-timeout — also caught + fixed a real classifier bug in `AircLiveTransport::send_request`) | — | ✅ |
 | `Observability is half the substrate` (every load-bearing decision capturable) | per-module CaptureSink test | — | — | — | TODO: build-graph check that load-bearing modules implement the capture trait | 🟡 |
 | Module compose-by-event (no Commands.execute inside substrate-internal logic) | — | — | — | — | `tests/architecture_compose_by_event.rs` (ratchet: 1 grandfathered `executor.execute_json` in `cognition/vision_describe.rs`; NEW BLOCK; migration tracked under #112-#114, graduates to ✅ when ratchet hits 0) | 🟡 |
 | RAII Lease drop ordering (PerKeyGate doctrine v2) | `per_key_gate::tests::lease_drop_evicts_gate_when_no_other_holders` + `gate_survives_first_lease_drop_while_second_holds` | — | — | — | `#[must_use]` on `Lease` | ✅ |
