@@ -62,16 +62,23 @@
 //! positron's session protocol PR merges. The seam stays narrow on
 //! purpose so the wire layer drops in cleanly.
 
+pub mod cache;
+pub mod chat;
 pub mod kinds;
 pub mod revisions;
+pub mod session;
 pub mod state;
-pub mod chat;
 
+pub use cache::SubstrateStateCache;
+pub use chat::{ChatMessageView, ChatViewState, PersonaSlotView, SenderKind};
 pub use kinds::{KnownKind, RevisionKey};
 pub use revisions::Revisions;
+pub use session::{apply_subscribe, Subscription};
 pub use state::StateBuilder;
-pub use chat::{ChatMessageView, ChatViewState, PersonaSlotView, SenderKind};
 
-// Re-export positron's wire types so consumers get them under one
-// path. The typed payloads in this crate fill `StateEnvelope.payload`.
+// Re-export positron's wire + session types so consumers get them
+// under one path. The typed payloads in this crate fill
+// `StateEnvelope.payload`; the session protocol's frames are what
+// substrate-side handlers consume + emit.
+pub use positron_core::session::{ClientMessage, KindRevision, ServerMessage};
 pub use positron_core::wire::{CommandEnvelope, CommandSource, StateEnvelope, StateLayer};
