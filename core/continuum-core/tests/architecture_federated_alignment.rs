@@ -83,12 +83,8 @@ use std::sync::Mutex;
 
 use airc_test_fixtures::TwoAircLoopback;
 use async_trait::async_trait;
-use continuum_airc_protocol::{
-    AircCommandResponse, COMMAND_REQUEST_BODY_HINT, HEADER_CONTINUUM_BODY_HINT,
-};
-use continuum_core::ai::types::{
-    ChatMessage, FinishReason, MessageContent, TextGenerationRequest, UsageMetrics,
-};
+use continuum_airc_protocol::{COMMAND_REQUEST_BODY_HINT, HEADER_CONTINUUM_BODY_HINT};
+use continuum_core::ai::types::{ChatMessage, MessageContent, TextGenerationRequest};
 use continuum_core::inference::airc_remote::{
     AircInferenceTransport, AircLiveTransport, RemoteInferenceRequest,
 };
@@ -240,20 +236,6 @@ fn build_remote_request() -> RemoteInferenceRequest {
     })
 }
 
-// silence unused-import warnings for items used only inside specific
-// tests
-#[allow(dead_code)]
-fn _import_anchors() {
-    let _ = AircCommandResponse::ok(serde_json::Value::Null);
-    let _ = FinishReason::Stop;
-    let _ = UsageMetrics {
-        input_tokens: 0,
-        output_tokens: 0,
-        total_tokens: 0,
-        estimated_cost: None,
-    };
-}
-
 // proves: federated alignment (hostile peer dispatch surfaces typed
 // refusal — Forbidden verdict prevents module execution, substrate
 // stays alive, caller receives structured error)
@@ -263,10 +245,16 @@ async fn hostile_peer_dispatch_is_refused_with_typed_forbidden_verdict() {
         .await
         .expect("fixture setup should succeed");
 
-    // peer_a's DENY policy: refuses any cross-grid caller. The
-    // closure flatly rejects with UnknownPeer for every Airc-source
-    // caller, mirroring the production "this peer is not enrolled
-    // in our trust store" outcome.
+    // peer_a's DENY policy: refuses any cross-grid caller with
+    // `ForbiddenReason::UnknownPeer`. The fixture's TwoAircLoopback
+    // actually enrolls peer_b in peer_a's trust store (mutual
+    // `add_peer`), so this policy overrides the trust-store state
+    // — and that override is doctrine-honest: the gate is the
+    // authority on admission, not the trust store. The test
+    // simulates "policy thinks they're unknown" semantics, which is
+    // what an ORM-backed production policy would surface when its
+    // capability table refuses regardless of the underlying trust
+    // store's enrollment list.
     let policy = ClosurePolicy::new(
         "chaos-deny-cross-grid",
         move |_decision: &RouteDecision, caller: Option<&CallerIdentity>| match caller {
@@ -319,11 +307,21 @@ async fn hostile_peer_dispatch_is_refused_with_typed_forbidden_verdict() {
          gate's typed Verdict (so audit + operator can identify the \
          cause). Got: {message}"
     );
+    // The substrate formats `Err(format!("forbidden: {reason}"))`
+    // where `{reason}` uses ForbiddenReason's thiserror Display. For
+    // UnknownPeer that's "caller peer not enrolled in this
+    // substrate" — so we assert on the Display prose, not the
+    // variant name. A future typed `AircCommandResponse::Verdict`
+    // variant (tracked follow-up; same antipattern PR #1593 closed
+    // for the deadline classifier) would let us match the variant
+    // directly; today's wire compression is prose.
     assert!(
-        message.contains("UnknownPeer") || message.contains("not enrolled"),
+        message.contains("not enrolled"),
         "the Forbidden reason must surface to the wire — caller should \
          be able to distinguish 'unknown peer' from 'no permission' or \
-         'rate limited' for audit + retry decisions. Got: {message}"
+         'rate limited' for audit + retry decisions. The Display prose \
+         for ForbiddenReason::UnknownPeer is 'caller peer not enrolled \
+         in this substrate' — got: {message}"
     );
 
     // Substrate stayed alive — we made it here without panic. The
