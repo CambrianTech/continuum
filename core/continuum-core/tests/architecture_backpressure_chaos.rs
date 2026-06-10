@@ -93,6 +93,22 @@ const LIVE_BROADCAST_CAPACITY: usize = 1_024;
 /// assertion, not the producer's burst rate.
 const FLOOD_COUNT: u64 = 1_500;
 
+/// Lifecycle-event headroom on top of FLOOD_COUNT for the
+/// conservation assertion. In a fresh 2-peer TwoAircLoopback fixture
+/// the substrate emits single-digit join/leave/subscription-advance
+/// events on the same broadcast channel; 64 leaves ~16× margin while
+/// still being tight enough that a fabrication bug (e.g. an event
+/// being double-broadcast on overflow recovery) would surface here.
+const CONSERVATION_SLACK: u64 = 64;
+
+/// Survival slack on top of LIVE_BROADCAST_CAPACITY for the
+/// bounded-recovery assertion. Accounts for the BroadcastStream
+/// wrapper's in-flight buffered item + ordering races between
+/// `lag` accounting and event delivery. 128 is conservative; the
+/// theoretical minimum is +1 (wrapper item) but ordering jitter
+/// can stretch this on loaded CI.
+const SURVIVAL_SLACK: u64 = 128;
+
 /// How long the consumer drains, measured from after the flood
 /// starts. Generous so a slower CI doesn't false-fail; the test
 /// completes promptly because the consumer hits Pending after
@@ -218,21 +234,17 @@ async fn flooding_producer_surfaces_typed_lag_to_slow_consumer() {
     assert!(
         lag_signals > 0,
         "slow consumer observed 0 LiveLag signals after a flood of \
-         {FLOOD_COUNT} events past airc-lib's 1024-event broadcast \
-         capacity. The substrate must surface typed lag on overflow \
-         (doctrine: backpressure intrinsic, no silent loss). Got: \
-         events={events}, lag_signals=0, total_skipped={total_skipped}."
+         {FLOOD_COUNT} events past airc-lib's {LIVE_BROADCAST_CAPACITY}-event \
+         broadcast capacity. The substrate must surface typed lag on \
+         overflow (doctrine: backpressure intrinsic, no silent loss). \
+         Got: events={events}, lag_signals=0, total_skipped={total_skipped}."
     );
 
-    // Conservation: events seen + skipped never exceeds events sent.
-    // peer_a's stream sees its OWN sends too (broadcast echoes locally),
-    // but here peer_a sends nothing — only peer_b floods. airc-lib
-    // emits a small number of lifecycle events (joins, subscription
-    // advances) on the same broadcast channel; in a fresh 2-peer
-    // fixture that's single digits, not hundreds. +CONSERVATION_SLACK
-    // catches the real fabrication class while staying tight enough
-    // that a future bug doubling event counts would surface here.
-    const CONSERVATION_SLACK: u64 = 64;
+    // Conservation: events seen + skipped never exceeds events sent
+    // plus a small lifecycle-event budget. peer_a's stream sees its
+    // OWN sends too (broadcast echoes locally), but here peer_a
+    // sends nothing — only peer_b floods. `CONSERVATION_SLACK`
+    // documents the budget at module scope.
     let observed = events + total_skipped;
     assert!(
         observed <= FLOOD_COUNT + CONSERVATION_SLACK,
@@ -245,17 +257,15 @@ async fn flooding_producer_surfaces_typed_lag_to_slow_consumer() {
     // Bounded recovery: the surviving event count is what's left in
     // the bounded broadcast ring when the consumer drains, plus at
     // most one in-flight item the BroadcastStream wrapper may have
-    // buffered between polls. 1024 (capacity) + 128 (slack for
-    // ordering races + the wrapper's internal state) is the honest
-    // upper bound; if survival exceeds this, the channel's
-    // capacity guarantee has been violated.
-    const SURVIVAL_SLACK: u64 = 128;
+    // buffered between polls. `SURVIVAL_SLACK` is documented at
+    // module scope.
     let survival_ceiling = (LIVE_BROADCAST_CAPACITY as u64) + SURVIVAL_SLACK;
     assert!(
         events <= survival_ceiling,
         "events delivered to slow consumer ({events}) exceeds the \
-         broadcast capacity (1024) + {SURVIVAL_SLACK} slack. The \
-         channel's bounded guarantee should cap what survives overflow."
+         broadcast capacity ({LIVE_BROADCAST_CAPACITY}) + \
+         {SURVIVAL_SLACK} slack. The channel's bounded guarantee \
+         should cap what survives overflow."
     );
 }
 
