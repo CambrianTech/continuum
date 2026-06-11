@@ -116,7 +116,13 @@ async function main() {
     entities,
   };
 
-  const outPath = path.resolve(__dirname, '..', 'shared', 'generated', 'entity_schemas.json');
+  // protocol/typescript/entity_schemas.json is the tracked location — it is
+  // what Rust include_str!'s (modules/entity_schemas.rs) and what the header
+  // above documents. The old '../shared/generated' resolution was relative to
+  // the pre-substrate src/scripts home and silently dumped output into
+  // tools/shared/generated/ after the tools/ move, leaving the tracked file
+  // stale (e.g. the deleted social subsystem lingered in it).
+  const outPath = path.resolve(__dirname, '..', '..', 'protocol', 'typescript', 'entity_schemas.json');
   await fs.promises.mkdir(path.dirname(outPath), { recursive: true });
 
   // Idempotent write: if the ENTITIES section is identical to what's on

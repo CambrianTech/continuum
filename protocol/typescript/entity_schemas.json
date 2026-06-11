@@ -1,7 +1,7 @@
 {
   "$schemaVersion": 1,
-  "$generatedAt": "2026-05-14T16:06:33.742Z",
-  "$sha256": "d5c1cff2a1ed6a6cb2e9a766ae0e39209fc8e766a300a8b87513eb349e9174e2",
+  "$generatedAt": "2026-06-11T17:50:50.044Z",
+  "$sha256": "44cbbfb1662c4514d7ea77c5432d5f7d6e99e2ea091726f2baa52b73b24ed2a2",
   "entities": {
     "users": {
       "collection": "users",
@@ -6625,132 +6625,6 @@
         }
       ],
       "compositeIndexes": [],
-      "archive": null
-    },
-    "social_credentials": {
-      "collection": "social_credentials",
-      "entityClass": "SocialCredentialEntity",
-      "fields": [
-        {
-          "fieldName": "id",
-          "fieldType": "primary",
-          "options": {
-            "unique": true,
-            "nullable": false
-          }
-        },
-        {
-          "fieldName": "createdAt",
-          "fieldType": "date",
-          "options": {
-            "nullable": false,
-            "index": true
-          }
-        },
-        {
-          "fieldName": "updatedAt",
-          "fieldType": "date",
-          "options": {
-            "nullable": false,
-            "index": true
-          }
-        },
-        {
-          "fieldName": "version",
-          "fieldType": "number",
-          "options": {
-            "nullable": false
-          }
-        },
-        {
-          "fieldName": "personaId",
-          "fieldType": "text",
-          "options": {
-            "nullable": false,
-            "index": true
-          }
-        },
-        {
-          "fieldName": "platformId",
-          "fieldType": "text",
-          "options": {
-            "nullable": false,
-            "index": true
-          }
-        },
-        {
-          "fieldName": "apiKey",
-          "fieldType": "text",
-          "options": {
-            "nullable": false,
-            "maxLength": 0
-          }
-        },
-        {
-          "fieldName": "agentName",
-          "fieldType": "text",
-          "options": {
-            "nullable": false,
-            "index": true
-          }
-        },
-        {
-          "fieldName": "profileUrl",
-          "fieldType": "text",
-          "options": {
-            "nullable": true,
-            "maxLength": 0
-          }
-        },
-        {
-          "fieldName": "claimUrl",
-          "fieldType": "text",
-          "options": {
-            "nullable": true,
-            "maxLength": 0
-          }
-        },
-        {
-          "fieldName": "claimStatus",
-          "fieldType": "enum",
-          "options": {
-            "nullable": false,
-            "index": true
-          }
-        },
-        {
-          "fieldName": "registeredAt",
-          "fieldType": "date",
-          "options": {
-            "nullable": false,
-            "index": true
-          }
-        },
-        {
-          "fieldName": "lastActiveAt",
-          "fieldType": "date",
-          "options": {
-            "nullable": true
-          }
-        },
-        {
-          "fieldName": "metadata",
-          "fieldType": "json",
-          "options": {
-            "nullable": true
-          }
-        }
-      ],
-      "compositeIndexes": [
-        {
-          "name": "idx_social_creds_persona_platform",
-          "fields": [
-            "personaId",
-            "platformId"
-          ],
-          "unique": true
-        }
-      ],
       "archive": null
     },
     "handles": {
