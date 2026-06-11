@@ -15,7 +15,7 @@ export type { TextGenerationRequest, TextGenerationResponse, UsageMetrics } from
 export interface ModelCapabilities {
   readonly modelId: string;
   readonly providerId: string;
-  readonly capabilities: import('../../../../../shared/generated/ai').ModelCapability[];
+  readonly capabilities: import('@shared/generated/ai').ModelCapability[];
   readonly maxContextTokens: number;
   readonly supportsImages: boolean;
   readonly supportsToolUse: boolean;
@@ -58,7 +58,7 @@ export interface ModelRecommendation {
   readonly speed: 'fast' | 'medium' | 'slow';
   readonly free: boolean;
   readonly requiresAPIKey: boolean;
-  readonly capabilities: import('../../../../../shared/generated/ai').ModelCapability[];
+  readonly capabilities: import('@shared/generated/ai').ModelCapability[];
 }
 
 /**

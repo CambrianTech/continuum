@@ -305,13 +305,20 @@ mod tests {
 
     #[test]
     fn no_subscriber_returns_empty_chain() {
-        // Outside `with_default` — no UriCaptureLayer installed
-        let span = tracing::info_span!("cmd", uri = "airc:///orphan");
-        let _enter = span.enter();
-        assert!(
-            current_uri_chain().is_empty(),
-            "no installed Layer means no captured frames; substrate refuses to fabricate"
-        );
+        // Pin an explicit NoSubscriber for this thread. The test's premise is
+        // "no UriCaptureLayer installed", but other tests in this binary can
+        // install a GLOBAL default that includes UriCaptureLayer (e.g.
+        // tracing_init's `try_init`), which captured this span and made the
+        // test order-dependent. with_default(NoSubscriber) restores the
+        // intended no-layer world regardless of what ran before.
+        tracing::subscriber::with_default(tracing::subscriber::NoSubscriber::default(), || {
+            let span = tracing::info_span!("cmd", uri = "airc:///orphan");
+            let _enter = span.enter();
+            assert!(
+                current_uri_chain().is_empty(),
+                "no installed Layer means no captured frames; substrate refuses to fabricate"
+            );
+        });
     }
 
     #[test]

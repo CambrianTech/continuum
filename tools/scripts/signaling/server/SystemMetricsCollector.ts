@@ -10,14 +10,14 @@ import * as path from 'path';
 import { exec } from 'child_process';
 import { promisify } from 'util';
 import type { SystemReadySignal, SystemHealth, BuildStatus } from '../shared/SystemSignalingTypes';
-import { SystemPaths } from '../../../system/core/config/SystemPaths';
+import { SystemPaths } from '../../../../src/system/core/config/SystemPaths';
 
 // Mutable version of SystemReadySignal for building metrics incrementally
 type MutableSystemReadySignal = {
   -readonly [K in keyof SystemReadySignal]: SystemReadySignal[K] extends ReadonlyArray<infer U> ? U[] : SystemReadySignal[K];
 };
 import { getSignalConfig } from '../shared/MilestoneConfiguration';
-import { JTAG_LOG_PATTERNS } from '../../../system/core/client/shared/JTAGClientConstants';
+import { JTAG_LOG_PATTERNS } from '../../../../src/system/core/client/shared/JTAGClientConstants';
 
 const execAsync = promisify(exec);
 

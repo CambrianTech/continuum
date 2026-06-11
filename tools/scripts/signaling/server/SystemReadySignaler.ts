@@ -12,7 +12,7 @@ import { SystemReadySignal } from '../shared/SystemSignalingTypes';
 import { getDefaultMilestoneConfig } from '../shared/MilestoneConfiguration';
 import { ProgressCalculator } from '../shared/ProgressCalculator';
 import { SystemMetricsCollector } from './SystemMetricsCollector';
-import { WorkingDirConfig } from '../../../system/core/config/WorkingDirConfig';
+import { WorkingDirConfig } from '../../../../src/system/core/config/WorkingDirConfig';
 
 export class SystemReadySignaler {
   private progressCalculator: ProgressCalculator;
@@ -70,7 +70,7 @@ export class SystemReadySignaler {
       console.warn(`⚠️ SystemReadySignaler: Failed to load active instance ports: ${(error as Error).message}`);
       // Fall back to ServerConfig (sole accessor for config.env)
       try {
-        const { getServerConfig } = require('../../../system/config/ServerConfig');
+        const { getServerConfig } = require('../../../../src/system/config/ServerConfig');
         const websocketPort = getServerConfig().getWsPort();
         return `port-${websocketPort}`;
       } catch (configError) {

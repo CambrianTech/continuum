@@ -4,7 +4,7 @@
  * Self-contained worker definition - discovered by generator
  */
 
-import { SystemPaths } from '../../system/core/config/SystemPaths';
+import { SystemPaths } from '../../src/system/core/config/SystemPaths';
 
 export default {
   name: 'archive',

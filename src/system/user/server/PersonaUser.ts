@@ -1664,7 +1664,7 @@ export class PersonaUser extends AIUser {
     originalMessage: ProcessableMessage,
     decisionContext?: Omit<LogDecisionParams, 'responseContent' | 'tokensUsed' | 'responseTime'>,
     preBuiltRagContext?: PipelineRAGContext,
-    socialSignals?: import('../../../shared/generated').SocialSignals
+    socialSignals?: import('@shared/generated').SocialSignals
   ): Promise<void> {
     if (!this.isProviderAvailableForChat()) {
       this.log.warn(`⏭️ ${this.displayName}: Refusing response generation because provider ${this.modelConfig.provider} is not configured`);

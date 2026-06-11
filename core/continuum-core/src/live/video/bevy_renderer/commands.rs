@@ -10,10 +10,9 @@ use bevy::prelude::*;
 use bevy::scene::SceneInstanceReady;
 
 use super::animation::{
-    BlinkAnimation, BoneRef, BreathingAnimation, CameraHeadLock, CognitiveGesture, Emotion,
-    EmotionAnimation, EyeGaze, GestureAnimation, GesturePhase, IdleMotion, ModelPath,
-    MorphMeshLink, MorphTargets, MouthWeight, Skeleton, SlotId, Speaking, SpeechClip,
-    EMOTION_DECAY_SECS,
+    BreathingAnimation, CameraHeadLock, CognitiveGesture, Emotion, EmotionAnimation,
+    GestureAnimation, GesturePhase, IdleMotion, ModelPath, MouthWeight, SlotId, Speaking,
+    SpeechClip, EMOTION_DECAY_SECS,
 };
 use super::api::gpu_manager;
 use super::scene::{

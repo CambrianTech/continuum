@@ -37,7 +37,7 @@ function openBrowserCommand(url: string): { cmd: string; args: string[] } {
   } catch { /* not WSL */ }
   return { cmd: 'xdg-open', args: [url] };
 }
-import { SystemReadySignaler } from '../../scripts/signal-system-ready';
+import { SystemReadySignaler } from '@scripts/signal-system-ready';
 import { 
   SYSTEM_MILESTONES, 
   MILESTONE_DEPENDENCIES, 
@@ -1178,7 +1178,7 @@ export class SystemOrchestrator extends EventEmitter {
   private async checkServerHealth(port: number): Promise<boolean> {
     try {
       // Use the existing signal system for comprehensive health checking
-      const { SystemReadySignaler } = await import('../../scripts/signaling/server/SystemReadySignaler');
+      const { SystemReadySignaler } = await import('@scripts/signaling/server/SystemReadySignaler');
       const signaler = new SystemReadySignaler();
       
       // Fast event-driven health check (500ms max)

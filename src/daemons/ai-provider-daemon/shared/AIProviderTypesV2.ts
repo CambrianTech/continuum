@@ -271,7 +271,7 @@ export interface AIProviderAdapter {
   readonly supportedCapabilities: ModelCapability[];
 
   // Core operations (only implement what the provider supports)
-  generateText?(request: TextGenerationRequest): Promise<import('../../../shared/generated/ai').TextGenerationResponse>;
+  generateText?(request: TextGenerationRequest): Promise<import('@shared/generated/ai').TextGenerationResponse>;
   generateAudio?(request: AudioGenerationRequest): Promise<AudioGenerationResponse>;
   transcribeAudio?(request: AudioTranscriptionRequest): Promise<AudioTranscriptionResponse>;
   generateImage?(request: ImageGenerationRequest): Promise<ImageGenerationResponse>;
@@ -285,8 +285,8 @@ export interface AIProviderAdapter {
   disableSkillTraining?(skillId: string): Promise<void>;
 
   // Metadata
-  getAvailableModels(): Promise<import('../../../shared/generated/ai').ModelInfo[]>;
-  healthCheck(): Promise<import('../../../shared/generated/ai').HealthStatus>;
+  getAvailableModels(): Promise<import('@shared/generated/ai').ModelInfo[]>;
+  healthCheck(): Promise<import('@shared/generated/ai').HealthStatus>;
 
   // Queue monitoring (for load-aware PersonaInbox consolidation)
   getQueueStats?(): {
@@ -302,7 +302,7 @@ export interface AIProviderAdapter {
   // Semantic Model Tier Resolution
   resolveModelTier?(tier: ModelTier): Promise<ModelResolution>;
   classifyModel?(modelId: string): Promise<ModelTags | null>;
-  getModelsByTier?(): Promise<Map<ModelTier, import('../../../shared/generated/ai').ModelInfo[]>>;
+  getModelsByTier?(): Promise<Map<ModelTier, import('@shared/generated/ai').ModelInfo[]>>;
 
   // Lifecycle
   initialize(): Promise<void>;
@@ -349,7 +349,7 @@ export class AIProviderError extends Error {
   }
 }
 
-export function chatMessagesToPrompt(messages: import('../../../shared/generated/ai').ChatMessage[]): { prompt: string; systemPrompt?: string } {
+export function chatMessagesToPrompt(messages: import('@shared/generated/ai').ChatMessage[]): { prompt: string; systemPrompt?: string } {
   let systemPrompt: string | undefined;
   const conversationParts: string[] = [];
 

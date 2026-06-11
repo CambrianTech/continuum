@@ -490,7 +490,7 @@ export class PersonaResponseGenerator {
         // Capabilities cross the wire as kebab-case strings (Rust
         // `Capability` serde rename) — matches the `Capability`
         // ts-rs export.
-        capabilities: capabilities as unknown as import('../../../../shared/generated/model_registry/Capability').Capability[],
+        capabilities: capabilities as unknown as import('@shared/generated/model_registry/Capability').Capability[],
         systemPrompt,
         recentHistory: recentHistory.map(h => ({
           id: h.id,
