@@ -6,9 +6,11 @@ set -e
 
 START_TIME=$(date +%s)
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-SRC_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-RUST_DIR="$SRC_DIR/workers/continuum-core"
-REPO_ROOT="$(cd "$SRC_DIR/.." && pwd)"
+# Script lives at <repo>/tools/scripts/ (substrate-first layout) — resolve
+# the repo root from there, then anchor src/ and the Rust workspace off it.
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+SRC_DIR="$REPO_ROOT/src"
+RUST_DIR="$REPO_ROOT/core/continuum-core"
 
 require_node_deps() {
     if [ -x "$SRC_DIR/node_modules/.bin/tsx" ] \
