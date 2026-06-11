@@ -414,6 +414,177 @@ pub fn full_evaluate(
 }
 
 // =============================================================================
+// BURST-AWARE EVALUATOR (task #248 PR C — demand-pull cognition path)
+// =============================================================================
+
+/// Result of evaluating a burst — analyzed at the cognition layer
+/// ONCE per channel-tick (the demand-pull doctrine in production form).
+///
+/// Parallel to [`FullEvaluateResult`] but burst-aware: carries the
+/// post-decision context (`respond_context`) cognition needs to compose
+/// a response, so the response phase doesn't have to walk the burst's
+/// items a second time.
+///
+/// Per `[[cognition-batches-per-channel-adapter]]`: cognition's
+/// `analyze` fires ONCE per `Vec<CoherentInput>` from
+/// `service_cycle_batched`, regardless of how many items each channel
+/// drained. This struct is what that single call returns per channel.
+#[derive(Debug, Clone)]
+pub struct BurstEvaluateResult {
+    /// Cognition's gate decision — same semantic as
+    /// [`FullEvaluateResult::should_respond`].
+    pub should_respond: bool,
+    pub confidence: f32,
+    pub reason: String,
+    /// Which gate decided (same string-tag set as `full_evaluate`).
+    pub gate: String,
+    /// How many raw items the burst aggregated. Equal to
+    /// `ChatCoherentInput::burst_message_count` when input is Chat.
+    pub burst_message_count: usize,
+    /// The room the burst came from. `Uuid::nil()` for non-Chat
+    /// CoherentInput variants.
+    pub primary_room: Uuid,
+    /// If `should_respond` is true, this carries the prompt-assembly
+    /// context. None when cognition decided silent. Lets the response
+    /// phase avoid re-walking the burst.
+    pub respond_context: Option<BurstRespondContext>,
+}
+
+/// Prompt-assembly context for a burst that cognition wants to
+/// respond to. Mirrors the fields cognition's prompt assembler reads
+/// from a single message but at burst granularity.
+#[derive(Debug, Clone)]
+pub struct BurstRespondContext {
+    pub room_id: Uuid,
+    /// Aggregated burst content — newline-joined "Sender: message"
+    /// lines including consolidated_context. Matches
+    /// `ChatCoherentInput::aggregated_content`.
+    pub aggregated_content: String,
+    pub last_sender_name: String,
+    pub burst_message_count: usize,
+    /// Identity-aware flag from `ChatChannelView::interpret`. Personas
+    /// named in the burst see this true; others see false.
+    pub anyone_mentioned_persona: bool,
+}
+
+/// Demand-pull cognition entry point — the PR C decision shape from
+/// the design doc:
+///
+/// > Option 3: Add `analyze_burst(&CoherentInput) -> BurstDecision`
+/// > alongside the existing per-item path. The new entry point IS the
+/// > demand-pull doctrine; the old per-item path stays for
+/// > compatibility, gets `#[deprecated]`'d, and gets ripped in PR C+1.
+///
+/// Per the doctrine: cognition's gate fires ONCE per channel-tick per
+/// burst, regardless of how many items the burst aggregated. The
+/// initial implementation maps a `Chat` burst into a synthetic
+/// [`FullEvaluateRequest`] and reuses [`full_evaluate`] for the gate
+/// logic — same trustworthy gate stack, batched input. Future
+/// refactors can replace the synthetic-request path with a
+/// burst-native gate implementation; the trait shape stays stable.
+///
+/// `Other` variants (Audio/Code/Background — domains without typed
+/// views yet) return a silent decision; downstream cognition skips
+/// them until typed views land (PR D for Audio).
+pub fn analyze_burst(
+    input: &crate::persona::channel_view::CoherentInput,
+    persona_id: Uuid,
+    persona_name: &str,
+    persona_unique_id: &str,
+    rate_limiter: &RateLimiterState,
+    sleep_state: &SleepState,
+    engine: &PersonaCognitionEngine,
+    message_cache: &RecentMessageCache,
+    now_ms: u64,
+) -> BurstEvaluateResult {
+    use crate::persona::channel_view::CoherentInput;
+
+    match input {
+        CoherentInput::Chat(chat) => {
+            // Build a synthetic single-message request from the burst's
+            // aggregated context. The doctrine is "ONE gate call per
+            // burst" — the synthetic shape is the path from burst →
+            // existing `full_evaluate`. PR C+1 can swap this for a
+            // burst-native gate without changing the trait surface.
+            //
+            // `message_id` is a burst-anchor UUID derived per call so
+            // downstream caches don't conflate two ticks' bursts on
+            // the same room.
+            let synthetic = FullEvaluateRequest {
+                persona_id,
+                persona_name: persona_name.to_string(),
+                persona_unique_id: persona_unique_id.to_string(),
+                message_id: Uuid::new_v4(),
+                room_id: chat.primary_room,
+                // Burst-level sender is the aggregate-of-senders; we
+                // pin it to nil and let the LLM read individual
+                // senders out of `aggregated_content`.
+                sender_id: Uuid::nil(),
+                sender_name: chat.last_sender_name.clone(),
+                // Sender-type at burst level is a heuristic — if the
+                // burst aggregated cross-sender messages, "human" is
+                // the safe default (matches the legacy fast-path
+                // interpretation of chat bursts).
+                sender_type: SenderType::Human,
+                content: chat.aggregated_content.clone(),
+                timestamp: now_ms,
+                is_voice: false,
+                voice_session_id: None,
+                sender_is_human: true,
+                topic_similarity: None,
+                recent_room_texts: None,
+            };
+            let inner = full_evaluate(
+                &synthetic,
+                rate_limiter,
+                sleep_state,
+                engine,
+                message_cache,
+                now_ms,
+            );
+
+            BurstEvaluateResult {
+                should_respond: inner.should_respond,
+                confidence: inner.confidence,
+                reason: inner.reason,
+                gate: inner.gate,
+                burst_message_count: chat.burst_message_count,
+                primary_room: chat.primary_room,
+                respond_context: inner.should_respond.then(|| BurstRespondContext {
+                    room_id: chat.primary_room,
+                    aggregated_content: chat.aggregated_content.clone(),
+                    last_sender_name: chat.last_sender_name.clone(),
+                    burst_message_count: chat.burst_message_count,
+                    anyone_mentioned_persona: chat.anyone_mentioned_persona,
+                }),
+            }
+        }
+        CoherentInput::Other {
+            domain,
+            item_count,
+            ..
+        } => {
+            // Non-Chat domains drain into Other until their typed
+            // views land (PR D for Audio). Cognition decides silent
+            // for these bursts — no gate logic runs, no inference
+            // would be wasted on a burst the substrate hasn't taught
+            // us how to interpret yet. Per `[[no-fallbacks-ever]]`:
+            // explicit silent decision with a typed reason, NOT a
+            // fall-through to chat semantics that would mis-route.
+            BurstEvaluateResult {
+                should_respond: false,
+                confidence: 0.0,
+                reason: format!("non-Chat burst from {domain:?} — typed view not yet implemented"),
+                gate: "other-domain-silent".into(),
+                burst_message_count: *item_count,
+                primary_room: Uuid::nil(),
+                respond_context: None,
+            }
+        }
+    }
+}
+
+// =============================================================================
 // TESTS
 // =============================================================================
 

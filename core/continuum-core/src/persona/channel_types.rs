@@ -58,7 +58,7 @@ pub const DOMAIN_PRIORITY_ORDER: &[ActivityDomain] = &[
 ///
 /// Default implementations provide sensible RTOS-style behavior.
 /// Subclasses override only what differs (e.g., Voice: always urgent, never kicked).
-pub trait QueueItemBehavior: Send + Sync + Any {
+pub trait QueueItemBehavior: Send + Sync + Any + std::fmt::Debug {
     /// Runtime type discriminator (e.g., "voice", "chat", "task")
     fn item_type(&self) -> &'static str;
 
@@ -149,14 +149,54 @@ pub trait QueueItemBehavior: Send + Sync + Any {
     // CONSOLIDATION
     // =========================================================================
 
-    /// Can this item be merged with another item in the same channel?
-    /// Items decide their own consolidation rules.
+    /// Opaque consolidation key — items returning the SAME key
+    /// consolidate together. `None` means "this item is always a
+    /// singleton" (matches the default `should_consolidate_with`
+    /// shape: never).
     ///
-    /// Default: false (no consolidation).
-    /// Chat overrides to consolidate same-room messages.
-    /// Task overrides to consolidate related tasks.
-    fn should_consolidate_with(&self, _other: &dyn QueueItemBehavior) -> bool {
-        false
+    /// Replaces the legacy O(N²) `should_consolidate_with` pairwise
+    /// check with a single HashMap pass in `ChannelQueue::consolidate`:
+    /// identical keys land in the same bucket. The trait now expresses
+    /// the consolidation rule as a key the queue can hash, not as a
+    /// pairwise predicate the queue has to N²-poll.
+    ///
+    /// ## Contract
+    ///
+    /// `a.consolidation_key() == b.consolidation_key()` iff
+    /// `a.should_consolidate_with(b)` would have returned `true`.
+    /// The default `should_consolidate_with` implementation below
+    /// reads `consolidation_key` so implementing one for free gives
+    /// the other; concrete impls should override `consolidation_key`
+    /// only (and let `should_consolidate_with` default-derive).
+    ///
+    /// ## Why u64 (not String / typed enum)
+    ///
+    /// - Zero allocation per call (substring of the hot path).
+    /// - No enum sprawl across the trait — each item folds its
+    ///   criteria through a stable hasher.
+    /// - HashMap<u64, _> is the substrate's idiomatic key-group shape.
+    ///
+    /// Stable-hash by feeding the item's `item_type()` + its
+    /// consolidation criteria into a fresh `DefaultHasher`. Mixing
+    /// `item_type` first prevents cross-type collisions (a chat with
+    /// room_id=X must NOT key-match a task with context_id=X).
+    fn consolidation_key(&self) -> Option<u64> {
+        None
+    }
+
+    /// Can this item be merged with another item in the same channel?
+    /// Default implementation derives from `consolidation_key`: items
+    /// merge iff their keys are equal AND non-None.
+    ///
+    /// Concrete impls should override `consolidation_key` rather than
+    /// this method — the queue's hot path uses `consolidation_key`
+    /// directly for its O(N) HashMap grouping; `should_consolidate_with`
+    /// stays for ad-hoc predicate checks (tests, ext consumers).
+    fn should_consolidate_with(&self, other: &dyn QueueItemBehavior) -> bool {
+        match (self.consolidation_key(), other.consolidation_key()) {
+            (Some(a), Some(b)) => a == b,
+            _ => false,
+        }
     }
 
     /// Downcast to Any for type-specific consolidation checks
@@ -199,6 +239,107 @@ pub struct ChannelRegistryStatus {
     pub total_size: u32,
     pub has_urgent_work: bool,
     pub has_work: bool,
+}
+
+//=============================================================================
+// COHERENT UNIT — one batch per channel-tick, the per-channel-typed shape
+// cognition's analyze() consumes
+//=============================================================================
+
+/// One coherent batch drained from a channel per service cycle. Each
+/// variant carries the domain-specific metadata cognition needs to
+/// reason about it WITHOUT re-traversing the items.
+///
+/// Items are held as `Arc<dyn QueueItemBehavior>` per
+/// `[[pass-by-reference-lazy-metadata-with-data]]`: lazy-cached derived
+/// state (e.g. `ChatQueueItem::embedding()`) lives on each Arc-shared
+/// item, so consumers across N personas share compute. Consumers that
+/// need domain-specific access downcast individual items via
+/// `as_any().downcast_ref::<ChatQueueItem>()`; `&self` is enough to
+/// drive the lazy cells, no `Arc<ChatQueueItem>` needed.
+///
+/// Per `[[cognition-batches-per-channel-adapter]]`: cognition fires
+/// `analyze()` ONCE per cycle with a `Vec<CoherentUnit>` (one per
+/// channel-with-work), not per item. CBAR catch-up doesn't compound;
+/// the slowest persona on the LCD tier sees the CURRENT batched state
+/// per cycle, not a backlog of every missed item.
+///
+/// Per `[[strong-typing-across-boundaries]]`: variants discriminate on
+/// `ActivityDomain` at compile-time so cognition's match is exhaustive.
+/// When the next channel type lands (Code, future Video) a new variant
+/// is added and every consumer's match is forced to extend coverage.
+#[derive(Debug, Clone)]
+pub enum CoherentUnit {
+    /// A burst of chat items from one room within a temporal window.
+    /// `primary_room` is the room shared by all items in this burst
+    /// (the queue's consolidation enforces same-room grouping).
+    Chat {
+        items: Vec<std::sync::Arc<dyn QueueItemBehavior>>,
+        window_span_ms: u64,
+        primary_room: uuid::Uuid,
+    },
+    /// A voice clip ready for processing. Voice never consolidates
+    /// (one item per burst); the variant still exists so cognition
+    /// dispatches uniformly across domains.
+    Voice {
+        items: Vec<std::sync::Arc<dyn QueueItemBehavior>>,
+        window_span_ms: u64,
+    },
+    /// A task batch — related work items consolidated by the
+    /// `should_consolidate_with` predicate.
+    Task {
+        items: Vec<std::sync::Arc<dyn QueueItemBehavior>>,
+        window_span_ms: u64,
+    },
+    /// Background work — periodic checks, low-urgency maintenance.
+    Background {
+        items: Vec<std::sync::Arc<dyn QueueItemBehavior>>,
+        window_span_ms: u64,
+    },
+}
+
+impl CoherentUnit {
+    /// Which `ActivityDomain` this batch came from.
+    pub fn domain(&self) -> ActivityDomain {
+        match self {
+            CoherentUnit::Chat { .. } => ActivityDomain::Chat,
+            CoherentUnit::Voice { .. } => ActivityDomain::Audio,
+            CoherentUnit::Task { .. } => ActivityDomain::Code,
+            CoherentUnit::Background { .. } => ActivityDomain::Background,
+        }
+    }
+
+    /// Number of items in this batch. Useful for the demand-pull
+    /// architecture proof: cognition's `analyze()` is called ONCE
+    /// per batch, regardless of `len()`.
+    pub fn len(&self) -> usize {
+        match self {
+            CoherentUnit::Chat { items, .. }
+            | CoherentUnit::Voice { items, .. }
+            | CoherentUnit::Task { items, .. }
+            | CoherentUnit::Background { items, .. } => items.len(),
+        }
+    }
+
+    /// `true` iff this batch has no items. `drain_batch` returns `None`
+    /// for empty queues so this is rarely true in practice, but the
+    /// predicate keeps callers' match arms honest.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Temporal span of the burst (largest `item.timestamp - anchor`).
+    /// Lifted into a method so per-domain dispatch tables can construct
+    /// `CoherentInput::Other` for un-typed-view domains without
+    /// re-matching the enum.
+    pub fn window_span_ms(&self) -> u64 {
+        match self {
+            CoherentUnit::Chat { window_span_ms, .. }
+            | CoherentUnit::Voice { window_span_ms, .. }
+            | CoherentUnit::Task { window_span_ms, .. }
+            | CoherentUnit::Background { window_span_ms, .. } => *window_span_ms,
+        }
+    }
 }
 
 /// Result from service_cycle() — what the TS loop should do next

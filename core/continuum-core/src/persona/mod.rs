@@ -37,6 +37,7 @@ pub mod channel_items;
 pub mod channel_queue;
 pub mod channel_registry;
 pub mod channel_types;
+pub mod channel_view;
 pub mod cognition;
 pub mod cognition_io;
 pub mod decay_tick;
@@ -50,6 +51,7 @@ pub mod home;
 pub mod host;
 pub mod hw_tier_descriptor;
 pub mod identity_provider;
+pub mod persona_identity;
 pub mod inbox;
 pub mod inference_profile;
 pub mod profile_builder;
@@ -108,8 +110,8 @@ pub use engram::{
     EngramKind, EngramOrigin, ToolInvocationRef, TrustState,
 };
 pub use evaluator::{
-    AdequacyResult, FullEvaluateRequest, FullEvaluateResult, GateDetails, RateLimiterState,
-    RecentResponse, SleepMode, SleepState,
+    analyze_burst, AdequacyResult, BurstEvaluateResult, BurstRespondContext, FullEvaluateRequest,
+    FullEvaluateResult, GateDetails, RateLimiterState, RecentResponse, SleepMode, SleepState,
 };
 pub use genome_paging::{
     ActivateSkillResult, CoverageReport, DomainActivity, GenomeAdapterInfo, GenomePagingEngine,

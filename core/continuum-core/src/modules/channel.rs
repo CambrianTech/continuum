@@ -503,7 +503,7 @@ impl ServiceModule for ChannelModule {
                                         self.state.registries.get_mut(persona_id)
                                     {
                                         let (registry, _state) = entry.value_mut();
-                                        if registry.route(Box::new(item)).is_ok() {
+                                        if registry.route(std::sync::Arc::new(item)).is_ok() {
                                             total_enqueued += 1;
                                         }
                                     }
@@ -542,7 +542,7 @@ impl ServiceModule for ChannelModule {
                                             self.state.registries.get_mut(persona_id)
                                         {
                                             let (registry, _state) = entry.value_mut();
-                                            let _ = registry.route(Box::new(item));
+                                            let _ = registry.route(std::sync::Arc::new(item));
                                         }
                                     }
                                 }
@@ -577,7 +577,7 @@ impl ServiceModule for ChannelModule {
                                         self.state.registries.get_mut(persona_id)
                                     {
                                         let (registry, _state) = entry.value_mut();
-                                        let _ = registry.route(Box::new(item));
+                                        let _ = registry.route(std::sync::Arc::new(item));
                                     }
                                 }
                             }

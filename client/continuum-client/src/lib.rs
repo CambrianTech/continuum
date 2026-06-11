@@ -11,6 +11,8 @@ pub mod command;
 pub mod connection;
 pub mod error;
 pub mod event;
+#[cfg(any(test, feature = "test-fixtures"))]
+pub mod mock;
 pub mod transport;
 
 pub use airc_ipc::AircIpcTransport;
@@ -18,4 +20,6 @@ pub use command::CommandClient;
 pub use connection::Connection;
 pub use error::ClientError;
 pub use event::EventSubscriber;
+#[cfg(any(test, feature = "test-fixtures"))]
+pub use mock::MockTransport;
 pub use transport::Transport;

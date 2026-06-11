@@ -162,7 +162,24 @@ pub struct ConsolidatedContext {
 /// When multiple messages from the same room are queued, they consolidate.
 /// The latest message is the "trigger" (what the AI responds to).
 /// Prior messages become consolidated_context (the AI has full room context).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+///
+/// ## Lazy-cached derived state
+///
+/// Per `[[pass-by-reference-lazy-metadata-with-data]]`: the item carries
+/// `OnceLock<Arc<...>>` cells for expensive derived state (currently
+/// `embedding_cell`; future: STT for audio attachments, RAG chunks).
+/// First consumer that calls `embedding()` triggers compute; every
+/// subsequent consumer (multiple personas in the same room) gets the
+/// cached Arc clone. The cell is `#[serde(skip)]` so wire format stays
+/// clean — derived state is local-substrate-only, never crosses the IPC
+/// boundary.
+///
+/// The struct's `Clone` impl creates a FRESH cell — clones get their own
+/// cache. In practice items are shared via `Arc<ChatQueueItem>` (queue
+/// pop returns the same Arc), so direct struct-level clones are rare;
+/// when they happen they're a deliberate "I want a fresh copy" signal
+/// and the fresh cache aligns with that intent.
+#[derive(Debug, Serialize, Deserialize)]
 pub struct ChatQueueItem {
     pub id: Uuid,
     pub room_id: Uuid,
@@ -180,6 +197,155 @@ pub struct ChatQueueItem {
     /// PRG resolves blob_hash → bytes on the model-input side.
     #[serde(default)]
     pub media: Vec<MediaItemRequest>,
+    /// Lazy-cached content embedding. First demand triggers compute via
+    /// `compute_chat_embedding`; every subsequent demand returns the
+    /// cached Arc clone. Skipped from serialization (derived state).
+    ///
+    /// `pub` so cross-module struct literals can initialize it with
+    /// `std::sync::OnceLock::new()`; consumers should call
+    /// `ChatQueueItem::embedding()` rather than touching the cell
+    /// directly. `OnceLock::set()` external use is safe (returns Err
+    /// if already populated, can't corrupt the cache).
+    #[serde(skip, default)]
+    pub embedding_cell: std::sync::OnceLock<std::sync::Arc<Vec<f32>>>,
+
+    /// Per-item compute-call counter, used by architecture proofs to
+    /// witness `[[shared-decode-per-persona-perspective]]` structurally:
+    /// N concurrent persona reads on this item must increment this by
+    /// exactly 1 (compute fires once; subsequent demands hit the cache).
+    ///
+    /// Per-item (not global) so concurrent integration tests don't
+    /// contaminate each other's measurements — the doctrine claim is
+    /// "compute fires once per ITEM," and the witness is per-item.
+    /// Arc-shared via `Arc<ChatQueueItem>` automatically; clones get a
+    /// fresh counter (consistent with the fresh `embedding_cell` on
+    /// clone — Clone semantics align across both lazy-state fields).
+    ///
+    /// `#[cfg(any(test, feature = "test-fixtures"))]` so production
+    /// binaries cannot link the field — zero hot-path cost.
+    #[cfg(any(test, feature = "test-fixtures"))]
+    #[serde(skip, default)]
+    pub compute_calls: std::sync::atomic::AtomicUsize,
+}
+
+impl Clone for ChatQueueItem {
+    /// Clone creates a fresh `embedding_cell` (and a fresh
+    /// `compute_calls` counter when the instrumentation feature is on).
+    ///
+    /// ⚠️ **Foot-gun warning**: cloning silently drops the lazy cache.
+    /// If you clone a `ChatQueueItem` whose `embedding_cell` is
+    /// populated and then call `.embedding()` on the clone, the compute
+    /// fires AGAIN — you pay the cost a second time. The doctrine
+    /// (`[[pass-by-reference-lazy-metadata-with-data]]`) says items
+    /// should be SHARED via `Arc<ChatQueueItem>`, not cloned. Clone
+    /// here is for the rare "I genuinely want a separate copy" case
+    /// (e.g. consolidation building a new anchor from absorbed items).
+    ///
+    /// If you find yourself reaching for `.clone()` to pass an item
+    /// to another consumer, you almost certainly want `Arc::clone(&arc)`
+    /// instead — that's the cache-preserving path.
+    fn clone(&self) -> Self {
+        Self {
+            id: self.id,
+            room_id: self.room_id,
+            content: self.content.clone(),
+            sender_id: self.sender_id,
+            sender_name: self.sender_name.clone(),
+            sender_type: self.sender_type,
+            mentions: self.mentions,
+            timestamp: self.timestamp,
+            enqueued_at: self.enqueued_at,
+            priority: self.priority,
+            consolidated_context: self.consolidated_context.clone(),
+            media: self.media.clone(),
+            embedding_cell: std::sync::OnceLock::new(),
+            #[cfg(any(test, feature = "test-fixtures"))]
+            compute_calls: std::sync::atomic::AtomicUsize::new(0),
+        }
+    }
+}
+
+impl ChatQueueItem {
+    /// Return this item's content embedding. First call computes via
+    /// `compute_chat_embedding(&self.content)` and caches; subsequent
+    /// calls return the cached `Arc<Vec<f32>>` directly. Cost:
+    ///
+    /// - First demand: one decoder pass (typically the RAG/embedding
+    ///   model on the substrate's `EmbeddingModule`)
+    /// - Subsequent demands across N consumers: `Arc::clone`-cheap;
+    ///   zero re-compute, regardless of persona count
+    ///
+    /// Per `[[shared-decode-per-persona-perspective]]`: this is the
+    /// substrate-shared decode. Per-persona ranking against this
+    /// embedding is the cheap per-persona perspective layer above it
+    /// (lands in Delta 4 as `PersonaChannelView::interpret`).
+    pub fn embedding(&self) -> std::sync::Arc<Vec<f32>> {
+        self.embedding_cell
+            .get_or_init(|| {
+                // Per-item compute-call instrumentation (test-fixtures
+                // only). Bumped INSIDE the OnceLock closure so it
+                // tracks closure-execution count, not call-site count.
+                // `std::sync::OnceLock::get_or_init` guarantees only
+                // one closure runs even under N-way contention (uses
+                // `Once::call_once_force` internally) — so this counter
+                // pins the doctrine claim "compute fires once per item
+                // regardless of concurrent reads."
+                #[cfg(any(test, feature = "test-fixtures"))]
+                self.compute_calls
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                std::sync::Arc::new(compute_chat_embedding(&self.content))
+            })
+            .clone()
+    }
+
+    /// Test-only accessor: how many times has `compute_chat_embedding`
+    /// fired for THIS item? Used by architecture proofs to witness
+    /// `[[shared-decode-per-persona-perspective]]` structurally.
+    ///
+    /// Per-item (not global) so concurrent integration tests don't
+    /// contaminate each other's measurements.
+    #[cfg(any(test, feature = "test-fixtures"))]
+    pub fn compute_call_count(&self) -> usize {
+        self.compute_calls
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
+/// Pure content → embedding decoder. **SEAM, not the production
+/// embedding path.** PR A ships a deterministic 8-dim hash-derived
+/// placeholder so the lazy-cell substrate is observable in tests; the
+/// real production path routes through the existing `EmbeddingModule`
+/// at `modules/embedding.rs` and lands in a follow-up PR (tracked as
+/// task #246 — substrate-wide `ChatItem::embedding()` async + wired
+/// through ai::embedding).
+///
+/// Why this matters for the doctrine: the `[[shared-decode-per-
+/// persona-perspective]]` claim is currently proven against this
+/// placeholder. The lazy-cell PROPERTY (one OnceLock fires once,
+/// N consumers share the Arc) holds under any pure decoder, so the
+/// architectural seam is sound. But the COST claim (compute is
+/// expensive; sharing it saves N-1× of compute) only becomes
+/// meaningful when the real embedding compute is in place — until
+/// then, the "expensive" decode is microsecond-cheap and the saving
+/// is theoretical. PR D / #246 closure must keep the lazy-cell
+/// contract AND route through EmbeddingModule.
+///
+/// CRITICAL property: this function is PURE. Caching is on the item's
+/// OnceLock cell, not in the function. That keeps the decoder
+/// trivially testable and the cache observable (`Arc::ptr_eq` between
+/// two calls on the same item witnesses the share).
+fn compute_chat_embedding(content: &str) -> Vec<f32> {
+    // Deterministic 8-dim placeholder: rotate content bytes into f32
+    // buckets so different content produces visibly different vectors.
+    // Real implementation routes through ai::embedding when the
+    // adapter integration lands (task #246). Per-item instrumentation
+    // lives on `ChatQueueItem::compute_calls`, NOT here, so this
+    // function stays pure.
+    let mut v = vec![0.0_f32; 8];
+    for (i, b) in content.bytes().enumerate() {
+        v[i % 8] += (b as f32) / 255.0;
+    }
+    v
 }
 
 impl QueueItemBehavior for ChatQueueItem {
@@ -206,17 +372,17 @@ impl QueueItemBehavior for ChatQueueItem {
         self.mentions
     }
 
-    // Consolidate with other chat items from the SAME ROOM
-    fn should_consolidate_with(&self, other: &dyn QueueItemBehavior) -> bool {
-        if other.item_type() != "chat" {
-            return false;
-        }
-        // Downcast to check room_id
-        if let Some(other_chat) = other.as_any().downcast_ref::<ChatQueueItem>() {
-            other_chat.room_id == self.room_id
-        } else {
-            false
-        }
+    // Consolidate with other chat items from the SAME ROOM. The
+    // `should_consolidate_with` default impl on the trait derives this
+    // from `consolidation_key` — same-key items merge.
+    fn consolidation_key(&self) -> Option<u64> {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        // Mix in the item type first so chat-with-room=X cannot
+        // key-collide with task-with-context=X (per trait docstring).
+        "chat".hash(&mut h);
+        self.room_id.hash(&mut h);
+        Some(h.finish())
     }
 
     fn as_any(&self) -> &dyn Any {
@@ -321,6 +487,12 @@ impl ChatQueueItem {
             // attachments would compete for the model's vision budget without
             // adding usable signal for the current turn.
             media: trigger.media.clone(),
+            // Consolidated item's content differs from any individual
+            // member's content, so a fresh embedding cell is correct —
+            // it'll be computed on first demand against the new content.
+            embedding_cell: std::sync::OnceLock::new(),
+            #[cfg(any(test, feature = "test-fixtures"))]
+            compute_calls: std::sync::atomic::AtomicUsize::new(0),
         }
     }
 }
@@ -387,16 +559,16 @@ impl QueueItemBehavior for TaskQueueItem {
         self.effective_priority(now_ms, enqueued_at_ms)
     }
 
-    // Consolidate related tasks: same task domain AND same context
-    fn should_consolidate_with(&self, other: &dyn QueueItemBehavior) -> bool {
-        if other.item_type() != "task" {
-            return false;
-        }
-        if let Some(other_task) = other.as_any().downcast_ref::<TaskQueueItem>() {
-            other_task.task_domain == self.task_domain && other_task.context_id == self.context_id
-        } else {
-            false
-        }
+    // Consolidate related tasks: same task domain AND same context.
+    // The `should_consolidate_with` default impl on the trait derives
+    // this from `consolidation_key` — same-key items merge.
+    fn consolidation_key(&self) -> Option<u64> {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        "task".hash(&mut h);
+        self.task_domain.hash(&mut h);
+        self.context_id.hash(&mut h);
+        Some(h.finish())
     }
 
     fn as_any(&self) -> &dyn Any {
@@ -632,7 +804,7 @@ pub enum ChannelEnqueueRequest {
 impl ChannelEnqueueRequest {
     /// Convert IPC request to a boxed queue item.
     /// Returns Err if UUIDs are invalid.
-    pub fn to_queue_item(&self) -> Result<Box<dyn QueueItemBehavior>, String> {
+    pub fn to_queue_item(&self) -> Result<std::sync::Arc<dyn QueueItemBehavior>, String> {
         let now = now_ms();
         match self {
             ChannelEnqueueRequest::Voice {
@@ -646,7 +818,7 @@ impl ChannelEnqueueRequest {
                 timestamp,
                 priority,
                 media,
-            } => Ok(Box::new(VoiceQueueItem {
+            } => Ok(std::sync::Arc::new(VoiceQueueItem {
                 id: parse_uuid(id, "id")?,
                 room_id: parse_uuid(room_id, "room_id")?,
                 content: content.clone(),
@@ -670,7 +842,7 @@ impl ChannelEnqueueRequest {
                 timestamp,
                 priority,
                 media,
-            } => Ok(Box::new(ChatQueueItem {
+            } => Ok(std::sync::Arc::new(ChatQueueItem {
                 id: parse_uuid(id, "id")?,
                 room_id: parse_uuid(room_id, "room_id")?,
                 content: content.clone(),
@@ -683,6 +855,9 @@ impl ChannelEnqueueRequest {
                 priority: *priority,
                 consolidated_context: Vec::new(),
                 media: media.clone(),
+                embedding_cell: std::sync::OnceLock::new(),
+                #[cfg(any(test, feature = "test-fixtures"))]
+                compute_calls: std::sync::atomic::AtomicUsize::new(0),
             })),
             ChannelEnqueueRequest::Code {
                 id,
@@ -693,7 +868,7 @@ impl ChannelEnqueueRequest {
                 priority,
                 is_review,
                 timestamp,
-            } => Ok(Box::new(CodeQueueItem {
+            } => Ok(std::sync::Arc::new(CodeQueueItem {
                 id: parse_uuid(id, "id")?,
                 room_id: parse_uuid(room_id, "room_id")?,
                 persona_id: parse_uuid(persona_id, "persona_id")?,
@@ -730,7 +905,7 @@ impl ChannelEnqueueRequest {
                     .map(|s| parse_uuid(s, "blocked_by"))
                     .collect();
 
-                Ok(Box::new(TaskQueueItem {
+                Ok(std::sync::Arc::new(TaskQueueItem {
                     id: parse_uuid(id, "id")?,
                     task_id: parse_uuid(task_id, "task_id")?,
                     assignee_id: parse_uuid(assignee_id, "assignee_id")?,
@@ -807,6 +982,9 @@ mod tests {
             priority,
             consolidated_context: Vec::new(),
             media: Vec::new(),
+            embedding_cell: std::sync::OnceLock::new(),
+            #[cfg(any(test, feature = "test-fixtures"))]
+            compute_calls: std::sync::atomic::AtomicUsize::new(0),
         }
     }
 
@@ -1040,5 +1218,104 @@ mod tests {
             first.get("mimeType").and_then(|v| v.as_str()),
             Some("image/jpeg")
         );
+    }
+
+    /// proves: lazy embedding cell shares compute across consumers
+    ///
+    /// First `embedding()` call triggers compute; every subsequent call on
+    /// the SAME `Arc<ChatQueueItem>` returns the cached `Arc<Vec<f32>>`.
+    /// `Arc::ptr_eq` witnesses the share: if two calls returned different
+    /// Arcs, the cell would be re-computing each time.
+    ///
+    /// Per `[[pass-by-reference-lazy-metadata-with-data]]`: this is the
+    /// item-level witness for the doctrine — the data IS the cache.
+    #[test]
+    fn embedding_cell_returns_same_arc_across_calls() {
+        let item = std::sync::Arc::new(ChatQueueItem {
+            id: Uuid::new_v4(),
+            room_id: Uuid::new_v4(),
+            content: "hello world from the channel".into(),
+            sender_id: Uuid::new_v4(),
+            sender_name: "test-sender".into(),
+            sender_type: SenderType::Human,
+            mentions: false,
+            timestamp: now_ms(),
+            enqueued_at: now_ms(),
+            priority: 0.5,
+            consolidated_context: Vec::new(),
+            media: Vec::new(),
+            embedding_cell: std::sync::OnceLock::new(),
+            #[cfg(any(test, feature = "test-fixtures"))]
+            compute_calls: std::sync::atomic::AtomicUsize::new(0),
+        });
+
+        let e1 = item.embedding();
+        let e2 = item.embedding();
+        let e3 = item.embedding();
+
+        // All three calls on the same item return the SAME underlying Arc.
+        // If the cell were re-computing, ptr_eq would fail because each
+        // compute would allocate a fresh Arc.
+        assert!(
+            std::sync::Arc::ptr_eq(&e1, &e2),
+            "second embedding() call must return the cached Arc, not recompute"
+        );
+        assert!(
+            std::sync::Arc::ptr_eq(&e2, &e3),
+            "third embedding() call must return the cached Arc, not recompute"
+        );
+
+        // Same content → same embedding (verifies the placeholder decoder
+        // is deterministic; real decoder will obviously also be
+        // deterministic against the same input).
+        assert_eq!(e1.len(), 8, "placeholder decoder produces 8-dim vectors");
+    }
+
+    /// proves: lazy embedding cell shares across multiple Arc consumers
+    /// (multi-persona-in-room property)
+    ///
+    /// The item is shared via `Arc<ChatQueueItem>`. Cloning the Arc gives
+    /// multiple handles to the SAME item. Each handle calling `embedding()`
+    /// must hit the same OnceLock cell and return the same underlying
+    /// `Arc<Vec<f32>>`. This is what makes "N personas in a room with M
+    /// arrivals cost M × decode_cost, not N × M × decode_cost" true.
+    #[test]
+    fn embedding_cell_shared_across_arc_clones() {
+        let item = std::sync::Arc::new(ChatQueueItem {
+            id: Uuid::new_v4(),
+            room_id: Uuid::new_v4(),
+            content: "shared content across personas".into(),
+            sender_id: Uuid::new_v4(),
+            sender_name: "test-sender".into(),
+            sender_type: SenderType::Human,
+            mentions: false,
+            timestamp: now_ms(),
+            enqueued_at: now_ms(),
+            priority: 0.5,
+            consolidated_context: Vec::new(),
+            media: Vec::new(),
+            embedding_cell: std::sync::OnceLock::new(),
+            #[cfg(any(test, feature = "test-fixtures"))]
+            compute_calls: std::sync::atomic::AtomicUsize::new(0),
+        });
+
+        // Simulate 4 personas each holding their own Arc to the same item.
+        let persona1 = std::sync::Arc::clone(&item);
+        let persona2 = std::sync::Arc::clone(&item);
+        let persona3 = std::sync::Arc::clone(&item);
+        let persona4 = std::sync::Arc::clone(&item);
+
+        let e1 = persona1.embedding();
+        let e2 = persona2.embedding();
+        let e3 = persona3.embedding();
+        let e4 = persona4.embedding();
+
+        // All four personas see the SAME cached embedding Arc — proves the
+        // shared-decode property: the embedding was computed ONCE by the
+        // first caller (whichever persona happened to demand it first),
+        // and the other three got the cached share.
+        assert!(std::sync::Arc::ptr_eq(&e1, &e2));
+        assert!(std::sync::Arc::ptr_eq(&e2, &e3));
+        assert!(std::sync::Arc::ptr_eq(&e3, &e4));
     }
 }

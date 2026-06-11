@@ -953,6 +953,9 @@ mod tests {
             priority: 0.5,
             consolidated_context: vec![],
             media: vec![],
+            embedding_cell: std::sync::OnceLock::new(),
+            #[cfg(any(test, feature = "test-fixtures"))]
+            compute_calls: std::sync::atomic::AtomicUsize::new(0),
         }
     }
 
@@ -998,7 +1001,7 @@ mod tests {
         let expected_id = item.id;
         persona
             .channels
-            .route(Box::new(item))
+            .route(std::sync::Arc::new(item))
             .expect("route chat item to Chat channel");
         let outcome = PersonaServiceModule::service_once_for(persona, 1_700_000_000_000)
             .expect("dispatch ok");
@@ -1091,7 +1094,7 @@ mod tests {
                 ensure_chat_channel(persona);
                 persona
                     .channels
-                    .route(Box::new(test_chat_item("hi", true, room_id)))
+                    .route(std::sync::Arc::new(test_chat_item("hi", true, room_id)))
                     .expect("route");
             }
         }
@@ -1128,7 +1131,7 @@ mod tests {
                 let mut item = test_chat_item(&format!("msg {i}"), true, room_id);
                 // Vary timestamps so consolidation orders deterministically.
                 item.timestamp = 1_700_000_000_000 + i as u64;
-                persona.channels.route(Box::new(item)).expect("route item");
+                persona.channels.route(std::sync::Arc::new(item)).expect("route item");
             }
         }
         m.drain_all_personas(1_700_000_000_000)
@@ -1215,7 +1218,7 @@ mod tests {
             ensure_chat_channel(persona);
             persona
                 .channels
-                .route(Box::new(test_chat_item("hi", true, room_id)))
+                .route(std::sync::Arc::new(test_chat_item("hi", true, room_id)))
                 .expect("route");
         }
         m.drain_all_personas(1_700_000_000_000)
@@ -1251,7 +1254,7 @@ mod tests {
             // ai-sender, not mentioned — the gate typically goes silent here
             persona
                 .channels
-                .route(Box::new(test_chat_item("hi", false, room_id)))
+                .route(std::sync::Arc::new(test_chat_item("hi", false, room_id)))
                 .expect("route");
         }
         m.drain_all_personas(1_700_000_000_000)
@@ -1289,7 +1292,7 @@ mod tests {
                 ensure_chat_channel(persona);
                 let mut item = test_chat_item(&format!("msg {tick}"), true, room_id);
                 item.timestamp = 1_700_000_000_000 + tick as u64;
-                persona.channels.route(Box::new(item)).expect("route");
+                persona.channels.route(std::sync::Arc::new(item)).expect("route");
             }
             m.drain_all_personas(1_700_000_000_000 + tick as u64)
                 .await
@@ -1327,7 +1330,7 @@ mod tests {
             ensure_chat_channel(persona);
             persona
                 .channels
-                .route(Box::new(test_chat_item("hi", true, room_id)))
+                .route(std::sync::Arc::new(test_chat_item("hi", true, room_id)))
                 .expect("route");
         }
         m.drain_all_personas(1_700_000_000_000)
@@ -1384,7 +1387,7 @@ mod tests {
             let p = personas.get_mut(&persona_id).unwrap();
             ensure_chat_channel(p);
             p.channels
-                .route(Box::new(test_chat_item("first", true, room_id)))
+                .route(std::sync::Arc::new(test_chat_item("first", true, room_id)))
                 .expect("route");
         }
         m.drain_all_personas(1_700_000_000_000).await.expect("ok");
@@ -1394,7 +1397,7 @@ mod tests {
             let p = personas.get_mut(&persona_id).unwrap();
             let mut item = test_chat_item("second", true, room_id);
             item.timestamp = 1_700_000_000_001;
-            p.channels.route(Box::new(item)).expect("route");
+            p.channels.route(std::sync::Arc::new(item)).expect("route");
         }
         m.drain_all_personas(1_700_000_000_001).await.expect("ok");
         // After the success, the inference counter should be reset to 0.
