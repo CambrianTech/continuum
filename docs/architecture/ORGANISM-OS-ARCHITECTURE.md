@@ -51,7 +51,7 @@ this a single architecture rather than five.
        │  (default-BLOCK → allow-on-evidence → ALLOW-THEN-MONITOR)
   L3  ACTIVITIES / ROOMS    OS spaces: forts, neighborhoods, security room
        │  (activities emit RuntimeFrames; rooms = address space)
-  L2  PERSONAS              ServiceModules riding airc keypairs; probed caps
+  L2  PERSONAS              ServiceModules riding airc identities; probed caps
        │  (local-first inference, the 1/8…8/8 chain on airc)
   L1  CBAR ORGANISM RUNTIME ServiceModule + PressureBroker + Governor (RTOS)
        │  (multiple RTOSes share one bus)
@@ -76,12 +76,17 @@ their user records to airc identities by pubkey rather than maintaining parallel
 account semantics" (`identity.rs:8-10`). A Continuum persona therefore *is* an
 airc peer; it registers under the `integrations` map (`identity.rs:50-56`).
 
-> **NAMED GAP — `peer=being/Ed25519`.** In this checkout `PeerId` is a UUID
-> newtype (`ids.rs:86-90`), not the Ed25519 verifying key itself. Envelope
-> ordering is owner-stamped/signed (`airc-bus/src/envelope.rs:132-153`), but
-> the "peer identity *is* an Ed25519 key" framing is aspirational here, not
-> literal. **Next card: bind `PeerId` to the Ed25519 key material as the
-> identity anchor (or document the UUID↔key mapping as the contract).**
+> **PRECISION — `peer=being`, not `peer=keypair`.** Be exact about what airc-core
+> says. `PeerId` is a **UUID newtype** — "the canonical who is this"
+> (`airc-core/src/ids.rs:86`) — *not* the Ed25519 verifying key itself. Ed25519
+> signing is **owner-stamped at the envelope** (`airc-bus/src/envelope.rs`:
+> `seq`/`occurred_at_ms` are router/owner-assigned and outside the sender's
+> signature scope), not a property of the peer record. Persona/identity types
+> live in `airc-core/src/identity.rs` (there is no `persona.rs`). The Continuum
+> framing that "a persona **is** her keypair / save the keypair = save the
+> persona" — identity derivable from a seed — is a **continuum-side aspiration**,
+> not a literal airc-core fact. State it as the aspiration it is; the airc-core
+> contract today is UUID-identity + envelope-level owner signing.
 
 **Rooms are the address space.** A `RoomId` is a room/channel handle; display
 names (`#general`) are mutable handles on top (`airc-core/src/ids.rs:80-84`).
@@ -121,13 +126,17 @@ and model payloads are explicitly out of scope" (`account_registry.rs:9-11`).
 This is the auto-discovery keystone: a node learns *who exists and how to dial
 them* without a hub.
 
-> **NAMED GAP — endpoint-field cross-machine P0 / `registry_refresh`.** The
-> auto-refresh loop the grid leans on (the standing P0 in MEMORY) is not in
-> this checkout — there is no `registry_refresh.rs`. `AccountPeerBeacon`
-> already carries `endpoints` (`account_registry.rs:111-116`) and
-> `invite_beacon()` (`:123-129`); what is missing is the periodic
-> publish/import driver. **Next card: land `registry_refresh` so endpoints
-> propagate cross-machine without a manual re-publish.**
+> **IN FLIGHT — endpoint-field cross-machine P0 / `registry_refresh` →
+> airc PR #1134.** The auto-refresh loop the grid leans on (the standing P0 in
+> MEMORY) is not yet on `rust-rewrite`, but it is **built and landing**: the
+> account-registry auto-publish/refresh daemon — same-account machines
+> self-discover with zero human action — is airc PR **#1134**
+> (`feat/account-registry-autodiscovery`, self-enrol fix done, re-review in
+> flight). `AccountPeerBeacon` already carries `endpoints`
+> (`account_registry.rs:111-116`) and `invite_beacon()` (`:123-129`); #1134 adds
+> the periodic publish/import driver (`registry_refresh.rs`) on top. Once #1134
+> merges to `rust-rewrite`, endpoints propagate cross-machine without a manual
+> re-publish — this is the cross-machine auto-discovery keystone, no longer a gap.
 
 ---
 
@@ -190,7 +199,7 @@ RTOSes coordinate — they are peers in rooms, not threads in one scheduler.
 
 ---
 
-### L2 — Personas As ServiceModules Riding airc Keypairs
+### L2 — Personas As ServiceModules Riding airc Identities
 
 **Pattern role:** the persona is the organism whose "needs/offers" are *inference
 capabilities*, and whose wake events arrive as airc envelopes.
@@ -224,23 +233,31 @@ degraded with a visible reason" (`inference_capability/residency.rs:1-44`,
 residency gate together are what let a persona say "I can take this turn
 locally" *truthfully*, or hand it to a peer.
 
-> **NAMED GAP — `resolve_inference_target` + `capability_registry` (airc
-> side).** The card describes an airc-side `resolve_inference_target` and a
-> `capability_registry` that route a turn to the best-capable peer. **Neither
-> exists in this airc checkout** (`rust-rewrite` @ `6d2d665`): no
-> `capability_registry.rs`, no `resolve_inference_target`. The substrate it
-> would build on *does* exist — capability advertising stays at the header
-> level by design (`task_negotiation.rs:27-34`), and the continuum-side
-> `NodeCapabilityRegistry` (`inference_capability/registry.rs`, re-exported
-> `inference_capability/mod.rs:53`) is the in-memory map a router would consume.
-> **Next card: land the airc-side capability registry + `resolve_inference_target`
-> resolver (the cross-grid sibling of the local probe).**
+> **IN FLIGHT — `resolve_inference_target` + `capability_registry` (airc side)
+> → airc PR #1133.** The airc-side `resolve_inference_target` and
+> `capability_registry.rs` that route a turn to the best-capable peer **are
+> built** — they exist on `feat/cross-grid-inference` (airc PR **#1133**,
+> sentinel-APPROVED and auto-merging), not yet merged to `rust-rewrite`. #1133
+> is the cross-grid inference spine end-to-end: `capability_registry.rs` +
+> `resolve_inference_target` in the airc consumer-shapes, plus the persona-peer
+> 1/8→8/8 chain it drives. The substrate it builds on already existed —
+> capability advertising stays at the header level by design
+> (`task_negotiation.rs:27-34`), and the continuum-side `NodeCapabilityRegistry`
+> (`inference_capability/registry.rs`, re-exported `inference_capability/mod.rs:53`)
+> is the in-memory map the router consumes. Once #1133 lands on `rust-rewrite`,
+> the cross-grid sibling of the local probe is live, not a gap.
 
-> **NAMED GAP — the 1/8…8/8 chain on airc + real model behind the 8/8 stub.**
-> The "1/8 … 8/8" capability-tier chain rides airc as the persona's advertised
-> ladder; today the top of that ladder (8/8) is a stub. **Next card (`0e7d94fe`):
-> wire the measured-capability probe; then put a real local model behind the 8/8
-> tier as a persona `ServiceModule`.**
+> **IN FLIGHT — the 1/8…8/8 persona-peer chain on airc → airc PR #1133;
+> probe-wire = card `0e7d94fe`.** The "1/8 … 8/8" persona-peer capability chain
+> that rides airc as the persona's advertised ladder is **part of #1133**
+> (`feat/cross-grid-inference`) — built, sentinel-APPROVED, auto-merging into
+> `rust-rewrite`. What remains genuinely unwired is narrow and continuum-side:
+> the **hardware probe already exists** in `continuum-core/src/inference_capability/`
+> (`probe.rs`, the pure `probe_inference_capabilities(hw)`); card **`0e7d94fe`**
+> is only the **wiring of that probe at persona spawn** so a spawned persona
+> publishes its *measured* capabilities — not a missing probe, just the spawn-time
+> hook. (Putting a real local model behind the 8/8 tier as a persona
+> `ServiceModule` is the follow-on once the probe is wired.)
 
 ---
 
@@ -359,8 +376,8 @@ The real decision points in the repo, layer by layer:
 | Seam | Where it lives (file:line) | Heuristic floor today | Learned-policy target |
 |---|---|---|---|
 | **Route resolver** | `route/resolver.rs:49-54` + `route/policy.rs:64-77` | `min_by_key(priority)` over healthy+allowed candidates; `NoRoute` on none | latency/outcome-weighted route scoring |
-| **resolve_inference_target** | **NAMED GAP** (airc); local sibling = `probe.rs:52` + `residency.rs` | probe + residency gate; pick local if it fits, else peer | demand-aligned cross-grid placement (GENOME §7 `grid_penalty`) |
-| **capability match** | **NAMED GAP** (airc `capability_registry`); local = `inference_capability/registry.rs` (`find_capable`) | exact-kind + VRAM-floor match | scored capability ranking |
+| **resolve_inference_target** | **IN FLIGHT** (airc PR #1133, `feat/cross-grid-inference`); local sibling = `probe.rs:52` + `residency.rs` | probe + residency gate; pick local if it fits, else peer | demand-aligned cross-grid placement (GENOME §7 `grid_penalty`) |
+| **capability match** | **IN FLIGHT** (airc `capability_registry`, PR #1133); local = `inference_capability/registry.rs` (`find_capable`) | exact-kind + VRAM-floor match | scored capability ranking |
 | **should-respond** | persona `ServiceModule` `handle_event`/`on_artifact_available` (`service_module.rs:288-374`) | subscription glob / artifact selector match | persona-trained relevance gate |
 | **review / threat verdict** | `airc AGENTS.md §0` (adversarial reviewer); `on_artifact_available` for monitor | "default BLOCK, justify APPROVE" prompt | LoRA red-team persona scoring the artifact |
 | **contract approval** | **NAMED GAP** (forge-alloy governance module); `FORGE-ALLOY-SPEC.md` is the artifact | sentinel verdict, manual | trust-scored contract acceptance (GENOME §10) |
@@ -379,9 +396,9 @@ Extension Bar rule).
 
 | Layer | Exists today (cite) | Gap | Next card |
 |---|---|---|---|
-| **L0 bus** | PeerId/Identity (`ids.rs:86-90`, `identity.rs:24-57`); rooms (`ids.rs:80-84`); cost-ordered transports w/ gh-invite-only (`route/policy.rs:64-86`); work-cards+leases (`work/model.rs:183-223`); account-registry discovery (`account_registry.rs:1-90`) | `PeerId`≠Ed25519 key (UUID newtype); no `registry_refresh` auto-propagation | **Bind PeerId↔Ed25519**; **land `registry_refresh` (endpoint cross-machine P0)** |
+| **L0 bus** | PeerId/Identity (`ids.rs:86`, `identity.rs:24-57`); rooms (`ids.rs:80-84`); cost-ordered transports w/ gh-invite-only (`route/policy.rs:64-86`); work-cards+leases (`work/model.rs:183-223`); account-registry discovery (`account_registry.rs:1-90`) | precision: `PeerId` is a UUID (Ed25519 is envelope-stamped, not the peer); "persona IS her keypair" is a continuum aspiration. `registry_refresh` auto-propagation **in flight** | **PR #1134** (`feat/account-registry-autodiscovery`) lands `registry_refresh` — the cross-machine endpoint keystone |
 | **L1 runtime** | `ServiceModule` (`service_module.rs:243-251`); artifact wake (`:340-374`); PressureBroker (`broker.rs:1-104`); arc_swap Governor + cascade (`local.rs:83-391`) | richer `RuntimeModule` trait + derive macro + scaffold not landed (CBAR-SUBSTRATE Lane D) | **Lane D `RuntimeModule` triplet** (specced in CBAR-SUBSTRATE) |
-| **L2 personas** | `PersonaEvent` on airc (`continuum.rs:34-82`); pure capability probe (`probe.rs:52-89`); residency gate (`residency.rs:1-68`); identity binding (`identity.rs:8-10`) | airc `resolve_inference_target` + `capability_registry` absent; 8/8 tier is a stub | **Wire probe (`0e7d94fe`)**; **real model behind 8/8 as a persona ServiceModule**; **airc capability registry + resolver** |
+| **L2 personas** | `PersonaEvent` on airc (`continuum.rs:34-82`); pure capability probe (`probe.rs:52-89`); residency gate (`residency.rs:1-68`); identity binding (`identity.rs:8-10`) | airc `resolve_inference_target` + `capability_registry` + 1/8→8/8 chain **in flight** (built on `feat/cross-grid-inference`); probe-at-spawn not yet wired (probe itself exists) | **PR #1133** (`feat/cross-grid-inference`, APPROVED/auto-merging): registry + resolver + 1/8→8/8 chain; **card `0e7d94fe`** wires the probe at persona spawn; then real model behind 8/8 |
 | **L3 rooms** | activity scoping (`continuum.rs:42-82`); `ROOM-MODE-ARCHITECTURE.md`; `GRID-ADDRESSING-AND-ROUTING.md` | Tron fort/neighborhood/outreach/security-room typing not coded | **Room-mode enum for the four Tron spaces**; **intergrid outreach** |
 | **L4 immune** | PR-review sentinel operational (`airc AGENTS.md §0`, `§8`); `on_artifact_available` monitor seam (`service_module.rs:365-374`); trust demotion (GENOME §10); ForgeAlloy spec | threat/contract sentinel not a coded module; ALLOW-THEN-MONITOR not wired to forge-alloy | **Security/immune activity + forge-alloy governance** (first non-inference organism team) |
 
@@ -392,14 +409,17 @@ Extension Bar rule).
 The order is bottom-up, because each layer is the wake-source for the next:
 
 1. **L0 solid.** Routes (`route/`), discovery (`account_registry.rs` +
-   the `registry_refresh` gap), and doctrine (`AGENTS.md`) are in flight. The
-   endpoint-field cross-machine propagation is the gating P0 — until peers can
-   dial each other across machines without a manual re-publish, L2's cross-grid
-   inference can't run.
-2. **Wire the probe + a real 8/8 model as a persona ServiceModule.** Card
-   `0e7d94fe` lands measured capabilities (`probe.rs`); then a real local model
-   replaces the 8/8 stub, riding the `ServiceModule` contract (L1) and the airc
-   keypair (L0). This is the first *cognition* organism on the grid.
+   `registry_refresh` landing via airc PR **#1134**), and doctrine (`AGENTS.md`)
+   are in flight. The endpoint-field cross-machine propagation is the gating P0 —
+   until #1134 merges to `rust-rewrite`, peers can't dial each other across
+   machines without a manual re-publish, and L2's cross-grid inference can't run.
+2. **Land the cross-grid inference spine, wire the probe, then a real 8/8
+   model.** The airc-side resolver + `capability_registry` + 1/8→8/8 chain land
+   via PR **#1133** (`feat/cross-grid-inference`). Card `0e7d94fe` wires the
+   already-existing measured-capability probe (`probe.rs`) at persona spawn; then
+   a real local model replaces the 8/8 stub, riding the `ServiceModule` contract
+   (L1) and the airc identity (L0). This is the first *cognition* organism on the
+   grid.
 3. **L4 security/immune activity + forge-alloy governance — the first
    non-inference organism team.** It reuses the sentinel pattern wholesale: the
    adversarial-reviewer verdict (`AGENTS.md §0`), the auto-spawned review card
