@@ -1,12 +1,18 @@
 //! `PersonaServiceModule` — singleton Rust `ServiceModule` for persona
 //! work.
 //!
-//! ## L0-2-respond-call scope
+//! ## Demand-pull cognition (post-PR-C cutover)
 //!
-//! Builds on L0-2-respond-context (#1467). `drain_all_personas` now
-//! actually calls `Responder::respond()` for each `NeedsResponse`
-//! outcome from `service_once_for`. Three contracts the previous
-//! self-closed attempt got wrong, now specified properly:
+//! `drain_all_personas` calls `service_burst_for` ONCE per persona per
+//! tick. That call drains every channel's coherent burst (via
+//! `ChannelRegistry::service_cycle_batched`) and runs cognition's
+//! `analyze_burst` per burst — ONE gate decision per channel-tick,
+//! regardless of how many items each channel aggregated. Per
+//! `[[cognition-batches-per-channel-adapter]]`: cognition stays dumb;
+//! the channel adapter compresses N items into one coherent unit.
+//!
+//! Each `NeedsResponse` outcome dispatches `Responder::respond()`
+//! OUTSIDE the lock. Three contracts the loop respects:
 //!
 //! 1. **Lock discipline.** The personas mutex is dropped before
 //!    `respond().await`. Production safety: status / enroll / other
@@ -46,14 +52,15 @@ use uuid::Uuid;
 
 use crate::cognition::response_orchestrator::PersonaSlot as ResponderPersona;
 use crate::model_registry::Capability;
-use crate::persona::channel_registry::ChannelRegistry;
-use crate::persona::channel_types::ServiceCycleResult;
-use crate::persona::evaluator::{full_evaluate, FullEvaluateRequest, FullEvaluateResult};
+use crate::persona::channel_registry::{ChannelRegistry, DEFAULT_BURST_WINDOW_MS};
+use crate::persona::channel_types::ActivityDomain;
+use crate::persona::channel_view::CoherentInput;
+use crate::persona::evaluator::{analyze_burst, BurstEvaluateResult, BurstRespondContext};
+use crate::persona::persona_identity::PersonaIdentity;
 use crate::persona::response::{PersonaResponse, RespondInput};
 use crate::persona::turn_context::TurnContext;
-use crate::persona::types::{PersonaState, SenderType};
+use crate::persona::types::PersonaState;
 use crate::persona::unified::PersonaCognition;
-use serde::Deserialize;
 use std::collections::HashSet;
 
 /// Dependency-injection point for response generation. Production binds
@@ -75,28 +82,6 @@ impl Responder for DefaultResponder {
     }
 }
 
-/// Wire shape that mirrors `ChatQueueItem::to_json()` (camelCase with a
-/// `"type": "chat"` discriminant). Used here to deserialize whatever
-/// `channel_registry::service_cycle` pops back into typed fields without
-/// adding a new deser path to ChatQueueItem itself. Local to the
-/// service module — not a stable public type.
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ChatItemWire {
-    #[serde(rename = "type")]
-    _kind: String,
-    id: Uuid,
-    #[serde(rename = "roomId")]
-    room_id: Uuid,
-    content: String,
-    #[serde(rename = "senderId")]
-    sender_id: Uuid,
-    #[serde(rename = "senderName")]
-    sender_name: String,
-    #[serde(rename = "senderType")]
-    sender_type: SenderType,
-    timestamp: u64,
-}
 use crate::rag::RagEngine;
 use crate::runtime::service_module::{CommandResult, ModuleConfig, ModulePriority, ServiceModule};
 use crate::runtime::ModuleContext;
@@ -115,14 +100,10 @@ const CIRCUIT_BREAKER_MAX_CONSECUTIVE_SERVICE_FAILURES: u32 = 5;
 const CIRCUIT_BREAKER_MAX_CONSECUTIVE_INFERENCE_FAILURES: u32 = 15;
 /// Duration the per-persona circuit stays open after tripping.
 const CIRCUIT_BREAKER_COOLDOWN_MS: u64 = 30_000;
-/// Per-tick per-persona drain bound — caps how many items a single
-/// persona can dispatch in one tick so one noisy persona can't starve
-/// the rest.
-const MAX_DRAIN_PER_TICK: u32 = 20;
 
 /// Per-persona persistent response configuration. Required at enrollment.
 /// All fields validated non-empty/non-default at enrollment time so
-/// `build_respond_input` can construct a honestly-populated `RespondInput`
+/// `build_respond_input_from_burst` can construct a honestly-populated `RespondInput`
 /// — no empty-string fallbacks that the inference layer would have to
 /// fail-loudly on. (Per Joel 2026-05-29 + the URI doctrine peer mapped:
 /// empty model fails at the URI parser; same fail-loud should happen at
@@ -181,16 +162,16 @@ pub struct EnrolledPersona {
     pub persona_id: Uuid,
     pub display_name: String,
     pub cognition: PersonaCognition,
-    /// Per-persona channel queues (chat, voice, task). `service_once_for`
-    /// pops the next eligible item via `channels.service_cycle(state)`.
+    /// Per-persona channel queues (chat, voice, task). `service_burst_for`
+    /// drains coherent bursts via `channels.service_cycle_batched(state, identity, window)`.
     pub channels: ChannelRegistry,
     /// Per-persona state (energy, mood, attention, inbox_load) consumed
-    /// by `service_cycle` to gate non-urgent items by `should_engage`.
-    /// `service_cycle` updates the inbox_load field on every call.
+    /// by `service_cycle_batched` to gate non-urgent items by `should_engage`.
+    /// `service_cycle_batched` updates the inbox_load field on every call.
     pub state: PersonaState,
     /// Per-persona responder configuration. Required at enrollment;
     /// supplies `model`, `system_prompt`, `capabilities`, `specialty`
-    /// for `build_respond_input` so no field needs an empty default.
+    /// for `build_respond_input_from_burst` so no field needs an empty default.
     pub responder_config: ResponderConfig,
     /// Unix-ms timestamp at which the per-persona circuit re-closes.
     /// 0 means the circuit is currently closed (healthy).
@@ -227,56 +208,42 @@ impl EnrolledPersona {
     }
 }
 
-/// Output of the *synchronous* pop+decide step (`service_once_for`)
-/// inside the lock. The async `Responder::respond` dispatch happens
-/// outside the lock; `drain_all_personas` converts a `NeedsResponse`
-/// decision into a `ServiceOnceOutcome::Responded` or surfaces the
-/// inference error.
+/// Output of the *synchronous* pop+decide step (`service_burst_for`)
+/// inside the lock — ONE entry per coherent burst drained from a
+/// persona's channels this tick. The async `Responder::respond`
+/// dispatch happens OUTSIDE the lock; `drain_all_personas` iterates
+/// the Vec returned by `service_burst_for` and dispatches each burst.
+///
+/// Per `[[cognition-batches-per-channel-adapter]]`: ONE entry per
+/// channel-burst, not per item. A burst aggregating N chat messages
+/// produces ONE `ServiceBurstDecision`, regardless of N.
 #[derive(Debug)]
-pub enum ServicePopDecision {
-    /// The channel was idle; nothing to pop.
-    Idle,
-    /// `full_evaluate` decided NOT to respond.
+pub enum ServiceBurstDecision {
+    /// `analyze_burst` decided NOT to respond.
     Silent {
-        message_id: Uuid,
-        decision: FullEvaluateResult,
+        burst_message_count: usize,
+        primary_room: Uuid,
+        decision: BurstEvaluateResult,
     },
-    /// `full_evaluate` decided to respond; `respond_input` is fully-formed.
-    /// The caller dispatches `Responder::respond(*respond_input)` OUTSIDE
-    /// the lock.
+    /// `analyze_burst` decided to respond; `respond_input` is
+    /// fully-formed from the burst's aggregated context. The caller
+    /// dispatches `Responder::respond(*respond_input)` OUTSIDE the
+    /// lock.
     NeedsResponse {
-        message_id: Uuid,
-        decision: FullEvaluateResult,
+        burst_message_count: usize,
+        primary_room: Uuid,
+        decision: BurstEvaluateResult,
         respond_input: Box<RespondInput>,
     },
-    /// Popped item had a non-chat `"type"` discriminant.
-    UnsupportedItem { item_type: String },
-}
-
-/// Outcome of a single `service_once_for` call on one enrolled persona.
-#[derive(Debug)]
-pub enum ServiceOnceOutcome {
-    /// The channel was idle; no item to dispatch this cycle.
-    Idle,
-    /// `full_evaluate` decided NOT to respond. Carries the gate outcome
-    /// for observability.
-    SilentByDecision {
-        message_id: Uuid,
-        decision: FullEvaluateResult,
+    /// Non-Chat burst (Audio / Code / Background) — typed view not yet
+    /// implemented, so cognition has no gate semantics for it.
+    /// Surfaced explicitly so callers / observers see the burst-shape
+    /// rather than the substrate silently dropping it (per
+    /// `[[no-fallbacks-ever]]`).
+    UnsupportedDomain {
+        domain: ActivityDomain,
+        burst_message_count: usize,
     },
-    /// `full_evaluate` decided to respond AND `Responder::respond`
-    /// returned successfully. `response` is the typed result
-    /// (`PersonaResponse::Silent` if the persona chose silence after
-    /// generation, `PersonaResponse::Spoke` otherwise).
-    Responded {
-        message_id: Uuid,
-        decision: FullEvaluateResult,
-        response: PersonaResponse,
-    },
-    /// Item was popped but its `"type"` wasn't `"chat"`. Voice + task
-    /// items live in the same channel queues and will be wired in
-    /// later slices; surfaced here rather than silently dropped.
-    UnsupportedItem { item_type: String },
 }
 
 /// Singleton owning persona work in-process. Replaces the TS
@@ -372,121 +339,142 @@ impl PersonaServiceModule {
             .collect())
     }
 
-    /// Service one cycle for one enrolled persona. Pure function over
-    /// `&mut EnrolledPersona` so it composes inside the tick loop
-    /// without re-acquiring the outer lock per call.
+    /// Demand-pull service step for one enrolled persona. Drains every
+    /// channel's coherent burst and runs cognition's `analyze_burst`
+    /// per burst. Pure function over `&mut EnrolledPersona` so it
+    /// composes inside the tick loop without re-acquiring the outer
+    /// lock per call.
+    ///
+    /// Per `[[cognition-batches-per-channel-adapter]]`: one
+    /// `BurstEvaluateResult` per channel-burst, regardless of how
+    /// many items each channel aggregated. Returns one
+    /// `ServiceBurstDecision` per drained burst; the Vec is empty
+    /// when no channel had work this tick.
     ///
     /// Behavior:
-    /// 1. `channels.service_cycle(&mut state)` pops the next eligible
-    ///    item (respects priority + `state.should_engage`).
-    /// 2. If no item: `Idle`.
-    /// 3. Otherwise, deserialize the popped item. If it's a chat
-    ///    message, build a `FullEvaluateRequest` from the persona +
-    ///    message, call `full_evaluate`, and surface the decision.
-    /// 4. Non-chat items (voice, task) are surfaced as `UnsupportedItem`
-    ///    — they're queued in the same channel registry but their
-    ///    dispatch wiring lands in a later slice. Surfacing them here
-    ///    rather than silently dropping is the anti-fallback discipline.
-    pub fn service_once_for(
+    /// 1. `channels.service_cycle_batched(&mut state, &identity,
+    ///    DEFAULT_BURST_WINDOW_MS)` drains coherent bursts from every
+    ///    channel that has work (respects priority + state).
+    /// 2. For each `CoherentInput::Chat`: call `analyze_burst`, build
+    ///    a `RespondInput` from the burst's aggregated context when
+    ///    the gate says respond, surface as `Silent` otherwise.
+    /// 3. `CoherentInput::Other` (Audio / Code / Background — typed
+    ///    views not yet implemented) surfaces as `UnsupportedDomain`
+    ///    rather than silently dropping (per `[[no-fallbacks-ever]]`).
+    pub fn service_burst_for(
         persona: &mut EnrolledPersona,
         now_ms: u64,
-    ) -> Result<ServicePopDecision, String> {
-        let result: ServiceCycleResult = persona.channels.service_cycle(&mut persona.state);
-        if !result.should_process {
-            return Ok(ServicePopDecision::Idle);
-        }
-        let item_value = result.item.ok_or_else(|| {
-            "service_cycle reported should_process=true but no item attached".to_string()
-        })?;
-        let item_type = item_value
-            .get("type")
-            .and_then(Value::as_str)
-            .unwrap_or("unknown")
-            .to_string();
-        if item_type != "chat" {
-            return Ok(ServicePopDecision::UnsupportedItem { item_type });
-        }
-        let wire: ChatItemWire = serde_json::from_value(item_value)
-            .map_err(|e| format!("service_once_for: failed to deserialize chat item: {e}"))?;
-        let sender_is_human = matches!(wire.sender_type, SenderType::Human);
-        let request = FullEvaluateRequest {
-            persona_id: persona.persona_id,
-            persona_name: persona.display_name.clone(),
-            persona_unique_id: persona.persona_id.to_string(),
-            message_id: wire.id,
-            room_id: wire.room_id,
-            sender_id: wire.sender_id,
-            sender_name: wire.sender_name.clone(),
-            sender_type: wire.sender_type,
-            content: wire.content.clone(),
-            timestamp: wire.timestamp,
-            is_voice: false,
-            voice_session_id: None,
-            sender_is_human,
-            // L0-2-dispatch surfaces the bare gate decision; sleep-mode
-            // topic-similarity context is computed inline by full_evaluate
-            // when not supplied. Upstream context plumbing for these
-            // optional pre-computed hints lands in a follow-up slice.
-            topic_similarity: None,
-            recent_room_texts: None,
-        };
-        let decision = full_evaluate(
-            &request,
-            &persona.cognition.rate_limiter,
-            &persona.cognition.sleep_state,
-            &persona.cognition.engine,
-            &persona.cognition.message_cache,
-            now_ms,
+    ) -> Result<Vec<ServiceBurstDecision>, String> {
+        let identity = PersonaIdentity::new(persona.persona_id, persona.display_name.clone());
+        let inputs = persona.channels.service_cycle_batched(
+            &mut persona.state,
+            &identity,
+            DEFAULT_BURST_WINDOW_MS,
         );
-        if !decision.should_respond {
-            return Ok(ServicePopDecision::Silent {
-                message_id: wire.id,
-                decision,
-            });
+        let mut out = Vec::with_capacity(inputs.len());
+        for input in inputs {
+            match input {
+                CoherentInput::Chat(_) => {
+                    let decision = analyze_burst(
+                        &input,
+                        persona.persona_id,
+                        &persona.display_name,
+                        &persona.persona_id.to_string(),
+                        &persona.cognition.rate_limiter,
+                        &persona.cognition.sleep_state,
+                        &persona.cognition.engine,
+                        &persona.cognition.message_cache,
+                        now_ms,
+                    );
+                    let burst_message_count = decision.burst_message_count;
+                    let primary_room = decision.primary_room;
+                    if decision.should_respond {
+                        // `analyze_burst`'s typed contract: `should_respond`
+                        // implies `respond_context` is Some. A None here
+                        // would be a structural bug in the evaluator, not
+                        // a runtime condition to handle gracefully.
+                        let Some(ref ctx) = decision.respond_context else {
+                            return Err(
+                                "analyze_burst returned should_respond=true \
+                                 with no respond_context — typed contract violated"
+                                    .to_string(),
+                            );
+                        };
+                        let respond_input = Self::build_respond_input_from_burst(persona, ctx);
+                        out.push(ServiceBurstDecision::NeedsResponse {
+                            burst_message_count,
+                            primary_room,
+                            decision,
+                            respond_input: Box::new(respond_input),
+                        });
+                    } else {
+                        out.push(ServiceBurstDecision::Silent {
+                            burst_message_count,
+                            primary_room,
+                            decision,
+                        });
+                    }
+                }
+                CoherentInput::Other {
+                    domain,
+                    item_count,
+                    ..
+                } => {
+                    out.push(ServiceBurstDecision::UnsupportedDomain {
+                        domain,
+                        burst_message_count: item_count,
+                    });
+                }
+            }
         }
-        let respond_input = Self::build_respond_input(persona, &wire);
-        Ok(ServicePopDecision::NeedsResponse {
-            message_id: wire.id,
-            decision,
-            respond_input: Box::new(respond_input),
-        })
+        Ok(out)
     }
 
     /// Construct a `RespondInput` for `persona::response::respond()`
-    /// from the enrolled persona's stored config + the popped chat-item
-    /// wire. Deterministic + side-effect free; no empty-string defaults
-    /// — every required field comes from `responder_config` (validated
-    /// at enrollment) or from the message itself.
+    /// from the enrolled persona's stored config + a burst's
+    /// `BurstRespondContext`. Deterministic + side-effect free; no
+    /// empty-string defaults — every required field comes from
+    /// `responder_config` (validated at enrollment) or from the
+    /// burst's aggregated content.
+    ///
+    /// `message_id` is a fresh `Uuid::new_v4()`: the burst IS the
+    /// unit of work, not any single item it aggregated, so we anchor
+    /// at burst granularity per `[[cognition-batches-per-channel-
+    /// adapter]]`. Downstream caches don't conflate two ticks'
+    /// bursts on the same room because the anchor differs per call.
     ///
     /// Fields that are LEGITIMATELY empty here:
-    /// - `turn_context.recent_history`: populated by L0-3/L0-4 when the
-    ///   inbox-routing path plumbs prior-message context per-turn. For
-    ///   now an empty Vec means "first-turn fresh context."
-    /// - `turn_context.known_specialties`: populated when the response
-    ///   orchestrator has multiple-persona-in-room context. Empty Vec
-    ///   means "no other-persona specialties to consider."
-    /// - `other_persona_names`: same provenance — populated when the
-    ///   room roster is plumbed.
-    /// - `message_media`: populated when the chat item carries media
-    ///   (next slice for media item wiring).
+    /// - `turn_context.recent_history`: populated by L0-3/L0-4 when
+    ///   the inbox-routing path plumbs prior-message context
+    ///   per-turn. For now an empty Vec means "first-turn fresh
+    ///   context."
+    /// - `turn_context.known_specialties`: populated when the
+    ///   response orchestrator has multiple-persona-in-room context.
+    /// - `other_persona_names`: populated when the room roster is
+    ///   plumbed.
+    /// - `message_media`: populated when burst items carry media
+    ///   (next slice).
     /// - `recalled_engrams`: populated when admission state recall is
     ///   wired (L0-3+).
     ///
     /// None of those are silently-substituted defaults — they're
-    /// genuinely-absent context that the receiver tolerates. The fields
-    /// that would be DANGEROUS to default (model, system_prompt,
-    /// capabilities, specialty) come from responder_config which is
-    /// validated non-empty at enrollment.
-    fn build_respond_input(persona: &EnrolledPersona, wire: &ChatItemWire) -> RespondInput {
+    /// genuinely-absent context that the receiver tolerates. The
+    /// fields that would be DANGEROUS to default (model,
+    /// system_prompt, capabilities, specialty) come from
+    /// responder_config which is validated non-empty at enrollment.
+    fn build_respond_input_from_burst(
+        persona: &EnrolledPersona,
+        ctx: &BurstRespondContext,
+    ) -> RespondInput {
         RespondInput {
             persona: ResponderPersona {
                 persona_id: persona.persona_id,
                 specialty: persona.responder_config.specialty.clone(),
                 display_name: persona.display_name.clone(),
             },
-            turn_context: TurnContext::arc(wire.room_id, Vec::new(), Vec::new()),
-            message_id: wire.id,
-            message_text: wire.content.clone(),
+            turn_context: TurnContext::arc(ctx.room_id, Vec::new(), Vec::new()),
+            message_id: Uuid::new_v4(),
+            message_text: ctx.aggregated_content.clone(),
             other_persona_names: Vec::new(),
             system_prompt: persona.responder_config.system_prompt.clone(),
             model: persona.responder_config.model.clone(),
@@ -497,25 +485,30 @@ impl PersonaServiceModule {
         }
     }
 
-    /// Iterate every enrolled persona, run a pop+evaluate+(maybe)respond
-    /// cycle up to `MAX_DRAIN_PER_TICK` times per persona while the
-    /// channel has work. Per-persona circuit breaker gates failures.
+    /// Iterate every enrolled persona, run ONE batched pop+evaluate
+    /// step (`service_burst_for`) per persona per tick, then dispatch
+    /// `Responder::respond()` for every burst whose gate said respond.
+    /// Per-persona circuit breaker gates failures.
+    ///
+    /// Per-tick item count is bounded by the channel-burst structure,
+    /// not a counter: each call returns at most one burst per
+    /// `ActivityDomain` (4 today). A burst aggregating N items is ONE
+    /// dispatch, regardless of N — that's
+    /// `[[cognition-batches-per-channel-adapter]]` in production form.
     ///
     /// Lock discipline (the load-bearing contract):
     /// 1. Brief lock at top: collect persona ids.
     /// 2. Drop lock.
     /// 3. Per persona id:
-    ///    a. Brief lock: check circuit, call `service_once_for` (sync
-    ///       pop+evaluate, returns `ServicePopDecision`), update state
-    ///       for outcomes that don't need `respond()`.
+    ///    a. Brief lock: check circuit, call `service_burst_for` (sync
+    ///       drain+evaluate, returns `Vec<ServiceBurstDecision>`).
     ///    b. Drop lock.
-    ///    c. If `NeedsResponse`: call `responder.respond(...).await`
-    ///       OUTSIDE the lock — production safety, status / enroll /
-    ///       other personas don't block across the multi-second
-    ///       inference call.
-    ///    d. Brief lock: update circuit-breaker state based on respond
-    ///       result (success resets `consecutive_inference_failures`,
-    ///       failure increments + may trip CB at the inference threshold).
+    ///    c. For each `NeedsResponse` burst: call
+    ///       `responder.respond(...).await` OUTSIDE the lock —
+    ///       production safety, status / enroll / other personas don't
+    ///       block across multi-second inference calls.
+    ///    d. Brief lock: update circuit-breaker state per respond
+    ///       result.
     pub async fn drain_all_personas(&self, now_ms: u64) -> Result<(), String> {
         let persona_ids: Vec<Uuid> = {
             let personas = self
@@ -525,51 +518,65 @@ impl PersonaServiceModule {
             personas.keys().copied().collect()
         };
         for persona_id in persona_ids {
-            let mut drained: u32 = 0;
-            'drain_loop: while drained < MAX_DRAIN_PER_TICK {
-                let pop_result = {
-                    let mut personas = self
-                        .personas
-                        .lock()
-                        .map_err(|_| "personas lock poisoned".to_string())?;
-                    let persona = match personas.get_mut(&persona_id) {
-                        Some(p) => p,
-                        None => break 'drain_loop, // unenrolled mid-tick
-                    };
-                    if persona.circuit_open_until_ms > now_ms {
-                        break 'drain_loop;
-                    }
-                    if persona.circuit_open_until_ms != 0 {
-                        persona.circuit_open_until_ms = 0;
-                        persona.consecutive_service_failures = 0;
-                        persona.consecutive_inference_failures = 0;
-                    }
-                    Self::service_once_for(persona, now_ms)
+            let burst_result = {
+                let mut personas = self
+                    .personas
+                    .lock()
+                    .map_err(|_| "personas lock poisoned".to_string())?;
+                let persona = match personas.get_mut(&persona_id) {
+                    Some(p) => p,
+                    None => continue, // unenrolled mid-tick
                 };
-                match pop_result {
-                    Ok(ServicePopDecision::Idle) => {
-                        self.with_persona(persona_id, |p| {
-                            p.consecutive_service_failures = 0;
-                        })?;
-                        break 'drain_loop;
+                if persona.circuit_open_until_ms > now_ms {
+                    continue;
+                }
+                if persona.circuit_open_until_ms != 0 {
+                    persona.circuit_open_until_ms = 0;
+                    persona.consecutive_service_failures = 0;
+                    persona.consecutive_inference_failures = 0;
+                }
+                Self::service_burst_for(persona, now_ms)
+            };
+            let bursts = match burst_result {
+                Ok(bursts) => {
+                    // Service-layer success — reset the service-failure
+                    // counter so an isolated past failure doesn't keep
+                    // accumulating toward the CB threshold.
+                    self.with_persona(persona_id, |p| {
+                        p.consecutive_service_failures = 0;
+                    })?;
+                    bursts
+                }
+                Err(_) => {
+                    let _ = self.with_persona(persona_id, |p| {
+                        p.consecutive_service_failures += 1;
+                        if p.consecutive_service_failures
+                            >= CIRCUIT_BREAKER_MAX_CONSECUTIVE_SERVICE_FAILURES
+                        {
+                            p.circuit_open_until_ms =
+                                now_ms.saturating_add(CIRCUIT_BREAKER_COOLDOWN_MS);
+                        }
+                    })?;
+                    continue;
+                }
+            };
+            // Iterate the tick's bursts. Lock dropped — respond() runs
+            // free. Inference errors bump the inference-failure
+            // counter; CB trips at the inference threshold.
+            for burst in bursts {
+                match burst {
+                    ServiceBurstDecision::Silent { .. }
+                    | ServiceBurstDecision::UnsupportedDomain { .. } => {
+                        // Gate said silent (Chat) or typed view not yet
+                        // wired (Other). Nothing further this burst.
                     }
-                    Ok(ServicePopDecision::Silent { .. })
-                    | Ok(ServicePopDecision::UnsupportedItem { .. }) => {
-                        self.with_persona(persona_id, |p| {
-                            p.consecutive_service_failures = 0;
-                        })?;
-                        drained += 1;
-                    }
-                    Ok(ServicePopDecision::NeedsResponse { respond_input, .. }) => {
-                        // Lock is dropped here. respond() runs free.
+                    ServiceBurstDecision::NeedsResponse { respond_input, .. } => {
                         let respond_result = self.responder.respond(*respond_input).await;
                         match respond_result {
                             Ok(_response) => {
                                 self.with_persona(persona_id, |p| {
-                                    p.consecutive_service_failures = 0;
                                     p.consecutive_inference_failures = 0;
                                 })?;
-                                drained += 1;
                             }
                             Err(_err) => {
                                 let tripped = self.with_persona(persona_id, |p| {
@@ -585,32 +592,17 @@ impl PersonaServiceModule {
                                     }
                                 })?;
                                 if tripped {
-                                    break 'drain_loop;
+                                    // CB tripped — skip remaining bursts
+                                    // for this persona this tick.
+                                    break;
                                 }
-                                // Inference error but circuit not yet
-                                // tripped — stop draining this persona
-                                // this tick. Don't keep hammering the
-                                // same misconfigured model on this same
-                                // tick; let the next tick retry.
-                                break 'drain_loop;
+                                // Inference error, CB not tripped. Don't
+                                // keep hammering the same misconfigured
+                                // model with the next burst this tick;
+                                // let the next tick retry.
+                                break;
                             }
                         }
-                    }
-                    Err(_) => {
-                        let tripped = self.with_persona(persona_id, |p| {
-                            p.consecutive_service_failures += 1;
-                            if p.consecutive_service_failures
-                                >= CIRCUIT_BREAKER_MAX_CONSECUTIVE_SERVICE_FAILURES
-                            {
-                                p.circuit_open_until_ms =
-                                    now_ms.saturating_add(CIRCUIT_BREAKER_COOLDOWN_MS);
-                                true
-                            } else {
-                                false
-                            }
-                        })?;
-                        let _ = tripped;
-                        break 'drain_loop;
                     }
                 }
             }
@@ -738,10 +730,11 @@ impl ServiceModule for PersonaServiceModule {
     }
 
     async fn tick(&self) -> Result<(), String> {
-        // L0-2-dispatch: tick drains every enrolled persona's channels
-        // up to MAX_DRAIN_PER_TICK. Production-safety: no production
-        // code calls `persona/enroll` yet — until L0-2-cutover wires
-        // enrollment, this tick runs over an empty map (no-op).
+        // Tick drains every enrolled persona's channels via the
+        // batched cognition path: ONE `service_burst_for` per persona
+        // per tick. Production-safety: no production code calls
+        // `persona/enroll` yet — until L0-2-cutover wires enrollment,
+        // this tick runs over an empty map (no-op).
         self.drain_all_personas(now_ms()).await
     }
 
@@ -933,6 +926,7 @@ mod tests {
     use crate::persona::channel_items::ChatQueueItem;
     use crate::persona::channel_queue::{ChannelQueue, ChannelQueueConfig};
     use crate::persona::channel_types::ActivityDomain;
+    use crate::persona::types::SenderType;
 
     /// Construct a chat queue item with sensible defaults for tests.
     fn test_chat_item(content: &str, sender_human: bool, room_id: Uuid) -> ChatQueueItem {
@@ -960,7 +954,7 @@ mod tests {
     }
 
     /// Ensure the Chat channel exists on this persona's registry so
-    /// items can be routed there for service_cycle to find.
+    /// items can be routed there for service_cycle_batched to find.
     fn ensure_chat_channel(persona: &mut EnrolledPersona) {
         if persona.channels.get(ActivityDomain::Chat).is_none() {
             persona
@@ -974,7 +968,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn service_once_for_idle_returns_idle() {
+    async fn service_burst_for_idle_returns_empty_vec() {
+        // what this catches: a future regression where service_burst_for
+        // pretends a burst exists on an empty channel. The batched
+        // contract is "zero work in → zero bursts out", not "one
+        // burst with empty content".
         let m = fresh_module();
         let persona_id = Uuid::new_v4();
         m.enroll(persona_id, "Helper", test_config())
@@ -982,13 +980,23 @@ mod tests {
         let mut personas = m.personas.lock().unwrap();
         let persona = personas.get_mut(&persona_id).unwrap();
         ensure_chat_channel(persona);
-        let outcome =
-            PersonaServiceModule::service_once_for(persona, 1_700_000_000_000).expect("idle ok");
-        assert!(matches!(outcome, ServicePopDecision::Idle));
+        let bursts = PersonaServiceModule::service_burst_for(persona, 1_700_000_000_000)
+            .expect("idle ok");
+        assert!(
+            bursts.is_empty(),
+            "no items routed → no bursts; got {} entries",
+            bursts.len()
+        );
     }
 
     #[tokio::test]
-    async fn service_once_for_dispatches_chat_item_through_full_evaluate() {
+    async fn service_burst_for_dispatches_chat_burst_through_analyze_burst() {
+        // what this catches: regression where service_burst_for stops
+        // honoring the demand-pull doctrine (one burst per channel-tick
+        // through analyze_burst). Pins: gate fires once, respond_input
+        // is fully-formed from BurstRespondContext, persona config flows
+        // through (no empty-string defaults), aggregated_content carries
+        // the burst's text.
         let m = fresh_module();
         let persona_id = Uuid::new_v4();
         m.enroll(persona_id, "Helper", test_config())
@@ -998,34 +1006,41 @@ mod tests {
         let persona = personas.get_mut(&persona_id).unwrap();
         ensure_chat_channel(persona);
         let item = test_chat_item("hello", true, room_id);
-        let expected_id = item.id;
         persona
             .channels
             .route(std::sync::Arc::new(item))
             .expect("route chat item to Chat channel");
-        let outcome = PersonaServiceModule::service_once_for(persona, 1_700_000_000_000)
+        let bursts = PersonaServiceModule::service_burst_for(persona, 1_700_000_000_000)
             .expect("dispatch ok");
-        // Sender is human + persona is not in DND + no rate limit → gate
-        // says respond → NeedsResponse with a fully-formed RespondInput.
-        match outcome {
-            ServicePopDecision::NeedsResponse {
-                message_id,
-                decision: _,
+        // One chat item routed → exactly one Chat burst. Multiple
+        // bursts here would mean the batched drain double-counted.
+        assert_eq!(bursts.len(), 1, "one chat item → one burst");
+        match bursts.into_iter().next().unwrap() {
+            ServiceBurstDecision::NeedsResponse {
+                burst_message_count,
+                primary_room,
+                decision,
                 respond_input,
             } => {
-                assert_eq!(message_id, expected_id);
-                // Verify the respond_input has the persona's real config,
-                // not empty defaults. This is the doctrine pin: no empty
-                // model, no empty specialty, no empty system_prompt
-                // (all came from test_config()).
+                assert_eq!(burst_message_count, 1, "single-item burst");
+                assert_eq!(primary_room, room_id);
+                assert!(decision.should_respond, "human-sender mention → respond");
+                // Doctrine pin: respond_input carries the persona's
+                // real config, not empty defaults (all came from
+                // test_config()).
                 assert_eq!(respond_input.model, "test-model");
                 assert_eq!(respond_input.persona.specialty, "general");
                 assert_eq!(
                     respond_input.system_prompt,
                     "You are a helpful test persona."
                 );
-                assert_eq!(respond_input.message_id, expected_id);
-                assert_eq!(respond_input.message_text, "hello");
+                // Aggregated content carries the burst text in
+                // "Sender: content" form (ChatChannelView::interpret).
+                assert!(
+                    respond_input.message_text.contains("hello"),
+                    "aggregated_content must carry the burst text; got {:?}",
+                    respond_input.message_text
+                );
             }
             other => panic!("expected NeedsResponse, got {other:?}"),
         }
@@ -1111,37 +1126,36 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn drain_respects_max_drain_per_tick() {
-        // Stage MAX_DRAIN_PER_TICK + 5 items on one persona. After one
-        // drain call, exactly MAX_DRAIN_PER_TICK should have been
-        // processed; the remainder stays queued.
+    async fn drain_handles_large_burst_without_tripping_cb() {
+        // what this catches: regression where a busy tick (many items
+        // routed to one persona's chat channel) breaks the per-persona
+        // CB. The batched cutover collapses N same-room items into
+        // ONE coherent burst via service_cycle_batched + consolidation,
+        // so one drain call dispatches at most one inference per
+        // domain — but the SERVICE-LAYER must still see clean state.
         let m = fresh_module();
         let persona_id = Uuid::new_v4();
         m.enroll(persona_id, "Helper", test_config())
             .expect("enroll");
         let room_id = Uuid::new_v4();
-        let staged = MAX_DRAIN_PER_TICK as usize + 5;
+        let staged = 25;
         {
             let mut personas = m.personas.lock().unwrap();
             let persona = personas.get_mut(&persona_id).unwrap();
             ensure_chat_channel(persona);
-            // Use distinct content per item to avoid same-room
-            // consolidation collapsing them into one.
             for i in 0..staged {
                 let mut item = test_chat_item(&format!("msg {i}"), true, room_id);
-                // Vary timestamps so consolidation orders deterministically.
                 item.timestamp = 1_700_000_000_000 + i as u64;
-                persona.channels.route(std::sync::Arc::new(item)).expect("route item");
+                persona
+                    .channels
+                    .route(std::sync::Arc::new(item))
+                    .expect("route item");
             }
         }
         m.drain_all_personas(1_700_000_000_000)
             .await
             .expect("drain ok");
-        // After one drain pass, the queue should NOT be empty (we
-        // staged more than the per-tick cap and ChatQueueItem
-        // consolidates same-room items, so the actual count drained
-        // depends on consolidation — but the persona should still be
-        // healthy and ready for the next tick).
+        // Persona stays healthy: zero service-layer failures, CB closed.
         let personas = m.personas.lock().unwrap();
         let persona = personas.get(&persona_id).unwrap();
         assert_eq!(persona.consecutive_service_failures, 0);
@@ -1227,7 +1241,7 @@ mod tests {
         assert_eq!(
             mock.call_count.load(Ordering::SeqCst),
             1,
-            "responder must be called exactly once for the single popped item"
+            "responder must be called exactly once for the single chat burst"
         );
         // Persona healthy (no failures, circuit closed).
         let personas = m.personas.lock().unwrap();
@@ -1261,7 +1275,7 @@ mod tests {
             .await
             .expect("drain ok");
         // Whether the gate said yes or no for this specific shape isn't
-        // guaranteed by full_evaluate alone — what's guaranteed is that
+        // guaranteed by analyze_burst alone — what's guaranteed is that
         // IF the gate says no, responder is never called. We can't reliably
         // assert gate behavior here without mocking it, so we assert the
         // weaker (and architecturally interesting) invariant: call_count
@@ -1274,10 +1288,11 @@ mod tests {
     async fn inference_errors_eventually_trip_circuit_at_inference_threshold() {
         // Repeated inference failures should trip the CB at the inference
         // threshold (15), not the service threshold (5). To exercise this
-        // we need 15 successful pops + inference failures, but drain caps
-        // at MAX_DRAIN_PER_TICK (20) per tick AND breaks on inference
-        // error. So each tick we hit exactly ONE inference error before
-        // breaking. We drive 15 ticks.
+        // we need 15 inference failures. Each tick we stage one chat
+        // item → service_burst_for emits ONE NeedsResponse burst → one
+        // inference call → one failure. drain_all_personas breaks out of
+        // the burst loop on inference error, so we drive exactly 15
+        // ticks to reach the threshold.
         let (m, mock) =
             module_with_responder(ResponderScript::AlwaysErr("model not loaded".to_string()));
         let persona_id = Uuid::new_v4();

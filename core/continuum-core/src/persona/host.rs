@@ -9,7 +9,8 @@
 //! - [`spawn_persona_service`] — slice 12: the per-persona compose
 //!   point. Takes a fully-assembled [`PersonaContext`] and starts
 //!   her service loop on a tokio handle. Used by the supervisor
-//!   below, and (today) by `airc_chat_demo` directly.
+//!   below and by integration tests that need a single persona on
+//!   the grid without the full boot pipeline.
 //! - [`PersonaSpawnSupervisor`] — slice 13.5: the boot-level
 //!   orchestrator. Wraps the slice 7-12 pipeline into one named
 //!   class. Construct it once at substrate boot, call

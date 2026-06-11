@@ -242,8 +242,9 @@ impl ServiceModule for PersonaSpawnerModule {
 //   layer stops at the profile so it stays testable without llama.cpp
 //   in the loop.
 // - Run the per-persona subscribe-loop. The chat-attach + service-loop
-//   is the demo binary's main today (`airc_chat_demo`); slice 9
-//   factors that out so it's reusable from production boot.
+//   was originally inlined per-persona at the call site; slice 9
+//   factors that out so it's reusable from production boot and from
+//   integration tests.
 
 /// Errors `bootstrap_planned` can surface, kept structured so callers
 /// (e.g. a future supervisor module) can decide which failures are

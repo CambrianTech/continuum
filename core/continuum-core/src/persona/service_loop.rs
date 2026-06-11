@@ -285,10 +285,10 @@ pub struct ServeOutcome {
 ///
 /// **PRECONDITION**: `conversation.prime()` MUST be called by the
 /// caller before invoking this function. The supervisor's
-/// `spawn_persona_service` enforces this. Direct callers (the
-/// `airc_chat_demo` binary, integration tests) must call `prime`
-/// explicitly. Per [[no-fallbacks-ever]] this loop does NOT prime
-/// as a safety net — one place primes, callers honor the contract.
+/// `spawn_persona_service` enforces this. Direct callers (e.g.
+/// integration tests) must call `prime` explicitly. Per
+/// [[no-fallbacks-ever]] this loop does NOT prime as a safety net —
+/// one place primes, callers honor the contract.
 /// If you forget to prime, the first `next_message` returns a typed
 /// `Err("called before prime()")` so the failure is loud.
 ///
@@ -318,9 +318,8 @@ async fn serve_persona_loop_inner(
 ) -> Result<ServeOutcome, String> {
     // PRECONDITION: caller MUST have called `conversation.prime()`
     // before entering this loop. The supervisor's `spawn_persona_service`
-    // does this before spawning the task. Direct callers
-    // (`airc_chat_demo`, integration tests) prime explicitly before
-    // calling.
+    // does this before spawning the task. Direct callers (e.g.
+    // integration tests) prime explicitly before calling.
     //
     // Per [[no-fallbacks-ever]]: this loop does NOT prime as a safety
     // net. Calling prime here AND in `spawn_persona_service` would be
@@ -1408,8 +1407,9 @@ mod tests {
     /// loop continues — does NOT propagate as a Result::Err from
     #[ignore = "slice 1D — global adapter registration (#161). respond() needs adapter in GLOBAL_REGISTRY; fixture not yet wired."]
     /// serve_persona_loop. The trailing Ok(None) eventually ends it
-    /// cleanly. Models the demo's "live stream lag — resume continues"
-    /// behavior (`bin/airc_chat_demo.rs:346`).
+    /// cleanly. Pins the "live stream lag — resume continues" shape
+    /// per `[[no-fallbacks-ever]]`: typed Err on the boundary, loop
+    /// handles, no silent drop.
     #[tokio::test]
     async fn transient_next_message_error_does_not_kill_loop() {
         let persona_peer = Uuid::new_v4();
