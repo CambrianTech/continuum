@@ -13,7 +13,7 @@
  *
  * Design doc: docs/architecture/ORM-PHASE-2-DESIGN.md
  *
- * Run manually:   npx tsx generator/generate-entity-schemas.ts
+ * Run manually:   npx tsx ../tools/generator/generate-entity-schemas.ts (from src/)
  * Run from build: wired into `npm run build:ts` so Rust always has the
  *                 freshest entity shape on every rebuild.
  */
@@ -25,7 +25,7 @@ import { createHash } from 'crypto';
 import {
   ENTITY_REGISTRY,
   initializeEntityRegistry,
-} from '../daemons/data-daemon/server/EntityRegistry';
+} from '../../src/daemons/data-daemon/server/EntityRegistry';
 import {
   getFieldMetadata,
   getCompositeIndexes,
@@ -33,7 +33,7 @@ import {
   type FieldMetadata,
   type CompositeIndexMetadata,
   type ArchiveConfig,
-} from '../system/data/decorators/FieldDecorators';
+} from '../../src/system/data/decorators/FieldDecorators';
 
 // ─── JSON shape (kept in sync with Rust's EntitySchemaJSON via ts-rs) ─────
 
