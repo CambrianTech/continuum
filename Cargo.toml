@@ -51,15 +51,23 @@ members = [
 #   - PublishRequest.target: MentionTarget → IpcTarget (via .into())
 #   - ResolveWire removed (owner-core daemon owns channels)
 #
-# All on same SHA so IPC ABI version stays consistent. The pinned
-# SHA is currently the tip of the unmerged airc PR branch (#1095 +
-# #1096); re-pin to the post-merge SHA on airc canary/rust-rewrite
-# before merging this continuum PR past canary.
-airc-core = { git = "https://github.com/CambrianTech/airc", rev = "f6ed190" }
-airc-protocol = { git = "https://github.com/CambrianTech/airc", rev = "f6ed190" }
-airc-ipc = { git = "https://github.com/CambrianTech/airc", rev = "f6ed190" }
-airc-lib = { git = "https://github.com/CambrianTech/airc", rev = "f6ed190" }
-airc-wire = { git = "https://github.com/CambrianTech/airc", rev = "f6ed190" }
+# All on same SHA so IPC ABI version stays consistent.
+#
+# 2026-06-11 bump f6ed190 → 7b7cdb2 (airc rust-rewrite tip): a month
+# behind had blocked the entire persona-as-peer line. Adopts
+# PersonaCapabilities (airc#1133) — the type 0e7d94fe stamps measured
+# hardware capabilities into — plus the cross-grid inference spine,
+# account-registry auto-discovery (#1134), and the substrate-owned
+# probe!/time_probe! macros (#1142, airc-diagnostics) continuum can
+# migrate its routing/macros.rs copy onto. Drift-checked: continuum-core
+# compiles against the new airc with NO API breakage (the only build
+# failures are tikv-jemalloc-sys + the llama crate's native build
+# scripts, both pre-existing Windows-MSVC-env issues unrelated to airc).
+airc-core = { git = "https://github.com/CambrianTech/airc", rev = "7b7cdb2" }
+airc-protocol = { git = "https://github.com/CambrianTech/airc", rev = "7b7cdb2" }
+airc-ipc = { git = "https://github.com/CambrianTech/airc", rev = "7b7cdb2" }
+airc-lib = { git = "https://github.com/CambrianTech/airc", rev = "7b7cdb2" }
+airc-wire = { git = "https://github.com/CambrianTech/airc", rev = "7b7cdb2" }
 
 # Candle ML framework — patched via [patch.crates-io] below.
 # Fixes: Metal buffer pool leak (#2271), RoPE NEOX convention (#3410)
