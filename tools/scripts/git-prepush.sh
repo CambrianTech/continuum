@@ -6,9 +6,11 @@ set -e
 
 START_TIME=$(date +%s)
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-SRC_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-RUST_DIR="$SRC_DIR/workers/continuum-core"
-REPO_ROOT="$(cd "$SRC_DIR/.." && pwd)"
+# Script lives at <repo>/tools/scripts/ (substrate-first layout) — resolve
+# the repo root from there, then anchor src/ and the Rust workspace off it.
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+SRC_DIR="$REPO_ROOT/src"
+RUST_DIR="$REPO_ROOT/core/continuum-core"
 
 require_node_deps() {
     if [ -x "$SRC_DIR/node_modules/.bin/tsx" ] \
@@ -152,7 +154,12 @@ if [ "$RUST_RELEVANT" -eq 0 ]; then
 elif [ -d "$RUST_DIR" ]; then
     # shellcheck source=shared/cargo-features.sh
     source "$(dirname "$0")/shared/cargo-features.sh"
-    if (cd "$RUST_DIR" && cargo check $CARGO_GPU_FEATURES 2>/dev/null); then
+    # --message-format=short: rustc 1.94+'s default annotate-snippets diagnostic
+    # renderer ICEs ("StyledBuffer::replace ... slice index starts at N but ends
+    # at N-1", rust-lang/rust#157460 / #157148) while rendering some warnings in
+    # this large crate. The short format bypasses that renderer entirely and the
+    # hook discards diagnostic output anyway — exit code semantics are unchanged.
+    if (cd "$RUST_DIR" && cargo check --message-format=short $CARGO_GPU_FEATURES 2>/dev/null); then
         echo "✅ Rust: clean ($(( $(date +%s) - RUST_START ))s) ${CARGO_GPU_FEATURES:-[cpu-only]}"
     else
         echo "❌ Rust compilation FAILED"
@@ -178,7 +185,8 @@ TEST_START=$(date +%s)
 if [ "$RUST_RELEVANT" -eq 0 ]; then
     echo "⏭️  No Rust-relevant changes in this push — skipping cargo test."
 elif [ -d "$RUST_DIR" ]; then
-    if (cd "$RUST_DIR" && cargo test --lib $CARGO_GPU_FEATURES > /tmp/git-prepush-cargo.log 2>&1); then
+    # --message-format=short for the same annotate-snippets ICE reason as Phase 2.
+    if (cd "$RUST_DIR" && cargo test --lib --message-format=short $CARGO_GPU_FEATURES > /tmp/git-prepush-cargo.log 2>&1); then
         echo "✅ Rust tests: passed ($(( $(date +%s) - TEST_START ))s) ${CARGO_GPU_FEATURES:-[cpu-only]}"
     else
         echo "❌ Rust tests FAILED"

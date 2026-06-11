@@ -13,7 +13,7 @@
  *
  * Design doc: docs/architecture/ORM-PHASE-2-DESIGN.md
  *
- * Run manually:   npx tsx generator/generate-entity-schemas.ts
+ * Run manually:   npx tsx ../tools/generator/generate-entity-schemas.ts (from src/)
  * Run from build: wired into `npm run build:ts` so Rust always has the
  *                 freshest entity shape on every rebuild.
  */
@@ -25,7 +25,7 @@ import { createHash } from 'crypto';
 import {
   ENTITY_REGISTRY,
   initializeEntityRegistry,
-} from '../daemons/data-daemon/server/EntityRegistry';
+} from '../../src/daemons/data-daemon/server/EntityRegistry';
 import {
   getFieldMetadata,
   getCompositeIndexes,
@@ -33,7 +33,7 @@ import {
   type FieldMetadata,
   type CompositeIndexMetadata,
   type ArchiveConfig,
-} from '../system/data/decorators/FieldDecorators';
+} from '../../src/system/data/decorators/FieldDecorators';
 
 // ─── JSON shape (kept in sync with Rust's EntitySchemaJSON via ts-rs) ─────
 
@@ -116,7 +116,13 @@ async function main() {
     entities,
   };
 
-  const outPath = path.resolve(__dirname, '..', 'shared', 'generated', 'entity_schemas.json');
+  // protocol/typescript/entity_schemas.json is the tracked location — it is
+  // what Rust include_str!'s (modules/entity_schemas.rs) and what the header
+  // above documents. The old '../shared/generated' resolution was relative to
+  // the pre-substrate src/scripts home and silently dumped output into
+  // tools/shared/generated/ after the tools/ move, leaving the tracked file
+  // stale (e.g. the deleted social subsystem lingered in it).
+  const outPath = path.resolve(__dirname, '..', '..', 'protocol', 'typescript', 'entity_schemas.json');
   await fs.promises.mkdir(path.dirname(outPath), { recursive: true });
 
   // Idempotent write: if the ENTITIES section is identical to what's on

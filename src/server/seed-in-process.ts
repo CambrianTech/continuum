@@ -13,7 +13,7 @@ import { UserEntity, type UserType, type UserStatus } from '../system/data/entit
 import { RoomEntity, type RoomType } from '../system/data/entities/RoomEntity';
 import { UserProfileEntity, type UserSpecialityType } from '../system/data/entities/UserProfileEntity';
 import type { UUID } from '../system/core/types/CrossPlatformUUID';
-import { PERSONA_UNIQUE_IDS, getAvailablePersonas, selectLocalModel } from '../scripts/seed/personas';
+import { PERSONA_UNIQUE_IDS, getAvailablePersonas, selectLocalModel } from '@scripts/seed/personas';
 import { DEFAULT_USER_UNIQUE_IDS } from '../system/data/domains/DefaultEntities';
 import { CONTENT_TYPE_CONFIGS } from '@shared/generated/ContentTypes';
 import { DataList } from '../commands/data/list/shared/DataListTypes';
@@ -225,7 +225,7 @@ class DatabaseSeeder {
   /** Generate avatar PNGs for all personas */
   async generateAvatars(personas: { uniqueId: string; displayName: string; accentColor: string }[]): Promise<number> {
     try {
-      const { generateAllAvatars } = await import('../scripts/seed/generate-avatars');
+      const { generateAllAvatars } = await import('@scripts/seed/generate-avatars');
       return await generateAllAvatars(personas);
     } catch (err) {
       console.warn(`  ⚠️ Avatars: ${err}`);
@@ -439,7 +439,7 @@ export async function seedDatabase(): Promise<boolean> {
 
   // Content types (maps room types to widgets)
   try {
-    const { createDefaultContentTypes } = await import('../scripts/seed/factories');
+    const { createDefaultContentTypes } = await import('@scripts/seed/factories');
     const contentTypes = createDefaultContentTypes();
     for (const ct of contentTypes) {
       try {

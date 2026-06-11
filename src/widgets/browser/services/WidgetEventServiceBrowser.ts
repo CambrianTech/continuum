@@ -6,12 +6,12 @@
  */
 
 import { WidgetEventService } from '../../shared/services/events/WidgetEventService';
-import { EventsDaemonBrowser } from '../../../daemons/events-daemon/browser/EventsDaemonBrowser';
+import { domInterestRegistry } from '../../shared/services/DOMInterestRegistry';
 
 export class WidgetEventServiceBrowser extends WidgetEventService {
   // Track DOM listeners for proper cleanup (document.addEventListener persists across renders)
   private _domListeners = new Map<string, EventListener>();
-  // Track DOM interest unregister functions for EventsDaemonBrowser scope filtering
+  // Track DOM interest unregister functions for DOMInterestRegistry scope filtering
   private _domInterestCleanups: Array<() => void> = [];
 
   // Override DOM event coordination for browser environment
@@ -48,7 +48,7 @@ export class WidgetEventServiceBrowser extends WidgetEventService {
       document.addEventListener(eventName, listener);
 
       // Register DOM interest so EventsDaemonBrowser knows to dispatch this event to DOM
-      this._domInterestCleanups.push(EventsDaemonBrowser.registerDOMInterest(eventName));
+      this._domInterestCleanups.push(domInterestRegistry.register(eventName));
     }
 
     this.customEventHandlers.get(eventName)!.push(handler);
@@ -62,7 +62,7 @@ export class WidgetEventServiceBrowser extends WidgetEventService {
     }
     this._domListeners.clear();
 
-    // Unregister DOM interest from EventsDaemonBrowser scope filtering
+    // Unregister DOM interest from DOMInterestRegistry scope filtering
     for (const unregister of this._domInterestCleanups) {
       unregister();
     }

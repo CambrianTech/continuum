@@ -308,7 +308,7 @@ class RoutingServiceImpl {
    */
   async resolve(contentType: string, identifier: string): Promise<ResolvedEntity | null> {
     // Entity resolution driven by recipe entityType — no switch on content type names
-    const { CONTENT_TYPE_CONFIGS } = await import('../../shared/generated/ContentTypes');
+    const { CONTENT_TYPE_CONFIGS } = await import('@shared/generated/ContentTypes');
     const config = CONTENT_TYPE_CONFIGS[contentType as keyof typeof CONTENT_TYPE_CONFIGS];
     if (!config?.entityType) return null;
 

@@ -13,6 +13,7 @@ import { Events } from '../../../system/core/shared/Events';
 import type { BaseEntity } from '../../../system/data/entities/BaseEntity';
 import { EventSubscriptionManager } from '../../../system/events/shared/EventSubscriptionManager';
 import type { IEventSubscriptionProvider } from '../../../system/events/shared/IEventSubscriptionProvider';
+import { domInterestRegistry } from '../../../widgets/shared/services/DOMInterestRegistry';
 
 // Verbose logging helper for browser
 const verbose = () => typeof window !== 'undefined' && window.JTAG_VERBOSE === true;
@@ -30,13 +31,6 @@ export class EventsDaemonBrowser extends EventsDaemon implements IEventSubscript
   protected eventManager = new EventManager();
   private subscriptionManager = new EventSubscriptionManager();
 
-  /**
-   * Registry of event names with active DOM listeners.
-   * DOM CustomEvent dispatch is skipped for events not in this set.
-   * Widgets register via registerDOMInterest() when they need document-level events.
-   */
-  private static _domInterest = new Set<string>();
-
   constructor(context: JTAGContext, router: JTAGRouter) {
     super(context, router);
   }
@@ -50,34 +44,22 @@ export class EventsDaemonBrowser extends EventsDaemon implements IEventSubscript
   }
 
   /**
-   * Register interest in receiving DOM CustomEvents for a specific event name.
-   * Only events with registered interest will be dispatched to the document.
-   * Returns an unregister function.
-   */
-  public static registerDOMInterest(eventName: string): () => void {
-    EventsDaemonBrowser._domInterest.add(eventName);
-    return () => {
-      EventsDaemonBrowser._domInterest.delete(eventName);
-    };
-  }
-
-  /**
    * Check if anything has registered DOM interest for this event name.
    * Checks both:
    * - Events.domInterest (populated by Events.subscribe() in browser)
-   * - _domInterest (populated by registerDOMInterest() from BaseWidget/WidgetEventServiceBrowser)
+   * - domInterestRegistry (populated by BaseWidget/WidgetEventServiceBrowser — daemon-free)
    * Uses prefix matching: 'data:chat_messages' matches 'data:chat_messages:created'.
    */
   private hasDOMInterest(eventName: string): boolean {
     // Direct match in either registry
     if (Events.domInterest.has(eventName)) return true;
-    if (EventsDaemonBrowser._domInterest.has(eventName)) return true;
+    if (domInterestRegistry.has(eventName)) return true;
 
     // Prefix match against both registries
     for (const interest of Events.domInterest) {
       if (eventName.startsWith(interest + ':') || interest.startsWith(eventName + ':')) return true;
     }
-    for (const interest of EventsDaemonBrowser._domInterest) {
+    for (const interest of domInterestRegistry.eventNames()) {
       if (eventName.startsWith(interest + ':') || interest.startsWith(eventName + ':')) return true;
     }
     return false;

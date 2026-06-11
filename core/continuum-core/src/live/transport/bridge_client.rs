@@ -162,7 +162,7 @@ impl LiveKitAgentManager {
         }
 
         // Wait for response (30s timeout)
-        let mut response = pending_req.response.lock().unwrap();
+        let response = pending_req.response.lock().unwrap();
         let timeout = std::time::Duration::from_secs(30);
         let (mut guard, timed_out) = pending_req
             .signal
@@ -584,7 +584,7 @@ fn handle_bridge_event(
             speaker_id,
             speaker_name,
             track_sid,
-            sample_count,
+            sample_count: _,
         } => {
             // Decode PCM samples from binary payload
             let samples: Vec<i16> = match binary {
@@ -679,8 +679,8 @@ fn handle_bridge_event(
             processors.retain(|k, _| !k.starts_with(&format!("{}:", call_id)));
         }
         BridgeEvent::VideoFrame {
-            call_id,
-            speaker_id,
+            call_id: _,
+            speaker_id: _,
             speaker_name,
             width,
             height,
@@ -692,7 +692,10 @@ fn handle_bridge_event(
                 #[cfg(feature = "livekit-webrtc")]
                 {
                     // When livekit-webrtc is enabled, VideoFrameCapture uses LiveKit directly.
-                    // The bridge path is for when livekit-webrtc is disabled.
+                    // The bridge path is for when livekit-webrtc is disabled. Mark the
+                    // bridge-path bindings as used so this cfg doesn't emit unused-variable
+                    // warnings (which also trip a rustc 1.94 annotate-snippets render ICE here).
+                    let _ = (&speaker_name, &width, &height, &jpeg);
                 }
                 #[cfg(not(feature = "livekit-webrtc"))]
                 {

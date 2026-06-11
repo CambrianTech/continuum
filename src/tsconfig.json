@@ -8,7 +8,7 @@
       "DOM"
     ],
     "outDir": "./dist",
-    "rootDir": "./",
+    "rootDir": "../",
     "baseUrl": "./",
     "paths": {
       "@commands/*": ["commands/*"],
@@ -17,6 +17,7 @@
       "@widgets/*": ["widgets/*"],
       "@shared/generated/*": ["../protocol/typescript/*"],
       "@shared/generated": ["../protocol/typescript"],
+      "sharp": ["node_modules/sharp/lib/index.d.ts"],
       "@shared/*": ["shared/*"],
       "@types/*": ["types/*"],
       "@browser/*": ["browser/*"],

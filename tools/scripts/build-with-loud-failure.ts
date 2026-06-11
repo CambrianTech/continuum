@@ -22,7 +22,7 @@ try {
   // tsc doesn't copy JSON — anything that ships next to .ts and is read
   // at runtime via __dirname must be replicated into dist/.
   const assets: Array<[string, string]> = [
-    ['shared/models.json', 'dist/shared/models.json'],
+    ['shared/models.json', 'dist/src/shared/models.json'],
   ];
   for (const [src, dest] of assets) {
     if (!existsSync(src)) continue;  // Optional asset — skip if absent.

@@ -11,7 +11,7 @@ import { DaemonBase } from '../shared/DaemonBase';
 import type { JTAGContext, JTAGMessage } from '../../../system/core/types/JTAGTypes';
 import type { JTAGRouter } from '../../../system/core/router/shared/JTAGRouter';
 import { Logger } from '../../../system/core/logging/Logger';
-import { RateLimiter, AsyncQueue, Semaphore, DaemonMetrics } from '../../../generator/DaemonConcurrency';
+import { RateLimiter, AsyncQueue, Semaphore, DaemonMetrics } from '@generator/DaemonConcurrency';
 import type { BaseResponsePayload } from '../../../system/core/types/ResponseTypes';
 
 export abstract class ServerDaemonBase extends DaemonBase {

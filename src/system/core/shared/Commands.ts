@@ -31,6 +31,10 @@ import { SYSTEM_SCOPES } from '../types/SystemScopes';
 import { Screenshot } from '../../../commands/interface/screenshot/shared/ScreenshotTypes';
 import { FileSave } from '../../../commands/file/save/shared/FileSaveTypes';
 
+// Re-exported so widget/browser code can consume command response types
+// without importing daemon modules (keeps the widget bundle daemon-free)
+export type { CommandResponse, CommandSuccessResponse, CommandErrorResponse } from '../../../daemons/command-daemon/shared/CommandResponseTypes';
+
 /** Error thrown when a command exceeds its timeout */
 export class CommandTimeoutError extends Error {
   constructor(

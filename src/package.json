@@ -14,39 +14,39 @@
       "height": 800
     }
   },
-  "main": "dist/server-index.js",
-  "browser": "dist/browser-index.js",
-  "types": "dist/server-index.d.ts",
+  "main": "dist/src/server-index.js",
+  "browser": "dist/src/browser-index.js",
+  "types": "dist/src/server-index.d.ts",
   "bin": {
-    "continuum": "./dist/cli.js",
-    "jtag": "./dist/cli.js",
+    "continuum": "./dist/src/cli.js",
+    "jtag": "./dist/src/cli.js",
     "mcp": "./mcp-server.ts"
   },
   "exports": {
     ".": {
-      "types": "./dist/server-index.d.ts",
-      "browser": "./dist/browser-index.js",
-      "default": "./dist/server-index.js"
+      "types": "./dist/src/server-index.d.ts",
+      "browser": "./dist/src/browser-index.js",
+      "default": "./dist/src/server-index.js"
     },
     "./browser": {
-      "types": "./dist/browser-index.d.ts",
-      "default": "./dist/browser-index.js"
+      "types": "./dist/src/browser-index.d.ts",
+      "default": "./dist/src/browser-index.js"
     },
     "./server": {
-      "types": "./dist/server-index.d.ts",
-      "default": "./dist/server-index.js"
+      "types": "./dist/src/server-index.d.ts",
+      "default": "./dist/src/server-index.js"
     },
     "./middleware": {
-      "types": "./dist/middleware.d.ts",
-      "default": "./dist/middleware.js"
+      "types": "./dist/src/middleware.d.ts",
+      "default": "./dist/src/middleware.js"
     },
     "./types": {
-      "types": "./dist/shared/types/ConnectionConfig.d.ts",
-      "default": "./dist/shared/types/ConnectionConfig.js"
+      "types": "./dist/src/shared/types/ConnectionConfig.d.ts",
+      "default": "./dist/src/shared/types/ConnectionConfig.js"
     },
     "./auto-start": {
-      "types": "./dist/auto-start.d.ts",
-      "default": "./dist/auto-start.js"
+      "types": "./dist/src/auto-start.d.ts",
+      "default": "./dist/src/auto-start.js"
     },
     "./package.json": "./package.json"
   },
@@ -145,7 +145,7 @@
     "setup:models": "bash ../tools/scripts/maybe-download-models.sh",
     "prebuild": "npx tsx ../tools/scripts/ensure-config.ts && npx tsx ../tools/generator/validate-command-spec-coverage.ts && npx tsx ../tools/generator/generate-rust-bindings.ts && npx tsx ../tools/generator/generate-structure.ts && npx tsx ../tools/generator/generate-command-schemas.ts && npx tsx ../tools/generator/generate-command-constants.ts && npx tsx ../tools/scripts/compile-sass.ts",
     "build:ts": "npx tsx ../tools/generator/generate-version.ts && npx tsx ../tools/generator/generate-config.ts && npx tsx ../tools/generator/generate-entity-schemas.ts && npx tsx ../tools/scripts/build-with-loud-failure.ts",
-    "build:cli": "npx esbuild dist/cli.js --bundle --platform=node --target=node18 --outfile=dist/cli-bundle.js --external:sqlite3 --external:better-sqlite3 --external:@anthropic-ai/sdk --external:@grpc/grpc-js --external:@grpc/proto-loader --external:playwright-core --external:playwright --minify 2>/dev/null && echo '✅ CLI bundle created'",
+    "build:cli": "npx esbuild dist/src/cli.js --bundle --platform=node --target=node18 --outfile=dist/cli-bundle.js --external:sqlite3 --external:better-sqlite3 --external:@anthropic-ai/sdk --external:@grpc/grpc-js --external:@grpc/proto-loader --external:playwright-core --external:playwright --minify 2>/dev/null && echo '✅ CLI bundle created'",
     "lint": "eslint . --max-warnings 0 && tsc --noEmit --project .",
     "lint:file": "eslint --max-warnings 0",
     "build": "npm run build:ts",

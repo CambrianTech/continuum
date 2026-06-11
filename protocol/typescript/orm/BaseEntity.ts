@@ -3,7 +3,7 @@
 /**
  * **The canonical base shape every ORM record carries.** Source of
  * truth for both Rust runtime and TS wire types — ts-rs emits the
- * matching TS type in `shared/generated/orm/BaseEntity.ts`. The TS-
+ * matching TS type in `protocol/typescript/orm/BaseEntity.ts`. The TS-
  * side hand-authored `BaseEntity.ts` is being migrated to this
  * generated version (single source of truth in Rust per Joel's
  * 2026-06-01 directive).

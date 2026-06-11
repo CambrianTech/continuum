@@ -16,11 +16,11 @@
  * The @ symbol is ONLY for UI mentions, NOT part of uniqueId
  */
 
-import { generateUniqueId } from '../../system/data/utils/UniqueIdUtils';
-import { LOCAL_MODELS } from '../../system/shared/Constants';
-import { SYMBOLIC_REFS } from '../../shared/ModelRegistry';
+import { generateUniqueId } from '../../../src/system/data/utils/UniqueIdUtils';
+import { LOCAL_MODELS } from '../../../src/system/shared/Constants';
+import { SYMBOLIC_REFS } from '../../../src/shared/ModelRegistry';
 import { execSync } from 'child_process';
-import { SecretManager } from '../../system/secrets/SecretManager';
+import { SecretManager } from '../../../src/system/secrets/SecretManager';
 
 export interface PersonaConfig {
   uniqueId: string;

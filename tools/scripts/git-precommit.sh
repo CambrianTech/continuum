@@ -208,10 +208,11 @@ if [ -n "$TS_FILES" ]; then
     # line 5 + 52), `--show-toplevel` returned the cwd `/repo/src` rather
     # than the worktree root `/repo`, producing an incorrect double-`src`
     # path `/repo/src/src/eslint-baseline.txt`. The hook ALWAYS lives at
-    # `<src>/scripts/git-precommit.sh`, so the baseline is one dir up from
-    # the script's parent dir — deterministic, no git resolution needed.
+    # `<repo>/tools/scripts/git-precommit.sh` (substrate-first layout), so
+    # the baseline is at `<repo>/src/eslint-baseline.txt` — two dirs up from
+    # the script dir, then into src/ — deterministic, no git resolution needed.
     HOOK_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-    BASELINE_FILE="$(dirname "$HOOK_SCRIPT_DIR")/eslint-baseline.txt"
+    BASELINE_FILE="$(dirname "$(dirname "$HOOK_SCRIPT_DIR")")/src/eslint-baseline.txt"
 
     # Tier 1: staged-files-only fast lint.
     STAGED_LINT_LOG="$(mktemp)"
@@ -273,28 +274,41 @@ if [ -n "$RS_FILES" ]; then
     # this commit added new violations). Update the baseline after
     # a real cleanup pass:
     #   cd core/continuum-core
-    #   source ../../scripts/shared/cargo-features.sh
-    #   cargo clippy --lib $CARGO_GPU_FEATURES 2>&1 | grep -cE "^warning:" > ../../clippy-baseline.txt
+    #   source ../../tools/scripts/shared/cargo-features.sh
+    #   cargo clippy --lib --message-format=short $CARGO_GPU_FEATURES 2>&1 | grep -cE ": warning:" > ../../src/clippy-baseline.txt
     #
     # Same platform feature selection as pre-push/npm start. macOS without
     # `--features metal,accelerate` intentionally fails at compile time because
     # CPU-only local inference is not a supported product path.
     #
+    # --message-format=short: rustc 1.94+'s annotate-snippets renderer ICEs on
+    # some warnings in this crate (rust-lang/rust#157460 / #157148) which both
+    # crashed the gate AND truncated the warning count. Short format bypasses
+    # the renderer; each diagnostic prints as "<file>:<line>:<col>: warning: ..."
+    # so the count regex is ": warning:" (the old "^warning:" counted human
+    # format lines and would only match the end-of-run summary here).
+    #
     # Use the hook's src cwd instead of git rev-parse. In git worktrees,
     # --show-toplevel is the parent checkout root, while this hook and baseline
-    # live under <root>/src.
+    # live under <root>/src. The crate itself moved in the substrate-first
+    # layout (2cb63e019): src/workers/continuum-core -> core/continuum-core,
+    # and the shared feature script lives next to this hook.
     # shellcheck source=shared/cargo-features.sh
-    source "scripts/shared/cargo-features.sh"
+    source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/shared/cargo-features.sh"
     BASELINE_FILE="$(pwd)/clippy-baseline.txt"
     CLIPPY_LOG="$(mktemp)"
-    (cd workers/continuum-core && cargo clippy --lib $CARGO_GPU_FEATURES > "$CLIPPY_LOG" 2>&1) || true
-    CURRENT=$(grep -cE "^warning:" "$CLIPPY_LOG" || true)
+    if ! (cd ../core/continuum-core && cargo clippy --lib --message-format=short $CARGO_GPU_FEATURES > "$CLIPPY_LOG" 2>&1); then
+        echo "❌ cargo clippy failed to run (compile error or missing toolchain):"
+        tail -10 "$CLIPPY_LOG" | sed 's/^/      /'
+        LINT_FAILED=true
+    fi
+    CURRENT=$(grep -cE ": warning:" "$CLIPPY_LOG" || true)
     if [ ! -f "$BASELINE_FILE" ]; then
         echo "❌ clippy-baseline.txt not found at $BASELINE_FILE — cannot run baseline gate."
         echo "   Generate once with:"
         echo "     cd core/continuum-core"
-        echo "     source ../../scripts/shared/cargo-features.sh"
-        echo "     cargo clippy --lib \$CARGO_GPU_FEATURES 2>&1 | grep -cE \"^warning:\" > ../../clippy-baseline.txt"
+        echo "     source ../../tools/scripts/shared/cargo-features.sh"
+        echo "     cargo clippy --lib --message-format=short \$CARGO_GPU_FEATURES 2>&1 | grep -cE \": warning:\" > ../../src/clippy-baseline.txt"
         echo "   Current warning count: $CURRENT"
         LINT_FAILED=true
     else
@@ -314,9 +328,9 @@ if [ -n "$RS_FILES" ]; then
             echo "╠════════════════════════════════════════════════════════════════╣"
             echo "║  Current: $CURRENT  Baseline: $BASELINE                                       ║"
             echo "║  Run to see what's new:                                        ║"
-            echo "║    cd core/continuum-core                               ║"
-            echo "║    source ../../scripts/shared/cargo-features.sh                ║"
-            echo "║    cargo clippy --lib \$CARGO_GPU_FEATURES                      ║"
+            echo "║    cd core/continuum-core                                      ║"
+            echo "║    source ../../tools/scripts/shared/cargo-features.sh          ║"
+            echo "║    cargo clippy --lib --message-format=short \$CARGO_GPU_FEATURES ║"
             echo "╚════════════════════════════════════════════════════════════════╝"
             LINT_FAILED=true
         fi
