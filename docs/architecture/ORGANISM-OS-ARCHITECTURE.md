@@ -233,24 +233,24 @@ degraded with a visible reason" (`inference_capability/residency.rs:1-44`,
 residency gate together are what let a persona say "I can take this turn
 locally" *truthfully*, or hand it to a peer.
 
-> **IN FLIGHT — `resolve_inference_target` + `capability_registry` (airc side)
-> → airc PR #1133.** The airc-side `resolve_inference_target` and
-> `capability_registry.rs` that route a turn to the best-capable peer **are
-> built** — they exist on `feat/cross-grid-inference` (airc PR **#1133**,
-> sentinel-APPROVED and auto-merging), not yet merged to `rust-rewrite`. #1133
-> is the cross-grid inference spine end-to-end: `capability_registry.rs` +
+> **LANDED — `resolve_inference_target` + `capability_registry` (airc side)
+> → airc PR #1133 (merged to `rust-rewrite`).** The airc-side
+> `resolve_inference_target` and `capability_registry.rs` that route a turn to
+> the best-capable peer **are built and merged** — they landed via airc PR
+> **#1133** (`feat/cross-grid-inference`, sentinel-APPROVED) on `rust-rewrite`.
+> #1133 is the cross-grid inference spine end-to-end: `capability_registry.rs` +
 > `resolve_inference_target` in the airc consumer-shapes, plus the persona-peer
 > 1/8→8/8 chain it drives. The substrate it builds on already existed —
 > capability advertising stays at the header level by design
 > (`task_negotiation.rs:27-34`), and the continuum-side `NodeCapabilityRegistry`
 > (`inference_capability/registry.rs`, re-exported `inference_capability/mod.rs:53`)
-> is the in-memory map the router consumes. Once #1133 lands on `rust-rewrite`,
+> is the in-memory map the router consumes. With #1133 merged to `rust-rewrite`,
 > the cross-grid sibling of the local probe is live, not a gap.
 
-> **IN FLIGHT — the 1/8…8/8 persona-peer chain on airc → airc PR #1133;
+> **LANDED — the 1/8…8/8 persona-peer chain on airc → airc PR #1133 (merged);
 > probe-wire = card `0e7d94fe`.** The "1/8 … 8/8" persona-peer capability chain
 > that rides airc as the persona's advertised ladder is **part of #1133**
-> (`feat/cross-grid-inference`) — built, sentinel-APPROVED, auto-merging into
+> (`feat/cross-grid-inference`) — built, sentinel-APPROVED, and merged into
 > `rust-rewrite`. What remains genuinely unwired is narrow and continuum-side:
 > the **hardware probe already exists** in `continuum-core/src/inference_capability/`
 > (`probe.rs`, the pure `probe_inference_capabilities(hw)`); card **`0e7d94fe`**
@@ -376,8 +376,8 @@ The real decision points in the repo, layer by layer:
 | Seam | Where it lives (file:line) | Heuristic floor today | Learned-policy target |
 |---|---|---|---|
 | **Route resolver** | `route/resolver.rs:49-54` + `route/policy.rs:64-77` | `min_by_key(priority)` over healthy+allowed candidates; `NoRoute` on none | latency/outcome-weighted route scoring |
-| **resolve_inference_target** | **IN FLIGHT** (airc PR #1133, `feat/cross-grid-inference`); local sibling = `probe.rs:52` + `residency.rs` | probe + residency gate; pick local if it fits, else peer | demand-aligned cross-grid placement (GENOME §7 `grid_penalty`) |
-| **capability match** | **IN FLIGHT** (airc `capability_registry`, PR #1133); local = `inference_capability/registry.rs` (`find_capable`) | exact-kind + VRAM-floor match | scored capability ranking |
+| **resolve_inference_target** | **LANDED** (airc PR #1133 merged, `feat/cross-grid-inference`); local sibling = `probe.rs:52` + `residency.rs` | probe + residency gate; pick local if it fits, else peer | demand-aligned cross-grid placement (GENOME §7 `grid_penalty`) |
+| **capability match** | **LANDED** (airc `capability_registry`, PR #1133 merged); local = `inference_capability/registry.rs` (`find_capable`) | exact-kind + VRAM-floor match | scored capability ranking |
 | **should-respond** | persona `ServiceModule` `handle_event`/`on_artifact_available` (`service_module.rs:288-374`) | subscription glob / artifact selector match | persona-trained relevance gate |
 | **review / threat verdict** | `airc AGENTS.md §0` (adversarial reviewer); `on_artifact_available` for monitor | "default BLOCK, justify APPROVE" prompt | LoRA red-team persona scoring the artifact |
 | **contract approval** | **NAMED GAP** (forge-alloy governance module); `FORGE-ALLOY-SPEC.md` is the artifact | sentinel verdict, manual | trust-scored contract acceptance (GENOME §10) |
@@ -414,8 +414,8 @@ The order is bottom-up, because each layer is the wake-source for the next:
    until #1134 merges to `rust-rewrite`, peers can't dial each other across
    machines without a manual re-publish, and L2's cross-grid inference can't run.
 2. **Land the cross-grid inference spine, wire the probe, then a real 8/8
-   model.** The airc-side resolver + `capability_registry` + 1/8→8/8 chain land
-   via PR **#1133** (`feat/cross-grid-inference`). Card `0e7d94fe` wires the
+   model.** The airc-side resolver + `capability_registry` + 1/8→8/8 chain landed
+   via PR **#1133** (`feat/cross-grid-inference`, merged to `rust-rewrite`). Card `0e7d94fe` wires the
    already-existing measured-capability probe (`probe.rs`) at persona spawn; then
    a real local model replaces the 8/8 stub, riding the `ServiceModule` contract
    (L1) and the airc identity (L0). This is the first *cognition* organism on the
