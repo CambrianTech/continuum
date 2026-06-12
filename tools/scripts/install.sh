@@ -38,6 +38,25 @@ echo ""
 PLATFORM=$(preflight_detect_platform)
 echo -e "  Platform: ${GREEN}${PLATFORM}${NC}"
 
+# Fail fast on an unsupported host shell. The from-source dev install needs a
+# real Linux userland (apt + the build toolchain). Git Bash / MSYS / Cygwin are
+# Windows shells with no package manager, so the Node/npm/Rust steps would
+# cascade into "command not found" — better to stop with a clear redirect.
+case "$PLATFORM" in
+  windows-shell)
+    echo -e "  ${RED}✗ This is Git Bash / MSYS on Windows — not a Linux environment.${NC}"
+    echo -e "  ${YELLOW}Continuum's from-source install needs WSL2 Ubuntu. Either:${NC}"
+    echo -e "  ${YELLOW}  • open WSL ('wsl') and run this from your WSL checkout, OR${NC}"
+    echo -e "  ${YELLOW}  • use the Docker-first Windows installer: install.ps1${NC}"
+    exit 1
+    ;;
+  unknown)
+    echo -e "  ${RED}✗ Unsupported platform ($(uname -s)). This installer supports${NC}"
+    echo -e "  ${YELLOW}  WSL2/Linux and macOS. On Windows use WSL2 or install.ps1.${NC}"
+    exit 1
+    ;;
+esac
+
 # ============================================================================
 # Modular install steps (new pattern — see INSTALL-ARCHITECTURE.md)
 # ============================================================================
@@ -350,6 +369,15 @@ install_node() {
       nvm use 22
       ;;
   esac
+  # Verify the install actually put node on PATH — don't claim success on a
+  # bare "node: command not found" (e.g. nvm sourced into a subshell that
+  # didn't persist, or an unsupported shell). Fail loud and actionable.
+  if ! command -v node &>/dev/null; then
+    echo -e "  ${RED}✗ Node.js install ran but 'node' is still not on PATH.${NC}"
+    echo -e "  ${YELLOW}  Open a new shell (or 'source ~/.nvm/nvm.sh') and re-run,${NC}"
+    echo -e "  ${YELLOW}  or install Node 22 via your platform's package manager.${NC}"
+    exit 1
+  fi
   echo -e "  ${GREEN}✅ Node.js $(node --version) installed${NC}"
 }
 
@@ -435,8 +463,23 @@ fi
 if [ "$SKIP_BUILD" = "0" ]; then
   echo -e "${YELLOW}[5/9] Building Continuum${NC}"
 
+  # Preflight: the build needs npm. Without this check, a missing npm only
+  # surfaces as "npm: command not found" swallowed by the `| tail` pipe, and
+  # the install appears to continue. Stop loud and actionable instead.
+  if ! command -v npm &>/dev/null; then
+    echo -e "  ${RED}✗ npm not found — cannot build. Node.js/npm must be installed${NC}"
+    echo -e "  ${YELLOW}  and on PATH (the [2/8] Node.js step provides them on a${NC}"
+    echo -e "  ${YELLOW}  supported platform). Open a fresh shell and re-run.${NC}"
+    exit 1
+  fi
+
   echo -e "  Installing npm dependencies..."
   npm install --silent 2>&1 | tail -3
+  # PIPESTATUS[0] is npm's real exit code (the pipe's own status is tail's).
+  if [ "${PIPESTATUS[0]}" -ne 0 ]; then
+    echo -e "  ${RED}✗ npm install failed${NC}"
+    exit 1
+  fi
 
   echo -e "  Building TypeScript..."
   npm run build:ts 2>&1 | tail -1
