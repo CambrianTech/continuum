@@ -1,14 +1,26 @@
 #!/bin/bash
-# Continuum Tower Install — One command to get a tower running.
+# Continuum — FROM-SOURCE developer/self-host build.
 #
-# Usage:
+# ┌───────────────────────────────────────────────────────────────────────┐
+# │  MOST USERS DO NOT RUN THIS. To just *use* Continuum, run the one-      │
+# │  command installer (pre-built Docker images, no compiler needed):      │
+# │    • Windows:      irm https://cambriantech.github.io/continuum/install.ps1 | iex
+# │    • Linux/macOS:  curl -fsSL https://cambriantech.github.io/continuum/install.sh | bash
+# │  On Windows that handles WSL2 + Docker + GPU for you — no shell choice. │
+# └───────────────────────────────────────────────────────────────────────┘
+#
+# This script is the FROM-SOURCE path: compiles continuum-core + workers and
+# installs the full dev toolchain. Use it only if you are building/hacking on
+# Continuum itself.
+#
+# Usage (must be a real Linux userland — WSL2/Ubuntu, native Linux, or macOS;
+# NOT Git Bash/MSYS, which has no apt/toolchain and is rejected up front):
 #   git clone https://github.com/CambrianTech/continuum.git
-#   cd continuum/src
-#   bash scripts/install.sh
+#   cd continuum && bash tools/scripts/install.sh
 #
-# Works on: macOS (Apple Silicon), Ubuntu/Debian (x86_64), WSL2
-# Installs: Node.js, Rust, Python venv (with ML packages if GPU detected), system deps
-# Idempotent: safe to run multiple times (skips what's already installed)
+# Installs: Node.js, Rust (pinned via rust-toolchain.toml), Python venv (+ ML
+#   packages and the CUDA toolkit when a GPU is detected), system deps.
+# Idempotent: safe to re-run (skips what's already installed).
 
 set -eo pipefail
 
