@@ -810,6 +810,16 @@ pub fn start_server(
     runtime.register(Arc::new(
         crate::modules::pressure_broker_module::PressureBrokerModule::new(),
     ));
+    // InferenceCoordinatorModule — stands up the multi-persona-one-model
+    // lane coordinator. Registered before the broker block below so its
+    // CoordinatorResourcePool can be attached to the broker in the same
+    // pass, closing the realistic-lane pressure→eviction loop in
+    // production. Realistic-floor budget today; governor-informed when the
+    // SubstrateGovernor lands. Opens/generates route through the same
+    // coordinator Arc via the handle module in a follow-up slice.
+    runtime.register(Arc::new(
+        crate::modules::inference_coordinator_module::InferenceCoordinatorModule::with_realistic_floor(),
+    ));
     // Register DiskPressureMonitor with the broker as a signal-only
     // ResourcePool — `evict_at_least` returns 0 (the monitor doesn't
     // own files), but the broker emits typed PressureAlert events on
@@ -877,6 +887,29 @@ pub fn start_server(
             "server",
             "Disk + Memory pressure monitors registered as ResourcePools ('disk-root', 'sys-memory') with PressureBroker"
         );
+
+        // Register the inference lane coordinator's pool so the broker's
+        // tick drives lane eviction (expired → Hard → Graceful, never an
+        // active Pinned lane) the same way it drives disk/Docker eviction.
+        // Until opens route through the coordinator (follow-up slice) the
+        // pool is armed but idle (usage 0 → Normal tier → broker no-ops),
+        // which is the correct inert state for the not-yet-trafficked path.
+        if let Some(m) = runtime
+            .registry()
+            .module_of_type::<crate::modules::inference_coordinator_module::InferenceCoordinatorModule>()
+        {
+            if let Some(cm) = m
+                .as_any()
+                .downcast_ref::<crate::modules::inference_coordinator_module::InferenceCoordinatorModule>(
+                ) {
+                cm.register_with_broker(&broker);
+                log_info!(
+                    "ipc",
+                    "server",
+                    "InferenceCoordinator lanes registered as ResourcePool ('inference-lanes') with PressureBroker"
+                );
+            }
+        }
     } else {
         log_error!(
             "ipc",
