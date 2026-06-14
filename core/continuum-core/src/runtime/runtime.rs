@@ -740,6 +740,7 @@ pub const MODULES: &[(&str, ModuleCategory)] = &[
     // AI / inference
     ("inference", ModuleCategory::Core),
     ("inference-coordinator", ModuleCategory::Core),
+    ("ai-inference-handle", ModuleCategory::Core),
     ("inference-llm", ModuleCategory::Core),
     ("ai_provider", ModuleCategory::Core),
     ("embedding", ModuleCategory::Core),

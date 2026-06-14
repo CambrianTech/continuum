@@ -939,6 +939,39 @@ pub fn start_server(
     // of duplicating the RAM formula. See issue #887.
     runtime.register(Arc::new(InferenceModule::new()));
 
+    // InferenceHandleModule — the `ai/inference/{open,generate,close,inspect}`
+    // lane command surface, routed through the SAME `InferenceCoordinator`
+    // the InferenceCoordinatorModule stood up + registered with the broker.
+    // This makes the realistic-lane path LIVE: opens create lanes (consuming
+    // the coordinator's admission budget + reporting footprint), and the
+    // broker's tick evicts them under pressure. Disjoint from InferenceModule
+    // above — `ai/inference/` vs `inference/`, "ai-inference-handle" vs
+    // "inference" — so this is purely additive, not a replacement.
+    let handle_coordinator = runtime
+        .registry()
+        .module_of_type::<crate::modules::inference_coordinator_module::InferenceCoordinatorModule>()
+        .and_then(|m| {
+            m.as_any()
+                .downcast_ref::<crate::modules::inference_coordinator_module::InferenceCoordinatorModule>()
+                .map(|cm| cm.coordinator())
+        });
+    if let Some(coordinator) = handle_coordinator {
+        runtime.register(Arc::new(
+            crate::inference::handle_module::InferenceHandleModule::with_coordinator(coordinator),
+        ));
+        log_info!(
+            "ipc",
+            "server",
+            "InferenceHandleModule registered (ai/inference/* routed through the broker-managed coordinator)"
+        );
+    } else {
+        log_error!(
+            "ipc",
+            "server",
+            "InferenceCoordinatorModule missing — ai/inference/* lane surface not registered"
+        );
+    }
+
     // Phase 5: InferenceLlmModule (MODULE-CATALOG §II `inference-llm`)
     // — the substrate's local-LLM generation surface. Subscribes to
     // inference/llm/request commands, returns InferenceComplete +
