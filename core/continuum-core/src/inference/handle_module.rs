@@ -417,8 +417,9 @@ impl InferenceHandleModule {
             Some(adapter) => adapter,
             None => {
                 // Async read guard scoped to this single statement; the
-                // returned `Arc` is owned, so the guard drops here — well
-                // before the downstream `await` on `coordinator.open_lane`.
+                // returned `Arc` is owned, so the guard drops at the `;`.
+                // (`open_lane` below is synchronous, so no await follows the
+                // read anyway — the guard is held across nothing.)
                 let from_registry = crate::modules::ai_provider::global_registry()
                     .read()
                     .await
