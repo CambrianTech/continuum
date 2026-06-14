@@ -32,12 +32,15 @@ mod costs;
 mod types;
 
 pub use types::{
-    EvictionPlan, FootprintEntry, FootprintKey, RegistryHealth, RegistrySnapshot, ResourceType,
+    EvictionPlan, FootprintEntry, FootprintKey, LeaseRevocationOutcome, RegistryHealth,
+    RegistrySnapshot, ResourceType,
 };
 
 use crate::cognition::{
     ThroughputLease, ThroughputLeaseError, ThroughputLeaseRevocationPolicy, ThroughputLeaseSnapshot,
 };
+use crate::paging::broker::PressureTier;
+use crate::paging::lease_revocation::select_leases_to_revoke;
 use dashmap::{mapref::entry::Entry, DashMap};
 use std::collections::BTreeMap;
 use std::collections::HashMap;
@@ -312,6 +315,72 @@ impl FootprintRegistry {
             .collect()
     }
 
+    /// Phase 2 of pressure relief — the pressure-driven sibling of
+    /// [`expire_leases`](Self::expire_leases). Revoke throughput leases to
+    /// free at least `target_bytes`, honoring each lease's revocation
+    /// policy gated by `pressure_tier` (expired → Hard → Graceful; an
+    /// active `Pinned` lease is never revoked).
+    ///
+    /// Snapshots the live lease mirrors, picks the least-disruptive plan
+    /// via the pure [`select_leases_to_revoke`], then RELEASES each chosen
+    /// lease — which removes its mirrored footprint, unpinning those keys
+    /// so a subsequent [`cheapest_eviction_for`](Self::cheapest_eviction_for)
+    /// pass can reclaim them. Returns the realized [`LeaseRevocationOutcome`].
+    ///
+    /// Returns `None` when policy cannot satisfy the demand at this tier
+    /// (e.g. only active `Pinned` leases remain). The caller MUST treat
+    /// `None` as "escalate", never as "free nothing" — a `None` pass
+    /// releases nothing. `Some` with an empty `revoked` happens only when
+    /// `target_bytes == 0` (a no-op pass).
+    ///
+    /// The snapshot→release is not atomic against concurrent
+    /// acquire/release (`lease_mirrors` is a `DashMap`). A lease chosen but
+    /// already gone by release time simply contributes nothing to
+    /// `bytes_freed`, which reflects only leases actually released. This is
+    /// meant to be driven from one place (the broker's tick), exactly like
+    /// `expire_leases` — concurrent revocation passes are not a supported
+    /// pattern, keeping the broker the single decision-maker.
+    pub fn revoke_leases_for(
+        &self,
+        target_bytes: u64,
+        pressure_tier: PressureTier,
+        now_ms: u64,
+    ) -> Option<LeaseRevocationOutcome> {
+        let mut leases = Vec::with_capacity(self.lease_mirrors.len());
+        let mut footprint_bytes_per_lease = HashMap::with_capacity(self.lease_mirrors.len());
+        for entry in self.lease_mirrors.iter() {
+            let mirror = entry.value();
+            footprint_bytes_per_lease.insert(mirror.lease.lease_id.clone(), mirror.bytes);
+            leases.push(mirror.lease.clone());
+        }
+
+        let plan = select_leases_to_revoke(
+            &leases,
+            &footprint_bytes_per_lease,
+            pressure_tier,
+            now_ms,
+            target_bytes,
+        )?;
+
+        let mut revoked = Vec::with_capacity(plan.len());
+        let mut bytes_freed = 0u64;
+        for (lease_id, planned_bytes) in plan {
+            // release_lease removes the mirror + decrements the footprint
+            // entry by exactly `planned_bytes`. If the lease vanished
+            // between snapshot and now (concurrent release), it frees 0 for
+            // that id and we don't count it — realized bytes reflect reality.
+            if self.release_lease(&lease_id).is_ok() {
+                bytes_freed = bytes_freed.saturating_add(planned_bytes);
+                revoked.push((lease_id, planned_bytes));
+            }
+        }
+
+        Some(LeaseRevocationOutcome {
+            revoked,
+            bytes_freed,
+        })
+    }
+
     fn is_key_pinned_by_active_lease(&self, key: &FootprintKey) -> bool {
         self.lease_mirrors.iter().any(|entry| {
             let mirror = entry.value();
@@ -437,6 +506,7 @@ mod tests {
     };
     use crate::gpu::MockMonitor;
     use crate::inference::kv_quant::Residency;
+    use crate::paging::broker::PressureTier;
 
     fn persona_kv_key(persona_id: Uuid) -> FootprintKey {
         FootprintKey::for_persona(persona_id, ResourceType::KvCache, Residency::Active)
@@ -1048,6 +1118,198 @@ mod tests {
         assert!(
             reg.cheapest_eviction_for(500_000, &[]).is_none(),
             "only pinned bytes exist, so eviction should fail loud"
+        );
+    }
+
+    // ─── revoke_leases_for — pressure-driven lease revocation (slice 2) ──
+
+    /// What this catches: `revoke_leases_for` reclaims footprint that
+    /// `cheapest_eviction_for` CANNOT — specifically an *expired* Pinned
+    /// lease. Key eviction skips any Pinned-policy key (it doesn't re-check
+    /// expiry), so those bytes are stranded; the revocation ladder ranks an
+    /// expired lease rank-0 and reclaims it even at Normal tier. This
+    /// complementarity is exactly what the two-phase relief depends on.
+    #[test]
+    fn revoke_reclaims_expired_pinned_that_key_eviction_strands() {
+        let reg = FootprintRegistry::new();
+        let key = persona_kv_key(Uuid::new_v4());
+        reg.acquire_lease(
+            lease(
+                "expired-pin",
+                TargetSilicon::Gpu,
+                8,
+                150,
+                ThroughputLeaseRevocationPolicy::Pinned,
+            ),
+            key,
+            1_000_000,
+            100,
+        )
+        .unwrap();
+
+        // now=200 → lease expired. Key eviction still refuses (Pinned policy).
+        assert!(
+            reg.cheapest_eviction_for(500_000, &[]).is_none(),
+            "cheapest_eviction_for strands the Pinned key even when expired"
+        );
+
+        // Revocation ladder reclaims it (expired = rank 0, eligible at Normal).
+        let outcome = reg
+            .revoke_leases_for(500_000, PressureTier::Normal, 200)
+            .expect("expired lease is reclaimable");
+        assert_eq!(outcome.bytes_freed, 1_000_000);
+        assert_eq!(outcome.revoked, vec![("expired-pin".to_string(), 1_000_000)]);
+        assert_eq!(reg.total_bytes(), 0, "footprint actually returned");
+    }
+
+    /// What this catches: when policy cannot satisfy the demand (only an
+    /// ACTIVE Pinned lease remains), `revoke_leases_for` returns `None` AND
+    /// releases nothing — the footprint is untouched. A `None` that still
+    /// mutated would be a silent pinned-lease revocation, the exact safety
+    /// violation the ladder exists to prevent.
+    #[test]
+    fn revoke_none_leaves_active_pinned_untouched() {
+        let reg = FootprintRegistry::new();
+        reg.acquire_lease(
+            lease(
+                "pinned",
+                TargetSilicon::Gpu,
+                8,
+                9_999,
+                ThroughputLeaseRevocationPolicy::Pinned,
+            ),
+            persona_kv_key(Uuid::new_v4()),
+            1_000_000,
+            100,
+        )
+        .unwrap();
+
+        assert!(reg
+            .revoke_leases_for(500_000, PressureTier::Critical, 200)
+            .is_none());
+        assert_eq!(
+            reg.total_bytes(),
+            1_000_000,
+            "pinned footprint must survive a None pass"
+        );
+        assert_eq!(reg.lease_snapshot(200).active.len(), 1);
+    }
+
+    /// What this catches: the REALIZATION (not just the pure selector)
+    /// respects tier gating — an active Graceful lease is left intact under
+    /// Warning (`None`, nothing released) but revoked under High. Proves the
+    /// release path cannot out-run the policy ceiling.
+    #[test]
+    fn revoke_respects_tier_ceiling_for_active_graceful() {
+        let reg = FootprintRegistry::new();
+        let key = persona_kv_key(Uuid::new_v4());
+        reg.acquire_lease(
+            lease(
+                "graceful",
+                TargetSilicon::Gpu,
+                8,
+                9_999,
+                ThroughputLeaseRevocationPolicy::Graceful,
+            ),
+            key,
+            1_000_000,
+            100,
+        )
+        .unwrap();
+
+        // Warning: rank-2 (active Graceful) is over the ceiling → None, untouched.
+        assert!(reg
+            .revoke_leases_for(500_000, PressureTier::Warning, 200)
+            .is_none());
+        assert_eq!(reg.total_bytes(), 1_000_000);
+
+        // High: eligible → released.
+        let outcome = reg
+            .revoke_leases_for(500_000, PressureTier::High, 200)
+            .expect("High may revoke Graceful");
+        assert_eq!(outcome.bytes_freed, 1_000_000);
+        assert_eq!(reg.total_bytes(), 0);
+    }
+
+    /// What this catches: with multiple revocable leases, the realization
+    /// releases exactly the least-disruptive SUBSET the selector chose
+    /// (Hard before Graceful) and frees their bytes — the other lease is
+    /// left holding its footprint. Verifies `revoke_leases_for` releases a
+    /// subset, not everything in sight.
+    #[test]
+    fn revoke_releases_only_the_selected_subset() {
+        let reg = FootprintRegistry::new();
+        reg.acquire_lease(
+            lease(
+                "hard",
+                TargetSilicon::Gpu,
+                8,
+                9_999,
+                ThroughputLeaseRevocationPolicy::Hard,
+            ),
+            persona_kv_key(Uuid::new_v4()),
+            600_000,
+            100,
+        )
+        .unwrap();
+        reg.acquire_lease(
+            lease(
+                "graceful",
+                TargetSilicon::Gpu,
+                8,
+                9_999,
+                ThroughputLeaseRevocationPolicy::Graceful,
+            ),
+            persona_kv_key(Uuid::new_v4()),
+            900_000,
+            100,
+        )
+        .unwrap();
+
+        // target 500k: Hard (600k) alone satisfies, less disruptive than Graceful.
+        let outcome = reg
+            .revoke_leases_for(500_000, PressureTier::High, 200)
+            .expect("hard lease satisfies target");
+        assert_eq!(outcome.revoked, vec![("hard".to_string(), 600_000)]);
+        assert_eq!(outcome.bytes_freed, 600_000);
+
+        // Graceful lease untouched — still holding its footprint.
+        assert_eq!(reg.total_bytes(), 900_000);
+        let snap = reg.lease_snapshot(200);
+        assert_eq!(snap.active.len(), 1);
+        assert_eq!(snap.active[0].lease_id, "graceful");
+    }
+
+    /// What this catches: a zero-byte demand is a no-op pass — `Some(empty)`
+    /// with nothing released, NOT `None` (which means "can't satisfy"). The
+    /// broker reads `None` as escalate; a zero-target `None` would spuriously
+    /// escalate on a pass that should do nothing.
+    #[test]
+    fn revoke_zero_target_is_noop_not_none() {
+        let reg = FootprintRegistry::new();
+        reg.acquire_lease(
+            lease(
+                "hard",
+                TargetSilicon::Gpu,
+                8,
+                9_999,
+                ThroughputLeaseRevocationPolicy::Hard,
+            ),
+            persona_kv_key(Uuid::new_v4()),
+            600_000,
+            100,
+        )
+        .unwrap();
+
+        let outcome = reg
+            .revoke_leases_for(0, PressureTier::Critical, 200)
+            .expect("zero target is a no-op, not unachievable");
+        assert!(outcome.revoked.is_empty());
+        assert_eq!(outcome.bytes_freed, 0);
+        assert_eq!(
+            reg.total_bytes(),
+            600_000,
+            "nothing released on a zero-target pass"
         );
     }
 }
