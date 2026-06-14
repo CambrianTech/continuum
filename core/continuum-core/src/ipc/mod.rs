@@ -894,21 +894,31 @@ pub fn start_server(
         // Until opens route through the coordinator (follow-up slice) the
         // pool is armed but idle (usage 0 → Normal tier → broker no-ops),
         // which is the correct inert state for the not-yet-trafficked path.
-        if let Some(m) = runtime
+        let coordinator_pool_registered = runtime
             .registry()
             .module_of_type::<crate::modules::inference_coordinator_module::InferenceCoordinatorModule>()
-        {
-            if let Some(cm) = m
-                .as_any()
-                .downcast_ref::<crate::modules::inference_coordinator_module::InferenceCoordinatorModule>(
-                ) {
-                cm.register_with_broker(&broker);
-                log_info!(
-                    "ipc",
-                    "server",
-                    "InferenceCoordinator lanes registered as ResourcePool ('inference-lanes') with PressureBroker"
-                );
-            }
+            .and_then(|m| {
+                m.as_any()
+                    .downcast_ref::<crate::modules::inference_coordinator_module::InferenceCoordinatorModule>()
+                    .map(|cm| cm.register_with_broker(&broker))
+            })
+            .is_some();
+        if coordinator_pool_registered {
+            log_info!(
+                "ipc",
+                "server",
+                "InferenceCoordinator lanes registered as ResourcePool ('inference-lanes') with PressureBroker"
+            );
+        } else {
+            // Mirrors the parent broker-fetch failure log: a load-bearing
+            // registration that silently no-ops would hide the lane pool
+            // from pressure relief. Unreachable today (the module is
+            // registered unconditionally above) but logged for symmetry.
+            log_error!(
+                "ipc",
+                "server",
+                "InferenceCoordinatorModule not retrievable after registration — lane pool won't appear on the broker"
+            );
         }
     } else {
         log_error!(
