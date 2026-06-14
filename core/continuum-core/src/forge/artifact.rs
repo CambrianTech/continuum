@@ -31,7 +31,7 @@ use ts_rs::TS;
 use uuid::Uuid;
 
 use super::recipe::{
-    AlloyHardware, AlloySource, BenchmarkDef, CorpusRef, PriorBaseline, QuantTier,
+    AlloyHardware, AlloySource, BenchmarkDef, CorpusRef, ForgeRecipe, PriorBaseline, QuantTier,
 };
 
 //=============================================================================
@@ -190,6 +190,58 @@ pub struct ForgeArtifact {
     /// (grid/FORGE-ALLOY-PROOF-CONTRACTS.md) lands in Rust.
     #[ts(optional, type = "unknown")]
     pub integrity: Option<serde_json::Value>,
+}
+
+impl ForgeArtifact {
+    /// Project a `ForgeRecipe` into an **unforged** `ForgeArtifact`
+    /// skeleton: every recipe field the model card renders is denormalized
+    /// (snapshotted) here, a fresh artifact `id` is assigned (distinct from
+    /// the recipe's — one recipe yields many artifacts), and every
+    /// foundry-execution field is left at its unforged default
+    /// (`forged_at_ms = 0` as the "not yet run" sentinel; the rest
+    /// `None`/empty). The foundry — or, for now, the v1 stub — stamps the
+    /// execution fields after running the recipe's stages.
+    ///
+    /// This is the canonical recipe→artifact projection the FORGE TEMPLATE
+    /// ARCHITECTURE mandates: *"the alloy is the projection of the recipe,
+    /// the foundry generates it"* — authoring artifacts by hand is
+    /// anti-architectural. One place owns the field inheritance; the
+    /// executor (and the stub) build on it instead of re-inlining the
+    /// 16-field copy, so the projection can never drift between callers.
+    pub fn from_recipe(recipe: &ForgeRecipe) -> Self {
+        Self {
+            // Fresh identity — distinct from the recipe.
+            id: Uuid::new_v4(),
+            // Lineage, frozen at projection time.
+            recipe_id: recipe.id,
+            recipe_version: recipe.version.clone(),
+            recipe_name: recipe.name.clone(),
+            // Denormalized recipe prose / config (the model-card snapshot).
+            description: recipe.description.clone(),
+            user_summary: recipe.user_summary.clone(),
+            author: recipe.author.clone(),
+            tags: recipe.tags.clone(),
+            license: recipe.license.clone(),
+            methodology_paper_url: recipe.methodology_paper_url.clone(),
+            limitations: recipe.limitations.clone(),
+            prior_metric_baselines: recipe.prior_metric_baselines.clone(),
+            source: recipe.source.clone(),
+            calibration_corpus: recipe.calibration_corpus.clone(),
+            quant_tiers: recipe.quant_tiers.clone(),
+            evaluation_benchmarks: recipe.evaluation_benchmarks.clone(),
+            hardware: recipe.hardware.clone(),
+            // Unforged: the foundry stamps these when it runs the stages.
+            forged_at_ms: 0,
+            duration_minutes: None,
+            forged_params_b: None,
+            active_params_b: None,
+            hardware_verified: Vec::new(),
+            alloy_hash: None,
+            results: None,
+            receipt: None,
+            integrity: None,
+        }
+    }
 }
 
 //=============================================================================

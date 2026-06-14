@@ -35,7 +35,6 @@ use serde::Deserialize;
 use serde_json::Value;
 use std::any::Any;
 use std::time::{SystemTime, UNIX_EPOCH};
-use uuid::Uuid;
 
 pub struct ForgeModule;
 
@@ -126,46 +125,27 @@ fn synthesize_stub_artifact(
             .collect::<String>()
     );
 
-    Ok(ForgeArtifact {
-        id: Uuid::new_v4(),
-        recipe_id: recipe.id,
-        recipe_version: recipe.version.clone(),
-        recipe_name: recipe.name.clone(),
-        description: recipe.description.clone(),
-        user_summary: recipe.user_summary.clone(),
-        author: recipe.author.clone(),
-        tags: recipe.tags.clone(),
-        license: recipe.license.clone(),
-        methodology_paper_url: recipe.methodology_paper_url.clone(),
-        limitations: recipe.limitations.clone(),
-        prior_metric_baselines: recipe.prior_metric_baselines.clone(),
-        source: recipe.source.clone(),
-        calibration_corpus: recipe.calibration_corpus.clone(),
-        quant_tiers: recipe.quant_tiers.clone(),
-        evaluation_benchmarks: recipe.evaluation_benchmarks.clone(),
-        hardware: recipe.hardware.clone(),
-        forged_at_ms: now_ms,
-        // Phase 5+ populates the rest; v1 stub leaves them empty/None.
-        duration_minutes: None,
-        forged_params_b: None,
-        active_params_b: None,
-        hardware_verified: hardware_node
-            .map(|node| {
-                vec![crate::forge::HardwareProfile {
-                    device: node.to_string(),
-                    format: "stub".to_string(),
-                    size_gb: None,
-                    tokens_per_sec: None,
-                    memory_usage_gb: None,
-                    verified: false,
-                }]
-            })
-            .unwrap_or_default(),
-        alloy_hash: Some(stub_hash),
-        results: None,
-        receipt: None,
-        integrity: None,
-    })
+    // Start from the canonical recipe→artifact projection (all inherited
+    // fields, fresh id, unforged execution fields), then stamp the few
+    // execution facts the v1 stub can supply: the run-start time, a
+    // recognizable stub hash, and the requested (unverified) hardware node.
+    // Phase 5+ replaces this with real stage execution filling the rest.
+    let mut artifact = ForgeArtifact::from_recipe(recipe);
+    artifact.forged_at_ms = now_ms;
+    artifact.alloy_hash = Some(stub_hash);
+    artifact.hardware_verified = hardware_node
+        .map(|node| {
+            vec![crate::forge::HardwareProfile {
+                device: node.to_string(),
+                format: "stub".to_string(),
+                size_gb: None,
+                tokens_per_sec: None,
+                memory_usage_gb: None,
+                verified: false,
+            }]
+        })
+        .unwrap_or_default();
+    Ok(artifact)
 }
 
 //=============================================================================
@@ -176,6 +156,7 @@ fn synthesize_stub_artifact(
 mod tests {
     use super::*;
     use crate::forge::{AlloyHardware, AlloySource, CorpusRef};
+    use uuid::Uuid;
 
     fn synthetic_recipe() -> ForgeRecipe {
         ForgeRecipe {
@@ -218,6 +199,57 @@ mod tests {
             authored_at_ms: 0,
             updated_at_ms: 0,
         }
+    }
+
+    // ── ForgeArtifact::from_recipe — the recipe→artifact projection ──
+
+    /// What this catches: `from_recipe` denormalizes every recipe field the
+    /// model card renders (lineage + prose + config), and assigns a FRESH
+    /// artifact id distinct from the recipe's. This is the single-source
+    /// projection the stub (and the future foundry executor) build on;
+    /// dropping a field here silently strips it from every artifact.
+    #[test]
+    fn from_recipe_projects_inherited_fields_with_fresh_id() {
+        let recipe = synthetic_recipe();
+        let a = ForgeArtifact::from_recipe(&recipe);
+
+        assert_ne!(a.id, recipe.id, "artifact id must be fresh (1:N)");
+        // Lineage.
+        assert_eq!(a.recipe_id, recipe.id);
+        assert_eq!(a.recipe_version, recipe.version);
+        assert_eq!(a.recipe_name, recipe.name);
+        // Denormalized prose / config snapshot.
+        assert_eq!(a.description, recipe.description);
+        assert_eq!(a.user_summary, recipe.user_summary);
+        assert_eq!(a.author, recipe.author);
+        assert_eq!(a.tags, recipe.tags);
+        assert_eq!(a.license, recipe.license);
+        assert_eq!(a.methodology_paper_url, recipe.methodology_paper_url);
+        assert_eq!(a.limitations, recipe.limitations);
+        assert_eq!(a.source.base_model, recipe.source.base_model);
+        assert_eq!(a.calibration_corpus.content_hash, recipe.calibration_corpus.content_hash);
+        assert_eq!(a.quant_tiers.len(), recipe.quant_tiers.len());
+        assert_eq!(a.evaluation_benchmarks.len(), recipe.evaluation_benchmarks.len());
+        assert_eq!(a.hardware.supports_cpu, recipe.hardware.supports_cpu);
+    }
+
+    /// What this catches: `from_recipe` returns an UNFORGED skeleton — every
+    /// foundry-execution field at its "not yet run" default (forged_at_ms=0,
+    /// the rest None/empty). The foundry/stub stamps these AFTER running
+    /// stages; if the projection pre-filled them it would fabricate
+    /// execution facts no run produced.
+    #[test]
+    fn from_recipe_leaves_execution_fields_unforged() {
+        let a = ForgeArtifact::from_recipe(&synthetic_recipe());
+        assert_eq!(a.forged_at_ms, 0, "unforged sentinel");
+        assert!(a.duration_minutes.is_none());
+        assert!(a.forged_params_b.is_none());
+        assert!(a.active_params_b.is_none());
+        assert!(a.hardware_verified.is_empty());
+        assert!(a.alloy_hash.is_none());
+        assert!(a.results.is_none());
+        assert!(a.receipt.is_none());
+        assert!(a.integrity.is_none());
     }
 
     /// What this catches: stub artifact carries the recipe's lineage
