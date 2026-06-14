@@ -621,7 +621,6 @@ impl InferenceCoordinator {
         struct EvictCandidate {
             handle_id: Uuid,
             acquired_at_ms: u64,
-            class: LaneClass,
             rank: u8,
             bytes: u64,
         }
@@ -638,7 +637,6 @@ impl InferenceCoordinator {
                 Some(EvictCandidate {
                     handle_id: lane.handle_id(),
                     acquired_at_ms: lane.lease().acquired_at_ms,
-                    class: lane.class(),
                     rank,
                     bytes: (lane.seed_kv_tokens() as u64).saturating_mul(bytes_per_token),
                 })
