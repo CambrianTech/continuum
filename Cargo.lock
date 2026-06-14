@@ -2643,6 +2643,7 @@ dependencies = [
 name = "continuum-airc-protocol"
 version = "0.1.0"
 dependencies = [
+ "airc-core",
  "serde",
  "serde_json",
  "uuid",
@@ -2684,6 +2685,7 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.18",
  "tokio",
+ "tokio-stream",
  "tracing",
  "uuid",
 ]
