@@ -31,7 +31,7 @@
 # Same multi-stage shape as the cuda variant — collapsing planner+builder
 # leaves stub binaries in target/ that cargo treats as "fresh" (mtime newer
 # than the later COPY .), producing a 436KB shell binary. Don't collapse.
-FROM rust:1.89-bookworm AS chef
+FROM rust:1.95-bookworm AS chef
 
 # System deps for compilation.
 #
