@@ -16,12 +16,14 @@
 //!
 //! ### Adapter resolution
 //!
-//! The `open` handler resolves the requested provider via the
-//! shared `AdapterRegistry` (the same registry that `inference/llm/
-//! request` uses). The handle store doesn't touch the registry —
-//! the module is the bridge between "I want provider X" (the
-//! caller's view) and "I have an Arc<dyn AIProviderAdapter>" (the
-//! store's contract).
+//! The `open` handler resolves the requested provider from the
+//! module's local adapter map first (adapters explicitly registered
+//! on this instance), then falls back to the shared `AdapterRegistry`
+//! (the same registry that `inference/llm/request` uses — the
+//! system-wide source of truth where production adapters live). The
+//! handle store doesn't touch the registry — the module is the bridge
+//! between "I want provider X" (the caller's view) and "I have an
+//! Arc<dyn AIProviderAdapter>" (the store's contract).
 //!
 //! ### Doctrine alignment
 //!
@@ -257,10 +259,11 @@ pub struct InspectResult {
 /// which made sharing references awkward. Task #162 fixed that —
 /// the registry now stores `Arc<dyn AIProviderAdapter>` natively
 /// and exposes `get_arc(provider_id)` for callers that need to
-/// hold the reference past the read-lock scope. The handle store
-/// could now read from the registry via `get_arc`; today it keeps a
-/// local adapter map for compatibility with the wiring sites that
-/// pre-dated #162. Migrating to `get_arc` is a follow-up cleanup.
+/// hold the reference past the read-lock scope. `open` now resolves
+/// through `get_arc` as a fallback (local map first, then the shared
+/// registry), so providers registered anywhere in the system are
+/// reachable; the local map remains for adapters explicitly registered
+/// on this module (tests + wiring sites that pre-dated #162).
 ///
 /// A future refactor (after task #109 lands) can fold this into a
 /// unified Arc-based registry; for now keeping the two surfaces
@@ -398,18 +401,43 @@ impl ServiceModule for InferenceHandleModule {
 
 impl InferenceHandleModule {
     async fn open(&self, params: OpenParams) -> Result<(HandleRef, OpenResult), String> {
-        let adapter = self
+        // Resolve the adapter: the module's local map first (adapters
+        // explicitly registered on this instance — tests + pre-#162 wiring
+        // sites), then the shared `AdapterRegistry` (the system-wide source
+        // of truth where production adapters live, per #162's `get_arc`).
+        // The local lookup is resolved into an OWNED Option in its own
+        // statement so the DashMap `Ref` is dropped before the async
+        // registry read — never a lock held across an `await`
+        // (CONCURRENCY-STYLE-GUIDE forbidden move #7).
+        let local_adapter = self
             .providers
             .get(&params.provider)
-            .map(|entry| entry.value().clone())
-            .ok_or_else(|| {
-                let available: Vec<String> =
-                    self.providers.iter().map(|e| e.key().clone()).collect();
-                format!(
-                    "{COMMAND_OPEN}: provider '{}' not registered (available: {:?})",
-                    params.provider, available
-                )
-            })?;
+            .map(|entry| entry.value().clone());
+        let adapter = match local_adapter {
+            Some(adapter) => adapter,
+            None => {
+                // Async read guard scoped to this single statement; the
+                // returned `Arc` is owned, so the guard drops at the `;`.
+                // (`open_lane` below is synchronous, so no await follows the
+                // read anyway — the guard is held across nothing.)
+                let from_registry = crate::modules::ai_provider::global_registry()
+                    .read()
+                    .await
+                    .get_arc(&params.provider);
+                match from_registry {
+                    Some(adapter) => adapter,
+                    None => {
+                        let available: Vec<String> =
+                            self.providers.iter().map(|e| e.key().clone()).collect();
+                        return Err(format!(
+                            "{COMMAND_OPEN}: provider '{}' not registered on this module \
+                             (local: {available:?}) nor in the shared AdapterRegistry",
+                            params.provider
+                        ));
+                    }
+                }
+            }
+        };
 
         if let Some(coordinator) = &self.coordinator {
             let persona = PersonaId::new(params.persona_id.unwrap_or_else(Uuid::new_v4));
@@ -581,7 +609,10 @@ mod tests {
         module
     }
 
-    fn module_with_coordinator() -> InferenceHandleModule {
+    /// A coordinator-backed module with an EMPTY local adapter map — used
+    /// to exercise the shared-registry fallback in `open`. `module_with_
+    /// coordinator` layers a local heuristic registration on top.
+    fn bare_coordinator_module() -> InferenceHandleModule {
         use crate::cognition::adaptive_throughput::{
             ResourceClass, TargetSilicon, ThroughputLaneBudget,
         };
@@ -601,7 +632,11 @@ mod tests {
             default_target_silicon: TargetSilicon::UnifiedMemory,
         };
         let coordinator = Arc::new(InferenceCoordinator::new(footprint, store, config));
-        let module = InferenceHandleModule::with_coordinator(coordinator);
+        InferenceHandleModule::with_coordinator(coordinator)
+    }
+
+    fn module_with_coordinator() -> InferenceHandleModule {
+        let module = bare_coordinator_module();
         module.register_adapter(
             HEURISTIC_PROVIDER_ID,
             Arc::new(HeuristicInferenceAdapter::new()) as Arc<dyn AIProviderAdapter>,
@@ -642,6 +677,35 @@ mod tests {
         assert_eq!(handle.get("owner").unwrap(), HANDLE_OWNER);
         assert_eq!(handle.get("type_tag").unwrap(), HANDLE_TYPE_TAG);
         assert_eq!(response.get("provider").unwrap(), HEURISTIC_PROVIDER_ID);
+    }
+
+    /// What this catches: `open` falls back to the shared `AdapterRegistry`
+    /// when the provider is absent from the module's local map — the
+    /// realization that lets production opens resolve adapters registered
+    /// elsewhere in the system (#162 `get_arc`). The module here registers
+    /// NOTHING locally; the adapter lives only in the global registry.
+    /// Without the fallback this open would 404.
+    #[tokio::test]
+    async fn open_resolves_via_shared_registry_when_absent_from_local_map() {
+        // Register the heuristic adapter in the SHARED registry only.
+        // get_arc(HEURISTIC_PROVIDER_ID) is robust to a prior test having
+        // already registered it — either way it resolves to Some.
+        crate::modules::ai_provider::global_registry()
+            .write()
+            .await
+            .register(
+                Arc::new(HeuristicInferenceAdapter::new()) as Arc<dyn AIProviderAdapter>,
+                0,
+            );
+        let m = bare_coordinator_module();
+        let (_handle, opened) = m
+            .open(OpenParams {
+                provider: HEURISTIC_PROVIDER_ID.to_string(),
+                ..Default::default()
+            })
+            .await
+            .expect("open must resolve the provider via the shared AdapterRegistry fallback");
+        assert_eq!(opened.provider, HEURISTIC_PROVIDER_ID);
     }
 
     #[tokio::test]
