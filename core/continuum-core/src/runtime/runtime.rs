@@ -739,6 +739,7 @@ pub const MODULES: &[(&str, ModuleCategory)] = &[
     ("pressure-broker", ModuleCategory::Core),
     // AI / inference
     ("inference", ModuleCategory::Core),
+    ("inference-coordinator", ModuleCategory::Core),
     ("inference-llm", ModuleCategory::Core),
     ("ai_provider", ModuleCategory::Core),
     ("embedding", ModuleCategory::Core),
