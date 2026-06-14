@@ -506,7 +506,7 @@ mod tests {
     };
     use crate::gpu::MockMonitor;
     use crate::inference::kv_quant::Residency;
-    use crate::paging::broker::PressureTier;
+    // PressureTier is already in scope via `use super::*` (module-scope import).
 
     fn persona_kv_key(persona_id: Uuid) -> FootprintKey {
         FootprintKey::for_persona(persona_id, ResourceType::KvCache, Residency::Active)
