@@ -59,6 +59,7 @@ use crate::inference::handle_store::{InferenceHandleStore, OpenSessionRequest};
 use crate::inference::kv_quant::Residency;
 use crate::inference::lane::{Lane, LaneClass};
 use crate::inference::recipe_budget::TaskKind;
+use crate::paging::lease_revocation::disruption_rank;
 use crate::runtime::cell_shapes::HandleRef;
 
 /// Configuration the coordinator needs at construction.
@@ -597,53 +598,60 @@ impl InferenceCoordinator {
     /// the conversation ends. Operator's escape valve: lease
     /// expiry — when a pinned lease expires (lease.expires_at_ms <
     /// now_ms), step 1 collects it like any other expired lease.
+    ///
+    /// The tier ordering above is NOT re-encoded here — it comes from the
+    /// single revocation-ladder definition,
+    /// [`disruption_rank`](crate::paging::lease_revocation::disruption_rank),
+    /// shared with `select_leases_to_revoke`. This method is one
+    /// *selection strategy* over that ladder (oldest-first, ungated,
+    /// lane-aware); the broker-style strategy is another.
     pub fn evict_under_pressure(&self, target_bytes: u64, now_ms: u64) -> EvictionResult {
         // Snapshot lane references so we don't hold DashMap entries
         // while we mutate. We need (handle_id, lease_acquired_at_ms,
-        // class, expired?, bytes_to_free).
+        // class, revocation rank, bytes_to_free).
+        //
+        // `rank` comes from the SINGLE revocation-ladder definition
+        // (`disruption_rank`) — NOT a parallel inline class→tier match.
+        // `disruption_rank` reads `lease.revocation_policy`, which
+        // `open_lane` sets from `LaneClass::revocation_policy()`, so the
+        // ranks are identical to the former inline tier() (expired=0,
+        // Hard=1, Graceful=2) while keeping the ladder defined once. An
+        // active `Pinned` lane returns `None` here and is filtered out
+        // entirely (the substrate contract: pressure never evicts it).
         struct EvictCandidate {
             handle_id: Uuid,
             acquired_at_ms: u64,
             class: LaneClass,
-            expired: bool,
+            rank: u8,
             bytes: u64,
         }
         let bytes_per_token = self.config.bytes_per_token;
         let mut candidates: Vec<EvictCandidate> = self
             .lanes
             .iter()
-            .map(|entry| {
+            .filter_map(|entry| {
                 let lane = entry.value();
-                let expired = lane.is_expired(now_ms);
-                EvictCandidate {
+                // None = active Pinned (Realtime, unexpired) → never a
+                // pressure-eviction candidate. Expired leases of any
+                // policy rank 0 (their holder is gone).
+                let rank = disruption_rank(lane.lease(), now_ms)?;
+                Some(EvictCandidate {
                     handle_id: lane.handle_id(),
                     acquired_at_ms: lane.lease().acquired_at_ms,
                     class: lane.class(),
-                    expired,
+                    rank,
                     bytes: (lane.seed_kv_tokens() as u64).saturating_mul(bytes_per_token),
-                }
+                })
             })
             .collect();
 
-        // Three tiers, each sorted by acquired_at_ms ascending
-        // (oldest first). Pinned lanes are excluded entirely unless
-        // expired (in which case they go in tier 1).
+        // Least-disruptive first (rank ascending: expired → Hard →
+        // Graceful), and within a rank oldest-first by acquisition time —
+        // the coordinator's fairness choice (drain the longest-running
+        // lane of a class before younger ones).
         candidates.sort_by(|a, b| {
-            // Sort key: (tier_rank, acquired_at_ms).
-            // tier_rank: 0 = expired, 1 = Hard, 2 = Graceful, 3 = Pinned (excluded later)
-            fn tier(c: &EvictCandidate) -> u8 {
-                if c.expired {
-                    0
-                } else {
-                    match c.class {
-                        LaneClass::Background | LaneClass::Sentinel => 1,
-                        LaneClass::Interactive => 2,
-                        LaneClass::Realtime => 3,
-                    }
-                }
-            }
-            tier(a)
-                .cmp(&tier(b))
+            a.rank
+                .cmp(&b.rank)
                 .then(a.acquired_at_ms.cmp(&b.acquired_at_ms))
         });
 
@@ -653,16 +661,13 @@ impl InferenceCoordinator {
             if bytes_freed >= target_bytes {
                 break;
             }
-            // Pinned + not expired → skip (substrate contract).
-            if cand.class == LaneClass::Realtime && !cand.expired {
-                continue;
-            }
-            let reason = if cand.expired {
-                EvictionReason::LeaseExpired
-            } else if matches!(cand.class, LaneClass::Background | LaneClass::Sentinel) {
-                EvictionReason::PressureHard
-            } else {
-                EvictionReason::PressureGraceful
+            // Reason derives from the shared rank: 0 = expired lease
+            // reclaim, 1 = Hard (Background/Sentinel) under pressure,
+            // 2 = Graceful (Interactive) under pressure.
+            let reason = match cand.rank {
+                0 => EvictionReason::LeaseExpired,
+                1 => EvictionReason::PressureHard,
+                _ => EvictionReason::PressureGraceful,
             };
 
             // Snapshot the lane's persona + task + lease_id BEFORE

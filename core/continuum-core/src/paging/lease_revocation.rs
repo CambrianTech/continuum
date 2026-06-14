@@ -41,7 +41,15 @@ use crate::paging::broker::PressureTier;
 /// Expiry is checked before policy so an expired `Pinned` lease is still
 /// rank 0 (its holder is gone; the pin no longer protects anything),
 /// matching [`ThroughputLease::is_reclaimable`].
-fn disruption_rank(lease: &ThroughputLease, now_ms: u64) -> Option<u8> {
+///
+/// This is the **single definition of the revocation ladder** (expired →
+/// Hard → Graceful, never active Pinned). Both selection strategies share
+/// it: `select_leases_to_revoke` (broker-style — largest-first within rank,
+/// `PressureTier`-gated) and `InferenceCoordinator::evict_under_pressure`
+/// (lane-style — oldest-first, ungated, lane-aware side effects). Keep the
+/// ladder defined ONCE here; a consumer that re-encodes class→tier inline
+/// is the duplication this `pub` exists to prevent.
+pub fn disruption_rank(lease: &ThroughputLease, now_ms: u64) -> Option<u8> {
     if lease.is_expired(now_ms) {
         return Some(0);
     }
