@@ -23,6 +23,31 @@ else
   PLATFORM="linux"
 fi
 
+# ── Ensure airc (mesh backbone) ───────────────────
+# Continuum rides airc as its event bus, identity mesh, and cross-grid
+# transport. A fresh user must get airc WITHOUT a separate manual step.
+# Delegate to airc's OWN installer (single source of truth — never re-implement
+# airc's prereq/auth logic here). Download-then-run (not `curl | bash`) keeps
+# stdin attached to the terminal, so airc's interactive steps (Homebrew, gh
+# auth login) still work when driven from setup.sh. Override the branch with
+# AIRC_CHANNEL (defaults to main, the released line).
+if ! command -v airc &>/dev/null; then
+  echo "⏳ airc not found — installing the mesh backbone (delegating to airc's installer)..."
+  AIRC_INSTALLER="$(mktemp)"
+  if curl -fsSL "https://raw.githubusercontent.com/CambrianTech/airc/${AIRC_CHANNEL:-main}/install.sh" -o "$AIRC_INSTALLER" \
+     && bash "$AIRC_INSTALLER"; then
+    rm -f "$AIRC_INSTALLER"
+    echo "✅ airc installed"
+  else
+    rm -f "$AIRC_INSTALLER"
+    echo "❌ airc install failed — continuum needs airc as its backbone."
+    echo "   See https://github.com/CambrianTech/airc and re-run setup.sh."
+    exit 1
+  fi
+else
+  echo "✅ airc found ($(command -v airc))"
+fi
+
 # ── Check Docker ──────────────────────────────────
 if ! command -v docker &>/dev/null; then
   echo "❌ Docker not found."
