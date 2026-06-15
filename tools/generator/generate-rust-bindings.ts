@@ -352,15 +352,21 @@ async function main() {
   // Ensure output directory exists
   fs.mkdirSync(GENERATED_DIR, { recursive: true });
 
-  // Skip cargo test if Rust source hasn't changed since last generation.
-  // Bindings are generated on macOS and committed — Linux/WSL towers use committed files.
-  // On Linux, cargo test crashes due to protobuf descriptor conflict (LiveKit).
-  // Instead of a hack env var, detect the platform and skip on Linux when bindings exist.
-  const isLinux = process.platform === 'linux';
-  const bindingsExist = fs.existsSync(GENERATED_DIR) && fs.readdirSync(GENERATED_DIR).length > 0;
+  // ONLY macOS regenerates ts-rs bindings (they're generated there and
+  // committed to git). Everyone else — Linux/WSL towers, the carl-install-smoke
+  // CI container — uses the committed bindings as-is and NEVER runs cargo:
+  //   * cargo test crashes on Linux (LiveKit protobuf descriptor conflict), and
+  //   * a cold continuum-core + llama.cpp compile blows past the install/build window.
+  // Pre-fix this skip was gated on `bindingsExist` checking GENERATED_DIR
+  // (shared/generated) — but the committed bindings live in protocol/typescript,
+  // so GENERATED_DIR read EMPTY on a fresh clone, the guard was false, and Linux
+  // fell through to the broken cargo path → install.sh's `npm run build` died
+  // ("Some bindings failed to generate") = the carl-install-smoke failure (C8).
+  // Gate on the platform itself (not a dir that moved) so the skip is robust.
+  const isMac = process.platform === 'darwin';
   const forceRegen = process.argv.includes('--force');
-  if (isLinux && bindingsExist && !forceRegen) {
-    console.log('  ✅ Linux: using committed bindings (cargo test skipped — protobuf conflict)\n');
+  if (!isMac && !forceRegen) {
+    console.log('  ✅ Non-macOS: using committed bindings (cargo skipped — generated + committed on macOS)\n');
   } else if (!forceRegen && bindingsUpToDate()) {
     console.log('  ✅ Bindings up to date (no Rust changes since last generation)');
     console.log('     Use --force to regenerate anyway\n');
