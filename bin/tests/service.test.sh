@@ -34,7 +34,7 @@ OUT="$(run_service install --dry-run)"
 has "/Library/LaunchDaemons/homes.continuum.node.plist" "$OUT" "targets system LaunchDaemons (NOT a per-user LaunchAgent)"
 has "<key>RunAtLoad</key><true/>" "$OUT" "RunAtLoad (starts at boot)"
 has "<key>KeepAlive</key><true/>" "$OUT" "KeepAlive (restarts if it dies)"
-has "<string>start</string>" "$OUT" "runs the node start"
+has "<string>--headless</string>" "$OUT" "runs 'start --headless' — Rust core ONLY, no Node"
 if command -v plutil >/dev/null 2>&1; then
   printf '%s\n' "$OUT" | sed -n '/<?xml/,/<\/plist>/p' > "$SHIM/test.plist"
   plutil -lint "$SHIM/test.plist" >/dev/null 2>&1 && ok "generated plist passes plutil -lint" || no "plist failed plutil -lint"
@@ -46,6 +46,8 @@ OUT="$(run_service install --dry-run)"
 has "/etc/systemd/system/continuum-node.service" "$OUT" "targets the SYSTEM unit dir"
 has "WantedBy=multi-user.target" "$OUT" "boots at multi-user (independent of any login)"
 has "Restart=always" "$OUT" "auto-restarts"
+has "ExecStart=" "$OUT" "has an ExecStart"
+has "start --headless" "$OUT" "runs 'start --headless' — Rust core ONLY, no Node"
 has "systemctl enable docker" "$OUT" "enables the docker engine at boot too"
 
 echo "Windows — startup task as SYSTEM (validate on BIGMAMA):"
@@ -53,6 +55,7 @@ make_uname MINGW64_NT-10.0
 OUT="$(run_service install --dry-run)"
 has "Register-ScheduledTask" "$OUT" "prints the startup-task recipe"
 has "AtStartup" "$OUT" "runs at startup, before any login"
+has "start --headless" "$OUT" "runs 'start --headless' — Rust core ONLY, no Node"
 
 echo "status (unprivileged) + bad action:"
 make_uname Darwin

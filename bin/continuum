@@ -271,6 +271,9 @@ get_url() {
 # ── Commands ────────────────────────────────────────────────
 
 cmd_start() {
+  local headless=false _a
+  for _a in "$@"; do [ "$_a" = "--headless" ] && headless=true; done
+
   if ! find_compose; then
     echo -e "${RED}❌ No Continuum installation found.${RESET}"
     echo "   Run: curl -fsSL continuum.homes/install | bash"
@@ -285,6 +288,29 @@ cmd_start() {
     echo -e "${CYAN}🌐 Grid mode${RESET} (Tailscale enabled)"
   else
     echo -e "${CYAN}🏠 Local mode${RESET}"
+  fi
+
+  # Headless / grid node / boot service: bring up ONLY the Rust core — NO
+  # node-server, NO widget-server, NO Node.js. continuum-core is the independent
+  # foundation; the Node desktop is a DEPENDENT client (node-server depends_on
+  # continuum-core, never the reverse). headless-first: a node must run with no
+  # Node in the loop.
+  if $headless; then
+    echo -e "${BLUE}🚀 Starting Continuum core (headless — Node-independent)...${RESET}"
+    docker compose up -d $compose_args continuum-core
+    echo -e "${DIM}⏳ Waiting for core...${RESET}"
+    local hretries=60 hhealth
+    while [ $hretries -gt 0 ]; do
+      hhealth=$(docker compose ps continuum-core --format '{{.Health}}' 2>/dev/null || echo "starting")
+      [ "$hhealth" = "healthy" ] && break
+      hretries=$((hretries - 1)); sleep 2
+    done
+    if [ $hretries -eq 0 ]; then
+      echo -e "${RED}❌ Core did not become healthy within 120s${RESET}"
+      echo "   Run: continuum logs continuum-core"; exit 1
+    fi
+    echo -e "${GREEN}✅ Continuum core ready (headless, no Node)${RESET}"
+    return 0
   fi
 
   echo -e "${BLUE}🚀 Starting Continuum...${RESET}"
@@ -1004,6 +1030,7 @@ _macos_plist_text() {
   <array>
     <string>${bin}</string>
     <string>start</string>
+    <string>--headless</string>
   </array>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
@@ -1025,7 +1052,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=${bin} start
+ExecStart=${bin} start --headless
 Restart=always
 RestartSec=10
 User=${user}
@@ -1039,7 +1066,7 @@ _service_windows_help() {
   local bin="$1"
   echo -e "${YELLOW}Windows: register a startup task that survives logoff (validate on BIGMAMA):${RESET}"
   echo -e "${DIM}  # PowerShell, elevated — runs at boot as SYSTEM, before any login:${RESET}"
-  echo "  \$a = New-ScheduledTaskAction -Execute 'bash' -Argument '-lc \"$bin start\"'"
+  echo "  \$a = New-ScheduledTaskAction -Execute 'bash' -Argument '-lc \"$bin start --headless\"'"
   echo "  \$t = New-ScheduledTaskTrigger -AtStartup"
   echo "  \$p = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -RunLevel Highest"
   echo "  Register-ScheduledTask -TaskName 'ContinuumNode' -Action \$a -Trigger \$t -Principal \$p"
@@ -1051,9 +1078,10 @@ _service_windows_help() {
 _service_engine_caveat() {
   case "$(uname -s)" in
     Darwin)
-      echo -e "${DIM}Note: Docker Desktop is user-session-bound. This LaunchDaemon survives${RESET}"
-      echo -e "${DIM}logout, but if the node runs on Docker Desktop the ENGINE may not — run${RESET}"
-      echo -e "${DIM}colima as a daemon or a native headless core for full logout survival.${RESET}"
+      echo -e "${DIM}Note: the service runs 'start --headless' — the Rust core ONLY, no Node.${RESET}"
+      echo -e "${DIM}But Docker Desktop is user-session-bound: this LaunchDaemon survives logout,${RESET}"
+      echo -e "${DIM}while the Docker ENGINE under it may not — run colima as a daemon or a${RESET}"
+      echo -e "${DIM}native headless core for full logout survival.${RESET}"
       ;;
   esac
 }
