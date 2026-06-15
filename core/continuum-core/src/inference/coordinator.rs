@@ -53,7 +53,10 @@ use crate::cognition::adaptive_throughput::{
     ThroughputJob, ThroughputLaneBudget,
 };
 use crate::cognition::throughput_lease::ThroughputLease;
+use crate::governor::classify_hardware;
+use crate::governor::types::TargetSilicon as GovernorSilicon;
 use crate::genome::working_set::PersonaId;
+use crate::inference_capability::hw_probe::probe_hardware_profile;
 use crate::inference::footprint_registry::{FootprintKey, FootprintRegistry, ResourceType};
 use crate::inference::handle_store::{InferenceHandleStore, OpenSessionRequest};
 use crate::inference::kv_quant::Residency;
@@ -81,23 +84,65 @@ pub struct CoordinatorConfig {
 }
 
 impl CoordinatorConfig {
-    /// Sensible default for a CPU-only / unified-memory host. The
-    /// "realistic floor" from the lanes-realistic doc:
-    /// - Local-generation budget for UnifiedMemory @ 4 concurrent lanes,
-    ///   total cost-units ~80K tokens (covers 3× chat + 1× spare).
-    /// - Default ~64 KB / token for FP16 KV.
-    pub fn realistic_floor_default() -> Self {
+    /// The realistic-floor lane budget retargeted to a specific silicon
+    /// class — the canonical config builder. Shape from the lanes-realistic
+    /// doc (4 concurrent lanes, ~80K cost-units, ~64 KB/token FP16 KV); only
+    /// the admission silicon varies. Real per-tier budgets arrive from the
+    /// governor's policy file in a later slice — this fixes the SILICON
+    /// label so the production default isn't anchored on the CPU/UMA floor.
+    pub fn for_silicon(silicon: TargetSilicon) -> Self {
         Self {
             lane_budgets: vec![ThroughputLaneBudget {
                 resource_class: ResourceClass::LocalGeneration,
-                target_silicon: TargetSilicon::UnifiedMemory,
+                target_silicon: silicon,
                 max_concurrency: 4,
                 max_cost_units: 80_000,
             }],
             bytes_per_token: 64 * 1024,
             lease_duration_ms: 30 * 60 * 1000, // 30 minutes
-            default_target_silicon: TargetSilicon::UnifiedMemory,
+            default_target_silicon: silicon,
         }
+    }
+
+    /// The "realistic floor" — UnifiedMemory budget. Kept for tests and for
+    /// constrained hosts that explicitly want the floor; NOT the production
+    /// default (see [`detected`](Self::detected)).
+    pub fn realistic_floor_default() -> Self {
+        Self::for_silicon(TargetSilicon::UnifiedMemory)
+    }
+
+    /// Hardware-detected config: probe the machine, classify its silicon,
+    /// and build a [`for_silicon`](Self::for_silicon) budget for it. On an
+    /// RTX 5090 this yields a `Gpu`-targeted coordinator; on Apple Silicon,
+    /// `UnifiedMemory`; on a GPU-less host, `Cpu`. This RETIRES the hardcoded
+    /// `UnifiedMemory` default — GPU-or-bust means the production default
+    /// follows the hardware, not a Mac/CPU floor.
+    ///
+    /// One-shot startup probe (a few file reads + per-backend FFI, per
+    /// `probe_hardware_profile`) — call once at boot, reuse the config.
+    pub fn detected() -> Self {
+        let class = classify_hardware(&probe_hardware_profile());
+        Self::for_silicon(coordinator_silicon_for(class.silicon))
+    }
+}
+
+/// Map the governor's hardware-detected [`GovernorSilicon`] to the
+/// coordinator's [`TargetSilicon`] admission class — the seam between the
+/// SubstrateGovernor's hardware classification (`classify_hardware`) and the
+/// lane scheduler.
+///
+/// `AppleM` → `UnifiedMemory` (Apple-silicon shared accelerator memory);
+/// every discrete-GPU class (`NvidiaCuda` / `AmdRocm` / `IntelVulkan`) →
+/// `Gpu`; `None` (no accelerator detected) → `Cpu`. `Cpu` is the HONEST
+/// classification, not a silent floor — a GPU-or-bust caller inspects the
+/// result and refuses rather than quietly serving CPU.
+pub fn coordinator_silicon_for(detected: GovernorSilicon) -> TargetSilicon {
+    match detected {
+        GovernorSilicon::AppleM => TargetSilicon::UnifiedMemory,
+        GovernorSilicon::NvidiaCuda
+        | GovernorSilicon::AmdRocm
+        | GovernorSilicon::IntelVulkan => TargetSilicon::Gpu,
+        GovernorSilicon::None => TargetSilicon::Cpu,
     }
 }
 
@@ -850,6 +895,63 @@ mod tests {
 
     fn persona(id: u128) -> PersonaId {
         PersonaId::new(Uuid::from_u128(id))
+    }
+
+    /// what this catches: the governor→coordinator silicon translation. A
+    /// discrete GPU (NvidiaCuda/AmdRocm/IntelVulkan) MUST map to `Gpu` (not
+    /// the UnifiedMemory floor) — that's the GPU-or-bust fix. AppleM →
+    /// UnifiedMemory; `None` → `Cpu` (honest, not a silent GPU pretense).
+    #[test]
+    fn governor_silicon_maps_discrete_gpu_to_gpu_not_floor() {
+        assert_eq!(
+            coordinator_silicon_for(GovernorSilicon::NvidiaCuda),
+            TargetSilicon::Gpu
+        );
+        assert_eq!(
+            coordinator_silicon_for(GovernorSilicon::AmdRocm),
+            TargetSilicon::Gpu
+        );
+        assert_eq!(
+            coordinator_silicon_for(GovernorSilicon::IntelVulkan),
+            TargetSilicon::Gpu
+        );
+        assert_eq!(
+            coordinator_silicon_for(GovernorSilicon::AppleM),
+            TargetSilicon::UnifiedMemory
+        );
+        assert_eq!(
+            coordinator_silicon_for(GovernorSilicon::None),
+            TargetSilicon::Cpu
+        );
+    }
+
+    /// what this catches: `for_silicon` sets BOTH the lane-budget silicon AND
+    /// the default to the SAME class — a mismatch would deny admission (the
+    /// planner looks up the budget by the lease's target_silicon). Pins that
+    /// a Gpu config targets Gpu end-to-end, not a stray UnifiedMemory.
+    #[test]
+    fn for_silicon_targets_one_silicon_end_to_end() {
+        let cfg = CoordinatorConfig::for_silicon(TargetSilicon::Gpu);
+        assert_eq!(cfg.default_target_silicon, TargetSilicon::Gpu);
+        assert_eq!(cfg.lane_budgets.len(), 1);
+        assert_eq!(cfg.lane_budgets[0].target_silicon, TargetSilicon::Gpu);
+        // realistic_floor_default is now just for_silicon(UnifiedMemory).
+        let floor = CoordinatorConfig::realistic_floor_default();
+        assert_eq!(floor.default_target_silicon, TargetSilicon::UnifiedMemory);
+        assert_eq!(floor.lane_budgets[0].target_silicon, TargetSilicon::UnifiedMemory);
+    }
+
+    /// what this catches: `detected()` runs to completion without panicking
+    /// on the test host (the probe→classify→translate chain), and the result
+    /// it produces is self-consistent. The end-to-end consistency invariant
+    /// itself is owned by `for_silicon_targets_one_silicon_end_to_end`; this
+    /// is the smoke test that the real hardware-probe path doesn't blow up.
+    #[test]
+    fn detected_config_runs_without_panicking() {
+        let cfg = CoordinatorConfig::detected();
+        assert_eq!(
+            cfg.default_target_silicon, cfg.lane_budgets[0].target_silicon
+        );
     }
 
     fn small_budget_config() -> CoordinatorConfig {

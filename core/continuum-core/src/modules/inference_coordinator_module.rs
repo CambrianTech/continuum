@@ -32,9 +32,11 @@
 //!   - Route `InferenceHandleModule` through `with_coordinator(self.coordinator())`
 //!     so opens actually create lanes (until then the registered pool is
 //!     armed but idle — usage 0, so the broker never needs to act on it).
-//!   - Governor-informed `CoordinatorConfig` (hardware-class → lane budget)
-//!     once the `SubstrateGovernor` emits its `TierConfig`s; today the
-//!     module uses the documented `realistic_floor_default()`.
+//!   - Per-tier lane BUDGET numbers from the governor's policy file once it
+//!     emits its `TierConfig`s. The module already hardware-detects the
+//!     SILICON class (`CoordinatorConfig::detected()` → Gpu on a discrete
+//!     GPU, UnifiedMemory on Apple Silicon, Cpu on a GPU-less host); only
+//!     the per-tier capacity numbers remain governor-deferred.
 
 use crate::inference::coordinator::{CoordinatorConfig, InferenceCoordinator};
 use crate::inference::coordinator_pool::CoordinatorResourcePool;
@@ -54,7 +56,7 @@ pub struct InferenceCoordinatorModule {
 impl InferenceCoordinatorModule {
     /// Construct from an explicit `CoordinatorConfig` with a fresh
     /// `FootprintRegistry` + `InferenceHandleStore`. Tests use this to pin
-    /// a deterministic budget; production uses `with_realistic_floor`.
+    /// a deterministic budget; production uses `with_detected_hardware`.
     pub fn new(config: CoordinatorConfig) -> Self {
         let footprint = Arc::new(FootprintRegistry::new());
         let handle_store = Arc::new(InferenceHandleStore::new());
@@ -62,11 +64,15 @@ impl InferenceCoordinatorModule {
         Self { coordinator }
     }
 
-    /// Production constructor — the documented "realistic floor" budget
-    /// (UnifiedMemory, 4 concurrent lanes, ~64KB/token FP16 KV). Swap for a
-    /// governor-informed config when the `SubstrateGovernor` lands.
-    pub fn with_realistic_floor() -> Self {
-        Self::new(CoordinatorConfig::realistic_floor_default())
+    /// Production constructor — **hardware-detected** silicon. Probes the
+    /// machine (`CoordinatorConfig::detected`), so the lanes target the
+    /// actual accelerator: `Gpu` on an RTX 5090, `UnifiedMemory` on Apple
+    /// Silicon, `Cpu` on a GPU-less host. This RETIRES the old hardcoded
+    /// `UnifiedMemory` floor default (GPU-or-bust — the default follows the
+    /// hardware, not a Mac/CPU floor). Governor policy-file budgets refine
+    /// the per-tier numbers in a later slice.
+    pub fn with_detected_hardware() -> Self {
+        Self::new(CoordinatorConfig::detected())
     }
 
     /// Borrow the coordinator so the boot sequence can hand the SAME `Arc`
