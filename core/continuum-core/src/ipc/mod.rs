@@ -1124,6 +1124,41 @@ pub fn start_server(
         reason = ?discovery.reason(),
         "AIRC discovery complete"
     );
+    // Honest boot-health line for the persona-comms-over-airc wire (card
+    // e9f50a36 slice A3, reworked onto core/continuum-core). Operators +
+    // sentinels see at boot whether airc is live / degraded / unreachable —
+    // emitted via boot_status -> probe! (class "boot.status"), so it's both a
+    // human stderr line AND subscribable by debug/probes/*. This is the
+    // comms→airc lane making "is the persona comms wire actually up?" honest.
+    {
+        use crate::runtime::boot_status::{boot_status, BootStatusKind};
+        let (kind, detail) = match &discovery {
+            crate::airc::AircDiscovery::Healthy {
+                socket,
+                peer_id,
+                room_name,
+                ..
+            } => {
+                let peer_short: String = peer_id.to_string().chars().take(8).collect();
+                (
+                    BootStatusKind::Ok,
+                    format!(
+                        "socket={} peer={} room={}",
+                        socket.display(),
+                        peer_short,
+                        room_name
+                    ),
+                )
+            }
+            crate::airc::AircDiscovery::Degraded { reason, .. } => {
+                (BootStatusKind::Degraded, format!("degraded: {reason}"))
+            }
+            crate::airc::AircDiscovery::Unreachable { reason } => {
+                (BootStatusKind::Failed, format!("unreachable: {reason}"))
+            }
+        };
+        boot_status("airc", kind, &detail);
+    }
     let airc_module = Arc::new(AircModule::from_discovery(&discovery));
     let persona_bootstrap_deps = airc_module
         .daemon_socket()
