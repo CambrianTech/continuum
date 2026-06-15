@@ -54,7 +54,7 @@ pub struct InferenceCoordinatorModule {
 impl InferenceCoordinatorModule {
     /// Construct from an explicit `CoordinatorConfig` with a fresh
     /// `FootprintRegistry` + `InferenceHandleStore`. Tests use this to pin
-    /// a deterministic budget; production uses `with_realistic_floor`.
+    /// a deterministic budget; production uses `with_detected_hardware`.
     pub fn new(config: CoordinatorConfig) -> Self {
         let footprint = Arc::new(FootprintRegistry::new());
         let handle_store = Arc::new(InferenceHandleStore::new());
@@ -62,9 +62,20 @@ impl InferenceCoordinatorModule {
         Self { coordinator }
     }
 
-    /// Production constructor — the documented "realistic floor" budget
-    /// (UnifiedMemory, 4 concurrent lanes, ~64KB/token FP16 KV). Swap for a
-    /// governor-informed config when the `SubstrateGovernor` lands.
+    /// Production constructor — **hardware-detected** silicon. Probes the
+    /// machine (`CoordinatorConfig::detected`), so the lanes target the
+    /// actual accelerator: `Gpu` on an RTX 5090, `UnifiedMemory` on Apple
+    /// Silicon, `Cpu` on a GPU-less host. This RETIRES the old hardcoded
+    /// `UnifiedMemory` floor default (GPU-or-bust — the default follows the
+    /// hardware, not a Mac/CPU floor). Governor policy-file budgets refine
+    /// the per-tier numbers in a later slice.
+    pub fn with_detected_hardware() -> Self {
+        Self::new(CoordinatorConfig::detected())
+    }
+
+    /// The "realistic floor" (UnifiedMemory) — for tests and explicitly
+    /// constrained hosts. NOT the production default; see
+    /// [`with_detected_hardware`](Self::with_detected_hardware).
     pub fn with_realistic_floor() -> Self {
         Self::new(CoordinatorConfig::realistic_floor_default())
     }

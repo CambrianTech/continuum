@@ -814,11 +814,13 @@ pub fn start_server(
     // lane coordinator. Registered before the broker block below so its
     // CoordinatorResourcePool can be attached to the broker in the same
     // pass, closing the realistic-lane pressure→eviction loop in
-    // production. Realistic-floor budget today; governor-informed when the
-    // SubstrateGovernor lands. Opens/generates route through the same
-    // coordinator Arc via the handle module in a follow-up slice.
+    // production. HARDWARE-DETECTED silicon (probes the machine: Gpu on a
+    // discrete GPU, UnifiedMemory on Apple Silicon, Cpu on a GPU-less host)
+    // — no hardcoded CPU/UMA floor. Per-tier budgets governor-informed in a
+    // later slice. Opens route through the same coordinator Arc via the
+    // handle module.
     runtime.register(Arc::new(
-        crate::modules::inference_coordinator_module::InferenceCoordinatorModule::with_realistic_floor(),
+        crate::modules::inference_coordinator_module::InferenceCoordinatorModule::with_detected_hardware(),
     ));
     // Register DiskPressureMonitor with the broker as a signal-only
     // ResourcePool — `evict_at_least` returns 0 (the monitor doesn't
