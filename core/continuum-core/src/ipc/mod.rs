@@ -17,6 +17,7 @@ use crate::modules::forge::ForgeModule;
 use crate::modules::gpu::GpuModule;
 use crate::modules::grid::GridModule;
 use crate::modules::health::HealthModule;
+use crate::modules::launch_mode::LaunchModeModule;
 use crate::modules::inference::InferenceModule;
 use crate::modules::live::{VoiceModule, VoiceState};
 use crate::modules::logger::LoggerModule;
@@ -759,6 +760,12 @@ pub fn start_server(
 
     // Phase 1: HealthModule (stateless)
     runtime.register(Arc::new(HealthModule::new()));
+
+    // LaunchModeModule (stateless) — system/launch-mode/{get,set}. Headless-native
+    // runtime lever for the headless-vs-UI launch preference; persists
+    // CONTINUUM_LAUNCH_MODE to config.env (same key bin/continuum reads) and emits
+    // system:launch-mode:changed so a running UI can attach/tear down its overlay.
+    runtime.register(Arc::new(LaunchModeModule::new()));
 
     // ExternalWebviewAuthModule — OAuth 2.0 + PKCE via system browser.
     // Landed in 26ab8c0ad; re-enabling after merge from feat/mac-docker-model-runner

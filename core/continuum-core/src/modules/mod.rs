@@ -44,6 +44,7 @@ pub mod health;
 pub mod hippocampus;
 pub mod inference;
 pub mod inference_coordinator_module;
+pub mod launch_mode;
 pub mod live;
 pub mod logger;
 pub mod mcp;
