@@ -12,7 +12,7 @@
 //! expected tok/s, and a verdict comparing the measured value to it.
 //!
 //! The verdict is what makes a CPU-fallback regression LOUD: a 4B-Q4 model
-//! that should do ~150 tok/s on an RTX 5090 but measures 8 tok/s is
+//! that should do ~180 tok/s on an RTX 5090 but measures 8 tok/s is
 //! `Degraded { ratio: 0.05 }` — an unmissable signal something fell off the
 //! GPU. Baselines are seed data, refined as we measure real hardware; the
 //! classifier mechanism is the load-bearing part.
