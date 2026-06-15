@@ -118,11 +118,12 @@ One command -- bootstraps WSL2 + Docker Desktop via winget if missing, auto-togg
 <details>
 <summary>Development (from source)</summary>
 
-Requires Node.js 20+ and Rust nightly. Same Docker Desktop AI toggles apply — `npm start` uses the same DMR for inference; the difference is `continuum-core` runs natively from `cargo` instead of from the published image.
+Requires Node.js 20+. `npm run setup:rust` provisions the rest of the native build chain — Rust nightly, **cmake**, and the **vendored git submodules** (llama.cpp/whisper.cpp) that `continuum-core` compiles. Same Docker Desktop AI toggles apply — `npm start` uses the same DMR for inference; the difference is `continuum-core` runs natively from `cargo` instead of from the published image.
 
 ```bash
 cd continuum/src
 npm install
+npm run setup:rust        # Rust nightly + cmake + vendored submodules (native build prereqs)
 npm run setup:git-hooks   # optional, for commit/pre-push validation
 npm start
 ```
