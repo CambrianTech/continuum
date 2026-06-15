@@ -75,6 +75,27 @@ impl NodeCapabilityRegistry {
         })
     }
 
+    /// Like [`find_capable`], but ALSO requires the node to have a GPU
+    /// backend (Metal/CUDA/Vulkan). This is the cross-node GPU-first
+    /// guardrail (Joel's "GPU-first ALWAYS", promoted from per-node to
+    /// ACROSS-node; no_cpu_fallback contract, the OFFLOAD path): a weak
+    /// node OFFLOADS heavy inference to a GPU peer, never a CPU-only peer.
+    /// When this returns empty, the routing mechanism must REFUSE the
+    /// offload (deny loud) rather than fall back to a CPU peer that
+    /// `find_capable` would still surface.
+    ///
+    /// `find_capable` stays GPU-agnostic on purpose — the routing
+    /// mechanism owns peer *selection*; this method is the *invariant* on
+    /// top: the contract guarantees the picked offload peer is a GPU peer.
+    pub fn find_gpu_capable<'a>(
+        &'a self,
+        kind: &'a InferenceKind,
+        min_free_vram_bytes: u64,
+    ) -> impl Iterator<Item = &'a NodeCapability> + 'a {
+        self.find_capable(kind, min_free_vram_bytes)
+            .filter(|node| node.hardware.has_gpu())
+    }
+
     /// Evict every node whose `last_updated_ms` is older than `cutoff_ms`.
     /// Returns the count of evicted nodes. PR-2's announcer ticks the TTL
     /// on broker cadence; this is the helper it calls.
@@ -199,6 +220,83 @@ mod tests {
             v
         };
         assert_eq!(want_any, vec!["big-llamacpp", "small-llamacpp"]);
+    }
+
+    /// What this catches: the cross-node GPU-first guardrail (no_cpu_fallback
+    /// offload path). A CPU-only peer (no Metal/CUDA/Vulkan) that advertises
+    /// the right kind + VRAM is still surfaced by `find_capable` (GPU-agnostic,
+    /// the mechanism's concern) but MUST be excluded by `find_gpu_capable`.
+    /// If it weren't, a weak node could offload a heavy job onto a CPU peer —
+    /// the exact "GPU-first ALWAYS" violation this guardrail forbids. Empty
+    /// result = the routing mechanism must DENY, not CPU-serve.
+    #[test]
+    fn find_gpu_capable_excludes_cpu_only_peers() {
+        let mut r = NodeCapabilityRegistry::new();
+        let mut cpu_only = mk_node("cpu-box", kinds::LLAMACPP, 32_000_000_000, 100);
+        cpu_only.hardware.has_metal = false;
+        cpu_only.hardware.has_cuda = false;
+        cpu_only.hardware.has_vulkan = false;
+        r.upsert(cpu_only);
+
+        let llamacpp = InferenceKind::from(kinds::LLAMACPP);
+        // GPU-agnostic find still surfaces it (mechanism's job to pick)...
+        assert_eq!(r.find_capable(&llamacpp, 1).count(), 1);
+        // ...but the GPU-first guardrail leaves NO eligible offload target.
+        assert_eq!(
+            r.find_gpu_capable(&llamacpp, 1).count(),
+            0,
+            "CPU-only peer must NOT be an eligible offload target — offload must be DENIED, not CPU-served"
+        );
+    }
+
+    /// What this catches: with a real GPU peer present, find_gpu_capable
+    /// returns ONLY it (the CPU-only peer is filtered out). Pairs with the
+    /// exclusion test to pin the full invariant: GPU peer => route there;
+    /// only CPU peers => empty => deny.
+    #[test]
+    fn find_gpu_capable_returns_gpu_peer_not_cpu_peer() {
+        let mut r = NodeCapabilityRegistry::new();
+        // mk_node defaults has_metal: true => a GPU (Apple Silicon) peer.
+        r.upsert(mk_node("gpu-mac", kinds::LLAMACPP, 24_000_000_000, 100));
+        let mut cpu_only = mk_node("cpu-box", kinds::LLAMACPP, 64_000_000_000, 100);
+        cpu_only.hardware.has_metal = false;
+        r.upsert(cpu_only);
+
+        let llamacpp = InferenceKind::from(kinds::LLAMACPP);
+        let gpu: Vec<&str> = r
+            .find_gpu_capable(&llamacpp, 1)
+            .map(|n| n.node_id.as_str())
+            .collect();
+        assert_eq!(
+            gpu,
+            vec!["gpu-mac"],
+            "only the GPU peer is an eligible offload target, even though cpu-box has more VRAM"
+        );
+    }
+
+    /// What this catches: a CUDA node (no metal) and a Vulkan node both
+    /// count as GPU peers — the guardrail is backend-agnostic, it just
+    /// requires SOME GPU. Guards against a future regression that hardcodes
+    /// has_metal only and silently drops CUDA/Vulkan offload targets.
+    #[test]
+    fn find_gpu_capable_accepts_cuda_and_vulkan_not_just_metal() {
+        let mut r = NodeCapabilityRegistry::new();
+        let mut cuda = mk_node("cuda-5090", kinds::LLAMACPP, 32_000_000_000, 100);
+        cuda.hardware.has_metal = false;
+        cuda.hardware.has_cuda = true;
+        r.upsert(cuda);
+        let mut vulkan = mk_node("vulkan-amd", kinds::LLAMACPP, 24_000_000_000, 100);
+        vulkan.hardware.has_metal = false;
+        vulkan.hardware.has_vulkan = true;
+        r.upsert(vulkan);
+
+        let llamacpp = InferenceKind::from(kinds::LLAMACPP);
+        let mut ids: Vec<&str> = r
+            .find_gpu_capable(&llamacpp, 1)
+            .map(|n| n.node_id.as_str())
+            .collect();
+        ids.sort();
+        assert_eq!(ids, vec!["cuda-5090", "vulkan-amd"]);
     }
 
     /// What this catches: find_capable on a kind no node advertises
