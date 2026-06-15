@@ -32,9 +32,11 @@
 //!   - Route `InferenceHandleModule` through `with_coordinator(self.coordinator())`
 //!     so opens actually create lanes (until then the registered pool is
 //!     armed but idle — usage 0, so the broker never needs to act on it).
-//!   - Governor-informed `CoordinatorConfig` (hardware-class → lane budget)
-//!     once the `SubstrateGovernor` emits its `TierConfig`s; today the
-//!     module uses the documented `realistic_floor_default()`.
+//!   - Per-tier lane BUDGET numbers from the governor's policy file once it
+//!     emits its `TierConfig`s. The module already hardware-detects the
+//!     SILICON class (`CoordinatorConfig::detected()` → Gpu on a discrete
+//!     GPU, UnifiedMemory on Apple Silicon, Cpu on a GPU-less host); only
+//!     the per-tier capacity numbers remain governor-deferred.
 
 use crate::inference::coordinator::{CoordinatorConfig, InferenceCoordinator};
 use crate::inference::coordinator_pool::CoordinatorResourcePool;
@@ -71,13 +73,6 @@ impl InferenceCoordinatorModule {
     /// the per-tier numbers in a later slice.
     pub fn with_detected_hardware() -> Self {
         Self::new(CoordinatorConfig::detected())
-    }
-
-    /// The "realistic floor" (UnifiedMemory) — for tests and explicitly
-    /// constrained hosts. NOT the production default; see
-    /// [`with_detected_hardware`](Self::with_detected_hardware).
-    pub fn with_realistic_floor() -> Self {
-        Self::new(CoordinatorConfig::realistic_floor_default())
     }
 
     /// Borrow the coordinator so the boot sequence can hand the SAME `Arc`

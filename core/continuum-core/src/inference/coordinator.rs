@@ -941,16 +941,16 @@ mod tests {
         assert_eq!(floor.lane_budgets[0].target_silicon, TargetSilicon::UnifiedMemory);
     }
 
-    /// what this catches: `detected()` is self-consistent — whatever silicon
-    /// the probe yields on the test host, the budget's silicon and the
-    /// default match it (no split that would deny admission). Environment-
-    /// dependent on the value, but the invariant holds on any machine.
+    /// what this catches: `detected()` runs to completion without panicking
+    /// on the test host (the probe→classify→translate chain), and the result
+    /// it produces is self-consistent. The end-to-end consistency invariant
+    /// itself is owned by `for_silicon_targets_one_silicon_end_to_end`; this
+    /// is the smoke test that the real hardware-probe path doesn't blow up.
     #[test]
-    fn detected_config_is_self_consistent() {
+    fn detected_config_runs_without_panicking() {
         let cfg = CoordinatorConfig::detected();
         assert_eq!(
-            cfg.default_target_silicon, cfg.lane_budgets[0].target_silicon,
-            "detected config must target one silicon end-to-end"
+            cfg.default_target_silicon, cfg.lane_budgets[0].target_silicon
         );
     }
 
