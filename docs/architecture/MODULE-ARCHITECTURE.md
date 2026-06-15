@@ -3,6 +3,7 @@
 **Status.** Canonical architecture for how continuum is packaged, addressed, composed, distributed, and grown. Design crystallized 2026-05-30 in a working conversation with Joel; this document is the durable artifact.
 
 **Companion to:**
+- [ADAPTER-SYSTEM-ARCHITECTURE.md](ADAPTER-SYSTEM-ARCHITECTURE.md) — the boundary/SDK doctrine: one core, thin (zero-logic) modalities, generated bindings, "fix once, fixed everywhere." §9 of *this* doc (Pure-Rust built-ins vs WASM shipped modules) is the distribution half of that story.
 - [CBAR-SUBSTRATE-ARCHITECTURE.md](CBAR-SUBSTRATE-ARCHITECTURE.md) — the RTOS-style runtime substrate every Rust module inherits.
 - [MODULE-CATALOG.md](MODULE-CATALOG.md) — the per-concern inventory of substrate runtime modules (cognition, RAG, voice, vision, inference, etc.). MODULE-CATALOG covers the *runtime shape*; this document covers the *packaging shape* and the *composition kernel*.
 - [GENOME-FOUNDRY-SENTINEL.md](GENOME-FOUNDRY-SENTINEL.md) — the artifact-sharing economy built on top of the substrate.
