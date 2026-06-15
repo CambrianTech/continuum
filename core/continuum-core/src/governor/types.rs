@@ -48,6 +48,21 @@ pub enum TargetSilicon {
     /// Apple Silicon (M1/M2/M3/M4/M5 + descendants). UMA — system_ram
     /// and "vram" are the same physical pool.
     AppleM,
+    /// Mac Intel chassis with a discrete GPU (typically AMD Polaris /
+    /// Vega / Navi) exposed through Apple's Metal driver, not CUDA or
+    /// Vulkan. NOT UMA — Intel CPU + discrete VRAM. Examples:
+    /// MacBookPro15,1 with Radeon Pro 555X; iMac (Intel, 2019) with
+    /// Radeon Pro 580X; Mac Pro (2019) with W6800X Duo. The hardware
+    /// reports `has_metal: true` exactly like Apple Silicon does, but
+    /// the tier policy is the discrete-GPU shape (5 tier roles
+    /// including Warm), NOT the UMA-class 4-tier shape. Caller
+    /// distinguishes via the platform architecture string in
+    /// HardwareProfile (`macos-arm64-*` = AppleM, `macos-x86_64-*` =
+    /// MacIntelMetal). Without this variant, classify_silicon falls
+    /// to `AppleM` for any host with `has_metal: true` and the entire
+    /// downstream governor + tier_configs pipeline picks the wrong
+    /// shape (task #52).
+    MacIntelMetal,
     /// NVIDIA CUDA. Discrete VRAM separate from system RAM.
     NvidiaCuda,
     /// AMD ROCm. Discrete VRAM separate from system RAM. Less mature
@@ -395,7 +410,37 @@ pub fn classify_hardware(profile: &HardwareProfile) -> HardwareClass {
 /// build). ROCm detection is left for PR-2 (requires rocm-smi probe).
 fn classify_silicon(profile: &HardwareProfile) -> TargetSilicon {
     if profile.has_metal {
-        TargetSilicon::AppleM
+        // Bug fix for task #52: `has_metal: true` is reported by BOTH
+        // Apple Silicon (UMA) AND Mac Intel hosts with a discrete GPU
+        // exposed through Apple's Metal driver (Joel's MacBookPro15,1 +
+        // Radeon Pro 555X is the canonical example). Pre-fix, both
+        // shipped as `AppleM`, so `classify_hardware` then forced
+        // `vram_mb = 0`, and `tier_configs_for` returned the UMA
+        // 4-tier shape (no Warm) on a host that's actually
+        // discrete-GPU and needs the 5-tier shape including Warm.
+        //
+        // The differentiator is the platform string's architecture
+        // hint. Apple Silicon platforms include `arm64` / `aarch64`
+        // (e.g. `macos-arm64-air`, `macos-arm64-m5pro`). Mac Intel
+        // includes `x86_64` (`macos-x86_64-pro`,
+        // `macos-x86_64-macbookpro15`). The hw_probe upstream sets
+        // these reliably per task #47.
+        //
+        // Default-to-AppleM-when-uncertain is intentional: the
+        // dominant Metal-shipping target IS Apple Silicon today,
+        // and on a future Apple-on-Apple host we'd rather lean UMA
+        // than treat it as discrete. The fallback only fires when
+        // the platform string is silent on architecture — at which
+        // point the upstream hw_probe has a separate bug to surface.
+        let platform_lower = profile.platform.to_lowercase();
+        let is_mac_intel = platform_lower.contains("x86_64")
+            || platform_lower.contains("x86-64")
+            || platform_lower.contains("intel");
+        if is_mac_intel {
+            TargetSilicon::MacIntelMetal
+        } else {
+            TargetSilicon::AppleM
+        }
     } else if profile.has_cuda {
         TargetSilicon::NvidiaCuda
     } else if profile.has_vulkan {
@@ -457,6 +502,25 @@ mod tests {
             total_vram_bytes: 48 * 1024 * 1024 * 1024,
             cpu_cores: 16,
             system_ram_bytes: 64 * 1024 * 1024 * 1024,
+        }
+    }
+
+    /// Mac Intel chassis (MacBookPro15,1 = the canonical task #52
+    /// regression target) with an AMD discrete GPU exposed via Metal.
+    /// The hardware reports `has_metal: true` exactly like Apple
+    /// Silicon, but the platform string carries `x86_64`. Joel's
+    /// actual hardware ships this profile.
+    fn mac_intel_macbookpro15() -> HardwareProfile {
+        HardwareProfile {
+            platform: "macos-x86_64-macbookpro15".into(),
+            has_metal: true,
+            has_cuda: false,
+            has_vulkan: false,
+            // Radeon Pro 555X is the discrete GPU; 4 GiB GDDR5.
+            free_vram_bytes: 3 * 1024 * 1024 * 1024,
+            total_vram_bytes: 4 * 1024 * 1024 * 1024,
+            cpu_cores: 6,
+            system_ram_bytes: 16 * 1024 * 1024 * 1024,
         }
     }
 
@@ -526,6 +590,46 @@ mod tests {
         assert_eq!(
             classify_hardware(&m5_pro_workstation()).silicon,
             TargetSilicon::AppleM
+        );
+    }
+
+    /// Task #52 regression: Mac Intel chassis with `has_metal: true`
+    /// must classify as `MacIntelMetal`, NOT `AppleM`. Pre-fix, the
+    /// `if profile.has_metal { TargetSilicon::AppleM }` branch swallowed
+    /// every metal-capable host into the UMA bucket — including Joel's
+    /// MacBookPro15,1 with Radeon Pro 555X — and forced `vram_mb = 0`,
+    /// then `tier_configs_for` emitted the UMA 4-tier shape on a
+    /// discrete-GPU host. Misclassification cascaded through the
+    /// substrate's governor + paging policy.
+    #[test]
+    fn mac_intel_classifies_as_mac_intel_metal_not_apple_m() {
+        let cls = classify_hardware(&mac_intel_macbookpro15());
+        assert_eq!(
+            cls.silicon,
+            TargetSilicon::MacIntelMetal,
+            "Mac Intel with discrete GPU via Metal must be \
+             MacIntelMetal, NOT AppleM (task #52 regression). \
+             classify_silicon got: {:?}",
+            cls.silicon
+        );
+    }
+
+    /// Same regression cross-checked via the downstream side-effect:
+    /// `classify_hardware` zeros `vram_mb` on AppleM (UMA spec) but
+    /// must preserve real VRAM on MacIntelMetal. The misclassification
+    /// pre-fix manifested HERE — Joel's machine reported `vram_mb = 0`
+    /// despite having 4 GiB of GDDR5 on the Radeon, and the governor's
+    /// inference budget then drew from system_ram instead of VRAM.
+    #[test]
+    fn mac_intel_preserves_real_vram_mb() {
+        let cls = classify_hardware(&mac_intel_macbookpro15());
+        let expected_mb = mac_intel_macbookpro15().total_vram_bytes / (1024 * 1024);
+        assert_eq!(
+            cls.vram_mb, expected_mb,
+            "Mac Intel with discrete GPU must report real VRAM, not 0 \
+             (the AppleM UMA branch must not swallow discrete hosts). \
+             Got: vram_mb={}, expected_mb={}",
+            cls.vram_mb, expected_mb
         );
     }
 
