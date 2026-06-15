@@ -132,16 +132,23 @@ impl CoordinatorConfig {
 /// lane scheduler.
 ///
 /// `AppleM` → `UnifiedMemory` (Apple-silicon shared accelerator memory);
-/// every discrete-GPU class (`NvidiaCuda` / `AmdRocm` / `IntelVulkan`) →
-/// `Gpu`; `None` (no accelerator detected) → `Cpu`. `Cpu` is the HONEST
-/// classification, not a silent floor — a GPU-or-bust caller inspects the
-/// result and refuses rather than quietly serving CPU.
+/// every discrete/Metal GPU class (`NvidiaCuda` / `AmdRocm` / `IntelVulkan` /
+/// `MacIntelMetal`) → `Gpu`; `None` (no accelerator detected) → `Cpu`. `Cpu`
+/// is the HONEST classification, not a silent floor — a GPU-or-bust caller
+/// inspects the result and refuses rather than quietly serving CPU.
+///
+/// `MacIntelMetal` (Intel Mac with a Metal-addressable discrete/integrated
+/// GPU — task #52) maps to `Gpu`, NOT `UnifiedMemory`: it is a real GPU, but
+/// not Apple-silicon shared memory. Added when the governor gained the
+/// variant (#1624); this match is in the `--features metal` build path, so
+/// the no-metal Linux CI did not catch the non-exhaustive gap.
 pub fn coordinator_silicon_for(detected: GovernorSilicon) -> TargetSilicon {
     match detected {
         GovernorSilicon::AppleM => TargetSilicon::UnifiedMemory,
         GovernorSilicon::NvidiaCuda
         | GovernorSilicon::AmdRocm
-        | GovernorSilicon::IntelVulkan => TargetSilicon::Gpu,
+        | GovernorSilicon::IntelVulkan
+        | GovernorSilicon::MacIntelMetal => TargetSilicon::Gpu,
         GovernorSilicon::None => TargetSilicon::Cpu,
     }
 }
