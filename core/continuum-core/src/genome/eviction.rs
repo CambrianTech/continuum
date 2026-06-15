@@ -14,7 +14,34 @@
 //! bytes are freed" loop with no policy logic of its own.
 
 use crate::genome::tier::EvictionPolicy;
-use crate::genome::working_set::{PageRef, ResidentPage};
+use crate::genome::working_set::{PageOffset, PageRef, ResidentPage};
+
+/// A total-order sort key for a `PageRef`, used as the final eviction
+/// tiebreak so ties resolve deterministically REGARDLESS of input order.
+/// The upstream `WorkingSet.pages` is a `HashMap` (non-deterministic
+/// iteration), so without this two pages equal on the policy signal could
+/// evict in run-dependent order. Mirrors the `lease_id` tiebreak in
+/// `paging::lease_revocation::select_leases_to_revoke`. `PageKind` is a
+/// unit-only enum so it casts to its discriminant; `PageOffset`'s variants
+/// flatten into a `(tag, …)` tuple.
+fn page_order_key(p: &PageRef) -> (u128, u8, u8, u32, u64, u64) {
+    let (off_tag, off_a, off_b, off_c) = match p.offset {
+        PageOffset::Whole => (0u8, 0u32, 0u64, 0u64),
+        PageOffset::Expert { expert_index } => (1, expert_index, 0, 0),
+        PageOffset::Range {
+            start_byte,
+            end_byte,
+        } => (2, 0, start_byte, end_byte),
+    };
+    (
+        p.artifact.as_uuid().as_u128(),
+        p.kind as u8,
+        off_tag,
+        off_a,
+        off_b,
+        off_c,
+    )
+}
 
 /// Rank `pages` by eviction priority under `policy` — least-valuable-to-keep
 /// FIRST. Pure: no I/O, no mutation. Pinned pages are excluded entirely (the
@@ -38,9 +65,10 @@ use crate::genome::working_set::{PageRef, ResidentPage};
 /// - `AppendOnlyGcOnSleep` — empty: the Frozen tier never evicts on the hot
 ///   path (GC happens opportunistically during sleep).
 ///
-/// Deterministic for a given input ordering (the sort is stable); exact ties
-/// (equal keys) follow input order. A caller needing cross-run determinism
-/// passes a pre-sorted slice.
+/// Fully deterministic regardless of the caller's input order: pages equal
+/// on the policy signal are broken by a total order on `PageRef`
+/// ([`page_order_key`]), so a `TierStore` may pass its `HashMap`-backed
+/// pages directly without run-dependent eviction order.
 pub fn rank_pages_for_eviction(pages: &[ResidentPage], policy: &EvictionPolicy) -> Vec<PageRef> {
     let mut candidates: Vec<&ResidentPage> = pages.iter().filter(|p| !p.pinned).collect();
 
@@ -51,7 +79,11 @@ pub fn rank_pages_for_eviction(pages: &[ResidentPage], policy: &EvictionPolicy) 
         EvictionPolicy::AppendOnlyGcOnSleep => return Vec::new(),
 
         EvictionPolicy::LruWithinTurn | EvictionPolicy::LruAcrossTurns { .. } => {
-            candidates.sort_by(|a, b| a.last_access_ms.cmp(&b.last_access_ms));
+            candidates.sort_by(|a, b| {
+                a.last_access_ms
+                    .cmp(&b.last_access_ms)
+                    .then_with(|| page_order_key(&a.page).cmp(&page_order_key(&b.page)))
+            });
         }
 
         // Least-used / least-demanded first; oldest access breaks ties.
@@ -64,6 +96,7 @@ pub fn rank_pages_for_eviction(pages: &[ResidentPage], policy: &EvictionPolicy) 
                 a.access_count_window
                     .cmp(&b.access_count_window)
                     .then(a.last_access_ms.cmp(&b.last_access_ms))
+                    .then_with(|| page_order_key(&a.page).cmp(&page_order_key(&b.page)))
             });
         }
     }
@@ -183,6 +216,26 @@ mod tests {
         let pages = [page(1, 100, 1, false), page(2, 200, 2, false)];
         let order = rank_pages_for_eviction(&pages, &EvictionPolicy::AppendOnlyGcOnSleep);
         assert!(order.is_empty());
+    }
+
+    /// what this catches: pages equal on the policy signal must evict in a
+    /// total, input-order-INDEPENDENT order (the upstream WorkingSet.pages is
+    /// a HashMap). Without the PageRef tiebreak, the same snapshot fed in two
+    /// orders would produce different eviction orders — run-dependent.
+    #[test]
+    fn equal_metadata_ties_resolve_by_pageref_deterministically() {
+        // Identical access metadata, distinct PageRefs (tag 10 < tag 20).
+        let a = page(10, 100, 5, false);
+        let b = page(20, 100, 5, false);
+        for policy in [
+            EvictionPolicy::LruWithinTurn,
+            EvictionPolicy::LfuPlusRecency,
+        ] {
+            let forward = rank_pages_for_eviction(&[a.clone(), b.clone()], &policy);
+            let reverse = rank_pages_for_eviction(&[b.clone(), a.clone()], &policy);
+            assert_eq!(forward, reverse, "{policy:?}: tie order must ignore input order");
+            assert_eq!(forward, vec![ref_of(10), ref_of(20)], "{policy:?}");
+        }
     }
 
     /// what this catches: empty input is a clean no-op (no panic, empty out)
