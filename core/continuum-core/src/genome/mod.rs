@@ -61,6 +61,7 @@
 
 pub mod blob;
 pub mod bus;
+pub mod eviction;
 pub mod fine_tuning;
 pub mod local_manager;
 pub mod manager;
@@ -76,6 +77,7 @@ pub use bus::{
     publish_page_fault, subscribe_to_genome_events, ACCESS_DENIED_KEY, EVICTION_RECORD_KEY,
     PAGE_FAULT_KEY,
 };
+pub use eviction::rank_pages_for_eviction;
 pub use local_manager::LocalWorkingSetManager;
 pub use manager::WorkingSetManager;
 pub use recall::{
