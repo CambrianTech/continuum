@@ -209,6 +209,14 @@ for key in ('EnableDockerAI', 'EnableInference', 'EnableInferenceGPUVariant', 'E
     if cfg.get(key) is not True:
         cfg[key] = True
         changed = True
+# Resource Saver pauses the Docker VM when idle (default ON, 5min) — fatal
+# for a persistent grid/inference node: DMR + personas would sleep. Disable
+# it (real key is PascalCase UseResourceSaver), unless the user opts to keep
+# it via CONTINUUM_DOCKER_KEEP_RESOURCE_SAVER=1. Non-clobbering: if it's
+# already False, no change.
+if os.environ.get('CONTINUUM_DOCKER_KEEP_RESOURCE_SAVER') != '1' and cfg.get('UseResourceSaver') is not False:
+    cfg['UseResourceSaver'] = False
+    changed = True
 if changed:
     shutil.copy2(path, path + '.continuum-bak')
     with open(path, 'w') as f:
@@ -220,7 +228,7 @@ else:
   )
 
   if [ "$AI_SETTINGS_STATUS" = "changed" ]; then
-    echo "   Docker Desktop AI settings enabled (GPU-backed inference + host-side TCP)"
+    echo "   Docker Desktop tuned (inference on; Resource Saver off so the grid node stays awake)"
     echo "   Restarting Docker Desktop so the toggles apply ..."
     docker desktop restart >/dev/null 2>&1 || true
     for _ in $(seq 1 30); do
