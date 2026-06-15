@@ -141,16 +141,26 @@ pub const SEED_BASELINES: &[ThroughputBaseline] = &[
         source: "MEASURED: continuum tests/llamacpp_metal_throughput.rs single-seq, 2026-06",
     },
     ThroughputBaseline {
+        model: "qwen3-8b",
+        quant: "Q4_K_M",
+        accelerator: "rtx-5090",
+        // Real hardware number: qwen3-8B resident entirely in 5090 VRAM,
+        // DMR llama.cpp-cuda backend (WSL2 GPU-PV), single-stream decode.
+        // prompt-eval was ~960 tok/s. This anchors the 4B estimate below.
+        expected_tok_s: 221.7,
+        source: "MEASURED: DMR llama.cpp-cuda slot timing, RTX 5090 32GB, 2026-06-15",
+    },
+    ThroughputBaseline {
         model: "qwen3.5-4b",
         quant: "Q4_K_M",
         accelerator: "rtx-5090",
-        // ~2.5GB Q4 weights / ~1.79 TB/s ≈ 700 tok/s theoretical bandwidth
-        // ceiling; llama.cpp single-stream realistically lands well below
-        // that. Conservative placeholder — REFINE by running the bench on
-        // the 5090. Even at this estimate, sub-30 tok/s = a fallen-off-GPU
-        // regression worth screaming about.
+        // Still an estimate (no 4B run yet) but now SANITY-CHECKED: the 8B
+        // above measured 221.7 tok/s on this exact GPU, and a 4B is ~half
+        // the weights, so it should comfortably EXCEED the 8B — 180 is a
+        // conservative floor, not a ceiling. Sub-30 tok/s on a 4B here = a
+        // fallen-off-GPU regression worth screaming about.
         expected_tok_s: 180.0,
-        source: "ESTIMATE: bandwidth-bound, REFINE with rtx-5090 bench measurement",
+        source: "ESTIMATE: conservative floor (8B measured 221.7 same GPU); REFINE with a 4B run",
     },
 ];
 
@@ -232,6 +242,20 @@ mod tests {
     fn nonpositive_expected_is_degraded_not_silently_ok() {
         assert!(classify_throughput(100.0, 0.0, FLOOR, CEIL).is_degraded());
         assert!(classify_throughput(100.0, -5.0, FLOOR, CEIL).is_degraded());
+    }
+
+    /// what this catches: the real-world contract this module exists for —
+    /// the MEASURED 5090 number (qwen3-8B, 221.7 t/s, 2026-06-15) is healthy
+    /// against its own baseline, while a CPU-fallback number (~12 t/s, the
+    /// shitty-CPU regression) on the same expectation trips Degraded. GPU =
+    /// OnPar, fallen-off-GPU = caught loud.
+    #[test]
+    fn measured_5090_is_healthy_and_cpu_fallback_is_caught() {
+        let b = baseline_for("qwen3-8b", "Q4_K_M", "rtx-5090").expect("measured 5090 baseline");
+        assert!(b.source.contains("MEASURED"));
+        assert!((b.expected_tok_s - 221.7).abs() < 0.01);
+        assert!(!classify_throughput(221.7, b.expected_tok_s, FLOOR, CEIL).is_degraded());
+        assert!(classify_throughput(12.0, b.expected_tok_s, FLOOR, CEIL).is_degraded());
     }
 
     /// what this catches: the seed table is wired correctly — the measured M5
