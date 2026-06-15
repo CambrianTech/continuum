@@ -47,6 +47,7 @@ pub mod lora;
 pub mod model;
 pub mod ort_providers;
 pub mod recipe_budget;
+pub mod throughput_expectation;
 pub mod vendored;
 
 // Re-export commonly used types
@@ -54,3 +55,6 @@ pub use backends::{read_gguf_metadata, GenomeAdapter, ModelBackend, ModelFormat}
 pub use llamacpp_adapter::{LlamaCppAdapter, LLAMACPP_PROVIDER_ID};
 pub use lora::{load_lora_adapter, merge_lora_weight, LoRAWeights, LoadedAdapter};
 pub use model::rebuild_with_stacked_lora;
+pub use throughput_expectation::{
+    baseline_for, classify_throughput, ThroughputBaseline, ThroughputVerdict, SEED_BASELINES,
+};
