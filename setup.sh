@@ -23,6 +23,31 @@ else
   PLATFORM="linux"
 fi
 
+# ── Ensure airc (mesh backbone) ───────────────────
+# Continuum rides airc as its event bus, identity mesh, and cross-grid
+# transport. A fresh user must get airc WITHOUT a separate manual step.
+# Delegate to airc's OWN installer (single source of truth — never re-implement
+# airc's prereq/auth logic here). Download-then-run (not `curl | bash`) keeps
+# stdin attached to the terminal, so airc's interactive steps (Homebrew, gh
+# auth login) still work when driven from setup.sh. Override the branch with
+# AIRC_CHANNEL (defaults to main, the released line).
+if ! command -v airc &>/dev/null; then
+  echo "⏳ airc not found — installing the mesh backbone (delegating to airc's installer)..."
+  AIRC_INSTALLER="$(mktemp)"
+  if curl -fsSL "https://raw.githubusercontent.com/CambrianTech/airc/${AIRC_CHANNEL:-main}/install.sh" -o "$AIRC_INSTALLER" \
+     && bash "$AIRC_INSTALLER"; then
+    rm -f "$AIRC_INSTALLER"
+    echo "✅ airc installed"
+  else
+    rm -f "$AIRC_INSTALLER"
+    echo "❌ airc install failed — continuum needs airc as its backbone."
+    echo "   See https://github.com/CambrianTech/airc and re-run setup.sh."
+    exit 1
+  fi
+else
+  echo "✅ airc found ($(command -v airc))"
+fi
+
 # ── Check Docker ──────────────────────────────────
 if ! command -v docker &>/dev/null; then
   echo "❌ Docker not found."
@@ -57,23 +82,29 @@ DOCKER_MEM=$(docker info --format '{{.MemTotal}}' 2>/dev/null || echo "0")
 DOCKER_MEM_GB=$((DOCKER_MEM / 1073741824))
 MIN_MEM_GB=8
 
-if [ "$DOCKER_MEM_GB" -lt "$MIN_MEM_GB" ] && [ "$DOCKER_MEM_GB" -gt 0 ]; then
-  echo ""
-  echo "⚠️  Docker VM has ${DOCKER_MEM_GB}GB RAM (minimum ${MIN_MEM_GB}GB needed)."
-  echo ""
+# Target = half system RAM (min 8GB), CPUs = half cores (min 2). Computed
+# BEFORE the gate so we can compare against it. Override with
+# CONTINUUM_DOCKER_MEM_GB / CONTINUUM_DOCKER_CPUS — scripts set sane
+# defaults; the user can still change them in Docker Desktop or via env.
+if [[ "$PLATFORM" == "mac" ]]; then
+  SYS_MEM_GB=$(sysctl -n hw.memsize 2>/dev/null | awk '{printf "%d", $1/1073741824}')
+  SYS_CPUS=$(sysctl -n hw.ncpu 2>/dev/null || echo "4")
+else
+  SYS_MEM_GB=$(grep MemTotal /proc/meminfo 2>/dev/null | awk '{printf "%d", $2/1048576}')
+  SYS_CPUS=$(nproc 2>/dev/null || echo "4")
+fi
+TARGET_MEM=${CONTINUUM_DOCKER_MEM_GB:-$((SYS_MEM_GB / 2))}
+TARGET_CPUS=${CONTINUUM_DOCKER_CPUS:-$((SYS_CPUS / 2))}
+[ "$TARGET_MEM" -lt "$MIN_MEM_GB" ] && TARGET_MEM="$MIN_MEM_GB"
+[ "$TARGET_CPUS" -lt 2 ] && TARGET_CPUS=2
 
-  # Detect system RAM and offer to fix
-  if [[ "$PLATFORM" == "mac" ]]; then
-    SYS_MEM_GB=$(sysctl -n hw.memsize 2>/dev/null | awk '{printf "%d", $1/1073741824}')
-    SYS_CPUS=$(sysctl -n hw.ncpu 2>/dev/null || echo "4")
-  else
-    SYS_MEM_GB=$(grep MemTotal /proc/meminfo 2>/dev/null | awk '{printf "%d", $2/1048576}')
-    SYS_CPUS=$(nproc 2>/dev/null || echo "4")
-  fi
-  TARGET_MEM=$((SYS_MEM_GB / 2))
-  TARGET_CPUS=$((SYS_CPUS / 2))
-  [ "$TARGET_MEM" -lt "$MIN_MEM_GB" ] && TARGET_MEM="$MIN_MEM_GB"
-  [ "$TARGET_CPUS" -lt 2 ] && TARGET_CPUS=2
+# Bump when Docker's current allocation is below target — NOT just below the
+# 8GB floor. The old `-lt MIN_MEM_GB` check left a 64GB host stuck at Docker's
+# 8GB default forever (8 -lt 8 is false). 2GB tolerance avoids re-bump churn.
+if [ "$DOCKER_MEM_GB" -gt 0 ] && [ "$DOCKER_MEM_GB" -lt "$((TARGET_MEM - 2))" ]; then
+  echo ""
+  echo "⚠️  Docker VM has ${DOCKER_MEM_GB}GB RAM; continuum target is ${TARGET_MEM}GB (½ of ${SYS_MEM_GB}GB system)."
+  echo ""
 
   DOCKER_UPDATED=false
 
@@ -135,10 +166,10 @@ print('   Updated: memoryInGB=${TARGET_MEM}, numberCPUs=${TARGET_CPUS}')
       python3 -c "
 import json
 d = json.load(open('$DD_FILE'))
-d['memoryMiB'] = $TARGET_MEM_MIB
-d['cpus'] = $TARGET_CPUS
+d['MemoryMiB'] = $TARGET_MEM_MIB
+d['Cpus'] = $TARGET_CPUS
 json.dump(d, open('$DD_FILE', 'w'), indent=2)
-print('   Updated: memoryMiB=${TARGET_MEM_MIB}, cpus=${TARGET_CPUS}')
+print('   Updated: MemoryMiB=${TARGET_MEM_MIB}, Cpus=${TARGET_CPUS}')
 " 2>/dev/null && DOCKER_UPDATED=true
       if [ "$DOCKER_UPDATED" = true ]; then
         echo "   Restart Docker Desktop to apply. (Or: osascript -e 'quit app \"Docker\"' && open -a Docker)"
@@ -174,10 +205,18 @@ path = os.path.expanduser('$DD_FILE')
 with open(path) as f:
     cfg = json.load(f)
 changed = False
-for key in ('EnableDockerAI', 'EnableInferenceGPUVariant', 'EnableInferenceTCP'):
+for key in ('EnableDockerAI', 'EnableInference', 'EnableInferenceGPUVariant', 'EnableInferenceTCP'):
     if cfg.get(key) is not True:
         cfg[key] = True
         changed = True
+# Resource Saver pauses the Docker VM when idle (default ON, 5min) — fatal
+# for a persistent grid/inference node: DMR + personas would sleep. Disable
+# it (real key is PascalCase UseResourceSaver), unless the user opts to keep
+# it via CONTINUUM_DOCKER_KEEP_RESOURCE_SAVER=1. Non-clobbering: if it's
+# already False, no change.
+if os.environ.get('CONTINUUM_DOCKER_KEEP_RESOURCE_SAVER') != '1' and cfg.get('UseResourceSaver') is not False:
+    cfg['UseResourceSaver'] = False
+    changed = True
 if changed:
     shutil.copy2(path, path + '.continuum-bak')
     with open(path, 'w') as f:
@@ -189,7 +228,7 @@ else:
   )
 
   if [ "$AI_SETTINGS_STATUS" = "changed" ]; then
-    echo "   Docker Desktop AI settings enabled (GPU-backed inference + host-side TCP)"
+    echo "   Docker Desktop tuned (inference on; Resource Saver off so the grid node stays awake)"
     echo "   Restarting Docker Desktop so the toggles apply ..."
     docker desktop restart >/dev/null 2>&1 || true
     for _ in $(seq 1 30); do
