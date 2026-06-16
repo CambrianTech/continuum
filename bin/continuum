@@ -18,6 +18,7 @@
 #   continuum provision    Pull config from a grid node
 #   continuum transfer <n> Deploy Continuum to a new machine
 #   continuum update       Git pull + rebuild + restart
+#   continuum service ...  Install/status node as a boot service (survives logout)
 #   continuum doctor       Diagnose common problems
 #
 # Installed by: curl -fsSL continuum.homes/install | bash
@@ -270,6 +271,22 @@ get_url() {
 # ── Commands ────────────────────────────────────────────────
 
 cmd_start() {
+  # Mode resolution: an explicit --headless/--ui flag wins; otherwise honor the
+  # CONTINUUM_LAUNCH_MODE config.env setting (the single source of truth, via
+  # launch_mode — auto-detects + persists on first run). headless → Rust core
+  # ONLY (Node-independent); ui → full stack incl the Node desktop.
+  local mode_flag="" _a
+  for _a in "$@"; do
+    case "$_a" in
+      --headless) mode_flag="headless" ;;
+      --ui)       mode_flag="ui" ;;
+    esac
+  done
+  local mode="$mode_flag"
+  [ -n "$mode" ] || mode="$(launch_mode)"
+  local headless=false
+  [ "$mode" = "headless" ] && headless=true
+
   if ! find_compose; then
     echo -e "${RED}❌ No Continuum installation found.${RESET}"
     echo "   Run: curl -fsSL continuum.homes/install | bash"
@@ -284,6 +301,29 @@ cmd_start() {
     echo -e "${CYAN}🌐 Grid mode${RESET} (Tailscale enabled)"
   else
     echo -e "${CYAN}🏠 Local mode${RESET}"
+  fi
+
+  # Headless / grid node / boot service: bring up ONLY the Rust core — NO
+  # node-server, NO widget-server, NO Node.js. continuum-core is the independent
+  # foundation; the Node desktop is a DEPENDENT client (node-server depends_on
+  # continuum-core, never the reverse). headless-first: a node must run with no
+  # Node in the loop.
+  if $headless; then
+    echo -e "${BLUE}🚀 Starting Continuum core (headless — Node-independent)...${RESET}"
+    docker compose up -d $compose_args continuum-core
+    echo -e "${DIM}⏳ Waiting for core...${RESET}"
+    local hretries=60 hhealth
+    while [ $hretries -gt 0 ]; do
+      hhealth=$(docker compose ps continuum-core --format '{{.Health}}' 2>/dev/null || echo "starting")
+      [ "$hhealth" = "healthy" ] && break
+      hretries=$((hretries - 1)); sleep 2
+    done
+    if [ $hretries -eq 0 ]; then
+      echo -e "${RED}❌ Core did not become healthy within 120s${RESET}"
+      echo "   Run: continuum logs continuum-core"; exit 1
+    fi
+    echo -e "${GREEN}✅ Continuum core ready (headless, no Node)${RESET}"
+    return 0
   fi
 
   echo -e "${BLUE}🚀 Starting Continuum...${RESET}"
@@ -957,6 +997,231 @@ cmd_doctor() {
   echo ""
 }
 
+# ── Node service: survive logout + reboot ───────────────────
+# A grid node must CONTINUE when the human logs out or the box reboots — node
+# loss is normal in the mesh, but a node tied to an interactive login session
+# is fragile by construction (a real node, BIGMAMA, died when a user account
+# was logged off). headless-first means the node has no business dying on
+# logout. This registers the node as a SESSION-INDEPENDENT OS service:
+#   macOS   → LaunchDaemon in /Library/LaunchDaemons (RunAtLoad + KeepAlive,
+#             SYSTEM scope — NOT a LaunchAgent, which dies on logout)
+#   Linux   → systemd SYSTEM unit (Restart=always, WantedBy=multi-user.target)
+#             + docker enabled at boot
+#   Windows → scheduled task at startup (validate on BIGMAMA)
+#
+# The service runs `continuum start` (no hardcoded mode) so the ONE config.env
+# setting CONTINUUM_LAUNCH_MODE governs what comes up: on a server the setting
+# is `headless` → Rust core ONLY, no Node (node-independent); on a desktop set
+# to `ui` → the full stack incl the Node desktop (where Node is wanted). The
+# setting decides — not a flag baked into the service.
+#
+# Honest caveat (printed by `status`): what must survive logout is the Docker
+# ENGINE. Linux dockerd is already a system service ✓. Docker DESKTOP on
+# macOS/Windows is user-session-bound — full logout survival there needs a
+# boot-independent engine (Linux dockerd, colima as a daemon, or a native
+# headless core). We surface that truth rather than pretend it's solved.
+
+SERVICE_LABEL="homes.continuum.node"
+SERVICE_PLIST="/Library/LaunchDaemons/${SERVICE_LABEL}.plist"
+SERVICE_UNIT="/etc/systemd/system/continuum-node.service"
+
+# Absolute path to THIS continuum CLI, for the service to invoke unattended.
+service_self_path() {
+  local p
+  p="$(command -v continuum 2>/dev/null || true)"
+  if [ -n "$p" ]; then printf '%s\n' "$p"; return 0; fi
+  case "$0" in
+    /*) printf '%s\n' "$0" ;;
+    *)  printf '%s\n' "$(cd "$(dirname "$0")" && pwd)/$(basename "$0")" ;;
+  esac
+}
+
+_macos_plist_text() {
+  local bin="$1" user="$2" logdir="$3" mode="${4:-}"
+  local mode_xml=""
+  [ -n "$mode" ] && mode_xml="
+    <string>${mode}</string>"
+  cat <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>${SERVICE_LABEL}</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>${bin}</string>
+    <string>start</string>${mode_xml}
+  </array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>UserName</key><string>${user}</string>
+  <key>StandardOutPath</key><string>${logdir}/node-service.log</string>
+  <key>StandardErrorPath</key><string>${logdir}/node-service.err.log</string>
+</dict>
+</plist>
+PLIST
+}
+
+_linux_unit_text() {
+  local bin="$1" user="$2" mode="${3:-}"
+  cat <<UNIT
+[Unit]
+Description=Continuum grid node
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=${bin} start${mode:+ ${mode}}
+Restart=always
+RestartSec=10
+User=${user}
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+}
+
+_service_windows_help() {
+  local bin="$1" mode="${2:-}"
+  echo -e "${YELLOW}Windows: register a startup task that survives logoff (validate on BIGMAMA):${RESET}"
+  echo -e "${DIM}  # PowerShell, elevated — runs at boot as SYSTEM, before any login:${RESET}"
+  echo "  \$a = New-ScheduledTaskAction -Execute 'bash' -Argument '-lc \"$bin start${mode:+ $mode}\"'"
+  echo "  \$t = New-ScheduledTaskTrigger -AtStartup"
+  echo "  \$p = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -RunLevel Highest"
+  echo "  Register-ScheduledTask -TaskName 'ContinuumNode' -Action \$a -Trigger \$t -Principal \$p"
+  echo -e "${DIM}  Caveat: Docker Desktop (WSL2 backend) is user-session-bound; for true${RESET}"
+  echo -e "${DIM}  logout survival run the engine boot-independent (WSL dockerd as a service${RESET}"
+  echo -e "${DIM}  started at boot, or a native headless core).${RESET}"
+}
+
+_service_engine_caveat() {
+  case "$(uname -s)" in
+    Darwin)
+      echo -e "${DIM}Note: the service runs 'continuum start' — mode comes from the${RESET}"
+      echo -e "${DIM}CONTINUUM_LAUNCH_MODE config.env setting (headless = Rust core only, no Node).${RESET}"
+      echo -e "${DIM}Docker Desktop is user-session-bound: this LaunchDaemon survives logout,${RESET}"
+      echo -e "${DIM}while the Docker ENGINE under it may not — run colima as a daemon or a${RESET}"
+      echo -e "${DIM}native headless core for full logout survival.${RESET}"
+      ;;
+  esac
+}
+
+cmd_service() {
+  local action="${1:-status}"
+  [ $# -gt 0 ] && shift
+  # Optional mode param pins the service's mode; default (no param) runs plain
+  # `continuum start`, so the CONTINUUM_LAUNCH_MODE config.env setting governs.
+  local dry_run=false svc_mode="" a
+  for a in "$@"; do
+    case "$a" in
+      --dry-run)  dry_run=true ;;
+      --headless) svc_mode="--headless" ;;
+      --ui)       svc_mode="--ui" ;;
+    esac
+  done
+
+  local os bin user logdir
+  os="$(uname -s)"
+  bin="$(service_self_path)"
+  user="$(whoami)"
+  logdir="$CONTINUUM_HOME/jtag/logs"
+
+  case "$action" in
+    install)
+      case "$os" in
+        Darwin)
+          echo -e "${CYAN}macOS LaunchDaemon → ${SERVICE_PLIST}${RESET}"
+          local tmp; tmp="$(mktemp)"
+          _macos_plist_text "$bin" "$user" "$logdir" "$svc_mode" > "$tmp"
+          if command -v plutil &>/dev/null && ! plutil -lint "$tmp" >/dev/null 2>&1; then
+            echo -e "${RED}❌ generated plist failed plutil -lint${RESET}"; rm -f "$tmp"; exit 1
+          fi
+          if $dry_run; then
+            echo -e "${DIM}# dry-run — would install:${RESET}"; cat "$tmp"
+            echo -e "${DIM}# sudo cp <plist> ${SERVICE_PLIST}; sudo launchctl bootstrap system ${SERVICE_PLIST}${RESET}"
+            rm -f "$tmp"; _service_engine_caveat; return 0
+          fi
+          mkdir -p "$logdir"
+          sudo cp "$tmp" "$SERVICE_PLIST" && sudo chown root:wheel "$SERVICE_PLIST" && sudo chmod 644 "$SERVICE_PLIST"
+          rm -f "$tmp"
+          sudo launchctl bootstrap system "$SERVICE_PLIST" 2>/dev/null || sudo launchctl load "$SERVICE_PLIST"
+          echo -e "${GREEN}✅ installed — survives logout + reboot${RESET}"
+          _service_engine_caveat
+          ;;
+        Linux)
+          echo -e "${CYAN}systemd unit → ${SERVICE_UNIT}${RESET}"
+          if $dry_run; then
+            echo -e "${DIM}# dry-run — would install:${RESET}"; _linux_unit_text "$bin" "$user" "$svc_mode"
+            echo -e "${DIM}# sudo tee ${SERVICE_UNIT}; sudo systemctl enable docker; sudo systemctl enable --now continuum-node${RESET}"
+            return 0
+          fi
+          _linux_unit_text "$bin" "$user" "$svc_mode" | sudo tee "$SERVICE_UNIT" >/dev/null
+          sudo systemctl daemon-reload
+          sudo systemctl enable docker 2>/dev/null || true
+          sudo systemctl enable --now continuum-node
+          echo -e "${GREEN}✅ installed — survives logout + reboot${RESET}"
+          ;;
+        *)
+          _service_windows_help "$bin" "$svc_mode"
+          ;;
+      esac
+      ;;
+    uninstall)
+      case "$os" in
+        Darwin)
+          if $dry_run; then echo -e "${DIM}# would: sudo launchctl bootout system ${SERVICE_PLIST}; sudo rm ${SERVICE_PLIST}${RESET}"; return 0; fi
+          sudo launchctl bootout system "$SERVICE_PLIST" 2>/dev/null || sudo launchctl unload "$SERVICE_PLIST" 2>/dev/null || true
+          sudo rm -f "$SERVICE_PLIST"
+          echo -e "${GREEN}✅ uninstalled${RESET}"
+          ;;
+        Linux)
+          if $dry_run; then echo -e "${DIM}# would: sudo systemctl disable --now continuum-node; sudo rm ${SERVICE_UNIT}${RESET}"; return 0; fi
+          sudo systemctl disable --now continuum-node 2>/dev/null || true
+          sudo rm -f "$SERVICE_UNIT"
+          sudo systemctl daemon-reload
+          echo -e "${GREEN}✅ uninstalled${RESET}"
+          ;;
+        *)
+          echo -e "${YELLOW}Windows: schtasks /Delete /TN ContinuumNode /F${RESET}"
+          ;;
+      esac
+      ;;
+    status)
+      case "$os" in
+        Darwin)
+          if [ -f "$SERVICE_PLIST" ]; then
+            echo -e "  ${GREEN}●${RESET} LaunchDaemon installed: $SERVICE_PLIST (survives logout + reboot)"
+            sudo launchctl print system/"$SERVICE_LABEL" >/dev/null 2>&1 \
+              && echo -e "  ${GREEN}●${RESET} loaded in system domain" \
+              || echo -e "  ${YELLOW}○${RESET} not currently loaded (sudo launchctl bootstrap system $SERVICE_PLIST)"
+          else
+            echo -e "  ${YELLOW}○${RESET} no node service installed — node dies on logout. Fix: continuum service install"
+          fi
+          _service_engine_caveat
+          ;;
+        Linux)
+          if [ -f "$SERVICE_UNIT" ]; then
+            echo -e "  ${GREEN}●${RESET} systemd unit installed: $SERVICE_UNIT"
+            systemctl is-enabled continuum-node >/dev/null 2>&1 \
+              && echo -e "  ${GREEN}●${RESET} enabled at boot" \
+              || echo -e "  ${YELLOW}○${RESET} not enabled (sudo systemctl enable --now continuum-node)"
+          else
+            echo -e "  ${YELLOW}○${RESET} no node service installed — node dies on logout. Fix: continuum service install"
+          fi
+          ;;
+        *)
+          echo -e "  ${YELLOW}○${RESET} Windows: check 'schtasks /Query /TN ContinuumNode'"
+          ;;
+      esac
+      ;;
+    *)
+      echo "Usage: continuum service {install|uninstall|status} [--dry-run]"
+      exit 1
+      ;;
+  esac
+}
+
 # ── Main ────────────────────────────────────────────────────
 # Dispatch ONLY when executed directly. When this file is sourced (e.g. the
 # launch-mode unit test, or another script reusing config_get/config_set/
@@ -979,6 +1244,7 @@ case "${1:-}" in
   transfer)  shift; cmd_transfer "$@" ;;
   update)    shift; cmd_update "$@" ;;
   tray-data) shift; cmd_tray_data "$@" ;;
+  service)   shift; cmd_service "$@" ;;
   doctor)    shift; cmd_doctor "$@" ;;
   help|-h|--help)
     echo "continuum — Distributed AI platform"
@@ -995,6 +1261,7 @@ case "${1:-}" in
     echo "  dev            Dev mode (npm start)"
     echo "  build          Build Docker images"
     echo "  update         Git pull + rebuild + restart"
+    echo "  service        Install/uninstall/status node as a boot service (survives logout; install [--headless|--ui], default honors config.env)"
     echo "  doctor         Diagnose common problems"
     echo ""
     echo -e "${CYAN}Grid:${RESET}"
