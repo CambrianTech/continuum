@@ -22,6 +22,7 @@ PASS=0; FAIL=0
 ok(){ echo "  ✓ $1"; PASS=$((PASS+1)); }
 no(){ echo "  ✗ $1"; FAIL=$((FAIL+1)); }
 has(){ case "$2" in *"$1"*) ok "$3";; *) no "$3 — missing: $1";; esac; }
+lacks(){ case "$2" in *"$1"*) no "$3 — should NOT contain: $1";; *) ok "$3";; esac; }
 
 SHIM="$(mktemp -d "${TMPDIR:-/tmp}/continuum-svc-test.XXXXXX")"
 trap 'rm -rf "$SHIM"' EXIT
@@ -34,7 +35,8 @@ OUT="$(run_service install --dry-run)"
 has "/Library/LaunchDaemons/homes.continuum.node.plist" "$OUT" "targets system LaunchDaemons (NOT a per-user LaunchAgent)"
 has "<key>RunAtLoad</key><true/>" "$OUT" "RunAtLoad (starts at boot)"
 has "<key>KeepAlive</key><true/>" "$OUT" "KeepAlive (restarts if it dies)"
-has "<string>--headless</string>" "$OUT" "runs 'start --headless' — Rust core ONLY, no Node"
+has "<string>start</string>" "$OUT" "runs the node start"
+lacks "<string>--headless</string>" "$OUT" "default pins NO mode — honors CONTINUUM_LAUNCH_MODE"
 if command -v plutil >/dev/null 2>&1; then
   printf '%s\n' "$OUT" | sed -n '/<?xml/,/<\/plist>/p' > "$SHIM/test.plist"
   plutil -lint "$SHIM/test.plist" >/dev/null 2>&1 && ok "generated plist passes plutil -lint" || no "plist failed plutil -lint"
@@ -47,7 +49,7 @@ has "/etc/systemd/system/continuum-node.service" "$OUT" "targets the SYSTEM unit
 has "WantedBy=multi-user.target" "$OUT" "boots at multi-user (independent of any login)"
 has "Restart=always" "$OUT" "auto-restarts"
 has "ExecStart=" "$OUT" "has an ExecStart"
-has "start --headless" "$OUT" "runs 'start --headless' — Rust core ONLY, no Node"
+lacks "start --headless" "$OUT" "default ExecStart pins NO mode — honors CONTINUUM_LAUNCH_MODE"
 has "systemctl enable docker" "$OUT" "enables the docker engine at boot too"
 
 echo "Windows — startup task as SYSTEM (validate on BIGMAMA):"
@@ -55,7 +57,18 @@ make_uname MINGW64_NT-10.0
 OUT="$(run_service install --dry-run)"
 has "Register-ScheduledTask" "$OUT" "prints the startup-task recipe"
 has "AtStartup" "$OUT" "runs at startup, before any login"
-has "start --headless" "$OUT" "runs 'start --headless' — Rust core ONLY, no Node"
+lacks "start --headless" "$OUT" "default pins NO mode — honors CONTINUUM_LAUNCH_MODE"
+
+echo "override — 'service install --headless' pins core-only regardless of the setting:"
+make_uname Darwin
+OUT="$(run_service install --headless --dry-run)"
+has "<string>--headless</string>" "$OUT" "macOS: --headless param baked into the service"
+make_uname Linux
+OUT="$(run_service install --headless --dry-run)"
+has "start --headless" "$OUT" "Linux: --headless param baked into ExecStart"
+make_uname MINGW64_NT-10.0
+OUT="$(run_service install --headless --dry-run)"
+has "start --headless" "$OUT" "Windows: --headless param baked into the task"
 
 echo "status (unprivileged) + bad action:"
 make_uname Darwin
