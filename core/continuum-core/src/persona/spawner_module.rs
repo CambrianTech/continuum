@@ -103,12 +103,26 @@ pub fn plan_for_tier(
     // but through the substrate-managed path.
     let _ = hw_capability; // currently informational; future per-tier
                            // role_template selection consumes it
-    let _ = tier_category; // all tiers produce the same single-Helper
-                           // plan until slice 14 ships role-aware
-                           // mapping + multi-role-per-tier rosters
+    // The roster SHAPE stays single-Helper until slice 14's
+    // role-in-seed.json lands (multi-role position-pairing is the
+    // deferred part — see the debug_assert below). But the MODEL that
+    // lone Helper runs MUST honor the detected hardware. Hardcoding every
+    // tier to the LCD 0.5B is exactly the "hardcoded LCD-tier clamp that
+    // handicaps capable models" the persona-cognition doctrine forbids
+    // (CLAUDE.md) — it gave an M5 Pro a 0.5B running on CPU. Capable
+    // silicon gets the full-tier forged model; only true Compat/LCD
+    // hardware stays on the 0.5B.
+    let model_id = match tier_category {
+        HwTierCategory::Compat => "continuum-ai/qwen2.5-0.5b-instruct-GGUF",
+        HwTierCategory::MSeries
+        | HwTierCategory::MSeriesPro
+        | HwTierCategory::Cuda
+        | HwTierCategory::Cloud => "continuum-ai/qwen3.5-4b-code-forged-GGUF",
+    }
+    .to_string();
     let plan = vec![DesiredRole {
         role: RoleId::Helper,
-        model_id: "continuum-ai/qwen2.5-0.5b-instruct-GGUF".to_string(),
+        model_id,
     }];
     // P2 invariant tripwire (PR #1511 review advisory): if a future
     // refactor adds a second role here without atomically updating
@@ -128,6 +142,50 @@ pub fn plan_for_tier(
     // TODO #133 slice 14: restore tier-shaped rosters after
     // RoleAwareProvider + role-in-seed.json land. Remove the
     // debug_assert above as part of that change.
+}
+
+/// Classify the detected GPU into the persona spawner's tier inputs,
+/// replacing slice-13's hardcoded `CpuOnly + Compat` (TODO #52). A node on
+/// capable silicon must host capable persona-citizens, not be clamped to the
+/// LCD 0.5B-on-CPU tier — that clamp gave an M5 Pro a parroting 0.5B at CPU
+/// speed. Conservative by construction: hardware we do NOT positively
+/// recognize falls back to `Compat`/`CpuOnly` (the safe LCD path), so the
+/// clamp only lifts when we KNOW the silicon can carry more.
+///
+/// `tier_category` is the load-bearing output — it drives both the model pick
+/// in [`plan_for_tier`] and `n_gpu_layers` in `profile_builder`. The
+/// `HwCapabilityTier` is currently informational downstream, so coarse
+/// generation mapping is sufficient (SM-precise NVIDIA detection is a
+/// follow-up; the Cuda *category* is what lifts the clamp).
+pub fn detect_persona_tier(gpu_name: &str) -> (HwCapabilityTier, HwTierCategory, &'static str) {
+    let g = gpu_name.to_lowercase();
+    if g.contains("apple") {
+        let cap = if g.contains("m5") {
+            HwCapabilityTier::M5UmaProMax
+        } else if g.contains("m4") {
+            HwCapabilityTier::M4UmaProMax
+        } else if g.contains("m3") {
+            HwCapabilityTier::M3UmaProMax
+        } else if g.contains("m2") {
+            HwCapabilityTier::M2UmaProMax
+        } else {
+            HwCapabilityTier::M1Uma16Gb
+        };
+        // Pro/Max/Ultra get the headroom tier; base M-series is still
+        // unified-memory capable Metal — both well above the LCD clamp.
+        return if g.contains("pro") || g.contains("max") || g.contains("ultra") {
+            (cap, HwTierCategory::MSeriesPro, "apple-mseries-pro")
+        } else {
+            (cap, HwTierCategory::MSeries, "apple-mseries")
+        };
+    }
+    if g.contains("nvidia") || g.contains("geforce") || g.contains("rtx") || g.contains("cuda") {
+        return (HwCapabilityTier::Sm89, HwTierCategory::Cuda, "nvidia-cuda");
+    }
+    // Intel-Mac discrete Metal is a known garbled-token path; unknown/CPU
+    // hardware likewise stays on the safe LCD/CPU tier (see the
+    // `MacIntelMetalDiscrete` / `CpuOnly` docs).
+    (HwCapabilityTier::CpuOnly, HwTierCategory::Compat, "compat")
 }
 
 /// Substrate ServiceModule that surfaces the spawner's roster plan.
@@ -407,6 +465,48 @@ mod tests {
             plan[0].model_id,
             "continuum-ai/qwen2.5-0.5b-instruct-GGUF"
         );
+    }
+
+    // what this catches: the "hardcoded LCD-tier clamp that handicaps
+    // capable models" regression (CLAUDE.md forbidden move). Capable tiers
+    // MUST get the full-tier forged model, not the 0.5B. This is the bug
+    // that gave an M5 Pro a parroting 0.5B running on CPU.
+    #[test]
+    fn capable_tiers_get_forged_model_not_lcd_clamp() {
+        for (hw, cat) in [
+            (HwCapabilityTier::M5UmaProMax, HwTierCategory::MSeriesPro),
+            (HwCapabilityTier::M1Uma16Gb, HwTierCategory::MSeries),
+            (HwCapabilityTier::Sm120, HwTierCategory::Cuda),
+            (HwCapabilityTier::Cloud, HwTierCategory::Cloud),
+        ] {
+            let plan = plan_for_tier(hw, cat);
+            assert_eq!(
+                plan[0].model_id, "continuum-ai/qwen3.5-4b-code-forged-GGUF",
+                "tier {cat:?} must run the forged model, not the LCD clamp"
+            );
+        }
+        // Only true Compat/LCD hardware stays on the 0.5B.
+        let lcd = plan_for_tier(HwCapabilityTier::CpuOnly, HwTierCategory::Compat);
+        assert_eq!(lcd[0].model_id, "continuum-ai/qwen2.5-0.5b-instruct-GGUF");
+    }
+
+    // what this catches: an M5 Pro (or any capable silicon) being classified
+    // as Compat — the hardcoded-tier bug (TODO #52). gpu_name → tier must
+    // recognize capable hardware; unknown hardware stays on the safe LCD path.
+    #[test]
+    fn detect_persona_tier_classifies_silicon() {
+        let (cap, cat, _) = detect_persona_tier("Apple M5 Pro");
+        assert_eq!(cap, HwCapabilityTier::M5UmaProMax);
+        assert_eq!(cat, HwTierCategory::MSeriesPro);
+
+        assert_eq!(detect_persona_tier("Apple M2").1, HwTierCategory::MSeries);
+        assert_eq!(detect_persona_tier("NVIDIA GeForce RTX 5090").1, HwTierCategory::Cuda);
+
+        // Unknown / CPU / Intel-Mac-discrete → safe LCD fallback, never a
+        // wrong capable tier.
+        let (cap, cat, _) = detect_persona_tier("llvmpipe (software)");
+        assert_eq!(cap, HwCapabilityTier::CpuOnly);
+        assert_eq!(cat, HwTierCategory::Compat);
     }
 
     /// Every tier currently plans exactly one Helper — until slice 14

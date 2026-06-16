@@ -1362,14 +1362,25 @@ pub fn start_server(
         // TODO #52: replace `CpuOnly + Compat` with
         // `detect_host_capability(&gpu_monitor, &system_info)` once
         // a production GpuMonitor constructor exists.
+        // TODO #52 resolved: classify the detected silicon instead of
+        // hardcoding CpuOnly + Compat (which clamped every host — including
+        // this M5 Pro — to the LCD 0.5B running on CPU at ~2 tok/s).
+        // gpu_manager already probed the device at Phase 0; map its name to
+        // the spawner's tier inputs. Conservative fallback keeps unknown
+        // hardware on the safe LCD path (see detect_persona_tier).
+        let (hw_capability, tier_category, tier_id) =
+            crate::persona::spawner_module::detect_persona_tier(gpu_manager.gpu_name());
+        tracing::info!(
+            gpu_name = gpu_manager.gpu_name(),
+            ?tier_category,
+            tier_id,
+            "persona spawner tier detected from hardware (TODO #52)"
+        );
         let supervisor = crate::persona::host::PersonaSpawnSupervisor::new(
-            crate::persona::spawner_module::PersonaSpawnerModule::new(
-                crate::cognition::model_resolver::types::HwCapabilityTier::CpuOnly,
-                crate::persona::hw_tier_descriptor::HwTierCategory::Compat,
-            ),
+            crate::persona::spawner_module::PersonaSpawnerModule::new(hw_capability, tier_category),
             instance_manager.clone(),
             std::sync::Arc::new(crate::persona::supervisor::LlamaCppPersonaAdapterFactory),
-            "default",
+            tier_id,
             crate::model_registry::global(),
             rt_handle.clone(),
         );
