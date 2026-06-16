@@ -172,7 +172,7 @@ async fn vision_roundtrip_local_qwen2_vl() {
         use continuum_core::ai::adapter::AIProviderAdapter;
         let registry_arc = continuum_core::modules::ai_provider::global_registry();
         let mut registry = registry_arc.write().await;
-        let adapter: Box<dyn AIProviderAdapter> = Box::new(
+        let adapter: std::sync::Arc<dyn AIProviderAdapter> = std::sync::Arc::new(
             continuum_core::inference::llamacpp_adapter::LlamaCppAdapter::with_model_id(
                 model_path.clone(),
                 model_id.to_string(),
