@@ -118,6 +118,12 @@ pub struct PromptAssemblyInput {
     /// itself. Empty = no block rendered (backwards-compatible).
     #[serde(default)]
     pub room_roster: Vec<String>,
+    /// The room's operating doctrine (airc-published) — what KIND of
+    /// activity this room is. Rendered as a `[Room operating doctrine]`
+    /// block so the persona calibrates participation to the room's
+    /// nature. `None` = no block (backwards-compatible).
+    #[serde(default)]
+    pub room_doctrine: Option<String>,
 }
 
 /// A message in conversation history.
@@ -210,6 +216,24 @@ pub fn assemble(input: &PromptAssemblyInput) -> AssembledPrompt {
         for line in &input.room_roster {
             let _ = write!(system_prompt, "\n- {line}");
         }
+    }
+
+    // Inject the room operating doctrine — WHAT KIND of room this is.
+    // Sits adjacent to the roster (both room-context grounding): the
+    // roster says who is here, the doctrine says how this room works.
+    // This is what lets a persona calibrate participation to the
+    // activity — e.g. stay sparse in a coordination room vs conversational
+    // in a chat room. airc-published markdown, rendered verbatim. None =
+    // no block (backwards-compatible). See
+    // docs/grid/AIRC-NATIVE-IDENTITY-ROOMS-SECURITY.md §5 slice 2.
+    if let Some(ref doctrine) = input.room_doctrine {
+        let _ = write!(
+            system_prompt,
+            "\n\n[Room operating doctrine]\n\
+             This room has a published operating contract. Follow it — it \
+             governs how to participate in THIS room (its activity, tone, and \
+             when to speak vs stay silent):\n{doctrine}"
+        );
     }
 
     // Inject recalled engrams as a memory block — continuum#1211 PR-2.
@@ -640,6 +664,7 @@ mod tests {
             other_persona_names: vec![],
             recalled_engrams: vec![],
             room_roster: vec![],
+            room_doctrine: None,
         };
 
         let result = assemble(&input);
@@ -726,6 +751,7 @@ mod tests {
             other_persona_names: vec![],
             recalled_engrams: vec![],
             room_roster: vec![],
+            room_doctrine: None,
         };
 
         let result = assemble(&input);
@@ -764,6 +790,7 @@ mod tests {
                 "Joel works in San Francisco.".to_string(),
             ],
             room_roster: vec![],
+            room_doctrine: None,
         };
 
         let result = assemble(&input);
@@ -813,6 +840,7 @@ mod tests {
             other_persona_names: vec![],
             recalled_engrams: vec![],
             room_roster: vec![],
+            room_doctrine: None,
         };
 
         let result = assemble(&input);
@@ -851,6 +879,7 @@ mod tests {
                 "BigMama [persona] — Busy".to_string(),
                 "win-claude [claude]".to_string(),
             ],
+            room_doctrine: None,
         };
 
         let result = assemble(&input);
@@ -889,6 +918,7 @@ mod tests {
             other_persona_names: vec![],
             recalled_engrams: vec![],
             room_roster: vec![],
+            room_doctrine: None,
         };
 
         let result = assemble(&input);
@@ -897,6 +927,49 @@ mod tests {
             "should NOT render the roster block for an empty roster: {}",
             result.system_message
         );
+    }
+
+    // what this catches: a non-empty room_doctrine renders a
+    // [Room operating doctrine] block carrying the contract verbatim, so
+    // the persona calibrates participation to the room's nature (slice
+    // 2). Empty/None must render nothing (the other test path). Regression
+    // target: docs/grid/AIRC-NATIVE-IDENTITY-ROOMS-SECURITY.md §5 slice 2.
+    #[test]
+    fn room_doctrine_renders_operating_block() {
+        let mut input = PromptAssemblyInput {
+            persona_name: "Ivar".to_string(),
+            system_prompt: "You are Ivar.".to_string(),
+            matched_angle: String::new(),
+            history: vec![],
+            current_message: HistoryMessage {
+                role: "user".to_string(),
+                name: None,
+                content: "hi".to_string(),
+                timestamp_ms: None,
+            },
+            is_voice: false,
+            social_signals: None,
+            multi_party_strategy: MultiPartyChatStrategy::default(),
+            other_persona_names: vec![],
+            recalled_engrams: vec![],
+            room_roster: vec![],
+            room_doctrine: Some(
+                "This is a coordination room. Respond sparingly; do not chat.".to_string(),
+            ),
+        };
+
+        let with = assemble(&input);
+        assert!(
+            with.system_message.contains("[Room operating doctrine]"),
+            "expected the doctrine block header: {}",
+            with.system_message
+        );
+        assert!(with.system_message.contains("Respond sparingly"));
+
+        // None → no block (backwards-compatible).
+        input.room_doctrine = None;
+        let without = assemble(&input);
+        assert!(!without.system_message.contains("[Room operating doctrine]"));
     }
 
     #[test]
@@ -918,6 +991,7 @@ mod tests {
             other_persona_names: vec![],
             recalled_engrams: vec![],
             room_roster: vec![],
+            room_doctrine: None,
         };
 
         let result = assemble(&input);
@@ -943,6 +1017,7 @@ mod tests {
             other_persona_names: vec![],
             recalled_engrams: vec![],
             room_roster: vec![],
+            room_doctrine: None,
         };
 
         let result = assemble(&input);
@@ -976,6 +1051,7 @@ mod tests {
             other_persona_names: vec![],
             recalled_engrams: vec![],
             room_roster: vec![],
+            room_doctrine: None,
         };
 
         let result = assemble(&input);
@@ -1019,6 +1095,7 @@ mod tests {
             other_persona_names: vec![],
             recalled_engrams: vec![],
             room_roster: vec![],
+            room_doctrine: None,
         };
 
         let result = assemble(&input);
@@ -1063,6 +1140,7 @@ mod tests {
             other_persona_names: vec![],
             recalled_engrams: vec![],
             room_roster: vec![],
+            room_doctrine: None,
         };
 
         let result = assemble(&input);

@@ -136,6 +136,14 @@ pub struct RespondInput {
     /// Empty when no roster source is bound or the room is otherwise
     /// quiet — backwards-compatible (no block rendered).
     pub room_roster: Vec<String>,
+    /// The room's operating doctrine — the airc-published contract for
+    /// what kind of activity this room is (chat vs coordination vs game
+    /// vs …), produced by `RoomDoctrineSource` and projected here by the
+    /// service loop. Rendered by `prompt_assembly` as a `[Room operating
+    /// doctrine]` block so the persona calibrates participation to the
+    /// room's nature (slice 2). `None` when the room has no published
+    /// doctrine — backwards-compatible (no block rendered).
+    pub room_doctrine: Option<String>,
 }
 
 /// What `respond()` returns.
@@ -587,6 +595,8 @@ async fn run_render(
         // Pass-through, same as engrams — respond() is the assembly
         // boundary, not the policy layer.
         room_roster: input.room_roster.clone(),
+        // Room doctrine projected from RoomDoctrineSource. Pass-through.
+        room_doctrine: input.room_doctrine.clone(),
     };
 
     let assembled = assemble(&prompt_input);

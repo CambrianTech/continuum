@@ -541,6 +541,7 @@ mod tests {
             capabilities: HashSet::new(),
             recalled_engrams: vec![],
             room_roster: vec![],
+            room_doctrine: None,
         }
     }
 

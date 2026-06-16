@@ -549,6 +549,15 @@ impl crate::persona::room_roster_source::AircRosterReader for PersonaAircRuntime
 }
 
 #[async_trait::async_trait]
+impl crate::persona::room_doctrine_source::AircDoctrineReader for PersonaAircRuntime {
+    async fn room_doctrine(
+        &self,
+    ) -> Result<Option<airc_core::doctrine::RoomDoctrinePublished>, AircError> {
+        self.airc.room_doctrine().await
+    }
+}
+
+#[async_trait::async_trait]
 impl crate::persona::airc_citizen::AircCitizen for PersonaAircRuntime {
     fn peer_id(&self) -> Uuid {
         self.airc.peer_id().as_uuid()

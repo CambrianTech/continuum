@@ -487,6 +487,7 @@ impl PersonaServiceModule {
             // here (no [Present in this room] block), same tolerated-
             // absence shape as other_persona_names above.
             room_roster: Vec::new(),
+            room_doctrine: None,
         }
     }
 
