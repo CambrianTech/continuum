@@ -307,6 +307,7 @@ impl MessageBus {
             || event_name.starts_with("command:")  // RTOS doctrine — every dispatch's completion event reaches the persona loop (see PERSONA-AS-DEVELOPER-GAP.md §P3)
             || event_name.starts_with("presence:")
             || event_name.starts_with("tool:")
+            || event_name.starts_with("airc:bridge:")  // !continuum directive/reply control events — must not coalesce-drop (directive & reply share the airc:bridge prefix; coalescing would drop a reply emitted right after its directive)
             || event_name.contains("chat_messages")  // data:chat_messages:created must not be coalesced
             || event_name.contains("chat_rooms"); // room events are real-time too
 

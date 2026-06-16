@@ -17,6 +17,7 @@ use crate::modules::forge::ForgeModule;
 use crate::modules::gpu::GpuModule;
 use crate::modules::grid::GridModule;
 use crate::modules::airc_bridge_directive::AircBridgeDirectiveModule;
+use crate::modules::airc_bridge_dispatch::AircBridgeDispatchModule;
 use crate::modules::health::HealthModule;
 use crate::modules::launch_mode::LaunchModeModule;
 use crate::modules::inference::InferenceModule;
@@ -773,6 +774,12 @@ pub fn start_server(
     // observable airc:bridge:directive event. Passive subscriber, NO execution
     // (slice 3a). Header+kind gated so media/WebRTC never reach it.
     runtime.register(Arc::new(AircBridgeDirectiveModule::new()));
+
+    // AircBridgeDispatchModule — consumes airc:bridge:directive (from 3a) and
+    // emits airc:bridge:reply. ping/status reply locally; command-executing
+    // directives are recognized but NOT executed (peer-command authorization is
+    // slice 3b-2). Off-loop consumer, no kernel execution from peer content.
+    runtime.register(Arc::new(AircBridgeDispatchModule::new()));
 
     // ExternalWebviewAuthModule — OAuth 2.0 + PKCE via system browser.
     // Landed in 26ab8c0ad; re-enabling after merge from feat/mac-docker-model-runner
