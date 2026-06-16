@@ -22,7 +22,9 @@
 //! its `send` takes `&self`. cbar's pipeline-stage pattern in Rust dress.
 
 use crate::cognition::model_resolver::types::HwCapabilityTier;
-use crate::cognition::serving_plan::{plan_serving, HostBudget, ModelFootprint, ServingPlan};
+use crate::cognition::serving_plan::{
+    plan_serving, plan_serving_stable, HostBudget, ModelFootprint, ServingPlan,
+};
 use crate::gpu::GpuMemoryManager;
 use crate::persona::hw_tier_descriptor::HwTierCategory;
 use crate::model_registry::types::{Capability, Model};
@@ -118,7 +120,15 @@ impl ServingDaemonModule {
     /// result, log it. Split from `recompute` so it's testable without the
     /// global registry / live GPU.
     fn publish_plan(&self, budget: HostBudget, candidates: &[ModelFootprint]) {
-        match plan_serving(budget, candidates) {
+        // Hysteresis: pass the currently-served model as the incumbent so a
+        // transient free-memory dip doesn't thrash the served model. Boot's
+        // first plan has no incumbent (plan_tx holds None) → plain selection.
+        let incumbent = self
+            .plan_tx
+            .borrow()
+            .as_ref()
+            .map(|p| p.base_model_id.clone());
+        match plan_serving_stable(budget, candidates, incumbent.as_deref()) {
             Some(plan) => {
                 crate::probe!(
                     class = "serving.plan",

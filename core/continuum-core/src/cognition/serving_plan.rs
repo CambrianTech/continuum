@@ -41,6 +41,13 @@
 /// batch cost stop paying off before the grid should share the load.
 pub const MAX_LANES: u32 = 4;
 
+/// Hysteresis margin for switching UP to a more capable model: it must fit
+/// within `(1 - SWITCH_UP_HEADROOM)` of the budget — i.e. with headroom to
+/// spare — before we abandon the incumbent for it. Stops transient budget
+/// bumps near a model's edge from flapping the served model (the live-budget
+/// thrash: free memory jitters, the "best fit" flips, the model reloads).
+pub const SWITCH_UP_HEADROOM: f64 = 0.10;
+
 /// The honest, already-netted serving memory budget for THIS host — VRAM on
 /// a discrete GPU, the unified-memory serving slice on Apple Silicon. The
 /// caller subtracts OS + non-inference headroom before building this, so this
@@ -198,6 +205,59 @@ pub fn plan_serving(host: HostBudget, candidates: &[ModelFootprint]) -> Option<S
     })
 }
 
+/// Hysteresis wrapper around [`plan_serving`]: stops model THRASH from live-
+/// budget jitter. Keeps the `incumbent` model as long as it still fits the
+/// budget — switching DOWN only when the incumbent no longer fits (forced
+/// eviction) and UP only when a strictly more capable model fits with
+/// [`SWITCH_UP_HEADROOM`] to spare. Lanes + resident count always re-track the
+/// current budget. No incumbent (or it's gone / no longer fits) → plain
+/// [`plan_serving`]. Use this for the ONGOING serving loop; boot uses
+/// `plan_serving` directly (no incumbent yet).
+pub fn plan_serving_stable(
+    host: HostBudget,
+    candidates: &[ModelFootprint],
+    incumbent: Option<&str>,
+) -> Option<ServingPlan> {
+    let fresh = plan_serving(host, candidates)?;
+    let Some(inc_id) = incumbent else {
+        return Some(fresh);
+    };
+    // Fresh already chose the incumbent → nothing to stabilize.
+    if fresh.base_model_id == inc_id {
+        return Some(fresh);
+    }
+    // Is the incumbent still present AND still fits at least one lane?
+    let inc = candidates.iter().find(|m| {
+        m.model_id == inc_id
+            && m.weights_bytes.saturating_add(m.per_lane_kv_bytes) <= host.usable_bytes
+    });
+    let Some(inc) = inc else {
+        // Incumbent gone or no longer fits → forced switch to `fresh`.
+        return Some(fresh);
+    };
+    // Incumbent still fits. Switch UP to `fresh` ONLY if it is strictly more
+    // capable AND fits with headroom (so a transient budget bump doesn't flap).
+    let headroom_budget = (host.usable_bytes as f64 * (1.0 - SWITCH_UP_HEADROOM)) as u64;
+    let upgrade_worth_it = candidates
+        .iter()
+        .find(|c| c.model_id == fresh.base_model_id)
+        .is_some_and(|f| {
+            f.capability_rank > inc.capability_rank
+                && f.weights_bytes.saturating_add(f.per_lane_kv_bytes) <= headroom_budget
+        });
+    if upgrade_worth_it {
+        return Some(fresh);
+    }
+    // Keep the incumbent: re-rank it to the top so `plan_serving` selects it
+    // and recomputes lanes + resident against the live budget — reusing all the
+    // fit/lane/pack logic instead of duplicating it here.
+    let mut promoted: Vec<ModelFootprint> = candidates.to_vec();
+    if let Some(m) = promoted.iter_mut().find(|m| m.model_id == inc_id) {
+        m.capability_rank = u8::MAX;
+    }
+    plan_serving(host, &promoted)
+}
+
 fn bytes_gb(bytes: u64) -> f64 {
     bytes as f64 / 1_000_000_000.0
 }
@@ -290,5 +350,54 @@ mod tests {
     fn no_candidates_is_none() {
         let host = HostBudget { usable_bytes: 45 * GB, perf_cores: 6 };
         assert!(plan_serving(host, &[]).is_none());
+    }
+
+    // ── hysteresis (plan_serving_stable) ──────────────────────────────────
+
+    // small chat (rank 1, ~1GB) vs big coder (rank 3, ~9.7GB) — the pair that
+    // exercises switch-up/down decisions.
+    fn pair() -> Vec<ModelFootprint> {
+        vec![fp("small", 1, 60, 1), fp("big", 9, 700, 3)]
+    }
+
+    // what this catches: no incumbent → identical to plain plan_serving (boot).
+    #[test]
+    fn stable_with_no_incumbent_equals_plain() {
+        let host = HostBudget { usable_bytes: 20 * GB, perf_cores: 6 };
+        assert_eq!(
+            plan_serving_stable(host, &pair(), None),
+            plan_serving(host, &pair())
+        );
+    }
+
+    // what this catches: THE thrash guard — fresh prefers `big` (more capable,
+    // fits) but it only fits without headroom, so we KEEP the incumbent `small`
+    // rather than flap the served model on a transient budget bump.
+    #[test]
+    fn stable_keeps_incumbent_when_upgrade_lacks_headroom() {
+        // 10GB: big (9.7GB) fits a lane but exceeds the 0.9*10=9GB headroom bar.
+        let host = HostBudget { usable_bytes: 10 * GB, perf_cores: 6 };
+        assert_eq!(plan_serving(host, &pair()).unwrap().base_model_id, "big", "fresh would pick big");
+        let stable = plan_serving_stable(host, &pair(), Some("small")).unwrap();
+        assert_eq!(stable.base_model_id, "small", "hysteresis keeps incumbent — no flap");
+        assert!(stable.lanes >= 1, "lanes still re-tracked for the kept model");
+    }
+
+    // what this catches: a genuine upgrade DOES happen when the better model
+    // fits with headroom — hysteresis isn't a permanent lock-in.
+    #[test]
+    fn stable_upgrades_when_better_model_fits_with_headroom() {
+        let host = HostBudget { usable_bytes: 20 * GB, perf_cores: 6 }; // big 9.7 << 0.9*20=18
+        let stable = plan_serving_stable(host, &pair(), Some("small")).unwrap();
+        assert_eq!(stable.base_model_id, "big", "more capable + ample headroom → upgrade");
+    }
+
+    // what this catches: forced switch DOWN — when the incumbent no longer fits
+    // the (shrunken) budget, we drop to what fits instead of clinging to it.
+    #[test]
+    fn stable_forced_down_when_incumbent_no_longer_fits() {
+        let host = HostBudget { usable_bytes: 2 * GB, perf_cores: 2 }; // big (9.7) can't fit
+        let stable = plan_serving_stable(host, &pair(), Some("big")).unwrap();
+        assert_eq!(stable.base_model_id, "small", "incumbent evicted — forced down to what fits");
     }
 }
