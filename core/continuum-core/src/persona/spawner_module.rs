@@ -72,6 +72,10 @@ pub struct DesiredRole {
     /// registry; this id is the substrate's *intent* — "Helper at
     /// Compat tier wants the LCD Qwen2.5-0.5B."
     pub model_id: String,
+    /// Continuous-batching lanes (`n_seq_max`) for this role's backend, from
+    /// the serving daemon's ServingPlan. Defaults to 1 from `plan_for_tier`;
+    /// `PersonaSpawnerModule::with_serving` overrides it from the live plan.
+    pub lanes: u32,
 }
 
 /// Compose the desired roster for a given hardware tier. Today this
@@ -108,7 +112,12 @@ pub fn plan_for_tier(
                            // mapping + multi-role-per-tier rosters
     let plan = vec![DesiredRole {
         role: RoleId::Helper,
+        // Fallback model when no ServingPlan is published yet (safe LCD). The
+        // serving daemon's plan overrides this via with_serving — that's the
+        // real, honest, GPU-residency-aware pick.
         model_id: "continuum-ai/qwen2.5-0.5b-instruct-GGUF".to_string(),
+        // Default single lane; with_serving overrides from the live plan.
+        lanes: 1,
     }];
     // P2 invariant tripwire (PR #1511 review advisory): if a future
     // refactor adds a second role here without atomically updating
@@ -138,6 +147,13 @@ pub fn plan_for_tier(
 pub struct PersonaSpawnerModule {
     hw_capability: HwCapabilityTier,
     tier_category: HwTierCategory,
+    /// Serving daemon's decision, applied as overrides on the tier roster:
+    /// the base model every desired role runs (`None` → fall back to the
+    /// tier's `plan_for_tier` pick) and the continuous-batching lane count.
+    /// This is how the daemon's honest per-host ServingPlan drives what
+    /// actually spawns — single source of truth, not a hardcode.
+    serving_base_model: Option<String>,
+    serving_lanes: u32,
 }
 
 impl PersonaSpawnerModule {
@@ -164,14 +180,33 @@ impl PersonaSpawnerModule {
         Self {
             hw_capability,
             tier_category,
+            serving_base_model: None,
+            serving_lanes: 1,
         }
     }
 
-    /// Currently-planned desired roster. Pure function over the
-    /// module's configured tier; doesn't touch async, doesn't hold a
-    /// lock — safe to call from anywhere.
+    /// Apply the serving daemon's [`ServingPlan`](crate::cognition::serving_plan::ServingPlan):
+    /// every desired role runs the plan's base model at the plan's lane count.
+    /// The daemon makes the honest per-host decision (budget + footprints,
+    /// GPU-residency); the spawner obeys it. `base_model = None` keeps the
+    /// tier's `plan_for_tier` pick (e.g. when no plan is published yet).
+    pub fn with_serving(mut self, base_model: Option<String>, lanes: u32) -> Self {
+        self.serving_base_model = base_model;
+        self.serving_lanes = lanes.max(1);
+        self
+    }
+
+    /// Currently-planned desired roster. Pure over the module's configured
+    /// tier + the serving overrides; no async, no lock — safe anywhere.
     pub fn plan(&self) -> Vec<DesiredRole> {
-        plan_for_tier(self.hw_capability, self.tier_category)
+        let mut roster = plan_for_tier(self.hw_capability, self.tier_category);
+        for role in &mut roster {
+            if let Some(ref base) = self.serving_base_model {
+                role.model_id = base.clone();
+            }
+            role.lanes = self.serving_lanes;
+        }
+        roster
     }
 }
 
@@ -330,7 +365,8 @@ pub async fn bootstrap_planned(
 ) -> Result<Vec<MaterializedPersonaPlan>, BootstrapPlannedError> {
     let plan = module.plan();
     let required = plan.len();
-    let mut bootstrapped: Vec<(RoleId, PersonaInstanceInfo, String)> = Vec::with_capacity(required);
+    let mut bootstrapped: Vec<(RoleId, PersonaInstanceInfo, String, u32)> =
+        Vec::with_capacity(required);
 
     for (slot_index, desired) in plan.iter().enumerate() {
         let intent: PersonaIdentityIntent = provider
@@ -357,16 +393,17 @@ pub async fn bootstrap_planned(
                 source,
             })?;
 
-        bootstrapped.push((desired.role, info, desired.model_id.clone()));
+        bootstrapped.push((desired.role, info, desired.model_id.clone(), desired.lanes));
     }
 
     let roster: Vec<RosterEntry> = bootstrapped
         .iter()
-        .map(|(role, info, model_id)| RosterEntry {
+        .map(|(role, info, model_id, lanes)| RosterEntry {
             role: *role,
             persona_id: info.persona_id,
             persona_name: info.agent_name.clone(),
             model_id: model_id.clone(),
+            lanes: *lanes,
         })
         .collect();
 
@@ -375,7 +412,7 @@ pub async fn bootstrap_planned(
     Ok(bootstrapped
         .into_iter()
         .zip(profiles)
-        .map(|((role, instance, _model_id), profile)| MaterializedPersonaPlan {
+        .map(|((role, instance, _model_id, _lanes), profile)| MaterializedPersonaPlan {
             role,
             instance,
             profile,
@@ -555,6 +592,7 @@ mod tests {
         let role = DesiredRole {
             role: RoleId::Helper,
             model_id: "continuum-ai/qwen2.5-0.5b-instruct-GGUF".to_string(),
+            lanes: 1,
         };
         let json = serde_json::to_string(&role).expect("serialize");
         // RoleId already serializes as snake_case ("helper"); model_id

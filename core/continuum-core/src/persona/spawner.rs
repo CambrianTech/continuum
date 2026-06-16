@@ -68,6 +68,10 @@ pub struct RosterEntry {
     /// `model_per_tier` table; future refinements via #123 ORM data
     /// substitute this without changing the planner contract.
     pub model_id: String,
+    /// Continuous-batching lanes (`n_seq_max`) for this persona's backend,
+    /// from the serving daemon's ServingPlan (honest host budget + footprint).
+    /// Threaded through to `build_profile`; floored at 1 there.
+    pub lanes: u32,
 }
 
 /// Materialize a spawn plan from a roster + tier descriptor.
@@ -95,6 +99,7 @@ pub fn derive_spawn_plan(
                 tier_id,
                 tier_category,
                 &entry.model_id,
+                entry.lanes,
                 registry,
             )
         })
@@ -168,6 +173,7 @@ mod tests {
             persona_id: Uuid::nil(),
             persona_name: "Paige".to_string(),
             model_id: "continuum-ai/qwen2.5-0.5b-instruct-GGUF".to_string(),
+            lanes: 1,
         }
     }
 
@@ -177,6 +183,7 @@ mod tests {
             persona_id: Uuid::nil(),
             persona_name: "Pax".to_string(),
             model_id: "continuum-ai/qwen2.5-0.5b-instruct-GGUF".to_string(),
+            lanes: 1,
         }
     }
 

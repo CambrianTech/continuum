@@ -794,9 +794,10 @@ pub fn start_server(
     // base model, how many continuous-batching lanes, how many models warm.
     // Runs the `cognition::serving_plan` classifier against the live host
     // budget + on-disk models; publishes the plan + answers `serving/plan`.
-    runtime.register(Arc::new(
-        crate::modules::serving_daemon::ServingDaemonModule::new(gpu_manager.clone()),
+    let serving_daemon = Arc::new(crate::modules::serving_daemon::ServingDaemonModule::new(
+        gpu_manager.clone(),
     ));
+    runtime.register(serving_daemon.clone());
 
     // ForgeModule (continuum#1164 Phase 4 stub — forge/run IPC).
     // v1 returns a stub ForgeArtifact from a recipe; Phase 5+ wires the
@@ -1371,14 +1372,37 @@ pub fn start_server(
         // TODO #52: replace `CpuOnly + Compat` with
         // `detect_host_capability(&gpu_monitor, &system_info)` once
         // a production GpuMonitor constructor exists.
+        // The serving daemon is the single hardware authority: it detects the
+        // tier (drives n_gpu_layers — retires the hardcoded CpuOnly+Compat of
+        // TODO #52) AND decides the model + lanes from an honest budget +
+        // on-disk footprints with GPU-residency. The spawner obeys the plan —
+        // no hardcoded tier/model/lanes. (Supersedes the #1645 tier-clamp fix.)
+        let (hw_cap, tier_cat, tier_id) = serving_daemon.detected_tier();
+        let (serving_model, serving_lanes) = match serving_daemon.compute_plan() {
+            Some(p) if p.fits_on_gpu => {
+                tracing::info!(
+                    base_model = %p.base_model_id,
+                    lanes = p.lanes,
+                    resident = p.resident_models,
+                    tier_id,
+                    "serving daemon drives persona spawn (model + lanes from ServingPlan)"
+                );
+                (Some(p.base_model_id), p.lanes)
+            }
+            other => {
+                tracing::warn!(
+                    plan = ?other,
+                    "no GPU-fitting serving plan — spawner falls back to the tier default model, 1 lane"
+                );
+                (None, 1)
+            }
+        };
         let supervisor = crate::persona::host::PersonaSpawnSupervisor::new(
-            crate::persona::spawner_module::PersonaSpawnerModule::new(
-                crate::cognition::model_resolver::types::HwCapabilityTier::CpuOnly,
-                crate::persona::hw_tier_descriptor::HwTierCategory::Compat,
-            ),
+            crate::persona::spawner_module::PersonaSpawnerModule::new(hw_cap, tier_cat)
+                .with_serving(serving_model, serving_lanes),
             instance_manager.clone(),
             std::sync::Arc::new(crate::persona::supervisor::LlamaCppPersonaAdapterFactory),
-            "default",
+            tier_id,
             crate::model_registry::global(),
             rt_handle.clone(),
         );

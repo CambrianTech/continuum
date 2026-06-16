@@ -21,8 +21,10 @@
 //! no lock held across await — the `watch::Sender` is the only shared state and
 //! its `send` takes `&self`. cbar's pipeline-stage pattern in Rust dress.
 
+use crate::cognition::model_resolver::types::HwCapabilityTier;
 use crate::cognition::serving_plan::{plan_serving, HostBudget, ModelFootprint, ServingPlan};
 use crate::gpu::GpuMemoryManager;
+use crate::persona::hw_tier_descriptor::HwTierCategory;
 use crate::model_registry::types::{Capability, Model};
 use crate::model_registry::Registry;
 use crate::runtime::{CommandResult, ModuleConfig, ModuleContext, ModulePriority, ServiceModule};
@@ -72,6 +74,22 @@ impl ServingDaemonModule {
     /// Honest serving budget for this host, right now.
     fn host_budget(&self) -> HostBudget {
         host_budget_from(self.gpu.total_vram_bytes(), perf_cores())
+    }
+
+    /// Compute the current serving plan from the live host snapshot + on-disk
+    /// models, WITHOUT relying on a tick having run. The boot path calls this
+    /// to drive the spawner before the tick loop starts — single source of
+    /// truth for "what model + how many lanes."
+    pub fn compute_plan(&self) -> Option<ServingPlan> {
+        let candidates = candidates_from_registry(crate::model_registry::global());
+        plan_serving(self.host_budget(), &candidates)
+    }
+
+    /// The detected hardware tier for this host, for the persona spawner's
+    /// `n_gpu_layers` + roster shape. Same GPU detection that feeds the serving
+    /// plan — one hardware authority, not two.
+    pub fn detected_tier(&self) -> (HwCapabilityTier, HwTierCategory, &'static str) {
+        detect_tier(self.gpu.gpu_name())
     }
 
     /// Recompute the plan from the live host snapshot + on-disk models, publish
@@ -191,6 +209,41 @@ pub fn candidates_from_registry(registry: &Registry) -> Vec<ModelFootprint> {
     registry.models().filter_map(footprint_for).collect()
 }
 
+/// Classify the detected GPU into the persona spawner's tier inputs — the
+/// `n_gpu_layers` + roster decision. Retires the old hardcoded `CpuOnly +
+/// Compat` (which clamped an M5 Pro to the LCD 0.5B on CPU). Conservative:
+/// hardware we don't positively recognize falls back to `Compat`/`CpuOnly`
+/// (the safe path), so the clamp only lifts when we KNOW the silicon.
+/// `tier_category` is load-bearing (drives `n_gpu_layers`); `HwCapabilityTier`
+/// is currently informational, so coarse generation mapping suffices.
+pub fn detect_tier(gpu_name: &str) -> (HwCapabilityTier, HwTierCategory, &'static str) {
+    let g = gpu_name.to_lowercase();
+    if g.contains("apple") {
+        let cap = if g.contains("m5") {
+            HwCapabilityTier::M5UmaProMax
+        } else if g.contains("m4") {
+            HwCapabilityTier::M4UmaProMax
+        } else if g.contains("m3") {
+            HwCapabilityTier::M3UmaProMax
+        } else if g.contains("m2") {
+            HwCapabilityTier::M2UmaProMax
+        } else {
+            HwCapabilityTier::M1Uma16Gb
+        };
+        return if g.contains("pro") || g.contains("max") || g.contains("ultra") {
+            (cap, HwTierCategory::MSeriesPro, "apple-mseries-pro")
+        } else {
+            (cap, HwTierCategory::MSeries, "apple-mseries")
+        };
+    }
+    if g.contains("nvidia") || g.contains("geforce") || g.contains("rtx") || g.contains("cuda") {
+        return (HwCapabilityTier::Sm89, HwTierCategory::Cuda, "nvidia-cuda");
+    }
+    // Intel-Mac discrete Metal is a known garbled-token path; unknown/CPU
+    // hardware stays on the safe LCD/CPU tier.
+    (HwCapabilityTier::CpuOnly, HwTierCategory::Compat, "compat")
+}
+
 #[async_trait]
 impl ServiceModule for ServingDaemonModule {
     fn config(&self) -> ModuleConfig {
@@ -265,6 +318,18 @@ mod tests {
         assert!(small.capability_rank < fp.capability_rank);
 
         assert!(footprint_from_parts("empty", 0, 8192, false).is_none(), "no weights → not servable");
+    }
+
+    // what this catches: an M5 Pro (or any capable silicon) must NOT classify
+    // as Compat (which would force n_gpu_layers=0 = CPU); unknown hardware
+    // stays on the safe LCD/CPU fallback.
+    #[test]
+    fn detect_tier_classifies_silicon() {
+        use crate::persona::hw_tier_descriptor::HwTierCategory;
+        assert_eq!(detect_tier("Apple M5 Pro").1, HwTierCategory::MSeriesPro);
+        assert_eq!(detect_tier("Apple M2").1, HwTierCategory::MSeries);
+        assert_eq!(detect_tier("NVIDIA GeForce RTX 5090").1, HwTierCategory::Cuda);
+        assert_eq!(detect_tier("llvmpipe").1, HwTierCategory::Compat);
     }
 
     // what this catches: the daemon publishes the classifier's decision to its
