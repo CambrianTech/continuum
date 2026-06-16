@@ -260,7 +260,7 @@ FLAGS (with spec file):
   NOTE: For Rust IPC commands, the generator creates the TypeScript command
   scaffold. You still need:
   1. The Rust ServiceModule (handles the IPC command)
-  2. The IPC mixin (workers/continuum-core/bindings/modules/<name>.ts)
+  2. The IPC mixin (core/continuum-core/bindings/modules/<name>.ts)
   3. Wire mixin into RustCoreIPC.ts composition chain
   See docs/infrastructure/UNIFIED-GENERATOR-ARCHITECTURE.md for full details.
 

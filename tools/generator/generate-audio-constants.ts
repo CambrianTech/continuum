@@ -11,9 +11,13 @@
 import * as fs from 'fs';
 import * as path from 'path';
 
-const SOURCE_FILE = path.join(__dirname, '../shared/audio-constants.json');
-const TS_OUTPUT = path.join(__dirname, '../shared/AudioConstants.ts');
-const RUST_OUTPUT = path.join(__dirname, '../workers/continuum-core/src/audio_constants.rs');
+// Paths are relative to tools/generator/. Updated after the repo restructure
+// (commit 2cb63e019: src/workers/continuum-core → core/continuum-core; this
+// generator moved under tools/generator/). All three were stale ../shared and
+// ../workers paths that resolved to nonexistent tools/* dirs.
+const SOURCE_FILE = path.join(__dirname, '../../src/shared/audio-constants.json');
+const TS_OUTPUT = path.join(__dirname, '../../src/shared/AudioConstants.ts');
+const RUST_OUTPUT = path.join(__dirname, '../../core/continuum-core/src/audio_constants.rs');
 
 interface AudioConstants {
   AUDIO_SAMPLE_RATE: number;

@@ -9,8 +9,8 @@
 # Per Rust-first alpha contract (PR #1070, ALPHA-GAP-ANALYSIS.md "Rust
 # core owns behavior"): every PR touching the persona surface must
 # either keep the line count flat or shrink it. New cognition logic
-# belongs in Rust (`workers/continuum-core/src/persona/`,
-# `workers/continuum-core/src/cognition/`), not in this TS surface.
+# belongs in Rust (`core/continuum-core/src/persona/`,
+# `core/continuum-core/src/cognition/`), not in this TS surface.
 #
 # Modes:
 #   ./check-ts-persona-cognition.sh              # check + report; exit 0/1
@@ -108,8 +108,8 @@ if [[ "$DELTA" -gt 0 ]]; then
   echo "  Per Rust-first alpha contract (PR #1070, docs/planning/ALPHA-GAP-ANALYSIS.md)," >&2
   echo "  the TS persona surface must SHRINK or stay flat. New cognition logic belongs" >&2
   echo "  in Rust:" >&2
-  echo "    workers/continuum-core/src/persona/" >&2
-  echo "    workers/continuum-core/src/cognition/" >&2
+  echo "    core/continuum-core/src/persona/" >&2
+  echo "    core/continuum-core/src/cognition/" >&2
   echo "" >&2
   echo "  Options:" >&2
   echo "    1. Move the new code Rust-side." >&2
