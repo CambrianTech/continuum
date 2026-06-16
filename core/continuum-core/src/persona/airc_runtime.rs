@@ -522,6 +522,28 @@ impl crate::persona::airc_source::AircTranscriptReader for PersonaAircRuntime {
 }
 
 #[async_trait::async_trait]
+impl crate::persona::room_roster_source::AircRosterReader for PersonaAircRuntime {
+    fn self_peer_id(&self) -> airc_core::PeerId {
+        self.airc.peer_id()
+    }
+
+    async fn active_agents(
+        &self,
+        within: std::time::Duration,
+        window: usize,
+    ) -> Result<Vec<airc_lib::AgentLiveness>, AircError> {
+        self.airc.active_agents(within, window).await
+    }
+
+    async fn peer_alias(
+        &self,
+        peer_id: airc_core::PeerId,
+    ) -> Result<Option<String>, AircError> {
+        self.airc.peer_alias(peer_id).await
+    }
+}
+
+#[async_trait::async_trait]
 impl crate::persona::airc_citizen::AircCitizen for PersonaAircRuntime {
     fn peer_id(&self) -> Uuid {
         self.airc.peer_id().as_uuid()

@@ -77,6 +77,16 @@ pub struct PersonaCognition {
     /// `runtime.transcript_reader()`) only becomes available after
     /// PersonaAircRuntime bootstraps.
     pub airc_source: Option<Arc<dyn RagSource>>,
+    /// The persona's room-roster RAG source — "who else is present in
+    /// this room right now", read from airc `active_agents`. Bound at
+    /// supervisor boot alongside `airc_source` (same `Airc` handle, which
+    /// satisfies `AircRosterReader`). `None` pre-attach / in unit tests
+    /// without a daemon; `Some` in production. Its delivery is routed by
+    /// the service loop into system-prompt GROUNDING (a `[Present in
+    /// this room]` block), not conversation history — the fix for a
+    /// persona confabulating other citizens' turns. See
+    /// docs/grid/AIRC-NATIVE-IDENTITY-ROOMS-SECURITY.md §5 slice 1.
+    pub roster_source: Option<Arc<dyn RagSource>>,
     /// The capture sink the RecordingRagSource wraps engram_source
     /// against. Default = `NoopRagCaptureSink` (zero overhead, drops
     /// events on the floor). Production callers swap in
@@ -161,6 +171,7 @@ impl PersonaCognition {
             recall_metadata,
             engram_source,
             airc_source: None,
+            roster_source: None,
             capture_sink,
         }
     }
@@ -181,6 +192,21 @@ impl PersonaCognition {
             self.capture_sink.clone(),
         ));
         self.airc_source = Some(decorated);
+    }
+
+    /// Bind the brain's room-roster RAG source (`RoomRosterSource`).
+    /// Called by the supervisor at boot with the same `Airc` handle that
+    /// backs `airc_source` (it satisfies `AircRosterReader`). Decorated
+    /// with the brain's `capture_sink` so roster deliveries are recorded
+    /// + replayable on the same wire as engrams and airc transcript
+    /// (per [[persona-record-replay-is-a-product-requirement]]). Boot-
+    /// time wire, not a per-turn allocation.
+    pub fn set_roster_source(&mut self, raw_source: Arc<dyn RagSource>) {
+        let decorated: Arc<dyn RagSource> = Arc::new(RecordingRagSource::new(
+            ArcRagSource::new(raw_source),
+            self.capture_sink.clone(),
+        ));
+        self.roster_source = Some(decorated);
     }
 
     /// Brain composition for one cognition turn. Walks the brain's
@@ -229,10 +255,16 @@ impl PersonaCognition {
         // then airc (the L1 conversational floor). Future sources
         // (code, tool descriptions, identity card) extend this list
         // in order of long-term-to-immediate.
-        let mut sources: Vec<Arc<dyn RagSource>> = Vec::with_capacity(2);
+        let mut sources: Vec<Arc<dyn RagSource>> = Vec::with_capacity(3);
         sources.push(self.engram_source.clone());
         if let Some(ref airc) = self.airc_source {
             sources.push(airc.clone());
+        }
+        // The "identity card" source the original author reserved this
+        // list for: who else is present in the room right now. Routed
+        // by the service loop into system-prompt grounding, not history.
+        if let Some(ref roster) = self.roster_source {
+            sources.push(roster.clone());
         }
 
         // Per-source budget claims. Even split between the two

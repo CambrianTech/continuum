@@ -530,6 +530,22 @@ async fn serve_persona_loop_inner(
                 }
             })
             .collect();
+        // Project the room-roster delivery → RespondInput.room_roster.
+        // Routed by source_id to system-prompt GROUNDING, deliberately
+        // NOT into recent_history above: the roster names who is present
+        // (identity grounding), it is not conversation. Injecting it as
+        // history is the exact confusion the source exists to remove.
+        // Each item's `content` is already a formatted line
+        // (`name [runtime] — availability`). See
+        // docs/grid/AIRC-NATIVE-IDENTITY-ROOMS-SECURITY.md §5 slice 1.
+        let room_roster: Vec<String> = composed
+            .deliveries
+            .iter()
+            .filter(|d| d.source_id == "room-roster")
+            .flat_map(|d| d.items.iter())
+            .map(|item| item.content.clone())
+            .collect();
+
         // recalled_engrams is populated above from
         // admission.recall_recent(8) — substrate-managed memory,
         // not the airc transcript window. The engram delivery from
@@ -579,6 +595,7 @@ async fn serve_persona_loop_inner(
             message_media: Vec::new(),
             capabilities: std::collections::HashSet::new(),
             recalled_engrams,
+            room_roster,
         };
 
         // 3. Run the cognition cycle. The persona may speak or stay

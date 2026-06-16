@@ -485,6 +485,19 @@ pub async fn materialize_adapters(
         );
         cognition.set_airc_source(airc_source);
 
+        // Bind the room-roster source from the SAME runtime — it
+        // upcasts to `AircRosterReader` (a supertrait of AircCitizen)
+        // just as it does to `AircTranscriptReader` above. This is what
+        // grounds the persona in who else is present (and who is NOT
+        // itself). See docs/grid/AIRC-NATIVE-IDENTITY-ROOMS-SECURITY.md
+        // §5 slice 1.
+        let roster_source: Arc<dyn crate::persona::rag_budget::RagSource> =
+            Arc::new(crate::persona::room_roster_source::RoomRosterSource::new(
+                identity.persona_id,
+                runtime.clone(),
+            ));
+        cognition.set_roster_source(roster_source);
+
         let system_prompt = build_persona_system_prompt(&identity.agent_name);
 
         out.push(Ok(PersonaContext {

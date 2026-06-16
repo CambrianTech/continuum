@@ -65,12 +65,18 @@ use uuid::Uuid;
 /// production and by [`StubAircCitizen`] for tests; future BaseUser
 /// variants (human, browser) impl it via their own airc-lib wrappers.
 ///
-/// `AircCitizen: AircTranscriptReader` — every citizen can page her
-/// own transcript history. Rust 1.86+ trait_upcasting means
-/// `Arc<dyn AircCitizen>` coerces directly to
-/// `Arc<dyn AircTranscriptReader>`; no explicit conversion needed.
+/// `AircCitizen: AircTranscriptReader + AircRosterReader` — every
+/// citizen can page her own transcript history AND read who else is
+/// present in her room (airc `active_agents`). Rust 1.86+
+/// trait_upcasting means `Arc<dyn AircCitizen>` coerces directly to
+/// `Arc<dyn AircTranscriptReader>` or `Arc<dyn AircRosterReader>`; no
+/// explicit conversion needed. The roster reader is what grounds a
+/// persona in who is present (and who is NOT itself) — see
+/// docs/grid/AIRC-NATIVE-IDENTITY-ROOMS-SECURITY.md §5.
 #[async_trait]
-pub trait AircCitizen: AircTranscriptReader {
+pub trait AircCitizen:
+    AircTranscriptReader + crate::persona::room_roster_source::AircRosterReader
+{
     /// The airc-side peer identity (Ed25519 pubkey, formatted as Uuid).
     /// Cognition uses this for self-loop filtering; the supervisor uses
     /// it as part of the persona's tracing span.
@@ -134,6 +140,30 @@ impl AircTranscriptReader for StubAircCitizen {
         _limit: usize,
     ) -> Result<Vec<airc_lib::TranscriptEvent>, AircError> {
         Ok(vec![])
+    }
+}
+
+#[async_trait]
+impl crate::persona::room_roster_source::AircRosterReader for StubAircCitizen {
+    fn self_peer_id(&self) -> airc_core::PeerId {
+        airc_core::PeerId::from_uuid(self.peer_id)
+    }
+
+    async fn active_agents(
+        &self,
+        _within: std::time::Duration,
+        _window: usize,
+    ) -> Result<Vec<airc_lib::AgentLiveness>, AircError> {
+        // No daemon in tests → no presence. RAG runs through cleanly
+        // with an empty roster (no [Present in this room] block).
+        Ok(vec![])
+    }
+
+    async fn peer_alias(
+        &self,
+        _peer_id: airc_core::PeerId,
+    ) -> Result<Option<String>, AircError> {
+        Ok(None)
     }
 }
 
