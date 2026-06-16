@@ -65,6 +65,7 @@ pub mod resource_broker;
 pub mod runtime_control;
 pub mod search;
 pub mod sentinel;
+pub mod serving_daemon;
 pub mod system_resources;
 pub mod tool_parsing;
 pub mod training_trigger;

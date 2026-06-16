@@ -814,9 +814,24 @@ pub fn start_server(
 
     // Phase 1: SystemResourceModule (CPU + memory + process monitoring IPC)
     let system_monitor = Arc::new(SystemResourceMonitor::new());
-    let system_resource_module = Arc::new(SystemResourceModule::new(system_monitor));
+    let system_resource_module = Arc::new(SystemResourceModule::new(system_monitor.clone()));
     system_resource_module.set_pressure_monitor(pressure_monitor.clone());
     runtime.register(system_resource_module);
+
+    // ServingDaemonModule — the ever-present control loop that decides (and
+    // re-decides every tick) how this host serves persona inference: which base
+    // model, how many continuous-batching lanes, how many models warm. Budget
+    // comes from the LIVE free-memory monitor (organic ebb/flow — drops when a
+    // game/build/renderer grabs memory) capped at physical VRAM. It is ONE
+    // consumer of the holistic resource budget the PressureBroker arbitrates
+    // across inference + TTS/STT + classifier CNNs + renderers; next refinement
+    // is negotiating an arbitrated share from the broker rather than reading
+    // raw free memory. Registered after the monitor so it can read it.
+    let serving_daemon = Arc::new(crate::modules::serving_daemon::ServingDaemonModule::new(
+        gpu_manager.clone(),
+        system_monitor.clone(),
+    ));
+    runtime.register(serving_daemon.clone());
 
     // Phase 2 of #1239 (continuum#1299 PR-1): PressureBrokerModule.
     // Brings the cross-pool PressureBroker online — instantiates the
@@ -1362,14 +1377,37 @@ pub fn start_server(
         // TODO #52: replace `CpuOnly + Compat` with
         // `detect_host_capability(&gpu_monitor, &system_info)` once
         // a production GpuMonitor constructor exists.
+        // The serving daemon is the single hardware authority: it detects the
+        // tier (drives n_gpu_layers — retires the hardcoded CpuOnly+Compat of
+        // TODO #52) AND decides the model + lanes from an honest budget +
+        // on-disk footprints with GPU-residency. The spawner obeys the plan —
+        // no hardcoded tier/model/lanes. (Supersedes the #1645 tier-clamp fix.)
+        let (hw_cap, tier_cat, tier_id) = serving_daemon.detected_tier();
+        let (serving_model, serving_lanes) = match serving_daemon.compute_plan() {
+            Some(p) if p.fits_on_gpu => {
+                tracing::info!(
+                    base_model = %p.base_model_id,
+                    lanes = p.lanes,
+                    resident = p.resident_models,
+                    tier_id,
+                    "serving daemon drives persona spawn (model + lanes from ServingPlan)"
+                );
+                (Some(p.base_model_id), p.lanes)
+            }
+            other => {
+                tracing::warn!(
+                    plan = ?other,
+                    "no GPU-fitting serving plan — spawner falls back to the tier default model, 1 lane"
+                );
+                (None, 1)
+            }
+        };
         let supervisor = crate::persona::host::PersonaSpawnSupervisor::new(
-            crate::persona::spawner_module::PersonaSpawnerModule::new(
-                crate::cognition::model_resolver::types::HwCapabilityTier::CpuOnly,
-                crate::persona::hw_tier_descriptor::HwTierCategory::Compat,
-            ),
+            crate::persona::spawner_module::PersonaSpawnerModule::new(hw_cap, tier_cat)
+                .with_serving(serving_model, serving_lanes),
             instance_manager.clone(),
             std::sync::Arc::new(crate::persona::supervisor::LlamaCppPersonaAdapterFactory),
-            "default",
+            tier_id,
             crate::model_registry::global(),
             rt_handle.clone(),
         );

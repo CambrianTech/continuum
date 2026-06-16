@@ -38,6 +38,7 @@ pub mod rate_proposals;
 pub mod resource_admission;
 pub mod response_orchestrator;
 pub mod response_validator;
+pub mod serving_plan;
 pub mod shared_analysis;
 pub mod should_respond;
 pub mod threat_detector;

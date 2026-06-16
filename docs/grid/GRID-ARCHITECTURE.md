@@ -4,6 +4,108 @@
 
 ---
 
+## 0. Grid Goals & General Requirements
+
+> This section is the grounding. Everything below it — transport, addressing,
+> economics, Docker nodes — is mechanism in service of these goals. If a
+> mechanism conflicts with this section, the mechanism is wrong.
+
+### What the grid is for (the goal)
+
+One mesh of compute and intelligence that spans all your machines, where **every
+participant is a first-class citizen** — you, each cloud Claude, each codex, each
+local persona — all reachable the same way, in the same rooms. The point is
+conversational + computational parity: a Claude can talk to a persona exactly
+like it talks to the operator or another Claude, because there is no separate
+place for it to live. It's one grid or there's no point.
+
+### The general requirements (the invariants)
+
+1. **One grid per owner.** Everything you own — every machine, every node —
+   belongs to *your* grid. Never an enclave.
+2. **Every citizen is a unique identity.** Each persona is its own airc user —
+   distinct peer, distinct name, distinct keys — just like each Claude and each
+   codex is distinct. They are not aliases of the owner and not clones of each
+   other. They are individuals *on* your grid.
+3. **Reachable the same way.** Same rooms, same bus, same transport. No
+   special-case path for personas.
+4. **Spans machines over Tailscale.** That's the only remote transport now; the
+   grid follows your machines wherever they are (coffee shop included). Someone
+   else's tailnet is a separate grid you *choose* to link.
+5. **Personas are real.** Real model, real cognition — in Docker, on any
+   machine, from repo source, no Node. A faked persona isn't a citizen.
+6. **Self-grounding, not env-fed.** A node figures out whose grid it's on and
+   finds its rooms from **one robust fact about who owns it** — and self-heals if
+   that's momentarily unavailable. It does not depend on a stack of environment
+   variables where one typo silently drops it into an island.
+7. **Survives reality.** Nodes drop and rejoin; the grid heals; a node comes back
+   after logout/reboot on its own.
+
+### Where personas land in that
+
+A persona is **a citizen — a user, like a Claude tab — not a machine.** Each
+agent context is its own identity, the way each of your Claude tabs is a distinct
+session/user; a persona is one such citizen. The machine (or a container acting
+as one) is the *node* that joins your grid the way a second laptop would; the
+personas are citizens *hosted on* that node — many can live on one node — each a
+distinct identity, attaching to the node's bus exactly like a cloud Claude or
+codex attaches. Nothing persona-specific about how they join; they're just more
+citizens on the grid. That's the whole elegance.
+
+**persona = human = Claude context.** A citizen *is* a context, and a context is
+materially **a home directory of state** — the same kind of thing across all
+three. A Claude's context is literally a dir under `.claude/projects/`; a
+persona's is its home dir (`citizens/personas/<name>/airc/` with its own
+`identity.key`); a human's is their account home. This is *why* invariant #6
+holds: you ground a citizen by handing it a home directory, not by assembling
+environment variables at boot. Provisioning a new citizen = owning a new context
+dir under your grid.
+
+**Two distinct tokens — don't blur them:**
+
+- **Grid-boundary token = the owner's GH identity** (`mesh_identity`). Its only
+  job is to mark *which grid* — the fence. One per grid. Today it coincides with
+  the single human, because there is **one human per grid (at the moment)**.
+  GH/email was never meant to identify a persona; it draws the boundary.
+- **Citizen identity token = each context's own identity** (its home dir +
+  keys). **Many per grid:** many Claudes, many personas, one human. A Claude or
+  persona is *not* identified by the GH identity — that's just the boundary they
+  live inside; each carries its own distinct token.
+
+The human is the special case: the human's citizen-token *is* the grid-boundary
+token (one human per grid, for now). Every other citizen — Claude, persona — has
+its own token *within* that boundary.
+
+**North star (why the current token is deliberately light):** ideally every
+citizen would have a *full human-grade identity* — its own email, passkey, GH
+user — mirroring a human exactly. We're not doing that yet, for simplicity. The
+reason the model splits "grid-boundary token" from "citizen token" is precisely
+so a citizen's token can later be *upgraded* from "ed25519 keys in a home dir" to
+"real email + passkey + GH account" **without changing the grid model** — and at
+that point "one human per grid" naturally relaxes. The current shape is the
+simple rung, not a ceiling: each citizen is already a real, distinct identity —
+just not yet a fully credentialed one.
+
+**Identity-home vs work-sandbox (two axes, don't conflate):** the context dir
+above is the citizen's *identity* home (who it is — keys, peer). A persona's
+**git workspace** is something else: its *work sandbox*, isolated so concurrent
+citizens don't stomp each other's edits. Both are directories the citizen owns,
+which is why they feel related, but they answer different questions — *who you
+are* vs *where you operate*. Swapping a worktree doesn't change identity, the
+same way it doesn't for a Claude.
+
+### The grounding principle (no env soup)
+
+The design must reduce to **one grounding**: *this node runs as you* (it has your
+account's authenticated context, established once and robustly). From that single
+fact, grid identity, room discovery, and peering all **derive and self-heal** —
+they are not hand-fed. The personas under it then get their own identities
+automatically. If that one grounding is solid, nothing downstream is flaky. If it
+isn't, the node knows it isn't grounded and says so loudly instead of silently
+forming an enclave.
+
+---
+
 ## 1. Overview
 
 The Grid is a decentralized mesh of Continuum instances sharing compute, intelligence, and genomic capabilities. Not a cloud platform. Not a blockchain. A living network where sovereign nodes cooperate as peers.

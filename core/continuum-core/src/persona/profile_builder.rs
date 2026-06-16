@@ -67,6 +67,7 @@ pub fn build_profile(
     tier_id: &str,
     tier_category: HwTierCategory,
     model_id: &str,
+    n_seq_max: u32,
     registry: &crate::model_registry::Registry,
 ) -> Result<PersonaInferenceProfile, InferenceProfileError> {
     let _ = role_id; // see module docstring; reserved for cognition_defaults wiring
@@ -119,9 +120,12 @@ pub fn build_profile(
     // other tiers — graph nodes scale modestly so no need to shrink.
     let n_ubatch = 512;
 
-    // n_seq_max: 1 for single-tenant personas. Future shared-base +
-    // LoRA paging (#122) lifts this when one base hosts N personas.
-    let n_seq_max = 1;
+    // n_seq_max: continuous-batching lanes for this persona's backend,
+    // decided by the serving daemon's ServingPlan (honest host budget +
+    // model footprint) and threaded in via DesiredRole → RosterEntry. Floored
+    // at 1. Shared-base + LoRA paging (#122) then lets one base host N
+    // personas across these lanes instead of one backend per persona.
+    let n_seq_max = n_seq_max.max(1);
     let n_batch = context_length;
 
     // GPU offload depth: substrate-known per tier. Compat (Intel Mac
@@ -252,6 +256,7 @@ mod tests {
             "mac_intel_metal_discrete",
             HwTierCategory::Compat,
             "continuum-ai/qwen2.5-0.5b-instruct-GGUF",
+            1,
             &registry,
         )
         .expect("build profile");
@@ -283,6 +288,7 @@ mod tests {
             "mac_intel_metal_discrete",
             HwTierCategory::Compat,
             model,
+            1,
             &registry,
         )
         .unwrap();
@@ -295,6 +301,7 @@ mod tests {
             "m1_uma_8gb",
             HwTierCategory::MSeries,
             model,
+            1,
             &registry,
         )
         .unwrap();
@@ -307,6 +314,7 @@ mod tests {
             "m5_uma_pro_max",
             HwTierCategory::MSeriesPro,
             model,
+            1,
             &registry,
         )
         .unwrap();
@@ -328,6 +336,7 @@ mod tests {
             "mac_intel_metal_discrete",
             HwTierCategory::Compat,
             model,
+            1,
             &registry,
         )
         .unwrap();
@@ -341,6 +350,7 @@ mod tests {
             "m1_uma_8gb",
             HwTierCategory::MSeries,
             model,
+            1,
             &registry,
         )
         .unwrap();
@@ -354,6 +364,7 @@ mod tests {
             "m5_uma_pro_max",
             HwTierCategory::MSeriesPro,
             model,
+            1,
             &registry,
         )
         .unwrap();
@@ -372,6 +383,7 @@ mod tests {
             "mac_intel_metal_discrete",
             HwTierCategory::Compat,
             "nonexistent/model-id",
+            1,
             &registry,
         )
         .expect_err("unknown model must error");
