@@ -146,6 +146,72 @@ open_browser() {
   esac
 }
 
+# ── Launch mode (headless vs UI) — ONE setting, MANY editors ────────
+# The launch preference lives in ONE place: CONTINUUM_LAUNCH_MODE in
+# config.env (the settings store — the Docker-Desktop settings-store.json
+# analog). Editors of that one key: the installer prompt, this CLI, the
+# menu-bar tray, the desktop UI shutting itself off when the last human
+# leaves, and the auto-detect below. "You're always editing a setting."
+#
+# Precedence: explicit arg/env var > config.env value > auto-detect.
+# `auto` (or an unset/garbage setting) runs has_display() ONCE and writes
+# the concrete result back — so the guess becomes an editable fact, never
+# a silent per-boot re-guess. To re-detect after moving hardware, set the
+# key back to `auto` (or re-run install).
+#
+# This is DISTINCT from the Rust substrate boot --mode
+# (full-citizen/inference-only/fail-fast), which stays explicit and is
+# never auto-detected ([[no-fallbacks-ever]]: the substrate never guesses
+# its capability set). Auto-detect here only chooses whether the SHELL
+# attaches a human UI overlay — a presentation concern, not a capability.
+
+# Read one key from config.env. Prints the value; returns 1 if absent.
+config_get() {
+  local key="$1" file="$CONTINUUM_HOME/config.env" line
+  [ -f "$file" ] || return 1
+  line=$(grep "^${key}=" "$file" 2>/dev/null | tail -1) || return 1
+  [ -n "$line" ] || return 1
+  printf '%s\n' "${line#*=}"
+}
+
+# Upsert one key into config.env, preserving every other line. Portable
+# across BSD/GNU (no `sed -i` flavor war): rewrite through a temp file.
+config_set() {
+  local key="$1" val="$2" file="$CONTINUUM_HOME/config.env" tmp
+  mkdir -p "$CONTINUUM_HOME"
+  touch "$file"
+  tmp=$(mktemp "${TMPDIR:-/tmp}/continuum-config.XXXXXX")
+  grep -v "^${key}=" "$file" > "$tmp" 2>/dev/null || true
+  printf '%s=%s\n' "$key" "$val" >> "$tmp"
+  mv "$tmp" "$file"
+}
+
+# Resolve the effective launch mode: prints "ui" or "headless".
+#   $1 (optional) — explicit override: ui | headless | auto
+launch_mode() {
+  local mode="${1:-}"
+  [ -n "$mode" ] || mode="${CONTINUUM_LAUNCH_MODE:-}"
+  [ -n "$mode" ] || mode="$(config_get CONTINUUM_LAUNCH_MODE || echo auto)"
+
+  case "$mode" in
+    ui|headless)
+      printf '%s\n' "$mode"
+      return 0
+      ;;
+    auto) ;;
+    *)
+      echo "[continuum] launch mode: unrecognized '$mode' — falling back to auto-detect" >&2
+      mode="auto"
+      ;;
+  esac
+
+  # auto: detect ONCE, persist, announce (loud + editable, not silent).
+  if has_display; then mode="ui"; else mode="headless"; fi
+  config_set CONTINUUM_LAUNCH_MODE "$mode"
+  echo "[continuum] launch mode: auto → $mode (edit $CONTINUUM_HOME/config.env or set CONTINUUM_LAUNCH_MODE=ui|headless|auto)" >&2
+  printf '%s\n' "$mode"
+}
+
 # ── Is local Docker running with Continuum? ─────────────────
 is_local_running() {
   find_compose 2>/dev/null || return 1
@@ -892,7 +958,10 @@ cmd_doctor() {
 }
 
 # ── Main ────────────────────────────────────────────────────
-
+# Dispatch ONLY when executed directly. When this file is sourced (e.g. the
+# launch-mode unit test, or another script reusing config_get/config_set/
+# launch_mode) it just defines its functions. See bin/tests/launch-mode.test.sh.
+if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
 case "${1:-}" in
   start)     shift; cmd_start "$@" ;;
   dev)       shift; cmd_dev "$@" ;;
@@ -970,3 +1039,4 @@ case "${1:-}" in
     cmd_cli "$@"
     ;;
 esac
+fi
