@@ -16,6 +16,7 @@ use crate::modules::events::EventsModule;
 use crate::modules::forge::ForgeModule;
 use crate::modules::gpu::GpuModule;
 use crate::modules::grid::GridModule;
+use crate::modules::airc_bridge_directive::AircBridgeDirectiveModule;
 use crate::modules::health::HealthModule;
 use crate::modules::launch_mode::LaunchModeModule;
 use crate::modules::inference::InferenceModule;
@@ -766,6 +767,12 @@ pub fn start_server(
     // CONTINUUM_LAUNCH_MODE to config.env (same key bin/continuum reads) and emits
     // system:launch-mode:changed so a running UI can attach/tear down its overlay.
     runtime.register(Arc::new(LaunchModeModule::new()));
+
+    // AircBridgeDirectiveModule — recognizes inbound `!continuum` directives on
+    // the airc bus (chat:posted) OFF the transport hot path, emitting an
+    // observable airc:bridge:directive event. Passive subscriber, NO execution
+    // (slice 3a). Header+kind gated so media/WebRTC never reach it.
+    runtime.register(Arc::new(AircBridgeDirectiveModule::new()));
 
     // ExternalWebviewAuthModule — OAuth 2.0 + PKCE via system browser.
     // Landed in 26ab8c0ad; re-enabling after merge from feat/mac-docker-model-runner
