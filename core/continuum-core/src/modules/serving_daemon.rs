@@ -28,6 +28,7 @@ use crate::persona::hw_tier_descriptor::HwTierCategory;
 use crate::model_registry::types::{Capability, Model};
 use crate::model_registry::Registry;
 use crate::runtime::{CommandResult, ModuleConfig, ModuleContext, ModulePriority, ServiceModule};
+use crate::system_resources::SystemResourceMonitor;
 use async_trait::async_trait;
 use serde_json::Value;
 use std::any::Any;
@@ -53,6 +54,11 @@ const PLANNED_CTX_TOKENS: u64 = 8192;
 
 pub struct ServingDaemonModule {
     gpu: Arc<GpuMemoryManager>,
+    /// Live system memory monitor — the budget comes from what's actually FREE
+    /// right now (`available_bytes`), not total capacity. On unified memory
+    /// this drops when anything else grabs memory (a game, a build), so the
+    /// plan ebbs and flows organically.
+    system: Arc<SystemResourceMonitor>,
     /// The published decision. `None` until the first successful plan. Held as
     /// the module's only shared state; `send` takes `&self` so `tick()` can
     /// publish without interior-mutability gymnastics.
@@ -60,9 +66,13 @@ pub struct ServingDaemonModule {
 }
 
 impl ServingDaemonModule {
-    pub fn new(gpu: Arc<GpuMemoryManager>) -> Self {
+    pub fn new(gpu: Arc<GpuMemoryManager>, system: Arc<SystemResourceMonitor>) -> Self {
         let (plan_tx, _rx) = watch::channel(None);
-        Self { gpu, plan_tx }
+        Self {
+            gpu,
+            system,
+            plan_tx,
+        }
     }
 
     /// Subscribe to the published serving plan. Consumers (scheduler, spawner)
@@ -71,9 +81,13 @@ impl ServingDaemonModule {
         self.plan_tx.subscribe()
     }
 
-    /// Honest serving budget for this host, right now.
+    /// Honest serving budget for this host, RIGHT NOW — from the live free
+    /// memory the monitor reports, capped at the device's physical VRAM. This
+    /// is the organic signal: free memory drops under load, the budget shrinks,
+    /// the plan picks fewer lanes / a smaller model; load clears, it flows back.
     fn host_budget(&self) -> HostBudget {
-        host_budget_from(self.gpu.total_vram_bytes(), perf_cores())
+        let available = self.system.snapshot().memory.available_bytes;
+        host_budget_from(available, self.gpu.total_vram_bytes(), perf_cores())
     }
 
     /// Compute the current serving plan from the live host snapshot + on-disk
@@ -133,9 +147,13 @@ impl ServingDaemonModule {
     }
 }
 
-/// Apply the serving-budget headroom to total device memory. Pure for tests.
-pub fn host_budget_from(total_vram_bytes: u64, perf_cores: u32) -> HostBudget {
-    let usable = (total_vram_bytes as f64 * SERVING_BUDGET_FRACTION) as u64;
+/// Serving budget from LIVE free memory, capped at physical VRAM, minus
+/// headroom. Pure for tests. `available_bytes` is the monitor's current free
+/// memory (already net of everything else running); we never plan above what's
+/// free, nor above what the device physically has.
+pub fn host_budget_from(available_bytes: u64, total_vram_bytes: u64, perf_cores: u32) -> HostBudget {
+    let live = available_bytes.min(total_vram_bytes);
+    let usable = (live as f64 * SERVING_BUDGET_FRACTION) as u64;
     HostBudget {
         usable_bytes: usable,
         perf_cores: perf_cores.max(1),
@@ -292,14 +310,26 @@ mod tests {
 
     const GB: u64 = 1_000_000_000;
 
-    // what this catches: the serving budget reserves headroom (never claims
-    // 100% of device memory) and floors perf cores at 1.
+    // what this catches: the budget is LIVE (tracks free memory, not capacity),
+    // capped at physical VRAM, with headroom, cores floored at 1 — the organic
+    // "free memory drops → budget drops" behavior.
     #[test]
-    fn host_budget_reserves_headroom() {
-        let b = host_budget_from(53 * GB, 6);
-        assert!(b.usable_bytes < 53 * GB, "must reserve OS/headroom");
-        assert!(b.usable_bytes >= 40 * GB, "but most of it is ours: {}", b.usable_bytes);
-        assert_eq!(host_budget_from(8 * GB, 0).perf_cores, 1, "cores floored at 1");
+    fn host_budget_tracks_live_free_memory() {
+        // 40GB free on a 53GB device → budget from the 40, with headroom.
+        let b = host_budget_from(40 * GB, 53 * GB, 6);
+        assert!(b.usable_bytes < 40 * GB, "must reserve headroom");
+        assert!(b.usable_bytes >= 30 * GB, "but most of free is ours: {}", b.usable_bytes);
+
+        // Organic: less free memory → smaller budget (a game grabbed memory).
+        let busy = host_budget_from(6 * GB, 53 * GB, 6);
+        assert!(busy.usable_bytes < b.usable_bytes, "less free → smaller budget");
+
+        // Never plan above physical VRAM even if the OS reports more free RAM
+        // (unified memory: free RAM can exceed the VRAM serving ceiling).
+        let capped = host_budget_from(100 * GB, 53 * GB, 6);
+        assert!(capped.usable_bytes <= 53 * GB, "capped at physical VRAM");
+
+        assert_eq!(host_budget_from(8 * GB, 8 * GB, 0).perf_cores, 1, "cores floored at 1");
     }
 
     // what this catches: footprint estimate is honest about weights (passed
@@ -338,7 +368,8 @@ mod tests {
     #[tokio::test]
     async fn publish_plan_drives_the_watch() {
         let gpu = Arc::new(GpuMemoryManager::simulated("Apple M5 Pro", 53 * GB));
-        let daemon = ServingDaemonModule::new(gpu);
+        let system = Arc::new(SystemResourceMonitor::new());
+        let daemon = ServingDaemonModule::new(gpu, system);
         let rx = daemon.subscribe();
         assert!(rx.borrow().is_none(), "starts unpublished");
 

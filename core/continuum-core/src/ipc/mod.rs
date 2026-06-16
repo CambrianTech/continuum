@@ -789,16 +789,6 @@ pub fn start_server(
     // Phase 1: GpuModule (GPU stats + pressure IPC)
     runtime.register(Arc::new(GpuModule::new(gpu_manager.clone())));
 
-    // ServingDaemonModule — the ever-present control loop that decides (and
-    // re-decides on each tick) how this host serves persona inference: which
-    // base model, how many continuous-batching lanes, how many models warm.
-    // Runs the `cognition::serving_plan` classifier against the live host
-    // budget + on-disk models; publishes the plan + answers `serving/plan`.
-    let serving_daemon = Arc::new(crate::modules::serving_daemon::ServingDaemonModule::new(
-        gpu_manager.clone(),
-    ));
-    runtime.register(serving_daemon.clone());
-
     // ForgeModule (continuum#1164 Phase 4 stub — forge/run IPC).
     // v1 returns a stub ForgeArtifact from a recipe; Phase 5+ wires the
     // real foundry executor.
@@ -824,9 +814,24 @@ pub fn start_server(
 
     // Phase 1: SystemResourceModule (CPU + memory + process monitoring IPC)
     let system_monitor = Arc::new(SystemResourceMonitor::new());
-    let system_resource_module = Arc::new(SystemResourceModule::new(system_monitor));
+    let system_resource_module = Arc::new(SystemResourceModule::new(system_monitor.clone()));
     system_resource_module.set_pressure_monitor(pressure_monitor.clone());
     runtime.register(system_resource_module);
+
+    // ServingDaemonModule — the ever-present control loop that decides (and
+    // re-decides every tick) how this host serves persona inference: which base
+    // model, how many continuous-batching lanes, how many models warm. Budget
+    // comes from the LIVE free-memory monitor (organic ebb/flow — drops when a
+    // game/build/renderer grabs memory) capped at physical VRAM. It is ONE
+    // consumer of the holistic resource budget the PressureBroker arbitrates
+    // across inference + TTS/STT + classifier CNNs + renderers; next refinement
+    // is negotiating an arbitrated share from the broker rather than reading
+    // raw free memory. Registered after the monitor so it can read it.
+    let serving_daemon = Arc::new(crate::modules::serving_daemon::ServingDaemonModule::new(
+        gpu_manager.clone(),
+        system_monitor.clone(),
+    ));
+    runtime.register(serving_daemon.clone());
 
     // Phase 2 of #1239 (continuum#1299 PR-1): PressureBrokerModule.
     // Brings the cross-pool PressureBroker online — instantiates the
