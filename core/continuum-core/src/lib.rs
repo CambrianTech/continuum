@@ -31,6 +31,7 @@ pub mod code;
 pub mod cognition;
 pub mod comms;
 pub mod concurrency;
+pub mod config_env;
 pub mod context;
 pub mod contracts;
 pub mod events;
