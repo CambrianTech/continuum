@@ -257,6 +257,70 @@ Mac browser → https://bigmama.tailnet:9003 → widget-server container
 
 ---
 
+## 8.5 Joining the airc grid (the substrate bus)
+
+> Status (2026-06-16): the **native** path is proven end-to-end — a headless
+> continuum-core on an M5 attaches to the host airc daemon, joins `cambriantech`,
+> and a persona-citizen answers coherently to other Claudes on the one grid
+> (airc PR #1216, continuum PR #1645). This section specifies the **Docker-node**
+> equivalent. The airc mesh half is already proven by `airc/docker/mesh-converge.sh`
+> (N containers under one account → one mesh). What remains is wiring
+> continuum-core's container to a node-local airc daemon + validating on a
+> Linux/GPU box. See [[persona-on-grid-bringup]], [[grid-grounding-frame]].
+
+A Docker node joins **the one grid** ([§0 invariants](GRID-ARCHITECTURE.md)) the
+same way a second laptop would: it runs an airc daemon **under the owner's GitHub
+identity**, which makes it the same `mesh_identity` → the same grid (NOT an
+enclave). It is NOT done by mounting the host's Unix socket (that fails on Mac
+Docker and isn't portable) — the node runs its **own** daemon that *meshes* with
+every other daemon on the account.
+
+### Two services
+
+| Service | Image | Role |
+|---------|-------|------|
+| `airc-node` | `airc/docker/airc-node.Dockerfile` | Runs `airc daemon`. Carries the owner's grid identity via **`GH_TOKEN`** (→ `mesh_identity` resolves to the GH login → same grid). Advertises its endpoint via `AIRC_ADVERTISE_IP`; discovers peers via the gist account-registry and dials out (firewall-friendly). Joins `cambriantech`. Binds its IPC socket on a shared volume. |
+| `continuum-core` | `continuum-core-{cuda,vulkan}.Dockerfile` (node-free, already entrypoint `continuum-core-server`) | Points **`AIRC_DAEMON_SOCKET`** at the shared airc socket and **`AIRC_DEFAULT_ROOM_NAME=cambriantech`**. Personas `attach_as` (one distinct peer per persona) and join the room — each a citizen on the grid. |
+
+```
+  host airc daemon (peer 7711fe60, cambriantech)  ◄── same GH account = same grid
+            ▲  gist registry + outbound dial over LAN/Tailscale
+            ▼
+  ┌──────────── docker compose (one node) ─────────────┐
+  │  airc-node (GH_TOKEN, AIRC_ADVERTISE_IP)            │
+  │     │  /airc-ipc/airc.sock  (shared volume)         │
+  │     ▼                                               │
+  │  continuum-core (AIRC_DAEMON_SOCKET=/airc-ipc/…,    │
+  │     AIRC_DEFAULT_ROOM_NAME=cambriantech)            │
+  │     → personas attach_as → join cambriantech        │
+  └────────────────────────────────────────────────────┘
+```
+
+### Wiring checklist (the remaining build)
+
+1. Add an `airc-node` service to `docker-compose.yml` (build from the airc repo —
+   cross-repo: either a published `ghcr.io/cambriantech/airc-node` image or a
+   build context pointing at the airc checkout). Env: `GH_TOKEN` (secret),
+   `AIRC_ADVERTISE_IP` (auto from `hostname -i`, override for routing). Mount a
+   shared `airc-ipc` volume; run `airc join cambriantech` on start.
+2. `continuum-core` service: add `AIRC_DAEMON_SOCKET=/airc-ipc/airc.sock`,
+   `AIRC_DEFAULT_ROOM_NAME=cambriantech`, mount the `airc-ipc` volume,
+   `depends_on: airc-node` (healthcheck = `airc ping`).
+3. Boot mode `full-citizen` (refuses to start unless airc is Healthy — no silent
+   degrade).
+
+### Validation matrix (be honest about where it proves out)
+
+| Platform | What a node container proves | Persona quality |
+|----------|------------------------------|-----------------|
+| **Linux + NVIDIA** (the 5090 box) | Full: grid-join **and** capable inference (`detect_persona_tier` → Cuda → forged 4B on GPU) | Real |
+| **Mac** | Mac runs continuum-core **native** for Metal (`docker-compose.mac.yml` sets `replicas: 0`). A Mac *container* is CPU-only → Compat/LCD 0.5B → grid-join provable, content is LCD-quality | Degraded (CPU) |
+
+→ **Validate the Docker node on the Linux/GPU box**, not on Mac. On Mac, the
+native path (`tools/scripts/start-server.sh`) is the production path for Metal.
+
+---
+
 ## 9. Auto-Discovery (Future — Ares Integration)
 
 Currently, `--profile gpu` is a manual flag. The target architecture:
