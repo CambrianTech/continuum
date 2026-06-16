@@ -85,8 +85,17 @@ impl RoomDoctrineSource {
     /// Fit the doctrine body to `budget` tokens. A doctrine is a single
     /// contract; if it doesn't fit we deliver a truncated prefix (with a
     /// marker) rather than dropping it entirely — partial guidance still
-    /// grounds the persona in the room's nature. Returns `None` only for
-    /// a zero budget.
+    /// grounds the persona in the room's nature.
+    ///
+    /// Returns `None` (no block) when the budget is too small to carry
+    /// the marker PLUS some real content. The alternative — emitting a
+    /// `[Room operating doctrine]` block whose entire content is the
+    /// truncation marker — is strictly worse than no block: it spends
+    /// tokens to say nothing, and (with a naive char budget) overspends
+    /// the allocation. Both the no-content case and overspend are
+    /// guarded here. `estimate_tokens(s) = s.chars()/4 + 1`, so a string
+    /// of `4*budget - 4` chars estimates to exactly `budget` tokens —
+    /// that's the ceiling we fit the (truncated body + marker) under.
     fn fit_body(body: &str, budget: u32) -> Option<String> {
         if budget == 0 {
             return None;
@@ -94,12 +103,18 @@ impl RoomDoctrineSource {
         if estimate_tokens(body) <= budget {
             return Some(body.to_string());
         }
-        // ~4 chars/token; leave room for the truncation marker.
         const MARKER: &str = "\n…[doctrine truncated]";
-        let char_budget = (budget as usize).saturating_mul(4).saturating_sub(MARKER.len());
-        let mut truncated: String = body.chars().take(char_budget).collect();
-        truncated.push_str(MARKER);
-        Some(truncated)
+        let marker_chars = MARKER.chars().count();
+        // Max chars whose estimate stays within `budget` tokens.
+        let max_chars = (budget as usize).saturating_mul(4).saturating_sub(4);
+        if max_chars <= marker_chars {
+            // No room for the marker plus any content → emit no block.
+            return None;
+        }
+        let char_budget = max_chars - marker_chars;
+        let mut out: String = body.chars().take(char_budget).collect();
+        out.push_str(MARKER);
+        Some(out)
     }
 }
 
@@ -290,17 +305,52 @@ mod tests {
         assert_eq!(delivery.resolution_used, ResolutionPreference::Placeholder);
     }
 
-    // what this catches: an over-budget doctrine is truncated (with a
-    // marker) and never overspends — partial guidance beats dropping the
-    // room's operating contract entirely.
+    // what this catches: an over-budget doctrine is truncated and NEVER
+    // overspends the allocation — across the full budget regime, not just
+    // a comfortable one. The earlier version only checked budget=20 and
+    // missed that tiny budgets (1..=6) overspent with a content-free
+    // marker-only block (adversarial review of PR #1651). Invariant now:
+    // for ANY budget, either no block is delivered, or the delivered
+    // block fits the budget AND carries real content (not just the
+    // truncation marker).
     #[tokio::test]
-    async fn oversized_doctrine_truncates_within_budget() {
+    async fn oversized_doctrine_never_overspends_across_budget_regime() {
+        let big = "x".repeat(10_000);
+        for budget in [1u32, 2, 3, 5, 6, 7, 8, 20, 100, 500] {
+            let reader = Arc::new(StubReader::new(Some(card(&big))));
+            let source = RoomDoctrineSource::new(persona(), reader);
+            let delivery = source
+                .deliver(&ctx(), budget, ResolutionPreference::Raw)
+                .await;
+            assert!(
+                delivery.tokens_used <= budget,
+                "budget {budget}: overspent ({} > {budget})",
+                delivery.tokens_used
+            );
+            if let Some(item) = delivery.items.first() {
+                // A delivered block must carry real doctrine content, not
+                // just the truncation marker — else it spends tokens to
+                // say nothing.
+                let only_marker = item.content.trim_start().starts_with('…')
+                    || !item.content.contains('x');
+                assert!(
+                    !only_marker,
+                    "budget {budget}: delivered a content-free block: {:?}",
+                    item.content
+                );
+            }
+        }
+    }
+
+    // what this catches: a budget too small to carry the marker plus real
+    // content yields NO block rather than a token-wasting marker-only one.
+    #[tokio::test]
+    async fn tiny_budget_emits_no_block() {
         let big = "x".repeat(10_000);
         let reader = Arc::new(StubReader::new(Some(card(&big))));
         let source = RoomDoctrineSource::new(persona(), reader);
-        let delivery = source.deliver(&ctx(), 20, ResolutionPreference::Raw).await;
-        assert_eq!(delivery.items.len(), 1);
-        assert!(delivery.tokens_used <= 20, "must not overspend the budget");
-        assert!(delivery.items[0].content.contains("truncated"));
+        let delivery = source.deliver(&ctx(), 3, ResolutionPreference::Raw).await;
+        assert!(delivery.items.is_empty(), "tiny budget must emit no block");
+        assert_eq!(delivery.tokens_used, 0);
     }
 }
