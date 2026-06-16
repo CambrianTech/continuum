@@ -63,6 +63,20 @@ fn default_rules() -> &'static Vec<AccessRule> {
             // Owner nodes get everything else too (via the wildcard below).
             // When we add untrusted-node support, we'll add Trusted/Provisional rules here.
 
+            // Cross-grid inference: a remote peer may request generation from
+            // this node's persona-provider over airc (AircRemoteInferenceAdapter
+            // dispatches `ai/generate`, KIND_PEER). Provisional is the durable
+            // substrate decision (vs the per-machine `grid/trust <peer> Owner`
+            // dance) so every grid consumer — IntelMac, future nodes — is
+            // admitted by policy, not a manual elevation. This is the same ACL
+            // spot the future capability-discovery handshake will gate. Owner
+            // still satisfies it (Owner >= Provisional); Blocked/Untrusted are
+            // still denied. More specific than the `""` wildcard, so it wins.
+            AccessRule {
+                prefix: "ai/generate",
+                access: CommandAccess::Provisional,
+            },
+
             // Wildcard: owner-trust nodes can run anything.
             // This means our own towers have full access across the grid.
             AccessRule {
@@ -132,6 +146,22 @@ mod tests {
         // grid/pair requires Owner
         assert!(!is_command_authorized("grid/pair", TrustLevel::Trusted));
         assert!(is_command_authorized("grid/pair", TrustLevel::Owner));
+    }
+
+    // what this catches: cross-grid inference (ai/generate) is admitted at
+    // Provisional+ (so an enrolled non-Owner consumer like IntelMac can request
+    // generation) WITHOUT opening everything else — a durable policy decision,
+    // not a per-machine manual trust elevation. Owner still works; Blocked is
+    // still denied; a sibling sensitive command stays Owner-only.
+    #[test]
+    fn ai_generate_is_provisional_for_cross_grid_consumers() {
+        assert!(is_command_authorized("ai/generate", TrustLevel::Provisional));
+        assert!(is_command_authorized("ai/generate", TrustLevel::Trusted));
+        assert!(is_command_authorized("ai/generate", TrustLevel::Owner));
+        assert!(!is_command_authorized("ai/generate", TrustLevel::Blocked));
+        // The Provisional rule must NOT leak access to other commands.
+        assert!(!is_command_authorized("data/delete", TrustLevel::Provisional));
+        assert!(!is_command_authorized("gpu/stats", TrustLevel::Provisional));
     }
 
     #[test]
