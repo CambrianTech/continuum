@@ -25,7 +25,13 @@
 
 set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+# Repo root is two up from tools/scripts/. (Was `dirname SCRIPT_DIR`, which
+# resolved to tools/ — stale since this script moved under tools/scripts/.)
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+# continuum-core crate manifest. Restructured workers/continuum-core →
+# core/continuum-core (commit 2cb63e019); cwd-independent --manifest-path so the
+# headless start works from any directory.
+CORE_MANIFEST="$REPO_ROOT/core/continuum-core/Cargo.toml"
 
 # ── PATH + config ────────────────────────────────────────────────────
 [ -f "$HOME/.cargo/env" ] && source "$HOME/.cargo/env"
@@ -115,5 +121,4 @@ echo "  socket:   $CONTINUUM_SOCKET"
 echo "  airc:     room=${AIRC_DEFAULT_ROOM_NAME:-?} channel=${AIRC_DEFAULT_CHANNEL:-?}"
 echo ""
 
-cd "$PROJECT_DIR/workers/continuum-core"
-exec cargo run --bin continuum-core-server $PROFILE_FLAG $CONTINUUM_FEATURES -- "$CONTINUUM_SOCKET"
+exec cargo run --manifest-path "$CORE_MANIFEST" --bin continuum-core-server $PROFILE_FLAG $CONTINUUM_FEATURES -- "$CONTINUUM_SOCKET"

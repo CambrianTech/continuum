@@ -2,7 +2,7 @@
   "_doc": "Single source of truth for all models the system uses. ALL consumers (install.sh, model-init download scripts, continuum-core Rust loader, persona seed) read from this file. To swap a model: edit ONE entry here. Personas store symbolic refs (e.g. 'local-default', 'vision-default') so changing the registry value automatically picks up everywhere on next inference call — seeded data does NOT need migration.",
   "_consumers": [
     "src/shared/ModelRegistry.ts (TS reader)",
-    "src/workers/continuum-core/src/inference/registry.rs (Rust reader)",
+    "core/continuum-core/src/inference/registry.rs (Rust reader)",
     "install.sh (resolves PERSONA_MODEL via tier)",
     "src/scripts/download-models.sh (model-init container — downloads all auto_download:true models)",
     "src/scripts/seed/personas.ts (resolves symbolic refs to current model on lookup)"
