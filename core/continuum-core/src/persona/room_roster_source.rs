@@ -48,10 +48,12 @@
 //! - Roster is small + always-current; no pagination (atomic unit = one
 //!   present citizen, like the `ToolSource` precedent in the trait doc).
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use airc_core::PeerId;
+use airc_core::identity::IdentityEvent;
+use airc_core::{Body, PeerId, TranscriptEvent, TranscriptKind};
 use airc_lib::{AgentLiveness, AircError};
 use async_trait::async_trait;
 
@@ -75,10 +77,44 @@ const PRESENCE_WINDOW: Duration = Duration::from_secs(120);
 /// peers — not the full scrollback.
 const HEARTBEAT_SCAN: usize = 200;
 
+/// How many recent transcript events to scan for `IdentityPublished`
+/// when building the peer→name map. Matches airc's own `peer_alias`
+/// window (200).
+pub(crate) const IDENTITY_SCAN: usize = 200;
+
 /// Rough chars/token estimate — same heuristic `AircRagSource` /
 /// `EngramSource` use. Real tokenizer integration lands in slice 12+.
 fn estimate_tokens(content: &str) -> u32 {
     ((content.chars().count() / 4) as u32).saturating_add(1)
+}
+
+/// Build a `PeerId → display-name` map from ONE transcript page, reading
+/// `IdentityPublished` cards. This is the batched form of airc's
+/// per-peer `peer_alias` (which scans a full page EACH call): resolving
+/// N present peers one-at-a-time is N+1 page scans — N+1 IPC round-trips
+/// under the cognition lock for an N-peer room. One scan keeps a roster
+/// delivery O(1) in room size. Uses only public `airc_core` types and
+/// mirrors `airc_lib::Airc::peer_alias` parsing; later cards win
+/// (page is chronological, so a re-published name overrides an old one).
+pub(crate) fn parse_identity_names(events: Vec<TranscriptEvent>) -> HashMap<PeerId, String> {
+    let mut names = HashMap::new();
+    for event in events {
+        if event.kind != TranscriptKind::IdentityPublished {
+            continue;
+        }
+        let Some(Body::Json(value)) = event.body else {
+            continue;
+        };
+        let Ok(IdentityEvent::PeerIdentityCard(card)) =
+            serde_json::from_value::<IdentityEvent>(value)
+        else {
+            continue;
+        };
+        if !card.identity.name.is_empty() {
+            names.insert(event.peer_id, card.identity.name);
+        }
+    }
+    names
 }
 
 /// Abstract reader over airc room presence + identity. Production impl
@@ -99,8 +135,12 @@ pub trait AircRosterReader: Send + Sync {
         window: usize,
     ) -> Result<Vec<AgentLiveness>, AircError>;
 
-    /// Human-readable display alias for a peer, if known.
-    async fn peer_alias(&self, peer_id: PeerId) -> Result<Option<String>, AircError>;
+    /// All known peer display names in the room, as one `PeerId → name`
+    /// map built from a SINGLE transcript scan. Batched on purpose:
+    /// resolving names per-peer (airc's `peer_alias`) is one full page
+    /// scan EACH, i.e. N+1 IPC round-trips under the cognition lock for
+    /// an N-peer room. One map keeps a roster delivery O(1) in room size.
+    async fn peer_alias_map(&self) -> Result<HashMap<PeerId, String>, AircError>;
 }
 
 /// `airc_lib::Airc` satisfies the reader contract directly. Orphan rule
@@ -119,8 +159,9 @@ impl AircRosterReader for airc_lib::Airc {
         airc_lib::Airc::active_agents(self, within, window).await
     }
 
-    async fn peer_alias(&self, peer_id: PeerId) -> Result<Option<String>, AircError> {
-        airc_lib::Airc::peer_alias(self, peer_id).await
+    async fn peer_alias_map(&self) -> Result<HashMap<PeerId, String>, AircError> {
+        let events = airc_lib::Airc::page_recent(self, IDENTITY_SCAN).await?;
+        Ok(parse_identity_names(events))
     }
 }
 
@@ -229,6 +270,19 @@ impl RagSource for RoomRosterSource {
 
         let self_peer = self.reader.self_peer_id();
 
+        // Resolve ALL names in ONE scan, not per-peer. A failure here is
+        // non-fatal — degrade to short peer labels (still truthful) so a
+        // transient identity-read outage doesn't blank the roster or the
+        // turn. Logged at debug so an outage is observable.
+        let names = self.reader.peer_alias_map().await.unwrap_or_else(|err| {
+            tracing::debug!(
+                error = %err,
+                persona_id = %self.persona_id,
+                "room_roster: peer_alias_map failed — falling back to short peer labels"
+            );
+            HashMap::new()
+        });
+
         let mut items: Vec<RagItem> = Vec::new();
         let mut tokens_used: u32 = 0;
         for agent in agents {
@@ -237,13 +291,12 @@ impl RagSource for RoomRosterSource {
             if agent.peer == self_peer {
                 continue;
             }
-            // Best-effort alias; fall back to a short peer label so a
-            // present citizen is never invisible just because its alias
-            // lookup failed.
-            let name = match self.reader.peer_alias(agent.peer).await {
-                Ok(Some(alias)) => alias,
-                _ => Self::short_peer_label(agent.peer),
-            };
+            // Name from the single-scan map; fall back to a short peer
+            // label so a present citizen is never invisible.
+            let name = names
+                .get(&agent.peer)
+                .cloned()
+                .unwrap_or_else(|| Self::short_peer_label(agent.peer));
             let availability = agent.coordination.availability.map(|a| format!("{a:?}"));
             let item = Self::make_item(
                 agent.peer,
@@ -348,12 +401,11 @@ mod tests {
             }
             Ok(self.agents.clone())
         }
-        async fn peer_alias(&self, peer_id: PeerId) -> Result<Option<String>, AircError> {
-            Ok(self
-                .aliases
-                .iter()
-                .find(|(p, _)| *p == peer_id)
-                .map(|(_, a)| a.clone()))
+        async fn peer_alias_map(&self) -> Result<HashMap<PeerId, String>, AircError> {
+            if *self.fail.lock().unwrap() {
+                return Err(AircError::UnknownPeer(PeerId::new()));
+            }
+            Ok(self.aliases.iter().cloned().collect())
         }
     }
 
@@ -387,6 +439,11 @@ mod tests {
         assert!(delivery.items[0].content.contains("win-claude"));
         assert!(delivery.items[0].content.contains("claude"));
         assert_eq!(delivery.items[0].metadata["runtime"], "claude");
+        // The service-loop projection reads metadata["display_name"] to
+        // populate other_persona_names (single-party history-drop). Lock
+        // that contract: the bare name must be present and match the
+        // transcript sender name, not the formatted line.
+        assert_eq!(delivery.items[0].metadata["display_name"], "win-claude");
         assert!(delivery.continuation.is_none());
     }
 

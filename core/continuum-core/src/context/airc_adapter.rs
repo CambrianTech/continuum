@@ -59,11 +59,16 @@ impl crate::persona::room_roster_source::AircRosterReader for AircHandleAdapter 
         self.inner.active_agents(within, window).await
     }
 
-    async fn peer_alias(
+    async fn peer_alias_map(
         &self,
-        peer_id: airc_core::PeerId,
-    ) -> Result<Option<String>, AircError> {
-        self.inner.peer_alias(peer_id).await
+    ) -> Result<std::collections::HashMap<airc_core::PeerId, String>, AircError> {
+        let events = self
+            .inner
+            .page_recent(crate::persona::room_roster_source::IDENTITY_SCAN)
+            .await?;
+        Ok(crate::persona::room_roster_source::parse_identity_names(
+            events,
+        ))
     }
 }
 

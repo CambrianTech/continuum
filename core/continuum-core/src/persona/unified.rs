@@ -30,6 +30,13 @@ use crate::rag::RagEngine;
 use std::sync::Arc;
 use uuid::Uuid;
 
+/// Token ceiling for the lightweight room-roster source. A roster is a
+/// handful of presence lines (tens of tokens); capping its budget keeps
+/// it from competing with the heavyweight engram/airc sources for grow
+/// headroom (which would shrink delivered recent_history). See the
+/// budget-claim rationale in `compose_for_turn`.
+const ROSTER_MAX_TOKENS: u32 = 256;
+
 /// All cognitive state for a single persona — single lock, cache-local.
 pub struct PersonaCognition {
     pub engine: PersonaCognitionEngine,
@@ -267,22 +274,43 @@ impl PersonaCognition {
             sources.push(roster.clone());
         }
 
-        // Per-source budget claims. Even split between the two
-        // first-class sources by default — the flex allocator
-        // re-distributes idle headroom toward whoever asks. The
-        // recent-conversation floor lives on airc per the
-        // cognition-cache-hierarchy doc.
+        // Per-source budget claims. The two HEAVYWEIGHT sources (engram
+        // long-term memory + airc recent conversation) split idle
+        // headroom evenly; the recent-conversation floor lives on airc
+        // per the cognition-cache-hierarchy doc. The room-roster source
+        // is LIGHTWEIGHT — a handful of presence lines, tens of tokens —
+        // so it claims a small fixed budget with NO floor. Giving it the
+        // same 500/500/per_source_max claim as the heavyweights would
+        // (a) at small context windows let the floor sum exceed
+        // available and starve airc (the roster, sorted last, would also
+        // drop to 0), and (b) at normal windows split grow-headroom 3
+        // ways instead of 2, shrinking airc's delivered recent_history.
+        // A source's budget should reflect its real appetite.
         let per_source_max = ((context_window as u64) * 6 / 10) as u32;
         let per_source_max = per_source_max.min(headroom);
+        let roster_max = ROSTER_MAX_TOKENS.min(per_source_max);
         let budgets: Vec<RagSourceBudget> = sources
             .iter()
-            .map(|s| RagSourceBudget {
-                source_id: s.source_id().to_string(),
-                priority: 10,
-                floor_tokens: 500_u32.min(per_source_max),
-                min_tokens: 500_u32.min(per_source_max),
-                max_tokens: per_source_max,
-                required: false,
+            .map(|s| {
+                if s.source_id() == "room-roster" {
+                    RagSourceBudget {
+                        source_id: s.source_id().to_string(),
+                        priority: 10,
+                        floor_tokens: 0,
+                        min_tokens: 0,
+                        max_tokens: roster_max,
+                        required: false,
+                    }
+                } else {
+                    RagSourceBudget {
+                        source_id: s.source_id().to_string(),
+                        priority: 10,
+                        floor_tokens: 500_u32.min(per_source_max),
+                        min_tokens: 500_u32.min(per_source_max),
+                        max_tokens: per_source_max,
+                        required: false,
+                    }
+                }
             })
             .collect();
 

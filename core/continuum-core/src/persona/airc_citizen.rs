@@ -159,11 +159,10 @@ impl crate::persona::room_roster_source::AircRosterReader for StubAircCitizen {
         Ok(vec![])
     }
 
-    async fn peer_alias(
+    async fn peer_alias_map(
         &self,
-        _peer_id: airc_core::PeerId,
-    ) -> Result<Option<String>, AircError> {
-        Ok(None)
+    ) -> Result<std::collections::HashMap<airc_core::PeerId, String>, AircError> {
+        Ok(std::collections::HashMap::new())
     }
 }
 
