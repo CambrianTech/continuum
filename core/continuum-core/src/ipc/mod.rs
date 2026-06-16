@@ -789,6 +789,15 @@ pub fn start_server(
     // Phase 1: GpuModule (GPU stats + pressure IPC)
     runtime.register(Arc::new(GpuModule::new(gpu_manager.clone())));
 
+    // ServingDaemonModule — the ever-present control loop that decides (and
+    // re-decides on each tick) how this host serves persona inference: which
+    // base model, how many continuous-batching lanes, how many models warm.
+    // Runs the `cognition::serving_plan` classifier against the live host
+    // budget + on-disk models; publishes the plan + answers `serving/plan`.
+    runtime.register(Arc::new(
+        crate::modules::serving_daemon::ServingDaemonModule::new(gpu_manager.clone()),
+    ));
+
     // ForgeModule (continuum#1164 Phase 4 stub — forge/run IPC).
     // v1 returns a stub ForgeArtifact from a recipe; Phase 5+ wires the
     // real foundry executor.

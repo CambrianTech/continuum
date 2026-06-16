@@ -70,7 +70,8 @@ pub struct ModelFootprint {
 }
 
 /// The serving decision for this host.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ServingPlan {
     /// The base model to serve (shared across lanes).
     pub base_model_id: String,
