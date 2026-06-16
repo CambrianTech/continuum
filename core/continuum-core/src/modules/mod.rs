@@ -11,6 +11,7 @@
 pub mod agent;
 pub mod ai_provider;
 pub mod airc;
+pub mod airc_bridge_directive;
 // Disabled pending v5 owner-core fixture rewrite (continuum task #83).
 // The whole `TestAircDaemon` was modeled on v4 wire shapes
 // (Response::Event { event: Box<TranscriptEvent> }, ResolveWire,
