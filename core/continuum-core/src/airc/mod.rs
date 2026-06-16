@@ -4,6 +4,7 @@
 //! process handling, queue validation, and typed queue envelopes live here so
 //! ServiceModule wrappers stay thin and future AIRC commands reuse one path.
 
+pub mod bridge_protocol;
 pub mod client;
 pub mod daemon_endpoint;
 pub mod daemon_transport;
@@ -18,6 +19,10 @@ pub mod realtime_store;
 pub mod realtime_wire;
 pub mod types;
 
+pub use bridge_protocol::{
+    format_airc_bridge_chat_text, parse_airc_bridge_message, room_from_airc_channel,
+    summarize_bridge_response, BridgeAction, ParseOptions, ParsedBridgeMessage,
+};
 pub use discovery_aggregate::discover;
 pub use discovery_state::{AircDiscovery, DiscoveryFailure, PartialDiscovery};
 
