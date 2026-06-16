@@ -178,6 +178,16 @@ proper reactive framework, mobile/positron-aware, every activity opened by a
 single airc `RoomId`, every client authenticating as its airc identity. Borrow
 the old UI's visuals piece by piece; do not borrow its id/identity/session model.
 
+The performance case is the real driver: the legacy stack's latency
+**compounds**. Node was the prime culprit (per-call overhead × every persona ×
+every turn), atop broader legacy tech debt. With 14 personas today and a target
+of **~100**, a substrate designed for **ms-latency concurrency** (the Rust core
++ airc's optimized wire, per [[airc-performance-doctrine]]) is not a nicety —
+it's what makes a hundred citizens responsive instead of "waiting all day" while
+the lag accumulates. The thin-continuum / generic-airc shape (§0.1) is what lets
+that concurrent substrate carry every surface without each one re-paying the
+cost.
+
 ## 6. What this explicitly is NOT
 
 - NOT a new event model — airc owns transport (envelope ids, routing, delivery
