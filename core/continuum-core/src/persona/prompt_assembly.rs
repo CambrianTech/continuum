@@ -111,6 +111,13 @@ pub struct PromptAssemblyInput {
     /// Continuum#1211 PR-2.
     #[serde(default)]
     pub recalled_engrams: Vec<String>,
+    /// OTHER citizens currently present in the room — one pre-formatted
+    /// line per peer (`name [runtime] — availability`), produced by
+    /// `RoomRosterSource`. Rendered as a `[Present in this room]` block
+    /// so the persona is grounded in who is present and who is NOT
+    /// itself. Empty = no block rendered (backwards-compatible).
+    #[serde(default)]
+    pub room_roster: Vec<String>,
 }
 
 /// A message in conversation history.
@@ -179,6 +186,30 @@ pub fn assemble(input: &PromptAssemblyInput) -> AssembledPrompt {
              to your expertise. Focus your contribution here:\n{}",
             input.matched_angle
         );
+    }
+
+    // Inject the room roster — who ELSE is present right now. This is
+    // identity grounding, so it sits high (right after the matched
+    // angle, before memory). Without it a persona sees other citizens'
+    // names in the transcript with nothing declaring them as real,
+    // distinct participants → it role-plays the whole room (the
+    // confabulation bug). The block names them and forbids voicing
+    // them. Empty roster = no block (backwards-compatible). See
+    // docs/grid/AIRC-NATIVE-IDENTITY-ROOMS-SECURITY.md §5 slice 1.
+    if !input.room_roster.is_empty() {
+        let _ = write!(
+            system_prompt,
+            "\n\n[Present in this room]\n\
+             You are {}. The following are the OTHER citizens present right now — \
+             real, distinct participants, NOT characters for you to voice. Address \
+             them by name when relevant; speak only as yourself. The label in \
+             brackets is each one's runtime (e.g. an outside agent vs a grid \
+             persona):",
+            input.persona_name
+        );
+        for line in &input.room_roster {
+            let _ = write!(system_prompt, "\n- {line}");
+        }
     }
 
     // Inject recalled engrams as a memory block — continuum#1211 PR-2.
@@ -608,6 +639,7 @@ mod tests {
             multi_party_strategy: MultiPartyChatStrategy::default(),
             other_persona_names: vec![],
             recalled_engrams: vec![],
+            room_roster: vec![],
         };
 
         let result = assemble(&input);
@@ -693,6 +725,7 @@ mod tests {
             multi_party_strategy: MultiPartyChatStrategy::default(),
             other_persona_names: vec![],
             recalled_engrams: vec![],
+            room_roster: vec![],
         };
 
         let result = assemble(&input);
@@ -730,6 +763,7 @@ mod tests {
                 "Joel's favorite color is teal.".to_string(),
                 "Joel works in San Francisco.".to_string(),
             ],
+            room_roster: vec![],
         };
 
         let result = assemble(&input);
@@ -778,12 +812,89 @@ mod tests {
             multi_party_strategy: MultiPartyChatStrategy::default(),
             other_persona_names: vec![],
             recalled_engrams: vec![],
+            room_roster: vec![],
         };
 
         let result = assemble(&input);
         assert!(
             !result.system_message.contains("[Recent Memory]"),
             "should NOT render Recent Memory header for empty engrams: {}",
+            result.system_message
+        );
+    }
+
+    // what this catches: the persona-identity-grounding fix. A non-empty
+    // room_roster MUST render a [Present in this room] block that names
+    // the persona itself, lists the other present citizens verbatim, and
+    // forbids voicing them. Without this block a small model role-plays
+    // the whole room (the Ivar confabulation bug). Regression target:
+    // docs/grid/AIRC-NATIVE-IDENTITY-ROOMS-SECURITY.md §5 slice 1.
+    #[test]
+    fn room_roster_renders_present_block_grounding_the_persona() {
+        let input = PromptAssemblyInput {
+            persona_name: "Ivar".to_string(),
+            system_prompt: "You are Ivar.".to_string(),
+            matched_angle: String::new(),
+            history: vec![],
+            current_message: HistoryMessage {
+                role: "user".to_string(),
+                name: None,
+                content: "hi".to_string(),
+                timestamp_ms: None,
+            },
+            is_voice: false,
+            social_signals: None,
+            multi_party_strategy: MultiPartyChatStrategy::default(),
+            other_persona_names: vec![],
+            recalled_engrams: vec![],
+            room_roster: vec![
+                "BigMama [persona] — Busy".to_string(),
+                "win-claude [claude]".to_string(),
+            ],
+        };
+
+        let result = assemble(&input);
+        assert!(
+            result.system_message.contains("[Present in this room]"),
+            "expected the roster block header: {}",
+            result.system_message
+        );
+        // Grounds the persona in its OWN identity within the block.
+        assert!(result.system_message.contains("You are Ivar"));
+        // Lists the other present citizens verbatim (name + runtime).
+        assert!(result.system_message.contains("BigMama [persona] — Busy"));
+        assert!(result.system_message.contains("win-claude [claude]"));
+    }
+
+    // what this catches: empty roster → NO [Present in this room] block,
+    // backwards-compatible with every caller that doesn't supply one
+    // (and the cold-start / no-presence case). A formatter that always
+    // emitted the header would clutter every prompt.
+    #[test]
+    fn empty_room_roster_emits_no_present_block() {
+        let input = PromptAssemblyInput {
+            persona_name: "Helper AI".to_string(),
+            system_prompt: "You are Helper AI.".to_string(),
+            matched_angle: String::new(),
+            history: vec![],
+            current_message: HistoryMessage {
+                role: "user".to_string(),
+                name: None,
+                content: "hi".to_string(),
+                timestamp_ms: None,
+            },
+            is_voice: false,
+            social_signals: None,
+            multi_party_strategy: MultiPartyChatStrategy::default(),
+            other_persona_names: vec![],
+            recalled_engrams: vec![],
+            room_roster: vec![],
+        };
+
+        let result = assemble(&input);
+        assert!(
+            !result.system_message.contains("[Present in this room]"),
+            "should NOT render the roster block for an empty roster: {}",
             result.system_message
         );
     }
@@ -806,6 +917,7 @@ mod tests {
             multi_party_strategy: MultiPartyChatStrategy::default(),
             other_persona_names: vec![],
             recalled_engrams: vec![],
+            room_roster: vec![],
         };
 
         let result = assemble(&input);
@@ -830,6 +942,7 @@ mod tests {
             multi_party_strategy: MultiPartyChatStrategy::default(),
             other_persona_names: vec![],
             recalled_engrams: vec![],
+            room_roster: vec![],
         };
 
         let result = assemble(&input);
@@ -862,6 +975,7 @@ mod tests {
             multi_party_strategy: MultiPartyChatStrategy::default(),
             other_persona_names: vec![],
             recalled_engrams: vec![],
+            room_roster: vec![],
         };
 
         let result = assemble(&input);
@@ -904,6 +1018,7 @@ mod tests {
             multi_party_strategy: MultiPartyChatStrategy::default(),
             other_persona_names: vec![],
             recalled_engrams: vec![],
+            room_roster: vec![],
         };
 
         let result = assemble(&input);
@@ -947,6 +1062,7 @@ mod tests {
             multi_party_strategy: MultiPartyChatStrategy::default(),
             other_persona_names: vec![],
             recalled_engrams: vec![],
+            room_roster: vec![],
         };
 
         let result = assemble(&input);

@@ -3,6 +3,13 @@
 Status: v0 development/test harness; target architecture for chat substrate
 migration.
 
+> **Superseded for identity/rooms/security:** the framing below where Continuum
+> "owns which rooms exist and which user may speak" predates the airc-native
+> principle. Identity, rooms, and security now *just use airc* — see
+> [AIRC-NATIVE-IDENTITY-ROOMS-SECURITY.md](AIRC-NATIVE-IDENTITY-ROOMS-SECURITY.md).
+> This doc remains accurate for the transport / side-channel / forge-contract
+> split.
+
 AIRC is the external collaboration wire and should become the primary
 handshake, initiation, and pipeline-control substrate. Continuum remains the
 runtime under test: it owns commands, persona behavior, model/runtime state,

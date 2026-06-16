@@ -482,6 +482,11 @@ impl PersonaServiceModule {
             message_media: Vec::new(),
             capabilities: persona.responder_config.capabilities.clone(),
             recalled_engrams: Vec::new(),
+            // Roster grounding flows through the service-loop / compose
+            // projection, not this burst projection — defaults empty
+            // here (no [Present in this room] block), same tolerated-
+            // absence shape as other_persona_names above.
+            room_roster: Vec::new(),
         }
     }
 

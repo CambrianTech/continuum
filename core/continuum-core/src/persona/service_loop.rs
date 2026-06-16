@@ -530,6 +530,37 @@ async fn serve_persona_loop_inner(
                 }
             })
             .collect();
+        // Project the room-roster delivery into TWO consumers from the
+        // ONE source of truth (the roster delivery), routed by source_id:
+        //   • `room_roster` — the formatted `name [runtime] — avail`
+        //     lines → system-prompt GROUNDING ([Present in this room]).
+        //     Deliberately NOT recent_history: the roster names who is
+        //     present (identity grounding), it is not conversation —
+        //     injecting it as history is the confusion the source removes.
+        //   • `other_persona_names` — bare display names → the
+        //     `ProperChatMlSingleParty` history-drop (single-party models
+        //     can't process other-AI turns). This field was reserved for
+        //     exactly this roster data and previously sat empty; the same
+        //     delivery now feeds it, so there is one roster truth, not two.
+        // See docs/grid/AIRC-NATIVE-IDENTITY-ROOMS-SECURITY.md §5 slice 1.
+        let mut room_roster: Vec<String> = Vec::new();
+        let mut other_persona_names: Vec<String> = Vec::new();
+        for item in composed
+            .deliveries
+            .iter()
+            .filter(|d| d.source_id == "room-roster")
+            .flat_map(|d| d.items.iter())
+        {
+            room_roster.push(item.content.clone());
+            if let Some(name) = item
+                .metadata
+                .get("display_name")
+                .and_then(|v| v.as_str())
+            {
+                other_persona_names.push(name.to_string());
+            }
+        }
+
         // recalled_engrams is populated above from
         // admission.recall_recent(8) — substrate-managed memory,
         // not the airc transcript window. The engram delivery from
@@ -579,6 +610,7 @@ async fn serve_persona_loop_inner(
             message_media: Vec::new(),
             capabilities: std::collections::HashSet::new(),
             recalled_engrams,
+            room_roster,
         };
 
         // 3. Run the cognition cycle. The persona may speak or stay

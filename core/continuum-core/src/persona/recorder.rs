@@ -540,6 +540,7 @@ mod tests {
             message_media: vec![],
             capabilities: HashSet::new(),
             recalled_engrams: vec![],
+            room_roster: vec![],
         }
     }
 
