@@ -38,6 +38,17 @@
 //! same-account Owner peer on another machine regains full access. Until
 //! then the conservative cap is the safe floor — consistent with the
 //! grid's "default to Blocked, elevate deliberately" posture.
+//!
+//! ### Scope: command surface only (for now)
+//!
+//! This policy gates the **command** surface. The airc **event-subscribe**
+//! surface (`routing/airc_event_adapters.rs`) runs its own
+//! `AuthPolicy::gate` but still defaults to `AllowAllPolicy` — a cross-grid
+//! peer's *subscriptions* are not yet gated by this policy (adversarial
+//! review of PR #1653, finding 3). That's intentionally out of scope here
+//! (subscribe is read-ish, and routing it through this gate would deny it
+//! — `events/*/subscribe` falls to the `""`=Owner wildcard). A follow-up
+//! installs a subscribe-appropriate policy on that surface.
 
 use super::auth_policy::{AuthPolicy, CallerIdentity, CallerSource};
 use super::{ForbiddenReason, RouteDecision, Verdict};
@@ -134,5 +145,33 @@ mod tests {
             policy.gate(&decision("data/delete"), Some(&local)),
             Verdict::Allowed
         );
+    }
+
+    // what this catches: the grid ACL matches by PREFIX, so the
+    // `ai/generate` Provisional rule is a NAMESPACE grant — any future
+    // `ai/generate*` path (e.g. `ai/generate/stream`) is also airc-
+    // callable at Provisional. Intentional (the cross-grid inference
+    // family); this test PINS it so the grant stays a conscious, reviewed
+    // decision rather than a silent surprise the day someone adds an
+    // `ai/generate-*` command (adversarial review of PR #1653, finding 1).
+    // If a future `ai/generate*` command should NOT be cross-grid-callable,
+    // tighten the acl.rs rule to exact-match — this test is the tripwire.
+    #[test]
+    fn ai_generate_is_a_provisional_namespace_grant() {
+        let policy = GridTrustAuthPolicy::new();
+        let airc = CallerIdentity::airc(Uuid::new_v4());
+        for granted in ["ai/generate", "ai/generate/stream"] {
+            assert_eq!(
+                policy.gate(&decision(granted), Some(&airc)),
+                Verdict::Allowed,
+                "{granted} is within the intentional ai/generate namespace grant"
+            );
+        }
+        // A sibling ai/* command OUTSIDE the namespace is still denied
+        // (falls to the ""=Owner wildcard) — the grant is scoped.
+        assert!(matches!(
+            policy.gate(&decision("ai/embedding"), Some(&airc)),
+            Verdict::Forbidden { .. }
+        ));
     }
 }
