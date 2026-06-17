@@ -49,11 +49,12 @@ use airc_lib::Airc;
 use async_trait::async_trait;
 
 use super::airc_event_publisher::{
-    build_subscribe_ack, build_unsubscribe_ack, parse_subscribe_envelope,
-    parse_unsubscribe_envelope, EventPublisherState, ParsedSubscribe, ParsedUnsubscribe,
+    build_publish_ack, build_subscribe_ack, build_unsubscribe_ack, parse_publish_envelope,
+    parse_subscribe_envelope, parse_unsubscribe_envelope, AircEventPublisher, EventPublisherState,
+    ParsedPublish, ParsedSubscribe, ParsedUnsubscribe,
 };
 use super::{
-    AllowAllPolicy, AuthPolicy, CallerIdentity, RouteDecision, Verdict,
+    AllowAllPolicy, AuthPolicy, CallerIdentity, RouteDecision, Verdict, EVENT_PUBLISH_BODY_HINT,
     EVENT_SUBSCRIBE_BODY_HINT, EVENT_UNSUBSCRIBE_BODY_HINT,
 };
 
@@ -62,6 +63,9 @@ pub const SUBSCRIBE_ADAPTER_NAME: &str = "continuum.event.subscribe";
 
 /// Stable adapter name for the unsubscribe path.
 pub const UNSUBSCRIBE_ADAPTER_NAME: &str = "continuum.event.unsubscribe";
+
+/// Stable adapter name for the publish path.
+pub const PUBLISH_ADAPTER_NAME: &str = "continuum.event.publish";
 
 /// ConsumerAdapter for the subscribe path. Registered with the
 /// airc adapter registry as claiming
@@ -96,6 +100,29 @@ pub struct EventSubscribeAdapter {
 pub struct EventUnsubscribeAdapter {
     airc: Arc<Airc>,
     state: Arc<EventPublisherState>,
+}
+
+/// ConsumerAdapter for the publish path — the `emit` half of the Event
+/// primitive. Registered with the airc adapter registry as claiming
+/// [`EVENT_PUBLISH_BODY_HINT`].
+///
+/// Holds the [`AircEventPublisher`] (the fan-out engine over the shared
+/// subscription registry) so an inbound publish reaches every matching
+/// subscriber, and an `Arc<dyn AuthPolicy>` so every inbound publish is
+/// gated through the same substrate-wide chokepoint subscribe uses.
+///
+/// Publish is a WRITE: unlike subscribe (which only registers the
+/// caller's own interest), a publish MUTATES every subscriber's stream
+/// by fanning an event out to it. Without the gate, any peer that can
+/// reach this node could inject events onto ANY topic — including
+/// internal substrate signals other personas act on. The gate runs on
+/// the synthetic URI `events/<topic>/publish`, so operators author
+/// publish policy with the same path-prefix matching as every other
+/// surface.
+pub struct EventPublishAdapter {
+    airc: Arc<Airc>,
+    publisher: Arc<AircEventPublisher>,
+    policy: Arc<dyn AuthPolicy>,
 }
 
 impl EventSubscribeAdapter {
@@ -204,6 +231,101 @@ impl EventUnsubscribeAdapter {
     }
 }
 
+impl EventPublishAdapter {
+    /// Build a publish adapter against an existing airc handle +
+    /// publisher, with [`AllowAllPolicy`] as the default gate. The
+    /// publisher carries the shared `EventPublisherState`, so a publish
+    /// fans out to exactly the subscriptions the subscribe adapter
+    /// registered. Builder-style `with_policy` swaps the gate.
+    pub fn new(airc: Arc<Airc>, publisher: Arc<AircEventPublisher>) -> Arc<Self> {
+        Arc::new(Self {
+            airc,
+            publisher,
+            policy: Arc::new(AllowAllPolicy),
+        })
+    }
+
+    /// Replace the auth policy. Operators wire their substrate gate here
+    /// at boot — the same `Arc<dyn AuthPolicy>` instance shared with the
+    /// subscribe adapter, so read (subscribe) and write (publish) are
+    /// governed by one policy.
+    pub fn with_policy(
+        airc: Arc<Airc>,
+        publisher: Arc<AircEventPublisher>,
+        policy: Arc<dyn AuthPolicy>,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            airc,
+            publisher,
+            policy,
+        })
+    }
+
+    /// Gate an inbound publish — the security seam, pure and exposed
+    /// `pub` so the WRITE contract is testable without airc.
+    ///
+    /// Refuses an empty topic upfront (it would fan out to nothing —
+    /// silent; refused per `[[no-fallbacks-ever]]`), then runs the
+    /// caller through the AuthPolicy on the synthetic URI
+    /// `events/<topic>/publish`. Returns `Ok(())` when allowed, or a
+    /// typed `AdapterError::Consumer` when the topic is empty or the
+    /// policy refuses (`Forbidden`/`Deferred`).
+    pub fn gate_publish(
+        policy: &dyn AuthPolicy,
+        parsed: &ParsedPublish,
+    ) -> Result<(), AdapterError> {
+        if parsed.request.topic.is_empty() {
+            return Err(AdapterError::Consumer(
+                "EventPublishAdapter: topic must not be empty — an empty topic fans \
+                 out to nothing; refuse upfront per [[no-fallbacks-ever]]"
+                    .to_string(),
+            ));
+        }
+
+        let caller = CallerIdentity::airc(parsed.caller_peer_id.0);
+        let decision = RouteDecision::Local {
+            path: format!("events/{}/publish", parsed.request.topic),
+            query: None,
+            fragment: None,
+        };
+        match policy.gate(&decision, Some(&caller)) {
+            Verdict::Allowed => Ok(()),
+            Verdict::Forbidden { reason } => Err(AdapterError::Consumer(format!(
+                "EventPublishAdapter: forbidden by policy ({reason:?}) — \
+                 caller peer={} topic={:?}",
+                parsed.caller_peer_id.0, parsed.request.topic
+            ))),
+            Verdict::Deferred {
+                reason,
+                prompt_target_env,
+            } => Err(AdapterError::Consumer(format!(
+                "EventPublishAdapter: deferred by policy ({reason:?}, prompt_target_env={prompt_target_env:?}) — \
+                 caller peer={} topic={:?}",
+                parsed.caller_peer_id.0, parsed.request.topic
+            ))),
+        }
+    }
+
+    /// Gate, fan out, ack. Gated FIRST (no fan-out on a refused publish),
+    /// then the payload is fanned to every matching subscriber, and the
+    /// ack carries the delivered count back to the caller's `emit()`.
+    async fn process_publish(
+        &self,
+        parsed: &ParsedPublish,
+    ) -> Result<(Headers, Body), AdapterError> {
+        Self::gate_publish(&*self.policy, parsed)?;
+
+        let delivered = self
+            .publisher
+            .publish(&parsed.request.topic, parsed.request.payload.clone())
+            .await
+            .map_err(AdapterError::Consumer)?;
+
+        build_publish_ack(&parsed.request.topic, delivered as u64)
+            .map_err(|e| AdapterError::Consumer(format!("build_publish_ack: {e}")))
+    }
+}
+
 #[async_trait]
 impl ConsumerAdapter for EventSubscribeAdapter {
     fn name(&self) -> &'static str {
@@ -246,13 +368,35 @@ impl ConsumerAdapter for EventUnsubscribeAdapter {
     }
 }
 
+#[async_trait]
+impl ConsumerAdapter for EventPublishAdapter {
+    fn name(&self) -> &'static str {
+        PUBLISH_ADAPTER_NAME
+    }
+
+    fn body_hint(&self) -> &'static str {
+        EVENT_PUBLISH_BODY_HINT
+    }
+
+    async fn on_envelope(&self, envelope: TranscriptEvent) -> Result<(), AdapterError> {
+        let parsed = parse_publish_envelope(&envelope)?;
+        let (headers, body) = self.process_publish(&parsed).await?;
+        self.airc
+            .reply(parsed.reply_to, parsed.correlation_id, headers, body)
+            .await
+            .map_err(|e| AdapterError::Io(format!("airc reply (publish ack): {e}")))?;
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::routing::{
-        AircEventSubscribe, AircEventSubscribeAck, AircEventUnsubscribe, AircEventUnsubscribeAck,
-        ClosurePolicy, ForbiddenReason, HEADER_CONTINUUM_BODY_HINT, HEADER_EVENT_KIND,
-        HEADER_EVENT_SUBSCRIPTION_ID, HEADER_EVENT_TOPIC, EVENT_ACK_BODY_HINT,
+        AircEventPublish, AircEventPublishAck, AircEventSubscribe, AircEventSubscribeAck,
+        AircEventUnsubscribe, AircEventUnsubscribeAck, ClosurePolicy, ForbiddenReason,
+        HEADER_CONTINUUM_BODY_HINT, HEADER_EVENT_KIND, HEADER_EVENT_SUBSCRIPTION_ID,
+        HEADER_EVENT_TOPIC, EVENT_ACK_BODY_HINT,
     };
     use airc_core::PeerId;
     use std::sync::{Arc as StdArc, Mutex};
@@ -468,6 +612,8 @@ mod tests {
         // would vanish.
         assert_eq!(SUBSCRIBE_ADAPTER_NAME, "continuum.event.subscribe");
         assert_eq!(UNSUBSCRIBE_ADAPTER_NAME, "continuum.event.unsubscribe");
+        assert_eq!(PUBLISH_ADAPTER_NAME, "continuum.event.publish");
+        assert_eq!(EVENT_PUBLISH_BODY_HINT, "continuum.event.publish.v1");
 
         // The body_hint accessors must match the protocol-side
         // constants the caller-side AircEventTransport stamps.
@@ -673,5 +819,175 @@ mod tests {
             "URI shape must be events/<topic>/subscribe so policies can match \
              prefix authoring stays stable across refactors"
         );
+    }
+
+    // ─── EventPublishAdapter::gate_publish (the WRITE gate) ───────────
+    //
+    // process_publish's fan-out half is the async glue over
+    // AircEventPublisher::publish, whose composition is covered without
+    // airc by airc_event_publisher::build_publish_envelopes tests. Here
+    // we test the security-critical seam — the gate — directly.
+
+    #[test]
+    fn gate_publish_threads_caller_into_gate() {
+        let captured: StdArc<Mutex<Option<CallerIdentity>>> = StdArc::new(Mutex::new(None));
+        let captured_clone = captured.clone();
+
+        let policy = ClosurePolicy::new(
+            "record-caller-event-publish",
+            move |_decision: &RouteDecision, caller: Option<&CallerIdentity>| {
+                *captured_clone.lock().unwrap() = caller.cloned();
+                Verdict::Allowed
+            },
+        );
+
+        let sender_peer_id = PeerId::new();
+        let parsed = ParsedPublish {
+            caller_peer_id: sender_peer_id,
+            reply_to: PeerId::new(),
+            correlation_id: Uuid::new_v4(),
+            request: AircEventPublish {
+                topic: "cognition/analyze/complete".into(),
+                payload: serde_json::json!({ "k": 1 }),
+            },
+        };
+
+        EventPublishAdapter::gate_publish(&policy, &parsed)
+            .expect("AllowAll-style verdict → gate_publish succeeds");
+
+        let observed = captured
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("AuthPolicy::gate must have been invoked with Some(caller)");
+        assert_eq!(
+            observed.peer_id, sender_peer_id.0,
+            "caller's peer_id must match the envelope sender — a publish is a \
+             WRITE; the gate must see who is emitting"
+        );
+        assert!(
+            matches!(observed.source, crate::routing::CallerSource::Airc),
+            "caller source must be Airc (cross-grid), not Local: {observed:?}"
+        );
+    }
+
+    #[test]
+    fn gate_publish_refuses_empty_topic_with_typed_error() {
+        let parsed = ParsedPublish {
+            caller_peer_id: PeerId::new(),
+            reply_to: PeerId::new(),
+            correlation_id: Uuid::new_v4(),
+            request: AircEventPublish {
+                topic: "".into(),
+                payload: serde_json::json!({}),
+            },
+        };
+
+        let err = EventPublishAdapter::gate_publish(&allow_all(), &parsed)
+            .expect_err("empty topic must refuse");
+        match err {
+            AdapterError::Consumer(msg) => assert!(
+                msg.contains("topic must not be empty"),
+                "error names the missing piece: {msg}"
+            ),
+            other => panic!("expected Consumer error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn gate_publish_refuses_when_policy_forbids() {
+        let policy = ClosurePolicy::new("forbid-everything", |_decision, _caller| {
+            Verdict::Forbidden {
+                reason: ForbiddenReason::NoPermissionForUri("events/internal/publish".into()),
+            }
+        });
+
+        let parsed = ParsedPublish {
+            caller_peer_id: PeerId::new(),
+            reply_to: PeerId::new(),
+            correlation_id: Uuid::new_v4(),
+            request: AircEventPublish {
+                topic: "events/internal".into(),
+                payload: serde_json::json!({}),
+            },
+        };
+
+        let err = EventPublishAdapter::gate_publish(&policy, &parsed)
+            .expect_err("Forbidden verdict must refuse");
+        match err {
+            AdapterError::Consumer(msg) => {
+                assert!(
+                    msg.contains("forbidden by policy"),
+                    "error must signal policy refusal: {msg}"
+                );
+                assert!(
+                    msg.contains("NoPermissionForUri"),
+                    "error must include the typed reason: {msg}"
+                );
+            }
+            other => panic!("expected Consumer error, got {other:?}"),
+        }
+    }
+
+    /// The synthetic URI the gate sees: `events/<topic>/publish` — the
+    /// WRITE twin of `.../subscribe`. Pin it so a future change to the URI
+    /// construction can't silently break publish policies that match on
+    /// the path prefix.
+    #[test]
+    fn gate_publish_decision_path_is_stable() {
+        let observed: StdArc<Mutex<Option<String>>> = StdArc::new(Mutex::new(None));
+        let observed_clone = observed.clone();
+
+        let policy = ClosurePolicy::new("record-decision-path", move |decision, _caller| {
+            if let RouteDecision::Local { path, .. } = decision {
+                *observed_clone.lock().unwrap() = Some(path.clone());
+            }
+            Verdict::Allowed
+        });
+
+        let parsed = ParsedPublish {
+            caller_peer_id: PeerId::new(),
+            reply_to: PeerId::new(),
+            correlation_id: Uuid::new_v4(),
+            request: AircEventPublish {
+                topic: "cognition/score/persona-scored".into(),
+                payload: serde_json::json!({}),
+            },
+        };
+
+        EventPublishAdapter::gate_publish(&policy, &parsed).expect("allowed");
+        let path = observed.lock().unwrap().clone().expect("policy saw a Local decision");
+        assert_eq!(
+            path, "events/cognition/score/persona-scored/publish",
+            "URI shape must be events/<topic>/publish — the WRITE twin of \
+             subscribe — so publish policy prefix authoring stays stable"
+        );
+    }
+
+    // what this catches: the publish ack carries BOTH the topic and the
+    // fan-out count back to the caller's emit(). A drift that drops
+    // `delivered` would make emit() unable to report how many subscribers
+    // an event reached.
+    #[test]
+    fn build_publish_ack_carries_topic_and_delivered_count() {
+        let (headers, body) = build_publish_ack("metrics/cpu", 3).expect("ack");
+
+        assert_eq!(headers.get(HEADER_EVENT_KIND).map(String::as_str), Some("ack"));
+        assert_eq!(
+            headers.get(HEADER_EVENT_TOPIC).map(String::as_str),
+            Some("metrics/cpu")
+        );
+        assert_eq!(
+            headers.get(HEADER_CONTINUUM_BODY_HINT).map(String::as_str),
+            Some(EVENT_ACK_BODY_HINT)
+        );
+
+        let ack: AircEventPublishAck = serde_json::from_value(match body {
+            Body::Json(v) => v,
+            other => panic!("expected Json, got {other:?}"),
+        })
+        .expect("decode");
+        assert_eq!(ack.topic, "metrics/cpu");
+        assert_eq!(ack.delivered, 3);
     }
 }
