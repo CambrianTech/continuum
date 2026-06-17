@@ -226,6 +226,30 @@ pub struct AdapterCapabilities {
     pub max_output_tokens: u32,
 }
 
+impl AdapterCapabilities {
+    /// A minimal text-only capability set — the common case for a basic
+    /// chat/completion adapter (and the trait's default `capabilities()`).
+    ///
+    /// Text in/out, chat-shaped, no tools/vision/audio/streaming, no
+    /// native tool-call or structured-output protocol. Richer adapters
+    /// build on it with struct-update syntax:
+    /// ```ignore
+    /// AdapterCapabilities { supports_tool_use: true,
+    ///     tool_call_protocol: ToolCallProtocol::NativeFunctionCalling,
+    ///     ..AdapterCapabilities::text_only() }
+    /// ```
+    pub fn text_only() -> Self {
+        Self {
+            supports_text_generation: true,
+            supports_chat: true,
+            modalities: ModalitySet::TEXT_ONLY,
+            max_context_window: 4096,
+            max_output_tokens: 2048,
+            ..Default::default()
+        }
+    }
+}
+
 /// LoRA capabilities reported by adapters
 #[derive(Debug, Clone, Default)]
 pub enum LoRACapabilities {
@@ -279,11 +303,22 @@ pub trait AIProviderAdapter: Send + Sync {
     /// Get adapter human-readable name
     fn name(&self) -> &str;
 
-    /// Get adapter capabilities
-    fn capabilities(&self) -> AdapterCapabilities;
+    /// Get adapter capabilities.
+    ///
+    /// Default: a text-only set (`AdapterCapabilities::text_only`).
+    /// Override to declare tools, vision, audio, streaming, or richer
+    /// context/output limits.
+    fn capabilities(&self) -> AdapterCapabilities {
+        AdapterCapabilities::text_only()
+    }
 
-    /// Get API style
-    fn api_style(&self) -> ApiStyle;
+    /// Get API style.
+    ///
+    /// Default: `Local` (in-process inference). Cloud adapters override
+    /// with `OpenAI` / `Anthropic` / `Google`.
+    fn api_style(&self) -> ApiStyle {
+        ApiStyle::Local
+    }
 
     /// Get default model for this provider
     fn default_model(&self) -> &str;
@@ -292,7 +327,14 @@ pub trait AIProviderAdapter: Send + Sync {
     /// off disk). Pays the model-load wall-clock once at boot so
     /// downstream consumers see the model's real capabilities from
     /// the first query on.
-    async fn initialize(&mut self) -> Result<(), String>;
+    ///
+    /// Default: `Ok(())` — adapters with no init contract (cloud
+    /// providers that authenticate lazily, in-process/heuristic
+    /// adapters, test fixtures) opt out silently. Local model adapters
+    /// that load weights off disk MUST override.
+    async fn initialize(&mut self) -> Result<(), String> {
+        Ok(())
+    }
 
     /// Warm the adapter's hot path BEFORE the first real `generate_text`
     /// call. For llama.cpp: run a tiny throwaway decode against a
@@ -320,8 +362,14 @@ pub trait AIProviderAdapter: Send + Sync {
         Ok(())
     }
 
-    /// Shutdown the adapter
-    async fn shutdown(&mut self) -> Result<(), String>;
+    /// Shutdown the adapter.
+    ///
+    /// Default: `Ok(())` — adapters holding no releasable resources opt
+    /// out. Adapters owning a model handle, socket, or worker process
+    /// override to release it.
+    async fn shutdown(&mut self) -> Result<(), String> {
+        Ok(())
+    }
 
     // ─── Text Generation ────────────────────────────────────────────────────
 
@@ -344,11 +392,26 @@ pub trait AIProviderAdapter: Send + Sync {
 
     // ─── Health & Metadata ──────────────────────────────────────────────────
 
-    /// Check provider health
-    async fn health_check(&self) -> HealthStatus;
+    /// Check provider health.
+    ///
+    /// Default: `HealthStatus::healthy()` — in-process / local / test
+    /// adapters with no remote endpoint to probe are nominally healthy
+    /// once constructed. Cloud adapters override to probe their endpoint
+    /// and report real latency / error-rate / rate-limit state.
+    async fn health_check(&self) -> HealthStatus {
+        HealthStatus::healthy()
+    }
 
-    /// Get available models from this provider
-    async fn get_available_models(&self) -> Vec<ModelInfo>;
+    /// Get available models from this provider.
+    ///
+    /// Default: empty — a minimal adapter advertises no model catalog
+    /// (callers use `default_model`). Adapters with a real catalog
+    /// (cloud `/v1/models`, DMR) override with their live list. Note
+    /// `ModelInfo` has no defaults by design, so the honest default here
+    /// is "no catalog," not a synthesized entry.
+    async fn get_available_models(&self) -> Vec<ModelInfo> {
+        Vec::new()
+    }
 
     /// Get metadata for a specific model by ID.
     /// Returns the ModelInfo with ALL required fields (context_window,
@@ -849,12 +912,16 @@ mod tests {
     //! two would leave a phantom in `available()` after deregister, which
     //! is exactly the bug a DMR watchdog needs to NOT have.
     use super::*;
-    use crate::ai::types::{
-        HealthStatus, ModelInfo, TextGenerationRequest, TextGenerationResponse,
-    };
+    use crate::ai::types::{TextGenerationRequest, TextGenerationResponse};
 
-    /// Minimal adapter for registry-shape tests. Doesn't actually do
-    /// inference — every operation either no-ops or returns a stub.
+    /// Minimal adapter for registry-shape tests. Doubles as the live
+    /// proof of the trait's default impls: it implements ONLY the four
+    /// required methods (provider_id, name, default_model, generate_text)
+    /// plus `supports_model` for the model-routing test — everything else
+    /// (capabilities, api_style, initialize, shutdown, health_check,
+    /// get_available_models, device_type) comes from the trait defaults.
+    /// If those defaults regress, this stops compiling or the
+    /// `minimal_adapter_inherits_sensible_defaults` test below fails.
     struct StubAdapter {
         id: String,
         model: Option<String>,
@@ -868,20 +935,8 @@ mod tests {
         fn name(&self) -> &str {
             &self.id
         }
-        fn capabilities(&self) -> AdapterCapabilities {
-            AdapterCapabilities::default()
-        }
-        fn api_style(&self) -> ApiStyle {
-            ApiStyle::Local
-        }
         fn default_model(&self) -> &str {
             "stub"
-        }
-        async fn initialize(&mut self) -> Result<(), String> {
-            Ok(())
-        }
-        async fn shutdown(&mut self) -> Result<(), String> {
-            Ok(())
         }
         async fn generate_text(
             &self,
@@ -889,24 +944,8 @@ mod tests {
         ) -> Result<TextGenerationResponse, String> {
             Err("stub adapter — no inference".into())
         }
-        async fn health_check(&self) -> HealthStatus {
-            HealthStatus {
-                status: crate::ai::types::HealthState::Healthy,
-                api_available: true,
-                response_time_ms: 0,
-                error_rate: 0.0,
-                last_checked: 0,
-                message: Some("stub".to_string()),
-            }
-        }
-        async fn get_available_models(&self) -> Vec<ModelInfo> {
-            Vec::new()
-        }
-        fn device_type(&self) -> InferenceDevice {
-            InferenceDevice::Gpu
-        }
-        fn supports_model(&self, _model: &str) -> bool {
-            self.model.as_deref().map_or(true, |model| model == _model)
+        fn supports_model(&self, model: &str) -> bool {
+            self.model.as_deref().map_or(true, |m| m == model)
         }
     }
 
@@ -989,5 +1028,45 @@ mod tests {
             .expect("qwen2-vl adapter selected");
         assert!(qwen2.supports_model("qwen2-vl"));
         assert!(!qwen2.supports_model("qwen3.5"));
+    }
+
+    // what this catches: regression in the AIProviderAdapter default impls.
+    // A minimal adapter (4 required methods) must inherit sensible defaults
+    // for the long tail so new providers + test fixtures don't boilerplate
+    // 10 methods (cv::Algorithm anti-pattern — common case must be trivial).
+    #[tokio::test]
+    async fn minimal_adapter_inherits_sensible_defaults() {
+        let mut a = StubAdapter {
+            id: "minimal".to_string(),
+            model: None,
+        };
+
+        // Lifecycle defaults are no-op-Ok.
+        assert!(a.initialize().await.is_ok());
+        assert!(a.shutdown().await.is_ok());
+
+        // api_style defaults to local in-process inference.
+        assert_eq!(a.api_style(), ApiStyle::Local);
+
+        // capabilities default to a text-only set.
+        let caps = a.capabilities();
+        assert!(caps.supports_text_generation);
+        assert!(caps.supports_chat);
+        assert!(!caps.supports_tool_use);
+        assert!(!caps.supports_vision);
+        assert!(caps.modalities.text_in && caps.modalities.text_out);
+        assert!(!caps.modalities.vision_in);
+
+        // health defaults to nominal-healthy (no remote probe).
+        let health = a.health_check().await;
+        assert_eq!(health.status, crate::ai::types::HealthState::Healthy);
+        assert!(health.api_available);
+
+        // no advertised catalog by default — callers use default_model.
+        assert!(a.get_available_models().await.is_empty());
+
+        // device defaults to GPU; production-capable unless opted out.
+        assert_eq!(a.device_type(), InferenceDevice::Gpu);
+        assert!(a.is_production_capable());
     }
 }
