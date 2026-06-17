@@ -30,6 +30,7 @@
 pub mod adaptive_throughput;
 pub mod audit;
 pub mod check_redundancy;
+pub mod embedding;
 pub mod generate_recipe;
 pub mod generate_response;
 pub mod host_capability_probe;

@@ -39,13 +39,37 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use uuid::Uuid;
 
+use super::embedding::{cosine_similarity, EmbeddingProvider};
 use super::workspace::{Contribution, Faculty, FacultyId, Workspace};
 use crate::persona::admission_state::AdmissionState;
+use crate::persona::engram::Engram;
 
 /// How many top engrams the faculty surfaces into the workspace per tick. A
 /// bounded "spotlight" on memory — the arbiter further bounds what reaches the
 /// decider.
 const DEFAULT_RECALL_LIMIT: usize = 5;
+
+/// When relevance re-ranking is active, over-fetch this many × the surface limit
+/// as candidates, then narrow by relevance. Over-fetch so a topically-relevant
+/// but lower-salience memory can still enter the running and win the re-rank.
+const RERANK_CANDIDATE_MULTIPLIER: usize = 4;
+
+/// Blend weight for relevance (cosine vs the burst) against the memory's
+/// salience-decay score: `RELEVANCE_WEIGHT·rel + (1-RELEVANCE_WEIGHT)·salience`.
+/// 0.5 = equal voice; tunable, and the replay A/B bench is exactly how we'll
+/// tune it with before/after traces instead of guessing.
+const RELEVANCE_WEIGHT: f32 = 0.5;
+
+/// Blend cosine-relevance (to the burst) with the memory's salience-decay score.
+fn blended_score(
+    salience: f32,
+    query: &[f32],
+    embedder: &dyn EmbeddingProvider,
+    content: &str,
+) -> f32 {
+    let rel = cosine_similarity(query, &embedder.embed(content));
+    RELEVANCE_WEIGHT * rel + (1.0 - RELEVANCE_WEIGHT) * salience
+}
 
 /// Wall-clock seam — injectable so tests are deterministic. Returns ms since
 /// the unix epoch, matching the `now_ms()` convention used across cognition.
@@ -69,16 +93,23 @@ pub struct RecallFaculty {
     admission_state: Arc<AdmissionState>,
     limit: usize,
     clock: Clock,
+    /// Optional relevance re-ranker. When set, recall surfaces the memory most
+    /// RELEVANT to the current burst (cosine, blended with salience), not just
+    /// the most salient/recent — the "memory works as designed at scale" path.
+    /// `None` → pure salience×recency (the backwards-compatible default). The
+    /// backend is swappable (lexical bootstrap now; neural local embedder later).
+    embedder: Option<Arc<dyn EmbeddingProvider>>,
 }
 
 impl RecallFaculty {
-    /// Construct with the default recall limit and wall clock.
+    /// Construct with the default recall limit and wall clock, no re-ranker.
     pub fn new(persona_id: Uuid, admission_state: Arc<AdmissionState>) -> Self {
         Self {
             persona_id,
             admission_state,
             limit: DEFAULT_RECALL_LIMIT,
             clock: wall_clock(),
+            embedder: None,
         }
     }
 
@@ -91,6 +122,13 @@ impl RecallFaculty {
     /// Inject a deterministic clock (tests / replay).
     pub fn with_clock(mut self, clock: Clock) -> Self {
         self.clock = clock;
+        self
+    }
+
+    /// Install a relevance re-ranker (embedding similarity vs the burst). Recall
+    /// then surfaces the most relevant memory, not just the most recent.
+    pub fn with_embedder(mut self, embedder: Arc<dyn EmbeddingProvider>) -> Self {
+        self.embedder = Some(embedder);
         self
     }
 
@@ -109,31 +147,73 @@ impl Faculty for RecallFaculty {
     // Perception tier (reacts_to_broadcast() == false, the default): recall
     // reacts to the raw world-state, bidding its memories into phase 1 so the
     // deliberation faculty can condition on them in phase 2.
-    async fn contribute(&self, _ws: &Workspace) -> Option<Contribution> {
+    async fn contribute(&self, ws: &Workspace) -> Option<Contribution> {
         let now = (self.clock)();
-        // recall_scored ranks by salience-modulated decay AND closes the
-        // bidirectional loop: it records a recall hit on each returned engram
-        // (uplift + access_count + persistence observe). Recalling into the
-        // workspace strengthens the memory — use-it-keeps-it.
-        let scored = self.admission_state.recall_scored(now, self.limit);
-        if scored.is_empty() {
+
+        // Fetch candidates WITHOUT recording hits — we record the hit on what we
+        // actually SURFACE (below), not on candidates that lose the re-rank.
+        // Over-fetch when re-ranking so a relevant-but-lower-salience memory can
+        // still win.
+        let fetch_n = if self.embedder.is_some() {
+            self.limit.saturating_mul(RERANK_CANDIDATE_MULTIPLIER).max(self.limit)
+        } else {
+            self.limit
+        };
+        let candidates = self.admission_state.recall_candidates(now, fetch_n);
+        if candidates.is_empty() {
             return None;
         }
 
-        // The faculty's salience = the best recalled memory's relevance. ML-/
-        // algorithm-derived, never a hand-weight; the arbiter integrates it.
-        let top_salience = scored[0].1.clamp(0.0, 1.0);
+        // Score: (final_score, engram, salience). With an embedder, final_score
+        // blends cosine-relevance-to-the-burst with salience — so recall surfaces
+        // the RELEVANT memory, not just the salient/recent one. Without one,
+        // final_score IS salience (candidates already in that order).
+        let mut scored: Vec<(f32, Engram, f32)> = match &self.embedder {
+            Some(embedder) => {
+                let query = embedder.embed(&ws.world_state);
+                let mut s: Vec<(f32, Engram, f32)> = candidates
+                    .into_iter()
+                    .map(|(engram, salience)| {
+                        let blended =
+                            blended_score(salience, &query, embedder.as_ref(), &engram.content);
+                        (blended, engram, salience)
+                    })
+                    .collect();
+                s.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+                s
+            }
+            None => candidates
+                .into_iter()
+                .map(|(engram, salience)| (salience, engram, salience))
+                .collect(),
+        };
+        scored.truncate(self.limit);
 
+        // Close the loop on what we ACTUALLY surface — Hebbian rehearsal on the
+        // memories the persona truly used this tick (uplift + persistence).
+        let surfaced_ids: Vec<Uuid> = scored.iter().map(|(_, e, _)| e.id).collect();
+        self.admission_state.record_recall_hits(&surfaced_ids, now);
+
+        // The faculty's salience = the top item's final score — relevance-aware
+        // when re-ranking, salience otherwise. ML/algorithm-derived, never a
+        // hand-weight; the arbiter integrates it.
+        let top_salience = scored[0].0.clamp(0.0, 1.0);
         let content = scored
             .iter()
-            .map(|(engram, salience)| format!("- {} (salience {:.2})", engram.content, salience))
+            .map(|(_, engram, salience)| {
+                format!("- {} (salience {:.2})", engram.content, salience)
+            })
             .collect::<Vec<_>>()
             .join("\n");
-
         let reasoning = format!(
-            "recalled {} memor{} via recall_scored (salience-uplifted — the loop is closed)",
+            "recalled {} memor{} ({}) — salience-uplifted, loop closed",
             scored.len(),
-            if scored.len() == 1 { "y" } else { "ies" }
+            if scored.len() == 1 { "y" } else { "ies" },
+            if self.embedder.is_some() {
+                "relevance-ranked vs the burst"
+            } else {
+                "salience×recency"
+            }
         );
 
         Some(Contribution::context(
@@ -330,6 +410,89 @@ mod tests {
             c.content.contains("feature flag"),
             "turn-2 recall must carry the turn-1 memory forward (coherence across turns); got: {}",
             c.content
+        );
+    }
+
+    // what this catches: RELEVANCE BEATS RECENCY — recall with an embedder
+    // surfaces the topically-relevant memory even when a MORE-salient, MORE-recent
+    // but irrelevant memory exists. Without the embedder, salience wins and the
+    // irrelevant memory surfaces. This is "memory works as designed at scale": as
+    // memory grows, you need the RIGHT memory, not the latest. The lexical
+    // embedder is the bootstrap; a neural one slots in behind the same trait.
+    #[tokio::test]
+    async fn relevance_beats_recency_with_embedder() {
+        use crate::cognition::embedding::LexicalEmbedder;
+
+        let now = 1_000_000_000u64;
+        let query = "what was our rollout plan for the auth flow again?";
+
+        let seed = || {
+            let recall_meta = Arc::new(RecallMetadataRegistry::new());
+            let state = Arc::new(AdmissionState::new(recall_meta.clone()));
+            let mut mk = |content: &str, salience: f32, age_ms: u64| {
+                let id = Uuid::new_v4();
+                state.push_for_test(Engram {
+                    id,
+                    kind: EngramKind::Episodic,
+                    content: content.to_string(),
+                    origin: EngramOrigin::Chat(ChatMessageRef {
+                        message_id: Uuid::new_v4(),
+                        room_id: Uuid::new_v4(),
+                        sender_id: Uuid::new_v4(),
+                        posted_at_ms: now - age_ms,
+                        content_hash: "h".to_string(),
+                    }),
+                    recall_keys: Vec::new(),
+                    admitted_at_ms: now - age_ms,
+                    trust_state_at_admission: TrustState::ApprovedPeer,
+                    admission_trace_id: None,
+                });
+                recall_meta.admit(
+                    id,
+                    RecallMetadata {
+                        salience,
+                        access_count: 0,
+                        last_accessed_ms: 0,
+                        protected_until_ms: 0,
+                        last_decayed_ms: now,
+                    },
+                );
+            };
+            // RELEVANT to the query, but LOWER salience and OLDER:
+            mk(
+                "we will ship the auth flow behind a feature flag and ramp the rollout to 10%",
+                0.4,
+                60_000,
+            );
+            // IRRELEVANT, but HIGHER salience and NEWER:
+            mk("lunch is at noon, someone booked the corner table", 0.6, 0);
+            state
+        };
+
+        let persona = Uuid::new_v4();
+
+        // Without a re-ranker: salience wins → the irrelevant (more salient) memory.
+        let plain = RecallFaculty::new(persona, seed())
+            .with_limit(1)
+            .with_clock(Arc::new(move || now));
+        let pc = plain.contribute(&Workspace::new(query)).await.unwrap();
+        assert!(
+            pc.content.contains("lunch"),
+            "salience-only recall surfaces the more-salient-but-irrelevant memory; got: {}",
+            pc.content
+        );
+
+        // With the relevance re-ranker: the auth-flow memory wins DESPITE lower
+        // salience — recall now surfaces what's relevant to the burst.
+        let smart = RecallFaculty::new(persona, seed())
+            .with_limit(1)
+            .with_clock(Arc::new(move || now))
+            .with_embedder(Arc::new(LexicalEmbedder::new()));
+        let sc = smart.contribute(&Workspace::new(query)).await.unwrap();
+        assert!(
+            sc.content.contains("feature flag"),
+            "relevance recall must surface the auth-flow memory despite lower salience; got: {}",
+            sc.content
         );
     }
 
