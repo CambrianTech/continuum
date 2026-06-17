@@ -52,15 +52,22 @@ members = [
 #   - PublishRequest.target: MentionTarget → IpcTarget (via .into())
 #   - ResolveWire removed (owner-core daemon owns channels)
 #
-# All on same SHA so IPC ABI version stays consistent. The pinned
-# SHA is currently the tip of the unmerged airc PR branch (#1095 +
-# #1096); re-pin to the post-merge SHA on airc canary/rust-rewrite
-# before merging this continuum PR past canary.
-airc-core = { git = "https://github.com/CambrianTech/airc", rev = "f6ed190" }
-airc-protocol = { git = "https://github.com/CambrianTech/airc", rev = "f6ed190" }
-airc-ipc = { git = "https://github.com/CambrianTech/airc", rev = "f6ed190" }
-airc-lib = { git = "https://github.com/CambrianTech/airc", rev = "f6ed190" }
-airc-wire = { git = "https://github.com/CambrianTech/airc", rev = "f6ed190" }
+# All on same SHA so IPC ABI version stays consistent.
+#
+# 2026-06-16 bump f6ed190 → 1a47231 (airc canary tip): adopts the
+# #1222 spawn contract — `Airc::publish_identity()` — so a persona
+# publishes its identity card after subscribe and is grounded by NAME,
+# not an anonymous peer-id. This is the airc half of the persona
+# identity-grounding work (continuum#1650 RoomRosterSource resolves
+# names from the IdentityPublished events publish_identity emits;
+# continuum#1651 RoomDoctrineSource reads room_doctrine). Also pulls
+# the airc update/doctor/network CLI fixes (#1218-#1222). Re-validate
+# attach_as (refactored open_as + with_daemon_client) on bump.
+airc-core = { git = "https://github.com/CambrianTech/airc", rev = "1a47231" }
+airc-protocol = { git = "https://github.com/CambrianTech/airc", rev = "1a47231" }
+airc-ipc = { git = "https://github.com/CambrianTech/airc", rev = "1a47231" }
+airc-lib = { git = "https://github.com/CambrianTech/airc", rev = "1a47231" }
+airc-wire = { git = "https://github.com/CambrianTech/airc", rev = "1a47231" }
 
 # Candle ML framework — patched via [patch.crates-io] below.
 # Fixes: Metal buffer pool leak (#2271), RoPE NEOX convention (#3410)
