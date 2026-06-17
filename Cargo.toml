@@ -25,6 +25,8 @@ members = [
 
     # client/ — shared client lib (consumed by CLI + mobile SDK FFI)
     "client/continuum-client",
+    # FFI-clean JSON-boundary facade — the single binding source per-platform SDKs wrap
+    "client/continuum-client-ffi",
 
     # apps/ — first-party UI shells / embodiments
     "apps/cli",

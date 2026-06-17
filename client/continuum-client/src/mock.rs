@@ -70,6 +70,11 @@ type CommandHandler = Box<dyn Fn(Value) -> Result<Value, ClientError> + Send + S
 /// drop a specific subscriber.
 #[derive(Debug)]
 struct Subscriber {
+    // Stable id for diagnostics (rides the `Debug` impl) + future
+    // drop-a-specific-subscriber tests. Not read on the hot path, so dead-code
+    // analysis (which ignores Debug-only use) flags it under `-D warnings`;
+    // the field is an intentional fixture slot, not dead.
+    #[allow(dead_code)]
     id: u64,
     tx: mpsc::Sender<Result<Value, ClientError>>,
 }

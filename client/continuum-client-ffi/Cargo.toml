@@ -1,0 +1,20 @@
+[package]
+name = "continuum-client-ffi"
+version = "0.1.0"
+edition = "2021"
+description = "FFI-clean JSON-boundary facade over continuum-client. The single binding source the per-platform SDKs wrap (uniffi → native/flutter; wasm-bindgen → web). execute(command, params_json)->result_json + subscribe(class, callback)."
+
+[dependencies]
+continuum-client = { path = "../continuum-client" }
+airc-lib = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+futures = "0.3"
+tokio = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+# Enable continuum-client's MockTransport so the boundary logic is tested
+# without a live airc daemon (the test-fixtures contract).
+continuum-client = { path = "../continuum-client", features = ["test-fixtures"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync"] }

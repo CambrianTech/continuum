@@ -1,0 +1,294 @@
+//! continuum-client-ffi — the FFI-clean JSON-boundary facade over
+//! `continuum-client`.
+//!
+//! The single binding source every per-platform SDK wraps. `Commands.execute`
+//! is generic (`<P, R>`) and generics can't cross an FFI boundary, so this
+//! facade reduces the two universal primitives to their JSON-at-the-boundary
+//! form — exactly what they ARE on the wire (cross-grid via airc ==
+//! cross-language via FFI, same shape):
+//!
+//! - `execute(command, params_json) -> result_json`
+//! - `subscribe(class, callback)` streaming `event_json` to a foreign callback
+//!
+//! Each language SDK adds the typed/idiomatic layer on top (Swift async/await +
+//! `AsyncStream`, Kotlin suspend + `Flow`, Dart `Stream`, TS Promise) from
+//! GENERATED types — never hand-written. The JSON shape is the canonical
+//! contract; this facade is the generic-free, tiny, stable surface the
+//! generators bind.
+//!
+//! Distribution (see docs/architecture/CLIENT-SDK-PLATFORM-ARCHITECTURE.md):
+//! uniffi reads this crate → one native binding → xcframework (Apple) + AAR
+//! (Android); the native SDKs wrap those; Flutter bundles them; web takes a
+//! separate wasm-bindgen path over the same facade.
+//!
+//! This module is the tool-agnostic Rust core. The uniffi `.udl` / annotations
+//! and the wasm-bindgen layer are thin per-target shells over `ContinuumClient`
+//! + the boundary helpers below.
+
+use std::sync::Arc;
+
+use continuum_client::{
+    AircIpcTransport, ClientError, CommandClient, Connection, EventSubscriber, Transport,
+};
+use futures::StreamExt;
+use uuid::Uuid;
+
+/// FFI-clean error. `continuum-client`'s `ClientError` is rich and Rust-shaped;
+/// this flattens it to the few variants a foreign caller needs, each carrying a
+/// human message. A refusal keeps `command` + `reason` since callers branch on
+/// "the substrate said no" vs "the transport broke".
+#[derive(Debug, thiserror::Error)]
+pub enum FfiError {
+    /// Establishing the session failed.
+    #[error("connect failed: {0}")]
+    Connect(String),
+    /// The session is closed; further calls won't succeed.
+    #[error("connection closed")]
+    Closed,
+    /// The substrate received the command but refused it.
+    #[error("command `{command}` refused: {reason}")]
+    Refused { command: String, reason: String },
+    /// Params/result JSON did not encode or decode.
+    #[error("codec error: {0}")]
+    Codec(String),
+    /// The transport layer failed (IPC, wire, etc.).
+    #[error("transport error: {0}")]
+    Transport(String),
+}
+
+impl From<ClientError> for FfiError {
+    fn from(e: ClientError) -> Self {
+        match e {
+            ClientError::Connect(m) => FfiError::Connect(m),
+            ClientError::Closed => FfiError::Closed,
+            ClientError::Refused { command, reason } => FfiError::Refused { command, reason },
+            ClientError::Codec(m) => FfiError::Codec(m),
+            ClientError::Transport(m) => FfiError::Transport(m),
+            ClientError::NotImplemented(m) => FfiError::Transport(format!("not implemented: {m}")),
+        }
+    }
+}
+
+/// A foreign-implemented sink for an event subscription. uniffi exposes this as
+/// a callback interface; each SDK adapts it into the platform's stream type
+/// (`AsyncStream` / `Flow` / `Stream`). Plain trait here so the facade is
+/// tool-agnostic and unit-testable.
+pub trait EventCallback: Send + Sync {
+    /// One event, already serialized to a JSON string.
+    fn on_event(&self, event_json: String);
+    /// A recoverable error on the stream (the stream stays open).
+    fn on_error(&self, message: String);
+    /// The stream ended (substrate closed it or the subscription was dropped).
+    fn on_closed(&self);
+}
+
+/// Run one command over a connection's command client, JSON in / JSON out.
+/// Generic over `Transport` so it's tested against `MockTransport` without a
+/// live daemon; the concrete [`ContinuumClient`] delegates here.
+async fn execute_json<T: Transport>(
+    commands: CommandClient<T>,
+    command: &str,
+    params_json: &str,
+) -> Result<String, FfiError> {
+    let params: serde_json::Value =
+        serde_json::from_str(params_json).map_err(|e| FfiError::Codec(e.to_string()))?;
+    // CommandClient::execute is generic; monomorphize to Value→Value — the
+    // JSON-value transport boundary is exactly what it wraps.
+    let result: serde_json::Value = commands.execute(command, params).await?;
+    serde_json::to_string(&result).map_err(|e| FfiError::Codec(e.to_string()))
+}
+
+/// Drive an event subscription into a foreign callback until the stream ends.
+/// Generic for testability; the concrete client spawns this on a task.
+async fn pump_events<T: Transport>(
+    events: EventSubscriber<T>,
+    class: String,
+    callback: Arc<dyn EventCallback>,
+) {
+    match events.subscribe(&class).await {
+        Ok(mut stream) => {
+            while let Some(item) = stream.next().await {
+                match item {
+                    Ok(value) => match serde_json::to_string(&value) {
+                        Ok(json) => callback.on_event(json),
+                        Err(e) => callback.on_error(format!("event encode failed: {e}")),
+                    },
+                    Err(e) => callback.on_error(e.to_string()),
+                }
+            }
+            callback.on_closed();
+        }
+        Err(e) => callback.on_error(e.to_string()),
+    }
+}
+
+/// An open subscription. Dropping it aborts the pump task — so a foreign caller
+/// unsubscribes simply by releasing this handle (no explicit close call to
+/// forget). Without this an event subscription would leak its task.
+pub struct Subscription {
+    handle: tokio::task::JoinHandle<()>,
+}
+
+impl Drop for Subscription {
+    fn drop(&mut self) {
+        self.handle.abort();
+    }
+}
+
+/// The concrete, generic-free client a foreign binding holds. Wraps a
+/// `Connection` over the real airc IPC transport; the per-platform binding
+/// (uniffi/wasm) exposes exactly `execute` + `subscribe`.
+pub struct ContinuumClient {
+    conn: Connection<AircIpcTransport>,
+}
+
+impl ContinuumClient {
+    /// Build over an established airc handle + the substrate's peer id. The CLI
+    /// (Rust) calls this directly; the per-platform glue builds the airc handle
+    /// then calls this. (A foreign-friendly `connect(home, peer)` constructor
+    /// that builds the handle internally is the next thin layer.)
+    pub fn new(airc: Arc<airc_lib::Airc>, target_peer: Uuid) -> Self {
+        Self {
+            conn: Connection::connect(airc, target_peer),
+        }
+    }
+
+    /// Execute a command: JSON params in, JSON result out.
+    pub async fn execute(&self, command: &str, params_json: &str) -> Result<String, FfiError> {
+        execute_json(self.conn.commands(), command, params_json).await
+    }
+
+    /// Subscribe to an event class; events stream to `callback` as JSON strings
+    /// until the returned [`Subscription`] is dropped.
+    pub fn subscribe(&self, class: &str, callback: Arc<dyn EventCallback>) -> Subscription {
+        let handle = tokio::spawn(pump_events(self.conn.events(), class.to_string(), callback));
+        Subscription { handle }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use continuum_client::MockTransport;
+    use serde_json::json;
+    use std::sync::Mutex;
+    use std::time::Duration;
+
+    /// A test sink that records callback invocations.
+    #[derive(Default)]
+    struct Recorder {
+        events: Mutex<Vec<String>>,
+        errors: Mutex<Vec<String>>,
+        closed: Mutex<bool>,
+    }
+    impl EventCallback for Recorder {
+        fn on_event(&self, event_json: String) {
+            self.events.lock().unwrap().push(event_json);
+        }
+        fn on_error(&self, message: String) {
+            self.errors.lock().unwrap().push(message);
+        }
+        fn on_closed(&self) {
+            *self.closed.lock().unwrap() = true;
+        }
+    }
+
+    #[tokio::test]
+    async fn execute_round_trips_json_at_the_boundary() {
+        // what this catches: the facade must serialize params_json → Value,
+        // dispatch, and serialize the result Value → result_json — the whole
+        // point of the generic-free FFI surface.
+        let mock = MockTransport::new();
+        mock.respond_to("data/get", |params| {
+            assert_eq!(params, json!({ "id": "abc" }));
+            Ok(json!({ "id": "abc", "value": 42 }))
+        });
+        let conn = Connection::new(mock);
+        let out = execute_json(conn.commands(), "data/get", r#"{"id":"abc"}"#)
+            .await
+            .expect("executes");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&out).unwrap(),
+            json!({ "id": "abc", "value": 42 })
+        );
+    }
+
+    #[tokio::test]
+    async fn malformed_params_json_is_a_codec_error_not_a_dispatch() {
+        // what this catches: bad JSON must fail at the boundary as Codec, never
+        // reach the substrate as a garbage command.
+        let conn = Connection::new(MockTransport::new());
+        let err = execute_json(conn.commands(), "x", "{not json")
+            .await
+            .expect_err("rejects malformed params");
+        assert!(matches!(err, FfiError::Codec(_)));
+    }
+
+    #[tokio::test]
+    async fn substrate_refusal_maps_to_ffi_refused() {
+        // what this catches: a substrate "no" must surface as FfiError::Refused
+        // (command + reason), distinct from a transport break.
+        let mock = MockTransport::new();
+        mock.respond_to("danger", |_| {
+            Err(ClientError::Refused {
+                command: "danger".to_string(),
+                reason: "not allowed".to_string(),
+            })
+        });
+        let conn = Connection::new(mock);
+        let err = execute_json(conn.commands(), "danger", "{}")
+            .await
+            .expect_err("refused");
+        match err {
+            FfiError::Refused { command, reason } => {
+                assert_eq!(command, "danger");
+                assert_eq!(reason, "not allowed");
+            }
+            other => panic!("expected Refused, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn subscribe_streams_events_as_json_to_the_callback() {
+        // what this catches: emitted substrate events must reach the foreign
+        // callback as JSON strings (the event half of the boundary), and a
+        // stream close must surface as on_closed.
+        let mock = MockTransport::new(); // Clone-shares Inner; keep a handle to emit/close
+        let conn = Connection::new(mock.clone());
+        let rec = Arc::new(Recorder::default());
+
+        let cb: Arc<dyn EventCallback> = rec.clone();
+        let pump = tokio::spawn(pump_events(
+            conn.events(),
+            "persona.response".to_string(),
+            cb,
+        ));
+
+        // Wait deterministically until the pump has registered its subscription.
+        for _ in 0..100 {
+            if mock.subscriber_count("persona.response") == 1 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert_eq!(
+            mock.subscriber_count("persona.response"),
+            1,
+            "pump subscribed"
+        );
+
+        mock.emit("persona.response", json!({ "text": "hi" }));
+        // close() drops the subscriber sender → the buffered event drains, then
+        // the stream yields None and the pump calls on_closed.
+        mock.close().await.expect("close");
+        let _ = tokio::time::timeout(Duration::from_secs(2), pump).await;
+
+        let events = rec.events.lock().unwrap();
+        assert_eq!(events.len(), 1, "one event delivered");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&events[0]).unwrap(),
+            json!({ "text": "hi" })
+        );
+        assert!(*rec.closed.lock().unwrap(), "stream close surfaced");
+    }
+}

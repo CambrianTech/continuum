@@ -2696,6 +2696,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "continuum-client-ffi"
+version = "0.1.0"
+dependencies = [
+ "airc-lib",
+ "continuum-client",
+ "futures",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "continuum-core"
 version = "0.1.0"
 dependencies = [
