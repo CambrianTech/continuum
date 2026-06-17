@@ -36,6 +36,7 @@ pub mod command_executor;
 pub mod command_interceptor;
 pub mod control;
 pub mod grid_interceptor;
+pub mod in_process_transport;
 pub mod late_bound;
 pub mod message_bus;
 pub mod module_context;
