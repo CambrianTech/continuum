@@ -335,12 +335,18 @@ autonomous citizen with its own mind, not a puppet pulled by an `@`-string.
     activities** — `AdmissionState` + `RecallMetadataRegistry` span every room the
     persona is in; nothing keys them by room. **This unified-store property is the
     anti-Severance part, and it already exists.**
-  - **Long-term memory is the engram store, recalled by similarity.** The target
-    is **vector/embedding similarity search** into the long-term store against the
-    current burst, so the mind is *always remembering* — continuously pulling the
-    *relevant* past into the working set. (Today recall ranks by `salience ×
-    recency`; **embedding-similarity recall is the next real build**, not yet
-    wired. The unified store is done; similarity retrieval into it is the slice.)
+  - **Long-term memory is the engram store, recalled by similarity.** The mind is
+    *always remembering* — continuously pulling the *relevant* past into the
+    working set. **This has landed:** `RecallFaculty` over-fetches candidates and
+    re-ranks them by **cosine similarity to the current burst** (blended with
+    salience), behind a swappable `EmbeddingProvider` (`cognition/embedding.rs`);
+    it surfaces the relevant memory, not just the recent one, and records the
+    recall hit only on what it surfaces. It is **on by default** in
+    `build_workspace_cycle`. The bootstrap embedder is **lexical** (FNV
+    term-frequency — zero-model, deterministic, works on any machine); a
+    **neural embedder** (local llama `--embedding` mode, then a dedicated
+    retrieval model; the grid's 5090 as a batch facility) slots in behind the same
+    trait for true *semantic* relevance — the next backend, not a rewrite.
 
 - **Low-latency or it isn't alive.** A mind that spends seconds of synchronous
   gating per message is dead on arrival. The servicing spine (§2.7) is the answer:
