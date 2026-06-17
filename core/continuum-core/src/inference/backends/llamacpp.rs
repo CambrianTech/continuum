@@ -182,6 +182,42 @@ impl LlamaCppBackend {
         })
     }
 
+    /// Compute pooled, L2-normalized embeddings for `texts` using a dedicated
+    /// EMBEDDING-mode context. The generation scheduler's context is
+    /// `embeddings: false` and physically cannot embed, so we build a separate
+    /// embedding context here (one per call covers the whole batch; the KV is
+    /// cleared between texts so each embedding is independent of the last).
+    ///
+    /// Model-agnostic plumbing: the LOADED model should be a retrieval embedder
+    /// (the grid's canonical Qwen3-Embedding-0.6B — last-token pooled) for the
+    /// vectors to be comparable grid-wide. `NeuralEmbeddingProvider` loads that
+    /// model; this just runs it. Runtime-validated by an `#[ignore]` real-model
+    /// test once the embedding GGUF is on disk; cargo-checked without it.
+    pub fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, String> {
+        if texts.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut ctx = self.model.new_context(llama::ContextParams {
+            embeddings: true,
+            // Qwen3-Embedding family is last-token pooled. Thread from config
+            // when other embedders join the grid.
+            pooling_type: llama::PoolingType::Last,
+            ..Default::default()
+        })?;
+        let mut out = Vec::with_capacity(texts.len());
+        for text in texts {
+            // Independent embedding per text — clear the KV so text N's pooled
+            // vector doesn't include text N-1's sequence.
+            ctx.memory_clear(true);
+            let tokens = self.model.tokenize(text, true, false)?;
+            if tokens.is_empty() {
+                return Err(format!("embed: input tokenized to empty: {text:?}"));
+            }
+            out.push(ctx.embed(&tokens)?);
+        }
+        Ok(out)
+    }
+
     /// Lazily load the multimodal projector. Returns Err when
     /// `config.mmproj_path` is None (text-only backend) or when the
     /// mmproj file fails to load. Idempotent — caches the loaded
@@ -354,6 +390,8 @@ impl LlamaCppBackend {
                 fused_gdn_ch: self.config.fused_gdn_ch,
                 type_k: self.config.type_k,
                 type_v: self.config.type_v,
+                embeddings: false,
+                pooling_type: llama::PoolingType::None,
             })
             .map_err(|e| format!("new_context failed: {e}"))?;
 

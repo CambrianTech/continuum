@@ -203,6 +203,8 @@ fn driver_loop(
         fused_gdn_ch: config.fused_gdn_ch,
         type_k: config.type_k,
         type_v: config.type_v,
+        embeddings: false,
+        pooling_type: llama::PoolingType::None,
     }) {
         Ok(c) => c,
         Err(e) => {
