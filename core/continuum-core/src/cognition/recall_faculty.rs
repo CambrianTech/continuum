@@ -278,6 +278,61 @@ mod tests {
         );
     }
 
+    // what this catches: MEMORY WORKS AS DESIGNED → coherence across turns. A
+    // substantive statement ADMITTED in turn 1 (the real store path, admit()) is
+    // RECALLED in a later turn — so the persona carries context forward instead of
+    // amnesia each turn. Clock-controlled (recall runs moments after admit) so
+    // decay doesn't floor it — the reproducible-clock pattern that the wall-clock
+    // live run exposed as needed. This is the store→recall loop the conversation
+    // coherence depends on.
+    #[tokio::test]
+    async fn memory_carries_context_across_turns() {
+        use crate::persona::engram::AdmissionDecision;
+        use crate::persona::types::{InboxMessage, SenderType};
+
+        let now1 = 1_000_000_000u64;
+        let recall_meta = Arc::new(RecallMetadataRegistry::new());
+        let state = Arc::new(AdmissionState::new(recall_meta));
+
+        // TURN 1: a decision worth remembering — stored through the real admission
+        // pipeline (not a test back-door push).
+        let msg = InboxMessage {
+            id: Uuid::new_v4(),
+            room_id: Uuid::new_v4(),
+            sender_id: Uuid::new_v4(),
+            sender_name: "Joel".to_string(),
+            sender_type: SenderType::Human,
+            content: "We decided to ship the new auth flow behind a feature flag and ramp to 10% first."
+                .to_string(),
+            timestamp: now1,
+            priority: 0.8,
+            source_modality: None,
+            voice_session_id: None,
+        };
+        let decision = state.admit(&msg, None).expect("admit should not error");
+        assert!(
+            matches!(decision, AdmissionDecision::Admit { .. }),
+            "a substantive decision must be admitted to memory, got: {decision:?}"
+        );
+
+        // TURN 2 (moments later): recall must surface that decision so the persona
+        // stays coherent with what was decided.
+        let persona = Uuid::new_v4();
+        let now2 = now1 + 5_000;
+        let recall = RecallFaculty::new(persona, state).with_clock(Arc::new(move || now2));
+        let c = recall
+            .contribute(&Workspace::new(
+                "what was our rollout plan for the auth flow again?",
+            ))
+            .await
+            .expect("recall should surface the stored decision in a later turn");
+        assert!(
+            c.content.contains("feature flag"),
+            "turn-2 recall must carry the turn-1 memory forward (coherence across turns); got: {}",
+            c.content
+        );
+    }
+
     // ---- The mind in action: real hippocampus → workspace → informed decision ----
 
     use super::super::workspace::{Decision, NoopWorkspaceCaptureSink, WorkspaceCaptureSink, WorkspaceCycle, WorkspaceTrace};
