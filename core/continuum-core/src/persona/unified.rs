@@ -210,6 +210,28 @@ impl PersonaCognition {
     /// airc deliveries flowing through the same capture/replay
     /// pipeline as engrams (per
     /// [[persona-record-replay-is-a-product-requirement]]).
+    /// Swap the in-memory admission for a disk-backed, rehydrated one
+    /// (per-persona `engrams.sqlite`, via `AdmissionState::for_persona`). Called
+    /// by the supervisor at boot once the persona's `PersonaHome` is known.
+    /// Rebuilds `engram_source` against the new admission (decorated with the
+    /// brain's `capture_sink`) and adopts its recall-metadata registry, so
+    /// encoding + recall + the workspace's RecallFaculty all share the persisted
+    /// store. Without this, admission is `NoopSink` — in-memory, lost on restart.
+    /// Must run BEFORE the per-persona WorkspaceCycle is assembled, so its
+    /// RecallFaculty binds the persisted admission.
+    pub fn attach_persistent_admission(
+        &mut self,
+        persona_id: Uuid,
+        admission: Arc<AdmissionState>,
+    ) {
+        self.recall_metadata = admission.recall_metadata().clone();
+        self.engram_source = Arc::new(RecordingRagSource::new(
+            EngramSource::new(persona_id, admission.clone()),
+            self.capture_sink.clone(),
+        ));
+        self.admission = admission;
+    }
+
     pub fn set_airc_source(&mut self, raw_source: Arc<dyn RagSource>) {
         let decorated: Arc<dyn RagSource> = Arc::new(RecordingRagSource::new(
             ArcRagSource::new(raw_source),

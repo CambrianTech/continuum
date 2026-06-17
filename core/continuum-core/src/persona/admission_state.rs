@@ -550,6 +550,44 @@ impl AdmissionState {
         scored
     }
 
+    /// Score the top `limit` engrams by salience-decay — but DO NOT record recall
+    /// hits. The hit (Hebbian rehearsal / salience uplift) must land on what a
+    /// caller actually SURFACES, not on everything it scored. A relevance
+    /// re-ranker (RecallFaculty) over-fetches candidates here, narrows by cosine
+    /// similarity to the burst, then calls [`record_recall_hits`] on the final
+    /// surfaced set — so the loop closes on the memories the persona truly used,
+    /// not on candidates that lost the re-rank. (`recall_scored` is the
+    /// no-re-ranker shortcut: score + hit in one pass.)
+    pub fn recall_candidates(&self, now_ms: u64, limit: usize) -> Vec<(Engram, f32)> {
+        if limit == 0 {
+            return Vec::new();
+        }
+        let engrams = self.engrams.lock().unwrap();
+        let mut scored: Vec<(Engram, f32)> = engrams
+            .iter()
+            .filter_map(|e| {
+                self.recall_metadata.apply_decay(e.id, now_ms);
+                self.recall_metadata.get(e.id).map(|m| (e.clone(), m.salience))
+            })
+            .collect();
+        drop(engrams);
+        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        scored.truncate(limit);
+        scored
+    }
+
+    /// Record recall hits (salience uplift + access_count + persistence observe)
+    /// on a specific set of engram ids — the memories a caller actually surfaced.
+    /// The write half of the [`recall_candidates`] → re-rank → record loop.
+    pub fn record_recall_hits(&self, ids: &[Uuid], now_ms: u64) {
+        for id in ids {
+            self.recall_metadata.record_recall_hit(*id, now_ms);
+            if let Some(updated) = self.recall_metadata.get(*id) {
+                self.persistence.observe_metadata_update(*id, updated);
+            }
+        }
+    }
+
     /// Recall a specific engram by id. None if not present in the store
     /// (either never admitted, or evicted in a future GC pass).
     pub fn recall_by_id(&self, id: Uuid) -> Option<Engram> {
