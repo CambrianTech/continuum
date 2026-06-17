@@ -538,6 +538,47 @@ impl ChatMessage {
         }
     }
 
+    /// An assistant turn that REQUESTED a batch of tool calls — the
+    /// agent-transcript shape a provider expects echoed back before the
+    /// matching results, so its next generation sees what it asked for.
+    pub fn assistant_tool_use(calls: &[ToolCall]) -> Self {
+        Self {
+            role: "assistant".to_string(),
+            content: MessageContent::Parts(
+                calls
+                    .iter()
+                    .map(|c| ContentPart::ToolUse {
+                        id: c.id.clone(),
+                        name: c.name.clone(),
+                        input: c.input.clone(),
+                    })
+                    .collect(),
+            ),
+            name: None,
+        }
+    }
+
+    /// A user turn carrying the RESULTS of a batch of tool calls, each paired
+    /// by `tool_use_id` to the assistant turn that requested it. The companion
+    /// to [`assistant_tool_use`](Self::assistant_tool_use) — together they form
+    /// one agent round in the message thread.
+    pub fn tool_results(results: &[ToolResult]) -> Self {
+        Self {
+            role: "user".to_string(),
+            content: MessageContent::Parts(
+                results
+                    .iter()
+                    .map(|r| ContentPart::ToolResult {
+                        tool_use_id: r.tool_use_id.clone(),
+                        content: r.content.clone(),
+                        is_error: r.is_error,
+                    })
+                    .collect(),
+            ),
+            name: None,
+        }
+    }
+
     /// Get content as plain text (extracts from parts if needed)
     pub fn content_text(&self) -> String {
         match &self.content {
