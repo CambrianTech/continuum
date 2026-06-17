@@ -60,6 +60,33 @@ Every faculty is independently trainable and independently replaceable. No
 faculty is hardcoded; none is privileged; the LLM is just the current default
 backend for the reasoning faculty, swappable like any other.
 
+## 1.5. Better than a human — where silicon wins
+
+We are not simulating a human brain; we are building a **better one**, by dropping
+the constraints biology couldn't escape. Each advantage is a concrete faculty or
+a property of the event-driven/concurrent/glass-box substrate:
+
+- **Perfect, total, content-addressable recall** — every engram kept, retrieved
+  by embedding instantly; decay becomes a *learned salience choice*, not a leak.
+- **Parallel deliberation** — branch N hypotheses/policies at once
+  (tree-of-thought / rollouts) across faculty threads, workspace selects. No
+  serial System-2 bottleneck.
+- **Replayable, honest metacognition** — the capture trace means the persona can
+  know *why* it decided; no confabulation. A brain that can audit itself.
+- **Fleet learning** — faculty backends / LoRAs shared via the genome: one
+  persona learns, the team inherits. Collective continuous learning.
+- **Upgradeable organs** — sentinel-ai forges a better recall re-ranker or
+  reasoner; swap the backend behind the faculty adapter. You can't get a better
+  hippocampus; a persona can.
+- **On-demand consolidation** — replay → LoRA in minutes, not nightly sleep.
+- **Exact counterfactual simulation** — fork the world model, roll out "what if I
+  say X," pick the best; active inference with precise rollouts, not fuzzy
+  imagination.
+
+None of these is exotic given the arch — each is a faculty, or a property of an
+event-driven, concurrent, replayable substrate. That's the bet: **modular +
+concurrent + glass-box → superhuman is reachable, incrementally and testably.**
+
 ## 2. Servicing: the persona **catches up on a thread** — never per-event (the efficiency spine)
 
 This is the load-bearing performance decision, and it is **proven** — the
@@ -151,6 +178,51 @@ burst at service time — not per event.** Attention competes over the thread-st
 volition selects one policy for the thread; the persona contributes once. Read
 every "cycle" below as "what happens on a service tick over a consolidated
 burst," never "what happens per message."
+
+## 2.7. Scales without slowdown — event-driven faculties (the rigor)
+
+"A better brain than a human" only holds if **adding complexity doesn't slow it
+down.** A serial pipeline gets slower with every stage; a brain doesn't — it's
+massively parallel and **event-driven** (spikes are events: sparse, async). Our
+arch must be the same, and that takes rigor:
+
+- **Faculties communicate by EMISSIONS, not calls.** A faculty doesn't invoke the
+  next in a chain; it *emits* its contribution/signals onto the bus
+  (`Events.emit` — the substrate's second universal primitive) and the arbiter +
+  other faculties *subscribe*. Decoupled pub/sub. Adding the Nth faculty is one
+  more emitter/subscriber — **zero coupling to the existing N-1**, which never
+  even know it joined. Open/closed; fits-many-molds.
+- **Concurrent, not serial.** Faculties are `BrainRegion` ServiceModules running
+  in parallel (CBAR). A new faculty is a *parallel* bidder, not a serial step — so
+  per-tick latency is bounded by the **slowest single faculty, not the sum.** And
+  the bounded workspace (top-k by salience) integrates only `capacity`
+  contributions no matter how many bid: cost is **O(capacity), not O(faculties).**
+- **Causality-based + multi-cadence — this is PROVEN.** This is exactly how Joel
+  built the AR computer-vision system fast: events + responsive threads, at least
+  partially **causality-based** (effects react to causal emissions, not a fixed
+  serial order), with **each stage at its own cadence** — optical flow ran at
+  *near frame-rate* while heavier scene understanding ran slower, all concurrent.
+  The brain maps 1:1: fast perceptual/pre-attention/salience faculties run hot
+  (the optical-flow tier), deliberation runs at the service-tick, consolidation /
+  default-mode runs coolest in the background. Each faculty ticks at the rate its
+  job needs; none waits on a slower one. Multi-cadence event flow is why the AR
+  pipeline stayed real-time as it grew — and why this brain will too.
+  Concretely RTOS-style: **most faculties are their own background thread** with
+  their own scheduler/cadence, driven by **event emissions**, off the hot path
+  (OFF-MAIN-THREAD doctrine). Nothing CPU-heavy runs where it could stall the
+  loop; a faculty wakes on events, does its bounded work on its thread, emits,
+  sleeps. That is the CBAR / RTOS shape (own task + interval + watch/queue +
+  spawn_blocking) — now applied to cognition.
+- **Backpressure keeps it honest.** Bounded queues, drop-oldest, triage,
+  do-less-under-pressure, no-locks-across-await (CONCURRENCY-STYLE-GUIDE). Under
+  load the brain sheds and lengthens its cadence gracefully, never locks up. An
+  expensive background faculty runs on a slow cadence off the hot path — it cannot
+  drag the service tick.
+- **The rigor is the fun.** This discipline is what lets us pile on faculties —
+  recall, world-model, ToM, volition, counterfactual rollout, a dozen more — and
+  stay fast. Event-based + concurrent + bounded = complexity is **additive in
+  parallel, never multiplicative slowdown.** That's how superhuman doesn't become
+  a slog.
 
 ## 3. Integration: a **Global Workspace**, not a pipeline
 
