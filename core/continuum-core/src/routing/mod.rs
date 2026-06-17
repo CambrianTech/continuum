@@ -50,20 +50,20 @@ pub use airc_command_protocol::{
     HEADER_COMMAND_STATUS, HEADER_CONTINUUM_BODY_HINT,
 };
 pub use airc_event_protocol::{
-    AircEventDeliver, AircEventSubscribe, AircEventSubscribeAck, AircEventUnsubscribe,
-    AircEventUnsubscribeAck, EVENT_ACK_BODY_HINT, EVENT_DELIVER_BODY_HINT,
-    EVENT_SUBSCRIBE_BODY_HINT, EVENT_UNSUBSCRIBE_BODY_HINT, HEADER_EVENT_KIND,
-    HEADER_EVENT_SUBSCRIPTION_ID, HEADER_EVENT_TOPIC,
+    AircEventDeliver, AircEventPublish, AircEventPublishAck, AircEventSubscribe,
+    AircEventSubscribeAck, AircEventUnsubscribe, AircEventUnsubscribeAck, EVENT_ACK_BODY_HINT,
+    EVENT_DELIVER_BODY_HINT, EVENT_PUBLISH_BODY_HINT, EVENT_SUBSCRIBE_BODY_HINT,
+    EVENT_UNSUBSCRIBE_BODY_HINT, HEADER_EVENT_KIND, HEADER_EVENT_SUBSCRIPTION_ID, HEADER_EVENT_TOPIC,
 };
 pub use airc_event_adapters::{
-    EventSubscribeAdapter, EventUnsubscribeAdapter, SUBSCRIBE_ADAPTER_NAME,
-    UNSUBSCRIBE_ADAPTER_NAME,
+    EventPublishAdapter, EventSubscribeAdapter, EventUnsubscribeAdapter, PUBLISH_ADAPTER_NAME,
+    SUBSCRIBE_ADAPTER_NAME, UNSUBSCRIBE_ADAPTER_NAME,
 };
 pub use airc_event_publisher::{
-    build_deliver_frame, build_subscribe_ack, build_unsubscribe_ack, matches_filter,
-    parse_subscribe_envelope, parse_unsubscribe_envelope, ActiveSubscription,
-    AircEventPublisher, EventPublisherState, MatchedSubscription, ParsedSubscribe,
-    ParsedUnsubscribe,
+    build_deliver_frame, build_publish_ack, build_subscribe_ack, build_unsubscribe_ack,
+    matches_filter, parse_publish_envelope, parse_subscribe_envelope, parse_unsubscribe_envelope,
+    ActiveSubscription, AircEventPublisher, EventPublisherState, MatchedSubscription, ParsedPublish,
+    ParsedSubscribe, ParsedUnsubscribe,
 };
 pub use airc_event_transport::{
     AircEventTransport, EventSubscription, DEFAULT_DELIVERY_QUEUE_CAPACITY,

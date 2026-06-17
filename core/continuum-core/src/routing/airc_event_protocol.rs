@@ -12,8 +12,9 @@
 //! `RouteKind` dependency.
 
 pub use continuum_airc_protocol::event::{
-    AircEventDeliver, AircEventSubscribe, AircEventSubscribeAck, AircEventUnsubscribe,
-    AircEventUnsubscribeAck, EVENT_ACK_BODY_HINT, EVENT_DELIVER_BODY_HINT,
-    EVENT_SUBSCRIBE_BODY_HINT, EVENT_UNSUBSCRIBE_BODY_HINT, HEADER_EVENT_KIND,
-    HEADER_EVENT_SUBSCRIPTION_ID, HEADER_EVENT_TOPIC,
+    AircEventDeliver, AircEventPublish, AircEventPublishAck, AircEventSubscribe,
+    AircEventSubscribeAck, AircEventUnsubscribe, AircEventUnsubscribeAck, EVENT_ACK_BODY_HINT,
+    EVENT_DELIVER_BODY_HINT, EVENT_PUBLISH_BODY_HINT, EVENT_SUBSCRIBE_BODY_HINT,
+    EVENT_UNSUBSCRIBE_BODY_HINT, HEADER_EVENT_KIND, HEADER_EVENT_SUBSCRIPTION_ID,
+    HEADER_EVENT_TOPIC,
 };
