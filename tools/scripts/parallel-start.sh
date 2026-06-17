@@ -487,24 +487,31 @@ else
 fi
 cleanup_startup_pause
 
-# Phase 6: Browser attach happens only after seed. This script owns the final
-# post-seed refresh/open so the orchestrator cannot race UI hydration against
-# database synchronization.
+# Phase 6: HEADLESS IS THE DEFAULT. `npm start` brings up the substrate (core +
+# server) and NEVER launches a desktop — servers (AWS, BigMama, grid nodes) run
+# headless, which is the first-class operating mode. The desktop is a DEPENDENT
+# overlay that attaches LATER, deliberately, through its one owner — the Rust
+# `LaunchModeModule` (`system/launch-mode/{get,set}`) driven by the menu-bar
+# tray / a setting / a prompt. This launcher does NOT read or write the
+# `CONTINUUM_LAUNCH_MODE` setting in config.env (one class owns that file — not
+# bash scripts cutting through it), and it does NOT open a browser window.
+#
+# The one thing it still does: if a human ALREADY has a UI tab connected, refresh
+# it post-seed so it doesn't render against a half-seeded DB. That's refreshing an
+# existing overlay the human chose to open — not launching the desktop.
 BROWSER_CONNECTED=false
 if [ "$SEED_OK" = true ]; then
-  echo -e "  ${YELLOW}Attaching browser after seed...${NC}"
   PING_OUTPUT=$(./jtag ping --timeout=5000 2>/dev/null || echo '{}')
   if echo "$PING_OUTPUT" | grep -q '"browser"' 2>/dev/null; then
+    echo -e "  ${YELLOW}Refreshing already-connected UI overlay after seed...${NC}"
     if ./jtag interface/navigate >/dev/null 2>&1; then
       BROWSER_CONNECTED=true
-      echo -e "  ${GREEN}Browser refreshed after seed${NC}"
+      echo -e "  ${GREEN}UI overlay refreshed after seed${NC}"
     else
       ./jtag development/exec --code="location.reload()" >/dev/null 2>&1 || true
     fi
-  elif command -v open >/dev/null 2>&1; then
-    open "http://localhost:9000/chat/general" >/dev/null 2>&1 || true
-  elif command -v xdg-open >/dev/null 2>&1; then
-    xdg-open "http://localhost:9000/chat/general" >/dev/null 2>&1 || true
+  else
+    echo -e "  ${GREEN}Headless — no desktop launched (attach a UI via the tray / launch-mode setting)${NC}"
   fi
 fi
 if [ "$HOT_RESTART" = true ]; then

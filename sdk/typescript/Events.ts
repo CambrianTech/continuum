@@ -1,0 +1,74 @@
+/**
+ * Events — the typed Event primitive (EMIT + SUBSCRIBE) for the TS SDK.
+ *
+ * Same depth as Commands: subscribe to a SOURCE (local, or a peer's/room's events
+ * across the grid — same airc:// addressing), with SERVER-SIDE filtering (the
+ * redone AircEventPublisher's `matches_filter` — filtered events never cross the
+ * wire), and a monotonic SEQUENCE per subscription (ordering/gap detection; in a
+ * multi-hop chain any link can emit, so ordering matters). Events = emit + subscribe.
+ *
+ * Zero logic ([[headless-core-many-clients]]): thin typed wrapper over the facade
+ * `Transport`. `EventMap` generated. See docs/architecture/SDK-API-SURFACE.md.
+ */
+
+import type { Transport, Subscription, Target } from './transport';
+import { buildEventTopic } from './transport';
+import type { EventMap, EventClass } from './generated/CommandMap';
+
+/** Metadata delivered alongside each event (from the redone publisher frame). */
+export interface EventMeta {
+  /** Monotonic per-subscription sequence — detect ordering/gaps. */
+  sequence: number;
+}
+
+/** Typed event handlers — payload + meta typed from the class. */
+export interface EventHandlers<K extends EventClass> {
+  onEvent(event: EventMap[K], meta: EventMeta): void;
+  onError?(message: string): void;
+  onClosed?(): void;
+}
+
+/** Where the events come FROM (omitted = local), and an optional server-side
+ *  filter (a partial match over the payload; richer predicates pass through). */
+export interface SubscribeOptions<K extends EventClass> {
+  source?: Target;
+  filter?: Partial<EventMap[K]>;
+}
+
+export class Events {
+  constructor(private readonly transport: Transport) {}
+
+  /**
+   * SUBSCRIBE to an event class. The class literal infers the payload type.
+   * `source` addresses whose events (a peer's/room's, across the grid); `filter`
+   * is applied SERVER-SIDE so non-matching events never cross the wire.
+   *
+   *   events.subscribe('data:chat_messages:created', { onEvent: (m, {sequence}) => … });
+   *   events.subscribe('grid:peer:joined', handlers, { source: { peer }, filter: { runtime: 'persona' } });
+   */
+  subscribe<K extends EventClass>(
+    eventClass: K,
+    handlers: EventHandlers<K>,
+    opts?: SubscribeOptions<K>,
+  ): Subscription {
+    const topic = buildEventTopic(eventClass, opts?.source);
+    const filterJson = opts?.filter ? JSON.stringify(opts.filter) : undefined;
+    return this.transport.subscribe(
+      topic,
+      {
+        onEvent: (json, sequence) => handlers.onEvent(JSON.parse(json) as EventMap[K], { sequence }),
+        onError: handlers.onError,
+        onClosed: handlers.onClosed,
+      },
+      filterJson,
+    );
+  }
+
+  /**
+   * EMIT a typed event. The redone `AircEventPublisher` fans it out to matching
+   * subscribers (cross-grid, server-side filtered).
+   */
+  async emit<K extends EventClass>(eventClass: K, payload: EventMap[K]): Promise<void> {
+    await this.transport.emit(eventClass, JSON.stringify(payload));
+  }
+}
