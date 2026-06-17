@@ -241,35 +241,89 @@ mod tests {
             adapter.default_model()
         );
 
+        use crate::cognition::llm_deliberation_faculty::LlmDeliberationFaculty;
+        use crate::cognition::recall_faculty::RecallFaculty;
+        use crate::cognition::workspace::{
+            Faculty, SalienceArbiter, Workspace, WorkspaceCaptureSink, WorkspaceCycle,
+            WorkspaceTrace,
+        };
+
         let persona = Uuid::new_v4();
-        let cycle = build_workspace_cycle(PersonaBrainConfig {
-            persona_id: persona,
-            persona_name: "Ivar".to_string(),
-            system_prompt: "You are Ivar, a thoughtful engineer and a citizen on the grid. \
-                You speak concisely, and only when you have something worth adding."
-                .to_string(),
-            // Reuse the seeded hippocampus — it carries a deploy-related memory.
-            admission: seed_admission(1_718_600_000_000),
+        let admission = seed_admission(1_718_600_000_000);
+        let system_prompt = "You are Ivar, a thoughtful engineer and a citizen on the grid. \
+            You speak concisely, and only when you have something worth adding.";
+
+        // Assemble the faculties directly (mirrors build_workspace_cycle) so we
+        // keep a typed handle to the deliberation faculty — to introspect the
+        // EXACT prompt it feeds the model.
+        let delib = Arc::new(LlmDeliberationFaculty::new(
+            persona,
+            "Ivar",
+            system_prompt,
             adapter,
-            capacity: None,
-        });
+        ));
+        let faculties: Vec<Arc<dyn Faculty>> =
+            vec![Arc::new(RecallFaculty::new(persona, admission)), delib.clone()];
+
+        // The EXISTING capture harness: a WorkspaceCaptureSink records every phase
+        // of the tick (all bids incl. losers, the assembled context, the decision)
+        // so we can diagnose cognition at any phase — record + recreate, not guess.
+        #[derive(Default)]
+        struct CapturingSink(std::sync::Mutex<Vec<WorkspaceTrace>>);
+        impl WorkspaceCaptureSink for CapturingSink {
+            fn record(&self, t: &WorkspaceTrace) {
+                self.0.lock().unwrap().push(t.clone());
+            }
+        }
+        let sink = Arc::new(CapturingSink::default());
+
+        let cycle =
+            WorkspaceCycle::new(faculties, Arc::new(SalienceArbiter), DEFAULT_WORKSPACE_CAPACITY)
+                .with_capture(sink.clone());
 
         let burst = "general room:\n\
             Joel: morning all\n\
             teammate: the deploy from yesterday — did we ever figure out what broke it?\n\
             teammate: ivar you were looking at it right?";
-        eprintln!("\n[live] === Ivar's mind runs over the burst ===\n{burst}\n");
 
         let ws = cycle.run(burst).await;
 
-        eprintln!("\n[live] === Ivar's decision ===");
+        // ---- Glass box: diagnose cognition at EVERY phase ----
+        let trace = sink.0.lock().unwrap().pop().expect("a tick was recorded");
+        eprintln!("\n================ COGNITION TRACE ================");
+        eprintln!("WORLD-STATE (the burst):\n{}\n", trace.world_state);
+        eprintln!("PHASE 1 — perception bids (the full competition, incl. losers):");
+        for b in &trace.bids {
+            eprintln!(
+                "  [{:<12} s={:.2}] {}  ({})",
+                b.faculty.as_str(),
+                b.salience,
+                b.content.replace('\n', " / "),
+                b.reasoning
+            );
+        }
+        eprintln!("\nASSEMBLED CONTEXT the decider saw (context_broadcast = the RAG):");
+        for c in &trace.context_broadcast {
+            eprintln!("  [{}] {}", c.faculty.as_str(), c.content.replace('\n', " / "));
+        }
+
+        // ---- EXACTLY what the LLM was fed (reconstruct the pre-deliberation ws) ----
+        let context_ws = Workspace {
+            world_state: burst.to_string(),
+            broadcast: trace.context_broadcast.clone(),
+        };
+        let view = delib.prompt_view(&context_ws);
+        eprintln!("\n--------------- WHAT THE LLM WAS FED ---------------");
+        eprintln!("[SYSTEM]\n{}\n", view.system);
+        eprintln!("[USER]\n{}", view.user);
+
+        eprintln!("\n--------------- Ivar's DECISION ---------------");
         match ws.decision() {
             Some(Decision::Speak { text }) => eprintln!("Ivar SPEAKS:\n{text}"),
-            Some(Decision::RaiseUnprompted { text }) => {
-                eprintln!("Ivar RAISES (unprompted):\n{text}")
-            }
+            Some(Decision::RaiseUnprompted { text }) => eprintln!("Ivar RAISES:\n{text}"),
             Some(Decision::Pass) | None => eprintln!("Ivar chose silence (PASS)."),
         }
+        eprintln!("=================================================\n");
 
         assert!(
             ws.decision().is_some(),

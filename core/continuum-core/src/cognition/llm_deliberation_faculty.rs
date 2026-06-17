@@ -28,6 +28,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use std::fmt::Write as _;
 use uuid::Uuid;
 
 use super::workspace::{Contribution, Decision, Faculty, FacultyId, Workspace};
@@ -118,7 +119,7 @@ impl LlmDeliberationFaculty {
     }
 
     fn build_system_prompt(&self, ws: &Workspace) -> String {
-        let mut s = String::with_capacity(self.system_prompt.len() + 512);
+        let mut s = String::with_capacity(self.system_prompt.len() + 768);
         s.push_str(&self.system_prompt);
         let context = self.render_assembled_context(ws);
         if !context.is_empty() {
@@ -131,10 +132,50 @@ impl LlmDeliberationFaculty {
             );
             s.push_str(&context);
         }
+        // Tell the reasoner it is taking a TURN in this activity, not analyzing a
+        // transcript — otherwise small models outline the situation instead of
+        // participating. The activity is NOT hardcoded (it is recipe-defined): the
+        // room's operating doctrine in the context above specializes HOW to
+        // participate (chat / coordination / game / code / art / …). This block
+        // only says "respond as yourself, in your own voice, not as an analysis."
+        let _ = write!(
+            s,
+            "\n\n[Taking your turn]\n\
+             What follows (the user message) is the recent activity in this space — \
+             messages from OTHER participants. You are {name}. Write ONLY your own \
+             single next message, in first person, in your own voice, the way you \
+             would actually say it. Do NOT write or invent anyone else's lines, do \
+             NOT continue or replay the transcript, do NOT prefix your message with \
+             your name, do NOT write an outline, analysis, or narration of what you \
+             are doing — just say your piece. Let the context above (including the \
+             room's operating doctrine, if any) shape how you participate. If you \
+             have nothing worth adding, stay silent.",
+            name = self.persona_name,
+        );
         // Reuse the ONE silence contract — PASS = first-class choice to stay quiet.
         s.push_str(SILENCE_AFFORDANCE_BLOCK);
         s
     }
+
+    /// The EXACT prompt this faculty sends the model this tick — the system
+    /// prompt (identity + assembled RAG context + how-to-participate + silence
+    /// affordance) and the user burst. Exposed so what the LLM sees is trivially
+    /// introspectable at every turn (tests, replay, operator tooling). The RAG is
+    /// the load-bearing input; it must never be opaque.
+    pub fn prompt_view(&self, ws: &Workspace) -> DeliberationPromptView {
+        DeliberationPromptView {
+            system: self.build_system_prompt(ws),
+            user: ws.world_state.clone(),
+        }
+    }
+}
+
+/// A snapshot of exactly what the deliberation faculty sends the model — the
+/// glass box over the RAG/prompt. Print it, capture it, diff it across turns.
+#[derive(Debug, Clone)]
+pub struct DeliberationPromptView {
+    pub system: String,
+    pub user: String,
 }
 
 #[async_trait]
@@ -150,15 +191,28 @@ impl Faculty for LlmDeliberationFaculty {
     }
 
     async fn contribute(&self, ws: &Workspace) -> Option<Contribution> {
+        let view = self.prompt_view(ws);
+        // Introspection seam: emit EXACTLY what the model sees this tick. The RAG
+        // is the load-bearing input — never opaque. Enable the `cognition` log
+        // category for the persona to capture this per-turn (the existing
+        // record/replay harness — recorder + RagCaptureSink + vdd::turn_replay —
+        // is the durable path; this debug emit is the live tap).
+        tracing::debug!(
+            target: "cognition::deliberation",
+            persona = %self.persona_name,
+            system_prompt = %view.system,
+            burst = %view.user,
+            "deliberation prompt — what the model sees this turn"
+        );
         let request = TextGenerationRequest {
             messages: vec![ChatMessage {
                 role: "user".to_string(),
                 // The consolidated burst — the "catch up on the thread" the
                 // persona is reasoning over this tick.
-                content: MessageContent::Text(ws.world_state.clone()),
+                content: MessageContent::Text(view.user),
                 name: None,
             }],
-            system_prompt: Some(self.build_system_prompt(ws)),
+            system_prompt: Some(view.system),
             model: self.model.clone(),
             provider: None,
             temperature: Some(self.temperature),
