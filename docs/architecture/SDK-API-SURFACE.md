@@ -110,6 +110,52 @@ rest — local walk, airc-to-peer, or room fan-out — over the SAME wire family
 (local IPC ↔ cross-grid airc). Caller stays transparent; addressing is opt-in.
 Events ride the redone `AircEventPublisher` cross-grid pub/sub the same way.
 
+## Handles are addressable resources (URIs) — long-running, streaming, multi-hop
+
+Short commands are request/response. Long-running / streaming / stateful work uses
+the **handle pattern** (the substrate's establish-once-reuse-many — `InferenceHandleStore`,
+AI-COMMAND-NAMESPACE.md §2): an `open`-style command returns a **handle**, events
+stream against it, and further commands (`write`, `read`, `close`) take it.
+
+The unifying move (Joel): **a handle IS a URI.** `open` returns the handle's
+`airc://` URI — in the result body, or an **airc header** (the HTTP `Location`
+analog: "the resource you created lives here"). Then *everything routes to that
+URI*:
+
+- further commands → `airc://<handle-uri>/write` (routes to wherever the resource
+  lives — a peer, an `:vr` env, N hops away);
+- event subscription → `airc://<handle-uri>/events/<class>` (the resource's stream).
+
+So in the long **router-chain** scenario, the handle's event stream is fed by **any
+link in the chain** — each hop emits handle-correlated events; the originator's
+subscription receives the live stream from across the grid (the web-like ping's
+hops *arrive as events*, not one return). Handle = an addressable resource;
+commands operate on it, events flow from it, routing places it. Commands + events +
+handles + routing collapse into ONE addressing scheme.
+
+```ts
+const f = await commands.open('file/open', { path }, { peer, env: 'web' }); // → Handle (carries its URI)
+f.on('progress', (e) => …);                 // events from the resource (any hop)
+await f.execute('write', { bytes });        // routed to the handle's URI
+await f.close();
+```
+
+## Wire model: headers route, body opaque, serialize once (web-like)
+
+For grid-scale efficiency ([[airc-performance-doctrine]]), the wire is **HTTP-like**:
+**control metadata in HEADERS, payload in an OPAQUE body.** A frame carries headers
+— target URI, the handle/`Location`, content-type, `filter`, `sequence`,
+access-level, `OPTIONS`-style preflight/capability — and an opaque body.
+
+The performance rule: **serialize ONCE at the caller, deserialize ONCE at the
+callee; every router hop in between forwards by reading only the headers** — it
+never parses/re-serializes the body. Limited serde on the routing path; forward the
+bytes. This is what makes multi-hop grid orchestration cheap — exactly how the web
+scales (routers read headers, forward the body untouched). The SDK endpoints
+already serialize-once (`execute` does one `JSON.stringify`, the result one
+`JSON.parse`); the header/body split + header-only forwarding is the wire layer
+(grid/transport — BigMama's lane).
+
 ## Orchestrating across the grid (multi-hop, web-like)
 
 A command should route across boundaries, machines, and the greater grid — even
