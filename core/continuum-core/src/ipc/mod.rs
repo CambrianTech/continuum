@@ -1645,7 +1645,15 @@ pub fn start_server(
     let executor = Arc::new(
         crate::runtime::CommandExecutor::new(runtime.registry_arc())
             .with_interceptor(Arc::new(crate::runtime::AircInterceptor::new()))
-            .with_interceptor(Arc::new(crate::runtime::GridInterceptor::new(grid_state))),
+            .with_interceptor(Arc::new(crate::runtime::GridInterceptor::new(grid_state)))
+            // Hard ACL gate (slice 3): replace the AllowAllPolicy default
+            // so cross-grid (airc) callers — incl. a persona's command
+            // inbound pump — are gated by the grid ACL, capped at
+            // Provisional. A remote room peer may request ai/generate and
+            // nothing privileged; local/substrate callers are unaffected.
+            // See routing/grid_trust_policy.rs + docs/grid/
+            // AIRC-NATIVE-IDENTITY-ROOMS-SECURITY.md §5 slice 3.
+            .with_policy(Arc::new(crate::routing::GridTrustAuthPolicy::new())),
     );
     runtime
         .registry()

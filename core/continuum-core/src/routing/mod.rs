@@ -33,6 +33,7 @@ pub mod auth_policy;
 pub mod command_handler;
 pub mod command_uri;
 pub mod environment;
+pub mod grid_trust_policy;
 #[macro_use]
 pub mod macros;
 pub mod probe_file_sink;
@@ -84,6 +85,7 @@ pub use probe_file_sink::{
 pub use probe_router::{ProbeEvent, ProbeRouterLayer, DEFAULT_CHANNEL_CAPACITY};
 pub use tracing_init::{install_probe_tracing, ProbeInstall, ProbeTracingConfig};
 pub use route_decision::{route, RouteDecision, RouteKind};
+pub use grid_trust_policy::GridTrustAuthPolicy;
 pub use transport::{ClosureTransport, NotImplementedRemoteTransport, Transport};
 pub use uri_layer::{current_uri_chain, UriCaptureLayer, UriFrame};
 pub use verdict::{DeferredReason, ForbiddenReason, Verdict};

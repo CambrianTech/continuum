@@ -177,9 +177,19 @@ floorless budget so it never starves airc's recent_history. `None` doctrine →
 no block. The same single-scan / one-source-of-truth discipline the roster's
 adversarial review established applies.
 
-**Slice 3 — Trust/origin enforcement at the cognition boundary.** Use the roster
-trust annotation so a persona weighs instructions by origin, and so it declines
-out-of-scope requests from untrusted outsiders in sensitive rooms.
+**Slice 3 — Hard ACL gate on cross-grid callers (DONE).** Enforcement, not just
+prompt guidance: a persona is command-callable over airc (its inbound pump
+forwards any `command-request` envelope from a room peer to the shared
+`CommandExecutor`), and the executor shipped the `AllowAllPolicy` default — so an
+untrusted outsider could address a privileged command (`data/delete`,
+`grid/trust`) to the persona and have it execute. `GridTrustAuthPolicy`
+(`routing/grid_trust_policy.rs`) closes it on the existing `AuthPolicy` seam:
+local/substrate callers pass; **airc-sourced callers are gated by the grid ACL
+(`is_command_authorized`), capped at `Provisional`** — they may request
+`ai/generate` (continuum#1649) and *nothing* above it; every `Owner`-gated
+command is denied regardless of sender. Installed on the production executor at
+boot. When the airc↔grid trust bridge lands, the hardcoded ceiling becomes the
+peer's resolved `TrustLevel` (a same-account Owner peer regains full access).
 
 **Later (not now) — Node/web unified clients.** Rewrite the legacy UI on a
 proper reactive framework, mobile/positron-aware, every activity opened by a
