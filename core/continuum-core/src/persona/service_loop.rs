@@ -561,6 +561,19 @@ async fn serve_persona_loop_inner(
             }
         }
 
+        // Project the room-doctrine delivery → RespondInput.room_doctrine.
+        // Routed by source_id into system-prompt grounding (a [Room
+        // operating doctrine] block), so the persona calibrates
+        // participation to the room's nature. One current contract per
+        // room → first item's content. See slice 2.
+        let room_doctrine: Option<String> = composed
+            .deliveries
+            .iter()
+            .filter(|d| d.source_id == "room-doctrine")
+            .flat_map(|d| d.items.iter())
+            .map(|item| item.content.clone())
+            .next();
+
         // recalled_engrams is populated above from
         // admission.recall_recent(8) — substrate-managed memory,
         // not the airc transcript window. The engram delivery from
@@ -594,7 +607,7 @@ async fn serve_persona_loop_inner(
             turn_context,
             message_id: Uuid::new_v4(),
             message_text: msg.text.clone(),
-            other_persona_names: Vec::new(),
+            other_persona_names,
             // #195 slice 2: cached per-session prompt. The
             // PersonaContext baked this once at construction via
             // `build_persona_system_prompt`; here we just lease
@@ -611,6 +624,7 @@ async fn serve_persona_loop_inner(
             capabilities: std::collections::HashSet::new(),
             recalled_engrams,
             room_roster,
+            room_doctrine,
         };
 
         // 3. Run the cognition cycle. The persona may speak or stay

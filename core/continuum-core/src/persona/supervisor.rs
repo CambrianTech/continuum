@@ -498,6 +498,16 @@ pub async fn materialize_adapters(
             ));
         cognition.set_roster_source(roster_source);
 
+        // Bind the room-doctrine source from the same runtime (upcasts to
+        // `AircDoctrineReader`). Grounds the persona in the room's nature
+        // — the airc-published operating contract. Slice 2.
+        let doctrine_source: Arc<dyn crate::persona::rag_budget::RagSource> =
+            Arc::new(crate::persona::room_doctrine_source::RoomDoctrineSource::new(
+                identity.persona_id,
+                runtime.clone(),
+            ));
+        cognition.set_doctrine_source(doctrine_source);
+
         let system_prompt = build_persona_system_prompt(&identity.agent_name);
 
         out.push(Ok(PersonaContext {

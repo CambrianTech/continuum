@@ -165,9 +165,17 @@ rendered in `prompt_assembly::assemble`) — *not* the `airc → recent_history`
 branch, which would inject the roster as fake chat. It rides `capture_sink`, so
 it is recorded and replayable through the existing fixtures.
 
-**Slice 2 — Room-nature grounding.** Surface the room's activity kind (chat vs
-coordination vs game vs …) into the same recipe/RAG context, via airc room
-doctrine, so participation is calibrated to the activity.
+**Slice 2 — Room-nature grounding (DONE).** A **`RoomDoctrineSource`** RAG source
+(same shape as the roster: `AircDoctrineReader` reader trait, persona-scoped,
+fails-safe-empty, test stub) reads airc `Airc::room_doctrine` — the room's
+published operating contract (markdown the airc-core docs say agents should
+"inject as a system message"). Its delivery routes into a `[Room operating
+doctrine]` system-prompt block, so a persona calibrates participation to the
+activity (sparse in a coordination room, conversational in a chat room — Ivar's
+*other* failure). Rides `capture_sink` (recorded + replayable); claims a small
+floorless budget so it never starves airc's recent_history. `None` doctrine →
+no block. The same single-scan / one-source-of-truth discipline the roster's
+adversarial review established applies.
 
 **Slice 3 — Trust/origin enforcement at the cognition boundary.** Use the roster
 trust annotation so a persona weighs instructions by origin, and so it declines

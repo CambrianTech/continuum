@@ -271,6 +271,7 @@ pub fn build_respond_input(signal: &Signal, ctx: &PersonaContext) -> Result<Resp
         // projection doesn't carry compose deliveries, so it defaults
         // empty — no [Present in this room] block, backwards-compatible.
         room_roster: Vec::new(),
+        room_doctrine: None,
     })
 }
 

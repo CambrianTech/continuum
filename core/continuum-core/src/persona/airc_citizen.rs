@@ -75,7 +75,9 @@ use uuid::Uuid;
 /// docs/grid/AIRC-NATIVE-IDENTITY-ROOMS-SECURITY.md §5.
 #[async_trait]
 pub trait AircCitizen:
-    AircTranscriptReader + crate::persona::room_roster_source::AircRosterReader
+    AircTranscriptReader
+    + crate::persona::room_roster_source::AircRosterReader
+    + crate::persona::room_doctrine_source::AircDoctrineReader
 {
     /// The airc-side peer identity (Ed25519 pubkey, formatted as Uuid).
     /// Cognition uses this for self-loop filtering; the supervisor uses
@@ -163,6 +165,17 @@ impl crate::persona::room_roster_source::AircRosterReader for StubAircCitizen {
         &self,
     ) -> Result<std::collections::HashMap<airc_core::PeerId, String>, AircError> {
         Ok(std::collections::HashMap::new())
+    }
+}
+
+#[async_trait]
+impl crate::persona::room_doctrine_source::AircDoctrineReader for StubAircCitizen {
+    async fn room_doctrine(
+        &self,
+    ) -> Result<Option<airc_core::doctrine::RoomDoctrinePublished>, AircError> {
+        // No daemon in tests → no published doctrine. Cognition runs
+        // through cleanly with no [Room operating doctrine] block.
+        Ok(None)
     }
 }
 

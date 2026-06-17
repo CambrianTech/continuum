@@ -37,6 +37,13 @@ use uuid::Uuid;
 /// budget-claim rationale in `compose_for_turn`.
 const ROSTER_MAX_TOKENS: u32 = 256;
 
+/// Token ceiling for the room-doctrine source. A doctrine is a short
+/// operating contract (a few paragraphs); capped so it grounds the
+/// persona in the room's nature without competing with engram/airc for
+/// grow headroom. Larger than the roster (prose, not a name list) but
+/// still bounded and floorless.
+const DOCTRINE_MAX_TOKENS: u32 = 1024;
+
 /// All cognitive state for a single persona — single lock, cache-local.
 pub struct PersonaCognition {
     pub engine: PersonaCognitionEngine,
@@ -94,6 +101,15 @@ pub struct PersonaCognition {
     /// persona confabulating other citizens' turns. See
     /// docs/grid/AIRC-NATIVE-IDENTITY-ROOMS-SECURITY.md §5 slice 1.
     pub roster_source: Option<Arc<dyn RagSource>>,
+    /// The persona's room-doctrine RAG source — "what KIND of room is
+    /// this" (the airc-published operating contract via
+    /// `Airc::room_doctrine`). Bound at supervisor boot from the same
+    /// `Airc` handle (satisfies `AircDoctrineReader`). `None` pre-attach
+    /// / in tests. Routed by the service loop into system-prompt
+    /// grounding (a `[Room operating doctrine]` block) so a persona
+    /// calibrates participation to the activity (slice 2). See
+    /// docs/grid/AIRC-NATIVE-IDENTITY-ROOMS-SECURITY.md §5 slice 2.
+    pub doctrine_source: Option<Arc<dyn RagSource>>,
     /// The capture sink the RecordingRagSource wraps engram_source
     /// against. Default = `NoopRagCaptureSink` (zero overhead, drops
     /// events on the floor). Production callers swap in
@@ -179,6 +195,7 @@ impl PersonaCognition {
             engram_source,
             airc_source: None,
             roster_source: None,
+            doctrine_source: None,
             capture_sink,
         }
     }
@@ -214,6 +231,18 @@ impl PersonaCognition {
             self.capture_sink.clone(),
         ));
         self.roster_source = Some(decorated);
+    }
+
+    /// Bind the brain's room-doctrine RAG source (`RoomDoctrineSource`).
+    /// Same boot-time wire as `set_roster_source`, from the same `Airc`
+    /// handle (satisfies `AircDoctrineReader`), decorated with the
+    /// `capture_sink` so doctrine deliveries are recorded + replayable.
+    pub fn set_doctrine_source(&mut self, raw_source: Arc<dyn RagSource>) {
+        let decorated: Arc<dyn RagSource> = Arc::new(RecordingRagSource::new(
+            ArcRagSource::new(raw_source),
+            self.capture_sink.clone(),
+        ));
+        self.doctrine_source = Some(decorated);
     }
 
     /// Brain composition for one cognition turn. Walks the brain's
@@ -262,16 +291,20 @@ impl PersonaCognition {
         // then airc (the L1 conversational floor). Future sources
         // (code, tool descriptions, identity card) extend this list
         // in order of long-term-to-immediate.
-        let mut sources: Vec<Arc<dyn RagSource>> = Vec::with_capacity(3);
+        let mut sources: Vec<Arc<dyn RagSource>> = Vec::with_capacity(4);
         sources.push(self.engram_source.clone());
         if let Some(ref airc) = self.airc_source {
             sources.push(airc.clone());
         }
-        // The "identity card" source the original author reserved this
-        // list for: who else is present in the room right now. Routed
-        // by the service loop into system-prompt grounding, not history.
+        // The "identity card" sources the original author reserved this
+        // list for: WHO is present (roster) and WHAT KIND of room this is
+        // (doctrine). Both routed by the service loop into system-prompt
+        // grounding, not history.
         if let Some(ref roster) = self.roster_source {
             sources.push(roster.clone());
+        }
+        if let Some(ref doctrine) = self.doctrine_source {
+            sources.push(doctrine.clone());
         }
 
         // Per-source budget claims. The two HEAVYWEIGHT sources (engram
@@ -288,28 +321,28 @@ impl PersonaCognition {
         // A source's budget should reflect its real appetite.
         let per_source_max = ((context_window as u64) * 6 / 10) as u32;
         let per_source_max = per_source_max.min(headroom);
-        let roster_max = ROSTER_MAX_TOKENS.min(per_source_max);
         let budgets: Vec<RagSourceBudget> = sources
             .iter()
             .map(|s| {
-                if s.source_id() == "room-roster" {
-                    RagSourceBudget {
-                        source_id: s.source_id().to_string(),
-                        priority: 10,
-                        floor_tokens: 0,
-                        min_tokens: 0,
-                        max_tokens: roster_max,
-                        required: false,
+                // Lightweight grounding sources (roster, doctrine) claim a
+                // small floorless budget matching their real appetite, so
+                // they never starve airc's recent_history or compete for
+                // grow headroom with the heavyweight engram/airc sources.
+                let (floor, min, max) = match s.source_id() {
+                    "room-roster" => (0, 0, ROSTER_MAX_TOKENS.min(per_source_max)),
+                    "room-doctrine" => (0, 0, DOCTRINE_MAX_TOKENS.min(per_source_max)),
+                    _ => {
+                        let f = 500_u32.min(per_source_max);
+                        (f, f, per_source_max)
                     }
-                } else {
-                    RagSourceBudget {
-                        source_id: s.source_id().to_string(),
-                        priority: 10,
-                        floor_tokens: 500_u32.min(per_source_max),
-                        min_tokens: 500_u32.min(per_source_max),
-                        max_tokens: per_source_max,
-                        required: false,
-                    }
+                };
+                RagSourceBudget {
+                    source_id: s.source_id().to_string(),
+                    priority: 10,
+                    floor_tokens: floor,
+                    min_tokens: min,
+                    max_tokens: max,
+                    required: false,
                 }
             })
             .collect();
