@@ -31,12 +31,23 @@ use async_trait::async_trait;
 use std::fmt::Write as _;
 use uuid::Uuid;
 
+use super::tool_executor::{ToolExecutionContext, ToolExecutor};
 use super::workspace::{Contribution, Decision, Faculty, FacultyId, Workspace};
 use crate::ai::adapter::AIProviderAdapter;
-use crate::ai::types::{ChatMessage, MessageContent, TextGenerationRequest};
+use crate::ai::types::{
+    ChatMessage, ContentPart, FinishReason, MessageContent, NativeToolSpec, TextGenerationRequest,
+};
 use crate::persona::prompt_assembly::{
     looks_like_silence_token, SILENCE_AFFORDANCE_BLOCK, SILENCE_TOKEN,
 };
+
+/// Default cap on tool-use rounds in one deliberation tick. A persona that ACTS
+/// loops generate→tool→generate; the bound stops a model that never stops calling
+/// tools from spinning the turn forever (a turn is bounded work, not an open agent).
+const DEFAULT_MAX_TOOL_ITERATIONS: usize = 4;
+
+/// Max chars of a tool result fed back to the model — keeps the re-prompt bounded.
+const TOOL_RESULT_MAX_CHARS: usize = 8_000;
 
 /// Default sampling temperature for deliberation — enough warmth for natural
 /// voice, not so much it drifts.
@@ -90,6 +101,17 @@ pub struct LlmDeliberationFaculty {
     model: Option<String>,
     temperature: f32,
     max_tokens: u32,
+    /// The persona's authorized tool set. Empty → the persona can only SPEAK
+    /// (no `tools` passed to the model). Non-empty → the persona can ACT: the
+    /// model may emit tool_calls the agent loop executes. Rust-origin contracts,
+    /// the executor runs them ([[commands-are-kernel-level-and-compose]]).
+    tools: Vec<NativeToolSpec>,
+    /// Runs the tool calls the model emits. `None` → no acting even if `tools` is
+    /// set (degrades to speak-only). Injected (trait): a TS-IPC impl in production,
+    /// a mock in tests — the loop is impl-agnostic.
+    tool_executor: Option<Arc<dyn ToolExecutor>>,
+    /// Bound on tool-use rounds per tick ([`DEFAULT_MAX_TOOL_ITERATIONS`]).
+    max_tool_iterations: usize,
 }
 
 impl LlmDeliberationFaculty {
@@ -107,6 +129,9 @@ impl LlmDeliberationFaculty {
             model: None,
             temperature: DEFAULT_TEMPERATURE,
             max_tokens: DEFAULT_MAX_TOKENS,
+            tools: Vec::new(),
+            tool_executor: None,
+            max_tool_iterations: DEFAULT_MAX_TOOL_ITERATIONS,
         }
     }
 
@@ -118,6 +143,68 @@ impl LlmDeliberationFaculty {
     pub fn with_temperature(mut self, temperature: f32) -> Self {
         self.temperature = temperature;
         self
+    }
+
+    /// Authorize a tool set — the persona can now ACT, not just speak. The model
+    /// is offered these tools; emitted tool_calls run through the executor.
+    pub fn with_tools(mut self, tools: Vec<NativeToolSpec>) -> Self {
+        self.tools = tools;
+        self
+    }
+
+    /// Inject the tool executor (the thing that runs the calls). Without it,
+    /// `tools` are inert — the faculty stays speak-only.
+    pub fn with_tool_executor(mut self, executor: Arc<dyn ToolExecutor>) -> Self {
+        self.tool_executor = Some(executor);
+        self
+    }
+
+    /// Build a generation request for the current message thread. Centralized so
+    /// the agent loop's re-prompts and the first prompt share one shape.
+    fn build_request(
+        &self,
+        messages: Vec<ChatMessage>,
+        tools: Option<Vec<NativeToolSpec>>,
+        system_prompt: String,
+    ) -> TextGenerationRequest {
+        TextGenerationRequest {
+            messages,
+            system_prompt: Some(system_prompt),
+            model: self.model.clone(),
+            provider: None,
+            temperature: Some(self.temperature),
+            max_tokens: Some(self.max_tokens),
+            top_p: None,
+            top_k: None,
+            repeat_penalty: None,
+            stop_sequences: None,
+            tools,
+            tool_choice: None,
+            response_format: None,
+            active_adapters: None,
+            request_id: None,
+            user_id: None,
+            room_id: None,
+            purpose: Some("cognition/deliberation".to_string()),
+            persona_id: Some(self.persona_id.to_string()),
+        }
+    }
+
+    /// Context for tool execution this tick. session/context ids are nil for now
+    /// (the Workspace cycle isn't session-scoped yet); they thread in when the
+    /// recipe-executor passes the live session — a follow-up, flagged not faked.
+    fn tool_context(&self) -> ToolExecutionContext {
+        ToolExecutionContext {
+            persona_id: self.persona_id,
+            persona_name: self.persona_name.clone(),
+            session_id: uuid::Uuid::nil(),
+            context_id: uuid::Uuid::nil(),
+            caller_context: serde_json::Value::Null,
+            persona_config: super::tool_executor::PersonaMediaConfigLite {
+                auto_load_media: false,
+                supported_media_types: Vec::new(),
+            },
+        }
     }
 
     /// Render the assembled context (the phase-1 winners that hold the workspace)
@@ -222,60 +309,109 @@ impl Faculty for LlmDeliberationFaculty {
             burst = %view.user,
             "deliberation prompt — what the model sees this turn"
         );
-        let request = TextGenerationRequest {
-            messages: vec![ChatMessage {
-                role: "user".to_string(),
-                // The consolidated burst — the "catch up on the thread" the
-                // persona is reasoning over this tick.
-                content: MessageContent::Text(view.user),
-                name: None,
-            }],
-            system_prompt: Some(view.system),
-            model: self.model.clone(),
-            provider: None,
-            temperature: Some(self.temperature),
-            max_tokens: Some(self.max_tokens),
-            top_p: None,
-            top_k: None,
-            repeat_penalty: None,
-            stop_sequences: None,
-            tools: None,
-            tool_choice: None,
-            response_format: None,
-            active_adapters: None,
-            request_id: None,
-            user_id: None,
-            room_id: None,
-            purpose: Some("cognition/deliberation".to_string()),
-            persona_id: Some(self.persona_id.to_string()),
-        };
+        // The growing message thread. Starts with the consolidated burst; the
+        // agent loop appends the model's tool_use turns + their tool results, so a
+        // persona that ACTS reasons over what its tools returned before it speaks.
+        let mut messages = vec![ChatMessage {
+            role: "user".to_string(),
+            content: MessageContent::Text(view.user),
+            name: None,
+        }];
+        let tools = (!self.tools.is_empty()).then(|| self.tools.clone());
+        // ACT only when the persona has BOTH authorized tools AND an executor;
+        // otherwise it's speak-only (tools inert) — backward-compatible.
+        let can_act = tools.is_some() && self.tool_executor.is_some();
+        let mut iterations = 0usize;
 
-        match self.adapter.generate_text(request).await {
-            Ok(resp) => {
-                let decision = decision_from_response(&resp.text);
-                // The faculty's own confidence in its verdict. A placeholder for a
-                // model-derived signal (logprob / uncertainty) — NOT a caste
-                // weight; it's how sure THIS mind is, which the arbiter integrates.
-                let (salience, reasoning) = match &decision {
-                    Decision::Pass => (0.5, format!("{} chose silence (PASS)", self.persona_name)),
-                    _ => (
-                        0.85,
-                        format!("{} deliberated over the assembled context", self.persona_name),
-                    ),
-                };
-                Some(Contribution::verdict(decision, salience, reasoning))
+        loop {
+            let request = self.build_request(messages.clone(), tools.clone(), view.system.clone());
+            let resp = match self.adapter.generate_text(request).await {
+                Ok(r) => r,
+                // Inference failed — abstain this tick (no fabricated Pass: a failed
+                // model is not a chosen silence).
+                Err(e) => {
+                    tracing::warn!(
+                        persona = %self.persona_name,
+                        error = %e,
+                        "deliberation inference failed; abstaining this tick"
+                    );
+                    return None;
+                }
+            };
+
+            // ACT: the model called tools, we can run them, and we're under the
+            // per-tick bound → execute, thread the results back, re-generate.
+            if can_act
+                && iterations < self.max_tool_iterations
+                && matches!(resp.finish_reason, FinishReason::ToolUse)
+            {
+                let calls = resp.tool_calls.clone().unwrap_or_default();
+                if !calls.is_empty() {
+                    let executor = self.tool_executor.as_ref().expect("can_act implies executor");
+                    // Append the model's tool_use turn (so the re-prompt has the
+                    // assistant's calls, then the results — the agent transcript).
+                    let assistant_parts = calls
+                        .iter()
+                        .map(|c| ContentPart::ToolUse {
+                            id: c.id.clone(),
+                            name: c.name.clone(),
+                            input: c.input.clone(),
+                        })
+                        .collect::<Vec<_>>();
+                    messages.push(ChatMessage {
+                        role: "assistant".to_string(),
+                        content: MessageContent::Parts(assistant_parts),
+                        name: None,
+                    });
+
+                    match executor
+                        .execute_native_batch(&calls, &self.tool_context(), TOOL_RESULT_MAX_CHARS)
+                        .await
+                    {
+                        Ok(outcome) => {
+                            let result_parts = outcome
+                                .results
+                                .iter()
+                                .map(|r| ContentPart::ToolResult {
+                                    tool_use_id: r.tool_use_id.clone(),
+                                    content: r.content.clone(),
+                                    is_error: None,
+                                })
+                                .collect::<Vec<_>>();
+                            messages.push(ChatMessage {
+                                role: "user".to_string(),
+                                content: MessageContent::Parts(result_parts),
+                                name: None,
+                            });
+                            iterations += 1;
+                            continue; // re-generate now that the tools have answered
+                        }
+                        // Tool batch failed — don't fabricate; fall through to a
+                        // final decision over whatever text the model already gave.
+                        Err(e) => {
+                            tracing::warn!(
+                                persona = %self.persona_name,
+                                error = %e,
+                                "tool batch failed; falling through to text decision"
+                            );
+                        }
+                    }
+                }
             }
-            // Inference failed — abstain this tick (the trace shows no verdict
-            // bid; the caller treats absence as effective silence). We do NOT
-            // fabricate a Pass: a failed model is not a chosen silence.
-            Err(e) => {
-                tracing::warn!(
-                    persona = %self.persona_name,
-                    error = %e,
-                    "deliberation inference failed; abstaining this tick"
-                );
-                None
-            }
+
+            // FINAL: the model's text is the verdict (speak / pass).
+            let decision = decision_from_response(&resp.text);
+            // The faculty's own confidence in its verdict. A placeholder for a
+            // model-derived signal (logprob / uncertainty) — NOT a caste weight;
+            // it's how sure THIS mind is, which the arbiter integrates.
+            let (salience, reasoning) = match &decision {
+                Decision::Pass => (0.5, format!("{} chose silence (PASS)", self.persona_name)),
+                _ => (
+                    0.85,
+                    format!("{} deliberated over the assembled context", self.persona_name),
+                ),
+            };
+            return Some(Contribution::verdict(decision, salience, reasoning));
         }
     }
 }
