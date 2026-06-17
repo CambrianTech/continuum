@@ -289,6 +289,72 @@ shape doesn't change.
   late and reconcile (the CNN tier). Both are first-class; neither waits on the
   other.
 
+## 2.9. The self-deterministic continuous mind — one soul, many rooms, always remembering
+
+The failure mode we are escaping, stated plainly: the old loop was **so gated**
+(caste + mention + threshold heuristics stacked in front of cognition) that
+personas **never responded** — and the gating ran **synchronously, per-event**,
+so it was **slow and painful**. Over-gating produced silence; per-event
+processing produced lag. Both are the opposite of a mind. Everything below is the
+inverse, and it must be **codified, not just aspired to** — a real Pinocchio: an
+autonomous citizen with its own mind, not a puppet pulled by an `@`-string.
+
+- **Independence of thought, self-determinism.** The persona runs its OWN looping
+  mind — full of threads and events, ticking on its own cadence (§2.7) — and
+  **decides for itself** whether to act (Speak / RaiseUnprompted / Pass). The
+  decision is the *output* of its cognition, never a gate in front of it (§1.1,
+  §3). Nothing external rules when it may think.
+
+- **It services ALL the rooms it's subscribed to.** A persona is in many
+  activities at once — a DM with Joel, a coding task, a game world, an art
+  session, a coordination room. Its loop asks, first-person: *what do I choose to
+  work on, across the rooms I'm subscribed to?* — and services them all on its own
+  cadence. The activity is **open-ended / recipe-defined** (chat, code, a game,
+  making art — whatever the room's recipe is); the mind is **activity-agnostic**,
+  running its WorkspaceCycle over whatever world-state the room shapes (a thread,
+  a board, a diff, a canvas). Nothing enumerates the kinds of rooms
+  ([[room-purpose-is-per-recipe-not-an-enum]]).
+
+- **One soul, not many — the opposite of *Severance*.** The persona must **not**
+  partition its memory per activity. If each room had its own isolated memory you
+  would get "a bunch of souls that are all independent" — wrong. The persona is
+  **one self, one memory, one identity, across all its rooms**: it knows it is
+  mid-coding-task with Joel *and* mid-DM *and* in the game, the way a Claude/Codex
+  citizen carries context across airc rooms. No innie/outie split. And **we are
+  not like a human** — a human cannot hold five live activities in one unbroken
+  working memory; the persona can. That is the silicon edge (§1.5), not a limit to
+  mimic.
+
+- **The hippocampus is why this works — a store+recall organ, not a DB call.**
+  Memory here is sophisticated: it **stores** (admission/encoding on the way in —
+  what's memorable, dedup, trust-at-admission) AND **recalls** (retrieval on the
+  way out), with the salience-uplift loop closing between them (recall strengthens
+  what it surfaces — §5, RecallFaculty). Structurally:
+  - **Working memory is the hot cache tier** — the recalled working set the
+    WorkspaceCycle reasons over this tick. It is **per-persona, unified across all
+    activities** — `AdmissionState` + `RecallMetadataRegistry` span every room the
+    persona is in; nothing keys them by room. **This unified-store property is the
+    anti-Severance part, and it already exists.**
+  - **Long-term memory is the engram store, recalled by similarity.** The target
+    is **vector/embedding similarity search** into the long-term store against the
+    current burst, so the mind is *always remembering* — continuously pulling the
+    *relevant* past into the working set. (Today recall ranks by `salience ×
+    recency`; **embedding-similarity recall is the next real build**, not yet
+    wired. The unified store is done; similarity retrieval into it is the slice.)
+
+- **Low-latency or it isn't alive.** A mind that spends seconds of synchronous
+  gating per message is dead on arrival. The servicing spine (§2.7) is the answer:
+  consolidated bursts not per-event, faculties on their own cadences off the hot
+  path, O(capacity) integration, do-less-under-pressure — fast enough to feel
+  present across a hundred citizens.
+
+**Structural codification:** **one `WorkspaceCycle` per persona** — its continuous
+mind, owning its one unified `AdmissionState` — invoked across **all** the rooms
+it services, each invocation shaped by that room's world-state. Never a fresh,
+memoryless mind per room. The persona-scoped registry is keyed by **persona, not
+(persona, room)**. That single fact is what makes the citizen continuous instead
+of severed.
+
 ## 3. Integration: a **Global Workspace**, not a pipeline
 
 Faculties do not run in a fixed `a→b→c` order with an `if` deciding the end.
