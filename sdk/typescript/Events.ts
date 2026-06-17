@@ -12,7 +12,7 @@
  */
 
 import type { Transport, Subscription, Target } from './transport';
-import { buildEventTopic } from './transport';
+import { buildEventTopic, stampContext } from './transport';
 import type { EventMap, EventClass } from './generated/CommandMap';
 
 /** Metadata delivered alongside each event (from the redone publisher frame). */
@@ -36,7 +36,16 @@ export interface SubscribeOptions<K extends EventClass> {
 }
 
 export class Events {
-  constructor(private readonly transport: Transport) {}
+  /**
+   * @param transport the facade binding
+   * @param contextId the conversation/room scope (set by `Continuum.scoped(ctx)`);
+   *   when present, `emit` stamps it into the event payload so an emitted event
+   *   carries the conversation it belongs to. Mirrors `continuum-client`.
+   */
+  constructor(
+    private readonly transport: Transport,
+    private readonly contextId?: string,
+  ) {}
 
   /**
    * SUBSCRIBE to an event class. The class literal infers the payload type.
@@ -69,6 +78,7 @@ export class Events {
    * subscribers (cross-grid, server-side filtered).
    */
   async emit<K extends EventClass>(eventClass: K, payload: EventMap[K]): Promise<void> {
-    await this.transport.emit(eventClass, JSON.stringify(payload));
+    const body = stampContext(payload, this.contextId);
+    await this.transport.emit(eventClass, JSON.stringify(body));
   }
 }

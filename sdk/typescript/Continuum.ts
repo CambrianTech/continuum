@@ -10,7 +10,7 @@
  * See docs/architecture/{CLIENT-SDK-PLATFORM-ARCHITECTURE, SDK-API-SURFACE}.md.
  */
 
-import type { Transport, Target } from './transport';
+import type { Transport, Target, SessionIdentity } from './transport';
 import { Commands } from './Commands';
 import { Events } from './Events';
 import { Handle, handleFrom } from './Handle';
@@ -22,9 +22,12 @@ export class Continuum {
   /** Subscribe/emit — the Event primitive (the organism's signaling). */
   readonly events: Events;
 
-  private constructor(private readonly transport: Transport) {
-    this.commands = new Commands(transport);
-    this.events = new Events(transport);
+  private constructor(
+    private readonly transport: Transport,
+    private readonly contextId?: string,
+  ) {
+    this.commands = new Commands(transport, contextId);
+    this.events = new Events(transport, contextId);
   }
 
   /**
@@ -33,6 +36,32 @@ export class Continuum {
    */
   static connect(transport: Transport): Continuum {
     return new Continuum(transport);
+  }
+
+  /**
+   * WHO this client acts as — citizen (`userId`) + session instance
+   * (`sessionId`). Readonly; surfaces the identity established at connect (airc
+   * pairing / handshake, or the persona's own id). Mirrors `continuum-client`'s
+   * `Connection::session()` — the same shape every client and persona reads.
+   */
+  get session(): SessionIdentity {
+    return this.transport.session();
+  }
+
+  /** The conversation/room this client is scoped to, if any (third ID tier). */
+  get context(): string | undefined {
+    return this.contextId;
+  }
+
+  /**
+   * Return a client SCOPED to a conversation/room — its `commands` + `events`
+   * auto-stamp `contextId` (the third ID tier) so callers never re-thread the
+   * scope. Shares the same Transport + identity; only the context differs. This
+   * is how a persona services a room (scoped to that room's contextId) exactly
+   * the way a browser tab does — `[[persona-is-a-client]]`.
+   */
+  scoped(contextId: string): Continuum {
+    return new Continuum(this.transport, contextId);
   }
 
   /**

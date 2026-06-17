@@ -31,6 +31,41 @@ export interface Transport {
   subscribe(topic: string, handlers: RawEventHandlers, filterJson?: string): Subscription;
   /** Event PUBLISH: emit(class, payload_json). (facade gap) */
   emit(eventClass: string, payloadJson: string): Promise<void>;
+  /**
+   * WHO this connection acts as — citizen (`userId`) + session instance
+   * (`sessionId`), established by the binding at connect (airc pairing /
+   * handshake; the spawn path for a persona). Readonly; the SDK surfaces it,
+   * never fabricates it. Mirrors `continuum-client`'s `Connection::session()`.
+   */
+  session(): SessionIdentity;
+}
+
+/**
+ * WHO a connection acts as — the first two ID tiers (CLAUDE.md: userId >
+ * sessionId > contextId). Uuids are strings at the JSON boundary (the Rust
+ * `Option<Uuid>` → `string | undefined`). The third tier, contextId, is NOT
+ * here: it's per-scope, carried by a scoped client, not per-connection.
+ */
+export interface SessionIdentity {
+  userId?: string;
+  sessionId?: string;
+}
+
+/**
+ * Stamp the conversation scope (`contextId`, the third ID tier) into an outbound
+ * command envelope / event payload as a sibling field — the exact shape the core
+ * reads it from (`command_envelope.rs`), mirroring `continuum-client`'s
+ * `CommandClient::stamp_context`. Only objects are stamped (command params + event
+ * payloads always are); a non-object is returned untouched rather than silently
+ * wrapped. No-op when unscoped. Identity (userId/sessionId) is NEVER stamped here
+ * — it's kernel-injected from the connection, which keeps identity unforgeable.
+ */
+export function stampContext<T>(value: T, contextId?: string): T {
+  if (contextId == null) return value;
+  if (value !== null && typeof value === 'object' && !Array.isArray(value)) {
+    return { ...(value as Record<string, unknown>), contextId } as T;
+  }
+  return value;
 }
 
 /** Raw (JSON-string) command handler — the facade's inbound-handler shape. */
