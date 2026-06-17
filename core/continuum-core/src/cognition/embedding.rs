@@ -22,6 +22,12 @@ use std::sync::{Arc, OnceLock};
 
 use dashmap::DashMap;
 
+/// Soft bound on the global embedding cache so a long-lived grid node servicing a
+/// busy room can't grow it without limit (the substrate's pressure doctrine — an
+/// unbounded hot-path cache is a leak at scale). On overflow we evict one
+/// arbitrary entry; a proper LRU / `PagedResourcePool` tie-in is the follow-up.
+const EMBEDDING_CACHE_MAX: usize = 20_000;
+
 /// A backend that turns text into a dense vector. Sync + cheap for the lexical
 /// bootstrap; a neural backend pre-embeds engrams at admission (off the recall
 /// hot path) and looks them up here.
@@ -50,10 +56,19 @@ pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
         na += a[i] * a[i];
         nb += b[i] * b[i];
     }
-    if na == 0.0 || nb == 0.0 {
+    // Reject zero AND non-finite norms. A future EmbeddingProvider (neural/grid)
+    // could return a NaN/Inf component; without this the `== 0.0` guard passes,
+    // cosine returns NaN, and a NaN salience poisons the arbiter's sort
+    // (every partial_cmp → Equal = arbitrary order). Fail to "no signal", never NaN.
+    if !na.is_finite() || !nb.is_finite() || na == 0.0 || nb == 0.0 {
         return 0.0;
     }
-    dot / (na.sqrt() * nb.sqrt())
+    let sim = dot / (na.sqrt() * nb.sqrt());
+    if sim.is_finite() {
+        sim
+    } else {
+        0.0
+    }
 }
 
 /// Bootstrap embedder: hashing-trick term-frequency vectors. Lowercase, split on
@@ -159,7 +174,7 @@ impl EmbeddingCache {
             h ^= *b as u64;
             h = h.wrapping_mul(0x100000001b3);
         }
-        h ^= 0; // separator so "ab"+"c" != "a"+"bc"
+        h ^= 0xff; // real separator byte so provider_id/text boundary can't alias
         h = h.wrapping_mul(0x100000001b3);
         for b in text.as_bytes() {
             h ^= *b as u64;
@@ -227,6 +242,13 @@ impl EmbeddingProvider for CachingEmbeddingProvider {
             return v.clone();
         }
         let v = self.inner.embed(text);
+        // Bound memory: evict one arbitrary entry on overflow before inserting a
+        // genuinely new key. Hot/recent content re-populates on its next miss.
+        if !self.cache.map.contains_key(&key) && self.cache.map.len() >= EMBEDDING_CACHE_MAX {
+            if let Some(victim) = self.cache.map.iter().next().map(|e| *e.key()) {
+                self.cache.map.remove(&victim);
+            }
+        }
         self.cache.map.insert(key, v.clone());
         v
     }
@@ -272,6 +294,11 @@ mod tests {
         assert_eq!(cosine_similarity(&[], &[]), 0.0);
         assert_eq!(cosine_similarity(&[1.0, 2.0], &[1.0]), 0.0);
         assert_eq!(cosine_similarity(&[0.0, 0.0], &[1.0, 1.0]), 0.0);
+        // Non-finite components → 0.0 ("no signal"), NEVER NaN — a NaN here
+        // would poison the arbiter sort (every partial_cmp becomes Equal).
+        assert_eq!(cosine_similarity(&[f32::NAN, 1.0], &[1.0, 1.0]), 0.0);
+        assert_eq!(cosine_similarity(&[f32::INFINITY, 1.0], &[1.0, 1.0]), 0.0);
+        assert!(cosine_similarity(&[f32::NAN, 1.0], &[1.0, 1.0]).is_finite());
     }
 
     // what this catches: embeddings are REPRODUCIBLE across calls (FNV, not the

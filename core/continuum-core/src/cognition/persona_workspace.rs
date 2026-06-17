@@ -225,6 +225,28 @@ mod tests {
         assert_eq!(registry.len(), 2);
     }
 
+    // what this catches: RESPAWN must replace the mind, not keep the stale one.
+    // A persona can respawn in-process (node resilience) with a fresh admission +
+    // adapter; the supervisor uses register() (overwrite), so get() returns the
+    // NEW cycle, not the prior lifetime's orphaned one. (get_or_build would have
+    // discarded the fresh config — the bug this guards.)
+    #[tokio::test]
+    async fn register_overwrites_on_respawn() {
+        let registry = PersonaWorkspaceRegistry::new();
+        let persona = Uuid::new_v4();
+        let first = Arc::new(build_workspace_cycle(cfg_for(persona)));
+        registry.register(persona, first.clone());
+        let second = Arc::new(build_workspace_cycle(cfg_for(persona)));
+        registry.register(persona, second.clone());
+        let got = registry.get(&persona).expect("registered");
+        assert!(
+            Arc::ptr_eq(&got, &second),
+            "respawn must resolve to the FRESH mind"
+        );
+        assert!(!Arc::ptr_eq(&got, &first), "the prior lifetime's mind is replaced");
+        assert_eq!(registry.len(), 1);
+    }
+
     // THE LIVE BRING-UP: a persona's mind thinks with the REAL local model.
     // Runs the EXACT production assembly path (build_workspace_cycle → RecallFaculty
     // + LlmDeliberationFaculty) against the real LlamaCppAdapter (qwen3.5-4b-code-

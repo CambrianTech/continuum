@@ -34,7 +34,9 @@ use uuid::Uuid;
 use super::workspace::{Contribution, Decision, Faculty, FacultyId, Workspace};
 use crate::ai::adapter::AIProviderAdapter;
 use crate::ai::types::{ChatMessage, MessageContent, TextGenerationRequest};
-use crate::persona::prompt_assembly::{looks_like_silence_token, SILENCE_AFFORDANCE_BLOCK};
+use crate::persona::prompt_assembly::{
+    looks_like_silence_token, SILENCE_AFFORDANCE_BLOCK, SILENCE_TOKEN,
+};
 
 /// Default sampling temperature for deliberation — enough warmth for natural
 /// voice, not so much it drifts.
@@ -51,13 +53,29 @@ const DEFAULT_MAX_TOKENS: u32 = 512;
 /// the burst it was given.
 pub fn decision_from_response(text: &str) -> Decision {
     let trimmed = text.trim();
-    if trimmed.is_empty() || looks_like_silence_token(trimmed) {
+    if trimmed.is_empty() || looks_like_silence_token(trimmed) || starts_with_silence_token(trimmed)
+    {
         Decision::Pass
     } else {
         Decision::Speak {
             text: trimmed.to_string(),
         }
     }
+}
+
+/// True if the response STARTS with the silence token (e.g. `"PASS — nothing to
+/// add"`). Small models frequently emit `PASS` plus trailing prose despite the
+/// "no other text" instruction; without this they'd literally speak the word
+/// "PASS" into the room. The leading-token check treats that as the chosen
+/// silence it is. (Accepted trade: a real message whose first word is literally
+/// "pass" is silenced — vanishingly rare for a deliberation turn, and silence is
+/// a first-class, low-cost outcome.)
+fn starts_with_silence_token(text: &str) -> bool {
+    let Some(first) = text.split_whitespace().next() else {
+        return false;
+    };
+    let core = first.trim_end_matches(|c: char| !c.is_alphanumeric());
+    core.eq_ignore_ascii_case(SILENCE_TOKEN)
 }
 
 /// The reasoner faculty. Persona-scoped; shared model backend.
@@ -275,6 +293,10 @@ mod tests {
         assert_eq!(decision_from_response("PASS"), Decision::Pass);
         assert_eq!(decision_from_response("  PASS.  "), Decision::Pass);
         assert_eq!(decision_from_response(""), Decision::Pass);
+        // Small models leak trailing prose after PASS — must still be silence,
+        // not a message that literally says "PASS ...".
+        assert_eq!(decision_from_response("PASS — nothing to add here"), Decision::Pass);
+        assert_eq!(decision_from_response("PASS.\nI'll stay quiet"), Decision::Pass);
         match decision_from_response("Let's ship the deploy fix now.") {
             Decision::Speak { text } => assert!(text.contains("ship the deploy")),
             other => panic!("expected Speak, got {other:?}"),

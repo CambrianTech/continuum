@@ -194,10 +194,13 @@ impl Faculty for RecallFaculty {
         let surfaced_ids: Vec<Uuid> = scored.iter().map(|(_, e, _)| e.id).collect();
         self.admission_state.record_recall_hits(&surfaced_ids, now);
 
-        // The faculty's salience = the top item's final score — relevance-aware
-        // when re-ranking, salience otherwise. ML/algorithm-derived, never a
-        // hand-weight; the arbiter integrates it.
-        let top_salience = scored[0].0.clamp(0.0, 1.0);
+        // The faculty's bid salience: max(blended_score, intrinsic_salience). The
+        // `.max` removes the regression where a lexically-thin burst (cosine ≈ 0)
+        // would halve recall's bid to 0.5·salience and silently under-weight it
+        // in the arbiter — recall now never bids BELOW the surfaced memory's own
+        // salience, and a highly-relevant hit can bid ABOVE it. (`f32::max` also
+        // returns the finite operand if the other is NaN — defensive.)
+        let top_salience = scored[0].0.max(scored[0].2).clamp(0.0, 1.0);
         let content = scored
             .iter()
             .map(|(_, engram, salience)| {

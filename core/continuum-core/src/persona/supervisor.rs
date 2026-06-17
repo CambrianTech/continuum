@@ -549,15 +549,24 @@ pub async fn materialize_adapters(
         // Additive: makes `ai/should-respond` resolvable for this persona; does
         // NOT change the existing service-loop decision path (heuristics stay
         // live until the coordinated cutover).
-        crate::cognition::persona_workspace::global().get_or_build(
-            crate::cognition::persona_workspace::PersonaBrainConfig {
-                persona_id: identity.persona_id,
-                persona_name: identity.agent_name.to_string(),
-                system_prompt: system_prompt.to_string(),
-                admission: cognition.admission.clone(),
-                adapter: adapter.clone(),
-                capacity: None,
-            },
+        // REGISTER (overwrite), not get_or_build: a persona can respawn in the
+        // same process (node resilience). get_or_build is idempotent by
+        // persona_id and would DISCARD the fresh admission + adapter, leaving the
+        // mind bound to the prior lifetime's orphaned (rehydrated-then-replaced)
+        // AdmissionState — newly-admitted engrams invisible to recall, the
+        // "severed" failure across a restart. Build + register replaces it.
+        crate::cognition::persona_workspace::global().register(
+            identity.persona_id,
+            std::sync::Arc::new(crate::cognition::persona_workspace::build_workspace_cycle(
+                crate::cognition::persona_workspace::PersonaBrainConfig {
+                    persona_id: identity.persona_id,
+                    persona_name: identity.agent_name.to_string(),
+                    system_prompt: system_prompt.to_string(),
+                    admission: cognition.admission.clone(),
+                    adapter: adapter.clone(),
+                    capacity: None,
+                },
+            )),
         );
 
         out.push(Ok(PersonaContext {
