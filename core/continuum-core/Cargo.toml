@@ -37,6 +37,12 @@ uuid.workspace = true
 # dev loop tight (no version juggle while the macro evolves).
 continuum-orm-derive = { path = "../continuum-orm-derive" }
 continuum-airc-protocol = { path = "../continuum-airc-protocol" }
+# The client SDK. `InProcessTransport` (runtime/in_process_transport.rs)
+# implements `continuum_client::Transport` so an in-core citizen (persona,
+# foundry) holds the SAME `Connection` every external client uses — citizens
+# use clients ([[persona-is-a-client]]). No cycle: continuum-client does not
+# depend on continuum-core.
+continuum-client = { path = "../../client/continuum-client" }
 reqwest = { version = "0.12", features = ["json", "multipart"] }
 thiserror.workspace = true
 dashmap = "6.1"  # Lock-free concurrent HashMap
@@ -299,10 +305,10 @@ tokio-test = "0.4"
 tempfile = "3"                   # Temp directories for code module tests
 
 # Cross-airc integration tests (tests/airc_ipc_roundtrip.rs). The fixture
-# spawns two real Airc peers on LAN loopback; the client crate gives us
-# `Connection` + `AircIpcTransport` so we can exercise the substrate's
-# command_handler against an actual continuum-client request envelope.
+# spawns two real Airc peers on LAN loopback. `continuum-client` is now a
+# regular dependency (see [dependencies]) because `InProcessTransport` — the
+# in-core citizen's connection to its own substrate — implements
+# `continuum_client::Transport` in production code, not just tests.
 airc-test-fixtures = { path = "../airc-test-fixtures" }
-continuum-client = { path = "../../client/continuum-client" }
 airc-protocol = { workspace = true }
 futures = "0.3"
