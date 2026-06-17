@@ -8,13 +8,25 @@ use crate::airc_ipc::AircIpcTransport;
 use crate::command::CommandClient;
 use crate::error::ClientError;
 use crate::event::EventSubscriber;
-use crate::transport::Transport;
+use crate::transport::{ServeHandler, Transport};
 
 /// One session against a continuum substrate. Generic over the wire so
 /// the same code drives local airc IPC, remote airc grid, and the
 /// `MockTransport` used in downstream tests.
 pub struct Connection<T: Transport> {
     transport: Arc<T>,
+}
+
+// Manual `Clone` (not derived): a connection is cheap to clone — it shares the
+// one `Arc<T>` transport. Derived `Clone` would wrongly require `T: Clone`;
+// `Arc<T>` is `Clone` regardless. Cloning lets a `provide` registration hold a
+// handle to revoke on drop without re-establishing the session.
+impl<T: Transport> Clone for Connection<T> {
+    fn clone(&self) -> Self {
+        Self {
+            transport: Arc::clone(&self.transport),
+        }
+    }
 }
 
 impl<T: Transport> Connection<T> {
@@ -35,6 +47,22 @@ impl<T: Transport> Connection<T> {
     /// Typed event subscriber for this connection.
     pub fn events(&self) -> EventSubscriber<T> {
         EventSubscriber::new(Arc::clone(&self.transport))
+    }
+
+    /// Register a handler to SERVE `command` — the client-provided side of the
+    /// Command primitive (the substrate routes matching commands here). Twin of
+    /// `commands().execute`; stop with [`Connection::revoke`].
+    pub async fn provide(
+        &self,
+        command: &str,
+        handler: Arc<dyn ServeHandler>,
+    ) -> Result<(), ClientError> {
+        self.transport.provide(command, handler).await
+    }
+
+    /// Stop serving `command`. Idempotent.
+    pub async fn revoke(&self, command: &str) -> Result<(), ClientError> {
+        self.transport.revoke(command).await
     }
 
     /// Close the underlying transport. After this, further command /

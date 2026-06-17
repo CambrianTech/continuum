@@ -2683,6 +2683,7 @@ version = "0.1.0"
 dependencies = [
  "airc-core",
  "airc-lib",
+ "airc-protocol",
  "async-trait",
  "continuum-airc-protocol",
  "futures",
@@ -2700,6 +2701,7 @@ name = "continuum-client-ffi"
 version = "0.1.0"
 dependencies = [
  "airc-lib",
+ "async-trait",
  "continuum-client",
  "futures",
  "serde_json",

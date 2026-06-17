@@ -22,4 +22,4 @@ pub use error::ClientError;
 pub use event::EventSubscriber;
 #[cfg(any(test, feature = "test-fixtures"))]
 pub use mock::MockTransport;
-pub use transport::Transport;
+pub use transport::{ServeHandler, Transport};

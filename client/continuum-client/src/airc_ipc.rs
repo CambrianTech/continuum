@@ -12,25 +12,40 @@
 //! `resolve_unsubscribe`. Substrate's `AircEventTransport` composes the
 //! same helpers — zero wire drift between client and substrate.
 
-use std::sync::Arc;
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::sync::Mutex;
 use std::time::Duration;
 
 use async_trait::async_trait;
 use serde_json::Value;
 
-use airc_core::{Body, MentionTarget, PeerId};
+use airc_core::{Body, Headers, MentionTarget, PeerId, TranscriptEvent};
 use airc_lib::Airc;
+use airc_protocol::{HEADER_AIRC_CORRELATION_ID, HEADER_AIRC_REPLY_TO};
 use continuum_airc_protocol::command::{
-    AircCommandRequest, AircCommandResponse, COMMAND_REQUEST_BODY_HINT, HEADER_COMMAND_ENV,
-    HEADER_COMMAND_KIND, HEADER_COMMAND_PATH, HEADER_CONTINUUM_BODY_HINT, KIND_PEER,
+    AircCommandRequest, AircCommandResponse, COMMAND_REQUEST_BODY_HINT, COMMAND_RESPONSE_BODY_HINT,
+    HEADER_COMMAND_ENV, HEADER_COMMAND_KIND, HEADER_COMMAND_PATH, HEADER_COMMAND_STATUS,
+    HEADER_CONTINUUM_BODY_HINT, KIND_PEER,
 };
 use continuum_airc_protocol::event as event_proto;
+use futures::StreamExt as _;
 use uuid::Uuid;
 
 use crate::error::ClientError;
 use crate::event::EventStream;
-use crate::transport::Transport;
+use crate::transport::{ServeHandler, Transport};
+
+/// Serve-side state for `provide`/`revoke`: the registry of handlers this
+/// client serves, plus a one-time flag for the inbound serve loop. Shared
+/// (`Arc`) so a clone of the transport sees the same registrations and the loop
+/// dispatches against the live map.
+#[derive(Default)]
+struct ServeState {
+    handlers: Mutex<HashMap<String, std::sync::Arc<dyn ServeHandler>>>,
+    loop_started: AtomicBool,
+}
 
 /// Default in-flight event buffer for a single subscription.
 ///
@@ -54,6 +69,7 @@ pub struct AircIpcTransport {
     target: PeerId,
     deadline: Duration,
     closed: Arc<AtomicBool>,
+    serve: Arc<ServeState>,
 }
 
 impl std::fmt::Debug for AircIpcTransport {
@@ -75,6 +91,7 @@ impl AircIpcTransport {
             target: PeerId(target_peer),
             deadline: DEFAULT_DEADLINE,
             closed: Arc::new(AtomicBool::new(false)),
+            serve: Arc::new(ServeState::default()),
         }
     }
 
@@ -109,17 +126,20 @@ impl AircIpcTransport {
             Body::Json(v) => v,
             Body::Binary(_) => {
                 return Err(ClientError::Transport(
-                    "reply body was Binary; expected Json (AircCommandResponse is JSON)".to_string(),
+                    "reply body was Binary; expected Json (AircCommandResponse is JSON)"
+                        .to_string(),
                 ));
             }
         };
 
         let response: AircCommandResponse = serde_json::from_value(response_value)?;
 
-        response.into_result().map_err(|message| ClientError::Refused {
-            command: "<unknown>".to_string(),
-            reason: message,
-        })
+        response
+            .into_result()
+            .map_err(|message| ClientError::Refused {
+                command: "<unknown>".to_string(),
+                reason: message,
+            })
     }
 }
 
@@ -141,7 +161,12 @@ impl Transport for AircIpcTransport {
 
         let pending = self
             .airc
-            .request(MentionTarget::Peer(self.target), headers, body, self.deadline)
+            .request(
+                MentionTarget::Peer(self.target),
+                headers,
+                body,
+                self.deadline,
+            )
             .await
             .map_err(|e| ClientError::Transport(format!("airc request failed: {e}")))?;
 
@@ -273,9 +298,7 @@ impl Transport for AircIpcTransport {
             if let Ok((target, headers, body)) =
                 event_proto::resolve_unsubscribe(publisher, subscription_id)
             {
-                if let Ok(pending) =
-                    airc_for_task.request(target, headers, body, deadline).await
-                {
+                if let Ok(pending) = airc_for_task.request(target, headers, body, deadline).await {
                     let _ = airc_for_task.await_reply(pending).await;
                 }
             }
@@ -287,6 +310,40 @@ impl Transport for AircIpcTransport {
         Ok(Box::pin(tokio_stream::wrappers::ReceiverStream::new(rx)))
     }
 
+    async fn provide(
+        &self,
+        command: &str,
+        handler: Arc<dyn ServeHandler>,
+    ) -> Result<(), ClientError> {
+        if self.closed.load(Ordering::Relaxed) {
+            return Err(ClientError::Closed);
+        }
+        self.serve
+            .handlers
+            .lock()
+            .expect("serve handlers lock poisoned")
+            .insert(command.to_string(), handler);
+        // Start the inbound serve loop exactly once, on first provide — the
+        // client-side twin of persona/command_inbound_pump. A second airc
+        // subscribe is broadcast-shape (every subscriber gets every event), so
+        // it coexists with the event-subscribe path without contention.
+        if !self.serve.loop_started.swap(true, Ordering::Relaxed) {
+            tokio::spawn(serve_loop(Arc::clone(&self.airc), Arc::clone(&self.serve)));
+        }
+        Ok(())
+    }
+
+    async fn revoke(&self, command: &str) -> Result<(), ClientError> {
+        // Idempotent: removing an unprovided command is a no-op. The serve loop
+        // keeps running (cheap) and simply ignores commands with no handler.
+        self.serve
+            .handlers
+            .lock()
+            .expect("serve handlers lock poisoned")
+            .remove(command);
+        Ok(())
+    }
+
     async fn close(&self) -> Result<(), ClientError> {
         // Idempotent: first close wins, later calls return Closed.
         if self.closed.swap(true, Ordering::Relaxed) {
@@ -296,6 +353,131 @@ impl Transport for AircIpcTransport {
         // transport goes out of scope releases our reference. Other
         // holders (the substrate, sibling transports) keep theirs.
         Ok(())
+    }
+}
+
+// ── Serve side (provide) — the client-side twin of command_inbound_pump ──
+//
+// Mirrors core/continuum-core/src/routing/command_handler.rs, opposite role:
+// instead of dispatching inbound commands to the local CommandExecutor, this
+// dispatches to a handler the SDK PROVIDED, then replies the same
+// `AircCommandResponse` wire (zero drift — same protocol types as `request`).
+
+/// A decoded inbound command-request envelope, ready to dispatch + reply.
+struct InboundCommand {
+    path: String,
+    params: Value,
+    /// From `airc.reply_to` — where the response ships.
+    reply_to: PeerId,
+    /// From `airc.correlation_id` — pairs the reply with the caller's await.
+    correlation_id: Uuid,
+}
+
+/// Decode an inbound command-request `TranscriptEvent`. `None` (skip) if it's
+/// not a command request or is missing the reply addressing — never a panic.
+fn parse_inbound_command(event: &TranscriptEvent) -> Option<InboundCommand> {
+    let reply_to = PeerId(
+        event
+            .headers
+            .get(HEADER_AIRC_REPLY_TO)?
+            .parse::<Uuid>()
+            .ok()?,
+    );
+    let correlation_id = event
+        .headers
+        .get(HEADER_AIRC_CORRELATION_ID)?
+        .parse::<Uuid>()
+        .ok()?;
+    let Body::Json(value) = event.body.as_ref()? else {
+        return None;
+    };
+    let request: AircCommandRequest = serde_json::from_value(value.clone()).ok()?;
+    Some(InboundCommand {
+        path: request.path,
+        params: request.params,
+        reply_to,
+        correlation_id,
+    })
+}
+
+/// Ship an `AircCommandResponse` back to the caller, stamping the same status +
+/// body-hint headers the substrate's command_handler uses.
+async fn send_serve_reply(
+    airc: &Airc,
+    reply_to: PeerId,
+    correlation_id: Uuid,
+    response: &AircCommandResponse,
+) {
+    let body = match serde_json::to_value(response) {
+        Ok(v) => Body::Json(v),
+        Err(e) => {
+            eprintln!("continuum-client serve reply: serialize AircCommandResponse failed: {e}");
+            return;
+        }
+    };
+    let mut headers = Headers::new();
+    headers.insert(
+        HEADER_COMMAND_STATUS.to_string(),
+        response.status_header_value().to_string(),
+    );
+    headers.insert(
+        HEADER_CONTINUUM_BODY_HINT.to_string(),
+        COMMAND_RESPONSE_BODY_HINT.to_string(),
+    );
+    if let Err(e) = airc.reply(reply_to, correlation_id, headers, body).await {
+        eprintln!("continuum-client serve reply: airc.reply failed: {e}");
+    }
+}
+
+/// The inbound serve loop: subscribe to the broadcast stream, and for each
+/// command-request envelope whose path this client provides, dispatch to the
+/// handler and reply. Dispatch is spawned per request so a slow handler (a
+/// screenshot, a sensor read) doesn't stall the loop. Exits when the airc
+/// stream ends (daemon disconnect) — per no-fallbacks, a lost subscribe ends
+/// the loop loudly rather than silently degrading.
+async fn serve_loop(airc: Arc<Airc>, serve: Arc<ServeState>) {
+    let mut stream = match airc.subscribe().await {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("continuum-client serve loop: airc subscribe failed: {e}");
+            return;
+        }
+    };
+    while let Some(item) = stream.next().await {
+        let event = match item {
+            Ok(e) => e,
+            Err(_) => continue, // stream lag — skip
+        };
+        // Only command-request envelopes; everything else (events, chat) skipped.
+        if event
+            .headers
+            .get(HEADER_CONTINUUM_BODY_HINT)
+            .map(String::as_str)
+            != Some(COMMAND_REQUEST_BODY_HINT)
+        {
+            continue;
+        }
+        let Some(parsed) = parse_inbound_command(&event) else {
+            continue;
+        };
+        // Only answer commands THIS client provides; others are for someone else.
+        let handler = serve
+            .handlers
+            .lock()
+            .expect("serve handlers lock poisoned")
+            .get(&parsed.path)
+            .cloned();
+        let Some(handler) = handler else {
+            continue;
+        };
+        let airc = Arc::clone(&airc);
+        tokio::spawn(async move {
+            let response = match handler.handle(parsed.params).await {
+                Ok(value) => AircCommandResponse::ok(value),
+                Err(e) => AircCommandResponse::error(e.to_string()),
+            };
+            send_serve_reply(&airc, parsed.reply_to, parsed.correlation_id, &response).await;
+        });
     }
 }
 
@@ -321,13 +503,11 @@ mod tests {
             Some("peer")
         );
         assert_eq!(
-            headers
-                .get(HEADER_CONTINUUM_BODY_HINT)
-                .map(|s| s.as_str()),
+            headers.get(HEADER_CONTINUUM_BODY_HINT).map(|s| s.as_str()),
             Some(COMMAND_REQUEST_BODY_HINT)
         );
         assert!(
-            headers.get(HEADER_COMMAND_ENV).is_none(),
+            !headers.contains_key(HEADER_COMMAND_ENV),
             "no env should mean no env header"
         );
     }

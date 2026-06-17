@@ -9,6 +9,7 @@ continuum-client = { path = "../continuum-client" }
 airc-lib = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
+async-trait = { workspace = true }
 futures = "0.3"
 tokio = { workspace = true }
 uuid = { workspace = true }

@@ -28,7 +28,8 @@
 use std::sync::Arc;
 
 use continuum_client::{
-    AircIpcTransport, ClientError, CommandClient, Connection, EventSubscriber, Transport,
+    AircIpcTransport, ClientError, CommandClient, Connection, EventSubscriber, ServeHandler,
+    Transport,
 };
 use futures::StreamExt;
 use uuid::Uuid;
@@ -80,6 +81,44 @@ pub trait EventCallback: Send + Sync {
     fn on_error(&self, message: String);
     /// The stream ended (substrate closed it or the subscription was dropped).
     fn on_closed(&self);
+}
+
+/// A foreign-implemented handler for a command this client PROVIDES — the serve
+/// side of the Command primitive. uniffi exposes this as a callback interface;
+/// the platform SDK supplies the per-platform adapter (web = DOM/canvas
+/// screenshot, desktop = OS, AR/VR = renderer capture — one command identity, N
+/// adapters). `handle` is sync from Rust's view (a foreign call); the serve path
+/// runs it on a blocking worker so a heavy handler doesn't stall the runtime.
+pub trait CommandHandler: Send + Sync {
+    /// Run the provided command — JSON params in, JSON result out. `Err`
+    /// surfaces to the caller as a command error, never a silent drop.
+    fn handle(&self, params_json: String) -> Result<String, FfiError>;
+}
+
+/// Adapts a foreign [`CommandHandler`] to the client's [`ServeHandler`]
+/// (JSON-string boundary ↔ `Value`), running the sync foreign handler on a
+/// blocking worker so the serve loop's task isn't blocked (off-main-thread).
+struct CommandHandlerAdapter {
+    command: String,
+    cb: Arc<dyn CommandHandler>,
+}
+
+#[async_trait::async_trait]
+impl ServeHandler for CommandHandlerAdapter {
+    async fn handle(&self, params: serde_json::Value) -> Result<serde_json::Value, ClientError> {
+        let params_json =
+            serde_json::to_string(&params).map_err(|e| ClientError::Codec(e.to_string()))?;
+        let cb = Arc::clone(&self.cb);
+        let command = self.command.clone();
+        let result_json = tokio::task::spawn_blocking(move || cb.handle(params_json))
+            .await
+            .map_err(|e| ClientError::Transport(format!("provided handler task join: {e}")))?
+            .map_err(|fe| ClientError::Refused {
+                command,
+                reason: fe.to_string(),
+            })?;
+        serde_json::from_str(&result_json).map_err(|e| ClientError::Codec(e.to_string()))
+    }
 }
 
 /// Run one command over a connection's command client, JSON in / JSON out.
@@ -135,6 +174,25 @@ impl Drop for Subscription {
     }
 }
 
+/// An active command provision — the serve twin of [`Subscription`]. Dropping it
+/// DEREGISTERS the command (release = revoke): the serve loop stops matching it.
+pub struct Registration {
+    conn: Connection<AircIpcTransport>,
+    command: String,
+}
+
+impl Drop for Registration {
+    fn drop(&mut self) {
+        // revoke is async; spawn it (we're under a tokio runtime). Removing the
+        // handler is all it takes — the serve loop then ignores the command.
+        let conn = self.conn.clone();
+        let command = std::mem::take(&mut self.command);
+        tokio::spawn(async move {
+            let _ = conn.revoke(&command).await;
+        });
+    }
+}
+
 /// The concrete, generic-free client a foreign binding holds. Wraps a
 /// `Connection` over the real airc IPC transport; the per-platform binding
 /// (uniffi/wasm) exposes exactly `execute` + `subscribe`.
@@ -163,6 +221,26 @@ impl ContinuumClient {
     pub fn subscribe(&self, class: &str, callback: Arc<dyn EventCallback>) -> Subscription {
         let handle = tokio::spawn(pump_events(self.conn.events(), class.to_string(), callback));
         Subscription { handle }
+    }
+
+    /// PROVIDE (serve) a command: register `handler` to answer inbound requests
+    /// the substrate routes to this client — the serve side of the Command
+    /// primitive (client-provided commands like `interface/screenshot`). Returns
+    /// a [`Registration`]; drop it to stop serving.
+    pub async fn provide(
+        &self,
+        command: &str,
+        handler: Arc<dyn CommandHandler>,
+    ) -> Result<Registration, FfiError> {
+        let adapter = Arc::new(CommandHandlerAdapter {
+            command: command.to_string(),
+            cb: handler,
+        });
+        self.conn.provide(command, adapter).await?;
+        Ok(Registration {
+            conn: self.conn.clone(),
+            command: command.to_string(),
+        })
     }
 }
 
@@ -290,5 +368,81 @@ mod tests {
             json!({ "text": "hi" })
         );
         assert!(*rec.closed.lock().unwrap(), "stream close surfaced");
+    }
+
+    /// A foreign command handler that echoes a canned result.
+    struct CannedHandler(serde_json::Value);
+    impl CommandHandler for CannedHandler {
+        fn handle(&self, _params_json: String) -> Result<String, FfiError> {
+            Ok(serde_json::to_string(&self.0).unwrap())
+        }
+    }
+
+    /// A handler that fails — exercises the error mapping.
+    struct FailingHandler;
+    impl CommandHandler for FailingHandler {
+        fn handle(&self, _params_json: String) -> Result<String, FfiError> {
+            Err(FfiError::Transport("device busy".into()))
+        }
+    }
+
+    #[tokio::test]
+    async fn provided_handler_answers_a_routed_command() {
+        // what this catches: the serve side end-to-end — provide registers a
+        // foreign CommandHandler (via the adapter), and a routed inbound command
+        // dispatches to it and returns its JSON result. This is the client
+        // serving interface/screenshot et al, the half #1663 lacked.
+        let mock = MockTransport::new();
+        let conn = Connection::new(mock.clone());
+        let cb: Arc<dyn CommandHandler> = Arc::new(CannedHandler(json!({ "png_base64": "abc" })));
+        let adapter = Arc::new(CommandHandlerAdapter {
+            command: "interface/screenshot".into(),
+            cb,
+        });
+        conn.provide("interface/screenshot", adapter).await.unwrap();
+
+        let out = mock
+            .dispatch_provided("interface/screenshot", json!({ "selector": "body" }))
+            .await
+            .expect("provided handler answers");
+        assert_eq!(out, json!({ "png_base64": "abc" }));
+    }
+
+    #[tokio::test]
+    async fn provided_handler_error_maps_to_refused() {
+        // what this catches: a handler failure must surface as a typed command
+        // error (Refused with the reason), never a silent empty result.
+        let mock = MockTransport::new();
+        let conn = Connection::new(mock.clone());
+        let adapter = Arc::new(CommandHandlerAdapter {
+            command: "x".into(),
+            cb: Arc::new(FailingHandler),
+        });
+        conn.provide("x", adapter).await.unwrap();
+
+        let err = mock.dispatch_provided("x", json!({})).await.unwrap_err();
+        match err {
+            ClientError::Refused { reason, .. } => assert!(reason.contains("device busy")),
+            other => panic!("expected Refused, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn revoke_stops_serving_the_command() {
+        // what this catches: dropping a Registration (→ revoke) deregisters the
+        // command — the serve loop then has nothing to dispatch.
+        let mock = MockTransport::new();
+        let conn = Connection::new(mock.clone());
+        let adapter = Arc::new(CommandHandlerAdapter {
+            command: "x".into(),
+            cb: Arc::new(CannedHandler(json!(1))),
+        });
+        conn.provide("x", adapter).await.unwrap();
+        assert!(mock.provides("x"), "provided");
+
+        conn.revoke("x").await.unwrap();
+        assert!(!mock.provides("x"), "revoked");
+        let err = mock.dispatch_provided("x", json!({})).await.unwrap_err();
+        assert!(matches!(err, ClientError::NotImplemented(_)));
     }
 }

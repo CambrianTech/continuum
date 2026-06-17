@@ -51,7 +51,7 @@ use tokio_stream::wrappers::ReceiverStream;
 
 use crate::error::ClientError;
 use crate::event::EventStream;
-use crate::transport::Transport;
+use crate::transport::{ServeHandler, Transport};
 
 /// Default per-subscription buffer for emitted events. Matches the
 /// real `AircIpcTransport` default so a test that fills the buffer
@@ -87,6 +87,9 @@ struct Inner {
     handlers: Mutex<HashMap<String, Vec<CommandHandler>>>,
     /// Active subscribers per class (exact-match string keying).
     subscribers: Mutex<HashMap<String, Vec<Subscriber>>>,
+    /// Handlers the client PROVIDES (serve side), keyed by command. A test
+    /// simulates an inbound routed command via [`MockTransport::dispatch_provided`].
+    serve_handlers: Mutex<HashMap<String, Arc<dyn ServeHandler>>>,
     /// Monotonic id source for `Subscriber.id`. Per-instance.
     next_subscriber_id: AtomicU64,
     /// `Transport::close` semantics: idempotent first-call-wins.
@@ -110,6 +113,7 @@ impl MockTransport {
             inner: Arc::new(Inner {
                 handlers: Mutex::new(HashMap::new()),
                 subscribers: Mutex::new(HashMap::new()),
+                serve_handlers: Mutex::new(HashMap::new()),
                 next_subscriber_id: AtomicU64::new(0),
                 closed: AtomicBool::new(false),
             }),
@@ -149,7 +153,11 @@ impl MockTransport {
     /// The dropped count is reflected in the return value (count
     /// returned is *successful* sends only).
     pub fn emit(&self, class: impl AsRef<str>, payload: Value) -> usize {
-        let mut subscribers = self.inner.subscribers.lock().expect("subscribers lock poisoned");
+        let mut subscribers = self
+            .inner
+            .subscribers
+            .lock()
+            .expect("subscribers lock poisoned");
         let class = class.as_ref();
         let Some(list) = subscribers.get_mut(class) else {
             return 0;
@@ -169,13 +177,53 @@ impl MockTransport {
     /// Diagnostic: how many active subscribers does `class` have?
     /// Stale (closed) subscribers are pruned at observation time.
     pub fn subscriber_count(&self, class: impl AsRef<str>) -> usize {
-        let mut subscribers = self.inner.subscribers.lock().expect("subscribers lock poisoned");
+        let mut subscribers = self
+            .inner
+            .subscribers
+            .lock()
+            .expect("subscribers lock poisoned");
         let class = class.as_ref();
         let Some(list) = subscribers.get_mut(class) else {
             return 0;
         };
         list.retain(|s| !s.tx.is_closed());
         list.len()
+    }
+
+    /// Simulate an inbound routed command hitting a handler this client
+    /// PROVIDED — the serve-side analog of `emit` for the subscribe side. Looks
+    /// up the handler registered via `Transport::provide` and runs it, so a
+    /// test can assert "the SDK's provided handler answers" without a live
+    /// substrate routing the request. `NotImplemented` if nothing is provided
+    /// for `command` (mirrors the request-side's unregistered behaviour).
+    pub async fn dispatch_provided(
+        &self,
+        command: &str,
+        params: Value,
+    ) -> Result<Value, ClientError> {
+        let handler = {
+            let handlers = self
+                .inner
+                .serve_handlers
+                .lock()
+                .expect("serve_handlers lock poisoned");
+            handlers.get(command).map(Arc::clone)
+        };
+        match handler {
+            Some(h) => h.handle(params).await,
+            None => Err(ClientError::NotImplemented(
+                "MockTransport: no handler provided for command — register via `provide` first",
+            )),
+        }
+    }
+
+    /// Diagnostic: is a handler currently provided for `command`?
+    pub fn provides(&self, command: &str) -> bool {
+        self.inner
+            .serve_handlers
+            .lock()
+            .expect("serve_handlers lock poisoned")
+            .contains_key(command)
     }
 }
 
@@ -238,9 +286,16 @@ impl Transport for MockTransport {
             return Err(ClientError::Closed);
         }
         let (tx, rx) = mpsc::channel::<Result<Value, ClientError>>(DEFAULT_EVENT_BUFFER);
-        let id = self.inner.next_subscriber_id.fetch_add(1, Ordering::Relaxed);
+        let id = self
+            .inner
+            .next_subscriber_id
+            .fetch_add(1, Ordering::Relaxed);
         {
-            let mut subscribers = self.inner.subscribers.lock().expect("subscribers lock poisoned");
+            let mut subscribers = self
+                .inner
+                .subscribers
+                .lock()
+                .expect("subscribers lock poisoned");
             subscribers
                 .entry(class.to_string())
                 .or_default()
@@ -249,12 +304,42 @@ impl Transport for MockTransport {
         Ok(Box::pin(ReceiverStream::new(rx)))
     }
 
+    async fn provide(
+        &self,
+        command: &str,
+        handler: Arc<dyn ServeHandler>,
+    ) -> Result<(), ClientError> {
+        if self.inner.closed.load(Ordering::Relaxed) {
+            return Err(ClientError::Closed);
+        }
+        self.inner
+            .serve_handlers
+            .lock()
+            .expect("serve_handlers lock poisoned")
+            .insert(command.to_string(), handler);
+        Ok(())
+    }
+
+    async fn revoke(&self, command: &str) -> Result<(), ClientError> {
+        // Idempotent: revoking an unprovided command is a no-op, not an error.
+        self.inner
+            .serve_handlers
+            .lock()
+            .expect("serve_handlers lock poisoned")
+            .remove(command);
+        Ok(())
+    }
+
     async fn close(&self) -> Result<(), ClientError> {
         if self.inner.closed.swap(true, Ordering::Relaxed) {
             return Err(ClientError::Closed);
         }
         // Drop all senders → any active subscriber stream sees None.
-        let mut subscribers = self.inner.subscribers.lock().expect("subscribers lock poisoned");
+        let mut subscribers = self
+            .inner
+            .subscribers
+            .lock()
+            .expect("subscribers lock poisoned");
         subscribers.clear();
         Ok(())
     }
@@ -270,14 +355,17 @@ mod tests {
     async fn request_returns_registered_response() {
         let mock = MockTransport::new();
         mock.respond_with("ai/generate", json!({"text": "mocked"}));
-        let got = mock.request("ai/generate", json!({"prompt": "hi"})).await.unwrap();
+        let got = mock
+            .request("ai/generate", json!({"prompt": "hi"}))
+            .await
+            .unwrap();
         assert_eq!(got, json!({"text": "mocked"}));
     }
 
     #[tokio::test]
     async fn request_handler_sees_params() {
         let mock = MockTransport::new();
-        mock.respond_to("echo", |params| Ok(params));
+        mock.respond_to("echo", Ok);
         let got = mock.request("echo", json!({"x": 1})).await.unwrap();
         assert_eq!(got, json!({"x": 1}));
     }
