@@ -364,4 +364,33 @@ mod tests {
             "same text in two embedding spaces = two distinct cache entries"
         );
     }
+
+    // what this catches: TRANSPORT IS INVISIBLE TO THE CACHE — "identity is the
+    // model, transport is the policy" (IntelMac/BigMama contract). Two DIFFERENT
+    // provider impls (e.g. local NeuralEmbeddingProvider + cross-grid
+    // GridEmbeddingProvider) that serve the SAME model return the SAME
+    // provider_id, so a vector computed by one is reused by the other — same
+    // model, same space, same cache key. The grid round-trip never fires for
+    // content the local path already embedded.
+    #[test]
+    fn cache_shared_across_transports_with_same_model_slug() {
+        let cache = Arc::new(EmbeddingCache::new());
+        // Two distinct impls, SAME model slug — stand-ins for Neural (local) and
+        // Grid (cross-grid), both serving qwen3-embedding-0.6b.
+        let local = Arc::new(CountingEmbedder::new("qwen3-embedding-0.6b"));
+        let grid = Arc::new(CountingEmbedder::new("qwen3-embedding-0.6b"));
+        let neural = CachingEmbeddingProvider::with_cache(local.clone(), cache.clone());
+        let grid_provider = CachingEmbeddingProvider::with_cache(grid.clone(), cache.clone());
+
+        let a = neural.embed("the deploy went red"); // local path computes + caches
+        let b = grid_provider.embed("the deploy went red"); // grid path hits the SAME entry
+        assert_eq!(a, b, "same model slug → same cache entry across transports");
+        assert_eq!(local.calls.load(Ordering::SeqCst), 1, "local computed once");
+        assert_eq!(
+            grid.calls.load(Ordering::SeqCst),
+            0,
+            "grid round-trip never fired — the local-cached vector was reused"
+        );
+        assert_eq!(cache.len(), 1, "one entry: identity is the model, not the transport");
+    }
 }
