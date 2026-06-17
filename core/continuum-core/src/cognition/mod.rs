@@ -44,6 +44,7 @@ pub mod response_validator;
 pub mod serving_plan;
 pub mod shared_analysis;
 pub mod should_respond;
+pub mod should_respond_module;
 pub mod threat_detector;
 pub mod throughput_lease;
 pub mod tool_embedding;
