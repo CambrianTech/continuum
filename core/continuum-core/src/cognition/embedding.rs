@@ -20,7 +20,11 @@
 
 use std::sync::{Arc, OnceLock};
 
+use async_trait::async_trait;
 use dashmap::DashMap;
+
+use crate::ai::adapter::AIProviderAdapter;
+use crate::ai::types::{EmbeddingInput, EmbeddingRequest};
 
 /// Soft bound on the global embedding cache so a long-lived grid node servicing a
 /// busy room can't grow it without limit (the substrate's pressure doctrine — an
@@ -28,9 +32,13 @@ use dashmap::DashMap;
 /// arbitrary entry; a proper LRU / `PagedResourcePool` tie-in is the follow-up.
 const EMBEDDING_CACHE_MAX: usize = 20_000;
 
-/// A backend that turns text into a dense vector. Sync + cheap for the lexical
-/// bootstrap; a neural backend pre-embeds engrams at admission (off the recall
-/// hot path) and looks them up here.
+/// A backend that turns text into a dense vector. **Async** because real backends
+/// do IO: a neural embedder runs a model forward pass, a grid embedder makes a
+/// cross-grid round-trip. The lexical bootstrap is sync-bodied (cheap) but still
+/// exposes the async signature so all backends are interchangeable. The
+/// content-addressed cache (CachingEmbeddingProvider) makes repeat embeds a sync
+/// map hit, so the async cost is paid once per unique content.
+#[async_trait]
 pub trait EmbeddingProvider: Send + Sync {
     /// Stable identifier for the embedding space (so vectors from different
     /// providers are never silently mixed).
@@ -38,7 +46,7 @@ pub trait EmbeddingProvider: Send + Sync {
     /// The vector dimensionality.
     fn dim(&self) -> usize;
     /// Embed text into a (typically L2-normalized) vector of length `dim()`.
-    fn embed(&self, text: &str) -> Vec<f32>;
+    async fn embed(&self, text: &str) -> Vec<f32>;
 }
 
 /// Cosine similarity in `[-1, 1]` (≈`[0,1]` for non-negative vectors). Returns
@@ -105,6 +113,7 @@ impl LexicalEmbedder {
     }
 }
 
+#[async_trait]
 impl EmbeddingProvider for LexicalEmbedder {
     fn id(&self) -> &str {
         "lexical-fnv-tf"
@@ -114,7 +123,7 @@ impl EmbeddingProvider for LexicalEmbedder {
         self.dim
     }
 
-    fn embed(&self, text: &str) -> Vec<f32> {
+    async fn embed(&self, text: &str) -> Vec<f32> {
         let mut v = vec![0.0f32; self.dim];
         let mut token = String::new();
         let mut push = |tok: &mut String, v: &mut [f32]| {
@@ -227,6 +236,7 @@ impl CachingEmbeddingProvider {
     }
 }
 
+#[async_trait]
 impl EmbeddingProvider for CachingEmbeddingProvider {
     fn id(&self) -> &str {
         self.inner.id()
@@ -236,12 +246,12 @@ impl EmbeddingProvider for CachingEmbeddingProvider {
         self.inner.dim()
     }
 
-    fn embed(&self, text: &str) -> Vec<f32> {
+    async fn embed(&self, text: &str) -> Vec<f32> {
         let key = EmbeddingCache::key(self.inner.id(), text);
         if let Some(v) = self.cache.map.get(&key) {
-            return v.clone();
+            return v.clone(); // hot path: sync map hit, the async cost is paid once
         }
-        let v = self.inner.embed(text);
+        let v = self.inner.embed(text).await;
         // Bound memory: evict one arbitrary entry on overflow before inserting a
         // genuinely new key. Hot/recent content re-populates on its next miss.
         if !self.cache.map.contains_key(&key) && self.cache.map.len() >= EMBEDDING_CACHE_MAX {
@@ -254,6 +264,69 @@ impl EmbeddingProvider for CachingEmbeddingProvider {
     }
 }
 
+/// Neural embedder behind the trait — semantic relevance, not just lexical
+/// overlap. Wraps an `AIProviderAdapter` that has loaded a retrieval embedding
+/// model (the grid's canonical Qwen3-Embedding-0.6B); `embed` calls
+/// `create_embedding` (GPU forward pass via llama.cpp Metal/CUDA — the fast path).
+///
+/// `id()` returns the MODEL SLUG (not a transport prefix) so vectors share cache
+/// space with the grid embedder serving the same model ("identity is the model,
+/// transport is the policy"). Wrapped in `CachingEmbeddingProvider` in production
+/// so the GPU embed runs once per unique content and every persona reuses it.
+pub struct NeuralEmbeddingProvider {
+    adapter: Arc<dyn AIProviderAdapter>,
+    /// The canonical model slug = the embedding space identity + cache key.
+    model_slug: String,
+    /// Vector dimensionality (Qwen3-Embedding-0.6B = 1024).
+    dim: usize,
+}
+
+impl NeuralEmbeddingProvider {
+    pub fn new(
+        adapter: Arc<dyn AIProviderAdapter>,
+        model_slug: impl Into<String>,
+        dim: usize,
+    ) -> Self {
+        Self {
+            adapter,
+            model_slug: model_slug.into(),
+            dim,
+        }
+    }
+}
+
+#[async_trait]
+impl EmbeddingProvider for NeuralEmbeddingProvider {
+    fn id(&self) -> &str {
+        &self.model_slug
+    }
+
+    fn dim(&self) -> usize {
+        self.dim
+    }
+
+    async fn embed(&self, text: &str) -> Vec<f32> {
+        let request = EmbeddingRequest {
+            input: EmbeddingInput::Single(text.to_string()),
+            model: Some(self.model_slug.clone()),
+            provider: None,
+        };
+        match self.adapter.create_embedding(request).await {
+            Ok(resp) => resp.embeddings.into_iter().next().unwrap_or_default(),
+            Err(e) => {
+                // Degrade to "no signal" (empty → cosine 0), never junk vectors;
+                // log loud so a misconfigured embedder is visible, not silent.
+                tracing::warn!(
+                    model = %self.model_slug,
+                    error = %e,
+                    "neural embed failed; degrading to no-relevance for this item"
+                );
+                Vec::new()
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -261,23 +334,25 @@ mod tests {
 
     // what this catches: the cosine of identical text is ~1; orthogonal
     // (no shared vocabulary) is ~0. The relevance primitive is sane.
-    #[test]
-    fn identical_text_is_maximally_similar() {
+    #[tokio::test]
+    async fn identical_text_is_maximally_similar() {
         let e = LexicalEmbedder::new();
-        let a = e.embed("the deploy pipeline went red after the migration");
-        let same = e.embed("the deploy pipeline went red after the migration");
+        let a = e.embed("the deploy pipeline went red after the migration").await;
+        let same = e.embed("the deploy pipeline went red after the migration").await;
         assert!(cosine_similarity(&a, &same) > 0.999);
     }
 
     // what this catches: topical relevance — a query about the rollout plan is
     // MORE similar to the rollout memory than to an unrelated lunch memory, even
     // though both are equally "old". This is relevance, not recency.
-    #[test]
-    fn relevant_text_outscores_unrelated_text() {
+    #[tokio::test]
+    async fn relevant_text_outscores_unrelated_text() {
         let e = LexicalEmbedder::new();
-        let query = e.embed("what was our rollout plan for the auth flow?");
-        let relevant = e.embed("we will ship the auth flow behind a feature flag and ramp the rollout to 10%");
-        let unrelated = e.embed("lunch is at noon, someone booked the corner table");
+        let query = e.embed("what was our rollout plan for the auth flow?").await;
+        let relevant = e
+            .embed("we will ship the auth flow behind a feature flag and ramp the rollout to 10%")
+            .await;
+        let unrelated = e.embed("lunch is at noon, someone booked the corner table").await;
         let rel = cosine_similarity(&query, &relevant);
         let unrel = cosine_similarity(&query, &unrelated);
         assert!(
@@ -303,10 +378,13 @@ mod tests {
 
     // what this catches: embeddings are REPRODUCIBLE across calls (FNV, not the
     // randomized DefaultHasher) — required for replay/record-recreate to work.
-    #[test]
-    fn embeddings_are_reproducible() {
+    #[tokio::test]
+    async fn embeddings_are_reproducible() {
         let e = LexicalEmbedder::new();
-        assert_eq!(e.embed("reproducible vectors"), e.embed("reproducible vectors"));
+        assert_eq!(
+            e.embed("reproducible vectors").await,
+            e.embed("reproducible vectors").await
+        );
     }
 
     /// An embedder that counts how many times it actually computed — to prove
@@ -323,6 +401,7 @@ mod tests {
             }
         }
     }
+    #[async_trait]
     impl EmbeddingProvider for CountingEmbedder {
         fn id(&self) -> &str {
             self.id
@@ -330,7 +409,7 @@ mod tests {
         fn dim(&self) -> usize {
             4
         }
-        fn embed(&self, text: &str) -> Vec<f32> {
+        async fn embed(&self, text: &str) -> Vec<f32> {
             self.calls.fetch_add(1, Ordering::SeqCst);
             // Deterministic per-content vector (content length spread over dims).
             let n = text.len() as f32;
@@ -341,14 +420,14 @@ mod tests {
     // what this catches: THE OPTIMIZATION — the same content is embedded ONCE;
     // the second call (any persona) is a cache hit, the inner embedder is NOT
     // re-invoked. This is the compute-once-per-content / 14-personas-reuse-one win.
-    #[test]
-    fn cache_computes_once_and_reuses() {
+    #[tokio::test]
+    async fn cache_computes_once_and_reuses() {
         let inner = Arc::new(CountingEmbedder::new("counting"));
         let cache = Arc::new(EmbeddingCache::new());
         let cached = CachingEmbeddingProvider::with_cache(inner.clone(), cache);
 
-        let a = cached.embed("the deploy went red");
-        let b = cached.embed("the deploy went red"); // any persona, same content
+        let a = cached.embed("the deploy went red").await;
+        let b = cached.embed("the deploy went red").await; // any persona, same content
         assert_eq!(a, b, "cache returns the identical vector");
         assert_eq!(
             inner.calls.load(Ordering::SeqCst),
@@ -359,21 +438,21 @@ mod tests {
 
     // what this catches: distinct content is genuinely recomputed (the cache
     // isn't returning a stale vector for new text).
-    #[test]
-    fn cache_recomputes_distinct_content() {
+    #[tokio::test]
+    async fn cache_recomputes_distinct_content() {
         let inner = Arc::new(CountingEmbedder::new("counting"));
         let cache = Arc::new(EmbeddingCache::new());
         let cached = CachingEmbeddingProvider::with_cache(inner.clone(), cache);
-        let _ = cached.embed("first message");
-        let _ = cached.embed("a different message");
+        let _ = cached.embed("first message").await;
+        let _ = cached.embed("a different message").await;
         assert_eq!(inner.calls.load(Ordering::SeqCst), 2);
     }
 
     // what this catches: vectors from DIFFERENT embedding spaces (provider ids)
     // never collide in the cache — keying includes provider_id, so a lexical
     // vector is never served to a neural query (cosine across spaces is nonsense).
-    #[test]
-    fn cache_keys_by_embedding_space() {
+    #[tokio::test]
+    async fn cache_keys_by_embedding_space() {
         let cache = Arc::new(EmbeddingCache::new());
         let lexical = CachingEmbeddingProvider::with_cache(
             Arc::new(CountingEmbedder::new("space-a")),
@@ -383,8 +462,8 @@ mod tests {
             Arc::new(CountingEmbedder::new("space-b")),
             cache.clone(),
         );
-        let _ = lexical.embed("same text");
-        let _ = neural.embed("same text");
+        let _ = lexical.embed("same text").await;
+        let _ = neural.embed("same text").await;
         assert_eq!(
             cache.len(),
             2,
@@ -399,8 +478,8 @@ mod tests {
     // provider_id, so a vector computed by one is reused by the other — same
     // model, same space, same cache key. The grid round-trip never fires for
     // content the local path already embedded.
-    #[test]
-    fn cache_shared_across_transports_with_same_model_slug() {
+    #[tokio::test]
+    async fn cache_shared_across_transports_with_same_model_slug() {
         let cache = Arc::new(EmbeddingCache::new());
         // Two distinct impls, SAME model slug — stand-ins for Neural (local) and
         // Grid (cross-grid), both serving qwen3-embedding-0.6b.
@@ -409,8 +488,8 @@ mod tests {
         let neural = CachingEmbeddingProvider::with_cache(local.clone(), cache.clone());
         let grid_provider = CachingEmbeddingProvider::with_cache(grid.clone(), cache.clone());
 
-        let a = neural.embed("the deploy went red"); // local path computes + caches
-        let b = grid_provider.embed("the deploy went red"); // grid path hits the SAME entry
+        let a = neural.embed("the deploy went red").await; // local path computes + caches
+        let b = grid_provider.embed("the deploy went red").await; // grid path hits the SAME entry
         assert_eq!(a, b, "same model slug → same cache entry across transports");
         assert_eq!(local.calls.load(Ordering::SeqCst), 1, "local computed once");
         assert_eq!(
