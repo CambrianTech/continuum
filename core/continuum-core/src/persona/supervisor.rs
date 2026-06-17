@@ -508,7 +508,66 @@ pub async fn materialize_adapters(
             ));
         cognition.set_doctrine_source(doctrine_source);
 
+        // Disk-backed, per-persona memory: open <home>/engrams.sqlite and
+        // rehydrate prior engrams + recall metadata, so memory SURVIVES restart.
+        // Without this, admission is in-memory only (NoopSink) and the persona is
+        // amnesiac across boots. `identity.home` is the resolved
+        // <root>/personas/<name> dir. On disk error we log loud and continue
+        // in-memory — the persona stays alive; persistence is degraded, not fatal
+        // (NOT an inference fallback). MUST run before the WorkspaceCycle is
+        // assembled below, so its RecallFaculty binds the persisted admission.
+        let home = crate::persona::home::PersonaHome::from_root(identity.home.clone());
+        let recall_meta = std::sync::Arc::new(
+            crate::persona::recall_metadata::RecallMetadataRegistry::new(),
+        );
+        match crate::persona::admission_state::AdmissionState::for_persona(&home, recall_meta)
+            .await
+        {
+            Ok(persisted) => {
+                cognition.attach_persistent_admission(
+                    identity.persona_id,
+                    std::sync::Arc::new(persisted),
+                );
+            }
+            Err(e) => {
+                tracing::warn!(
+                    persona = %identity.agent_name,
+                    error = %e,
+                    "engram persistence unavailable; running in-memory (memory will NOT survive restart)"
+                );
+            }
+        }
+
         let system_prompt = build_persona_system_prompt(&identity.agent_name);
+
+        // Assemble this persona's continuous mind into the process-global
+        // workspace registry — ONE WorkspaceCycle per persona, keyed by
+        // persona_id (the "one soul, many rooms" invariant, PERSONA-BRAIN-
+        // ARCHITECTURE.md §2.9). The shared hippocampus (cognition.admission)
+        // and the persona's inference adapter are leased into its faculties.
+        // Cheap (no model load — the adapter lazy-loads on first inference).
+        // Additive: makes `ai/should-respond` resolvable for this persona; does
+        // NOT change the existing service-loop decision path (heuristics stay
+        // live until the coordinated cutover).
+        // REGISTER (overwrite), not get_or_build: a persona can respawn in the
+        // same process (node resilience). get_or_build is idempotent by
+        // persona_id and would DISCARD the fresh admission + adapter, leaving the
+        // mind bound to the prior lifetime's orphaned (rehydrated-then-replaced)
+        // AdmissionState — newly-admitted engrams invisible to recall, the
+        // "severed" failure across a restart. Build + register replaces it.
+        crate::cognition::persona_workspace::global().register(
+            identity.persona_id,
+            std::sync::Arc::new(crate::cognition::persona_workspace::build_workspace_cycle(
+                crate::cognition::persona_workspace::PersonaBrainConfig {
+                    persona_id: identity.persona_id,
+                    persona_name: identity.agent_name.to_string(),
+                    system_prompt: system_prompt.to_string(),
+                    admission: cognition.admission.clone(),
+                    adapter: adapter.clone(),
+                    capacity: None,
+                },
+            )),
+        );
 
         out.push(Ok(PersonaContext {
             role: plan.role,

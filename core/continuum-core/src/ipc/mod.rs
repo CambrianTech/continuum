@@ -763,6 +763,18 @@ pub fn start_server(
     // Phase 1: HealthModule (stateless)
     runtime.register(Arc::new(HealthModule::new()));
 
+    // ai/should-respond — the kernel command that runs a persona's WorkspaceCycle
+    // (the brain) and returns a Decision. Resolves the per-persona cycle from the
+    // process-global PersonaWorkspaceRegistry, which is populated at persona spawn
+    // (supervisor::materialize_adapters). One command, N lane-routed handlers;
+    // this is the continuum-native handler. Additive — the recipe walker + the
+    // service-loop cutover consume it; existing heuristics stay live until then.
+    runtime.register(Arc::new(
+        crate::cognition::should_respond_module::ShouldRespondModule::new(
+            crate::cognition::persona_workspace::global(),
+        ),
+    ));
+
     // LaunchModeModule (stateless) — system/launch-mode/{get,set}. Headless-native
     // runtime lever for the headless-vs-UI launch preference; persists
     // CONTINUUM_LAUNCH_MODE to config.env (same key bin/continuum reads) and emits

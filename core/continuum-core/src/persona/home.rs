@@ -56,6 +56,15 @@ impl PersonaHome {
         Self { root }
     }
 
+    /// Wrap an ALREADY-resolved persona home directory (e.g. the
+    /// `identity.home` the spawn path already computed as
+    /// `<root>/personas/<name>`). Use this when the caller holds the resolved
+    /// home path directly and must NOT re-join `personas/<name>` (which
+    /// `for_persona` does).
+    pub fn from_root(root: PathBuf) -> Self {
+        Self { root }
+    }
+
     /// The root directory for this persona. Used by callers that
     /// need to compose their own sub-paths (e.g. the airc-lib
     /// `attach_as` call that owns `airc/`).
