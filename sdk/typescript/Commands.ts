@@ -69,6 +69,40 @@ export interface Subscription {
   unsubscribe(): void;
 }
 
+/**
+ * WHERE a command runs — the cross-environment dimension. Projects onto the
+ * redone command-addressing infra (`CommandUri` / `RouteDecision`,
+ * `core/src/routing/`): `airc://[peer[@node]][:env]/path`. The SDK does NOT route;
+ * it builds the URI and the core's `RouteDecision` resolves it (local walk / airc
+ * to a peer / room fan-out). This is what lets a command "stretch across
+ * environments": caller, contract-origin, and executing adapter can each be in a
+ * different place.
+ *
+ * - omitted → **Local**: the caller's own substrate (bare path; back-compatible).
+ * - `peer` → a specific citizen; `node` disambiguates multi-node; **`env`** is the
+ *   WHICH-embodiment selector — `'web'` (DOM/canvas adapter), `'vr'` (renderer
+ *   capture), `'server'`, `'cli'`, … This is how `screenshot` reaches the right
+ *   client display.
+ * - `room` → fan-out to every subscriber (optionally env-filtered).
+ * - `env: '*'` on a peer → every active embodiment of that peer (broadcast).
+ */
+export type Target =
+  | { peer: string; node?: string; env?: string }
+  | { room: string; env?: string };
+
+/** Build the redone airc:// command URI from a name + optional target. Bare name
+ *  = Local (default). The core parses this back into a `CommandUri`. */
+export function buildCommandUri(name: string, target?: Target): string {
+  if (!target) return name; // Local — bare path, back-compatible
+  if ('room' in target) {
+    const env = target.env ? `:${target.env}` : '';
+    return `airc://room:${target.room}${env}/${name}`;
+  }
+  const node = target.node ? `@${target.node}` : '';
+  const env = target.env ? `:${target.env}` : '';
+  return `airc://${target.peer}${node}${env}/${name}`;
+}
+
 /** Typed event handlers — payload is the generated type for the class. */
 export interface EventHandlers<K extends EventClass> {
   onEvent(event: EventMap[K]): void;
@@ -90,8 +124,13 @@ export class Commands {
   async execute<K extends CommandName>(
     name: K,
     params: CommandMap[K]['params'],
+    target?: Target,
   ): Promise<CommandMap[K]['result']> {
-    const resultJson = await this.transport.execute(name, JSON.stringify(params));
+    // Project name + target onto the redone command-URI addressing; the core's
+    // RouteDecision resolves local-walk vs airc-to-peer vs room fan-out. `target`
+    // is the cross-environment selector (e.g. {peer, env:'web'} for screenshot).
+    const uri = buildCommandUri(name, target);
+    const resultJson = await this.transport.execute(uri, JSON.stringify(params));
     // The facade guarantees result_json is the serialized result type; the
     // generated map guarantees the static type. One cast at the boundary, typed
     // everywhere above it.

@@ -73,6 +73,39 @@ commands.provide('interface/screenshot', async (p) => rendererCapture(p)); // ap
 this today — the browser file IS the web adapter. The new shape generalizes it:
 rust-origin contract, per-SDK adapter, routed.)
 
+## Commands that stretch across environments (the hard part)
+
+A command's **caller, contract-origin, and executing adapter can each be in a
+different environment**: a CLI calls `screenshot` → the core routes it → a web
+client's adapter runs it → the result flows back; cross-grid, a persona on one node
+targets a human's client on another. The SDK must express *where* a command runs
+without losing transparency.
+
+It does **not** reinvent routing — the **redone command/event infrastructure**
+already solves addressing (`core/src/routing/`): `CommandUri` /`RouteDecision` over
+`airc://[peer[@node]][:env]/path`. The SDK just **projects** onto it:
+
+| CommandUri | SDK `target` | meaning |
+|------------|--------------|---------|
+| `Local` | omitted (bare path) | caller's own substrate (default, back-compatible) |
+| `Peer { peer, node?, env? }` | `{ peer, node?, env? }` | a citizen; **`env`** = WHICH embodiment |
+| `Room { env? }` | `{ room, env? }` | fan-out to subscribers |
+| `Broadcast` / `:*` | `{ peer, env: '*' }` | every embodiment of a peer |
+
+**`env` is the cross-environment key** (`EnvironmentId::Named("web" | "vr" | "server"
+| "cli" | …)`). It's how a client-provided command reaches the right embodiment:
+
+```ts
+commands.execute('interface/screenshot', { querySelector: 'body' },
+                 { peer: joelPeerId, env: 'web' });   // → airc://<peer>:web/interface/screenshot
+commands.execute('interface/capture', {}, { peer: headsetPeerId, env: 'vr' }); // renderer capture
+```
+
+The SDK builds the `airc://` URI (`buildCommandUri`) and `RouteDecision` does the
+rest — local walk, airc-to-peer, or room fan-out — over the SAME wire family
+(local IPC ↔ cross-grid airc). Caller stays transparent; addressing is opt-in.
+Events ride the redone `AircEventPublisher` cross-grid pub/sub the same way.
+
 ## The contract: a command is (name, ParamsType, ResultType, accessLevel)
 
 | Field | Source of truth |
