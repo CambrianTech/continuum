@@ -564,6 +564,23 @@ impl TextGenerationResponse {
     }
 }
 
+impl HealthStatus {
+    /// A nominal-healthy status — the sensible default for adapters that
+    /// don't run a real probe (in-process local adapters, test fixtures,
+    /// heuristic adapters). Cloud adapters that DO probe their endpoint
+    /// override `health_check` and build a status from the live result.
+    pub fn healthy() -> Self {
+        Self {
+            status: HealthState::Healthy,
+            api_available: true,
+            response_time_ms: 0,
+            error_rate: 0.0,
+            last_checked: 0,
+            message: None,
+        }
+    }
+}
+
 impl Default for HealthStatus {
     fn default() -> Self {
         Self {
