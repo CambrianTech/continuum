@@ -24,6 +24,9 @@ continuum-airc-protocol = { path = "../../core/continuum-airc-protocol" }
 # (Body, MentionTarget, PeerId, Headers) the request signature needs.
 airc-lib = { workspace = true }
 airc-core = { workspace = true }
+# airc command-bus header keys (correlation / reply-to) for the serve side —
+# the SAME crate the substrate's command_handler reads them from (zero drift).
+airc-protocol = { workspace = true }
 
 [features]
 default = []
