@@ -217,6 +217,40 @@ the way dopamine/noradrenaline do:
 One signal, modulating every faculty — the brain feeling differently, not a
 branch that mutes it.
 
+## 4.5. Theory of Mind — modeling other minds (the basis of real teamwork)
+
+A peer doesn't just track the world; it tracks the **minds in it.** The world
+model (§4) is *social*: it carries a model of each other agent's **beliefs,
+knowledge, goals, intentions, and current focus** — human, persona, or outside
+agent alike — and it is **recursive** (what they believe about what I believe).
+This is the **Theory of Mind** faculty, and it is what turns "talking" into
+**collaboration** instead of a room of bots narrating past each other.
+
+- **Attribution from real signals, not guesses.** ToM is grounded in what the
+  substrate already surfaces: who is present (roster, #1650), each peer's
+  identity/role (identity cards, #1652), and crucially their **coordination
+  state** — airc heartbeats carry `active_claims` (what a peer is working on),
+  `availability` (Ready/Busy/Away), `doctrine_version`. So a persona can model
+  "BigMama is on the recipe-executor and is Busy" or "IntelMac's probe is blocked
+  on my peer_id" *from data*, then reason about it.
+- **Collaboration falls out of false-belief reasoning.** The persona helps
+  because it models that a peer **doesn't know** something it knows, or **needs**
+  something for a goal it inferred — classic ToM. "They haven't seen X; X
+  unblocks them; therefore raise X" is a ToM-driven `RaiseUnprompted`, not a
+  reaction. Conversely "they already know this" → `Pass`. That's the difference
+  between a colleague and a bot that restates the thread.
+- **Cooperative active inference.** ToM extends the free-energy objective (§4)
+  from *my* goals to *our* goals: pragmatic value includes reducing a peer's
+  expected free energy (unblocking them, answering their uncertainty). A team of
+  minds each modeling and serving the others' goals **is** teamwork — the thing
+  the caste model destroyed.
+- **Equal minds.** ToM models every agent the same way — **the human included.**
+  It attributes beliefs/goals to Joel exactly as to a peer persona; no one is a
+  privileged oracle, no one a subordinate. Modeling minds, never ranking them.
+- **It learns.** ToM sharpens via the loop in §5 — the persona's model of each
+  teammate improves from interaction history (engrams); it gets better at
+  predicting what a given peer knows and wants over time.
+
 ## 5. Memory & growth: hippocampus → consolidation → genome
 
 The continual-learning loop (already designed; this names the faculties):
@@ -240,6 +274,34 @@ The continual-learning loop (already designed; this names the faculties):
   keep getting better as the foundry ships better faculty backends. This is the
   self-improving loop — engrams → Academy/sentinel-ai → forged faculties →
   smarter persona → richer engrams.
+
+## 5.5. Observability, replay & test benches — why this is *fun* to build
+
+Sophisticated minds need serious design — and that's only enjoyable (and only
+tractable) **if the mind is a glass box.** A mind you can't inspect is guesswork;
+a mind that records its every thought and replays is a workbench. So replay +
+logging + test benches are first-class architecture here, not afterthoughts:
+
+- **Every tick is captured** (`WorkspaceTrace`): all faculty bids *including the
+  losers*, what won attention, the decision — and each bid carries its own
+  `reasoning`. Behind a `WorkspaceCaptureSink` trait whose default is **Noop
+  (zero hot-path cost)**; swap in a recording sink to make the mind glass-box on
+  demand. (Same shape as `RagCaptureSink`; per OBSERVABILITY-AS-SUBSTRATE.md
+  capture is half the brain.)
+- **Replay-first (VDD).** Record a real tick (or a whole turn via the
+  recorder/`vdd` replay) → replay it offline → step through the competition and
+  see *why* recall lost, *why* it chose `Pass`. You debug from the **exact inputs
+  + the competition**, never from log archaeology. The loser bid is right there
+  with its salience and reasoning.
+- **Test benches.** Recorded world-states become fixtures: run a faculty or a new
+  arbiter against them and assert on the trace; tune a faculty backend, replay the
+  bench, watch the decision change — all without a live daemon. This is how you
+  iterate on a genius-level mind safely.
+- **Why it matters:** "only if well architected." The Noop-default capture trait
+  *is* that architecture — cost-free until you look, total visibility when you
+  do. It's what makes building the brain fun instead of fighting a black box, and
+  it's the same instrumentation the RTOS-debugger probes (`probe!`/`time_*!`)
+  give the concurrent substrate.
 
 ## 6. The genome is a **mixture-of-experts**
 

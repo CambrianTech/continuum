@@ -201,6 +201,38 @@ impl Arbiter for SalienceArbiter {
     }
 }
 
+/// A full record of one workspace tick — the **mechanic's view of the mind.**
+/// Captures every faculty bid *including the ones that LOST attention*, what won,
+/// and the decision. This is why working on cognition is debuggable and fun:
+/// replay a tick, see exactly why the mind did what it did ("why didn't recall
+/// win?" — the loser bid + its salience + reasoning are right here), and run test
+/// benches against recorded world-states. Per OBSERVABILITY-AS-SUBSTRATE.md,
+/// capture is half the brain; per VDD ([[persona-record-replay-is-a-product-
+/// requirement]]) knowing the exact inputs + competition beats any log.
+#[derive(Debug, Clone)]
+pub struct WorkspaceTrace {
+    pub world_state: String,
+    /// ALL bids this tick, winners and losers — the full competition.
+    pub bids: Vec<Contribution>,
+    /// What won attention and was broadcast.
+    pub broadcast: Vec<Contribution>,
+    /// The participation decision that emerged, if any.
+    pub decision: Option<Decision>,
+}
+
+/// Sink for workspace traces — the replay/logging seam. Default is `Noop`
+/// (zero hot-path cost); operators/test-benches swap in a recording sink.
+/// Same pattern as `RagCaptureSink`.
+pub trait WorkspaceCaptureSink: Send + Sync {
+    fn record(&self, trace: &WorkspaceTrace);
+}
+
+/// Zero-cost default — drops traces on the floor.
+pub struct NoopWorkspaceCaptureSink;
+impl WorkspaceCaptureSink for NoopWorkspaceCaptureSink {
+    fn record(&self, _trace: &WorkspaceTrace) {}
+}
+
 /// One service-tick of cognition over a CONSOLIDATED burst (never per-event):
 /// every faculty bids in parallel over the same world-state, the arbiter
 /// integrates the bids into the bounded workspace, the workspace broadcasts.
@@ -211,6 +243,10 @@ pub struct WorkspaceCycle {
     /// Bound on how many contributions can hold the workspace at once — the
     /// finite "spotlight" of attention.
     capacity: usize,
+    /// Replay/logging seam — every tick is recorded here. Default `Noop`
+    /// (zero hot-path cost); swap in a recording sink to make the mind a
+    /// glass box for debugging, tuning, and test benches.
+    capture: Arc<dyn WorkspaceCaptureSink>,
 }
 
 impl WorkspaceCycle {
@@ -219,16 +255,33 @@ impl WorkspaceCycle {
             faculties,
             arbiter,
             capacity: capacity.max(1),
+            capture: Arc::new(NoopWorkspaceCaptureSink),
         }
     }
 
-    /// Run one cognition tick over the consolidated `world_state`.
+    /// Install a capture sink (recording / on-disk replay / in-flight inspection).
+    pub fn with_capture(mut self, capture: Arc<dyn WorkspaceCaptureSink>) -> Self {
+        self.capture = capture;
+        self
+    }
+
+    /// Run one cognition tick over the consolidated `world_state`, recording the
+    /// full trace (every bid incl. losers, what won, the decision) for replay.
     pub async fn run(&self, world_state: impl Into<String>) -> Workspace {
         let mut ws = Workspace::new(world_state);
         // Faculties bid in parallel over the same consolidated state.
         let bids = join_all(self.faculties.iter().map(|f| f.contribute(&ws))).await;
         let candidates: Vec<Contribution> = bids.into_iter().flatten().collect();
+        // Capture ALL bids (winners + losers) before the arbiter truncates —
+        // the losers are exactly what you need when debugging "why didn't X win?"
+        let all_bids = candidates.clone();
         ws.broadcast = self.arbiter.select(candidates, self.capacity);
+        self.capture.record(&WorkspaceTrace {
+            world_state: ws.world_state.clone(),
+            bids: all_bids,
+            broadcast: ws.broadcast.clone(),
+            decision: ws.decision().cloned(),
+        });
         ws
     }
 }
@@ -388,5 +441,54 @@ mod tests {
         let ws = cycle(faculties, 5).run(consolidated).await;
         assert!(ws.world_state.contains("many events, one unit"));
         assert!(matches!(ws.decision(), Some(Decision::Speak { .. })));
+    }
+
+    /// In-memory capture sink — the test-bench / replay primitive.
+    #[derive(Default)]
+    struct RecordingSink(std::sync::Mutex<Vec<WorkspaceTrace>>);
+    impl WorkspaceCaptureSink for RecordingSink {
+        fn record(&self, trace: &WorkspaceTrace) {
+            self.0.lock().unwrap().push(trace.clone());
+        }
+    }
+
+    // what this catches: every tick is replayable — the trace captures the FULL
+    // competition incl. the LOSER bid (the bit you need to debug "why didn't it
+    // win?"), what won, and the decision. This is the glass box that makes
+    // working on the mind debuggable + test-benchable, not guesswork.
+    #[tokio::test]
+    async fn capture_records_the_full_tick_including_losers() {
+        let sink = Arc::new(RecordingSink::default());
+        let faculties: Vec<Arc<dyn Faculty>> = vec![
+            Arc::new(FixedFaculty(Contribution::context(
+                FacultyId::Recall,
+                "loser bid",
+                0.1,
+                "weak — should lose attention",
+            ))),
+            Arc::new(FixedFaculty(Contribution::verdict(
+                Decision::Speak {
+                    text: "winner".into(),
+                },
+                0.9,
+                "high value",
+            ))),
+        ];
+        // capacity 1 → only the winner is broadcast, but the trace keeps both.
+        let _ws = WorkspaceCycle::new(faculties, Arc::new(SalienceArbiter), 1)
+            .with_capture(sink.clone())
+            .run("thread")
+            .await;
+
+        let traces = sink.0.lock().unwrap();
+        assert_eq!(traces.len(), 1, "one tick recorded");
+        let t = &traces[0];
+        assert_eq!(t.bids.len(), 2, "trace keeps ALL bids — winner AND loser");
+        assert_eq!(t.broadcast.len(), 1, "only the winner held attention");
+        assert!(
+            t.bids.iter().any(|b| b.content == "loser bid"),
+            "the loser bid + its salience + reasoning are replayable for debugging"
+        );
+        assert_eq!(t.decision, Some(Decision::Speak { text: "winner".into() }));
     }
 }
