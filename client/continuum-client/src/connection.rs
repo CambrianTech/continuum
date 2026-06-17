@@ -49,6 +49,12 @@ impl<T: Transport> Connection<T> {
         EventSubscriber::new(Arc::clone(&self.transport))
     }
 
+    /// Publish an event to `class` — the publish side of the Event primitive
+    /// (the emit twin of `events().subscribe`).
+    pub async fn emit(&self, class: &str, payload: serde_json::Value) -> Result<(), ClientError> {
+        self.transport.emit(class, payload).await
+    }
+
     /// Register a handler to SERVE `command` — the client-provided side of the
     /// Command primitive (the substrate routes matching commands here). Twin of
     /// `commands().execute`; stop with [`Connection::revoke`].

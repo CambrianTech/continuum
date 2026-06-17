@@ -304,6 +304,18 @@ impl Transport for MockTransport {
         Ok(Box::pin(ReceiverStream::new(rx)))
     }
 
+    async fn emit(&self, class: &str, payload: Value) -> Result<(), ClientError> {
+        if self.inner.closed.load(Ordering::Relaxed) {
+            return Err(ClientError::Closed);
+        }
+        // Reuse the inherent `emit` (fan-out to subscribers, returns count) via
+        // the explicit type path — unambiguously the inherent method, not this
+        // trait method (no recursion). The Transport contract returns Result;
+        // the inherent's count is the richer test surface.
+        let _delivered = MockTransport::emit(self, class, payload);
+        Ok(())
+    }
+
     async fn provide(
         &self,
         command: &str,

@@ -310,6 +310,32 @@ impl Transport for AircIpcTransport {
         Ok(Box::pin(tokio_stream::wrappers::ReceiverStream::new(rx)))
     }
 
+    async fn emit(&self, class: &str, payload: Value) -> Result<(), ClientError> {
+        if self.closed.load(Ordering::Relaxed) {
+            return Err(ClientError::Closed);
+        }
+        // Publish via the same shared protocol helper the substrate's
+        // EventPublishAdapter receives — zero wire drift (the publish twin of
+        // the subscribe path above).
+        let (target, headers, body) = event_proto::resolve_publish(self.target, class, payload)
+            .map_err(ClientError::Transport)?;
+        let pending = self
+            .airc
+            .request(target, headers, body, self.deadline)
+            .await
+            .map_err(|e| ClientError::Transport(format!("airc publish request: {e}")))?;
+        let reply = self
+            .airc
+            .await_reply(pending)
+            .await
+            .map_err(|e| ClientError::Transport(format!("airc publish await_reply: {e}")))?;
+        // Decode the ack to surface a malformed reply; the fan-out count is
+        // informational (emit fires into the fan-out — the caller doesn't branch
+        // on how many subscribers received it).
+        let _ack = event_proto::decode_publish_ack(reply.body).map_err(ClientError::Transport)?;
+        Ok(())
+    }
+
     async fn provide(
         &self,
         command: &str,

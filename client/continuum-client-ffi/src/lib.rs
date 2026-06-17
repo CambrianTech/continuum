@@ -223,6 +223,16 @@ impl ContinuumClient {
         Subscription { handle }
     }
 
+    /// EMIT (publish) an event to `class` — the publish side of the Event
+    /// primitive (twin of `subscribe`). `payload_json` is the event body as a
+    /// JSON string.
+    pub async fn emit(&self, class: &str, payload_json: &str) -> Result<(), FfiError> {
+        let payload: serde_json::Value =
+            serde_json::from_str(payload_json).map_err(|e| FfiError::Codec(e.to_string()))?;
+        self.conn.emit(class, payload).await?;
+        Ok(())
+    }
+
     /// PROVIDE (serve) a command: register `handler` to answer inbound requests
     /// the substrate routes to this client — the serve side of the Command
     /// primitive (client-provided commands like `interface/screenshot`). Returns
@@ -444,5 +454,37 @@ mod tests {
         assert!(!mock.provides("x"), "revoked");
         let err = mock.dispatch_provided("x", json!({})).await.unwrap_err();
         assert!(matches!(err, ClientError::NotImplemented(_)));
+    }
+
+    #[tokio::test]
+    async fn emit_publishes_to_a_subscriber() {
+        // what this catches: emit (publish) reaches a subscriber of the same
+        // class — the publish twin of subscribe, end-to-end via the mock fan-out.
+        // Completes the four-verb facade surface.
+        let mock = MockTransport::new();
+        let conn = Connection::new(mock.clone());
+        let rec = Arc::new(Recorder::default());
+        let cb: Arc<dyn EventCallback> = rec.clone();
+        let pump = tokio::spawn(pump_events(conn.events(), "x".to_string(), cb));
+
+        for _ in 0..100 {
+            if mock.subscriber_count("x") == 1 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        conn.emit("x", json!({ "hello": "world" }))
+            .await
+            .expect("emit publishes");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        mock.close().await.ok();
+        let _ = tokio::time::timeout(Duration::from_secs(2), pump).await;
+
+        let events = rec.events.lock().unwrap();
+        assert_eq!(events.len(), 1, "subscriber received the emitted event");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&events[0]).unwrap(),
+            json!({ "hello": "world" })
+        );
     }
 }
