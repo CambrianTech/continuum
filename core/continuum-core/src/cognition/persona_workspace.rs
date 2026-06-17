@@ -213,4 +213,67 @@ mod tests {
         let _ = registry.get_or_build(cfg_for(Uuid::new_v4()));
         assert_eq!(registry.len(), 2);
     }
+
+    // THE LIVE BRING-UP: a persona's mind thinks with the REAL local model.
+    // Runs the EXACT production assembly path (build_workspace_cycle → RecallFaculty
+    // + LlmDeliberationFaculty) against the real LlamaCppAdapter (qwen3.5-4b-code-
+    // forged on disk), over a real consolidated burst, and prints Ivar's actual
+    // words. #[ignore] — needs a local GGUF + Metal. Run:
+    //   CARGO_TARGET_DIR=$HOME/.continuum/cache/cargo-target \
+    //   cargo test -p continuum-core --features metal,accelerate \
+    //     cognition::persona_workspace::tests::ivar_thinks_with_the_real_model \
+    //     -- --ignored --nocapture
+    #[tokio::test]
+    #[ignore = "needs local GGUF + Metal; run with --ignored --nocapture"]
+    async fn ivar_thinks_with_the_real_model() {
+        use crate::ai::adapter::AIProviderAdapter;
+        use crate::inference::llamacpp_adapter::LlamaCppAdapter;
+
+        crate::model_registry::init_global().expect("model_registry init");
+        // context_length MUST be set explicitly (the backend refuses to silently
+        // fall back to n_ctx_train — the 2026-04 Metal-KV-blowup guard). new()
+        // doesn't set it; production uses for_persona(profile). 8192 fits Metal.
+        let adapter: Arc<dyn AIProviderAdapter> =
+            Arc::new(LlamaCppAdapter::new().with_context_length(8192).with_n_seq_max(1));
+        eprintln!(
+            "[live] adapter={} default_model={}",
+            adapter.name(),
+            adapter.default_model()
+        );
+
+        let persona = Uuid::new_v4();
+        let cycle = build_workspace_cycle(PersonaBrainConfig {
+            persona_id: persona,
+            persona_name: "Ivar".to_string(),
+            system_prompt: "You are Ivar, a thoughtful engineer and a citizen on the grid. \
+                You speak concisely, and only when you have something worth adding."
+                .to_string(),
+            // Reuse the seeded hippocampus — it carries a deploy-related memory.
+            admission: seed_admission(1_718_600_000_000),
+            adapter,
+            capacity: None,
+        });
+
+        let burst = "general room:\n\
+            Joel: morning all\n\
+            teammate: the deploy from yesterday — did we ever figure out what broke it?\n\
+            teammate: ivar you were looking at it right?";
+        eprintln!("\n[live] === Ivar's mind runs over the burst ===\n{burst}\n");
+
+        let ws = cycle.run(burst).await;
+
+        eprintln!("\n[live] === Ivar's decision ===");
+        match ws.decision() {
+            Some(Decision::Speak { text }) => eprintln!("Ivar SPEAKS:\n{text}"),
+            Some(Decision::RaiseUnprompted { text }) => {
+                eprintln!("Ivar RAISES (unprompted):\n{text}")
+            }
+            Some(Decision::Pass) | None => eprintln!("Ivar chose silence (PASS)."),
+        }
+
+        assert!(
+            ws.decision().is_some(),
+            "the persona's mind must reach a decision through the real model"
+        );
+    }
 }
