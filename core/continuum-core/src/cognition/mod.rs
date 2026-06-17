@@ -35,6 +35,7 @@ pub mod generate_response;
 pub mod host_capability_probe;
 pub mod model_resolver;
 pub mod rate_proposals;
+pub mod recall_faculty;
 pub mod resource_admission;
 pub mod response_orchestrator;
 pub mod response_validator;
