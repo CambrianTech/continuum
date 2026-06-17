@@ -555,24 +555,12 @@ impl crate::persona::room_roster_source::AircRosterReader for PersonaAircRuntime
         self.airc.peer_id()
     }
 
-    async fn active_agents(
+    async fn room_roster(
         &self,
         within: std::time::Duration,
         window: usize,
-    ) -> Result<Vec<airc_lib::AgentLiveness>, AircError> {
-        self.airc.active_agents(within, window).await
-    }
-
-    async fn peer_alias_map(
-        &self,
-    ) -> Result<std::collections::HashMap<airc_core::PeerId, String>, AircError> {
-        let events = self
-            .airc
-            .page_recent(crate::persona::room_roster_source::IDENTITY_SCAN)
-            .await?;
-        Ok(crate::persona::room_roster_source::parse_identity_names(
-            events,
-        ))
+    ) -> Result<Vec<airc_lib::RoomMember>, AircError> {
+        self.airc.room_roster(within, window).await
     }
 }
 

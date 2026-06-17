@@ -63,11 +63,11 @@ members = [
 # continuum#1651 RoomDoctrineSource reads room_doctrine). Also pulls
 # the airc update/doctor/network CLI fixes (#1218-#1222). Re-validate
 # attach_as (refactored open_as + with_daemon_client) on bump.
-airc-core = { git = "https://github.com/CambrianTech/airc", rev = "1a47231" }
-airc-protocol = { git = "https://github.com/CambrianTech/airc", rev = "1a47231" }
-airc-ipc = { git = "https://github.com/CambrianTech/airc", rev = "1a47231" }
-airc-lib = { git = "https://github.com/CambrianTech/airc", rev = "1a47231" }
-airc-wire = { git = "https://github.com/CambrianTech/airc", rev = "1a47231" }
+airc-core = { git = "https://github.com/CambrianTech/airc", rev = "72824ba" }
+airc-protocol = { git = "https://github.com/CambrianTech/airc", rev = "72824ba" }
+airc-ipc = { git = "https://github.com/CambrianTech/airc", rev = "72824ba" }
+airc-lib = { git = "https://github.com/CambrianTech/airc", rev = "72824ba" }
+airc-wire = { git = "https://github.com/CambrianTech/airc", rev = "72824ba" }
 
 # Candle ML framework — patched via [patch.crates-io] below.
 # Fixes: Metal buffer pool leak (#2271), RoPE NEOX convention (#3410)
