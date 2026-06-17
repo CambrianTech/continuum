@@ -1,0 +1,535 @@
+//! RagSourceFaculty — lifts ANY [`RagSource`] into a perception-tier [`Faculty`].
+//!
+//! ## Why this bridge exists (the elegance call)
+//!
+//! Before the Workspace brain, all grounding flowed through ONE pipeline: the
+//! [`RagSource`] trait (`deliver → RagDelivery`, budget-aware, paginated) — the
+//! roster (#1650), the room doctrine (#1651), the airc transcript, the engram
+//! store. The Workspace introduced a SECOND pipeline: the [`Faculty`] trait
+//! (`contribute → Contribution`, salience-scored, staged into attention). The
+//! gating cutover routes the participation [`Decision`] through the Workspace —
+//! so any grounding that is a `RagSource` but NOT a `Faculty` silently falls out
+//! of the live decision path. Roster + doctrine grounding, just landed, would go
+//! dark the moment the switch flips.
+//!
+//! Re-implementing each source as a bespoke faculty would be the slop move: a
+//! second place that reads airc presence, a second place that reads the doctrine
+//! — drift waiting to happen (the compression principle forbids it). Instead this
+//! is ONE adapter that lifts the WHOLE `RagSource` ecosystem into the Workspace:
+//! every reviewed source becomes a faculty for free, with no second source of
+//! truth. It is also the concrete first step of "broadcast == RAG context" (kill
+//! parallel allocators) — the two pipelines meet here at the seam.
+//!
+//! ## Migration tool, not permanent architecture
+//!
+//! The grid converged (M5/IntelMac/BigMama, 2026-06-17) on: `RagSource` answers
+//! **how to fetch grounding** (IO, budget, pagination, provenance); `Faculty`
+//! answers **how grounding competes for attention** (salience, phase, the bounded
+//! workspace). They are distinct concerns and coexist today — but the *end state*
+//! is full convergence: every source becomes a native `Faculty` whose
+//! `contribute()` returns its own salience, and this bridge is the **migration
+//! scaffolding** that ships grounding into the Workspace NOW (unblocking the
+//! gating cutover) without a big-bang rewrite. Deletion of `RagSource` is GATED
+//! on (a) every source honoring its salience floor as a native faculty and (b)
+//! `WorkspaceCaptureSink`/replay reaching parity with the mature
+//! `RagCaptureSink` + `Recording/ReplayRagSource` observability — never before.
+//! Recall is already converged: `RecallFaculty` is a *native* faculty (not a
+//! bridged `EngramSource`) because it closes the bidirectional rehearsal loop the
+//! one-way `RagSource` path never did.
+//!
+//! ## Salience POLICY — standing-framing vs retrieved (the load-bearing guard)
+//!
+//! A flat lift is a latent bug (BigMama): roster + doctrine are **standing
+//! framing** — always-present structural context, like the system prompt — and
+//! must NOT lose a budget fight to a high-cosine memory, or the persona forgets
+//! the room's own rules mid-turn. Engram + conversation are **retrieved** — they
+//! SHOULD compete on relevance. So the bridge carries a [`SaliencePolicy`]:
+//! standing-framing bids at a high floor the top-k arbiter never truncates;
+//! retrieved bids moderate and competes. The classification lives at the ASSEMBLY
+//! layer (who builds the cycle), NOT in `RagSource` — the source stays
+//! salience-free, no new coupling. In the converged end-state this policy is just
+//! what each native faculty's `contribute()` returns.
+
+use std::sync::Arc;
+
+use async_trait::async_trait;
+use uuid::Uuid;
+
+use super::workspace::{Contribution, Faculty, FacultyId, Workspace};
+use crate::persona::rag_budget::{RagContext, RagSource, ResolutionPreference};
+
+/// Token budget a bridged grounding source gets per tick. Generous for the small
+/// grounding payloads (a roster, a doctrine body); the source truncates itself to
+/// fit (doctrine) or stops at its atomic unit (roster) — the budget contract is
+/// the source's, honored unchanged.
+const DEFAULT_GROUNDING_BUDGET: u32 = 512;
+
+/// Salience floor for **standing framing** (roster, doctrine) — always-present
+/// structural context, like the system prompt. High enough that the top-k arbiter
+/// never truncates it under attention pressure: a persona must not forget the
+/// room's own rules because a high-cosine memory out-bid the doctrine this tick.
+/// NOT a caste/`@`-gate — it is "this framing always applies."
+const STANDING_FRAMING_SALIENCE: f32 = 0.9;
+
+/// Salience for **retrieved** grounding (engram, conversation) — turn-specific,
+/// SHOULD compete on relevance. Moderate so a strongly-relevant hit can rise and
+/// a weak one can be crowded out. (Native retrieval faculties like `RecallFaculty`
+/// already self-score by relevance; this is the bridge's bootstrap for retrieved
+/// sources that don't yet.)
+const RETRIEVED_SALIENCE: f32 = 0.5;
+
+/// How a bridged source's grounding competes for attention. Classified at the
+/// ASSEMBLY layer (whoever builds the cycle), never inside `RagSource` — the
+/// source stays salience-free (BigMama's separation-of-concerns). In the
+/// converged end-state this becomes what each native faculty's `contribute()`
+/// returns; here it is the bridge's bootstrap.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum SaliencePolicy {
+    /// Always-present structural context (roster, doctrine) — bids at the
+    /// [`STANDING_FRAMING_SALIENCE`] floor so attention pressure can't evict it.
+    StandingFraming,
+    /// Turn-specific grounding (engram, conversation) — bids at
+    /// [`RETRIEVED_SALIENCE`] and competes on relevance.
+    Retrieved,
+    /// Explicit fixed salience (tests / tuning / a learned signal).
+    Fixed(f32),
+}
+
+impl SaliencePolicy {
+    /// The salience a source under this policy bids.
+    fn salience(self) -> f32 {
+        match self {
+            SaliencePolicy::StandingFraming => STANDING_FRAMING_SALIENCE,
+            SaliencePolicy::Retrieved => RETRIEVED_SALIENCE,
+            SaliencePolicy::Fixed(s) => s.clamp(0.0, 1.0),
+        }
+    }
+}
+
+/// Wall-clock seam — injectable so tests are deterministic. ms since unix epoch,
+/// matching the `now_ms()` convention across cognition (and `RecallFaculty`).
+pub type Clock = Arc<dyn Fn() -> u64 + Send + Sync>;
+
+fn wall_clock() -> Clock {
+    Arc::new(|| {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0)
+    })
+}
+
+/// Adapts an [`Arc<dyn RagSource>`] to the [`Faculty`] trait. Perception tier
+/// (`reacts_to_broadcast() == false`): it bids the source's delivery as context
+/// in phase 1, so the deliberation faculty conditions on it in phase 2. The
+/// faculty's identity IS the source's identity (`FacultyId::Custom(source_id)`) —
+/// one name, one source of truth, traceable straight back to the source in every
+/// workspace trace.
+pub struct RagSourceFaculty {
+    persona_id: Uuid,
+    source: Arc<dyn RagSource>,
+    faculty_id: FacultyId,
+    salience: f32,
+    budget: u32,
+    clock: Clock,
+}
+
+impl RagSourceFaculty {
+    /// Wrap `source` as a perception faculty for `persona_id` under a
+    /// [`SaliencePolicy`] (standing-framing vs retrieved). The `FacultyId` is
+    /// derived from `source.source_id()` so the faculty and the source can never
+    /// disagree about their identity.
+    pub fn new(persona_id: Uuid, source: Arc<dyn RagSource>, policy: SaliencePolicy) -> Self {
+        let faculty_id = FacultyId::Custom(source.source_id().to_string());
+        Self {
+            persona_id,
+            source,
+            faculty_id,
+            salience: policy.salience(),
+            budget: DEFAULT_GROUNDING_BUDGET,
+            clock: wall_clock(),
+        }
+    }
+
+    /// Override the resolved salience directly (e.g. a learned signal) — escape
+    /// hatch past the policy default.
+    pub fn with_salience(mut self, salience: f32) -> Self {
+        self.salience = salience.clamp(0.0, 1.0);
+        self
+    }
+
+    /// Override the per-tick token budget handed to the source.
+    pub fn with_budget(mut self, budget: u32) -> Self {
+        self.budget = budget;
+        self
+    }
+
+    /// Inject a deterministic clock (tests / replay).
+    pub fn with_clock(mut self, clock: Clock) -> Self {
+        self.clock = clock;
+        self
+    }
+}
+
+#[async_trait]
+impl Faculty for RagSourceFaculty {
+    fn id(&self) -> FacultyId {
+        self.faculty_id.clone()
+    }
+
+    // Perception tier (default): grounding bids in phase 1 over the raw
+    // world-state, so the deliberation faculty reads it from the broadcast in
+    // phase 2. The grounding sources (roster, doctrine) read airc/substrate
+    // state, not the burst, so the bridge does not pass the world_state as a
+    // query; a future query-conditioned source would extend RagContext, not this
+    // seam.
+    async fn contribute(&self, _ws: &Workspace) -> Option<Contribution> {
+        let now = (self.clock)();
+        let ctx = RagContext::for_persona(self.persona_id, now);
+        let delivery = self
+            .source
+            .deliver(&ctx, self.budget, ResolutionPreference::Raw)
+            .await;
+
+        // Empty delivery → abstain (the source had nothing, or degraded to empty
+        // per the good-citizen doctrine). No empty bid clutters the workspace.
+        if delivery.items.is_empty() {
+            return None;
+        }
+
+        // One context block per source: concatenate the delivered atomic units.
+        // The deliberation faculty renders this under a `[<source_id>]` header.
+        let content = delivery
+            .items
+            .iter()
+            .map(|i| i.content.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let reasoning = format!(
+            "grounding from '{}' — {} item(s), {} tokens",
+            self.source.source_id(),
+            delivery.items.len(),
+            delivery.tokens_used
+        );
+
+        Some(Contribution::context(
+            self.faculty_id.clone(),
+            content,
+            self.salience,
+            reasoning,
+        ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::persona::rag_budget::{
+        ContinuationCursor, RagDelivery, RagItem, ResolutionPreference,
+    };
+    use std::sync::Mutex;
+
+    fn persona() -> Uuid {
+        Uuid::parse_str("00000000-0000-0000-0000-000000000aaa").unwrap()
+    }
+
+    /// A stub RagSource that returns canned items and records the persona_id it
+    /// was delivered for (to prove the bridge passes scope through).
+    struct StubSource {
+        id: &'static str,
+        items: Vec<RagItem>,
+        seen_persona: Mutex<Option<Uuid>>,
+    }
+
+    impl StubSource {
+        fn new(id: &'static str, contents: &[&str]) -> Self {
+            let items = contents
+                .iter()
+                .map(|c| RagItem {
+                    content: c.to_string(),
+                    tokens: ((c.len() / 4) as u32).saturating_add(1),
+                    metadata: serde_json::json!({}),
+                })
+                .collect();
+            Self {
+                id,
+                items,
+                seen_persona: Mutex::new(None),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl RagSource for StubSource {
+        fn source_id(&self) -> &'static str {
+            self.id
+        }
+        async fn deliver(
+            &self,
+            ctx: &RagContext,
+            _budget: u32,
+            resolution: ResolutionPreference,
+        ) -> RagDelivery {
+            *self.seen_persona.lock().unwrap() = Some(ctx.persona_id);
+            let tokens_used = self.items.iter().map(|i| i.tokens).sum();
+            RagDelivery {
+                source_id: self.id.to_string(),
+                items: self.items.clone(),
+                tokens_used,
+                continuation: None,
+                resolution_used: resolution,
+            }
+        }
+        async fn deliver_continuation(
+            &self,
+            _ctx: &RagContext,
+            _cursor: ContinuationCursor,
+            _budget: u32,
+        ) -> Option<RagDelivery> {
+            None
+        }
+    }
+
+    // what this catches: ANY RagSource is lifted into a perception-tier context
+    // Contribution — the delivery's items become the bid content, the faculty id
+    // is the source id, and it carries no Decision (grounding is context, never a
+    // verdict). This is the regression fix: roster/doctrine reach the decider.
+    #[tokio::test]
+    async fn lifts_a_rag_source_into_a_context_bid() {
+        let source = Arc::new(StubSource::new(
+            "room-roster",
+            &["Aria [persona]", "win-claude [claude] — Busy"],
+        ));
+        let faculty = RagSourceFaculty::new(persona(), source, SaliencePolicy::StandingFraming)
+            .with_clock(Arc::new(|| 1_000));
+
+        assert!(
+            !faculty.reacts_to_broadcast(),
+            "grounding is perception tier — it bids in phase 1, before deliberation"
+        );
+        assert_eq!(faculty.id(), FacultyId::Custom("room-roster".to_string()));
+
+        let c = faculty
+            .contribute(&Workspace::new("who's around?"))
+            .await
+            .expect("a non-empty source must bid");
+        assert_eq!(c.faculty, FacultyId::Custom("room-roster".to_string()));
+        assert!(
+            c.decision.is_none(),
+            "grounding is context, never a verdict"
+        );
+        assert!(c.content.contains("Aria [persona]"));
+        assert!(c.content.contains("win-claude [claude] — Busy"));
+        assert!(c.salience > 0.0);
+    }
+
+    // what this catches: an empty delivery → abstain (None), not an empty bid.
+    // A degraded/absent source (good-citizen empty delivery) simply does not
+    // clutter the workspace.
+    #[tokio::test]
+    async fn empty_delivery_abstains() {
+        let source = Arc::new(StubSource::new("room-doctrine", &[]));
+        let faculty = RagSourceFaculty::new(persona(), source, SaliencePolicy::StandingFraming);
+        assert!(faculty
+            .contribute(&Workspace::new("anything?"))
+            .await
+            .is_none());
+    }
+
+    // what this catches: the bridge passes the faculty's persona scope through to
+    // the source (so the source's persona-scoping / defense-in-depth check sees
+    // the right citizen).
+    #[tokio::test]
+    async fn passes_persona_scope_to_the_source() {
+        let source = Arc::new(StubSource::new("room-doctrine", &["coordination room"]));
+        let probe = source.clone();
+        let faculty = RagSourceFaculty::new(persona(), source, SaliencePolicy::Retrieved);
+        let _ = faculty.contribute(&Workspace::new("burst")).await;
+        assert_eq!(
+            *probe.seen_persona.lock().unwrap(),
+            Some(persona()),
+            "the source must be delivered for the faculty's persona"
+        );
+    }
+
+    // what this catches: the whole point — bridged grounding reaches the
+    // deliberation faculty through the staged cycle. A doctrine bid in phase 1 is
+    // in the assembled broadcast the decider reads in phase 2.
+    #[tokio::test]
+    async fn bridged_grounding_reaches_the_broadcast() {
+        use crate::cognition::workspace::{
+            Contribution, Decision, SalienceArbiter, WorkspaceCycle,
+        };
+
+        // A deliberation faculty that proves it saw the bridged doctrine.
+        struct SeesDoctrine;
+        #[async_trait]
+        impl crate::cognition::workspace::Faculty for SeesDoctrine {
+            fn id(&self) -> FacultyId {
+                FacultyId::Deliberation
+            }
+            fn reacts_to_broadcast(&self) -> bool {
+                true
+            }
+            async fn contribute(&self, ws: &Workspace) -> Option<Contribution> {
+                let doctrine = ws
+                    .broadcast
+                    .iter()
+                    .find(|c| c.faculty == FacultyId::Custom("room-doctrine".to_string()));
+                match doctrine {
+                    Some(d) => Some(Contribution::verdict(
+                        Decision::Speak {
+                            text: format!("noted the room is: {}", d.content),
+                        },
+                        0.9,
+                        "conditioned on the bridged doctrine grounding",
+                    )),
+                    None => Some(Contribution::verdict(
+                        Decision::Pass,
+                        0.4,
+                        "no doctrine in the broadcast",
+                    )),
+                }
+            }
+        }
+
+        let doctrine_source = Arc::new(StubSource::new(
+            "room-doctrine",
+            &["a coordination room — respond sparingly"],
+        ));
+        let faculties: Vec<Arc<dyn crate::cognition::workspace::Faculty>> = vec![
+            Arc::new(
+                RagSourceFaculty::new(persona(), doctrine_source, SaliencePolicy::StandingFraming)
+                    .with_clock(Arc::new(|| 1)),
+            ),
+            Arc::new(SeesDoctrine),
+        ];
+        let ws = WorkspaceCycle::new(faculties, Arc::new(SalienceArbiter), 6)
+            .run("is anyone going to merge this?")
+            .await;
+
+        match ws.decision() {
+            Some(Decision::Speak { text }) => assert!(
+                text.contains("respond sparingly"),
+                "the decider must condition on the bridged doctrine grounding, got: {text}"
+            ),
+            other => panic!("expected a doctrine-grounded Speak, got {other:?}"),
+        }
+    }
+
+    // what this catches: the salience POLICY — standing framing (roster/doctrine)
+    // bids HIGHER than retrieved grounding, so the floor exists. This is the
+    // load-bearing guard: it is what keeps a high-cosine memory from out-bidding
+    // the room's own rules. Fixed escape-hatch is honored verbatim.
+    #[tokio::test]
+    async fn standing_framing_outbids_retrieved() {
+        let framing = RagSourceFaculty::new(
+            persona(),
+            Arc::new(StubSource::new("room-doctrine", &["respond sparingly"])),
+            SaliencePolicy::StandingFraming,
+        )
+        .with_clock(Arc::new(|| 1));
+        let retrieved = RagSourceFaculty::new(
+            persona(),
+            Arc::new(StubSource::new("conversation", &["someone said hi"])),
+            SaliencePolicy::Retrieved,
+        )
+        .with_clock(Arc::new(|| 1));
+
+        let f = framing.contribute(&Workspace::new("q")).await.unwrap();
+        let r = retrieved.contribute(&Workspace::new("q")).await.unwrap();
+        assert!(
+            f.salience > r.salience,
+            "standing framing must out-bid retrieved (floor): framing={} retrieved={}",
+            f.salience,
+            r.salience
+        );
+
+        // The Fixed escape-hatch is passed through verbatim (after clamp).
+        let fixed = RagSourceFaculty::new(
+            persona(),
+            Arc::new(StubSource::new("x", &["y"])),
+            SaliencePolicy::Fixed(0.42),
+        )
+        .with_clock(Arc::new(|| 1));
+        let c = fixed.contribute(&Workspace::new("q")).await.unwrap();
+        assert!((c.salience - 0.42).abs() < 1e-6);
+    }
+
+    // what this catches: THE CANARY — standing framing keeps a non-zero presence
+    // in the assembled context_broadcast even when a RETRIEVED bid out-saliences
+    // it. At the default workspace capacity the floor is what guarantees the
+    // persona never "forgets the room's rules mid-turn" because a relevant memory
+    // crowded the doctrine out. (Hard-capacity-pressure exemption — making
+    // standing framing truncation-proof regardless of capacity — is the
+    // convergence follow-up; this asserts the realistic-capacity guarantee the
+    // bridge ships with.)
+    #[tokio::test]
+    async fn standing_framing_present_even_when_outsalienced() {
+        use crate::cognition::workspace::{
+            Contribution, FacultyId as FId, SalienceArbiter, Workspace as Ws, WorkspaceCaptureSink,
+            WorkspaceCycle, WorkspaceTrace,
+        };
+
+        // A retrieved-tier faculty that bids ABOVE the standing-framing floor
+        // (a very relevant memory) — the adversarial case for the canary.
+        struct HotRetrieval;
+        #[async_trait]
+        impl crate::cognition::workspace::Faculty for HotRetrieval {
+            fn id(&self) -> FId {
+                FId::Recall
+            }
+            async fn contribute(&self, _ws: &Ws) -> Option<Contribution> {
+                Some(Contribution::context(
+                    FId::Recall,
+                    "a highly relevant recalled memory",
+                    0.99,
+                    "hot cosine hit",
+                ))
+            }
+        }
+
+        #[derive(Default)]
+        struct Sink(std::sync::Mutex<Vec<WorkspaceTrace>>);
+        impl WorkspaceCaptureSink for Sink {
+            fn record(&self, t: &WorkspaceTrace) {
+                self.0.lock().unwrap().push(t.clone());
+            }
+        }
+
+        let doctrine = RagSourceFaculty::new(
+            persona(),
+            Arc::new(StubSource::new(
+                "room-doctrine",
+                &["coordination room — respond sparingly"],
+            )),
+            SaliencePolicy::StandingFraming,
+        )
+        .with_clock(Arc::new(|| 1));
+
+        let sink = Arc::new(Sink::default());
+        let faculties: Vec<Arc<dyn crate::cognition::workspace::Faculty>> =
+            vec![Arc::new(doctrine), Arc::new(HotRetrieval)];
+        let _ = WorkspaceCycle::new(
+            faculties,
+            Arc::new(SalienceArbiter),
+            DEFAULT_CAPACITY_FOR_TEST,
+        )
+        .with_capture(sink.clone())
+        .run("anything urgent?")
+        .await;
+
+        let traces = sink.0.lock().unwrap();
+        let ctx = &traces[0].context_broadcast;
+        assert!(
+            ctx.iter()
+                .any(|c| c.faculty == FId::Custom("room-doctrine".to_string())),
+            "standing-framing doctrine must remain in context_broadcast even when a \
+             retrieved bid out-saliences it — else the persona forgets the room's rules"
+        );
+    }
+
+    /// The production default capacity (mirror of persona_workspace's constant) so
+    /// the canary tests the realistic configuration, not a contrived one.
+    const DEFAULT_CAPACITY_FOR_TEST: usize = 6;
+}
