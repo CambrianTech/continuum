@@ -60,6 +60,19 @@ Every faculty is independently trainable and independently replaceable. No
 faculty is hardcoded; none is privileged; the LLM is just the current default
 backend for the reasoning faculty, swappable like any other.
 
+### 1.1 No privileged trait method
+
+The trait has **one** behavioural method — `contribute`. There is deliberately
+**no** `decide()` / `deliberate()` / `judge()`. A privileged decider method would
+re-create the gate *at the type level*: it would make "the thing that decides
+participation" a special kind of faculty the others answer to — the same
+anti-pattern as a Rust `if is_mentioned`, one layer up. Instead the deliberation
+faculty is a peer like any other; it just emits a [`Contribution`] that happens to
+carry a `Decision`. The verdict is data in the workspace, not a method on a
+caste. (`reacts_to_broadcast()` is **not** a behavioural method — it's a
+structural phase declaration, the cbar `needsRealTime()` analog; see §2.8.) This
+is `[[no-rust-gates-around-cognition]]` applied to the trait shape itself.
+
 ## 1.5. Better than a human — where silicon wins
 
 We are not simulating a human brain; we are building a **better one**, by dropping
@@ -224,6 +237,58 @@ arch must be the same, and that takes rigor:
   parallel, never multiplicative slowdown.** That's how superhuman doesn't become
   a slog.
 
+## 2.8. A reactive mind — attention routes information flow, slow faculties reconcile back in time
+
+Three framings sharpen §2.7, all from the same proven AR-vision *perspective*
+(cbar) — taken as perspective, **not template.** A true event-mind *inside* the
+LLM (interrupt-driven, continuous token-level cognition, **event-based
+attention** baked into the architecture) would need invasive model surgery — that
+is sentinel-ai's domain (new LLM classes), and it is a **real future target, not
+a discarded one:** building our own event-attention LLMs is the eventual endgame,
+deferred for later. For now we build the event-mind at the **orchestration
+layer**: independent emitters + salience routing + multi-cadence + temporal
+reconciliation, around LLM/ML faculties we don't have to rewrite. The
+orchestration-layer design is forward-compatible — when sentinel-ai produces an
+event-attention model, it slots in as a faculty backend; the Workspace/arbiter
+shape doesn't change.
+
+- **It's a reactive graph — faculties are React hooks.** A faculty isn't *called*
+  on a schedule; it *reacts* when the emissions/world-state it **depends on**
+  change — a `useEffect` with a dependency array, a derived signal that
+  recomputes when its upstream signals fire. The Workspace is the reactive store;
+  emitting a contribution updates a signal; subscribed faculties re-fire on the
+  deltas they care about. Declarative cause→effect, not an imperative chain. This
+  is *why* adding a faculty is free: it declares its own dependencies and joins
+  the graph; nothing else is rewired.
+
+- **Attention here routes the flow of information, not the weighting of tokens.**
+  In the AR pipeline a line-finder *emits* lines; a plane-analyzer *receives lines
+  from several emitters* and assembles them into planes (and watershed barriers).
+  The receiver pulls what is *salient to its job* from everything emitted — query
+  (what I need) against keys (what's been emitted). That selective pull across
+  many emitters is structurally an **attention mechanism over information flow.**
+  So the arbiter is not a *gate* that kills low-k bids — it is a **router** that
+  decides which emissions get *received into the next layer of assembly.* Cognition
+  has the same assembly hierarchy: recall-hits + affect-spikes + world-model-deltas
+  are emitted (the "lines"); higher-order faculties (deliberation, ToM) *receive
+  the salient subset and assemble* a decision (the "planes"). Emit → assemble →
+  emit, organically, no central scheduler.
+
+- **Slow faculties reconcile back in time.** A full-LLM faculty is *slow* — by the
+  time it emits, the room has moved on (new turns arrived, the burst grew). In the
+  AR system a CNN's result was **readjusted back in time** — reprojected onto the
+  motion track — so a late, expensive inference still aligned with current reality,
+  using the **history of features in space** kept for exactly this. The brain
+  analog: a slow deliberation/recall contribution is **re-anchored to the turn it
+  reasoned about and reconciled against the world-state that moved on** before it
+  is broadcast or acted — re-validated, re-targeted, or invalidated if reality
+  drifted past it. This is *why* the engram/RAG **turn-history is load-bearing:**
+  it is our "feature history in space," and it is what lets a slow deep faculty
+  participate without either blocking the fast loop or acting on a stale world.
+  Fast faculties keep the loop live (the optical-flow tier); slow faculties land
+  late and reconcile (the CNN tier). Both are first-class; neither waits on the
+  other.
+
 ## 3. Integration: a **Global Workspace**, not a pipeline
 
 Faculties do not run in a fixed `a→b→c` order with an `if` deciding the end.
@@ -275,6 +340,42 @@ account of agency we have.) This is the mechanism of free will:
   what they *mean to the persona's goals* (learned), never by a `Human=1.0,
   Persona=0.3` caste. A peer persona and a human and Claude are all just sources
   of evidence and value in the same model.
+
+## 3.5. Encourage creativity — exploration over greedy convergence
+
+A mind that always emits its single highest-salience bid is not creative — it's a
+thermostat. **Greedy top-k attention collapses to safe convergence:** the
+obvious, expected contribution wins every tick, and the divergent, novel,
+"no one asked but here's a better idea" bid gets truncated before it's ever
+heard. Encouraging creativity is therefore an **integration-layer constraint**,
+and it must be encoded without a hardcoded "be creative" rule (that would be a
+gate). Two principled levers, both already in the architecture:
+
+- **Epistemic value is creativity's engine (§3).** Active inference already
+  values *curiosity* — resolving uncertainty, exploring — alongside pragmatic
+  goal-achievement. A **Volition faculty** that scores epistemic value into the
+  salience it emits makes creative, exploratory bids *earn* attention on merit:
+  a novel idea with high information-gain bids high and wins. `RaiseUnprompted`
+  is the creative channel — initiative with no external trigger — and it is
+  first-class, equal to `Speak`. Creativity is not bolted on; it's the volition
+  faculty's epistemic drive surfacing into the workspace.
+- **The arbiter must not be greedy.** The bootstrap `SalienceArbiter` is pure
+  top-k — exploitation at temperature 0. Because the arbiter is **pluggable**, a
+  creative mind swaps in an **exploration-preserving** policy: reserve part of
+  attention's bounded capacity for high-epistemic-value / divergent bids so they
+  aren't deterministically crowded out by the safe maximum. This is the
+  exploration term of active inference and the softmax-temperature/UCB analog of
+  attention — *neuromodulated* (§4: affect sets the exploration↔exploitation
+  gain, so the same mind explores more when curious/energised, less under load).
+  It stays ML-driven: the faculties supply the value; the arbiter policy only
+  decides how much to explore. **No metric is invented prematurely** — until the
+  Volition faculty and an epistemic-value signal exist, this is a documented seam
+  on the `Arbiter` trait, not a half-built `ExplorationArbiter`.
+
+The discipline: creativity is *encouraged* by valuing curiosity (faculty
+salience) and by refusing greedy integration (arbiter policy) — never by a rule
+that says "sometimes say something random." Divergence that earns attention, not
+noise injected into a gate.
 
 ## 4. Neuromodulation: affect as **gain control**
 
@@ -396,6 +497,26 @@ a fraction of the cost:
 The deliberation faculty stays an LLM (for now). The brain never changes — only
 the backend behind a trait. That is the cutting edge this substrate is built for:
 not one frozen model, but a continually-specializing federation.
+
+**The adapter shape is proven (cbar `CBP_DeepModel`).** Joel's AR system ran
+N deep models (normals, shadows, semantic segmentation) behind one base class.
+Every subclass was *nothing but a `getModelInfo()`* — a declared I/O contract
+(name, type, input/output shape). The base owned all mechanism: lazy load on a
+**detached thread** (warm-up never stalls the loop), inference, benchmarking, and
+a session **mutex** ("one at a time"). Three lessons transfer verbatim to faculty
+backends:
+- **A model is *data*, not code.** Adding a specialist = declaring its contract,
+  not writing machinery. Same compression as the forge recipe-as-entity and the
+  `ai/*` adapter doctrine: mechanism in one place, model as a declaration.
+- **The session mutex is a resource lease.** Backends sharing the base model
+  can't all fire at once — they queue through the lease. This is continuum's
+  inference-lane/slot-pool scarcity (INFERENCE-LANES-REALISTIC), and it is *why*
+  multi-cadence (§2.8) is structural, not a nicety: you physically cannot run
+  every expensive faculty every tick.
+- **Cadence is measured, not guessed.** `getBenchmarkedDuration()` — each backend
+  times *itself*; the scheduler reads that observed cost to decide which faculties
+  run hot and which run cool. The §2.8 fast/slow tiers are *learned per-faculty
+  from cost*, the SubstrateGovernor/DVFS idea — present in 2018 AR code.
 
 ## 8. Map to what exists (build on, don't reinvent)
 

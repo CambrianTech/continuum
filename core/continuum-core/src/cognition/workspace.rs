@@ -173,7 +173,33 @@ impl Workspace {
 pub trait Faculty: Send + Sync {
     fn id(&self) -> FacultyId;
     /// Bid into the workspace given the current state. `None` = abstain.
+    ///
+    /// Called once in the faculty's phase (see [`Faculty::reacts_to_broadcast`]).
+    /// Perception faculties see an empty `ws.broadcast` (they react to the raw
+    /// world-state); deliberation faculties see the *assembled context* that won
+    /// attention in phase 1. A faculty's intelligence is entirely here — the
+    /// arbiter only integrates the salience it returns.
     async fn contribute(&self, ws: &Workspace) -> Option<Contribution>;
+
+    /// The faculty's **dependency / phase** in the staged cycle — the reactive
+    /// "what do I fire on" declaration (a faculty is a React hook; this is its
+    /// dependency array). This is the direct analog of cbar's `needsRealTime()`
+    /// bool that split real-time motion from delayed scene understanding: a
+    /// *structural* scheduling declaration, **not** a cognition gate.
+    ///
+    /// - `false` (default) — **perception tier**: reacts to the raw world-state,
+    ///   bids in phase 1 (recall, world-model, affect, salience, roster…).
+    /// - `true` — **deliberation tier**: reacts to the *assembled broadcast* (the
+    ///   context that won attention), bids in phase 2 so it can condition its
+    ///   [`Decision`] on what recall/world-model/affect actually surfaced.
+    ///
+    /// This is what makes "pull relevant memory, *then* decide" expressible: the
+    /// decider runs after, over the assembled context — cbar's lines→planes, GWT's
+    /// broadcast-then-rebid. It does NOT enumerate faculties or privilege a
+    /// decider; any faculty may be either tier.
+    fn reacts_to_broadcast(&self) -> bool {
+        false
+    }
 }
 
 /// Attention: selects which contributions enter the bounded workspace.
@@ -187,6 +213,17 @@ pub trait Arbiter: Send + Sync {
 }
 
 /// Top-k by ML salience within the workspace's bounded capacity.
+///
+/// This is the **bootstrap** policy: pure exploitation, attention at temperature
+/// 0 — the highest-salience bids always win. It is *greedy*, so on its own it
+/// collapses to safe convergence (the obvious bid wins every tick; divergent /
+/// creative bids get truncated). Encouraging creativity is an
+/// exploration-preserving arbiter policy that slots in here — reserve part of
+/// capacity for high-epistemic-value / divergent bids so they aren't crowded out
+/// (the active-inference exploration term; see PERSONA-BRAIN-ARCHITECTURE.md
+/// §3.5). It is a documented seam, NOT built yet — it waits on a Volition faculty
+/// that emits an epistemic-value signal, so no novelty metric is invented
+/// prematurely.
 pub struct SalienceArbiter;
 
 impl Arbiter for SalienceArbiter {
@@ -212,9 +249,14 @@ impl Arbiter for SalienceArbiter {
 #[derive(Debug, Clone)]
 pub struct WorkspaceTrace {
     pub world_state: String,
-    /// ALL bids this tick, winners and losers — the full competition.
+    /// ALL bids this tick, winners and losers, across BOTH phases — the full
+    /// competition (perception phase-1 context bids + deliberation phase-2 bids).
     pub bids: Vec<Contribution>,
-    /// What won attention and was broadcast.
+    /// The **assembled context** the deliberation faculty saw — what won attention
+    /// in phase 1 and was broadcast into phase 2. This is the glass-box answer to
+    /// "what context did the decider actually have?" (the RAG it reasoned over).
+    pub context_broadcast: Vec<Contribution>,
+    /// The final broadcast: the assembled context PLUS the deliberation output.
     pub broadcast: Vec<Contribution>,
     /// The participation decision that emerged, if any.
     pub decision: Option<Decision>,
@@ -267,18 +309,68 @@ impl WorkspaceCycle {
 
     /// Run one cognition tick over the consolidated `world_state`, recording the
     /// full trace (every bid incl. losers, what won, the decision) for replay.
+    ///
+    /// **Staged assembly** (cbar lines→planes / GWT broadcast-then-rebid):
+    /// 1. **Perception phase** — faculties with `reacts_to_broadcast() == false`
+    ///    bid in parallel over the raw world-state (broadcast still empty). The
+    ///    arbiter routes the salient subset into the broadcast: this is the
+    ///    *assembled context* (the "RAG" the decider will read).
+    /// 2. **Deliberation phase** — faculties with `reacts_to_broadcast() == true`
+    ///    bid in parallel over the workspace whose broadcast now holds the
+    ///    assembled context, so the [`Decision`] is conditioned on what recall /
+    ///    world-model / affect actually surfaced. Their bids append to the
+    ///    broadcast.
+    ///
+    /// This is what makes "pull relevant memory, *then* decide" real: the decider
+    /// is never blind to recall. Still one tick over the consolidated burst, still
+    /// `O(capacity)` for the bounded context — no per-event slowdown.
     pub async fn run(&self, world_state: impl Into<String>) -> Workspace {
         let mut ws = Workspace::new(world_state);
-        // Faculties bid in parallel over the same consolidated state.
-        let bids = join_all(self.faculties.iter().map(|f| f.contribute(&ws))).await;
-        let candidates: Vec<Contribution> = bids.into_iter().flatten().collect();
-        // Capture ALL bids (winners + losers) before the arbiter truncates —
-        // the losers are exactly what you need when debugging "why didn't X win?"
-        let all_bids = candidates.clone();
-        ws.broadcast = self.arbiter.select(candidates, self.capacity);
+
+        // --- Phase 1: perception. Context faculties react to the raw world-state. ---
+        let perception: Vec<&Arc<dyn Faculty>> = self
+            .faculties
+            .iter()
+            .filter(|f| !f.reacts_to_broadcast())
+            .collect();
+        let context_bids: Vec<Contribution> =
+            join_all(perception.iter().map(|f| f.contribute(&ws)))
+                .await
+                .into_iter()
+                .flatten()
+                .collect();
+        // Route the salient subset into the bounded workspace — the arbiter is the
+        // attention ROUTER over information flow, not a gate. The winners are the
+        // assembled context the deliberation faculty reasons over.
+        ws.broadcast = self.arbiter.select(context_bids.clone(), self.capacity);
+        let context_broadcast = ws.broadcast.clone();
+
+        // --- Phase 2: deliberation. Reacts to the assembled broadcast (it can now
+        // see what recall/world-model/affect surfaced) and emits the verdict. ---
+        let deliberation: Vec<&Arc<dyn Faculty>> = self
+            .faculties
+            .iter()
+            .filter(|f| f.reacts_to_broadcast())
+            .collect();
+        let decision_bids: Vec<Contribution> =
+            join_all(deliberation.iter().map(|f| f.contribute(&ws)))
+                .await
+                .into_iter()
+                .flatten()
+                .collect();
+        // The deliberation output is the RESULT of attending to the context, not a
+        // competitor for the bounded context spotlight — append it to the broadcast.
+        ws.broadcast.extend(decision_bids.iter().cloned());
+
+        // Capture the FULL competition: every bid across both phases (incl. the
+        // losers you need to debug "why didn't X win?"), the assembled context the
+        // decider saw, the final broadcast, and the decision.
+        let mut all_bids = context_bids;
+        all_bids.extend(decision_bids);
         self.capture.record(&WorkspaceTrace {
             world_state: ws.world_state.clone(),
             bids: all_bids,
+            context_broadcast,
             broadcast: ws.broadcast.clone(),
             decision: ws.decision().cloned(),
         });
@@ -311,6 +403,43 @@ mod tests {
         }
         async fn contribute(&self, _ws: &Workspace) -> Option<Contribution> {
             None
+        }
+    }
+
+    /// A deliberation faculty that CONDITIONS its decision on the assembled
+    /// broadcast: it speaks (referencing what it saw) only if recall surfaced
+    /// something; otherwise it passes. This is the probe for staged assembly —
+    /// under the old single-pass join_all it would always see an empty broadcast
+    /// and could never be informed by recall.
+    struct ConditionalDeliberation;
+    #[async_trait]
+    impl Faculty for ConditionalDeliberation {
+        fn id(&self) -> FacultyId {
+            FacultyId::Deliberation
+        }
+        fn reacts_to_broadcast(&self) -> bool {
+            true
+        }
+        async fn contribute(&self, ws: &Workspace) -> Option<Contribution> {
+            // Look at the assembled context that won attention in phase 1.
+            let recalled = ws
+                .broadcast
+                .iter()
+                .find(|c| c.faculty == FacultyId::Recall);
+            match recalled {
+                Some(mem) => Some(Contribution::verdict(
+                    Decision::Speak {
+                        text: format!("informed by recall: {}", mem.content),
+                    },
+                    0.9,
+                    "conditioned the reply on the recalled context",
+                )),
+                None => Some(Contribution::verdict(
+                    Decision::Pass,
+                    0.5,
+                    "blind — no context in the broadcast",
+                )),
+            }
         }
     }
 
@@ -490,5 +619,110 @@ mod tests {
             "the loser bid + its salience + reasoning are replayable for debugging"
         );
         assert_eq!(t.decision, Some(Decision::Speak { text: "winner".into() }));
+    }
+
+    // what this catches: STAGED ASSEMBLY — the deliberation faculty conditions its
+    // Decision on what recall surfaced in phase 1. This is the coherence fix: "pull
+    // relevant memory, THEN decide." Under the old single-pass join_all the decider
+    // bid over an EMPTY broadcast and could never be informed by recall.
+    #[tokio::test]
+    async fn deliberation_sees_the_recall_that_won_phase_one() {
+        let faculties: Vec<Arc<dyn Faculty>> = vec![
+            // Phase 1 (perception): recall surfaces a memory with strong salience.
+            Arc::new(FixedFaculty(Contribution::context(
+                FacultyId::Recall,
+                "deploy pipeline is red",
+                0.8,
+                "recalled the open blocker",
+            ))),
+            // Phase 2 (deliberation): reacts to the assembled broadcast.
+            Arc::new(ConditionalDeliberation),
+        ];
+        let ws = cycle(faculties, 5).run("what's the status?").await;
+        match ws.decision() {
+            Some(Decision::Speak { text }) => assert!(
+                text.contains("deploy pipeline is red"),
+                "the decider must condition on recall it saw, got: {text}"
+            ),
+            other => panic!("expected an informed Speak, got {other:?} — decider was blind to recall"),
+        }
+    }
+
+    // what this catches: the trace exposes the ASSEMBLED CONTEXT the decider saw
+    // (context_broadcast) separately from the final broadcast — the glass-box
+    // answer to "what RAG did the mind reason over?" — and the deliberation output
+    // is appended, not competing for the bounded context spotlight.
+    #[tokio::test]
+    async fn trace_separates_assembled_context_from_deliberation_output() {
+        let sink = Arc::new(RecordingSink::default());
+        let faculties: Vec<Arc<dyn Faculty>> = vec![
+            Arc::new(FixedFaculty(Contribution::context(
+                FacultyId::Recall,
+                "deploy pipeline is red",
+                0.8,
+                "recalled",
+            ))),
+            Arc::new(ConditionalDeliberation),
+        ];
+        let _ws = WorkspaceCycle::new(faculties, Arc::new(SalienceArbiter), 5)
+            .with_capture(sink.clone())
+            .run("status?")
+            .await;
+
+        let traces = sink.0.lock().unwrap();
+        let t = &traces[0];
+        // The assembled context is exactly the phase-1 recall winner.
+        assert_eq!(t.context_broadcast.len(), 1);
+        assert_eq!(t.context_broadcast[0].faculty, FacultyId::Recall);
+        // The final broadcast holds the context PLUS the deliberation verdict.
+        assert_eq!(t.broadcast.len(), 2, "assembled context + deliberation output");
+        assert!(t.broadcast.iter().any(|c| c.decision.is_some()), "verdict appended");
+        // Both phases' bids are in the full competition record.
+        assert_eq!(t.bids.len(), 2);
+    }
+
+    // what this catches: a perception faculty does NOT bid in the deliberation
+    // phase (reacts_to_broadcast == false), and a deliberation faculty does NOT
+    // bid in the perception phase — each faculty fires once, in its tier. This is
+    // the cbar needsRealTime() split: no double inference.
+    #[tokio::test]
+    async fn faculties_fire_only_in_their_declared_phase() {
+        // A faculty that records how many times it was asked to contribute, and in
+        // what broadcast state, so we can prove single-phase firing.
+        struct CountingDeliberation(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+        #[async_trait]
+        impl Faculty for CountingDeliberation {
+            fn id(&self) -> FacultyId {
+                FacultyId::Deliberation
+            }
+            fn reacts_to_broadcast(&self) -> bool {
+                true
+            }
+            async fn contribute(&self, ws: &Workspace) -> Option<Contribution> {
+                self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                // If we are ever called, the broadcast must be populated (phase 2).
+                assert!(
+                    !ws.broadcast.is_empty(),
+                    "deliberation must only fire after phase 1 assembled context"
+                );
+                Some(Contribution::verdict(Decision::Pass, 0.5, "noted"))
+            }
+        }
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let faculties: Vec<Arc<dyn Faculty>> = vec![
+            Arc::new(FixedFaculty(Contribution::context(
+                FacultyId::WorldModel,
+                "ctx",
+                0.7,
+                "perception",
+            ))),
+            Arc::new(CountingDeliberation(calls.clone())),
+        ];
+        let _ws = cycle(faculties, 5).run("burst").await;
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "deliberation faculty fired exactly once, in its phase"
+        );
     }
 }
