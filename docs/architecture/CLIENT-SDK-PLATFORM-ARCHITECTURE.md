@@ -113,6 +113,26 @@ SDKs.
    `flutter_rust_bridge`. Slightly more indirection, but one binding reused
    everywhere — the matrix-rust-sdk distribution shape.
 
+## The TypeScript / web layer (most non-Rust code — still generation-first)
+
+The Node/TS world will hold the **most non-Rust code** — because the UI is rich —
+but the same law applies: logic concentrates in Rust, TS stays a boundary +
+presentation layer.
+
+- **`sdk/typescript` = the web boundary, generated-first.** As much **ts-rs** as we
+  can get away with (types come from Rust, never hand-written); hand-written TS only
+  for what generation can't cover. Its job is to make the web boundary
+  *straightforward* — not to hold logic.
+- **It's `/shared`.** Because we chose TS, the boundary types + helpers are
+  environment-agnostic and reused across **frontend AND backend** (the
+  `shared/browser/server` tier — `shared/` imports neither browser nor server).
+  One type definition, both sides. This is the specific payoff of TS for the web
+  embodiment that the native SDKs don't get.
+- **The UI mass lives in the app, not the SDK.** `apps/web` holds the widgets, DOM,
+  rendering, presentation; `apps/desktop` (Tauri) wraps that same UI. The SDK stays
+  thin; the app is where the platform's "most code" legitimately accumulates — but
+  it's UI, not substrate logic.
+
 ## Toolchain reality (who can build what)
 
 The native-glue lane splits by **toolchain**, not just intent — Apple artifacts
