@@ -13,7 +13,7 @@
 //! supplies the unified memory + identity + faculties.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use uuid::Uuid;
 
@@ -115,6 +115,18 @@ impl PersonaWorkspaceRegistry {
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
+}
+
+/// Process-global persona-workspace registry. One per process; persona minds are
+/// assembled into it at spawn (`supervisor::materialize_adapters`) and resolved
+/// from it by the `ai/should-respond` ServiceModule. Same pattern as
+/// `modules::ai_provider::global_registry()` — the shared seam between the spawn
+/// path that builds minds and the command path that runs them.
+pub fn global() -> Arc<PersonaWorkspaceRegistry> {
+    static GLOBAL: OnceLock<Arc<PersonaWorkspaceRegistry>> = OnceLock::new();
+    GLOBAL
+        .get_or_init(|| Arc::new(PersonaWorkspaceRegistry::new()))
+        .clone()
 }
 
 #[cfg(test)]

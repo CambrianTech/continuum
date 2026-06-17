@@ -510,6 +510,26 @@ pub async fn materialize_adapters(
 
         let system_prompt = build_persona_system_prompt(&identity.agent_name);
 
+        // Assemble this persona's continuous mind into the process-global
+        // workspace registry — ONE WorkspaceCycle per persona, keyed by
+        // persona_id (the "one soul, many rooms" invariant, PERSONA-BRAIN-
+        // ARCHITECTURE.md §2.9). The shared hippocampus (cognition.admission)
+        // and the persona's inference adapter are leased into its faculties.
+        // Cheap (no model load — the adapter lazy-loads on first inference).
+        // Additive: makes `ai/should-respond` resolvable for this persona; does
+        // NOT change the existing service-loop decision path (heuristics stay
+        // live until the coordinated cutover).
+        crate::cognition::persona_workspace::global().get_or_build(
+            crate::cognition::persona_workspace::PersonaBrainConfig {
+                persona_id: identity.persona_id,
+                persona_name: identity.agent_name.to_string(),
+                system_prompt: system_prompt.to_string(),
+                admission: cognition.admission.clone(),
+                adapter: adapter.clone(),
+                capacity: None,
+            },
+        );
+
         out.push(Ok(PersonaContext {
             role: plan.role,
             identity,
