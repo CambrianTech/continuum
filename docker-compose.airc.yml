@@ -106,6 +106,21 @@ services:
       # symlink reachable from continuum-core (which mounts the SAME volume at the
       # SAME path).
       - airc-ipc:/node/.airc
+    # ROUTABILITY (BigMama's #1661 transport review): the default dial-out path
+    # converges WITHOUT inbound reachability — a gist-discovered peer the daemon
+    # dials carries BOTH directions over one TLS connection (lan_tcp keys it by
+    # PeerId, tokio::io::split), so the peer replies on it without ever dialing the
+    # container back. Same-LAN (the 5090 validation) converges as-is. The only
+    # residual is a BOUNDED LATENCY window: a peer that dials the container FIRST
+    # hits the unroutable bridge IP until the container's next route-refresh dial
+    # cycle (#1229) establishes the link — convergence, just delayed. For
+    # lowest-latency cross-host or the both-behind-NAT edge, make the endpoint
+    # genuinely routable by sharing the host network namespace:
+    #   network_mode: host    # airc-node advertises the host LAN/Tailscale IP
+    # (then drop the AIRC_ADVERTISE_IP override — `hostname -i` resolves the host
+    # IP). Left OFF by default: bridge networking keeps the node isolated and
+    # dial-out converges for the stated same-LAN case. Tailscale-in-container is
+    # the other option for WAN.
     healthcheck:
       # Gate on the EXACT thing core needs: the stable symlink resolving to a live
       # socket (`test -S` follows the symlink) AND the daemon answering status.
