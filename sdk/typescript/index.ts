@@ -23,10 +23,11 @@ export type { HandleEventHandlers } from './Handle';
 export type {
   Transport,
   Target,
+  SessionIdentity,
   Subscription,
   Registration,
   RawCommandHandler,
   RawEventHandlers,
 } from './transport';
-export { buildCommandUri, buildEventTopic } from './transport';
+export { buildCommandUri, buildEventTopic, stampContext } from './transport';
 export type { CommandMap, CommandName, EventMap, EventClass } from './generated/CommandMap';

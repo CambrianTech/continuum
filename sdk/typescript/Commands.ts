@@ -13,16 +13,27 @@
  */
 
 import type { Transport, Registration, Target } from './transport';
-import { buildCommandUri } from './transport';
+import { buildCommandUri, stampContext } from './transport';
 import type { CommandMap, CommandName } from './generated/CommandMap';
 
 export class Commands {
-  constructor(private readonly transport: Transport) {}
+  /**
+   * @param transport the facade binding
+   * @param contextId the conversation/room scope this client is bound to (set by
+   *   `Continuum.scoped(ctx)`); when present, `execute` stamps it into the request
+   *   envelope as the `contextId` sibling — the third ID tier — so callers never
+   *   re-thread the scope. Mirrors `continuum-client`'s `CommandClient`.
+   */
+  constructor(
+    private readonly transport: Transport,
+    private readonly contextId?: string,
+  ) {}
 
   /**
    * CALL a command. The name literal infers params + result; `target` is the
    * cross-environment selector (omitted = local; `{peer, env:'web'}` etc.).
    * `execute('data/list', { collection })` → `Promise<DataListResult>`.
+   * When this client is scoped, `contextId` is stamped into the envelope.
    */
   async execute<K extends CommandName>(
     name: K,
@@ -30,7 +41,8 @@ export class Commands {
     target?: Target,
   ): Promise<CommandMap[K]['result']> {
     const uri = buildCommandUri(name, target);
-    const resultJson = await this.transport.execute(uri, JSON.stringify(params));
+    const envelope = stampContext(params, this.contextId);
+    const resultJson = await this.transport.execute(uri, JSON.stringify(envelope));
     return JSON.parse(resultJson) as CommandMap[K]['result'];
   }
 

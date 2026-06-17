@@ -8,12 +8,13 @@
  * contract; if it is, every twin proves it. Pinned in TS first because the loop is
  * instant (`vitest --watch`) against a daemon-free MockTransport.
  *
- * The contract has FIVE sections, each a conformance dimension:
+ * The contract has SIX sections, each a conformance dimension:
  *   1. Addressing      — name + Target → the airc:// URI / event topic (pure, total)
  *   2. Commands        — execute (call) + provide (serve): serialize-once fidelity
  *   3. Events          — subscribe (listen) + emit (publish): source, filter, sequence, teardown
  *   4. Handle          — addressable resource: ops + event stream + close route to one URI
  *   5. Timing          — the SDK is a thin skin; the hot path is ~free (optimization-first)
+ *   6. Sessions        — session() identity + scoped(context) auto-stamps the third ID tier
  *
  * Mirroring guide for the native twins: each `it(...)` is one contract clause.
  * Keep the clause text identical across languages so a reviewer can diff suites.
@@ -30,6 +31,7 @@ import type {
   RawCommandHandler,
   Subscription,
   Registration,
+  SessionIdentity,
 } from './transport';
 
 /**
@@ -44,10 +46,18 @@ class MockTransport implements Transport {
   unsubscribed = 0;
   emitted: Array<{ eventClass: string; payloadJson: string }> = [];
   lastHandlers?: RawEventHandlers;
+  identity: SessionIdentity = {};
   private nextResult = '{}';
 
   willReturn(json: string) {
     this.nextResult = json;
+  }
+  withIdentity(identity: SessionIdentity) {
+    this.identity = identity;
+    return this;
+  }
+  session(): SessionIdentity {
+    return this.identity;
   }
   async execute(command: string, paramsJson: string): Promise<string> {
     this.executed.push({ command, paramsJson });
@@ -271,5 +281,60 @@ describe('5. timing — the hot path is ~free', () => {
     const start = performance.now();
     for (let i = 0; i < 100_000; i++) buildEventTopic('grid:peer:joined', { peer: 'p1' });
     expect(performance.now() - start).toBeLessThan(50);
+  });
+});
+
+// ─── 6. Sessions (identity + scoped context — the third ID tier) ─────────────────
+//
+// The ID hierarchy is userId > sessionId > contextId, uniform across EVERY client
+// and persona ("first class citizens and all"). Identity (userId/sessionId) is
+// surfaced, never fabricated, and never stamped client-side (kernel-injected from
+// the connection — the no-forged-identity guarantee). Only contextId is
+// client-supplied, via scoped(), and it auto-stamps the envelope. A persona's tool
+// executor is just a scoped client — same shape as a browser tab.
+
+describe('6. sessions — session() identity + scoped(context)', () => {
+  it('session: surfaces the established identity (never fabricated)', () => {
+    const unknown = Continuum.connect(new MockTransport());
+    expect(unknown.session).toEqual({});
+    expect(unknown.context).toBeUndefined();
+
+    const known = Continuum.connect(
+      new MockTransport().withIdentity({ userId: 'u1', sessionId: 's1' }),
+    );
+    expect(known.session).toEqual({ userId: 'u1', sessionId: 's1' });
+  });
+
+  it('scoped: execute auto-stamps contextId into the command envelope', async () => {
+    const t = new MockTransport();
+    const c = Continuum.connect(t).scoped('room-7');
+    await c.commands.execute('data/list', { collection: 'users' });
+    expect(JSON.parse(t.executed[0].paramsJson)).toEqual({
+      collection: 'users',
+      contextId: 'room-7',
+    });
+  });
+
+  it('scoped: emit auto-stamps contextId into the event payload', async () => {
+    const t = new MockTransport();
+    const c = Continuum.connect(t).scoped('room-7');
+    await c.events.emit('data:users:created', { id: 'u1' });
+    expect(JSON.parse(t.emitted[0].payloadJson)).toEqual({ id: 'u1', contextId: 'room-7' });
+  });
+
+  it('unscoped: no contextId is stamped (scope is opt-in)', async () => {
+    const t = new MockTransport();
+    const c = Continuum.connect(t);
+    await c.commands.execute('ping', { message: 'hi' });
+    expect(JSON.parse(t.executed[0].paramsJson)).toEqual({ message: 'hi' });
+  });
+
+  it('scoped: carries identity forward + leaves the parent unscoped', async () => {
+    const t = new MockTransport().withIdentity({ userId: 'u1', sessionId: 's1' });
+    const c = Continuum.connect(t);
+    const room = c.scoped('room-7');
+    expect(room.session).toEqual({ userId: 'u1', sessionId: 's1' });
+    expect(room.context).toBe('room-7');
+    expect(c.context).toBeUndefined();
   });
 });
