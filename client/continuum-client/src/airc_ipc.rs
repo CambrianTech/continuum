@@ -145,7 +145,7 @@ impl AircIpcTransport {
 
 #[async_trait]
 impl Transport for AircIpcTransport {
-    async fn request(&self, command: &str, params: Value) -> Result<Value, ClientError> {
+    async fn execute(&self, command: &str, params: Value) -> Result<Value, ClientError> {
         if self.closed.load(Ordering::Relaxed) {
             return Err(ClientError::Closed);
         }

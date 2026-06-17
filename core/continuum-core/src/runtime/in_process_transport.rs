@@ -98,7 +98,7 @@ fn command_result_to_value(command: &str, result: CommandResult) -> Result<Value
 
 #[async_trait]
 impl Transport for InProcessTransport {
-    async fn request(&self, command: &str, params: Value) -> Result<Value, ClientError> {
+    async fn execute(&self, command: &str, params: Value) -> Result<Value, ClientError> {
         if self.closed.load(Ordering::Relaxed) {
             return Err(ClientError::Closed);
         }
@@ -248,14 +248,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn request_after_close_errors() {
+    async fn execute_after_close_errors() {
         let registry = Arc::new(ModuleRegistry::new());
         registry.register(Arc::new(EchoModule));
         let executor = Arc::new(CommandExecutor::new(registry));
         let transport = InProcessTransport::new(executor, None);
 
         transport.close().await.expect("first close ok");
-        let err = transport.request("echo/run", json!({})).await.unwrap_err();
+        let err = transport.execute("echo/run", json!({})).await.unwrap_err();
         assert!(matches!(err, ClientError::Closed));
     }
 
