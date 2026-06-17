@@ -530,6 +530,49 @@ async fn serve_persona_loop_inner(
                 }
             })
             .collect();
+
+        // The consolidated burst the WorkspaceCycle reasons over — a stream of
+        // inbox items WITH their metadata (WHO + WHEN + WHAT), not bare text. A
+        // mind needs who-said-what-and-when to follow the thread and avoid
+        // repeating itself — "given this RAG, do I have what I need?" (the persona
+        // must see its OWN posts too, attributed, or it's a goldfish). WHERE = the
+        // room header; the persona's MEMORIES are injected separately by the
+        // WorkspaceCycle's RecallFaculty. Other modalities (game moves, etc.) ride
+        // the same seam carrying their own metadata. Built here where the item
+        // metadata is still intact. (Self-echo is safe: own posts never TRIGGER a
+        // turn — the `msg.peer_id == own` filter above — only inform context.)
+        let own_peer = ctx.identity.peer_id.to_string();
+        let workspace_burst: String = {
+            use std::fmt::Write as _;
+            let mut b = String::new();
+            let _ = writeln!(b, "[room {}]", ctx.identity.default_room);
+            for item in composed
+                .deliveries
+                .iter()
+                .filter(|d| d.source_id == "airc")
+                .flat_map(|d| d.items.iter())
+            {
+                let who_raw = item
+                    .metadata
+                    .get("peer_id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("peer");
+                let who = if who_raw == own_peer {
+                    ctx.identity.agent_name.as_str()
+                } else {
+                    who_raw
+                };
+                match item.metadata.get("occurred_at_ms").and_then(|v| v.as_u64()) {
+                    Some(t) => {
+                        let _ = writeln!(b, "[t={t}] {who}: {}", item.content);
+                    }
+                    None => {
+                        let _ = writeln!(b, "{who}: {}", item.content);
+                    }
+                }
+            }
+            b
+        };
         // Project the room-roster delivery into TWO consumers from the
         // ONE source of truth (the roster delivery), routed by source_id:
         //   • `room_roster` — the formatted `name [runtime] — avail`
@@ -643,63 +686,89 @@ async fn serve_persona_loop_inner(
         // `[[jtag-probes-are-rtos-debugger]]`: every meaningful seam
         // should emit timing on the same wire so multi-persona
         // optimization campaigns work from one probe stream.
+        // === GATING CUTOVER (task #9): the decision AND the response now come
+        // from the persona's WorkspaceCycle (the brain) — NOT the heuristic
+        // calculate_priority / fast_path_decision_core path. We resolve the
+        // per-persona cycle (registered at spawn), run it over the consolidated
+        // burst, and take its `Decision` as the turn. The model judges whether to
+        // speak; Rust no longer gates cognition ([[no-rust-gates-around-cognition]]).
+        // respond() remains a defensive fallback ONLY when no cycle is registered
+        // (should not happen) so no persona goes mute during the transition.
+        //
+        // The burst INCLUDES the persona's OWN prior posts, ATTRIBUTED by name — a
+        // mind must see what IT said to follow context and avoid repeating itself.
+        // The self-talk loop is prevented upstream, not by hiding own posts: a
+        // persona's own message never TRIGGERS a turn (the `msg.peer_id == own`
+        // filter above), so including own posts purely as read-context is safe.
         let respond_started = std::time::Instant::now();
-        let response_result = crate::time_probe!(
-            "persona.respond",
-            crate::persona::response::respond(respond_input)
-        );
-        phase_timings.respond_ms = respond_started.elapsed().as_millis() as u64;
-        let response = match response_result {
-            Ok(r) => r,
-            Err(e) => {
-                tracing::warn!(
-                    lamport = msg.lamport,
-                    error = %e,
-                    "respond cycle failed"
-                );
-                // RTOS-debugger breakpoint: turn failed somewhere
-                // inside the cognition cycle. Pair with the inner
-                // `persona.response.enter` probe (same persona +
-                // message_id) to find which stage threw.
-                crate::probe!(
-                    class = "persona.turn.error",
-                    persona = %ctx.identity.agent_name,
-                    lamport = msg.lamport,
-                    stage = "respond",
-                    error = %e,
-                    "respond cycle failed"
-                );
-                outcome.turns_errored += 1;
-                continue;
+        let response_text = match crate::cognition::persona_workspace::global()
+            .get(&ctx.identity.persona_id)
+        {
+            Some(cycle) => {
+                // Run the mind over the metadata-rich burst built above
+                // (WHO/WHEN/WHAT per inbox item, own posts attributed, room as the
+                // WHERE). Recall (the persona's own memories) is injected by the
+                // RecallFaculty inside the cycle — so "given this RAG, do I have
+                // what I need?" is: this burst + recalled memory.
+                let ws = cycle.run(workspace_burst).await;
+                phase_timings.respond_ms = respond_started.elapsed().as_millis() as u64;
+                match ws.decision() {
+                    Some(crate::cognition::workspace::Decision::Speak { text })
+                    | Some(crate::cognition::workspace::Decision::RaiseUnprompted { text }) => {
+                        text.clone()
+                    }
+                    Some(crate::cognition::workspace::Decision::Pass) | None => {
+                        tracing::info!(
+                            lamport = msg.lamport,
+                            "persona chose silence (workspace) — substrate honors decision"
+                        );
+                        crate::probe!(
+                            class = "persona.turn.silent",
+                            persona = %ctx.identity.agent_name,
+                            lamport = msg.lamport,
+                            reason = "workspace-pass",
+                            "persona chose silence"
+                        );
+                        outcome.turns_skipped += 1;
+                        continue;
+                    }
+                }
             }
-        };
-
-        let response_text = match response {
-            crate::persona::response::PersonaResponse::Silent { reason, .. } => {
-                tracing::info!(
-                    lamport = msg.lamport,
-                    reason = %reason,
-                    "persona chose silence — substrate honors decision"
+            None => {
+                // Defensive fallback: no WorkspaceCycle registered (should not
+                // happen — the supervisor registers one at spawn). Use the legacy
+                // respond() path so the persona isn't mute.
+                let response_result = crate::time_probe!(
+                    "persona.respond",
+                    crate::persona::response::respond(respond_input)
                 );
-                // RTOS-debugger breakpoint: persona chose silence as
-                // its own cognitive output (the canonical
-                // PersonaResponse::Silent path, not the substrate
-                // skipping the turn). The `reason` field is the
-                // persona's own explanation — load-bearing for
-                // diagnosing "why didn't this persona respond?"
-                // vs "why is no persona responding to anything?"
-                // (which is a cognition.analyze.parse signal).
-                crate::probe!(
-                    class = "persona.turn.silent",
-                    persona = %ctx.identity.agent_name,
-                    lamport = msg.lamport,
-                    reason = %reason,
-                    "persona chose silence"
-                );
-                outcome.turns_skipped += 1;
-                continue;
+                phase_timings.respond_ms = respond_started.elapsed().as_millis() as u64;
+                match response_result {
+                    Ok(crate::persona::response::PersonaResponse::Spoke { text, .. }) => text,
+                    Ok(crate::persona::response::PersonaResponse::Silent { reason, .. }) => {
+                        tracing::info!(
+                            lamport = msg.lamport,
+                            reason = %reason,
+                            "persona chose silence (legacy fallback)"
+                        );
+                        outcome.turns_skipped += 1;
+                        continue;
+                    }
+                    Err(e) => {
+                        tracing::warn!(lamport = msg.lamport, error = %e, "respond cycle failed");
+                        crate::probe!(
+                            class = "persona.turn.error",
+                            persona = %ctx.identity.agent_name,
+                            lamport = msg.lamport,
+                            stage = "respond",
+                            error = %e,
+                            "respond cycle failed"
+                        );
+                        outcome.turns_errored += 1;
+                        continue;
+                    }
+                }
             }
-            crate::persona::response::PersonaResponse::Spoke { text, .. } => text,
         };
 
         // Per #195 slice 1: time the airc publish + downstream ack.
