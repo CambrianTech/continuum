@@ -14,11 +14,15 @@ Everything is the two primitives ([[command-event-decision-rule]]), each
 ```
 execute(command: &str, params_json: &str) -> Result<String, FfiError>   // Command: CALL
 provide(command: &str, handler: CommandHandler) -> Registration         // Command: SERVE (client-provided)
-subscribe(class: &str, callback: EventCallback) -> Subscription          // Event: subscribe (Drop = unsubscribe)
+subscribe(class: &str, callback: EventCallback) -> Subscription          // Event: SUBSCRIBE (Drop = unsubscribe)
+emit(class: &str, payload_json: &str) -> Result<(), FfiError>            // Event: EMIT (publish)
 ```
 
-(`#1663` shipped `execute` + `subscribe`; `provide` is the serve-side primitive the
-facade still needs — see "Commands are bidirectional" below.)
+FOUR facade methods = two primitives × two directions. `#1663` shipped `execute` +
+`subscribe`; **`provide` (serve) + `emit` (publish) are the facade gaps** — bind all
+four in one uniffi `.udl` pass so the native binding is complete in one shot. The
+TS SDK splits them by primitive: `Commands` (`execute` + `provide`), `Events`
+(`subscribe` + `emit`) — the CLAUDE.md two-primitives file split.
 
 A typed SDK method is a thin wrapper over `execute`/`subscribe`:
 

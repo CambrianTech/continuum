@@ -1,0 +1,78 @@
+/**
+ * transport — the facade binding the typed SDK rides on.
+ *
+ * The substrate has exactly TWO primitives, each BIDIRECTIONAL (SDK-API-SURFACE.md):
+ *   Commands = execute (call) + provide (serve)
+ *   Events   = emit    (publish) + subscribe (listen)
+ * => FOUR facade methods. The Rust FFI facade (`client/continuum-client-ffi`,
+ * #1663) shipped `execute` + `subscribe`; `provide` + `emit` are the serve/publish
+ * sides still being bound (flag to the facade owner — bind all four in one .udl
+ * pass so the native binding is complete in one shot).
+ *
+ * This is the ONLY layer that touches bytes (JSON strings at the boundary). The
+ * typed Commands/Events classes are thin generics over it; all logic is in the
+ * Rust lib ([[headless-core-many-clients]]).
+ */
+
+/** The facade binding — wasm-bindgen(continuum-client) in browser, RustCoreIPC
+ *  wire when the core is remote. JSON at the boundary; generic-free. */
+export interface Transport {
+  /** Command CALL: execute(command, params_json) -> result_json. (#1663) */
+  execute(command: string, paramsJson: string): Promise<string>;
+  /** Command SERVE: register a handler this client provides. (facade gap) */
+  provide(command: string, handler: RawCommandHandler): Registration;
+  /** Event LISTEN: subscribe(class, callback) -> Subscription. (#1663) */
+  subscribe(eventClass: string, handlers: RawEventHandlers): Subscription;
+  /** Event PUBLISH: emit(class, payload_json). (facade gap) */
+  emit(eventClass: string, payloadJson: string): Promise<void>;
+}
+
+/** Raw (JSON-string) command handler — the facade's inbound-handler shape. */
+export interface RawCommandHandler {
+  handle(paramsJson: string): Promise<string>;
+}
+
+/** Raw (JSON-string) event handlers — the facade's `EventCallback` shape. */
+export interface RawEventHandlers {
+  onEvent(json: string): void;
+  onError?(message: string): void;
+  onClosed?(): void;
+}
+
+/** A live subscription; `unsubscribe()` tears it down (facade Drop). */
+export interface Subscription {
+  unsubscribe(): void;
+}
+
+/** A registered command provision; `remove()` deregisters it (facade Drop). */
+export interface Registration {
+  remove(): void;
+}
+
+/**
+ * WHERE a command runs — the cross-environment dimension. Projects onto the redone
+ * command addressing (`CommandUri`/`RouteDecision`, `core/src/routing/`):
+ * `airc://[peer[@node]][:env]/path`. The SDK builds the URI; the core's
+ * `RouteDecision` resolves local-walk / airc-to-peer / room fan-out (and, when
+ * multi-hop lands, forwards across grid routers — no surface change).
+ *
+ * - omitted → Local (caller's own substrate; bare path, back-compatible).
+ * - `{peer, node?, env?}` → a citizen; `env` = WHICH embodiment ('web'|'vr'|…).
+ * - `{room, env?}` → fan-out to subscribers.
+ * - `env: '*'` on a peer → every embodiment (broadcast).
+ */
+export type Target =
+  | { peer: string; node?: string; env?: string }
+  | { room: string; env?: string };
+
+/** Build the redone airc:// command URI from a name + optional target. */
+export function buildCommandUri(name: string, target?: Target): string {
+  if (!target) return name; // Local — bare path
+  if ('room' in target) {
+    const env = target.env ? `:${target.env}` : '';
+    return `airc://room:${target.room}${env}/${name}`;
+  }
+  const node = target.node ? `@${target.node}` : '';
+  const env = target.env ? `:${target.env}` : '';
+  return `airc://${target.peer}${node}${env}/${name}`;
+}
