@@ -372,6 +372,13 @@ impl Model {
             KvCacheType::F16 => sys::ggml_type_GGML_TYPE_F16,
             KvCacheType::Q8_0 => sys::ggml_type_GGML_TYPE_Q8_0,
         };
+        ffi.embeddings = params.embeddings;
+        ffi.pooling_type = match params.pooling_type {
+            PoolingType::None => sys::llama_pooling_type_LLAMA_POOLING_TYPE_NONE,
+            PoolingType::Mean => sys::llama_pooling_type_LLAMA_POOLING_TYPE_MEAN,
+            PoolingType::Cls => sys::llama_pooling_type_LLAMA_POOLING_TYPE_CLS,
+            PoolingType::Last => sys::llama_pooling_type_LLAMA_POOLING_TYPE_LAST,
+        };
 
         let raw = unsafe { sys::llama_new_context_with_model(self.ptr.as_ptr(), ffi) };
         let ctx = NonNull::new(raw).ok_or_else(|| "failed to create context".to_string())?;
@@ -574,6 +581,30 @@ pub struct ContextParams {
     pub type_k: KvCacheType,
     /// KV cache element type for V. Default `F16` (lossless).
     pub type_v: KvCacheType,
+    /// Put the context into EMBEDDING mode (`llama_context_params.embeddings`).
+    /// Default false (generation). Required for [`Context::embed`]; a context
+    /// built for generation cannot embed and vice-versa.
+    pub embeddings: bool,
+    /// How per-token embeddings are pooled into one sequence vector
+    /// (`llama_pooling_type`). Only meaningful when `embeddings == true`. Default
+    /// `Mean`. Retrieval embedders are trained for a specific pooling — set it to
+    /// match the model (Qwen3-Embedding-0.6B uses last-token).
+    pub pooling_type: PoolingType,
+}
+
+/// Sequence-embedding pooling strategy — maps to `llama_pooling_type`. Set it to
+/// match the embedding model's training; wrong pooling = degraded retrieval (a
+/// silent-quality bug, not a crash).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PoolingType {
+    /// No pooling — per-token embeddings only.
+    None,
+    /// Mean of token embeddings (common default).
+    Mean,
+    /// CLS / first-token embedding.
+    Cls,
+    /// Last-token embedding (Qwen3-Embedding family).
+    Last,
 }
 
 impl Default for ContextParams {
@@ -588,6 +619,8 @@ impl Default for ContextParams {
             fused_gdn_ch: true,
             type_k: KvCacheType::F16,
             type_v: KvCacheType::F16,
+            embeddings: false,
+            pooling_type: PoolingType::Mean,
         }
     }
 }
@@ -643,6 +676,42 @@ impl<'m> Context<'m> {
         } else {
             Err(format!("llama_decode returned {rc}"))
         }
+    }
+
+    /// Compute a pooled, L2-normalized embedding for `tokens`. Requires the
+    /// context to have been built with `ContextParams { embeddings: true,
+    /// pooling_type: ... }`. Decodes the tokens as sequence 0, then reads the
+    /// pooled sequence embedding via `llama_get_embeddings_seq`. The vector is
+    /// L2-normalized so callers use a plain dot product for cosine.
+    ///
+    /// Fails LOUD on a null or degenerate (zero / non-finite) embedding — a null
+    /// pointer means the context was NOT built in embedding mode (or nothing
+    /// decoded). Per the no-silent-degrade rule we never feed an empty/short
+    /// vector into recall.
+    pub fn embed(&mut self, tokens: &[i32]) -> Result<Vec<f32>, String> {
+        if tokens.is_empty() {
+            return Err("embed: empty token slice".to_string());
+        }
+        let n_embd = unsafe { sys::llama_model_n_embd(self.model_ptr()) };
+        if n_embd <= 0 {
+            return Err(format!("embed: invalid n_embd {n_embd}"));
+        }
+        let batch = Batch::for_tokens(tokens.to_vec());
+        self.decode(&batch)?;
+        let ptr = unsafe { sys::llama_get_embeddings_seq(self.ptr.as_ptr(), 0) };
+        if ptr.is_null() {
+            return Err("embed: llama_get_embeddings_seq returned null — context not in \
+                        embedding mode (ContextParams.embeddings=true + a pooling_type), \
+                        or nothing was decoded"
+                .to_string());
+        }
+        let raw = unsafe { std::slice::from_raw_parts(ptr, n_embd as usize) };
+        // L2-normalize so downstream cosine is a dot product; reject degenerate.
+        let norm: f32 = raw.iter().map(|x| x * x).sum::<f32>().sqrt();
+        if !norm.is_finite() || norm == 0.0 {
+            return Err("embed: degenerate (zero / non-finite) embedding".to_string());
+        }
+        Ok(raw.iter().map(|x| x / norm).collect())
     }
 
     /// Logits for the i-th token position in the last batch (tokens with
