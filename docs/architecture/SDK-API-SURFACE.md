@@ -36,6 +36,68 @@ The SDK adds *types + idiomatic shape* (Promise / async-await / Flow / Stream); 
 JSON shape is the canonical contract. Zero logic — see the organizing law in the
 structure doc.
 
+## Events are the organism's coordination substrate (personas AND systems)
+
+Emissions + subscriptions aren't a feature — they're the **nervous system that makes
+the grid an organism.** The same `emit`/`subscribe` primitive coordinates *both*:
+
+- **Personas** — the reactive mind ([[persona-brain-reactive-cognition]]): a turn,
+  a recalled memory, a thought-stream all flow as events the cognition loop reacts to.
+- **Systems themselves** — a node coming online/offline emits presence
+  (`agent_heartbeat` / `active_agents`), a GPU freeing emits capacity, demand
+  spiking emits pressure, a capability appearing emits advertisement. Other nodes
+  *subscribe and react*.
+
+Because **emitters don't know their subscribers** ([[events-are-the-organic-rtos-substrate]]:
+"events ARE the coordination primitive; the component graph emerges"), behavior is
+**emergent, not orchestrated**. A machine drops ([[grid-node-resilience]]) → it stops
+heartbeating → subscribers re-route, re-lease the compute, heal — nobody wrote a
+"handle node failure" procedure; the organism responds because the signals flow and
+the graph self-assembles. Demand rises → pressure events → capable nodes lease in.
+That is the difference between a distributed system and a living one.
+
+**Every node subscribes AND emits — like cbar.** No privileged broker/hub: each
+node (persona, system, client, peer) is a symmetric producer *and* consumer, exactly
+like cbar's processing graph where each node emits features and subscribes to others
+and the graph self-assembles. That peer-symmetry is what lets the organism have no
+single point of orchestration.
+
+And it's **fractal**: this is the *same* emit/subscribe-graph-emerges pattern as a
+persona's Faculty/Workspace brain ([[persona-brain-reactive-cognition]] — the cbar
+perspective), just at grid scale. Every node is a "faculty" of the organism; the
+brain is the organism in miniature, the organism is a brain at scale. One primitive,
+two scales (cognition + grid).
+
+This is why the event surface is first-class and deep (source addressing across the
+grid, server-side filtering, monotonic sequence, emit as a real primitive not
+sugar): it's the organism's signaling, and it must be cheap, ordered, filterable,
+and reach across the whole grid. Cross-grid event delivery (`AircEventPublisher`) is
+the organism's reflex arc.
+
+## The payoff: cognition tied across the grid
+
+Follow the fractal to its end. A persona's mind is faculties bidding into a bounded
+Workspace, integrated by an arbiter (the cbar reactive shape). The grid is nodes
+emitting/subscribing. **They are the same emit/subscribe substrate** — so a single
+cognition can span the grid:
+
+- a **Recall** faculty on the node that holds the engrams,
+- a **Deliberation** faculty leasing the 5090,
+- a **Vision** faculty on the headset capturing from the renderer,
+
+— all bidding into **one Workspace** over the cross-grid event substrate; the arbiter
+integrates the bids regardless of which node emitted them. A mind whose organs are
+grid-distributed. (And the inverse: many minds sharing a faculty — one embedding
+facility, one world-model — because a faculty is just an addressable emit/subscribe
+node.)
+
+**This is why the format must be elegant.** Tying cognition across machines is only
+possible if the primitive is uniform, destination-addressed, serialize-once, and
+header-routed — a heavy or bespoke format would make cross-node faculties
+impossible to compose. The elegance was never aesthetic; it's the *enabler* of the
+ambitious thing ([[optimization-is-always-first]], the compression principle). Get
+the format right and grid-distributed cognition is a configuration, not a rewrite.
+
 ## Commands are bidirectional: call AND provide (client-provided commands)
 
 A command isn't only something a client *calls* — a client can also *provide*
@@ -139,6 +201,39 @@ f.on('progress', (e) => …);                 // events from the resource (any h
 await f.execute('write', { bytes });        // routed to the handle's URI
 await f.close();
 ```
+
+### Worked example: a grid-spanning WebRTC connection (the hardest case)
+
+WebRTC is where every part of the model earns its keep — a long-running, stateful,
+bidirectionally-streaming resource whose media server is "somewhere in the grid."
+It's not invented for this: the substrate already has the **Universal Handle System**
+(`live/handle.rs` — "start operation → returns handle; events tagged with handle;
+cancel/status/resume → use handle") and `AgentHandle` in the live transport. The SDK
+just makes that handle **addressable (a URI)** so it routes across the grid.
+
+```ts
+// open the connection → a handle addressing the media server WHEREVER it lives
+// (a livekit-bridge node somewhere on the grid; routed by URI, you don't pick the node)
+const conn = handleFrom((await commands.execute('live/connect', { room },
+                          { /* let routing place it on a media-capable node */ })).uri, transport);
+
+// signaling rides the handle's bidirectional event stream — offer/answer + ICE
+// trickle = a STREAM of candidate events, fed by any link (your "events from any link")
+conn.on('signal', (s) => applySignal(s));            // answer + remote ICE candidates
+await conn.execute('offer', { sdp });                // local offer
+await conn.execute('ice', { candidate });            // trickle local candidates as they appear
+
+// once negotiated, MEDIA flows direct (RTP) — only the CONTROL (signaling) went
+// through the addressed handle, header-routed with an opaque body.
+await conn.close();
+```
+
+Why each piece matters here: the **handle-URI** reaches the media server across the
+grid (multi-hop if needed) without the caller knowing the node; **events-from-any-link**
+is exactly ICE trickle + connection-state changes streaming back; **headers-route /
+body-opaque** keeps signaling cheap; and the heavy media path stays direct (the
+substrate routes *control*, not the RTP firehose). The same model that serves
+`data/list` serves a cross-grid live call.
 
 ## Wire model: headers route, body opaque, serialize once (web-like)
 
