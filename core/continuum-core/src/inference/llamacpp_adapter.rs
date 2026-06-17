@@ -35,8 +35,9 @@
 use crate::ai::adapter::{AIProviderAdapter, AdapterCapabilities, ApiStyle, InferenceDevice};
 use crate::ai::registry_bridge::models_for_provider_via_registry;
 use crate::ai::types::{
-    FinishReason, HealthState, HealthStatus, MessageContent, ModelInfo, ResponseFormat,
-    TextGenerationRequest, TextGenerationResponse, UsageMetrics,
+    EmbeddingInput, EmbeddingRequest, EmbeddingResponse, FinishReason, HealthState, HealthStatus,
+    MessageContent, ModelInfo, ResponseFormat, TextGenerationRequest, TextGenerationResponse,
+    UsageMetrics,
 };
 use crate::inference::backends::llamacpp::{LlamaCppBackend, LlamaCppConfig};
 use crate::inference::backends::{SamplingConfig, JSON_GRAMMAR};
@@ -680,7 +681,7 @@ impl AIProviderAdapter for LlamaCppAdapter {
             supports_tool_use: true,
             supports_vision: false,
             supports_streaming: true,
-            supports_embeddings: false,
+            supports_embeddings: true,
             supports_audio: false,
             supports_image_generation: false,
             is_local: true,
@@ -1103,6 +1104,50 @@ impl AIProviderAdapter for LlamaCppAdapter {
             tool_calls: None,
             routing: None,
             error: None,
+        })
+    }
+
+    /// Embeddings via the backend's dedicated embedding-mode context. The loaded
+    /// model determines the vector space — for grid-comparable vectors this
+    /// adapter must have loaded the canonical Qwen3-Embedding-0.6B (the
+    /// `NeuralEmbeddingProvider` is responsible for loading it). `backend.embed`
+    /// is a blocking forward pass, so it runs on `spawn_blocking`, off the async
+    /// executor (the same bridge as `generate_text`'s forward).
+    async fn create_embedding(
+        &self,
+        request: EmbeddingRequest,
+    ) -> Result<EmbeddingResponse, String> {
+        let backend = self.ensure_loaded()?;
+        let model_id = backend.model_id().to_string();
+        let texts: Vec<String> = match request.input {
+            EmbeddingInput::Single(s) => vec![s],
+            EmbeddingInput::Multiple(v) => v,
+        };
+        let zero_usage = UsageMetrics {
+            input_tokens: 0,
+            output_tokens: 0,
+            total_tokens: 0,
+            estimated_cost: None,
+        };
+        if texts.is_empty() {
+            return Ok(EmbeddingResponse {
+                embeddings: Vec::new(),
+                model: model_id,
+                provider: LLAMACPP_PROVIDER_ID.to_string(),
+                usage: zero_usage,
+                response_time_ms: 0,
+            });
+        }
+        let start = Instant::now();
+        let embeddings = tokio::task::spawn_blocking(move || backend.embed(&texts))
+            .await
+            .map_err(|e| format!("embedding task join failed: {e}"))??;
+        Ok(EmbeddingResponse {
+            embeddings,
+            model: model_id,
+            provider: LLAMACPP_PROVIDER_ID.to_string(),
+            usage: zero_usage,
+            response_time_ms: start.elapsed().as_millis() as u64,
         })
     }
 
