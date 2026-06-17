@@ -168,6 +168,26 @@ Keep the binding **single-source** (one `.udl`, generated Swift source shared); 
 only the Apple *packaging/validation* on a Mac. A `macos-runner` CI job is the
 durable home so it doesn't depend on any one operator's laptop.
 
+## Locking the abstraction: three divergent platforms in parallel (outlier validation)
+
+Per the CLAUDE.md outlier-validation strategy — don't build platforms exhaustively
+or hopefully; build the **most divergent** ones in parallel so they *prove* the
+abstraction. If `client/continuum-client` (the common Rust SDK) + the facade serve
+all three cleanly, the interface is locked and every other platform is trivial.
+
+| Track | Binds the common Rust SDK via | Validates the axis |
+|-------|-------------------------------|--------------------|
+| **cli** (`apps/cli`, Rust) | links `continuum-client` **directly** | in-process, no FFI, no wire — the simplest path |
+| **mobile** (`apps/mobile` + `sdk/{flutter,swift,kotlin}`) | **uniffi** → xcframework/AAR, Flutter bundles them | cross-language FFI + cross-toolchain — the hardest path |
+| **nodejs** (`sdk/typescript` + a node consumer) | **wasm/napi** (or RustCoreIPC wire) | JS runtime, possibly a remote core — the third axis |
+
+They share ONE conformance spec (`sdk/typescript/Commands.test.ts` is the reference;
+each language mirrors it — Rust cargo, swift/kotlin) + ONE hot-path timing budget.
+Building them together is what surfaces an abstraction leak early: if a verb or a
+type can't cross all three cleanly, the facade — not the platform — is wrong, and
+we fix it once at the root. The common Rust SDK is the single source of truth all
+three wrap; nothing reimplements logic per platform.
+
 ## Build order
 
 1. **Foundation** — `client/continuum-client` FFI-clean JSON facade (BigMama; it
