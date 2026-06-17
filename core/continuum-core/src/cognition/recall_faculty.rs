@@ -54,21 +54,24 @@ const DEFAULT_RECALL_LIMIT: usize = 5;
 /// but lower-salience memory can still enter the running and win the re-rank.
 const RERANK_CANDIDATE_MULTIPLIER: usize = 4;
 
-/// Blend weight for relevance (cosine vs the burst) against the memory's
-/// salience-decay score: `RELEVANCE_WEIGHT·rel + (1-RELEVANCE_WEIGHT)·salience`.
-/// 0.5 = equal voice; tunable, and the replay A/B bench is exactly how we'll
-/// tune it with before/after traces instead of guessing.
-const RELEVANCE_WEIGHT: f32 = 0.5;
+/// Default blend weight for relevance (cosine vs the burst) against the memory's
+/// salience-decay score: `weight·rel + (1-weight)·salience`. 0.5 = equal voice.
+/// Configurable per RecallFaculty via [`RecallFaculty::with_relevance_weight`] so
+/// the replay A/B bench can sweep 0.0 (pure salience = old behaviour) → 1.0 (pure
+/// relevance) and DIFF the resulting traces — tuning by evidence, not guessing.
+pub const DEFAULT_RELEVANCE_WEIGHT: f32 = 0.5;
 
-/// Blend cosine-relevance (to the burst) with the memory's salience-decay score.
+/// Blend cosine-relevance (to the burst) with the memory's salience-decay score
+/// at relevance `weight` (0.0 = pure salience, 1.0 = pure relevance).
 fn blended_score(
     salience: f32,
+    weight: f32,
     query: &[f32],
     embedder: &dyn EmbeddingProvider,
     content: &str,
 ) -> f32 {
     let rel = cosine_similarity(query, &embedder.embed(content));
-    RELEVANCE_WEIGHT * rel + (1.0 - RELEVANCE_WEIGHT) * salience
+    weight * rel + (1.0 - weight) * salience
 }
 
 /// Wall-clock seam — injectable so tests are deterministic. Returns ms since
@@ -99,6 +102,10 @@ pub struct RecallFaculty {
     /// `None` → pure salience×recency (the backwards-compatible default). The
     /// backend is swappable (lexical bootstrap now; neural local embedder later).
     embedder: Option<Arc<dyn EmbeddingProvider>>,
+    /// Relevance blend weight (0.0 = pure salience×recency, 1.0 = pure cosine
+    /// relevance). Only used when `embedder` is set. Configurable so the replay
+    /// A/B bench can sweep it; defaults to [`DEFAULT_RELEVANCE_WEIGHT`].
+    relevance_weight: f32,
 }
 
 impl RecallFaculty {
@@ -110,6 +117,7 @@ impl RecallFaculty {
             limit: DEFAULT_RECALL_LIMIT,
             clock: wall_clock(),
             embedder: None,
+            relevance_weight: DEFAULT_RELEVANCE_WEIGHT,
         }
     }
 
@@ -130,6 +138,19 @@ impl RecallFaculty {
     pub fn with_embedder(mut self, embedder: Arc<dyn EmbeddingProvider>) -> Self {
         self.embedder = Some(embedder);
         self
+    }
+
+    /// Set the relevance blend weight (0.0 = pure salience×recency, 1.0 = pure
+    /// cosine relevance to the burst), clamped to `[0,1]`. The replay A/B bench
+    /// sweeps this to find where the salience↔relevance trade-off lands.
+    pub fn with_relevance_weight(mut self, weight: f32) -> Self {
+        self.relevance_weight = weight.clamp(0.0, 1.0);
+        self
+    }
+
+    /// The current relevance blend weight (for the bench / introspection).
+    pub fn relevance_weight(&self) -> f32 {
+        self.relevance_weight
     }
 
     /// The persona this faculty recalls for.
@@ -175,7 +196,7 @@ impl Faculty for RecallFaculty {
                     .into_iter()
                     .map(|(engram, salience)| {
                         let blended =
-                            blended_score(salience, &query, embedder.as_ref(), &engram.content);
+                            blended_score(salience, self.relevance_weight, &query, embedder.as_ref(), &engram.content);
                         (blended, engram, salience)
                     })
                     .collect();
@@ -590,5 +611,85 @@ mod tests {
 
         // Silence the unused-import lint when this module's other helpers vary.
         let _ = NoopWorkspaceCaptureSink;
+    }
+
+    // what this catches: with_relevance_weight TUNES the salience↔relevance blend
+    // — weight 0.0 = pure salience (the more-salient irrelevant memory wins),
+    // weight 1.0 = pure relevance (the topically-relevant memory wins). This is
+    // the knob the replay A/B bench sweeps to prove recall propagates to behavior.
+    #[tokio::test]
+    async fn relevance_weight_tunes_the_blend() {
+        use crate::cognition::embedding::LexicalEmbedder;
+        let now = 1_000_000_000u64;
+        let query = "what was our rollout plan for the auth flow again?";
+        let seed = || {
+            let recall_meta = Arc::new(RecallMetadataRegistry::new());
+            let state = Arc::new(AdmissionState::new(recall_meta.clone()));
+            let mut mk = |content: &str, salience: f32, age: u64| {
+                let id = Uuid::new_v4();
+                state.push_for_test(Engram {
+                    id,
+                    kind: EngramKind::Episodic,
+                    content: content.to_string(),
+                    origin: EngramOrigin::Chat(ChatMessageRef {
+                        message_id: Uuid::new_v4(),
+                        room_id: Uuid::new_v4(),
+                        sender_id: Uuid::new_v4(),
+                        posted_at_ms: now - age,
+                        content_hash: "h".to_string(),
+                    }),
+                    recall_keys: Vec::new(),
+                    admitted_at_ms: now - age,
+                    trust_state_at_admission: TrustState::ApprovedPeer,
+                    admission_trace_id: None,
+                });
+                recall_meta.admit(
+                    id,
+                    RecallMetadata {
+                        salience,
+                        access_count: 0,
+                        last_accessed_ms: 0,
+                        protected_until_ms: 0,
+                        last_decayed_ms: now,
+                    },
+                );
+            };
+            mk("ship the auth flow behind a feature flag and ramp the rollout to 10%", 0.4, 60_000);
+            mk("lunch is at noon, someone booked the corner table", 0.6, 0);
+            state
+        };
+        let persona = Uuid::new_v4();
+
+        // weight 0.0 → pure salience → the more-salient IRRELEVANT memory.
+        let salience_only = RecallFaculty::new(persona, seed())
+            .with_limit(1)
+            .with_clock(Arc::new(move || now))
+            .with_embedder(Arc::new(LexicalEmbedder::new()))
+            .with_relevance_weight(0.0);
+        assert!(
+            salience_only
+                .contribute(&Workspace::new(query))
+                .await
+                .unwrap()
+                .content
+                .contains("lunch"),
+            "weight 0.0 = pure salience → irrelevant-but-salient memory"
+        );
+
+        // weight 1.0 → pure relevance → the topically-relevant memory.
+        let relevance_only = RecallFaculty::new(persona, seed())
+            .with_limit(1)
+            .with_clock(Arc::new(move || now))
+            .with_embedder(Arc::new(LexicalEmbedder::new()))
+            .with_relevance_weight(1.0);
+        assert!(
+            relevance_only
+                .contribute(&Workspace::new(query))
+                .await
+                .unwrap()
+                .content
+                .contains("feature flag"),
+            "weight 1.0 = pure relevance → topically-relevant memory"
+        );
     }
 }
