@@ -37,6 +37,7 @@ pub mod host_capability_probe;
 pub mod llm_deliberation_faculty;
 pub mod model_resolver;
 pub mod persona_workspace;
+pub mod rag_source_faculty;
 pub mod rate_proposals;
 pub mod recall_faculty;
 pub mod resource_admission;

@@ -496,7 +496,11 @@ pub async fn materialize_adapters(
                 identity.persona_id,
                 runtime.clone(),
             ));
-        cognition.set_roster_source(roster_source);
+        // Clone the Arc: the SAME source feeds both the legacy compose path
+        // (set_roster_source) and the brain (as a bridged grounding faculty,
+        // below). One source of truth, two consumers during the cutover
+        // transition — not a parallel allocator.
+        cognition.set_roster_source(roster_source.clone());
 
         // Bind the room-doctrine source from the same runtime (upcasts to
         // `AircDoctrineReader`). Grounds the persona in the room's nature
@@ -506,7 +510,8 @@ pub async fn materialize_adapters(
                 identity.persona_id,
                 runtime.clone(),
             ));
-        cognition.set_doctrine_source(doctrine_source);
+        // Same dual-wire as the roster: one Arc, legacy path + brain faculty.
+        cognition.set_doctrine_source(doctrine_source.clone());
 
         // Disk-backed, per-persona memory: open <home>/engrams.sqlite and
         // rehydrate prior engrams + recall metadata, so memory SURVIVES restart.
@@ -565,6 +570,19 @@ pub async fn materialize_adapters(
                     admission: cognition.admission.clone(),
                     adapter: adapter.clone(),
                     capacity: None,
+                    // Roster + doctrine bridged into the brain as STANDING-FRAMING
+                    // grounding faculties (high salience floor). Without these the
+                    // gating cutover routes decisions through the Workspace and the
+                    // #1650/#1651 grounding silently falls out of the live path —
+                    // the persona forgets who is present / what the room is for.
+                    grounding_sources: vec![
+                        crate::cognition::persona_workspace::GroundingSource::framing(
+                            roster_source,
+                        ),
+                        crate::cognition::persona_workspace::GroundingSource::framing(
+                            doctrine_source,
+                        ),
+                    ],
                 },
             )),
         );

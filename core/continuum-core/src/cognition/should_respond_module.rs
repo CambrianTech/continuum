@@ -156,6 +156,7 @@ mod tests {
             admission: seed_admission(1_000_000_000),
             adapter: Arc::new(HeuristicInferenceAdapter::new()),
             capacity: None,
+            grounding_sources: Vec::new(),
         });
         registry
     }

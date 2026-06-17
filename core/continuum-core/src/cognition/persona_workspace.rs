@@ -19,10 +19,12 @@ use uuid::Uuid;
 
 use super::embedding::{CachingEmbeddingProvider, LexicalEmbedder};
 use super::llm_deliberation_faculty::LlmDeliberationFaculty;
+use super::rag_source_faculty::{RagSourceFaculty, SaliencePolicy};
 use super::recall_faculty::RecallFaculty;
 use super::workspace::{Faculty, SalienceArbiter, WorkspaceCycle};
 use crate::ai::adapter::AIProviderAdapter;
 use crate::persona::admission_state::AdmissionState;
+use crate::persona::rag_budget::RagSource;
 
 /// Default bounded workspace capacity — the finite attention "spotlight". Enough
 /// for recall + world-model + affect + roster context to coexist; the arbiter
@@ -42,36 +44,91 @@ pub struct PersonaBrainConfig {
     pub adapter: Arc<dyn AIProviderAdapter>,
     /// Bounded workspace capacity; `None` → [`DEFAULT_WORKSPACE_CAPACITY`].
     pub capacity: Option<usize>,
+    /// Grounding RagSources lifted into perception-tier faculties via
+    /// [`RagSourceFaculty`] (the migration bridge — see its module doc). Each is
+    /// paired with a [`SaliencePolicy`]: roster + doctrine are `StandingFraming`
+    /// (a high salience floor so attention pressure can't evict the room's own
+    /// rules); retrieved sources would be `Retrieved`. Empty in bring-up harnesses
+    /// that only need recall + deliberation. This is the assembly-layer
+    /// classification BigMama's separation-of-concerns requires: the salience
+    /// policy lives HERE, never inside `RagSource`.
+    pub grounding_sources: Vec<GroundingSource>,
+}
+
+/// A grounding [`RagSource`] plus the [`SaliencePolicy`] under which it competes
+/// for attention once bridged into a faculty. Classified by whoever assembles the
+/// cycle (the spawn path), keeping `RagSource` itself salience-free.
+pub struct GroundingSource {
+    pub source: Arc<dyn RagSource>,
+    pub policy: SaliencePolicy,
+}
+
+impl GroundingSource {
+    /// Standing framing (roster, doctrine) — always-present structural context.
+    pub fn framing(source: Arc<dyn RagSource>) -> Self {
+        Self {
+            source,
+            policy: SaliencePolicy::StandingFraming,
+        }
+    }
+
+    /// Retrieved grounding (engram, conversation) — competes on relevance.
+    pub fn retrieved(source: Arc<dyn RagSource>) -> Self {
+        Self {
+            source,
+            policy: SaliencePolicy::Retrieved,
+        }
+    }
 }
 
 /// Assemble a persona's `WorkspaceCycle` from its faculties. This IS the
 /// production assembly path — the bring-up harness and the `ai/should-respond`
 /// ServiceModule build the cycle the same way, so they cannot diverge.
 ///
-/// v1 faculties: `RecallFaculty` (perception tier — the hippocampus) and
-/// `LlmDeliberationFaculty` (deliberation tier — the reasoner). More faculties
-/// (world-model, affect, volition) slot into this `Vec` as they land; nothing
-/// else changes (open/closed — §2.7).
+/// v1 faculties: `RecallFaculty` (perception tier — the hippocampus), the
+/// bridged grounding sources (roster, doctrine — perception tier via
+/// [`RagSourceFaculty`]), and `LlmDeliberationFaculty` (deliberation tier — the
+/// reasoner). More faculties (world-model, affect, volition) slot into this `Vec`
+/// as they land; nothing else changes (open/closed — §2.7).
+///
+/// The grounding sources are what keep the live decision path grounded in WHO is
+/// present (roster) and WHAT the room is for (doctrine) after the gating cutover
+/// routes decisions through the Workspace — without them, that grounding (#1650 /
+/// #1651) silently falls out of the live path.
 pub fn build_workspace_cycle(cfg: PersonaBrainConfig) -> WorkspaceCycle {
-    let faculties: Vec<Arc<dyn Faculty>> = vec![
-        // Relevance recall ON by default — the lexical bootstrap embedder works on
-        // any machine (no model), and relevance > recency is strictly better for
-        // coherence. Wrapped in the process-global content-addressed cache so a
-        // message is embedded ONCE and shared across every persona (the
-        // compute-once-per-content optimization — never 14× for 14 personas). A
-        // neural embedder slots in behind the same cache later.
-        Arc::new(
-            RecallFaculty::new(cfg.persona_id, cfg.admission).with_embedder(Arc::new(
-                CachingEmbeddingProvider::new(Arc::new(LexicalEmbedder::new())),
-            )),
-        ),
-        Arc::new(LlmDeliberationFaculty::new(
-            cfg.persona_id,
-            cfg.persona_name,
-            cfg.system_prompt,
-            cfg.adapter,
+    let mut faculties: Vec<Arc<dyn Faculty>> = Vec::with_capacity(2 + cfg.grounding_sources.len());
+
+    // Relevance recall ON by default — the lexical bootstrap embedder works on
+    // any machine (no model), and relevance > recency is strictly better for
+    // coherence. Wrapped in the process-global content-addressed cache so a
+    // message is embedded ONCE and shared across every persona (the
+    // compute-once-per-content optimization — never 14× for 14 personas). A
+    // neural embedder slots in behind the same cache later.
+    faculties.push(Arc::new(
+        RecallFaculty::new(cfg.persona_id, cfg.admission).with_embedder(Arc::new(
+            CachingEmbeddingProvider::new(Arc::new(LexicalEmbedder::new())),
         )),
-    ];
+    ));
+
+    // Bridge each grounding source into a perception-tier faculty under its
+    // salience policy. Standing-framing (roster, doctrine) bids at a high floor so
+    // the top-k arbiter never evicts the room's rules under attention pressure.
+    for g in cfg.grounding_sources {
+        faculties.push(Arc::new(RagSourceFaculty::new(
+            cfg.persona_id,
+            g.source,
+            g.policy,
+        )));
+    }
+
+    // The reasoner runs in phase 2 over everything the perception tier surfaced.
+    faculties.push(Arc::new(LlmDeliberationFaculty::new(
+        cfg.persona_id,
+        cfg.persona_name,
+        cfg.system_prompt,
+        cfg.adapter,
+    )));
+
     WorkspaceCycle::new(
         faculties,
         Arc::new(SalienceArbiter),
@@ -190,6 +247,7 @@ mod tests {
             admission: seed_admission(1_000_000_000),
             adapter: Arc::new(HeuristicInferenceAdapter::new()),
             capacity: None,
+            grounding_sources: Vec::new(),
         }
     }
 
