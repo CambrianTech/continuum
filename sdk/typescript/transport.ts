@@ -21,8 +21,14 @@ export interface Transport {
   execute(command: string, paramsJson: string): Promise<string>;
   /** Command SERVE: register a handler this client provides. (facade gap) */
   provide(command: string, handler: RawCommandHandler): Registration;
-  /** Event LISTEN: subscribe(class, callback) -> Subscription. (#1663) */
-  subscribe(eventClass: string, handlers: RawEventHandlers): Subscription;
+  /**
+   * Event LISTEN: subscribe(topic, callback, filter?) -> Subscription. (#1663
+   * shipped the bare 2-arg form; `filterJson` is the events-side refinement — the
+   * redone AircEventPublisher applies it SERVER-SIDE via `matches_filter`, so
+   * filtered-out events never cross the wire.) `topic` may be a bare class (local)
+   * or an `airc://<peer>/events/<class>` address (a remote peer's events).
+   */
+  subscribe(topic: string, handlers: RawEventHandlers, filterJson?: string): Subscription;
   /** Event PUBLISH: emit(class, payload_json). (facade gap) */
   emit(eventClass: string, payloadJson: string): Promise<void>;
 }
@@ -32,9 +38,11 @@ export interface RawCommandHandler {
   handle(paramsJson: string): Promise<string>;
 }
 
-/** Raw (JSON-string) event handlers — the facade's `EventCallback` shape. */
+/** Raw (JSON-string) event handlers — the facade's `EventCallback` shape. The
+ *  `sequence` is the redone AircEventPublisher's monotonic per-subscription
+ *  counter — lets subscribers detect ordering/gaps (multi-hop, any link emits). */
 export interface RawEventHandlers {
-  onEvent(json: string): void;
+  onEvent(json: string, sequence: number): void;
   onError?(message: string): void;
   onClosed?(): void;
 }
@@ -75,4 +83,13 @@ export function buildCommandUri(name: string, target?: Target): string {
   const node = target.node ? `@${target.node}` : '';
   const env = target.env ? `:${target.env}` : '';
   return `airc://${target.peer}${node}${env}/${name}`;
+}
+
+/** Build the event topic address — bare class (local), or a SOURCE peer's/room's
+ *  event topic across the grid: `airc://<peer|room>/events/<class>` (the redone
+ *  AircEventPublisher subscribe path). Same destination-addressing as commands. */
+export function buildEventTopic(eventClass: string, source?: Target): string {
+  if (!source) return eventClass; // local events
+  const authority = 'room' in source ? `room:${source.room}` : source.peer;
+  return `airc://${authority}/events/${eventClass}`;
 }
