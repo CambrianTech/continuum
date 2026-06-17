@@ -5,6 +5,26 @@
 > of SDKs). None is privileged; the desktop is just one app. See
 > [[headless-core-many-clients]].
 
+## Why this rewrite: performance (not style)
+
+Nobody likes a rewrite — this one is justified by **speed and CPU**, not aesthetics.
+The old system was slow and CPU-intensive because the hot path ran **serde/parse +
+IPC + ORM in Node** ([[airc-performance-doctrine]]). It will not work at grid scale
+unless it's optimized, and **headless is the enabler** of that optimization. Every
+rule below serves performance:
+
+- **Logic in Rust, Node off the hot path** — no per-request parse/IPC/ORM tax in a
+  JS runtime; one optimized implementation (BLAS/SIMD/GPU where it matters,
+  [[optimization-is-always-first]]).
+- **Headless** — no browser/render loop burning CPU on machines that are servers
+  (AWS, BigMama, grid nodes); rendering happens only if a human client attaches.
+- **Thin, generated SDKs** — no hand-written marshalling layers (CPU + drift); the
+  same Rust lib, not N reimplementations.
+- **Consolidated, bounded work** — e.g. cognition runs once over a consolidated
+  burst at `O(capacity)`, never per-event FIFO.
+
+If a choice here ever trades performance for convenience, it's the wrong choice.
+
 ## The organizing law: concentrate logic as deep as possible (≈ all Rust)
 
 Push **every bit of logic to the deepest shared layer** — which is almost entirely
