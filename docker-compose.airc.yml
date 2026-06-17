@@ -1,0 +1,150 @@
+# Continuum — airc grid-join overlay (DOCKER-NODE-ARCHITECTURE.md §8.5)
+#
+# Stands up a node-local airc daemon and wires continuum-core to it, so the
+# node's personas attach_as distinct peers and join the grid room as citizens —
+# the Docker equivalent of the proven native path (continuum PR #1645 / airc
+# PR #1216). This is the "persona-in-Docker-as-grid-peer" enabler.
+#
+# Usage (overlay on the base compose):
+#   GH_TOKEN=ghp_... docker compose -f docker-compose.yml -f docker-compose.airc.yml up
+# GPU node (5090):
+#   GH_TOKEN=ghp_... docker compose -f docker-compose.yml -f docker-compose.gpu.yml -f docker-compose.airc.yml up
+#
+# WHY an overlay (not the base file): the base `docker compose up` first-run
+# (Carl) must not require a GH_TOKEN. airc-join is opt-in via this overlay.
+#
+# VALIDATION (be honest — DOCKER-NODE-ARCHITECTURE.md §8.5 matrix): prove this
+# on the Linux/NVIDIA box (BigMama's 5090), where grid-join AND capable inference
+# (Cuda → forged 4B) both hold. A Mac *container* is CPU-only (LCD 0.5B) and Mac
+# production runs continuum-core NATIVE (docker-compose.mac.yml replicas:0) — so
+# don't judge persona quality from a Mac container, only grid-join provability.
+#
+# ROBUSTNESS (the "less flaky" contract):
+#  - NO hardcoded socket version. The airc daemon binds a version-stamped socket
+#    (daemon-v<N>.sock); hardcoding v5 breaks silently on an IPC bump. Instead
+#    airc-node resolves the live socket via `airc ipc-endpoint` (the SAME resolver
+#    continuum-core's discovery uses) and publishes a STABLE symlink the core
+#    points at. Version changes can't desync the two halves.
+#  - Healthcheck gates on the EXACT socket the core will dial (the stable symlink
+#    resolving to a live socket), not a proxy — so depends_on:service_healthy
+#    means "the thing core needs is actually ready", not "a process started".
+#  - Fail loud: daemon down → no symlink → healthcheck never passes → core never
+#    starts (full-citizen refuses a grid-less boot). No silent half-citizen.
+
+services:
+
+  # ── airc-node: the node's grid daemon ─────────────────────
+  # Runs `airc daemon` (airc/docker/airc-node.Dockerfile). Carries the owner's
+  # GitHub identity via GH_TOKEN → mesh_identity resolves to the GH login → the
+  # SAME grid as every other daemon on the account (not an enclave). Discovers
+  # peers via the gist account-registry and dials out (firewall-friendly), so it
+  # meshes with the host daemon (peer 7711fe60, cambriantech) over LAN/Tailscale.
+  airc-node:
+    build:
+      # Cross-repo: the airc checkout sits beside continuum (sibling), same shape
+      # as forge-worker's `build: ../sentinel-ai`. Swap for the published
+      # ghcr.io/cambriantech/airc-node image once the release pipeline exists.
+      context: ../airc
+      dockerfile: docker/airc-node.Dockerfile
+    image: ghcr.io/cambriantech/airc-node:${AIRC_IMAGE_TAG:-latest}
+    restart: unless-stopped
+    mem_limit: ${AIRC_NODE_MEM:-512m}
+    # Run the daemon, then publish a VERSION-INDEPENDENT stable socket symlink the
+    # core can dial. `airc ipc-endpoint` is the same resolver core uses, so the
+    # symlink always points at the real (version-stamped) socket — no hardcoded
+    # daemon-v<N>.sock to drift. Backgrounds the daemon, waits for it to bind,
+    # links it, enrols the node in the room (idempotent, non-fatal), then waits on
+    # the daemon (its exit ⇒ container exit ⇒ restart:unless-stopped).
+    # NOTE: every `$` is doubled to `$$` so docker-compose passes the script
+    # through to the container shell verbatim (compose interpolates single `$`).
+    command:
+      - /bin/sh
+      - -ec
+      - |
+        : "$${AIRC_ADVERTISE_IP:=$$(hostname -i 2>/dev/null | awk '{print $$1}')}"
+        export AIRC_ADVERTISE_IP
+        echo "airc-node: advertising $${AIRC_ADVERTISE_IP:-<none>}"
+        airc daemon &
+        dpid=$$!
+        # Wait for the daemon to bind + resolve its live socket, then publish the
+        # stable symlink. Bounded: if it never resolves, no symlink => healthcheck
+        # fails => core won't boot (fail loud, not a silent grid-less node).
+        linked=0
+        for _ in $$(seq 1 60); do
+          ep="$$(airc ipc-endpoint 2>/dev/null || true)"
+          if [ -n "$$ep" ] && [ -S "$$ep" ]; then
+            ln -sf "$$ep" /node/.airc/airc.sock
+            echo "airc-node: published stable socket /node/.airc/airc.sock -> $$ep"
+            linked=1
+            break
+          fi
+          sleep 1
+        done
+        [ "$$linked" = 1 ] || echo "airc-node: WARN endpoint never resolved; core boot will gate-fail (intended)"
+        # Enrol the node identity in the room so the registry lists it. Personas
+        # (continuum-core) also join per-citizen; this is belt-and-suspenders and
+        # must never take the node down, hence non-fatal.
+        airc join "$${AIRC_ROOM:-cambriantech}" >/dev/null 2>&1 || true
+        wait "$$dpid"
+    environment:
+      # The grid identity. Required — same token = same account = same grid.
+      - GH_TOKEN=${GH_TOKEN:?set GH_TOKEN (the owner GitHub token) to join the grid}
+      # detect_lan_ip() bails inside a container; hand it the routable endpoint.
+      # Unset → the command above falls back to the container's own bridge IP
+      # (`hostname -i`), reachable by same-host siblings. Override with the host
+      # LAN/Tailscale IP for cross-host routing.
+      - AIRC_ADVERTISE_IP=${AIRC_ADVERTISE_IP:-}
+      # The room the node enrols in (must match continuum-core's default room).
+      - AIRC_ROOM=${AIRC_DEFAULT_ROOM_NAME:-cambriantech}
+      # Keep the gh request counter bounded across nodes (same governor the mesh
+      # harness asserts on). Matches docker/mesh-converge.sh.
+      - AIRC_GH_MAX_REQUESTS_PER_MIN=${AIRC_GH_MAX_REQUESTS_PER_MIN:-500}
+    volumes:
+      # The daemon's airc home (HOME=/node in the image) holds its identity AND
+      # its socket. Sharing the whole home on a named volume (a) persists the
+      # node's grid identity across restarts and (b) makes the socket + the stable
+      # symlink reachable from continuum-core (which mounts the SAME volume at the
+      # SAME path).
+      - airc-ipc:/node/.airc
+    healthcheck:
+      # Gate on the EXACT thing core needs: the stable symlink resolving to a live
+      # socket (`test -S` follows the symlink) AND the daemon answering status.
+      # Both true ⇒ core can dial. Either false ⇒ unhealthy ⇒ core won't start.
+      test: ["CMD-SHELL", "test -S /node/.airc/airc.sock && airc status >/dev/null 2>&1"]
+      interval: 5s
+      timeout: 5s
+      start_period: 30s
+      retries: 6
+
+  # ── continuum-core: point its personas at the node daemon ──
+  # Overrides the base service: add the airc socket + default room env (both
+  # already honored by core — src/airc/discovery.rs: AIRC_DAEMON_SOCKET +
+  # AIRC_DEFAULT_ROOM_NAME), mount the shared airc home, and gate boot on the
+  # daemon being healthy. Personas then attach_as (one peer each) and join the
+  # room — each a citizen on the one grid.
+  continuum-core:
+    environment:
+      # Point discovery at the STABLE symlink (version-independent — see header).
+      # discover_airc_socket() honors this unconditionally as override #1.
+      - AIRC_DAEMON_SOCKET=/node/.airc/airc.sock
+      # Don't let core auto-install its own airc + spin a second daemon: the only
+      # daemon is airc-node's. With the socket override set, discovery short-
+      # circuits before the install path anyway; this is defense in depth.
+      - CONTINUUM_DISABLE_AIRC_AUTOINSTALL=1
+      # The room the node's personas join (NAME, never UUID-as-string — a UUID
+      # gets re-derived into a different channel; see room_roster_source.rs).
+      - AIRC_DEFAULT_ROOM_NAME=${AIRC_DEFAULT_ROOM_NAME:-cambriantech}
+    volumes:
+      # SAME named volume, SAME path → continuum-core sees the daemon's socket.
+      - airc-ipc:/node/.airc
+    depends_on:
+      airc-node:
+        condition: service_healthy
+    # Boot mode full-citizen (the default) refuses to start unless airc is
+    # Healthy — no silent degrade. The healthcheck gate above guarantees the
+    # daemon + stable socket are live first; if they aren't, core fails loud
+    # (correct — a node with no grid is a bug to surface, not a half-citizen).
+    command: ["--mode=full-citizen", "/root/.continuum/sockets/continuum-core.sock"]
+
+volumes:
+  airc-ipc:
