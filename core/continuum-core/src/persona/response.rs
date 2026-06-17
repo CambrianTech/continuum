@@ -125,6 +125,25 @@ pub struct RespondInput {
     /// change to engrams (kind enum, embeddings, recall_keys reshape)
     /// doesn't ripple into the prompt path.
     pub recalled_engrams: Vec<String>,
+    /// Roster of OTHER citizens currently present in the room — one
+    /// pre-formatted line per peer (`name [runtime] — availability`),
+    /// produced by `RoomRosterSource` from airc `active_agents` and
+    /// projected here by the service loop. Rendered by `prompt_assembly`
+    /// as a `[Present in this room]` block so the persona is grounded in
+    /// who is present and who is NOT itself — the fix for the persona
+    /// confabulating other citizens' turns (see
+    /// docs/grid/AIRC-NATIVE-IDENTITY-ROOMS-SECURITY.md §5 slice 1).
+    /// Empty when no roster source is bound or the room is otherwise
+    /// quiet — backwards-compatible (no block rendered).
+    pub room_roster: Vec<String>,
+    /// The room's operating doctrine — the airc-published contract for
+    /// what kind of activity this room is (chat vs coordination vs game
+    /// vs …), produced by `RoomDoctrineSource` and projected here by the
+    /// service loop. Rendered by `prompt_assembly` as a `[Room operating
+    /// doctrine]` block so the persona calibrates participation to the
+    /// room's nature (slice 2). `None` when the room has no published
+    /// doctrine — backwards-compatible (no block rendered).
+    pub room_doctrine: Option<String>,
 }
 
 /// What `respond()` returns.
@@ -572,6 +591,12 @@ async fn run_render(
         // handler). Empty when admission was skipped or persona has
         // no memory yet.
         recalled_engrams: input.recalled_engrams.clone(),
+        // Room roster projected from RoomRosterSource by the caller.
+        // Pass-through, same as engrams — respond() is the assembly
+        // boundary, not the policy layer.
+        room_roster: input.room_roster.clone(),
+        // Room doctrine projected from RoomDoctrineSource. Pass-through.
+        room_doctrine: input.room_doctrine.clone(),
     };
 
     let assembled = assemble(&prompt_input);

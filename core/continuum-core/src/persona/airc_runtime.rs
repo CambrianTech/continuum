@@ -356,6 +356,34 @@ impl PersonaAircRuntime {
              persona is now addressable for cross-grid commands"
         );
 
+        // airc#1222 spawn contract: attach_as → join → subscribe →
+        // publish_identity. Now that the persona is attached, joined, and
+        // subscribed (the pump above), publish its identity card so it is
+        // grounded by NAME on the wire, not an anonymous peer-id. This is
+        // the continuum half of the contract; it's what lets every peer's
+        // RoomRosterSource (continuum#1650) resolve this persona's display
+        // name from the IdentityPublished event this emits. Seeds from the
+        // agent-name floor.
+        //
+        // WARN-and-continue, not fatal — asymmetric with the subscribe
+        // failure above (which IS fatal): a deaf persona is useless, but an
+        // anonymous-but-functional one is fine — it appears by peer-id in
+        // rosters until its identity card propagates / is re-published.
+        match airc_arc.publish_identity().await {
+            Ok(()) => info!(
+                persona_id = %persona_id,
+                agent_name = %agent_name,
+                "PersonaAircRuntime bootstrap: identity card published — grounded by name"
+            ),
+            Err(source) => warn!(
+                persona_id = %persona_id,
+                agent_name = %agent_name,
+                error = %source,
+                "PersonaAircRuntime bootstrap: publish_identity failed — persona is live \
+                 but will appear by peer-id in rosters until its identity card propagates"
+            ),
+        }
+
         Ok(Self {
             persona_id,
             agent_name,
@@ -518,6 +546,30 @@ impl crate::persona::airc_source::AircTranscriptReader for PersonaAircRuntime {
         limit: usize,
     ) -> Result<Vec<airc_lib::TranscriptEvent>, AircError> {
         self.airc.page_recent(limit).await
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::persona::room_roster_source::AircRosterReader for PersonaAircRuntime {
+    fn self_peer_id(&self) -> airc_core::PeerId {
+        self.airc.peer_id()
+    }
+
+    async fn room_roster(
+        &self,
+        within: std::time::Duration,
+        window: usize,
+    ) -> Result<Vec<airc_lib::RoomMember>, AircError> {
+        self.airc.room_roster(within, window).await
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::persona::room_doctrine_source::AircDoctrineReader for PersonaAircRuntime {
+    async fn room_doctrine(
+        &self,
+    ) -> Result<Option<airc_core::doctrine::RoomDoctrinePublished>, AircError> {
+        self.airc.room_doctrine().await
     }
 }
 

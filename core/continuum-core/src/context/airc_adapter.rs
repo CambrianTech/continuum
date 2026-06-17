@@ -46,6 +46,30 @@ impl AircTranscriptReader for AircHandleAdapter {
 }
 
 #[async_trait]
+impl crate::persona::room_roster_source::AircRosterReader for AircHandleAdapter {
+    fn self_peer_id(&self) -> airc_core::PeerId {
+        self.inner.peer_id()
+    }
+
+    async fn room_roster(
+        &self,
+        within: std::time::Duration,
+        window: usize,
+    ) -> Result<Vec<airc_lib::RoomMember>, AircError> {
+        self.inner.room_roster(within, window).await
+    }
+}
+
+#[async_trait]
+impl crate::persona::room_doctrine_source::AircDoctrineReader for AircHandleAdapter {
+    async fn room_doctrine(
+        &self,
+    ) -> Result<Option<airc_core::doctrine::RoomDoctrinePublished>, AircError> {
+        self.inner.room_doctrine().await
+    }
+}
+
+#[async_trait]
 impl AircCitizen for AircHandleAdapter {
     fn peer_id(&self) -> Uuid {
         self.inner.peer_id().as_uuid()

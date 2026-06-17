@@ -266,6 +266,12 @@ pub fn build_respond_input(signal: &Signal, ctx: &PersonaContext) -> Result<Resp
         // direct callers) gets a no-op memory render — same shape
         // as the system pre-#1211 PR-2.
         recalled_engrams: Vec::new(),
+        // Room roster flows through the service-loop projection (which
+        // has the RoomRosterSource delivery). This signal→RespondInput
+        // projection doesn't carry compose deliveries, so it defaults
+        // empty — no [Present in this room] block, backwards-compatible.
+        room_roster: Vec::new(),
+        room_doctrine: None,
     })
 }
 

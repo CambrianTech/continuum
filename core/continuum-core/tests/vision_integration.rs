@@ -103,6 +103,8 @@ fn build_vision_request(model_id: &str) -> RespondInput {
         // Vision capability — caller-declared, no registry lookup.
         capabilities: caps,
         recalled_engrams: Vec::new(),
+        room_roster: Vec::new(),
+        room_doctrine: None,
     }
 }
 

@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use airc_core::RoomId;
-use airc_ipc::{codec::read_frame, AttachRequest, DaemonClient, Response};
+use airc_ipc::{codec::read_frame, AttachRequest, AttachStart, DaemonClient, Response};
 use airc_lib::decode_wire_event;
 use tracing::warn;
 
@@ -43,11 +43,13 @@ pub async fn run_daemon_attach(
     // Multi-room scopes will spawn one daemon_attach task per channel
     // they care about — single-attach today, per-room fan-out as a
     // follow-up when continuum rooms become first-class.
+    // airc#1222 bump: AttachRequest dropped Default for explicit
+    // builders. The prior `..default()` was `from_now: false` —
+    // FromTranscriptStart per airc-ipc's own "legacy meaning" doc — so
+    // preserve full-backlog semantics rather than silently switching to
+    // live-only (which would skip events on attach).
     let mut stream = client
-        .attach(AttachRequest {
-            channel: Some(channel),
-            ..AttachRequest::default()
-        })
+        .attach(AttachRequest::new(channel, AttachStart::FromTranscriptStart))
         .await
         .map_err(|error| format!("failed to attach to airc daemon: {error}"))?;
 
