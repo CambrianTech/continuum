@@ -72,6 +72,7 @@ pub mod rag_replay;
 pub mod recall_metadata;
 pub mod recipe_executor;
 pub mod recorder;
+pub mod replay_bench;
 pub mod resource_forecast;
 pub mod response;
 pub mod room_doctrine_source;
