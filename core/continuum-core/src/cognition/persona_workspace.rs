@@ -17,7 +17,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use uuid::Uuid;
 
-use super::embedding::LexicalEmbedder;
+use super::embedding::{CachingEmbeddingProvider, LexicalEmbedder};
 use super::llm_deliberation_faculty::LlmDeliberationFaculty;
 use super::recall_faculty::RecallFaculty;
 use super::workspace::{Faculty, SalienceArbiter, WorkspaceCycle};
@@ -56,10 +56,14 @@ pub fn build_workspace_cycle(cfg: PersonaBrainConfig) -> WorkspaceCycle {
     let faculties: Vec<Arc<dyn Faculty>> = vec![
         // Relevance recall ON by default — the lexical bootstrap embedder works on
         // any machine (no model), and relevance > recency is strictly better for
-        // coherence. A neural embedder slots in behind the same trait later.
+        // coherence. Wrapped in the process-global content-addressed cache so a
+        // message is embedded ONCE and shared across every persona (the
+        // compute-once-per-content optimization — never 14× for 14 personas). A
+        // neural embedder slots in behind the same cache later.
         Arc::new(
-            RecallFaculty::new(cfg.persona_id, cfg.admission)
-                .with_embedder(Arc::new(LexicalEmbedder::new())),
+            RecallFaculty::new(cfg.persona_id, cfg.admission).with_embedder(Arc::new(
+                CachingEmbeddingProvider::new(Arc::new(LexicalEmbedder::new())),
+            )),
         ),
         Arc::new(LlmDeliberationFaculty::new(
             cfg.persona_id,

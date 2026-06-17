@@ -18,6 +18,10 @@
 //! This is the project's adapter discipline: build the simplest outlier first,
 //! prove the interface, let the strong backend slot in unchanged.
 
+use std::sync::{Arc, OnceLock};
+
+use dashmap::DashMap;
+
 /// A backend that turns text into a dense vector. Sync + cheap for the lexical
 /// bootstrap; a neural backend pre-embeds engrams at admission (off the recall
 /// hot path) and looks them up here.
@@ -124,9 +128,114 @@ impl EmbeddingProvider for LexicalEmbedder {
     }
 }
 
+/// Content-addressed embedding cache — compute ONCE per message content, share
+/// across every persona. An embedding is a property of the CONTENT, not the
+/// persona (exactly like a vision description or an STT transcript): 14 personas
+/// in a room reuse ONE embedding per message, never 14. Keyed by (embedding
+/// space, content) so vectors from different embedders never collide — cosine
+/// across spaces is arithmetic nonsense. Global + shared; the hot path is a
+/// `DashMap::get`. Optimization-first: the sharing is the seam, not a later pass.
+pub struct EmbeddingCache {
+    map: DashMap<u64, Vec<f32>>,
+}
+
+impl Default for EmbeddingCache {
+    fn default() -> Self {
+        Self { map: DashMap::new() }
+    }
+}
+
+impl EmbeddingCache {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// FNV-1a-64 over `provider_id \0 text` — keys the vector to its embedding
+    /// SPACE as well as its content. Deterministic (replay-safe); collision
+    /// probability is negligible at realistic message volumes.
+    fn key(provider_id: &str, text: &str) -> u64 {
+        let mut h: u64 = 0xcbf29ce484222325;
+        for b in provider_id.as_bytes() {
+            h ^= *b as u64;
+            h = h.wrapping_mul(0x100000001b3);
+        }
+        h ^= 0; // separator so "ab"+"c" != "a"+"bc"
+        h = h.wrapping_mul(0x100000001b3);
+        for b in text.as_bytes() {
+            h ^= *b as u64;
+            h = h.wrapping_mul(0x100000001b3);
+        }
+        h
+    }
+
+    /// Number of vectors currently cached.
+    pub fn len(&self) -> usize {
+        self.map.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.map.is_empty()
+    }
+}
+
+/// Process-global content-addressed embedding cache — the one place a message's
+/// vector lives, shared by every persona. Same global-singleton pattern as the
+/// persona-workspace registry and the ai_provider registry.
+pub fn global_embedding_cache() -> Arc<EmbeddingCache> {
+    static G: OnceLock<Arc<EmbeddingCache>> = OnceLock::new();
+    G.get_or_init(|| Arc::new(EmbeddingCache::new())).clone()
+}
+
+/// Wraps any [`EmbeddingProvider`] with the content-addressed cache. `embed` is a
+/// `DashMap::get` on the hot path; the inner provider (lexical now; neural / grid
+/// later) fires ONLY on a miss, and the result is shared with every other persona
+/// that embeds the same content. This is how "compute once per element, reuse
+/// across 14 personas" is enforced structurally.
+pub struct CachingEmbeddingProvider {
+    inner: Arc<dyn EmbeddingProvider>,
+    cache: Arc<EmbeddingCache>,
+}
+
+impl CachingEmbeddingProvider {
+    /// Wrap `inner`, sharing the process-global cache — what makes the
+    /// compute-once-across-personas property hold in production.
+    pub fn new(inner: Arc<dyn EmbeddingProvider>) -> Self {
+        Self {
+            inner,
+            cache: global_embedding_cache(),
+        }
+    }
+
+    /// Wrap `inner` against a specific cache (tests / isolated benches).
+    pub fn with_cache(inner: Arc<dyn EmbeddingProvider>, cache: Arc<EmbeddingCache>) -> Self {
+        Self { inner, cache }
+    }
+}
+
+impl EmbeddingProvider for CachingEmbeddingProvider {
+    fn id(&self) -> &str {
+        self.inner.id()
+    }
+
+    fn dim(&self) -> usize {
+        self.inner.dim()
+    }
+
+    fn embed(&self, text: &str) -> Vec<f32> {
+        let key = EmbeddingCache::key(self.inner.id(), text);
+        if let Some(v) = self.cache.map.get(&key) {
+            return v.clone();
+        }
+        let v = self.inner.embed(text);
+        self.cache.map.insert(key, v.clone());
+        v
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     // what this catches: the cosine of identical text is ~1; orthogonal
     // (no shared vocabulary) is ~0. The relevance primitive is sane.
@@ -171,5 +280,88 @@ mod tests {
     fn embeddings_are_reproducible() {
         let e = LexicalEmbedder::new();
         assert_eq!(e.embed("reproducible vectors"), e.embed("reproducible vectors"));
+    }
+
+    /// An embedder that counts how many times it actually computed — to prove
+    /// the cache prevents recomputation.
+    struct CountingEmbedder {
+        id: &'static str,
+        calls: AtomicUsize,
+    }
+    impl CountingEmbedder {
+        fn new(id: &'static str) -> Self {
+            Self {
+                id,
+                calls: AtomicUsize::new(0),
+            }
+        }
+    }
+    impl EmbeddingProvider for CountingEmbedder {
+        fn id(&self) -> &str {
+            self.id
+        }
+        fn dim(&self) -> usize {
+            4
+        }
+        fn embed(&self, text: &str) -> Vec<f32> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            // Deterministic per-content vector (content length spread over dims).
+            let n = text.len() as f32;
+            vec![n, n + 1.0, n + 2.0, n + 3.0]
+        }
+    }
+
+    // what this catches: THE OPTIMIZATION — the same content is embedded ONCE;
+    // the second call (any persona) is a cache hit, the inner embedder is NOT
+    // re-invoked. This is the compute-once-per-content / 14-personas-reuse-one win.
+    #[test]
+    fn cache_computes_once_and_reuses() {
+        let inner = Arc::new(CountingEmbedder::new("counting"));
+        let cache = Arc::new(EmbeddingCache::new());
+        let cached = CachingEmbeddingProvider::with_cache(inner.clone(), cache);
+
+        let a = cached.embed("the deploy went red");
+        let b = cached.embed("the deploy went red"); // any persona, same content
+        assert_eq!(a, b, "cache returns the identical vector");
+        assert_eq!(
+            inner.calls.load(Ordering::SeqCst),
+            1,
+            "inner embedder computed ONCE despite two embed calls"
+        );
+    }
+
+    // what this catches: distinct content is genuinely recomputed (the cache
+    // isn't returning a stale vector for new text).
+    #[test]
+    fn cache_recomputes_distinct_content() {
+        let inner = Arc::new(CountingEmbedder::new("counting"));
+        let cache = Arc::new(EmbeddingCache::new());
+        let cached = CachingEmbeddingProvider::with_cache(inner.clone(), cache);
+        let _ = cached.embed("first message");
+        let _ = cached.embed("a different message");
+        assert_eq!(inner.calls.load(Ordering::SeqCst), 2);
+    }
+
+    // what this catches: vectors from DIFFERENT embedding spaces (provider ids)
+    // never collide in the cache — keying includes provider_id, so a lexical
+    // vector is never served to a neural query (cosine across spaces is nonsense).
+    #[test]
+    fn cache_keys_by_embedding_space() {
+        let cache = Arc::new(EmbeddingCache::new());
+        let lexical = CachingEmbeddingProvider::with_cache(
+            Arc::new(CountingEmbedder::new("space-a")),
+            cache.clone(),
+        );
+        let neural = CachingEmbeddingProvider::with_cache(
+            Arc::new(CountingEmbedder::new("space-b")),
+            cache.clone(),
+        );
+        let _ = lexical.embed("same text");
+        let _ = neural.embed("same text");
+        assert_eq!(
+            cache.len(),
+            2,
+            "same text in two embedding spaces = two distinct cache entries"
+        );
     }
 }
