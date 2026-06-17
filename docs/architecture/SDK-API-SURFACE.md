@@ -106,6 +106,38 @@ rest — local walk, airc-to-peer, or room fan-out — over the SAME wire family
 (local IPC ↔ cross-grid airc). Caller stays transparent; addressing is opt-in.
 Events ride the redone `AircEventPublisher` cross-grid pub/sub the same way.
 
+## Orchestrating across the grid (multi-hop, web-like)
+
+A command should route across boundaries, machines, and the greater grid — even
+through many layers — as easily as a local call. The property that makes this free:
+**commands are addressed by DESTINATION, not by route** (`airc://peer/path`, like a
+URL). So whether a command is local, one hop, or ten hops across the grid's
+routers, **the caller/SDK surface never changes** — the routers forward it, exactly
+like the web (you `GET` a URL; intermediate routers forward it N hops; the client
+neither knows nor cares).
+
+Status (honest): the redone routing is **single-hop today** (`RouteDecision` =
+Local / Peer-over-airc / Room). Multi-hop "across the routers of the greater grid"
+is the next routing-layer evolution — and the substrate for it already exists:
+`modules/grid/router.rs` + the **Reticulum** transport (identity-addressed
+encrypted mesh, *inherently* multi-hop). The evolution is a `RouteDecision`
+transit/forward dimension + the router forwarding toward the destination — **zero
+change to the command surface**, because destination-addressing already
+accommodates it. (Routing-layer lane — grid/transport, not the SDK.)
+
+**Web-like ping = the demonstrator.** A `ping`/`traceroute` command routed across
+the grid: each router it transits appends itself to the path, the reply carries the
+full hop list. It proves multi-hop command forwarding end-to-end and is a perfect
+glass-box demo (you watch a command traverse the grid). It's a `ping` that "works
+more like the web."
+
+**Orchestration across layers** is then "commands made of commands" (the recipe
+walker — IntelMac's lane): a single command fans out sub-commands that each
+dispatch to wherever their destination resolves — local, a peer's `:vr` env, a 5090
+facility, a node ten hops away — and composes the results. The walker doesn't care
+where each runs; the addressing + routing place them. One command, many layers,
+across the grid.
+
 ## The contract: a command is (name, ParamsType, ResultType, accessLevel)
 
 | Field | Source of truth |
