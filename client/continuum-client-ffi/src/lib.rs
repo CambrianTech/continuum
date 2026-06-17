@@ -29,10 +29,14 @@ use std::sync::Arc;
 
 use continuum_client::{
     AircIpcTransport, ClientError, CommandClient, Connection, EventSubscriber, ServeHandler,
-    Transport,
+    SessionIdentity, Transport,
 };
 use futures::StreamExt;
 use uuid::Uuid;
+
+/// Re-export so every per-platform binding reads the one identity record:
+/// `{ userId?, sessionId? }`. The FFI surface for `ContinuumClient::session`.
+pub use continuum_client::SessionIdentity as Session;
 
 /// FFI-clean error. `continuum-client`'s `ClientError` is rich and Rust-shaped;
 /// this flattens it to the few variants a foreign caller needs, each carrying a
@@ -211,7 +215,26 @@ impl ContinuumClient {
         }
     }
 
-    /// Execute a command: JSON params in, JSON result out.
+    /// WHO this client acts as — citizen (`userId`) + session instance
+    /// (`sessionId`). Readonly; surfaces the identity established at connect
+    /// (airc pairing / handshake, or the persona's own id). Each platform SDK
+    /// presents it idiomatically; the record shape is identical everywhere.
+    pub fn session(&self) -> SessionIdentity {
+        self.conn.session()
+    }
+
+    /// Return a client SCOPED to a conversation/room (`context_id`, the third
+    /// ID tier). The scoped client's verbs auto-stamp `contextId` so callers
+    /// never re-thread the scope — a persona services a room as a scoped client
+    /// exactly the way a UI client does. Shares the same transport + identity.
+    pub fn scoped(&self, context_id: Uuid) -> ContinuumClient {
+        ContinuumClient {
+            conn: self.conn.scoped(context_id),
+        }
+    }
+
+    /// Execute a command: JSON params in, JSON result out. Stamps `contextId`
+    /// when this client is `scoped`.
     pub async fn execute(&self, command: &str, params_json: &str) -> Result<String, FfiError> {
         execute_json(self.conn.commands(), command, params_json).await
     }
