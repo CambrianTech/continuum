@@ -191,13 +191,53 @@ pub fn generate_command_map(commands: &[CommandDescriptor], import_base: &str) -
     out
 }
 
-/// The command registry — the generator's input. Explicit for the proving slice;
-/// becomes auto-discovery (every `CommandSpec` impl) once the pattern is proven.
+/// A self-registered command. Each [`CommandSpec`] impl submits one of these at
+/// its OWN declaration site via [`register_command!`]; `inventory` collects them
+/// all at link time. The associated `Params`/`Result` types are erased to a
+/// runtime `CommandDescriptor` by the captured fn — so the registry is a flat
+/// list the generator walks, assembled from declarations scattered across the
+/// codebase. No central hand-maintained list: adding a command makes it appear in
+/// every generated surface automatically (the anti-drift guarantee, mandatory
+/// when commands are infinitely-extensible / written on the fly).
+pub struct CommandRegistration {
+    descriptor_fn: fn() -> CommandDescriptor,
+}
+
+impl CommandRegistration {
+    /// Build a registration from a descriptor constructor — the
+    /// `|| CommandDescriptor::of::<C>()` the macro supplies.
+    pub const fn new(descriptor_fn: fn() -> CommandDescriptor) -> Self {
+        Self { descriptor_fn }
+    }
+}
+
+inventory::collect!(CommandRegistration);
+
+/// Self-register a `CommandSpec` type into the auto-discovered registry. ONE line
+/// at the command's own declaration site — never a central list:
+/// ```ignore
+/// register_command!(MyCommand);
+/// ```
+#[macro_export]
+macro_rules! register_command {
+    ($cmd:ty) => {
+        inventory::submit! {
+            $crate::sdk_codegen::CommandRegistration::new(
+                || $crate::sdk_codegen::CommandDescriptor::of::<$cmd>(),
+            )
+        }
+    };
+}
+
+/// The command registry — the generator's input, ASSEMBLED from every
+/// `register_command!` submission across the crate. Sorted by name so the
+/// generated output is deterministic regardless of inventory iteration order.
 pub fn command_registry() -> Vec<CommandDescriptor> {
-    vec![
-        CommandDescriptor::of::<demo::Ping>(),
-        CommandDescriptor::of::<demo::DataList>(),
-    ]
+    let mut descriptors: Vec<CommandDescriptor> = inventory::iter::<CommandRegistration>()
+        .map(|reg| (reg.descriptor_fn)())
+        .collect();
+    descriptors.sort_by(|a, b| a.name.cmp(b.name));
+    descriptors
 }
 
 /// The two outlier commands that prove the `CommandSpec` declaration handles both
@@ -228,6 +268,7 @@ mod demo {
         type Params = PingParams;
         type Result = PingResult;
     }
+    crate::register_command!(Ping);
 
     // ── Outlier B: nested params (the extreme the interface must also fit) ──
     #[derive(Serialize, Deserialize, TS)]
@@ -255,6 +296,7 @@ mod demo {
         type Params = DataListParams;
         type Result = DataListResult;
     }
+    crate::register_command!(DataList);
 }
 
 #[cfg(test)]
@@ -291,6 +333,21 @@ mod tests {
         assert!(out.contains("export interface CommandMap"));
         assert!(out.contains("export type CommandName = keyof CommandMap;"));
         assert!(out.starts_with("// GENERATED from the Rust command registry"));
+    }
+
+    // what this catches: the registry is ASSEMBLED FROM the register_command!
+    // sites (inventory), not a hand-maintained list — both demo commands appear
+    // though nothing lists them centrally, and the output is sorted by name for
+    // determinism. This is the anti-drift guarantee: a new command shows up here
+    // by registering at its own site, never by editing a central list.
+    #[test]
+    fn registry_is_auto_discovered_and_sorted() {
+        let names: Vec<&str> = command_registry().iter().map(|d| d.name).collect();
+        assert_eq!(
+            names,
+            vec!["data/list", "ping"],
+            "both register_command! sites collected, sorted by name, no central list"
+        );
     }
 
     // what this catches: a command's typed declaration round-trips to a

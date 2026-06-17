@@ -2747,6 +2747,7 @@ dependencies = [
  "hound",
  "ignore",
  "image",
+ "inventory",
  "libc",
  "livekit",
  "livekit-api",
