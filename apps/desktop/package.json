@@ -1,0 +1,20 @@
+{
+  "name": "@continuum/desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Native desktop shell for Continuum (Tauri) — system tray, OS notifications, window management, local hotkeys. A thin embodiment that wraps the apps/web UI over the headless Rust core; it does NOT host substrate logic. Sits next to apps/web; one of many equal clients. Replaces the transitional src/server-index.ts Electron-ish crutch.",
+  "type": "module",
+  "scripts": {
+    "dev": "tauri dev",
+    "build": "tauri build",
+    "tauri": "tauri"
+  },
+  "dependencies": {
+    "@continuum/sdk-typescript": "*",
+    "@tauri-apps/api": "^2.0.0"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.0.0",
+    "typescript": "^5.6.0"
+  }
+}

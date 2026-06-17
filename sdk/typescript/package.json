@@ -1,0 +1,14 @@
+{
+  "name": "@continuum/sdk-typescript",
+  "version": "0.1.0",
+  "private": true,
+  "description": "TypeScript SDK for the Continuum substrate — the thin typed client every JS/TS client (apps/web, apps/desktop, apps/mcp) talks to the headless Rust core through. Commands.execute / Events over IPC/WebSocket; NO business logic (substrate decisions live in core/). The Rust-first analog of sdk/{swift,kotlin} and client/continuum-client.",
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.0"
+  }
+}
