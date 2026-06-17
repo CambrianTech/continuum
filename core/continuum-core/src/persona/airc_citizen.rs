@@ -151,20 +151,14 @@ impl crate::persona::room_roster_source::AircRosterReader for StubAircCitizen {
         airc_core::PeerId::from_uuid(self.peer_id)
     }
 
-    async fn active_agents(
+    async fn room_roster(
         &self,
         _within: std::time::Duration,
         _window: usize,
-    ) -> Result<Vec<airc_lib::AgentLiveness>, AircError> {
+    ) -> Result<Vec<airc_lib::RoomMember>, AircError> {
         // No daemon in tests → no presence. RAG runs through cleanly
         // with an empty roster (no [Present in this room] block).
         Ok(vec![])
-    }
-
-    async fn peer_alias_map(
-        &self,
-    ) -> Result<std::collections::HashMap<airc_core::PeerId, String>, AircError> {
-        Ok(std::collections::HashMap::new())
     }
 }
 

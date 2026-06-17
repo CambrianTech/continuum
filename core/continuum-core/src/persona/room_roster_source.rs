@@ -48,13 +48,11 @@
 //! - Roster is small + always-current; no pagination (atomic unit = one
 //!   present citizen, like the `ToolSource` precedent in the trait doc).
 
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use airc_core::identity::IdentityEvent;
-use airc_core::{Body, PeerId, TranscriptEvent, TranscriptKind};
-use airc_lib::{AgentLiveness, AircError};
+use airc_core::PeerId;
+use airc_lib::{AircError, RoomMember};
 use async_trait::async_trait;
 
 use crate::persona::rag_budget::{
@@ -71,16 +69,11 @@ const SOURCE_ID: &str = "room-roster";
 /// hasn't beaten within this window is treated as gone.
 const PRESENCE_WINDOW: Duration = Duration::from_secs(120);
 
-/// How many recent transcript events to scan for heartbeats. The
-/// presence reduction keeps one entry per peer, so this only needs to
-/// be large enough to span the heartbeat cadence across all present
-/// peers — not the full scrollback.
-const HEARTBEAT_SCAN: usize = 200;
-
-/// How many recent transcript events to scan for `IdentityPublished`
-/// when building the peer→name map. Matches airc's own `peer_alias`
-/// window (200).
-pub(crate) const IDENTITY_SCAN: usize = 200;
+/// How many recent transcript events airc scans to build the roster.
+/// The presence reduction keeps one entry per peer, so this only needs
+/// to span the heartbeat cadence across all present peers — not the
+/// full scrollback. Passed straight to `Airc::room_roster`.
+const ROSTER_SCAN: usize = 200;
 
 /// Rough chars/token estimate — same heuristic `AircRagSource` /
 /// `EngramSource` use. Real tokenizer integration lands in slice 12+.
@@ -88,59 +81,34 @@ fn estimate_tokens(content: &str) -> u32 {
     ((content.chars().count() / 4) as u32).saturating_add(1)
 }
 
-/// Build a `PeerId → display-name` map from ONE transcript page, reading
-/// `IdentityPublished` cards. This is the batched form of airc's
-/// per-peer `peer_alias` (which scans a full page EACH call): resolving
-/// N present peers one-at-a-time is N+1 page scans — N+1 IPC round-trips
-/// under the cognition lock for an N-peer room. One scan keeps a roster
-/// delivery O(1) in room size. Uses only public `airc_core` types and
-/// mirrors `airc_lib::Airc::peer_alias` parsing; later cards win
-/// (page is chronological, so a re-published name overrides an old one).
-pub(crate) fn parse_identity_names(events: Vec<TranscriptEvent>) -> HashMap<PeerId, String> {
-    let mut names = HashMap::new();
-    for event in events {
-        if event.kind != TranscriptKind::IdentityPublished {
-            continue;
-        }
-        let Some(Body::Json(value)) = event.body else {
-            continue;
-        };
-        let Ok(IdentityEvent::PeerIdentityCard(card)) =
-            serde_json::from_value::<IdentityEvent>(value)
-        else {
-            continue;
-        };
-        if !card.identity.name.is_empty() {
-            names.insert(event.peer_id, card.identity.name);
-        }
-    }
-    names
-}
-
-/// Abstract reader over airc room presence + identity. Production impl
-/// rides on `airc_lib::Airc`; tests use a stub that returns canned
-/// liveness without needing a daemon.
+/// Abstract reader over airc room membership. Production impl rides on
+/// `airc_lib::Airc::room_roster`; tests use a stub that returns canned
+/// `RoomMember`s without needing a daemon.
+///
+/// Slice "consume room_roster" (airc#1232): this used to be a 2-method
+/// `active_agents` + `peer_alias_map` reader, with continuum re-parsing
+/// `IdentityPublished` events to join names onto presence — a wire-format
+/// coupling the adversarial review of continuum#1650 flagged. airc now
+/// owns that join: `room_roster` returns presence + names in ONE batched
+/// scan. So this is a single-method reader and the continuum-side
+/// parsing is gone — thin continuum, airc owns presence+identity.
 #[async_trait]
 pub trait AircRosterReader: Send + Sync {
     /// This persona's own airc peer id — used to exclude self from the
-    /// roster so the grounding block reads "who is NOT me".
+    /// roster so the grounding block reads "who is NOT me". (`room_roster`
+    /// includes self by design; the caller drops its own peer_id.)
     fn self_peer_id(&self) -> PeerId;
 
-    /// Currently-alive agents in this persona's room, within `within`,
-    /// scanning the most recent `window` transcript events. Newest-wins
-    /// per peer; peers that signalled `Leaving` are excluded by airc.
-    async fn active_agents(
+    /// Everyone present in this persona's room — presence joined with
+    /// published display names in ONE airc-side batched scan, within
+    /// `within`, over the most recent `window` transcript events.
+    /// Newest-wins per peer; peers that signalled `Leaving` are excluded
+    /// by airc; `display_name` is `None` for a present-but-unnamed peer.
+    async fn room_roster(
         &self,
         within: Duration,
         window: usize,
-    ) -> Result<Vec<AgentLiveness>, AircError>;
-
-    /// All known peer display names in the room, as one `PeerId → name`
-    /// map built from a SINGLE transcript scan. Batched on purpose:
-    /// resolving names per-peer (airc's `peer_alias`) is one full page
-    /// scan EACH, i.e. N+1 IPC round-trips under the cognition lock for
-    /// an N-peer room. One map keeps a roster delivery O(1) in room size.
-    async fn peer_alias_map(&self) -> Result<HashMap<PeerId, String>, AircError>;
+    ) -> Result<Vec<RoomMember>, AircError>;
 }
 
 /// `airc_lib::Airc` satisfies the reader contract directly. Orphan rule
@@ -151,17 +119,12 @@ impl AircRosterReader for airc_lib::Airc {
         airc_lib::Airc::peer_id(self)
     }
 
-    async fn active_agents(
+    async fn room_roster(
         &self,
         within: Duration,
         window: usize,
-    ) -> Result<Vec<AgentLiveness>, AircError> {
-        airc_lib::Airc::active_agents(self, within, window).await
-    }
-
-    async fn peer_alias_map(&self) -> Result<HashMap<PeerId, String>, AircError> {
-        let events = airc_lib::Airc::page_recent(self, IDENTITY_SCAN).await?;
-        Ok(parse_identity_names(events))
+    ) -> Result<Vec<RoomMember>, AircError> {
+        airc_lib::Airc::room_roster(self, within, window).await
     }
 }
 
@@ -246,17 +209,16 @@ impl RagSource for RoomRosterSource {
             };
         }
 
-        let agents = match self
-            .reader
-            .active_agents(PRESENCE_WINDOW, HEARTBEAT_SCAN)
-            .await
-        {
-            Ok(a) => a,
+        // ONE airc call returns presence joined with display names
+        // (airc#1232). A failure is non-fatal — empty delivery, cognition
+        // stays up (good-citizen doctrine).
+        let members = match self.reader.room_roster(PRESENCE_WINDOW, ROSTER_SCAN).await {
+            Ok(m) => m,
             Err(err) => {
                 tracing::warn!(
                     error = %err,
                     persona_id = %self.persona_id,
-                    "room_roster: active_agents failed — empty delivery, cognition stays up"
+                    "room_roster: room_roster failed — empty delivery, cognition stays up"
                 );
                 return RagDelivery {
                     source_id: SOURCE_ID.to_string(),
@@ -270,40 +232,26 @@ impl RagSource for RoomRosterSource {
 
         let self_peer = self.reader.self_peer_id();
 
-        // Resolve ALL names in ONE scan, not per-peer. A failure here is
-        // non-fatal — degrade to short peer labels (still truthful) so a
-        // transient identity-read outage doesn't blank the roster or the
-        // turn. Logged at debug so an outage is observable.
-        let names = self.reader.peer_alias_map().await.unwrap_or_else(|err| {
-            tracing::debug!(
-                error = %err,
-                persona_id = %self.persona_id,
-                "room_roster: peer_alias_map failed — falling back to short peer labels"
-            );
-            HashMap::new()
-        });
-
         let mut items: Vec<RagItem> = Vec::new();
         let mut tokens_used: u32 = 0;
-        for agent in agents {
+        for member in members {
             // Exclude self — the roster grounds the persona in who is
-            // NOT itself.
-            if agent.peer == self_peer {
+            // NOT itself. (room_roster includes self by design.)
+            if member.peer_id == self_peer {
                 continue;
             }
-            // Name from the single-scan map; fall back to a short peer
-            // label so a present citizen is never invisible.
-            let name = names
-                .get(&agent.peer)
-                .cloned()
-                .unwrap_or_else(|| Self::short_peer_label(agent.peer));
-            let availability = agent.coordination.availability.map(|a| format!("{a:?}"));
+            // airc resolved the name; fall back to a short peer label for
+            // a present-but-unnamed peer so a citizen is never invisible.
+            let name = member
+                .display_name
+                .unwrap_or_else(|| Self::short_peer_label(member.peer_id));
+            let availability = member.availability.map(|a| format!("{a:?}"));
             let item = Self::make_item(
-                agent.peer,
+                member.peer_id,
                 name,
-                agent.runtime.clone(),
+                member.runtime,
                 availability,
-                agent.last_seen_ms,
+                member.last_seen_ms,
             );
             if tokens_used.saturating_add(item.tokens) > budget {
                 // Budget exhausted. Roster is unordered presence; we
@@ -360,26 +308,22 @@ mod tests {
         RagContext::for_persona(persona(), 1_000_000)
     }
 
-    /// Test double — canned liveness + alias map, optional failure.
+    /// Test double — canned room members, optional failure. (airc joins
+    /// presence + names into `RoomMember` now; the stub returns them
+    /// directly — no separate alias map to maintain.)
     struct StubReader {
         self_peer: PeerId,
-        agents: Vec<AgentLiveness>,
-        aliases: Vec<(PeerId, String)>,
+        members: Vec<RoomMember>,
         fail: Mutex<bool>,
     }
 
     impl StubReader {
-        fn new(self_peer: PeerId, agents: Vec<AgentLiveness>) -> Self {
+        fn new(self_peer: PeerId, members: Vec<RoomMember>) -> Self {
             Self {
                 self_peer,
-                agents,
-                aliases: Vec::new(),
+                members,
                 fail: Mutex::new(false),
             }
-        }
-        fn with_alias(mut self, peer: PeerId, alias: &str) -> Self {
-            self.aliases.push((peer, alias.to_string()));
-            self
         }
         fn set_fail(&self, fail: bool) {
             *self.fail.lock().unwrap() = fail;
@@ -391,33 +335,27 @@ mod tests {
         fn self_peer_id(&self) -> PeerId {
             self.self_peer
         }
-        async fn active_agents(
+        async fn room_roster(
             &self,
             _within: Duration,
             _window: usize,
-        ) -> Result<Vec<AgentLiveness>, AircError> {
+        ) -> Result<Vec<RoomMember>, AircError> {
             if *self.fail.lock().unwrap() {
                 return Err(AircError::UnknownPeer(PeerId::new()));
             }
-            Ok(self.agents.clone())
-        }
-        async fn peer_alias_map(&self) -> Result<HashMap<PeerId, String>, AircError> {
-            if *self.fail.lock().unwrap() {
-                return Err(AircError::UnknownPeer(PeerId::new()));
-            }
-            Ok(self.aliases.iter().cloned().collect())
+            Ok(self.members.clone())
         }
     }
 
-    fn liveness(peer: PeerId, runtime: &str) -> AgentLiveness {
-        AgentLiveness {
-            peer,
+    /// Build a `RoomMember` — `name: Some` mirrors a peer that published
+    /// an identity card; `None` mirrors present-but-unnamed.
+    fn member(peer: PeerId, runtime: &str, name: Option<&str>) -> RoomMember {
+        RoomMember {
+            peer_id: peer,
+            display_name: name.map(|s| s.to_string()),
             runtime: runtime.to_string(),
-            client_id: None,
-            scope: None,
-            build: None,
+            availability: None,
             last_seen_ms: 1_000_000,
-            coordination: Default::default(),
         }
     }
 
@@ -429,7 +367,7 @@ mod tests {
         let me = PeerId::new();
         let other = PeerId::new();
         let reader = Arc::new(
-            StubReader::new(me, vec![liveness(other, "claude")]).with_alias(other, "win-claude"),
+            StubReader::new(me, vec![member(other, "claude", Some("win-claude"))]),
         );
         let source = RoomRosterSource::new(persona(), reader);
         let delivery = source
@@ -456,7 +394,7 @@ mod tests {
         let other = PeerId::new();
         let reader = Arc::new(StubReader::new(
             me,
-            vec![liveness(me, "persona"), liveness(other, "persona")],
+            vec![member(me, "persona", None), member(other, "persona", None)],
         ));
         let source = RoomRosterSource::new(persona(), reader);
         let delivery = source
@@ -476,7 +414,7 @@ mod tests {
     async fn peer_without_alias_falls_back_to_short_label() {
         let me = PeerId::new();
         let other = PeerId::new();
-        let reader = Arc::new(StubReader::new(me, vec![liveness(other, "codex")]));
+        let reader = Arc::new(StubReader::new(me, vec![member(other, "codex", None)]));
         let source = RoomRosterSource::new(persona(), reader);
         let delivery = source
             .deliver(&ctx(), 1_000, ResolutionPreference::Raw)
@@ -511,7 +449,7 @@ mod tests {
     async fn reader_error_returns_empty_no_panic() {
         let me = PeerId::new();
         let other = PeerId::new();
-        let reader = Arc::new(StubReader::new(me, vec![liveness(other, "persona")]));
+        let reader = Arc::new(StubReader::new(me, vec![member(other, "persona", None)]));
         reader.set_fail(true);
         let source = RoomRosterSource::new(persona(), reader);
         let delivery = source
@@ -527,7 +465,7 @@ mod tests {
     async fn cross_persona_ctx_returns_empty() {
         let me = PeerId::new();
         let other = PeerId::new();
-        let reader = Arc::new(StubReader::new(me, vec![liveness(other, "persona")]));
+        let reader = Arc::new(StubReader::new(me, vec![member(other, "persona", None)]));
         let source = RoomRosterSource::new(persona(), reader);
         let alien = Uuid::parse_str("00000000-0000-0000-0000-000000000bbb").unwrap();
         let delivery = source
@@ -550,9 +488,9 @@ mod tests {
         let reader = Arc::new(StubReader::new(
             me,
             vec![
-                liveness(PeerId::new(), "persona"),
-                liveness(PeerId::new(), "persona"),
-                liveness(PeerId::new(), "persona"),
+                member(PeerId::new(), "persona", None),
+                member(PeerId::new(), "persona", None),
+                member(PeerId::new(), "persona", None),
             ],
         ));
         let source = RoomRosterSource::new(persona(), reader);
