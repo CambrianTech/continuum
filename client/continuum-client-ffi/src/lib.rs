@@ -205,14 +205,39 @@ pub struct ContinuumClient {
 }
 
 impl ContinuumClient {
-    /// Build over an established airc handle + the substrate's peer id. The CLI
-    /// (Rust) calls this directly; the per-platform glue builds the airc handle
-    /// then calls this. (A foreign-friendly `connect(home, peer)` constructor
-    /// that builds the handle internally is the next thin layer.)
+    /// Build over an established airc handle + the substrate's peer id. The
+    /// IN-PROCESS entry — the CLI / a persona in the same process calls this
+    /// directly (it already holds the `Arc<Airc>`, no overhead). The FFI entry
+    /// is [`ContinuumClient::connect`] (foreign callers can't construct an
+    /// `Arc<airc_lib::Airc>` across the boundary).
     pub fn new(airc: Arc<airc_lib::Airc>, target_peer: Uuid) -> Self {
         Self {
             conn: Connection::connect(airc, target_peer),
         }
+    }
+
+    /// FOREIGN-friendly constructor — the FFI entry point. Builds the airc
+    /// handle INTERNALLY (foreign callers can't make an `Arc<airc_lib::Airc>` —
+    /// the outlier-B leak the uniffi pass surfaced): attaches to the running
+    /// daemon at `socket` as `agent_name` under `home`, targeting the substrate
+    /// `target_peer`. Identity defaults to `SessionIdentity::unknown()` (via
+    /// `new` → `Connection::connect`) — the handshake populates it, never
+    /// fabricated here. Returns `Arc<Self>` (the uniffi object shape); the
+    /// in-process `new` stays for Rust consumers. Both entries coexist.
+    pub async fn connect(
+        home: String,
+        agent_name: String,
+        socket: String,
+        target_peer: String,
+    ) -> Result<Arc<ContinuumClient>, FfiError> {
+        // Parse the peer id FIRST — a bad id fails cheaply before we touch the
+        // daemon, and never fabricates a target.
+        let peer = Uuid::parse_str(&target_peer)
+            .map_err(|e| FfiError::Connect(format!("target_peer is not a valid UUID: {e}")))?;
+        let airc = airc_lib::Airc::attach_as(std::path::PathBuf::from(home), &agent_name, socket)
+            .await
+            .map_err(|e| FfiError::Connect(format!("airc attach failed: {e}")))?;
+        Ok(Arc::new(ContinuumClient::new(Arc::new(airc), peer)))
     }
 
     /// WHO this client acts as — citizen (`userId`) + session instance
@@ -509,5 +534,26 @@ mod tests {
             serde_json::from_str::<serde_json::Value>(&events[0]).unwrap(),
             json!({ "hello": "world" })
         );
+    }
+
+    #[tokio::test]
+    async fn connect_rejects_a_bad_target_peer_uuid() {
+        // what this catches: the foreign constructor validates target_peer FIRST
+        // (cheap, before touching the daemon) and surfaces FfiError::Connect —
+        // never fabricates a target or proceeds with a garbage peer id.
+        // match (not unwrap_err) — ContinuumClient isn't Debug, so unwrap_err
+        // (which needs the Ok type to be Debug) wouldn't compile.
+        match ContinuumClient::connect(
+            "/tmp".into(),
+            "tester".into(),
+            "/tmp/nonexistent.sock".into(),
+            "not-a-uuid".into(),
+        )
+        .await
+        {
+            Err(FfiError::Connect(_)) => {}
+            Err(other) => panic!("expected FfiError::Connect, got {other:?}"),
+            Ok(_) => panic!("expected an error for a bad target_peer uuid"),
+        }
     }
 }
