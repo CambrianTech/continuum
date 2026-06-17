@@ -49,6 +49,7 @@ pub mod turn_batch;
 pub mod types;
 pub mod validate_response;
 pub mod vision_describe;
+pub mod workspace;
 
 pub use adaptive_throughput::*;
 pub use model_resolver::*;
