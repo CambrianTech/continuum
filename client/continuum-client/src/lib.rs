@@ -13,6 +13,7 @@ pub mod error;
 pub mod event;
 #[cfg(any(test, feature = "test-fixtures"))]
 pub mod mock;
+pub mod session;
 pub mod transport;
 
 pub use airc_ipc::AircIpcTransport;
@@ -22,4 +23,5 @@ pub use error::ClientError;
 pub use event::EventSubscriber;
 #[cfg(any(test, feature = "test-fixtures"))]
 pub use mock::MockTransport;
+pub use session::SessionIdentity;
 pub use transport::{ServeHandler, Transport};

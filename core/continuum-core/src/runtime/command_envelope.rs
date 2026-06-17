@@ -142,6 +142,25 @@ pub struct CommandRequest<P> {
     /// reading this can scope per-user state (e.g., per-persona work).
     #[serde(rename = "userId", skip_serializing_if = "Option::is_none", default)]
     pub user_id: Option<Uuid>,
+
+    /// Conversation / room scope this command operates within — the THIRD
+    /// ID tier (userId > sessionId > contextId, CLAUDE.md ID hierarchy).
+    ///
+    /// UNLIKE `session_id`/`user_id` — which the kernel injects from the
+    /// connection (the substrate knows WHO you are from the airc pairing) —
+    /// `context_id` is CLIENT-SUPPLIED: the caller scopes a sequence of ops
+    /// to a conversation via the SDK's scoped client (`Continuum.scoped(ctx)`),
+    /// and it rides as an envelope sibling so handlers scope per-context state
+    /// (per-room memory, per-thread recall) without it polluting command
+    /// params. First-class for every citizen — a persona servicing a room is
+    /// a citizen scoped to that room's contextId, the same shape a browser tab
+    /// uses (this is what fills the persona cognition's tool_context).
+    #[serde(
+        rename = "contextId",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
+    pub context_id: Option<Uuid>,
 }
 
 impl<P> CommandRequest<P>
@@ -172,6 +191,7 @@ impl<P> CommandRequest<P> {
             handle: None,
             session_id: None,
             user_id: None,
+            context_id: None,
         }
     }
 
@@ -187,6 +207,13 @@ impl<P> CommandRequest<P> {
 
     pub fn with_user(mut self, user_id: Uuid) -> Self {
         self.user_id = Some(user_id);
+        self
+    }
+
+    /// Scope this request to a conversation/room (the third ID tier). The SDK's
+    /// scoped client stamps it; handlers read it for per-context state.
+    pub fn with_context(mut self, context_id: Uuid) -> Self {
+        self.context_id = Some(context_id);
         self
     }
 
@@ -401,7 +428,10 @@ mod tests {
         assert_eq!(req.params.model, "qwen");
         assert_eq!(req.params.max_tokens, 512);
         assert!(
-            req.handle.is_none() && req.session_id.is_none() && req.user_id.is_none(),
+            req.handle.is_none()
+                && req.session_id.is_none()
+                && req.user_id.is_none()
+                && req.context_id.is_none(),
             "envelope fields default to None when absent in the wire JSON"
         );
     }
@@ -458,6 +488,35 @@ mod tests {
         assert_eq!(req.handle, Some(handle));
         assert_eq!(req.session_id, Some(session_id));
         assert_eq!(req.user_id, Some(user_id));
+    }
+
+    // what this catches: the THIRD ID tier (contextId) parses from the flat wire
+    // envelope as a sibling of sessionId/userId, and the builder attaches it.
+    // contextId is CLIENT-supplied (the SDK's scoped client stamps it), so unlike
+    // session/user it must survive a round-trip from the caller's JSON. A drift
+    // that drops it would silently un-scope every per-context handler (per-room
+    // memory, per-thread recall, a persona's tool_context).
+    #[test]
+    fn request_parses_and_builds_context_id_third_tier() {
+        let context_id = Uuid::new_v4();
+        // From flat wire JSON (the caller stamped contextId alongside params).
+        let value = json!({
+            "model": "qwen",
+            "max_tokens": 256,
+            "contextId": context_id.to_string(),
+        });
+        let req = CommandRequest::<StartParams>::from_value(value).expect("parse must succeed");
+        assert_eq!(req.context_id, Some(context_id));
+        // Round-trips back out under the camelCase wire key.
+        let back = serde_json::to_value(&req).expect("serialize");
+        assert_eq!(back["contextId"], json!(context_id.to_string()));
+        // And the builder attaches it.
+        let built = CommandRequest::new(StartParams {
+            model: "q".into(),
+            max_tokens: 1,
+        })
+        .with_context(context_id);
+        assert_eq!(built.context_id, Some(context_id));
     }
 
     // ── CommandResponse<T> ───────────────────────────────────────────
