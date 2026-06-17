@@ -8,12 +8,17 @@
 
 ## The two primitives are the entire surface
 
-Everything is one of two calls on the facade ([[command-event-decision-rule]]):
+Everything is the two primitives ([[command-event-decision-rule]]), each
+**bidirectional** — Commands = call + serve, Events = emit + subscribe:
 
 ```
-execute(command: &str, params_json: &str) -> Result<String, FfiError>   // request/response
-subscribe(class: &str, callback: EventCallback) -> Subscription          // pub/sub (Drop = unsubscribe)
+execute(command: &str, params_json: &str) -> Result<String, FfiError>   // Command: CALL
+provide(command: &str, handler: CommandHandler) -> Registration         // Command: SERVE (client-provided)
+subscribe(class: &str, callback: EventCallback) -> Subscription          // Event: subscribe (Drop = unsubscribe)
 ```
+
+(`#1663` shipped `execute` + `subscribe`; `provide` is the serve-side primitive the
+facade still needs — see "Commands are bidirectional" below.)
 
 A typed SDK method is a thin wrapper over `execute`/`subscribe`:
 
@@ -26,6 +31,47 @@ chat.send({ room, message }) -> SendResult
 The SDK adds *types + idiomatic shape* (Promise / async-await / Flow / Stream); the
 JSON shape is the canonical contract. Zero logic — see the organizing law in the
 structure doc.
+
+## Commands are bidirectional: call AND provide (client-provided commands)
+
+A command isn't only something a client *calls* — a client can also *provide*
+(serve) one. This is the **serve side of the Command primitive** (still two
+primitives: Commands = `execute` + `provide`; Events = `emit` + `subscribe`).
+
+Some commands cannot run in the core — they need the **client's** display, sensors,
+or renderer:
+
+| Command | rust-origin contract | per-platform adapter (in the SDK) |
+|---------|----------------------|-----------------------------------|
+| `interface/screenshot` | name + ts-rs `ScreenshotParams`/`Result` | web = DOM/canvas · desktop = OS · **AR/VR = capture from the renderer** |
+| capture / sensors | rust-origin | each platform's native capture |
+| `ping` | rust-origin | trivial, but same shape |
+
+The **contract has a rust origin** (canonical name + ts-rs types, one source of
+truth); the **adapter that implements it lives in the SDK**, one per platform —
+OpenCV-style adapter polymorphism: one command identity, N platform adapters. The
+core (or a peer) *routes* the command to a client that provides it; the SDK's
+adapter runs and returns the typed result.
+
+This already exists server-side for personas (`persona/command_inbound_pump.rs`
+routes inbound commands to a persona's handlers). The SDK is the **client analog**,
+so the FFI facade needs a third method beside `execute`/`subscribe`:
+
+```
+provide(command: &str, handler: CommandHandler) -> Registration   // Drop = deregister
+CommandHandler { handle(params_json) -> Result<result_json, FfiError> }
+```
+
+Typed in the SDK off the SAME `CommandMap` (params/result inferred from the name):
+
+```ts
+commands.provide('interface/screenshot', async (p) => webCapture(p));      // apps/web
+commands.provide('interface/screenshot', async (p) => rendererCapture(p)); // apps/vr
+```
+
+(The legacy `src/commands/interface/screenshot/{browser,server}` split is exactly
+this today — the browser file IS the web adapter. The new shape generalizes it:
+rust-origin contract, per-SDK adapter, routed.)
 
 ## The contract: a command is (name, ParamsType, ResultType, accessLevel)
 
@@ -54,6 +100,46 @@ Pipeline per language:
 - **Swift / Kotlin** — uniffi emits the binding; the typed method layer generates
   from the same command/type manifest.
 - **Dart** — rides the native SDKs (per structure doc); generated likewise.
+
+## The elegant typed surface (TS): infer from the name, don't pass generics
+
+The old shape made the *caller* supply the generics — `Commands.execute<T extends
+CommandParams, U extends CommandResult>(name, params)`. We can do better: **infer
+both the params type AND the result type from the command-name literal**, so the
+caller passes nothing but the name + params and gets a fully-typed result.
+
+```ts
+// GENERATED — one entry per discovered command, never hand-written
+interface CommandMap {
+  'data/list':                { params: DataListParams;  result: DataListResult };
+  'ai/generate':              { params: GenerateParams;  result: GenerateResult };
+  'collaboration/chat/send':  { params: ChatSendParams;  result: ChatSendResult };
+  // …
+}
+type CommandName = keyof CommandMap;
+
+// hand-written ONCE (the generic machinery over the facade); never changes per command
+function execute<K extends CommandName>(
+  name: K,
+  params: CommandMap[K]['params'],
+): Promise<CommandMap[K]['result']>;
+```
+
+`execute('data/list', { collection })` now infers the params shape and returns
+`Promise<DataListResult>` — no `<T,U>`, full inference from the literal. Same for
+events via an `EventMap`. This is the "amazing things with generics" win — and it
+**stays compatible with the no-hardcoded-registry rule** because `CommandMap` is
+*generated* (regenerated on every command change), not a hand-maintained union.
+Generation is what makes the elegance safe.
+
+## Structure: the SDK is the one shared layer (front + back)
+
+Sharing TS across frontend and backend is smart — but the old
+`browser/shared/server` tripartite split got into trouble (logic scattered across
+three tiers, fuzzy boundaries). The cleaner shape: **`sdk/typescript` IS the shared
+layer** — environment-agnostic (imports neither browser nor server), consumed by
+`apps/web` (frontend) AND any TS backend alike. Apps stay thin environment shells
+on top. One shared SDK, not three intertwined tiers.
 
 ## The command set (by namespace — ~40 live, discovery-driven)
 
