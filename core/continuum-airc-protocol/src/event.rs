@@ -55,6 +55,9 @@ pub const HEADER_EVENT_SUBSCRIPTION_ID: &str = "continuum.event.subscription_id"
 pub const EVENT_SUBSCRIBE_BODY_HINT: &str = "continuum.event.subscribe.v1";
 pub const EVENT_DELIVER_BODY_HINT: &str = "continuum.event.deliver.v1";
 pub const EVENT_UNSUBSCRIBE_BODY_HINT: &str = "continuum.event.unsubscribe.v1";
+/// A client PUBLISHING an event into the substrate's fan-out — the publish twin
+/// of subscribe (the `emit` half of the Event primitive).
+pub const EVENT_PUBLISH_BODY_HINT: &str = "continuum.event.publish.v1";
 pub const EVENT_ACK_BODY_HINT: &str = "continuum.event.ack.v1";
 
 // ─── Typed envelopes ─────────────────────────────────────────────────
@@ -94,6 +97,21 @@ pub struct AircEventUnsubscribe {
 pub struct AircEventUnsubscribeAck {
     pub subscription_id: Uuid,
     pub closed: bool,
+}
+
+/// Caller-side publish request — a client emitting an event into the
+/// substrate's fan-out. The publish twin of [`AircEventSubscribe`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AircEventPublish {
+    pub topic: String,
+    pub payload: Value,
+}
+
+/// Peer-side ack to a publish: how many subscribers the event fanned out to.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AircEventPublishAck {
+    pub topic: String,
+    pub delivered: u64,
 }
 
 // ─── Pure helper functions ───────────────────────────────────────────
@@ -174,6 +192,60 @@ pub fn resolve_unsubscribe(
     Ok((MentionTarget::Peer(target_peer), headers, body))
 }
 
+/// Build the outbound publish envelope — a client emitting `payload` to
+/// `topic`. The publish twin of [`resolve_subscribe`]; refuses an empty topic
+/// upfront for the same reason (the publisher matches by topic).
+pub fn resolve_publish(
+    target_peer: PeerId,
+    topic: &str,
+    payload: Value,
+) -> Result<(MentionTarget, airc_core::Headers, Body), String> {
+    if topic.is_empty() {
+        return Err(
+            "airc event publish: topic must not be empty — the peer-side publisher \
+             fans out by topic and an empty topic would match nothing. Per \
+             [[no-fallbacks-ever]] the transport refuses upfront."
+                .to_string(),
+        );
+    }
+    let req = AircEventPublish {
+        topic: topic.to_string(),
+        payload,
+    };
+    let body_value = serde_json::to_value(&req)
+        .map_err(|e| format!("airc event publish: serialize AircEventPublish to JSON: {e}"))?;
+    let body = Body::Json(body_value);
+
+    let mut headers = airc_core::Headers::new();
+    headers.insert(HEADER_EVENT_TOPIC.to_string(), topic.to_string());
+    headers.insert(HEADER_EVENT_KIND.to_string(), "publish".to_string());
+    headers.insert(
+        HEADER_CONTINUUM_BODY_HINT.to_string(),
+        EVENT_PUBLISH_BODY_HINT.to_string(),
+    );
+
+    Ok((MentionTarget::Peer(target_peer), headers, body))
+}
+
+/// Decode a publish-reply body as [`AircEventPublishAck`] (the fan-out count).
+pub fn decode_publish_ack(reply_body: Option<Body>) -> Result<AircEventPublishAck, String> {
+    let body = reply_body.ok_or_else(|| {
+        "airc event publish: reply has no body (peer-side publisher must \
+         attach Body::Json(AircEventPublishAck))"
+            .to_string()
+    })?;
+    let value = match body {
+        Body::Json(v) => v,
+        Body::Binary(_) => {
+            return Err("airc event publish: reply body was Binary; expected Json \
+                 (AircEventPublishAck is a JSON envelope)"
+                .to_string());
+        }
+    };
+    serde_json::from_value(value)
+        .map_err(|e| format!("airc event publish: deserialize reply as AircEventPublishAck: {e}"))
+}
+
 /// Decode a subscribe-reply body as [`AircEventSubscribeAck`].
 ///
 /// Every error path (no body, binary body, malformed JSON) is
@@ -187,9 +259,11 @@ pub fn decode_subscribe_ack(reply_body: Option<Body>) -> Result<AircEventSubscri
     let value = match body {
         Body::Json(v) => v,
         Body::Binary(_) => {
-            return Err("airc event subscribe: reply body was Binary; expected Json \
+            return Err(
+                "airc event subscribe: reply body was Binary; expected Json \
                  (AircEventSubscribeAck is a JSON envelope)"
-                .to_string());
+                    .to_string(),
+            );
         }
     };
     serde_json::from_value(value).map_err(|e| {
@@ -207,9 +281,7 @@ pub fn decode_unsubscribe_ack(reply_body: Option<Body>) -> Result<AircEventUnsub
     let value = match body {
         Body::Json(v) => v,
         Body::Binary(_) => {
-            return Err(
-                "airc event unsubscribe: reply body was Binary; expected Json".to_string()
-            );
+            return Err("airc event unsubscribe: reply body was Binary; expected Json".to_string());
         }
     };
     serde_json::from_value(value).map_err(|e| {
@@ -233,9 +305,7 @@ pub fn decode_deliver_frame(event: &TranscriptEvent) -> Result<AircEventDeliver,
     let value = match body {
         Body::Json(v) => v.clone(),
         Body::Binary(_) => {
-            return Err(
-                "airc event Deliver frame body was Binary; expected Json".to_string()
-            );
+            return Err("airc event Deliver frame body was Binary; expected Json".to_string());
         }
     };
     serde_json::from_value(value)
@@ -368,5 +438,70 @@ mod tests {
             "continuum.event.unsubscribe.v1"
         );
         assert_eq!(EVENT_ACK_BODY_HINT, "continuum.event.ack.v1");
+        assert_eq!(EVENT_PUBLISH_BODY_HINT, "continuum.event.publish.v1");
+    }
+
+    #[test]
+    fn publish_round_trips_json() {
+        let req = AircEventPublish {
+            topic: "cognition/analyze/complete".into(),
+            payload: serde_json::json!({ "confidence": 0.9 }),
+        };
+        let json = serde_json::to_string(&req).expect("serialize");
+        let back: AircEventPublish = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back, req);
+    }
+
+    #[test]
+    fn publish_ack_round_trips() {
+        let ack = AircEventPublishAck {
+            topic: "events/x".into(),
+            delivered: 3,
+        };
+        let json = serde_json::to_string(&ack).expect("serialize");
+        let back: AircEventPublishAck = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back, ack);
+    }
+
+    #[test]
+    fn resolve_publish_builds_envelope_with_publish_hint() {
+        // what this catches: the publish envelope must carry the topic + the
+        // publish body-hint so the substrate's EventPublishAdapter routes it (the
+        // mirror of resolve_subscribe).
+        let peer = PeerId::new();
+        let (target, headers, body) =
+            resolve_publish(peer, "events/x", serde_json::json!({ "k": 1 })).expect("resolves");
+        assert_eq!(target, MentionTarget::Peer(peer));
+        assert_eq!(
+            headers.get(HEADER_CONTINUUM_BODY_HINT).map(String::as_str),
+            Some(EVENT_PUBLISH_BODY_HINT)
+        );
+        assert_eq!(
+            headers.get(HEADER_EVENT_KIND).map(String::as_str),
+            Some("publish")
+        );
+        let Body::Json(v) = body else {
+            panic!("publish body must be JSON")
+        };
+        let decoded: AircEventPublish = serde_json::from_value(v).expect("decode body");
+        assert_eq!(decoded.topic, "events/x");
+    }
+
+    #[test]
+    fn resolve_publish_refuses_empty_topic() {
+        // what this catches: an empty topic fans out to nothing (silent) — refuse
+        // upfront per no-fallbacks, same as resolve_subscribe.
+        assert!(resolve_publish(PeerId::new(), "", serde_json::json!({})).is_err());
+    }
+
+    #[test]
+    fn decode_publish_ack_round_trips_the_fanout_count() {
+        let ack = AircEventPublishAck {
+            topic: "events/x".into(),
+            delivered: 7,
+        };
+        let body = Body::Json(serde_json::to_value(&ack).unwrap());
+        let decoded = decode_publish_ack(Some(body)).expect("decodes");
+        assert_eq!(decoded.delivered, 7);
     }
 }

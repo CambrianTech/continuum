@@ -25,15 +25,26 @@ pub use command::{
     KIND_ROOM,
 };
 pub use event::{
-    // Envelope types
-    AircEventDeliver, AircEventSubscribe, AircEventSubscribeAck, AircEventUnsubscribe,
-    AircEventUnsubscribeAck,
     // Helper functions — shared by substrate AND client
-    decode_deliver_frame, decode_subscribe_ack, decode_unsubscribe_ack, matches_subscription,
-    resolve_subscribe, resolve_unsubscribe,
+    decode_deliver_frame,
+    decode_subscribe_ack,
+    decode_unsubscribe_ack,
+    matches_subscription,
+    resolve_subscribe,
+    resolve_unsubscribe,
+    // Envelope types
+    AircEventDeliver,
+    AircEventSubscribe,
+    AircEventSubscribeAck,
+    AircEventUnsubscribe,
+    AircEventUnsubscribeAck,
     // Body-hint constants
-    EVENT_ACK_BODY_HINT, EVENT_DELIVER_BODY_HINT, EVENT_SUBSCRIBE_BODY_HINT,
+    EVENT_ACK_BODY_HINT,
+    EVENT_DELIVER_BODY_HINT,
+    EVENT_SUBSCRIBE_BODY_HINT,
     EVENT_UNSUBSCRIBE_BODY_HINT,
     // Header name constants
-    HEADER_EVENT_KIND, HEADER_EVENT_SUBSCRIPTION_ID, HEADER_EVENT_TOPIC,
+    HEADER_EVENT_KIND,
+    HEADER_EVENT_SUBSCRIPTION_ID,
+    HEADER_EVENT_TOPIC,
 };

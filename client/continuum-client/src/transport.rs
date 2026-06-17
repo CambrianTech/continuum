@@ -44,6 +44,10 @@ pub trait Transport: Send + Sync + 'static {
     /// substrate's URI convention (e.g. `"persona.response.*"`). (Event: LISTEN.)
     async fn subscribe(&self, class: &str) -> Result<EventStream, ClientError>;
 
+    /// Publish an event to `class` — the publish twin of `subscribe`, routed to
+    /// the substrate's event fan-out. (Event: PUBLISH.)
+    async fn emit(&self, class: &str, payload: Value) -> Result<(), ClientError>;
+
     /// Register `handler` to serve `command`: inbound requests the substrate
     /// routes here are dispatched to it and the result replied automatically.
     /// The serve twin of `request`. Idempotent per command (re-registering
