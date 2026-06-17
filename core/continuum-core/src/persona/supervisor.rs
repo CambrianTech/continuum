@@ -508,6 +508,36 @@ pub async fn materialize_adapters(
             ));
         cognition.set_doctrine_source(doctrine_source);
 
+        // Disk-backed, per-persona memory: open <home>/engrams.sqlite and
+        // rehydrate prior engrams + recall metadata, so memory SURVIVES restart.
+        // Without this, admission is in-memory only (NoopSink) and the persona is
+        // amnesiac across boots. `identity.home` is the resolved
+        // <root>/personas/<name> dir. On disk error we log loud and continue
+        // in-memory — the persona stays alive; persistence is degraded, not fatal
+        // (NOT an inference fallback). MUST run before the WorkspaceCycle is
+        // assembled below, so its RecallFaculty binds the persisted admission.
+        let home = crate::persona::home::PersonaHome::from_root(identity.home.clone());
+        let recall_meta = std::sync::Arc::new(
+            crate::persona::recall_metadata::RecallMetadataRegistry::new(),
+        );
+        match crate::persona::admission_state::AdmissionState::for_persona(&home, recall_meta)
+            .await
+        {
+            Ok(persisted) => {
+                cognition.attach_persistent_admission(
+                    identity.persona_id,
+                    std::sync::Arc::new(persisted),
+                );
+            }
+            Err(e) => {
+                tracing::warn!(
+                    persona = %identity.agent_name,
+                    error = %e,
+                    "engram persistence unavailable; running in-memory (memory will NOT survive restart)"
+                );
+            }
+        }
+
         let system_prompt = build_persona_system_prompt(&identity.agent_name);
 
         // Assemble this persona's continuous mind into the process-global
