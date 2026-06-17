@@ -27,6 +27,10 @@ path = "src/bin/vrm_inspect.rs"
 name = "cargo-continuum-vdd"
 path = "src/bin/cargo-continuum-vdd.rs"
 
+[[bin]]
+name = "airc-remote-inference-probe"
+path = "src/bin/airc_remote_inference_probe.rs"
+
 [dependencies]
 tokio.workspace = true
 serde.workspace = true
