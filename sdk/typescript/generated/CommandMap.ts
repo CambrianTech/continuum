@@ -23,10 +23,19 @@ export interface PingParams { message?: string }
 export interface PingResult { ok: boolean; roundTripMs: number }
 export interface ScreenshotParams { querySelector?: string; filename?: string }
 export interface ScreenshotResult { dataUrl: string; width: number; height: number }
+/** A command with NESTED params — pins serialize-once fidelity for the conformance
+ *  spec (a twin that flattens/reorders nested objects breaks here). */
+export interface DataListParams {
+  collection: string;
+  orderBy?: Array<{ field: string; direction: 'asc' | 'desc' }>;
+  filter?: Record<string, unknown>;
+}
+export interface DataListResult { items: unknown[]; total: number }
 
 /** name -> { params, result }. Generated; the contract is rust-origin. */
 export interface CommandMap {
   'ping': { params: PingParams; result: PingResult };
+  'data/list': { params: DataListParams; result: DataListResult };
   // Client-PROVIDED command: rust-origin contract, per-platform SDK adapter
   // (web DOM/canvas · desktop OS · AR/VR renderer capture). See `Commands.provide`.
   'interface/screenshot': { params: ScreenshotParams; result: ScreenshotResult };
@@ -34,9 +43,14 @@ export interface CommandMap {
 
 export type CommandName = keyof CommandMap;
 
+// --- Placeholder event payloads (real ones import from protocol/typescript/*) ---
+export interface GridPeerJoined { peerId: string; runtime: 'persona' | 'human' | 'agent' }
+export interface UserCreated { id: string }
+
 /** event class -> payload. Generated. */
 export interface EventMap {
-  // e.g. 'data:chat_messages:created': ChatMessage  (generated)
+  'grid:peer:joined': GridPeerJoined;
+  'data:users:created': UserCreated;
 }
 
 export type EventClass = keyof EventMap;
