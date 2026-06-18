@@ -1,37 +1,51 @@
 //! sdk_codegen — the Rust-rooted SDK generator.
 //!
 //! **The single source of truth for the command surface is RUST.** A command
-//! declares, in ONE place, its name + typed `Params`/`Result` (ts-rs types) +
-//! access level via [`CommandSpec`]. The generator walks the registry and emits
-//! the per-language SDK surface (here: the TypeScript `CommandMap`) FROM that one
-//! declaration — so the typed surface cannot drift from the commands. Generation
-//! is what keeps every SDK consistent ([[lock-uniform-client-early]],
-//! [[persona-is-a-client]]).
+//! declares, in ONE place, its [`CommandSpec`] — name + [`WireShape`] + typed
+//! `Params`/`Result` (ts-rs types). That ONE declaration drives BOTH sides of the
+//! command, so they can never drift:
 //!
-//! This replaces the inverted status quo (98 hand-authored TS spec JSONs + the
-//! old tsx generator, which made the shallow TS layer the source of truth). Here
-//! the deepest layer — the Rust command declaration, whose `Params`/`Result` are
-//! the SAME ts-rs types the wire uses — is the source; the TS surface is output.
+//! - **Call side** ([`generate_command_api`]) — a typed, string-free accessor per
+//!   command (`api.chatSend(params)`, typed in/out, the command string baked in
+//!   once). Change a `Params` type in Rust → regenerate → wrong call sites fail to
+//!   compile. The change is transferred across the boundary, not left as debt.
+//! - **Write side** ([`handler`]) — one typed `execute(ctx, params) -> Result<…>`;
+//!   the framework [`dispatch`] owns parse + envelope + error→reject, so authors
+//!   write no `from_value`/`match`/`try-catch`/envelope boilerplate.
 //!
-//! ## Import model (not decl-inlining)
+//! This replaces the inverted status quo (hand-authored TS spec JSONs + the old
+//! tsx generator, which made the shallow TS layer the source of truth). Here the
+//! deepest layer — the Rust declaration, whose `Params`/`Result` are the SAME
+//! ts-rs wire types — is the source; every language SDK is output
+//! ([[lock-uniform-client-early]], [[persona-is-a-client]]).
 //!
-//! ts-rs is built so each type exports to its OWN file and consumers IMPORT it.
-//! So the generated `CommandMap` **imports** each command's params/result types
-//! (and their transitive dependencies, via [`TS::dependencies`]) from where ts-rs
-//! emits them (`protocol/typescript/*`) — the type lives once, the map references
-//! it. (The outlier-B nested command proved this: re-emitting `decl()` text drops
-//! nested types; importing carries them.)
+//! ## Wire shape, modeled faithfully
 //!
-//! ## Scope (proving slice)
+//! A command's [`WireShape`] is the REAL convention its handler uses, declared per
+//! command and verified against it (an earlier pass modeling a bare handler as
+//! enveloped LIED about the wire — adversarial review caught it): `Bare`
+//! (`P`→`T`), `Enveloped` (`CommandRequest<P>`→`CommandResponse<T>`, the envelope
+//! single-sourced from Rust via ts-rs `#[ts(flatten)]`), `Provided` (adapter,
+//! bare). Command FAILURE is a rejected promise (`ClientError`), never a result
+//! field.
 //!
-//! Outlier-validation slice: the [`CommandSpec`] pattern + the TS `CommandMap`
-//! emitter, proven on TWO outliers — a trivial command (`ping`) and a
-//! nested-params one (`data/list`, whose params reference `OrderBy`). Follow-ups
-//! behind this proven interface: auto-discovery of all `CommandSpec` impls
-//! (`inventory`) replacing the explicit registry; the Swift/Kotlin/CLI emitters
-//! (same registry, more backends); the TS front/back binding tiers; the
-//! `import_base` resolution against the generated file's real location; and
-//! unifying runtime dispatch onto the same `CommandSpec`.
+//! ## Import / vendor model
+//!
+//! ts-rs exports each type to its own file. The generated surface IMPORTS each
+//! command's params/result + their transitive deps (via [`TS::dependencies`]).
+//! [`emit::write_typescript_sdk`] then VENDORS that closure — copying the ts-rs
+//! output into the SDK's own `generated/wire/**`, following imports transitively
+//! so the tree is closed — so the SDK is self-contained yet single-sourced.
+//!
+//! ## Status
+//!
+//! Registry self-assembles via `inventory` (no central list). A diverse REAL
+//! sampling is migrated across all three wire shapes (`inference/llm/request`,
+//! `interface/screenshot`, `chat/*`, `ai/inference/*`), with the authoring trait
+//! proven on the `ai/inference/*` family. Pending: pointing the emitter at the
+//! live `sdk/typescript/generated` (needs a TS typecheck + reconciling the stub's
+//! event split); the Swift/Kotlin emitters (atop the uniffi facade); reconciling
+//! [`AccessLevel`] with the runtime ACL; the remaining ~250 commands.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
