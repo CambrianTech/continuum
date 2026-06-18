@@ -237,6 +237,48 @@ impl CommandDescriptor {
     }
 }
 
+impl CommandDescriptor {
+    /// The TS type a caller PASSES — the inner params, wrapped in
+    /// `CommandRequest<P>` for `Enveloped` commands, bare otherwise.
+    fn ts_param_type(&self) -> String {
+        if self.wire.is_enveloped() {
+            format!("CommandRequest<{}>", self.params.name)
+        } else {
+            self.params.name.clone()
+        }
+    }
+
+    /// The TS type a caller RECEIVES — the inner result, wrapped in
+    /// `CommandResponse<T>` for `Enveloped` commands, bare otherwise.
+    fn ts_result_type(&self) -> String {
+        if self.wire.is_enveloped() {
+            format!("CommandResponse<{}>", self.result.name)
+        } else {
+            self.result.name.clone()
+        }
+    }
+
+    /// The camelCase accessor method name derived from the command path —
+    /// `chat/send` → `chatSend`, `ai/inference/open` → `aiInferenceOpen`,
+    /// `data/query-next` → `dataQueryNext`. The command STRING lives only inside
+    /// the generated method body; call sites use this typed name (no string keys).
+    fn accessor_name(&self) -> String {
+        let mut out = String::new();
+        let mut capitalize = false;
+        for ch in self.name.chars() {
+            match ch {
+                '/' | '-' | '_' => capitalize = true,
+                c if capitalize => {
+                    out.extend(c.to_uppercase());
+                    capitalize = false;
+                }
+                c => out.push(c),
+            }
+        }
+        out
+    }
+}
+
 /// The TS module the [`CommandRequest`](crate::runtime::command_envelope::CommandRequest)
 /// generic is emitted to by ts-rs (relative to [`TS_ROOT`]). The generated map
 /// imports the envelope generics from here for `Enveloped` commands.
@@ -245,15 +287,12 @@ const ENVELOPE_REQUEST_MODULE: &str = "runtime/CommandRequest";
 /// generic is emitted to by ts-rs.
 const ENVELOPE_RESPONSE_MODULE: &str = "runtime/CommandResponse";
 
-/// Emit the TypeScript `CommandMap` module from the registry — the typed surface
-/// every TS SDK consumer infers from (`Commands.execute<K>(name, params)`). Pure:
-/// descriptors in, TS text out, so it's testable without node.
-///
-/// `import_base` is the path (relative to the generated file) where the ts-rs
-/// wire types are emitted — e.g. `"@protocol"` or `"../../../protocol/typescript"`.
-pub fn generate_command_map(commands: &[CommandDescriptor], import_base: &str) -> String {
-    // Group imports by module, deduped — one `import type { A, B } from 'm'` line
-    // per module, names sorted for stable output.
+/// Build the `import type {...}` block every generated surface shares: each
+/// command's transitive `type_refs` grouped by module + deduped, plus the
+/// envelope generics when any command is `Enveloped`. Returns the import lines
+/// (newline-terminated). Centralized so the map and the accessor API can't drift
+/// on what they import.
+fn render_imports(commands: &[CommandDescriptor], import_base: &str) -> String {
     let mut by_module: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     for c in commands {
         for t in &c.type_refs {
@@ -263,15 +302,7 @@ pub fn generate_command_map(commands: &[CommandDescriptor], import_base: &str) -
                 .insert(t.name.clone());
         }
     }
-
-    // Any `Enveloped` command wraps its params/result in the envelope generics,
-    // so the map must import `CommandRequest`/`CommandResponse` from where ts-rs
-    // emitted them (their .ts files already pull in HandleRef themselves). This
-    // is the ONE place the generic wrapper enters the surface — exactly the
-    // compression: the envelope lives once (Rust), every Enveloped command refers
-    // to it rather than re-declaring success/error/handle.
-    let any_enveloped = commands.iter().any(|c| c.wire.is_enveloped());
-    if any_enveloped {
+    if commands.iter().any(|c| c.wire.is_enveloped()) {
         by_module
             .entry(ENVELOPE_REQUEST_MODULE.to_string())
             .or_default()
@@ -281,20 +312,30 @@ pub fn generate_command_map(commands: &[CommandDescriptor], import_base: &str) -
             .or_default()
             .insert("CommandResponse".to_string());
     }
-
     let mut out = String::new();
-    out.push_str(
-        "// GENERATED from the Rust command registry (core/continuum-core sdk_codegen).\n\
-         // DO NOT EDIT. Source of truth: each command's CommandSpec (name + ts-rs\n\
-         // Params/Result + kind). Regenerate after a command changes.\n\n",
-    );
-
     for (module, names) in &by_module {
         let list = names.iter().cloned().collect::<Vec<_>>().join(", ");
         out.push_str(&format!(
             "import type {{ {list} }} from '{import_base}/{module}';\n"
         ));
     }
+    out
+}
+
+/// Emit the TypeScript `CommandMap` module from the registry — the typed surface
+/// every TS SDK consumer infers from (`Commands.execute<K>(name, params)`). Pure:
+/// descriptors in, TS text out, so it's testable without node.
+///
+/// `import_base` is the path (relative to the generated file) where the ts-rs
+/// wire types are emitted — e.g. `"@protocol"` or `"../../../protocol/typescript"`.
+pub fn generate_command_map(commands: &[CommandDescriptor], import_base: &str) -> String {
+    let mut out = String::new();
+    out.push_str(
+        "// GENERATED from the Rust command registry (core/continuum-core sdk_codegen).\n\
+         // DO NOT EDIT. Source of truth: each command's CommandSpec (name + ts-rs\n\
+         // Params/Result + wire shape). Regenerate after a command changes.\n\n",
+    );
+    out.push_str(&render_imports(commands, import_base));
     out.push('\n');
 
     out.push_str(
@@ -311,21 +352,66 @@ pub fn generate_command_map(commands: &[CommandDescriptor], import_base: &str) -
     );
     out.push_str("export interface CommandMap {\n");
     for c in commands {
-        let (params_ty, result_ty) = if c.wire.is_enveloped() {
-            (
-                format!("CommandRequest<{}>", c.params.name),
-                format!("CommandResponse<{}>", c.result.name),
-            )
-        } else {
-            (c.params.name.clone(), c.result.name.clone())
-        };
         out.push_str(&format!(
-            "  '{}': {{ params: {params_ty}; result: {result_ty} }};\n",
-            c.name
+            "  '{}': {{ params: {}; result: {} }};\n",
+            c.name,
+            c.ts_param_type(),
+            c.ts_result_type()
         ));
     }
     out.push_str("}\n\n");
     out.push_str("export type CommandName = keyof CommandMap;\n");
+    out
+}
+
+/// Emit the typed command ACCESSOR API — the surface callers actually use. This
+/// is the point of the whole generator ([[lock-uniform-client-early]]): a caller
+/// writes `api.chatSend(params)` with `params` and the return value strongly
+/// typed straight from the Rust definition — NO string command keys at the call
+/// site, NO hand-written wrapper, NO casting. The command string lives exactly
+/// once, inside the generated method body. Change a param or result type in Rust,
+/// regenerate, and every now-wrong call site fails to compile — the change is
+/// TRANSFERRED across the boundary, not left as tech debt.
+///
+/// `client_module` is where the thin `Commands` facade lives relative to the
+/// generated file (e.g. `"./Commands"`); `import_base` is the ts-rs wire-type
+/// root (e.g. `"@protocol"`). The accessor delegates to `Commands.execute`, so
+/// the literal it passes is still checked against the generated `CommandMap`.
+pub fn generate_command_api(
+    commands: &[CommandDescriptor],
+    import_base: &str,
+    client_module: &str,
+) -> String {
+    let mut out = String::new();
+    out.push_str(
+        "// GENERATED from the Rust command registry (core/continuum-core sdk_codegen).\n\
+         // DO NOT EDIT. Typed accessors — call api.<name>(params), never a string key.\n\n",
+    );
+    out.push_str(&format!("import {{ Commands }} from '{client_module}';\n"));
+    out.push_str(&render_imports(commands, import_base));
+    out.push('\n');
+
+    out.push_str(
+        "/**\n\
+         * Typed command accessors. One method per command, derived from its Rust\n\
+         * CommandSpec — inputs and outputs strongly typed, the command string baked\n\
+         * in once here so call sites stay string-free. A Rust param/result change\n\
+         * regenerates this and breaks now-wrong call sites at compile time.\n\
+         */\n",
+    );
+    out.push_str("export class CommandApi {\n");
+    out.push_str("  constructor(private readonly commands: Commands) {}\n");
+    for c in commands {
+        out.push_str(&format!(
+            "\n  /** `{name}` */\n  {accessor}(params: {params}): Promise<{result}> {{\n    \
+             return this.commands.execute('{name}', params);\n  }}\n",
+            name = c.name,
+            accessor = c.accessor_name(),
+            params = c.ts_param_type(),
+            result = c.ts_result_type(),
+        ));
+    }
+    out.push_str("}\n");
     out
 }
 
@@ -510,6 +596,54 @@ mod tests {
             ),
             "envelope response generic imported:\n{out}"
         );
+    }
+
+    // what this catches (Joel's goal): the generated ACCESSOR API gives a typed
+    // method per command with the command string baked into the BODY — call sites
+    // are string-free and strongly typed straight from the Rust definition. Each
+    // shape gets the faithful signature; the param/result types are the same ones
+    // the CommandMap models, so a Rust type change propagates here too.
+    #[test]
+    fn command_api_emits_typed_string_free_accessors() {
+        let registry = command_registry();
+        let out = generate_command_api(&registry, "@protocol", "./Commands");
+
+        // Enveloped: typed accessor, wrapped signature, string only in the body.
+        assert!(
+            out.contains(
+                "chatSend(params: CommandRequest<ChatSendParams>): \
+                 Promise<CommandResponse<ChatSendResult>> {"
+            ),
+            "enveloped accessor is typed both ends:\n{out}"
+        );
+        // Bare: typed accessor, bare signature.
+        assert!(
+            out.contains(
+                "inferenceLlmRequest(params: InferenceRequest): Promise<InferenceResponse> {"
+            ),
+            "bare accessor is typed both ends, no envelope:\n{out}"
+        );
+        // Provided + multi-segment path camelCasing.
+        assert!(
+            out.contains(
+                "interfaceScreenshot(params: ScreenshotParams): Promise<ScreenshotResult> {"
+            ),
+            "provided accessor present, path camelCased:\n{out}"
+        );
+        assert!(
+            out.contains("aiInferenceOpen(params: CommandRequest<OpenParams>):"),
+            "deep path camelCased (ai/inference/open → aiInferenceOpen):\n{out}"
+        );
+
+        // The command STRING appears only inside method bodies (execute call), and
+        // the accessor delegates to the typed Commands facade.
+        assert!(
+            out.contains("return this.commands.execute('chat/send', params);"),
+            "string key lives once, inside the body:\n{out}"
+        );
+        // No leaked escape paths; the facade is imported.
+        assert!(!out.contains("../../../"), "no ts-rs escape path leaks");
+        assert!(out.contains("import { Commands } from './Commands';"));
     }
 
     // what this catches: a Bare/Provided-only registry must NOT import or use the
