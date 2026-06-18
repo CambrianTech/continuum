@@ -40,9 +40,25 @@ refresh_tailscale_status() {
   fi
 }
 
+# Continuum's grid IS Docker (sandboxed single-machine clusters), so a dead
+# or wedged engine is the grid being down — and a normal `docker compose`
+# call against a hung daemon just hangs. Run the dependable preflight first:
+# it probes the engine and, if it's down, recovers it (force-kills a hung
+# Docker Desktop + clean WSL cycle + relaunch on Windows; relaunch/start on
+# mac/linux), then verifies — failing LOUD if it truly can't come up.
+ensure_docker() {
+  local preflight="$DIR/scripts/ensure-docker.sh"
+  [ -f "$preflight" ] || return 0   # tolerate older checkouts without the preflight
+  bash "$preflight" || {
+    echo "❌ Docker engine is not available and could not be recovered — see ensure-docker messages above." >&2
+    exit 1
+  }
+}
+
 case "${1:-}" in
   up|start)
     refresh_tailscale_status
+    ensure_docker
     cd "$DIR" && docker compose up -d
     echo "⏳ Waiting for services..."
     for i in $(seq 1 30); do
@@ -176,6 +192,7 @@ case "${1:-}" in
   "")
     # No args: open browser if not already open, start if not running
     refresh_tailscale_status
+    ensure_docker
     cd "$DIR"
     if ! docker compose ps widget-server 2>/dev/null | grep -q "healthy"; then
       docker compose up -d
