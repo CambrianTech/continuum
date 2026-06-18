@@ -5,10 +5,62 @@
 //! the ServiceModule trait design is proven for the simplest case.
 
 use crate::runtime::{CommandResult, ModuleConfig, ModuleContext, ModulePriority, ServiceModule};
+use crate::sdk_codegen::{dispatch, CommandError, CommandHandler, Ctx, Outcome};
 use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::any::Any;
 use std::time::Instant;
+use ts_rs::TS;
+
+/// Params for `ping` — the canonical health/liveness command every SDK exposes.
+/// An optional echo message round-trips so a caller can correlate.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../../protocol/typescript/health/PingParams.ts")]
+pub struct PingParams {
+    /// Optional message echoed back (for correlation / a hello).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub message: Option<String>,
+}
+
+/// Result of `ping` — the substrate is alive.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../../protocol/typescript/health/PingResult.ts")]
+pub struct PingResult {
+    /// Always true on a successful round-trip.
+    pub ok: bool,
+    /// Substrate-measured handling time in milliseconds.
+    pub round_trip_ms: u32,
+}
+
+/// `ping` — Bare: bare `PingParams` in, bare `PingResult` out. The simplest
+/// command, authored with the typed trait (a trivial-outlier proof of the
+/// authoring surface alongside the ai/inference family).
+pub struct PingCommand;
+impl crate::sdk_codegen::CommandSpec for PingCommand {
+    const NAME: &'static str = "ping";
+    const ACCESS_LEVEL: crate::sdk_codegen::AccessLevel = crate::sdk_codegen::AccessLevel::AiSafe;
+    const WIRE: crate::sdk_codegen::WireShape = crate::sdk_codegen::WireShape::Bare;
+    type Params = PingParams;
+    type Result = PingResult;
+}
+crate::register_command!(PingCommand);
+
+struct PingHandler;
+#[async_trait]
+impl CommandHandler for PingHandler {
+    type Spec = PingCommand;
+    async fn execute(&self, _ctx: &Ctx, _p: PingParams) -> Result<Outcome<PingResult>, CommandError> {
+        Ok(PingResult {
+            ok: true,
+            round_trip_ms: 0,
+        }
+        .into())
+    }
+}
 
 pub struct HealthModule {
     started_at: Instant,
@@ -34,7 +86,7 @@ impl ServiceModule for HealthModule {
         ModuleConfig {
             name: "health",
             priority: ModulePriority::Normal,
-            command_prefixes: &["health-", "get-"],
+            command_prefixes: &["health-", "get-", "ping"],
             event_subscriptions: &[],
             needs_dedicated_thread: false,
             max_concurrency: 0,
@@ -46,8 +98,10 @@ impl ServiceModule for HealthModule {
         Ok(())
     }
 
-    async fn handle_command(&self, command: &str, _params: Value) -> Result<CommandResult, String> {
+    async fn handle_command(&self, command: &str, params: Value) -> Result<CommandResult, String> {
         match command {
+            "ping" => dispatch(&PingHandler, params).await,
+
             "health-check" => {
                 let uptime_secs = self.started_at.elapsed().as_secs();
                 Ok(CommandResult::Json(serde_json::json!({

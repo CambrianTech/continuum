@@ -57,8 +57,11 @@ pub fn write_typescript_sdk(
         seeds.insert("runtime/CommandResponse".to_string());
     }
 
-    // 2. Vendor: copy each seed file + everything it transitively imports.
+    // 2. Vendor: copy each seed file + everything it transitively imports. Clean
+    //    the wire tree first so a removed/renamed command leaves no orphan vendored
+    //    type behind (only `wire/` — sibling hand files like EventMap.ts are kept).
     let wire_dir = out_dir.join(WIRE_SUBDIR);
+    let _ = fs::remove_dir_all(&wire_dir);
     let mut copied: BTreeSet<String> = BTreeSet::new();
     for module in &seeds {
         copy_with_deps(module, protocol_dir, &wire_dir, &mut copied)?;
@@ -180,6 +183,28 @@ mod tests {
     fn protocol_dir() -> PathBuf {
         // core/continuum-core → ../../protocol/typescript
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../../protocol/typescript")
+    }
+
+    /// Regenerates the committed TypeScript SDK from the live registry — the same
+    /// way ts-rs's `export_bindings_*` tests regenerate `protocol/typescript`.
+    /// Running `cargo test` keeps `sdk/typescript/generated/{CommandMap,CommandApi}.ts`
+    /// + `wire/**` in sync with the Rust command declarations; the output is
+    /// committed. Only writes when the protocol bindings exist (they're produced by
+    /// the export_bindings tests in the same run / a prior one).
+    ///
+    /// NOTE: this writes ONLY the generated command surface + vendored wire types.
+    /// `generated/EventMap.ts` is hand-maintained (events aren't Rust-sourced yet)
+    /// and is deliberately left untouched.
+    #[test]
+    fn generates_live_typescript_sdk() {
+        let protocol = protocol_dir();
+        if !protocol.exists() {
+            return;
+        }
+        let out = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../sdk/typescript/generated");
+        let registry = command_registry();
+        write_typescript_sdk(&registry, &protocol, &out)
+            .expect("regenerate the committed TypeScript SDK");
     }
 
     // what this catches: the generator actually WRITES a self-contained SDK —

@@ -312,9 +312,14 @@ const ENVELOPE_RESPONSE_MODULE: &str = "runtime/CommandResponse";
 /// (newline-terminated). Centralized so the map and the accessor API can't drift
 /// on what they import.
 fn render_imports(commands: &[CommandDescriptor], import_base: &str) -> String {
+    // Import ONLY the types the surface directly NAMES — each command's top-level
+    // params + result. The nested/transitive types are referenced only inside the
+    // vendored wire files (which import each other), never here, so importing them
+    // would be dead imports (and would break under `noUnusedLocals`). Vendoring
+    // (emit.rs) still copies the full closure; that's a separate concern.
     let mut by_module: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     for c in commands {
-        for t in &c.type_refs {
+        for t in [&c.params, &c.result] {
             by_module
                 .entry(t.module.clone())
                 .or_default()

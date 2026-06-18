@@ -75,8 +75,11 @@ pub struct ScreenshotParams {
     /// Device-scale multiplier (retina/HiDPI). 1.0 when omitted.
     #[ts(optional, type = "number")]
     pub scale: Option<f32>,
-    /// Where the result should be delivered.
-    pub destination: ScreenshotDestination,
+    /// Where the result should be delivered. Optional — adapters default to
+    /// `File` when omitted, so the common case is just `{ querySelector }`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub destination: Option<ScreenshotDestination>,
     /// Suggested filename when `destination` writes a file.
     #[ts(optional)]
     pub filename: Option<String>,

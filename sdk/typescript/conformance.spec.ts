@@ -164,19 +164,20 @@ describe('2. Commands — execute (call) + provide (serve)', () => {
     const t = new MockTransport();
     const c = Continuum.connect(t);
     c.commands.provide('interface/screenshot', async (p) => ({
+      success: true,
       dataUrl: `shot:${p.querySelector}`,
       width: 1,
       height: 1,
     }));
     const handler = t.provided.get('interface/screenshot')!;
     const out = await handler.handle('{"querySelector":"body"}');
-    expect(JSON.parse(out)).toEqual({ dataUrl: 'shot:body', width: 1, height: 1 });
+    expect(JSON.parse(out)).toEqual({ success: true, dataUrl: 'shot:body', width: 1, height: 1 });
   });
 
   it('provide: Registration.remove() deregisters the adapter', () => {
     const t = new MockTransport();
     const c = Continuum.connect(t);
-    const reg = c.commands.provide('interface/screenshot', async () => ({ dataUrl: '', width: 0, height: 0 }));
+    const reg = c.commands.provide('interface/screenshot', async () => ({ success: true, dataUrl: '', width: 0, height: 0 }));
     expect(t.provided.has('interface/screenshot')).toBe(true);
     reg.remove();
     expect(t.provided.has('interface/screenshot')).toBe(false);
