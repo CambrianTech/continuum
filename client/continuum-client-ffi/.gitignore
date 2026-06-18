@@ -1,0 +1,6 @@
+# Generated native bindings — regenerated from the cdylib at SDK build time via
+#   cargo run --bin uniffi-bindgen -- generate --library <cdylib> --language <swift|kotlin>
+# Never hand-edited, never the source of truth (the annotated Rust is). The
+# xcframework/AAR build steps emit these fresh; committing them would let a
+# stale copy drift from the facade.
+bindings/

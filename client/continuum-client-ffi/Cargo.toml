@@ -4,6 +4,11 @@ version = "0.1.0"
 edition = "2021"
 description = "FFI-clean JSON-boundary facade over continuum-client. The single binding source the per-platform SDKs wrap (uniffi → native/flutter; wasm-bindgen → web). execute(command, params_json)->result_json + subscribe(class, callback)."
 
+# `lib` for Rust consumers (the CLI/tests) + `cdylib` so uniffi can build the
+# one native binding (xcframework/AAR) the swift/kotlin SDKs wrap.
+[lib]
+crate-type = ["lib", "cdylib"]
+
 [dependencies]
 continuum-client = { path = "../continuum-client" }
 airc-lib = { workspace = true }
@@ -13,6 +18,11 @@ async-trait = { workspace = true }
 futures = "0.3"
 tokio = { workspace = true }
 uuid = { workspace = true }
+# uniffi reads this crate (proc-macro mode) to emit the one native binding;
+# the `tokio` feature drives the async verbs (execute/emit/provide/connect);
+# `cli` provides `uniffi_bindgen_main()` for the in-crate `uniffi-bindgen` bin
+# (keeps the generator version pinned to the runtime version via Cargo).
+uniffi = { version = "0.31", features = ["tokio", "cli"] }
 
 [dev-dependencies]
 # Enable continuum-client's MockTransport so the boundary logic is tested

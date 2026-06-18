@@ -29,20 +29,49 @@ use std::sync::Arc;
 
 use continuum_client::{
     AircIpcTransport, ClientError, CommandClient, Connection, EventSubscriber, ServeHandler,
-    SessionIdentity, Transport,
+    SessionIdentity as ClientSessionIdentity, Transport,
 };
 use futures::StreamExt;
 use uuid::Uuid;
 
-/// Re-export so every per-platform binding reads the one identity record:
-/// `{ userId?, sessionId? }`. The FFI surface for `ContinuumClient::session`.
-pub use continuum_client::SessionIdentity as Session;
+// uniffi proc-macro scaffolding: assembles the native binding from the
+// `#[uniffi::export]` / `#[derive(uniffi::*)]` annotations below. One source,
+// emitted to Swift + Kotlin (the xcframework/AAR the native SDKs wrap).
+uniffi::setup_scaffolding!();
+
+// `Uuid` isn't a uniffi built-in — bridge it as a String across the boundary
+// (the native SDKs present it as their own UUID type over this). Lower = to
+// string; lift = parse, surfacing a malformed id rather than fabricating one.
+uniffi::custom_type!(Uuid, String, {
+    remote,
+    lower: |id| id.to_string(),
+    try_lift: |s| Uuid::parse_str(&s).map_err(Into::into),
+});
+
+/// The identity a client acts as — citizen (`user_id`) + session instance
+/// (`session_id`), both optional until the handshake establishes them. The FFI
+/// record every per-platform binding reads (mirrors `continuum-client`'s
+/// `SessionIdentity`; the facade owns its own uniffi-exported shape).
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct SessionIdentity {
+    pub user_id: Option<Uuid>,
+    pub session_id: Option<Uuid>,
+}
+
+impl From<ClientSessionIdentity> for SessionIdentity {
+    fn from(s: ClientSessionIdentity) -> Self {
+        Self {
+            user_id: s.user_id,
+            session_id: s.session_id,
+        }
+    }
+}
 
 /// FFI-clean error. `continuum-client`'s `ClientError` is rich and Rust-shaped;
 /// this flattens it to the few variants a foreign caller needs, each carrying a
 /// human message. A refusal keeps `command` + `reason` since callers branch on
 /// "the substrate said no" vs "the transport broke".
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, thiserror::Error, uniffi::Error)]
 pub enum FfiError {
     /// Establishing the session failed.
     #[error("connect failed: {0}")]
@@ -78,6 +107,7 @@ impl From<ClientError> for FfiError {
 /// a callback interface; each SDK adapts it into the platform's stream type
 /// (`AsyncStream` / `Flow` / `Stream`). Plain trait here so the facade is
 /// tool-agnostic and unit-testable.
+#[uniffi::export(with_foreign)]
 pub trait EventCallback: Send + Sync {
     /// One event, already serialized to a JSON string.
     fn on_event(&self, event_json: String);
@@ -93,6 +123,7 @@ pub trait EventCallback: Send + Sync {
 /// screenshot, desktop = OS, AR/VR = renderer capture — one command identity, N
 /// adapters). `handle` is sync from Rust's view (a foreign call); the serve path
 /// runs it on a blocking worker so a heavy handler doesn't stall the runtime.
+#[uniffi::export(with_foreign)]
 pub trait CommandHandler: Send + Sync {
     /// Run the provided command — JSON params in, JSON result out. `Err`
     /// surfaces to the caller as a command error, never a silent drop.
@@ -168,6 +199,7 @@ async fn pump_events<T: Transport>(
 /// An open subscription. Dropping it aborts the pump task — so a foreign caller
 /// unsubscribes simply by releasing this handle (no explicit close call to
 /// forget). Without this an event subscription would leak its task.
+#[derive(uniffi::Object)]
 pub struct Subscription {
     handle: tokio::task::JoinHandle<()>,
 }
@@ -180,6 +212,7 @@ impl Drop for Subscription {
 
 /// An active command provision — the serve twin of [`Subscription`]. Dropping it
 /// DEREGISTERS the command (release = revoke): the serve loop stops matching it.
+#[derive(uniffi::Object)]
 pub struct Registration {
     conn: Connection<AircIpcTransport>,
     command: String,
@@ -200,6 +233,7 @@ impl Drop for Registration {
 /// The concrete, generic-free client a foreign binding holds. Wraps a
 /// `Connection` over the real airc IPC transport; the per-platform binding
 /// (uniffi/wasm) exposes exactly `execute` + `subscribe`.
+#[derive(uniffi::Object)]
 pub struct ContinuumClient {
     conn: Connection<AircIpcTransport>,
 }
@@ -215,7 +249,13 @@ impl ContinuumClient {
             conn: Connection::connect(airc, target_peer),
         }
     }
+}
 
+// The FFI surface — uniffi exports these (the in-process `new` above is NOT
+// exported: foreign callers can't pass an `Arc<airc_lib::Airc>`). `async_runtime`
+// drives the async verbs; the foreign side awaits naturally.
+#[uniffi::export(async_runtime = "tokio")]
+impl ContinuumClient {
     /// FOREIGN-friendly constructor — the FFI entry point. Builds the airc
     /// handle INTERNALLY (foreign callers can't make an `Arc<airc_lib::Airc>` —
     /// the outlier-B leak the uniffi pass surfaced): attaches to the running
@@ -224,6 +264,7 @@ impl ContinuumClient {
     /// `new` → `Connection::connect`) — the handshake populates it, never
     /// fabricated here. Returns `Arc<Self>` (the uniffi object shape); the
     /// in-process `new` stays for Rust consumers. Both entries coexist.
+    #[uniffi::constructor]
     pub async fn connect(
         home: String,
         agent_name: String,
@@ -245,17 +286,17 @@ impl ContinuumClient {
     /// (airc pairing / handshake, or the persona's own id). Each platform SDK
     /// presents it idiomatically; the record shape is identical everywhere.
     pub fn session(&self) -> SessionIdentity {
-        self.conn.session()
+        self.conn.session().into()
     }
 
     /// Return a client SCOPED to a conversation/room (`context_id`, the third
     /// ID tier). The scoped client's verbs auto-stamp `contextId` so callers
     /// never re-thread the scope — a persona services a room as a scoped client
     /// exactly the way a UI client does. Shares the same transport + identity.
-    pub fn scoped(&self, context_id: Uuid) -> ContinuumClient {
-        ContinuumClient {
+    pub fn scoped(&self, context_id: Uuid) -> Arc<ContinuumClient> {
+        Arc::new(ContinuumClient {
             conn: self.conn.scoped(context_id),
-        }
+        })
     }
 
     /// Execute a command: JSON params in, JSON result out. Stamps `contextId`
@@ -266,9 +307,9 @@ impl ContinuumClient {
 
     /// Subscribe to an event class; events stream to `callback` as JSON strings
     /// until the returned [`Subscription`] is dropped.
-    pub fn subscribe(&self, class: &str, callback: Arc<dyn EventCallback>) -> Subscription {
+    pub fn subscribe(&self, class: &str, callback: Arc<dyn EventCallback>) -> Arc<Subscription> {
         let handle = tokio::spawn(pump_events(self.conn.events(), class.to_string(), callback));
-        Subscription { handle }
+        Arc::new(Subscription { handle })
     }
 
     /// EMIT (publish) an event to `class` — the publish side of the Event
@@ -289,16 +330,16 @@ impl ContinuumClient {
         &self,
         command: &str,
         handler: Arc<dyn CommandHandler>,
-    ) -> Result<Registration, FfiError> {
+    ) -> Result<Arc<Registration>, FfiError> {
         let adapter = Arc::new(CommandHandlerAdapter {
             command: command.to_string(),
             cb: handler,
         });
         self.conn.provide(command, adapter).await?;
-        Ok(Registration {
+        Ok(Arc::new(Registration {
             conn: self.conn.clone(),
             command: command.to_string(),
-        })
+        }))
     }
 }
 
