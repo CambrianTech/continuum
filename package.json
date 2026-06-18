@@ -15,7 +15,8 @@
     "desktop:legacy": "bash tools/scripts/parallel-start.sh",
     "stop": "bash tools/scripts/system-stop.sh",
     "install:continuum": "bash tools/scripts/install.sh",
-    "setup:git-hooks": "bash tools/scripts/setup-git-hooks.sh"
+    "setup:git-hooks": "bash tools/scripts/setup-git-hooks.sh",
+    "docker:ensure": "bash scripts/ensure-docker.sh"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.2.76",
