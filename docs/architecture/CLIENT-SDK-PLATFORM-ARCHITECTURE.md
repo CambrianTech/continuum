@@ -250,6 +250,71 @@ three wrap; nothing reimplements logic per platform.
 - **IntelMac integrates** from the recipe-walker / web-SDK side (closes the
   substrate→UI loop).
 
+## Onboarding & sharing: a node is a shareable contact card
+
+Joining or sharing a mesh node should feel like sharing a contact — because it
+*is* one. The grid's directory layer (airc `#1247`: identity + reachable
+endpoints + rooms + capability offers, published as small JSON "cards" through a
+gist/registry, metadata-only — never the message plane) makes a node's
+self-presentation tiny enough to travel over **any** low-bandwidth channel. That
+is the whole onboarding UX, and it's where the mobile SDKs earn their keep.
+
+**A node/grid card is vCard-shaped** — "who I am, how to reach me, what I offer."
+Everyone already knows the gesture for sharing a contact, so the mesh inherits it:
+
+- **QR — scan to join.** One device shows its card, another scans → enroll + connect.
+- **Deep / universal links** — `airc://join/…` or an `https://…/join/…` link that's
+  tappable straight out of any messenger; opens the app, pins the key, lands on the
+  directory.
+- **Native share sheet** — "Share this room/grid" → AirDrop / Messages / copy-link.
+- **NFC tap** — tap-to-share two phones (or a sticker), lower friction than QR.
+
+**Durability rule (so a share never rots): encode the stable POINTER, not the
+volatile endpoint.** Router ports change on restart (the airc `#1243` stale-port
+bug); a QR/link with an inline `host:port` would go stale. Encode "this gist +
+pin this key" instead — the gist refreshes the live endpoints behind a stable
+front door, so a printed QR or a months-old link still resolves to the current
+router. (An inline-endpoint QR is fine for ephemeral "join me on this LAN right
+now"; the gist-pointer form is the durable default.)
+
+**Public vs private is just the card's audience.** A public node posts its card
+openly; a private-VPN grid's card is shared only within trust (DM the link to an
+invitee). Same card, same mechanism — the trust boundary is *which gist*.
+
+### Identity = passkeys (secure, synced, no key management)
+
+The card carries a **public** key to pin; the matching **private** key is the
+user's mesh identity, and it should live where modern platforms already keep
+secrets best: a **passkey** — a hardware-backed (Secure Enclave / StrongBox),
+biometric-gated, platform-synced credential. The payoff:
+
+- **No raw-key management.** The user never sees or copies a key; Face/Touch ID
+  unlocks it. (Replaces the brittle `identity.key`-on-disk story for human users.)
+- **Identity follows the human across devices.** iCloud Keychain / Google Password
+  Manager sync the passkey, so the same mesh identity appears on phone, tablet,
+  laptop without an export/import dance.
+- **Phishing-resistant + revocable** per WebAuthn, and it composes with the
+  existing trust model — the mesh still pins an Ed25519 **public** key; passkeys
+  are how the **private** half is held + synced + unlocked.
+
+Open design point (resolve when the mobile SDK lands): whether the passkey
+**is** the airc signing key (if the platform authenticator can produce/sign in
+the curve airc's protocol uses) or **guards** an Ed25519 key sealed in the
+secure element. Either way the user-facing contract is identical — biometric
+unlock, synced across your devices, never a key to copy.
+
+### Where it slots in the stack
+
+The substrate is already laid: the **uniffi facade** (`#1675`, landed) is what the
+Swift/Kotlin SDKs wrap, and the **directory cards** come from airc. The
+*native affordances* — camera/QR, NFC, WebAuthn/passkeys, universal links, the
+share sheet — live in the **platform SDKs** (`sdk/swift`, `sdk/kotlin`) and the
+mobile app on top, not in the Rust core (which stays headless + UI-free). So the
+build path is concrete: facade ✅ → native SDKs (the typed layer + these
+platform affordances) → `apps/mobile` onboarding (scan/tap/click → passkey
+unlock → enroll → directory → connect). The directory makes the payload
+*shareable*; mobile makes sharing it *delightful*; passkeys make it *secure*.
+
 ## Non-negotiables
 
 - **Rust-first.** node only for genuinely-web clients; a headless user never
