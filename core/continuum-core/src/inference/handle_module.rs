@@ -72,21 +72,16 @@ pub const COMMAND_GENERATE: &str = "ai/inference/generate";
 pub const COMMAND_CLOSE: &str = "ai/inference/close";
 pub const COMMAND_INSPECT: &str = "ai/inference/inspect";
 
-// ── SDK command-surface declarations — DEFERRED pending envelope modeling ──
+// ── SDK command-surface declarations ──────────────────────────────
 //
-// These four commands use the CommandRequest<P> / CommandResponse<T> ENVELOPE:
-// the wire params carry a top-level `handle` (envelope sibling), and the wire
-// result is the flattened `CommandResponse` (a `success` field + — for `open` —
-// the `handle` itself, the command's defining output). So their TRUE wire types
-// are NOT the bare Params/Result structs. Declaring `CommandSpec` with the bare
-// types (as a first pass did) made the generated SDK omit `handle`/`success` —
-// caught by adversarial review before merge.
-//
-// They are intentionally NOT registered via CommandSpec yet: the generator must
-// first model the envelope (so generated types carry the flattened shape) — or
-// the envelope-vs-bare inconsistency across commands must be resolved. Until then
-// only `inference/llm/request` (which bypasses the envelope — bare in, bare out)
-// is migrated. See sdk_codegen for the envelope-modeling follow-up.
+// These four commands are ENVELOPED: the handler parses
+// `CommandRequest::<P>::from_value` and returns
+// `CommandResponse::ok(T).into_command_result()` (see `handle_command` below).
+// The CommandSpec declarations (registered at the bottom of this file, after the
+// types) carry `WireShape::Enveloped`, so the generator wraps them as
+// `CommandRequest<P>` → `CommandResponse<T>` — faithful to that wire, including
+// the flattened `handle` (`open` mints it; `generate`/`close`/`inspect` consume
+// it). This is the envelope modeling the earlier deferral was waiting on.
 
 // ── Typed params ───────────────────────────────────────────────────
 
@@ -263,6 +258,57 @@ pub struct InspectResult {
     #[ts(optional)]
     pub is_pinned: Option<bool>,
 }
+
+// ── CommandSpec registrations (sdk_codegen) ────────────────────────
+//
+// All four are Enveloped (verified against `handle_command`). `open` mints a
+// handle; `generate`/`close`/`inspect` consume one — the handle rides the
+// CommandRequest/CommandResponse envelope, which is exactly what the
+// `Enveloped` wire shape models. GenerateResult is `TextGenerationResponse`.
+
+/// `ai/inference/open` — open an inference session, returns a handle. Enveloped.
+pub struct OpenCommand;
+impl crate::sdk_codegen::CommandSpec for OpenCommand {
+    const NAME: &'static str = COMMAND_OPEN;
+    const ACCESS_LEVEL: crate::sdk_codegen::AccessLevel = crate::sdk_codegen::AccessLevel::AiSafe;
+    const WIRE: crate::sdk_codegen::WireShape = crate::sdk_codegen::WireShape::Enveloped;
+    type Params = OpenParams;
+    type Result = OpenResult;
+}
+crate::register_command!(OpenCommand);
+
+/// `ai/inference/generate` — generate against an open session (consumes handle).
+pub struct GenerateCommand;
+impl crate::sdk_codegen::CommandSpec for GenerateCommand {
+    const NAME: &'static str = COMMAND_GENERATE;
+    const ACCESS_LEVEL: crate::sdk_codegen::AccessLevel = crate::sdk_codegen::AccessLevel::AiSafe;
+    const WIRE: crate::sdk_codegen::WireShape = crate::sdk_codegen::WireShape::Enveloped;
+    type Params = GenerateParams;
+    type Result = GenerateResult;
+}
+crate::register_command!(GenerateCommand);
+
+/// `ai/inference/close` — close an open session (consumes handle). Enveloped.
+pub struct CloseCommand;
+impl crate::sdk_codegen::CommandSpec for CloseCommand {
+    const NAME: &'static str = COMMAND_CLOSE;
+    const ACCESS_LEVEL: crate::sdk_codegen::AccessLevel = crate::sdk_codegen::AccessLevel::AiSafe;
+    const WIRE: crate::sdk_codegen::WireShape = crate::sdk_codegen::WireShape::Enveloped;
+    type Params = CloseParams;
+    type Result = CloseResult;
+}
+crate::register_command!(CloseCommand);
+
+/// `ai/inference/inspect` — inspect an open session (consumes handle). Enveloped.
+pub struct InspectCommand;
+impl crate::sdk_codegen::CommandSpec for InspectCommand {
+    const NAME: &'static str = COMMAND_INSPECT;
+    const ACCESS_LEVEL: crate::sdk_codegen::AccessLevel = crate::sdk_codegen::AccessLevel::AiSafe;
+    const WIRE: crate::sdk_codegen::WireShape = crate::sdk_codegen::WireShape::Enveloped;
+    type Params = InspectParams;
+    type Result = InspectResult;
+}
+crate::register_command!(InspectCommand);
 
 // ── Module ─────────────────────────────────────────────────────────
 

@@ -44,6 +44,7 @@ pub mod http;
 pub mod identity;
 pub mod inference;
 pub mod inference_capability;
+pub mod interface;
 pub mod ipc;
 pub mod live;
 pub mod logging;

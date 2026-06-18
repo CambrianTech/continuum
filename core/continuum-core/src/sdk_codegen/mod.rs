@@ -69,6 +69,59 @@ impl AccessLevel {
     }
 }
 
+/// The ACTUAL wire shape a command's handler exchanges — the per-command fact
+/// the generated surface must model FAITHFULLY.
+///
+/// This is NOT "where the work happens" (a routing concern); it is "what JSON the
+/// handler parses and returns," which is the only thing the SDK type must match.
+/// The earlier `Executed | Provided` framing was wrong: it assumed all
+/// substrate commands flow through the envelope, but they don't —
+/// `inference/llm/request` returns a BARE payload while `chat/*` and
+/// `ai/inference/*` ride the envelope. Modeling those identically produced types
+/// that LIED about the wire (the adversarial-review failure). So the dimension is
+/// the handler's real convention, declared per command and verified against it:
+///
+/// - [`Bare`](WireShape::Bare) — a substrate `ServiceModule` parses `Params`
+///   directly (`serde_json::from_value::<P>`) and returns `Result` directly
+///   (`CommandResult::json(&T)`). The SDK sees exactly `P` in, `T` out. Failure
+///   is a rejected promise (`ClientError`), not a `success` field. Worked
+///   example: `inference/llm/request`.
+///
+/// - [`Enveloped`](WireShape::Enveloped) — the handler does
+///   `CommandRequest::<P>::from_value` in and
+///   `CommandResponse::ok(T).into_command_result()` out, so the inner JSON the
+///   transport returns is the FLATTENED `CommandResponse<T>` (`{success, ...T,
+///   handle?}`) and the accepted params are the flattened `CommandRequest<P>`
+///   (caller may add a `handle`; the SDK stamps `contextId`). The generated
+///   surface therefore wraps in the envelope generics — faithfully, because the
+///   handler genuinely emits them. Worked examples: `chat/send`, `chat/poll`,
+///   `ai/inference/*` (incl. handle mint/consume).
+///
+/// - [`Provided`](WireShape::Provided) — the substrate CANNOT execute it; it
+///   routes the call OUT to a client adapter that holds the capability (browser
+///   `html2canvas`, native snapshot, VR framebuffer). The adapter exchanges bare
+///   `P`/`T` (the `Commands.provide` signature), so the surface is bare — same
+///   TYPE shape as `Bare`, but a different *server* (adapter, not ServiceModule).
+///   Worked example: `interface/screenshot` — one name, N platform adapters
+///   ([[persona-is-a-client]]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WireShape {
+    /// Substrate handler; bare `P` in, bare `T` out.
+    Bare,
+    /// Substrate handler; `CommandRequest<P>` in, `CommandResponse<T>` out.
+    Enveloped,
+    /// Client-adapter-fulfilled; bare `P` in, bare `T` out.
+    Provided,
+}
+
+impl WireShape {
+    /// Whether the generated surface wraps params/result in the envelope generics.
+    /// Only `Enveloped` does — `Bare`/`Provided` exchange the types directly.
+    fn is_enveloped(self) -> bool {
+        matches!(self, WireShape::Enveloped)
+    }
+}
+
 /// The single source of truth for ONE command. `Params`/`Result` are ts-rs
 /// types — the SAME types a handler parses and the wire types ts-rs emits — so
 /// one declaration feeds both runtime dispatch (future) and codegen (here).
@@ -77,9 +130,17 @@ pub trait CommandSpec {
     const NAME: &'static str;
     /// The capability this command requires.
     const ACCESS_LEVEL: AccessLevel;
-    /// Typed params (the wire shape callers pass).
+    /// The handler's ACTUAL wire convention — decides whether the generated
+    /// surface is enveloped or bare. MUST match what the handler really does
+    /// (a mismatch is a type that lies about the wire).
+    const WIRE: WireShape;
+    /// The command-specific params payload (the INNER `P`). When
+    /// [`WIRE`](CommandSpec::WIRE) is `Enveloped` the generated surface wraps this
+    /// in `CommandRequest<P>`; otherwise it's used directly.
     type Params: TS + 'static;
-    /// Typed result (the wire shape callers get back).
+    /// The command-specific result payload (the INNER `T`). When
+    /// [`WIRE`](CommandSpec::WIRE) is `Enveloped` the generated surface wraps this
+    /// in `CommandResponse<T>`; otherwise it's used directly.
     type Result: TS + 'static;
 }
 
@@ -136,6 +197,8 @@ fn module_of(output_path: &Path) -> String {
 pub struct CommandDescriptor {
     pub name: &'static str,
     pub access_level: AccessLevel,
+    /// The handler's real wire convention (decides envelope wrapping).
+    pub wire: WireShape,
     pub params: TypeRef,
     pub result: TypeRef,
     /// Every TS type the params/result transitively need (themselves + nested
@@ -166,12 +229,21 @@ impl CommandDescriptor {
         Self {
             name: C::NAME,
             access_level: C::ACCESS_LEVEL,
+            wire: C::WIRE,
             params,
             result,
             type_refs,
         }
     }
 }
+
+/// The TS module the [`CommandRequest`](crate::runtime::command_envelope::CommandRequest)
+/// generic is emitted to by ts-rs (relative to [`TS_ROOT`]). The generated map
+/// imports the envelope generics from here for `Enveloped` commands.
+const ENVELOPE_REQUEST_MODULE: &str = "runtime/CommandRequest";
+/// The TS module the [`CommandResponse`](crate::runtime::command_envelope::CommandResponse)
+/// generic is emitted to by ts-rs.
+const ENVELOPE_RESPONSE_MODULE: &str = "runtime/CommandResponse";
 
 /// Emit the TypeScript `CommandMap` module from the registry — the typed surface
 /// every TS SDK consumer infers from (`Commands.execute<K>(name, params)`). Pure:
@@ -192,11 +264,29 @@ pub fn generate_command_map(commands: &[CommandDescriptor], import_base: &str) -
         }
     }
 
+    // Any `Enveloped` command wraps its params/result in the envelope generics,
+    // so the map must import `CommandRequest`/`CommandResponse` from where ts-rs
+    // emitted them (their .ts files already pull in HandleRef themselves). This
+    // is the ONE place the generic wrapper enters the surface — exactly the
+    // compression: the envelope lives once (Rust), every Enveloped command refers
+    // to it rather than re-declaring success/error/handle.
+    let any_enveloped = commands.iter().any(|c| c.wire.is_enveloped());
+    if any_enveloped {
+        by_module
+            .entry(ENVELOPE_REQUEST_MODULE.to_string())
+            .or_default()
+            .insert("CommandRequest".to_string());
+        by_module
+            .entry(ENVELOPE_RESPONSE_MODULE.to_string())
+            .or_default()
+            .insert("CommandResponse".to_string());
+    }
+
     let mut out = String::new();
     out.push_str(
         "// GENERATED from the Rust command registry (core/continuum-core sdk_codegen).\n\
          // DO NOT EDIT. Source of truth: each command's CommandSpec (name + ts-rs\n\
-         // Params/Result). Regenerate after a command changes.\n\n",
+         // Params/Result + kind). Regenerate after a command changes.\n\n",
     );
 
     for (module, names) in &by_module {
@@ -207,12 +297,31 @@ pub fn generate_command_map(commands: &[CommandDescriptor], import_base: &str) -
     }
     out.push('\n');
 
-    out.push_str("/** name -> { params, result }. Generated; the contract is Rust-origin. */\n");
+    out.push_str(
+        "/**\n\
+         * name -> { params, result }. Generated; the contract is Rust-origin and\n\
+         * models the REAL wire each handler exchanges.\n\
+         *\n\
+         * `Enveloped` commands ride the substrate envelope, so their params are\n\
+         * `CommandRequest<P>` and results `CommandResponse<T>` (the flattened\n\
+         * success/handle the handler actually emits). `Bare` substrate commands and\n\
+         * `Provided` adapter commands exchange their payloads directly. Command\n\
+         * FAILURE is a rejected promise (transport error), never a result field.\n\
+         */\n",
+    );
     out.push_str("export interface CommandMap {\n");
     for c in commands {
+        let (params_ty, result_ty) = if c.wire.is_enveloped() {
+            (
+                format!("CommandRequest<{}>", c.params.name),
+                format!("CommandResponse<{}>", c.result.name),
+            )
+        } else {
+            (c.params.name.clone(), c.result.name.clone())
+        };
         out.push_str(&format!(
-            "  '{}': {{ params: {}; result: {} }};\n",
-            c.name, c.params.name, c.result.name
+            "  '{}': {{ params: {params_ty}; result: {result_ty} }};\n",
+            c.name
         ));
     }
     out.push_str("}\n\n");
@@ -314,7 +423,7 @@ mod tests {
     }
 
     // what this catches: the Rust-source → TS CommandMap generation end-to-end,
-    // validated against a REAL registered command (no fictional fixtures). Its
+    // validated against REAL registered commands (no fictional fixtures). Their
     // types carry the production export_to form, so this exercises module_of on
     // real data: the generated imports must resolve (NO `../../../` escapes) and
     // reference the single-source modules under the TS root.
@@ -323,14 +432,9 @@ mod tests {
         let registry = command_registry();
         assert!(
             !registry.is_empty(),
-            "at least one real command is registered (inference/llm/request)"
+            "real commands are registered (the sampling)"
         );
         let out = generate_command_map(&registry, "@protocol");
-
-        // The real inference command, keyed by NAME, with its real ts-rs types.
-        assert!(out.contains(
-            "'inference/llm/request': { params: InferenceRequest; result: InferenceResponse }"
-        ));
 
         // CRITICAL: imports resolve — module_of stripped the export escape path.
         assert!(out.contains("import type {"), "imports emitted");
@@ -338,14 +442,103 @@ mod tests {
             !out.contains("../../../"),
             "no ts-rs export escape path leaks into the generated imports"
         );
-        assert!(
-            out.contains("from '@protocol/inference_llm/"),
-            "real types import from their clean module path under the TS root"
-        );
-
         assert!(out.contains("export interface CommandMap"));
         assert!(out.contains("export type CommandName = keyof CommandMap;"));
         assert!(out.starts_with("// GENERATED from the Rust command registry"));
+    }
+
+    // what this catches (the heart of the slice): the THREE wire shapes each
+    // produce the FAITHFUL type from one CommandMap, modeling exactly what the real
+    // handler exchanges (the lie the prior pass shipped was modeling a bare handler
+    // as enveloped). The sampling spans all three:
+    //   - Bare      (inference/llm/request): handler returns bare InferenceResponse
+    //   - Provided  (interface/screenshot):  adapter exchanges bare types
+    //   - Enveloped (chat/send, ai/inference/open): handler rides the envelope
+    #[test]
+    fn wire_shape_decides_envelope_wrapping_faithfully() {
+        let registry = command_registry();
+        let out = generate_command_map(&registry, "@protocol");
+
+        // Bare substrate command — bare both sides (NOT wrapped). This is the
+        // assertion that would have caught the prior lie.
+        assert!(
+            out.contains(
+                "'inference/llm/request': { params: InferenceRequest; result: InferenceResponse }"
+            ),
+            "Bare command must NOT be enveloped (it returns bare):\n{out}"
+        );
+        assert!(
+            !out.contains("CommandRequest<InferenceRequest>")
+                && !out.contains("CommandResponse<InferenceResponse>"),
+            "the envelope must NOT wrap the bare inference command"
+        );
+
+        // Provided adapter command — bare both sides.
+        assert!(
+            out.contains(
+                "'interface/screenshot': { params: ScreenshotParams; result: ScreenshotResult }"
+            ),
+            "Provided command must stay bare:\n{out}"
+        );
+
+        // Enveloped substrate commands — wrapped both sides (faithful: the handler
+        // really emits CommandResponse + parses CommandRequest).
+        assert!(
+            out.contains(
+                "'chat/send': { params: CommandRequest<ChatSendParams>; \
+                 result: CommandResponse<ChatSendResult> }"
+            ),
+            "Enveloped command must be wrapped:\n{out}"
+        );
+        assert!(
+            out.contains(
+                "'ai/inference/open': { params: CommandRequest<OpenParams>; \
+                 result: CommandResponse<OpenResult> }"
+            ),
+            "Enveloped handle-minting command must be wrapped:\n{out}"
+        );
+
+        // The envelope generics are imported once (Enveloped commands exist), and
+        // those modules carry HandleRef themselves so the map needn't.
+        assert!(
+            out.contains("import type { CommandRequest } from '@protocol/runtime/CommandRequest';"),
+            "envelope request generic imported from its single-source module:\n{out}"
+        );
+        assert!(
+            out.contains(
+                "import type { CommandResponse } from '@protocol/runtime/CommandResponse';"
+            ),
+            "envelope response generic imported:\n{out}"
+        );
+    }
+
+    // what this catches: a Bare/Provided-only registry must NOT import or use the
+    // envelope generics — the wrapping is conditional on an Enveloped command, so a
+    // surface with none stays envelope-free.
+    #[test]
+    fn non_enveloped_registry_omits_envelope_imports() {
+        let bare_and_provided: Vec<CommandDescriptor> = command_registry()
+            .into_iter()
+            .filter(|d| !d.wire.is_enveloped())
+            .collect();
+        assert!(
+            bare_and_provided.iter().any(|d| d.wire == WireShape::Provided)
+                && bare_and_provided.iter().any(|d| d.wire == WireShape::Bare),
+            "the sampling has both a Bare and a Provided command"
+        );
+        let out = generate_command_map(&bare_and_provided, "@protocol");
+        // Check imports + usages, not the explanatory JSDoc preamble (which names
+        // the generics regardless of shape).
+        assert!(
+            !out.contains("import type { CommandRequest }")
+                && !out.contains("import type { CommandResponse }"),
+            "no envelope import when nothing is Enveloped:\n{out}"
+        );
+        assert!(
+            !out.contains("params: CommandRequest<")
+                && !out.contains("result: CommandResponse<"),
+            "no envelope wrapping in the map entries when nothing is Enveloped:\n{out}"
+        );
     }
 
     // what this catches: the registry self-assembles from register_command! sites

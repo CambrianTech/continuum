@@ -179,6 +179,10 @@ pub struct InferenceLlmRequestCommand;
 impl crate::sdk_codegen::CommandSpec for InferenceLlmRequestCommand {
     const NAME: &'static str = COMMAND_REQUEST;
     const ACCESS_LEVEL: crate::sdk_codegen::AccessLevel = crate::sdk_codegen::AccessLevel::AiSafe;
+    // BARE: `handle_request` parses `InferenceRequest` directly and returns
+    // `InferenceResponse` directly (CommandResult::json(&response), llm_module_service.rs)
+    // — no CommandRequest/CommandResponse envelope. The SDK sees bare in, bare out.
+    const WIRE: crate::sdk_codegen::WireShape = crate::sdk_codegen::WireShape::Bare;
     type Params = InferenceRequest;
     type Result = InferenceResponse;
 }
