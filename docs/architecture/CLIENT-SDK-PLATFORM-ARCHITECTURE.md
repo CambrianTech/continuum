@@ -118,10 +118,13 @@ SDKs.
    Commands/Events are on the wire. The typed/idiomatic per-language layer is
    **generated** (ts-rs and the per-language equivalent), never hand-written; the
    JSON shape is the canonical contract.
-2. **uniffi for BOTH native (Swift + Kotlin) now.** One `.udl` → both bindings →
-   the xcframework + AAR. `swift-bridge` is DEFERRED — add the second toolchain
-   ONLY when native-iOS/visionOS async ergonomics prove load-bearing for `apps/vr`
-   / `apps/ar` (outlier-validation, not preemptive).
+2. **uniffi for BOTH native (Swift + Kotlin) now.** One annotated crate → both
+   bindings → the xcframework + AAR. **Proc-macro mode, NOT a `.udl`** (proven
+   2026-06-17, see below): the facade is annotated in-place
+   (`#[uniffi::export]`/`Object`/`Record`/`Error`), bindgen reads the compiled
+   cdylib. `swift-bridge` is DEFERRED — add the second toolchain ONLY when
+   native-iOS/visionOS async ergonomics prove load-bearing for `apps/vr` /
+   `apps/ar` (outlier-validation, not preemptive).
 3. **TWO binding mechanisms over the ONE facade** (uniffi does NOT emit wasm/JS):
    - **uniffi** → native (Swift xcframework + Kotlin AAR) → also what Flutter bundles.
    - **wasm-bindgen** (or napi) → `sdk/typescript` for web/node. Web is its OWN
@@ -160,13 +163,49 @@ need macOS/Xcode:
 
 | Step | Runs on | Owner |
 |------|---------|-------|
-| Rust facade, uniffi `.udl` + bindgen (emits Swift **and** Kotlin source), Android AAR + Kotlin SDK | any OS (verified building on Windows) | BigMama |
+| Rust facade + uniffi proc-macro annotations + bindgen (emits Swift **and** Kotlin source from the cdylib), Android AAR + Kotlin SDK | any OS (verified building + generating on Windows) | BigMama |
 | xcframework packaging, Swift SDK build/validate, visionOS | **macOS/Xcode only** | a Mac (M5/IntelMac) or a GitHub **macos-runner** CI job |
 | wasm-bindgen web binding | any OS | (web lane) |
 
-Keep the binding **single-source** (one `.udl`, generated Swift source shared); put
-only the Apple *packaging/validation* on a Mac. A `macos-runner` CI job is the
-durable home so it doesn't depend on any one operator's laptop.
+Keep the binding **single-source** (the annotated Rust facade is the source of
+truth; generated Swift/Kotlin source is a regenerated build artifact, never
+committed); put only the Apple *packaging/validation* on a Mac. A `macos-runner`
+CI job is the durable home so it doesn't depend on any one operator's laptop.
+
+### Proven: the uniffi binding (2026-06-17, PR #1675)
+
+Outlier-B for the SDK interface is landed — uniffi 0.31 binds the full 4-verb
+facade cleanly, with no shape forced on it:
+
+- **Proc-macro mode, no `.udl`.** `continuum-client-ffi/src/lib.rs` is annotated
+  in-place: `#[uniffi::Object]` (`ContinuumClient`, `Subscription`,
+  `Registration`), `#[uniffi::Record]` (`SessionIdentity`), `#[uniffi::Error]`
+  (`FfiError`), `#[uniffi::export(with_foreign)]` callback interfaces
+  (`EventCallback`, `CommandHandler`), async verbs under
+  `#[uniffi::export(async_runtime = "tokio")]`, `connect()` as
+  `#[uniffi::constructor]`, and `Uuid` via `custom_type!` (↔ `String`).
+- **Bindgen is in-crate** (`src/bin/uniffi-bindgen.rs` + uniffi `cli` feature) so
+  the generator version is pinned to the runtime version by Cargo:
+  ```sh
+  cargo run --bin uniffi-bindgen -- generate \
+    --library <cdylib: .dylib/.so/.dll> --language <swift|kotlin> --out-dir <dir>
+  ```
+- **Generated native surface** (Swift; Kotlin mirrors with suspend funs +
+  `Uuid = String` typealias + sealed `FfiError`). `snake_case` → `lowerCamel`
+  (`params_json` → `paramsJson`):
+  ```swift
+  open class ContinuumClient {
+    public static func connect(home:agentName:socket:targetPeer:) async throws -> ContinuumClient
+    open func execute(command:paramsJson:) async throws -> String
+    open func provide(command:handler:)   async throws -> Registration
+    open func subscribe(class:callback:)  -> Subscription
+    open func emit(class:payloadJson:)     async throws
+    open func scoped(contextId:)           -> ContinuumClient
+    open func session()                    -> SessionIdentity
+  }
+  ```
+  This is the symbol set the native typed/idiomatic emitter (M5's
+  `sdk_codegen`) targets — real names, not guesses.
 
 ## Locking the abstraction: three divergent platforms in parallel (outlier validation)
 
