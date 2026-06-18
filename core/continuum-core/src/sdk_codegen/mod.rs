@@ -38,7 +38,9 @@ use std::path::Path;
 
 use ts_rs::{Config, Dependency, TS};
 
+pub mod emit;
 pub mod handler;
+pub use emit::write_typescript_sdk;
 pub use handler::{dispatch, CommandError, CommandHandler, Ctx, Outcome};
 
 /// The capability a command declares.
