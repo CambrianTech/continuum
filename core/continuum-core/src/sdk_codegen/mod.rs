@@ -343,11 +343,20 @@ mod tests {
     #[test]
     fn registry_is_auto_discovered_and_sorted() {
         let names: Vec<&str> = command_registry().iter().map(|d| d.name).collect();
-        assert_eq!(
-            names,
-            vec!["data/list", "ping"],
-            "both register_command! sites collected, sorted by name, no central list"
+        // The demo outliers are collected from their register_command! sites...
+        assert!(names.contains(&"ping"), "demo outlier discovered");
+        assert!(names.contains(&"data/list"), "nested demo outlier discovered");
+        // ...AND a REAL command declared in a DIFFERENT module (inference) is
+        // collected too — proving the registry self-assembles crate-wide from
+        // scattered declarations, with no central list anywhere.
+        assert!(
+            names.contains(&"inference/llm/request"),
+            "a real command registered in another module is auto-discovered"
         );
+        // Output is sorted by name for deterministic generation.
+        let mut sorted = names.clone();
+        sorted.sort();
+        assert_eq!(names, sorted, "registry sorted by name");
     }
 
     // what this catches: a command's typed declaration round-trips to a
