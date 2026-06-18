@@ -62,7 +62,7 @@ use crate::inference::lane::LaneClass;
 use crate::inference::recipe_budget::TaskKind;
 use crate::runtime::cell_shapes::HandleRef;
 use crate::runtime::{
-    CommandRequest, CommandResponse, CommandResult, ModuleConfig, ModulePriority, ServiceModule,
+    CommandRequest, CommandResult, ModuleConfig, ModulePriority, ServiceModule,
 };
 
 // ── Command name constants ─────────────────────────────────────────
@@ -310,6 +310,67 @@ impl crate::sdk_codegen::CommandSpec for InspectCommand {
 }
 crate::register_command!(InspectCommand);
 
+// ── Typed handlers (the authoring trait) ───────────────────────────
+//
+// Each command is now ONE typed `execute`: typed params in, typed output out,
+// `?` for errors, `ctx.handle()?` for the envelope handle — no from_value, no
+// manual CommandRequest/CommandResponse, no match-on-name, no try/catch. The
+// framework's `dispatch` (driven by each command's WireShape) owns all of that.
+// The handlers borrow the module so they reach its shared state (the handle
+// store + adapter map). This is the shape every one of the ~260 commands takes.
+
+use crate::sdk_codegen::{dispatch, CommandError, CommandHandler, Ctx, Outcome};
+
+struct OpenHandler<'a>(&'a InferenceHandleModule);
+#[async_trait]
+impl CommandHandler for OpenHandler<'_> {
+    type Spec = OpenCommand;
+    async fn execute(&self, _ctx: &Ctx, p: OpenParams) -> Result<Outcome<OpenResult>, CommandError> {
+        let (handle, payload) = self.0.open(p).await?;
+        Ok(Outcome::with_handle(payload, handle)) // mint — framework places it on the envelope
+    }
+}
+
+struct GenerateHandler<'a>(&'a InferenceHandleModule);
+#[async_trait]
+impl CommandHandler for GenerateHandler<'_> {
+    type Spec = GenerateCommand;
+    async fn execute(
+        &self,
+        ctx: &Ctx,
+        p: GenerateParams,
+    ) -> Result<Outcome<GenerateResult>, CommandError> {
+        let handle = ctx.handle()?; // consume — typed accessor, loud if absent
+        Ok(self.0.generate(handle, p.request).await?.into())
+    }
+}
+
+struct CloseHandler<'a>(&'a InferenceHandleModule);
+#[async_trait]
+impl CommandHandler for CloseHandler<'_> {
+    type Spec = CloseCommand;
+    async fn execute(
+        &self,
+        ctx: &Ctx,
+        _p: CloseParams,
+    ) -> Result<Outcome<CloseResult>, CommandError> {
+        Ok(self.0.close(ctx.handle()?).await?.into())
+    }
+}
+
+struct InspectHandler<'a>(&'a InferenceHandleModule);
+#[async_trait]
+impl CommandHandler for InspectHandler<'_> {
+    type Spec = InspectCommand;
+    async fn execute(
+        &self,
+        ctx: &Ctx,
+        _p: InspectParams,
+    ) -> Result<Outcome<InspectResult>, CommandError> {
+        Ok(self.0.inspect(ctx.handle()?).await?.into())
+    }
+}
+
 // ── Module ─────────────────────────────────────────────────────────
 
 /// The ServiceModule. Holds Arc<InferenceHandleStore> + a local
@@ -413,42 +474,16 @@ impl ServiceModule for InferenceHandleModule {
         command: &str,
         params: Value,
     ) -> Result<CommandResult, String> {
+        // Each arm is one line: build the typed handler (borrowing self for shared
+        // state) and hand it to the framework dispatch, which parses the envelope,
+        // runs the handler's typed `execute`, shapes the reply per WireShape, and
+        // maps errors to the refusal channel. All the per-command boilerplate that
+        // used to live here now lives in the framework, once.
         match command {
-            COMMAND_OPEN => {
-                let req = CommandRequest::<OpenParams>::from_value(params)
-                    .map_err(|e| format!("{COMMAND_OPEN}: invalid params: {e}"))?;
-                let (handle, payload) = self.open(req.params).await?;
-                CommandResponse::ok(payload)
-                    .with_handle_ref(handle)
-                    .into_command_result()
-            }
-            COMMAND_GENERATE => {
-                let req = CommandRequest::<GenerateParams>::from_value(params)
-                    .map_err(|e| format!("{COMMAND_GENERATE}: invalid params: {e}"))?;
-                let handle = req.handle.ok_or_else(|| {
-                    format!("{COMMAND_GENERATE}: missing required `handle` field on envelope")
-                })?;
-                let result = self.generate(handle, req.params.request).await?;
-                CommandResponse::ok(result).into_command_result()
-            }
-            COMMAND_CLOSE => {
-                let req = CommandRequest::<CloseParams>::from_value(params)
-                    .map_err(|e| format!("{COMMAND_CLOSE}: invalid params: {e}"))?;
-                let handle = req.handle.ok_or_else(|| {
-                    format!("{COMMAND_CLOSE}: missing required `handle` field on envelope")
-                })?;
-                let result = self.close(handle).await?;
-                CommandResponse::ok(result).into_command_result()
-            }
-            COMMAND_INSPECT => {
-                let req = CommandRequest::<InspectParams>::from_value(params)
-                    .map_err(|e| format!("{COMMAND_INSPECT}: invalid params: {e}"))?;
-                let handle = req.handle.ok_or_else(|| {
-                    format!("{COMMAND_INSPECT}: missing required `handle` field on envelope")
-                })?;
-                let result = self.inspect(handle).await?;
-                CommandResponse::ok(result).into_command_result()
-            }
+            COMMAND_OPEN => dispatch(&OpenHandler(self), params).await,
+            COMMAND_GENERATE => dispatch(&GenerateHandler(self), params).await,
+            COMMAND_CLOSE => dispatch(&CloseHandler(self), params).await,
+            COMMAND_INSPECT => dispatch(&InspectHandler(self), params).await,
             other => Err(format!(
                 "ai-inference-handle: unknown command '{other}' \
                  (known: {COMMAND_OPEN}, {COMMAND_GENERATE}, {COMMAND_CLOSE}, {COMMAND_INSPECT})"

@@ -38,6 +38,9 @@ use std::path::Path;
 
 use ts_rs::{Config, Dependency, TS};
 
+pub mod handler;
+pub use handler::{dispatch, CommandError, CommandHandler, Ctx, Outcome};
+
 /// The capability a command declares.
 ///
 /// PLACEHOLDER — not yet load-bearing. Two honest caveats (adversarial review):
