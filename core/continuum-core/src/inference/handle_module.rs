@@ -72,6 +72,55 @@ pub const COMMAND_GENERATE: &str = "ai/inference/generate";
 pub const COMMAND_CLOSE: &str = "ai/inference/close";
 pub const COMMAND_INSPECT: &str = "ai/inference/inspect";
 
+// ── SDK command-surface declarations (single source → generated CommandMap) ──
+//
+// Each ai/inference handle command declares its typed surface ONCE via
+// CommandSpec at this site; `register_command!` self-registers it crate-wide
+// (inventory) and the Rust generator (sdk_codegen) emits its TS. Params/Result
+// are the SAME ts-rs types the handler parses/returns (all already ts-rs), so the
+// generated entry can't drift from the command. ([[persona-is-a-client]])
+
+/// `ai/inference/open` — lease a handle for a model lane.
+pub struct InferenceOpenCommand;
+impl crate::sdk_codegen::CommandSpec for InferenceOpenCommand {
+    const NAME: &'static str = COMMAND_OPEN;
+    const ACCESS_LEVEL: crate::sdk_codegen::AccessLevel = crate::sdk_codegen::AccessLevel::AiSafe;
+    type Params = OpenParams;
+    type Result = OpenResult;
+}
+crate::register_command!(InferenceOpenCommand);
+
+/// `ai/inference/generate` — generate over an open handle (result is the
+/// substrate-canonical `TextGenerationResponse` via `GenerateResult`).
+pub struct InferenceGenerateCommand;
+impl crate::sdk_codegen::CommandSpec for InferenceGenerateCommand {
+    const NAME: &'static str = COMMAND_GENERATE;
+    const ACCESS_LEVEL: crate::sdk_codegen::AccessLevel = crate::sdk_codegen::AccessLevel::AiSafe;
+    type Params = GenerateParams;
+    type Result = GenerateResult;
+}
+crate::register_command!(InferenceGenerateCommand);
+
+/// `ai/inference/close` — release a handle's lane.
+pub struct InferenceCloseCommand;
+impl crate::sdk_codegen::CommandSpec for InferenceCloseCommand {
+    const NAME: &'static str = COMMAND_CLOSE;
+    const ACCESS_LEVEL: crate::sdk_codegen::AccessLevel = crate::sdk_codegen::AccessLevel::AiSafe;
+    type Params = CloseParams;
+    type Result = CloseResult;
+}
+crate::register_command!(InferenceCloseCommand);
+
+/// `ai/inference/inspect` — read a handle's live state.
+pub struct InferenceInspectCommand;
+impl crate::sdk_codegen::CommandSpec for InferenceInspectCommand {
+    const NAME: &'static str = COMMAND_INSPECT;
+    const ACCESS_LEVEL: crate::sdk_codegen::AccessLevel = crate::sdk_codegen::AccessLevel::AiSafe;
+    type Params = InspectParams;
+    type Result = InspectResult;
+}
+crate::register_command!(InferenceInspectCommand);
+
 // ── Typed params ───────────────────────────────────────────────────
 
 /// Params for `ai/inference/open`.
