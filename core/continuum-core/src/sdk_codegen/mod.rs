@@ -38,8 +38,17 @@ use std::path::Path;
 
 use ts_rs::{Config, Dependency, TS};
 
-/// The capability a command declares — mirrors the spec `accessLevel`. Carried
-/// by the command, enforced by the core's `AuthPolicy`, never by the SDK.
+/// The capability a command declares.
+///
+/// PLACEHOLDER — not yet load-bearing. Two honest caveats (adversarial review):
+/// (1) this is currently metadata only — `generate_command_map` does NOT emit it,
+/// and the runtime gate (`routing::auth_policy`) doesn't read it; it is NOT
+/// enforced today. (2) It must be RECONCILED before it is — the substrate already
+/// has the spec `accessLevel` vocabulary (`ai-safe`/`privileged`/`internal`/
+/// `admin`/`human-only`/`owner-only`/`owner`/`system`) AND grid `TrustLevel`; this
+/// 3-variant enum is narrower than the spec set and a parallel vocabulary. Do not
+/// treat it as the access contract until it's unified with the real ACL type and
+/// actually wired into the gate + the generated surface.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AccessLevel {
     /// Safe for autonomous AI callers.
@@ -92,13 +101,33 @@ impl TypeRef {
     }
 }
 
-/// Drop the `.ts` extension + normalize separators so a ts-rs `output_path`
-/// (e.g. `ai/ModelInfo.ts`) becomes an importable module path (`ai/ModelInfo`).
+/// The canonical TypeScript root every wire type ultimately lands under. ts-rs
+/// `#[ts(export_to)]` paths are anchored at the export dir and climb out to this
+/// root via `../../../` escapes (e.g. `../../../protocol/typescript/ai/ModelInfo.ts`);
+/// the importable module is the path RELATIVE to this root.
+const TS_ROOT: &str = "protocol/typescript/";
+
+/// Convert a ts-rs `output_path` into an importable module path relative to
+/// [`TS_ROOT`]. Real wire types carry the escape-hatch form
+/// (`../../../protocol/typescript/ai/ModelInfo.ts`) → `ai/ModelInfo`; a type with
+/// no `#[ts(export_to)]` carries a bare derived name (`PingParams.ts`) → its stem.
+/// Anchoring on `TS_ROOT` is what makes the generated imports resolve regardless
+/// of where ts-rs's export dir sits — the bug the demo types (no `export_to`) hid.
 fn module_of(output_path: &Path) -> String {
-    output_path
+    let normalized = output_path
         .with_extension("")
         .to_string_lossy()
-        .replace('\\', "/")
+        .replace('\\', "/");
+    let root = TS_ROOT.trim_end_matches('/');
+    match normalized.find(&format!("{root}/")) {
+        Some(idx) => normalized[idx + root.len() + 1..].to_string(),
+        // No canonical-root segment: fall back to the bare file stem.
+        None => normalized
+            .rsplit('/')
+            .next()
+            .unwrap_or(&normalized)
+            .to_string(),
+    }
 }
 
 /// A runtime-value snapshot of a [`CommandSpec`] the generator walks — captured
@@ -237,141 +266,119 @@ pub fn command_registry() -> Vec<CommandDescriptor> {
         .map(|reg| (reg.descriptor_fn)())
         .collect();
     descriptors.sort_by(|a, b| a.name.cmp(b.name));
+    // Hard-fail on a duplicate command NAME. The "no central list" design removes
+    // the human backstop that would otherwise catch a collision, so the registry
+    // must catch it itself — two CommandSpec impls claiming the same name would
+    // silently emit a conflicting/duplicate CommandMap key (a TS error or a silent
+    // shadow). Sorted above, so duplicates are adjacent.
+    if let Some(dup) = descriptors.windows(2).find(|w| w[0].name == w[1].name) {
+        panic!(
+            "sdk_codegen: duplicate command NAME '{}' — two CommandSpec impls claim \
+             it. Command names must be unique across the whole registry.",
+            dup[0].name
+        );
+    }
     descriptors
 }
 
-/// The two outlier commands that prove the `CommandSpec` declaration handles both
-/// extremes — a trivial command and a nested-params one. Real commands declare
-/// `CommandSpec` where they live; these exist only to validate the interface.
-mod demo {
-    use super::{AccessLevel, CommandSpec};
-    use serde::{Deserialize, Serialize};
-    use ts_rs::TS;
-
-    // ── Outlier A: trivial ───────────────────────────────────────────────
-    #[derive(Serialize, Deserialize, TS)]
-    #[serde(rename_all = "camelCase")]
-    pub struct PingParams {
-        #[ts(optional)]
-        pub message: Option<String>,
-    }
-    #[derive(Serialize, Deserialize, TS)]
-    #[serde(rename_all = "camelCase")]
-    pub struct PingResult {
-        pub ok: bool,
-        pub round_trip_ms: u32,
-    }
-    pub struct Ping;
-    impl CommandSpec for Ping {
-        const NAME: &'static str = "ping";
-        const ACCESS_LEVEL: AccessLevel = AccessLevel::AiSafe;
-        type Params = PingParams;
-        type Result = PingResult;
-    }
-    crate::register_command!(Ping);
-
-    // ── Outlier B: nested params (the extreme the interface must also fit) ──
-    #[derive(Serialize, Deserialize, TS)]
-    #[serde(rename_all = "camelCase")]
-    pub struct OrderBy {
-        pub field: String,
-        pub direction: String,
-    }
-    #[derive(Serialize, Deserialize, TS)]
-    #[serde(rename_all = "camelCase")]
-    pub struct DataListParams {
-        pub collection: String,
-        #[ts(optional)]
-        pub order_by: Option<Vec<OrderBy>>,
-    }
-    #[derive(Serialize, Deserialize, TS)]
-    #[serde(rename_all = "camelCase")]
-    pub struct DataListResult {
-        pub total: u32,
-    }
-    pub struct DataList;
-    impl CommandSpec for DataList {
-        const NAME: &'static str = "data/list";
-        const ACCESS_LEVEL: AccessLevel = AccessLevel::AiSafe;
-        type Params = DataListParams;
-        type Result = DataListResult;
-    }
-    crate::register_command!(DataList);
-}
+// No demo/fixture commands: the generator is validated against the REAL
+// registered commands (declared via CommandSpec at their own sites, e.g. the
+// inference module), whose Params/Result are real ts-rs types carrying the
+// production `#[ts(export_to = "../../../protocol/typescript/...")]` escape form.
+// (The adversarial review caught that earlier demo fixtures — with no export_to —
+// hid the export-path resolution bug; validating on real types is the fix.)
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
 
-    // what this catches: the Rust-source → TS CommandMap generation end-to-end.
-    // Two single-source CommandSpec declarations (trivial + nested) project into a
-    // valid TS CommandMap that imports every type it references — INCLUDING the
-    // nested dependency (OrderBy). The generator IS the consistency guarantee, so
-    // it's pinned: drift in the emitter or a dropped dependency fails here.
+    // what this catches (the review's CRITICAL #4): real ts-rs types carry the
+    // `../../../protocol/typescript/...` export escape path; module_of must resolve
+    // them to clean importable modules. Earlier demo types (no export_to) hid this.
     #[test]
-    fn generates_command_map_importing_all_single_source_types() {
-        let out = generate_command_map(&command_registry(), "@protocol");
-
-        // Both commands appear, keyed by their NAME.
-        assert!(out.contains("'ping': { params: PingParams; result: PingResult }"));
-        assert!(out.contains("'data/list': { params: DataListParams; result: DataListResult }"));
-
-        // Every referenced type is imported from the single-source location —
-        // top-level params/result AND the nested dependency.
-        assert!(out.contains("PingParams"), "params imported");
-        assert!(out.contains("PingResult"), "result imported");
-        assert!(out.contains("DataListParams"));
-        assert!(out.contains("DataListResult"));
-        assert!(
-            out.contains("OrderBy"),
-            "nested dependency must be imported, not dropped (the outlier-B catch)"
+    fn module_of_strips_the_ts_rs_export_escape_path() {
+        assert_eq!(
+            module_of(Path::new("../../../protocol/typescript/ai/ModelInfo.ts")),
+            "ai/ModelInfo",
+            "escape-hatch export_to → clean module relative to the TS root"
         );
-        assert!(out.contains("import type {"), "import statements emitted");
-        assert!(out.contains("from '@protocol/"), "imports use the configured base");
+        assert_eq!(
+            module_of(Path::new(
+                "../../../protocol/typescript/inference_llm/InferenceRequest.ts"
+            )),
+            "inference_llm/InferenceRequest"
+        );
+        // No export_to (bare derived name) → its stem.
+        assert_eq!(module_of(Path::new("PingParams.ts")), "PingParams");
+    }
 
-        // The map + key type close it out; GENERATED banner; never hand-edited.
+    // what this catches: the Rust-source → TS CommandMap generation end-to-end,
+    // validated against a REAL registered command (no fictional fixtures). Its
+    // types carry the production export_to form, so this exercises module_of on
+    // real data: the generated imports must resolve (NO `../../../` escapes) and
+    // reference the single-source modules under the TS root.
+    #[test]
+    fn generates_command_map_from_the_real_registry() {
+        let registry = command_registry();
+        assert!(
+            !registry.is_empty(),
+            "at least one real command is registered (inference/llm/request)"
+        );
+        let out = generate_command_map(&registry, "@protocol");
+
+        // The real inference command, keyed by NAME, with its real ts-rs types.
+        assert!(out.contains(
+            "'inference/llm/request': { params: InferenceRequest; result: InferenceResponse }"
+        ));
+
+        // CRITICAL: imports resolve — module_of stripped the export escape path.
+        assert!(out.contains("import type {"), "imports emitted");
+        assert!(
+            !out.contains("../../../"),
+            "no ts-rs export escape path leaks into the generated imports"
+        );
+        assert!(
+            out.contains("from '@protocol/inference_llm/"),
+            "real types import from their clean module path under the TS root"
+        );
+
         assert!(out.contains("export interface CommandMap"));
         assert!(out.contains("export type CommandName = keyof CommandMap;"));
         assert!(out.starts_with("// GENERATED from the Rust command registry"));
     }
 
-    // what this catches: the registry is ASSEMBLED FROM the register_command!
-    // sites (inventory), not a hand-maintained list — both demo commands appear
-    // though nothing lists them centrally, and the output is sorted by name for
-    // determinism. This is the anti-drift guarantee: a new command shows up here
-    // by registering at its own site, never by editing a central list.
+    // what this catches: the registry self-assembles from register_command! sites
+    // (inventory) crate-wide — the real inference command appears though nothing
+    // lists it centrally — and is sorted for deterministic output.
     #[test]
-    fn registry_is_auto_discovered_and_sorted() {
+    fn registry_is_auto_discovered_with_no_central_list() {
         let names: Vec<&str> = command_registry().iter().map(|d| d.name).collect();
-        // The demo outliers are collected from their register_command! sites...
-        assert!(names.contains(&"ping"), "demo outlier discovered");
-        assert!(names.contains(&"data/list"), "nested demo outlier discovered");
-        // ...AND a REAL command declared in a DIFFERENT module (inference) is
-        // collected too — proving the registry self-assembles crate-wide from
-        // scattered declarations, with no central list anywhere.
         assert!(
             names.contains(&"inference/llm/request"),
-            "a real command registered in another module is auto-discovered"
+            "a real command, registered at its own site, is auto-discovered"
         );
-        // Output is sorted by name for deterministic generation.
         let mut sorted = names.clone();
         sorted.sort();
-        assert_eq!(names, sorted, "registry sorted by name");
+        assert_eq!(names, sorted, "registry sorted by name (deterministic output)");
     }
 
-    // what this catches: a command's typed declaration round-trips to a
-    // descriptor purely at the type level, carrying name + access + the nested
-    // dependency among its type_refs.
+    // what this catches: a real command round-trips to a descriptor at the type
+    // level, carrying name + access + its transitive nested deps as importable refs.
     #[test]
-    fn descriptor_captures_name_access_and_nested_deps() {
-        let d = CommandDescriptor::of::<demo::DataList>();
-        assert_eq!(d.name, "data/list");
+    fn descriptor_captures_real_command_and_nested_deps() {
+        let d = command_registry()
+            .into_iter()
+            .find(|d| d.name == "inference/llm/request")
+            .expect("inference/llm/request registered");
         assert_eq!(d.access_level, AccessLevel::AiSafe);
-        assert_eq!(d.params.name, "DataListParams");
-        assert_eq!(d.result.name, "DataListResult");
+        assert_eq!(d.params.name, "InferenceRequest");
+        assert_eq!(d.result.name, "InferenceResponse");
+        // InferenceResponse nests InferenceComplete + FirstTokenEmitted — the
+        // transitive closure must capture them as importable refs.
         assert!(
-            d.type_refs.iter().any(|t| t.name == "OrderBy"),
-            "nested type is captured as an importable ref"
+            d.type_refs.iter().any(|t| t.name == "InferenceComplete"),
+            "nested dependency captured (transitive closure)"
         );
     }
 }
