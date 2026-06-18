@@ -1,24 +1,26 @@
-/**
- * EventMap — the typed event surface.
- *
- * HAND-MAINTAINED for now: unlike CommandMap (Rust-generated from each command's
- * CommandSpec), events are not yet declared as Rust EventSpecs, so this file is
- * the interim source. When events become Rust-rooted (an EventSpec registry the
- * generator walks, mirroring commands), this file becomes generated too and the
- * payload types move to vendored `wire/*`. Until then, keep entries here.
- *
- * Split out of the generated CommandMap so the command surface can be regenerated
- * wholesale (sdk_codegen) without clobbering events.
- */
+// GENERATED from the Rust event registry (core/continuum-core sdk_codegen).
+// DO NOT EDIT. Source of truth: each event's EventSpec (class + ts-rs
+// Payload). Regenerate after an event changes.
 
-// --- Placeholder event payloads (real ones will vendor from wire/* once Rust-sourced) ---
-export interface GridPeerJoined { peerId: string; runtime: 'persona' | 'human' | 'agent' }
-export interface UserCreated { id: string }
+import type { ContractAcceptedPayload } from './wire/contracts/ContractAcceptedPayload';
+import type { ContractBidPayload } from './wire/contracts/ContractBidPayload';
+import type { ContractDeliveredPayload } from './wire/contracts/ContractDeliveredPayload';
+import type { ContractDisputedPayload } from './wire/contracts/ContractDisputedPayload';
+import type { ContractExecutingPayload } from './wire/contracts/ContractExecutingPayload';
+import type { ContractPaidPayload } from './wire/contracts/ContractPaidPayload';
+import type { ContractProposedPayload } from './wire/contracts/ContractProposedPayload';
+import type { ContractVerifiedPayload } from './wire/contracts/ContractVerifiedPayload';
 
-/** event class -> payload. */
+/** event class -> payload. Generated; the contract is Rust-origin. */
 export interface EventMap {
-  'grid:peer:joined': GridPeerJoined;
-  'data:users:created': UserCreated;
+  'contract:accepted': ContractAcceptedPayload;
+  'contract:bid': ContractBidPayload;
+  'contract:delivered': ContractDeliveredPayload;
+  'contract:disputed': ContractDisputedPayload;
+  'contract:executing': ContractExecutingPayload;
+  'contract:paid': ContractPaidPayload;
+  'contract:proposed': ContractProposedPayload;
+  'contract:verified': ContractVerifiedPayload;
 }
 
 export type EventClass = keyof EventMap;

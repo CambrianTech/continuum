@@ -187,11 +187,23 @@ describe('2. Commands — execute (call) + provide (serve)', () => {
 // ─── 3. Events (subscribe + emit) ───────────────────────────────────────────────
 
 describe('3. Events — subscribe (listen) + emit (publish)', () => {
+  // A real, Rust-sourced event (contract:proposed → ContractProposedPayload) so
+  // the typed surface is exercised against the generated EventMap, not a stub.
+  const proposed = {
+    contractId: 'c1',
+    proposerId: 'p1',
+    alloyHash: 'h',
+    bidCurrency: '',
+    maxBid: 0,
+    expiryUnixMs: 0,
+    requiredCapability: '',
+  };
+
   it('subscribe: local class = bare topic, no filter', () => {
     const t = new MockTransport();
     const c = Continuum.connect(t);
-    c.events.subscribe('data:users:created', { onEvent: () => {} });
-    expect(t.subscribed[0]).toEqual({ topic: 'data:users:created', filterJson: undefined });
+    c.events.subscribe('contract:proposed', { onEvent: () => {} });
+    expect(t.subscribed[0]).toEqual({ topic: 'contract:proposed', filterJson: undefined });
   });
 
   it('subscribe: source addressing + server-side filter + typed sequence delivery', () => {
@@ -199,15 +211,15 @@ describe('3. Events — subscribe (listen) + emit (publish)', () => {
     const c = Continuum.connect(t);
     const seen: Array<[unknown, number]> = [];
     c.events.subscribe(
-      'grid:peer:joined',
+      'contract:proposed',
       { onEvent: (e, meta) => seen.push([e, meta.sequence]) },
-      { source: { peer: 'p1' }, filter: { runtime: 'persona' } },
+      { source: { peer: 'p1' }, filter: { proposerId: 'p1' } },
     );
-    expect(t.subscribed[0].topic).toBe('airc://p1/events/grid:peer:joined');
-    expect(t.subscribed[0].filterJson).toBe('{"runtime":"persona"}');
+    expect(t.subscribed[0].topic).toBe('airc://p1/events/contract:proposed');
+    expect(t.subscribed[0].filterJson).toBe('{"proposerId":"p1"}');
     // drive a delivery through the recorded raw handler: parse-once + sequence
-    t.lastHandlers!.onEvent('{"peerId":"p9","runtime":"persona"}', 7);
-    expect(seen).toEqual([[{ peerId: 'p9', runtime: 'persona' }, 7]]);
+    t.lastHandlers!.onEvent('{"contractId":"c9","proposerId":"p1"}', 7);
+    expect(seen).toEqual([[{ contractId: 'c9', proposerId: 'p1' }, 7]]);
   });
 
   it('subscribe: onError / onClosed propagate from the transport', () => {
@@ -215,7 +227,7 @@ describe('3. Events — subscribe (listen) + emit (publish)', () => {
     const c = Continuum.connect(t);
     let err: string | undefined;
     let closed = false;
-    c.events.subscribe('data:users:created', {
+    c.events.subscribe('contract:proposed', {
       onEvent: () => {},
       onError: (m) => { err = m; },
       onClosed: () => { closed = true; },
@@ -229,7 +241,7 @@ describe('3. Events — subscribe (listen) + emit (publish)', () => {
   it('subscribe: Subscription.unsubscribe() tears down', () => {
     const t = new MockTransport();
     const c = Continuum.connect(t);
-    const sub = c.events.subscribe('data:users:created', { onEvent: () => {} });
+    const sub = c.events.subscribe('contract:proposed', { onEvent: () => {} });
     sub.unsubscribe();
     expect(t.unsubscribed).toBe(1);
   });
@@ -237,8 +249,11 @@ describe('3. Events — subscribe (listen) + emit (publish)', () => {
   it('emit: publishes the typed payload, serialize-once', async () => {
     const t = new MockTransport();
     const c = Continuum.connect(t);
-    await c.events.emit('data:users:created', { id: 'u1' });
-    expect(t.emitted[0]).toEqual({ eventClass: 'data:users:created', payloadJson: '{"id":"u1"}' });
+    await c.events.emit('contract:proposed', proposed);
+    expect(t.emitted[0]).toEqual({
+      eventClass: 'contract:proposed',
+      payloadJson: JSON.stringify(proposed),
+    });
   });
 });
 
@@ -319,8 +334,21 @@ describe('6. sessions — session() identity + scoped(context)', () => {
   it('scoped: emit auto-stamps contextId into the event payload', async () => {
     const t = new MockTransport();
     const c = Continuum.connect(t).scoped('room-7');
-    await c.events.emit('data:users:created', { id: 'u1' });
-    expect(JSON.parse(t.emitted[0].payloadJson)).toEqual({ id: 'u1', contextId: 'room-7' });
+    await c.events.emit('contract:bid', {
+      contractId: 'c1',
+      bidderId: 'b1',
+      bidAmount: 0,
+      maxLatencyMs: 0,
+      bidExpiryUnixMs: 0,
+    });
+    expect(JSON.parse(t.emitted[0].payloadJson)).toEqual({
+      contractId: 'c1',
+      bidderId: 'b1',
+      bidAmount: 0,
+      maxLatencyMs: 0,
+      bidExpiryUnixMs: 0,
+      contextId: 'room-7',
+    });
   });
 
   it('unscoped: no contextId is stamped (scope is opt-in)', async () => {
