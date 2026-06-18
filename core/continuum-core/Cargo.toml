@@ -46,6 +46,11 @@ continuum-client = { path = "../../client/continuum-client" }
 reqwest = { version = "0.12", features = ["json", "multipart"] }
 thiserror.workspace = true
 dashmap = "6.1"  # Lock-free concurrent HashMap
+# Distributed compile-time registration: each `CommandSpec` self-registers at its
+# own declaration site (sdk_codegen), so the command registry assembles itself —
+# no hand-maintained list (infinitely-extensible / on-the-fly commands make a
+# static list immediately stale). dtolnay's inventory; link-time collection.
+inventory = "0.3"
 tikv-jemallocator = "0.6"  # jemalloc: returns memory to OS aggressively, reduces fragmentation
 libc = "0.2"     # Process group management (setsid, kill -pgid)
 toml = "0.8"     # Avatar model manifest parsing

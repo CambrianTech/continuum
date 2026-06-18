@@ -259,7 +259,7 @@ impl std::fmt::Debug for MockTransport {
 
 #[async_trait]
 impl Transport for MockTransport {
-    async fn request(&self, command: &str, params: Value) -> Result<Value, ClientError> {
+    async fn execute(&self, command: &str, params: Value) -> Result<Value, ClientError> {
         if self.inner.closed.load(Ordering::Relaxed) {
             return Err(ClientError::Closed);
         }
@@ -364,47 +364,47 @@ mod tests {
     use serde_json::json;
 
     #[tokio::test]
-    async fn request_returns_registered_response() {
+    async fn execute_returns_registered_response() {
         let mock = MockTransport::new();
         mock.respond_with("ai/generate", json!({"text": "mocked"}));
         let got = mock
-            .request("ai/generate", json!({"prompt": "hi"}))
+            .execute("ai/generate", json!({"prompt": "hi"}))
             .await
             .unwrap();
         assert_eq!(got, json!({"text": "mocked"}));
     }
 
     #[tokio::test]
-    async fn request_handler_sees_params() {
+    async fn execute_handler_sees_params() {
         let mock = MockTransport::new();
         mock.respond_to("echo", Ok);
-        let got = mock.request("echo", json!({"x": 1})).await.unwrap();
+        let got = mock.execute("echo", json!({"x": 1})).await.unwrap();
         assert_eq!(got, json!({"x": 1}));
     }
 
     #[tokio::test]
-    async fn request_fifo_per_command() {
+    async fn execute_fifo_per_command() {
         let mock = MockTransport::new();
         mock.respond_with("c", json!(1));
         mock.respond_with("c", json!(2));
-        assert_eq!(mock.request("c", json!({})).await.unwrap(), json!(1));
-        assert_eq!(mock.request("c", json!({})).await.unwrap(), json!(2));
+        assert_eq!(mock.execute("c", json!({})).await.unwrap(), json!(1));
+        assert_eq!(mock.execute("c", json!({})).await.unwrap(), json!(2));
     }
 
     #[tokio::test]
-    async fn request_returns_not_implemented_when_unregistered() {
+    async fn execute_returns_not_implemented_when_unregistered() {
         let mock = MockTransport::new();
-        let err = mock.request("nope", json!({})).await.unwrap_err();
+        let err = mock.execute("nope", json!({})).await.unwrap_err();
         assert!(matches!(err, ClientError::NotImplemented(_)));
     }
 
     #[tokio::test]
-    async fn request_returns_closed_after_close() {
+    async fn execute_returns_closed_after_close() {
         let mock = MockTransport::new();
         mock.respond_with("c", json!(1));
         mock.close().await.unwrap();
         assert!(matches!(
-            mock.request("c", json!({})).await.unwrap_err(),
+            mock.execute("c", json!({})).await.unwrap_err(),
             ClientError::Closed
         ));
     }

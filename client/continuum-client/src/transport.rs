@@ -36,9 +36,11 @@ pub trait ServeHandler: Send + Sync {
 /// `test-fixtures`) for downstream unit tests.
 #[async_trait]
 pub trait Transport: Send + Sync + 'static {
-    /// Round-trip one command. Caller gives JSON params, gets JSON result
-    /// or a typed error. (Command: CALL.)
-    async fn request(&self, command: &str, params: Value) -> Result<Value, ClientError>;
+    /// Execute one command (the CALL verb). Caller gives JSON params, gets JSON
+    /// result or a typed error. Named `execute` to match the canonical primitive
+    /// (`Commands.execute()`) and the FFI/TS transports — one CALL verb across
+    /// every layer and language. (Command: CALL.)
+    async fn execute(&self, command: &str, params: Value) -> Result<Value, ClientError>;
 
     /// Open an event stream for the given class. Class strings follow the
     /// substrate's URI convention (e.g. `"persona.response.*"`). (Event: LISTEN.)

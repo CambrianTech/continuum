@@ -30,4 +30,7 @@ export type {
   RawEventHandlers,
 } from './transport';
 export { buildCommandUri, buildEventTopic, stampContext } from './transport';
-export type { CommandMap, CommandName, EventMap, EventClass } from './generated/CommandMap';
+export type { CommandMap, CommandName } from './generated/CommandMap';
+export type { EventMap, EventClass } from './generated/EventMap';
+/** Typed, string-free command accessors generated from the Rust command specs. */
+export { CommandApi } from './generated/CommandApi';

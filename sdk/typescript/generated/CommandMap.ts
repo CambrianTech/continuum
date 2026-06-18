@@ -1,56 +1,51 @@
+// GENERATED from the Rust command registry (core/continuum-core sdk_codegen).
+// DO NOT EDIT. Source of truth: each command's CommandSpec (name + ts-rs
+// Params/Result + wire shape). Regenerate after a command changes.
+
+import type { TextGenerationResponse } from './wire/ai/TextGenerationResponse';
+import type { CloseParams } from './wire/ai_inference/CloseParams';
+import type { CloseResult } from './wire/ai_inference/CloseResult';
+import type { GenerateParams } from './wire/ai_inference/GenerateParams';
+import type { InspectParams } from './wire/ai_inference/InspectParams';
+import type { InspectResult } from './wire/ai_inference/InspectResult';
+import type { OpenParams } from './wire/ai_inference/OpenParams';
+import type { OpenResult } from './wire/ai_inference/OpenResult';
+import type { ChatPollParams } from './wire/chat/ChatPollParams';
+import type { ChatPollResult } from './wire/chat/ChatPollResult';
+import type { ChatSendParams } from './wire/chat/ChatSendParams';
+import type { ChatSendResult } from './wire/chat/ChatSendResult';
+import type { DataListParams } from './wire/data/DataListParams';
+import type { DataListResult } from './wire/data/DataListResult';
+import type { PingParams } from './wire/health/PingParams';
+import type { PingResult } from './wire/health/PingResult';
+import type { InferenceRequest } from './wire/inference_llm/InferenceRequest';
+import type { InferenceResponse } from './wire/inference_llm/InferenceResponse';
+import type { ScreenshotParams } from './wire/interface/ScreenshotParams';
+import type { ScreenshotResult } from './wire/interface/ScreenshotResult';
+import type { CommandRequest } from './wire/runtime/CommandRequest';
+import type { CommandResponse } from './wire/runtime/CommandResponse';
+
 /**
- * CommandMap / EventMap — GENERATED. DO NOT EDIT BY HAND.
- *
- * One entry per discovered command/event; `params`/`result`/payload are the
- * ts-rs-generated wire types in `protocol/typescript/*`. Regenerated on every
- * command change, so the typed SDK surface never drifts and is never a
- * hand-maintained registry (CLAUDE.md anti-pattern: no central command list).
- *
- * The generator (SDK-API-SURFACE.md open item #1) emits this from the command
- * manifest + the ts-rs types. Until it lands, this stub carries a few real
- * entries so `Commands.ts` type-checks and the shape is demonstrated. Replace
- * wholesale on first generation.
- *
- * NOTE the bidirectional split (SDK-API-SURFACE.md § "Commands are bidirectional"):
- * the SAME map types both the CALLER side (`execute`) and the PROVIDER side
- * (`provide`). A client-provided command like `interface/screenshot` appears here
- * with a rust-origin contract; its per-platform adapter is supplied via `provide`.
- */
-
-// --- Placeholder wire types (the real ones import from protocol/typescript/*) ---
-// Replaced by generation; inline here only so the stub type-checks standalone.
-export interface PingParams { message?: string }
-export interface PingResult { ok: boolean; roundTripMs: number }
-export interface ScreenshotParams { querySelector?: string; filename?: string }
-export interface ScreenshotResult { dataUrl: string; width: number; height: number }
-/** A command with NESTED params — pins serialize-once fidelity for the conformance
- *  spec (a twin that flattens/reorders nested objects breaks here). */
-export interface DataListParams {
-  collection: string;
-  orderBy?: Array<{ field: string; direction: 'asc' | 'desc' }>;
-  filter?: Record<string, unknown>;
-}
-export interface DataListResult { items: unknown[]; total: number }
-
-/** name -> { params, result }. Generated; the contract is rust-origin. */
+* name -> { params, result }. Generated; the contract is Rust-origin and
+* models the REAL wire each handler exchanges.
+*
+* `Enveloped` commands ride the substrate envelope, so their params are
+* `CommandRequest<P>` and results `CommandResponse<T>` (the flattened
+* success/handle the handler actually emits). `Bare` substrate commands and
+* `Provided` adapter commands exchange their payloads directly. Command
+* FAILURE is a rejected promise (transport error), never a result field.
+*/
 export interface CommandMap {
-  'ping': { params: PingParams; result: PingResult };
+  'ai/inference/close': { params: CommandRequest<CloseParams>; result: CommandResponse<CloseResult> };
+  'ai/inference/generate': { params: CommandRequest<GenerateParams>; result: CommandResponse<TextGenerationResponse> };
+  'ai/inference/inspect': { params: CommandRequest<InspectParams>; result: CommandResponse<InspectResult> };
+  'ai/inference/open': { params: CommandRequest<OpenParams>; result: CommandResponse<OpenResult> };
+  'chat/poll': { params: CommandRequest<ChatPollParams>; result: CommandResponse<ChatPollResult> };
+  'chat/send': { params: CommandRequest<ChatSendParams>; result: CommandResponse<ChatSendResult> };
   'data/list': { params: DataListParams; result: DataListResult };
-  // Client-PROVIDED command: rust-origin contract, per-platform SDK adapter
-  // (web DOM/canvas · desktop OS · AR/VR renderer capture). See `Commands.provide`.
+  'inference/llm/request': { params: InferenceRequest; result: InferenceResponse };
   'interface/screenshot': { params: ScreenshotParams; result: ScreenshotResult };
+  'ping': { params: PingParams; result: PingResult };
 }
 
 export type CommandName = keyof CommandMap;
-
-// --- Placeholder event payloads (real ones import from protocol/typescript/*) ---
-export interface GridPeerJoined { peerId: string; runtime: 'persona' | 'human' | 'agent' }
-export interface UserCreated { id: string }
-
-/** event class -> payload. Generated. */
-export interface EventMap {
-  'grid:peer:joined': GridPeerJoined;
-  'data:users:created': UserCreated;
-}
-
-export type EventClass = keyof EventMap;

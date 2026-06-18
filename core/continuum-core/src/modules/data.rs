@@ -3657,3 +3657,70 @@ mod tests {
     } // end mod stress
 
 }
+
+// ── SDK contract: data/list (sdk_codegen) ──────────────────────────
+//
+// The Rust-rooted contract for `data/list`. Per the single-source principle the
+// TYPE leads and the handler conforms: `data/list` is, by contract, "collection
+// (+ optional ordering/filter) → items + total". Declared Bare (the data handler
+// returns its result directly, no envelope). These ts-rs types are the canonical
+// wire shape every SDK generates from; aligning the StorageQuery-based handler to
+// emit exactly this shape is the follow-up (tracked) — the contract is the source
+// of truth, not the current handler internals.
+
+/// Sort direction for a `data/list` ordering clause.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
+#[serde(rename_all = "lowercase")]
+#[ts(export, export_to = "../../../protocol/typescript/data/SortDir.ts")]
+pub enum SortDir {
+    Asc,
+    Desc,
+}
+
+/// One ordering clause: a field + a direction.
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
+#[ts(export, export_to = "../../../protocol/typescript/data/OrderByClause.ts")]
+pub struct OrderByClause {
+    pub field: String,
+    pub direction: SortDir,
+}
+
+/// Params for `data/list` — list records in a collection, optionally ordered and
+/// filtered.
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../../protocol/typescript/data/DataListParams.ts")]
+pub struct DataListParams {
+    /// The collection to list.
+    pub collection: String,
+    /// Optional ordering clauses, applied in order.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub order_by: Option<Vec<OrderByClause>>,
+    /// Optional field filter (a partial match over record fields).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional, type = "Record<string, unknown>")]
+    pub filter: Option<serde_json::Value>,
+}
+
+/// Result of `data/list` — the matching records + a total count.
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
+#[ts(export, export_to = "../../../protocol/typescript/data/DataListResult.ts")]
+pub struct DataListResult {
+    /// The matching records (shape is collection-specific).
+    #[ts(type = "Array<unknown>")]
+    pub items: Vec<serde_json::Value>,
+    /// Total matching records (may exceed `items.len()` when paginated).
+    pub total: u32,
+}
+
+/// `data/list` — Bare: bare `DataListParams` in, bare `DataListResult` out.
+pub struct DataListCommand;
+impl crate::sdk_codegen::CommandSpec for DataListCommand {
+    const NAME: &'static str = "data/list";
+    const ACCESS_LEVEL: crate::sdk_codegen::AccessLevel = crate::sdk_codegen::AccessLevel::AiSafe;
+    const WIRE: crate::sdk_codegen::WireShape = crate::sdk_codegen::WireShape::Bare;
+    type Params = DataListParams;
+    type Result = DataListResult;
+}
+crate::register_command!(DataListCommand);

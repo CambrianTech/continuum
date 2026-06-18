@@ -80,6 +80,7 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use ts_rs::TS;
 use uuid::Uuid;
 
 use super::cell_shapes::HandleRef;
@@ -113,12 +114,24 @@ use super::CommandResult;
 ///
 /// Tests + one-off callsites can construct directly via the public
 /// fields.
-#[derive(Debug, Clone, Deserialize, Serialize)]
+///
+/// # ts-rs / SDK
+///
+/// This is ALSO the single source of the generated TS envelope generic
+/// (`sdk_codegen`): `#[derive(TS)]` exports it to
+/// `protocol/typescript/runtime/CommandRequest.ts` as
+/// `export type CommandRequest<P> = P & { handle?, sessionId?, userId?, contextId? }`.
+/// An `Executed` command's generated `CommandMap` entry wraps its params
+/// `P` in this generic — so the typed surface cannot drift from the Rust
+/// envelope. `P` is flattened (`#[ts(flatten)]`) to match the flat wire JSON.
+#[derive(Debug, Clone, Deserialize, Serialize, TS)]
+#[ts(export, export_to = "../../../protocol/typescript/runtime/CommandRequest.ts")]
 pub struct CommandRequest<P> {
     /// Command-specific params, deserialized from the same JSON object
     /// as the envelope. Flatten means the wire JSON looks like
     /// `{ ...P fields..., handle?, sessionId?, userId? }`.
     #[serde(flatten)]
+    #[ts(flatten)]
     pub params: P,
 
     /// Handle to existing state from a prior command call. Present
@@ -126,6 +139,7 @@ pub struct CommandRequest<P> {
     /// training, hosting, ORM, etc.) — the producer minted the handle;
     /// this caller passes it back to thread the work.
     #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[ts(optional)]
     pub handle: Option<HandleRef>,
 
     /// Calling session — set by the kernel from the request envelope.
@@ -136,11 +150,13 @@ pub struct CommandRequest<P> {
         skip_serializing_if = "Option::is_none",
         default
     )]
+    #[ts(optional, type = "string")]
     pub session_id: Option<Uuid>,
 
     /// Calling user — set by the kernel from the session. Handlers
     /// reading this can scope per-user state (e.g., per-persona work).
     #[serde(rename = "userId", skip_serializing_if = "Option::is_none", default)]
+    #[ts(optional, type = "string")]
     pub user_id: Option<Uuid>,
 
     /// Conversation / room scope this command operates within — the THIRD
@@ -160,6 +176,7 @@ pub struct CommandRequest<P> {
         skip_serializing_if = "Option::is_none",
         default
     )]
+    #[ts(optional, type = "string")]
     pub context_id: Option<Uuid>,
 }
 
@@ -325,7 +342,17 @@ impl<P> CommandRequest<P> {
 /// via [`CommandResponse::into_command_result`]: serialize-flatten +
 /// wrap as `CommandResult::Json`. One method call to bridge the typed
 /// envelope into the existing kernel surface.
-#[derive(Debug, Clone, Serialize)]
+///
+/// # ts-rs / SDK
+///
+/// The single source of the generated TS result-envelope generic: exports
+/// to `protocol/typescript/runtime/CommandResponse.ts` as
+/// `export type CommandResponse<T> = T & { success, handle?, error? }`. An
+/// `Executed` command's generated `CommandMap` entry wraps its result `T`
+/// in this generic, so a caller always sees the cross-cutting
+/// success/error/handle alongside the command-specific payload.
+#[derive(Debug, Clone, Serialize, TS)]
+#[ts(export, export_to = "../../../protocol/typescript/runtime/CommandResponse.ts")]
 pub struct CommandResponse<T> {
     /// Operation succeeded. Default `true`; flipped by
     /// [`CommandResponse::err`].
@@ -334,15 +361,18 @@ pub struct CommandResponse<T> {
     /// Command-specific result payload, flattened into the wire JSON
     /// alongside the envelope fields.
     #[serde(flatten)]
+    #[ts(flatten)]
     pub data: T,
 
     /// Handle minted by this command for the caller to use in follow-up
     /// calls — the long-running session pattern.
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub handle: Option<HandleRef>,
 
     /// Operation-level error message. Set when `success == false`.
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub error: Option<String>,
 }
 
@@ -414,7 +444,7 @@ mod tests {
 
     // ── CommandRequest<P> ────────────────────────────────────────────
 
-    #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+    #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, TS)]
     struct StartParams {
         model: String,
         max_tokens: u32,
@@ -521,7 +551,7 @@ mod tests {
 
     // ── CommandResponse<T> ───────────────────────────────────────────
 
-    #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+    #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, TS)]
     struct StartData {
         first_token: String,
         tokens_emitted: u32,
@@ -612,7 +642,7 @@ mod tests {
         // Caller takes the result, builds a new request envelope using
         // the returned handle (+ their own session/user). The new
         // request's params type is a "poll" shape.
-        #[derive(Debug, Clone, Deserialize, Serialize)]
+        #[derive(Debug, Clone, Deserialize, Serialize, TS)]
         struct PollParams {
             max_tokens: u32,
         }
@@ -639,7 +669,7 @@ mod tests {
     // discovered is pinned by a test here so the substrate
     // guarantees them centrally.
 
-    #[derive(Debug, Clone, Default, Deserialize, Serialize)]
+    #[derive(Debug, Clone, Default, Deserialize, Serialize, TS)]
     #[serde(rename_all = "camelCase")]
     struct CursorParams {
         #[serde(default)]

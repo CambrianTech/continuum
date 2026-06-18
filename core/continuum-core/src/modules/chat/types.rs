@@ -172,6 +172,42 @@ pub const CHAT_MESSAGES_COLLECTION: &str = "chat_messages";
 /// the historical TS default (`params.limit || 50`).
 pub const DEFAULT_POLL_LIMIT: usize = 50;
 
+// ── SDK CommandSpec declarations (sdk_codegen) ───────────────────────────
+//
+// chat/send + chat/poll are ENVELOPED: the handler (chat/mod.rs) parses
+// `CommandRequest::<P>::from_value` and returns
+// `CommandResponse::ok(result).into_command_result()`, so the generated SDK
+// surface wraps them as `CommandRequest<ChatSendParams>` →
+// `CommandResponse<ChatSendResult>` — faithful to the real wire. Neither mints
+// or consumes a handle. The canonical NAME is the short `chat/*` form (the
+// `collaboration/chat/*` alias is a routing detail, not a second command).
+
+/// `chat/send` — store + broadcast a chat message. Enveloped, no handle.
+pub struct ChatSendCommand;
+
+impl crate::sdk_codegen::CommandSpec for ChatSendCommand {
+    const NAME: &'static str = "chat/send";
+    const ACCESS_LEVEL: crate::sdk_codegen::AccessLevel = crate::sdk_codegen::AccessLevel::AiSafe;
+    const WIRE: crate::sdk_codegen::WireShape = crate::sdk_codegen::WireShape::Enveloped;
+    type Params = ChatSendParams;
+    type Result = ChatSendResult;
+}
+
+crate::register_command!(ChatSendCommand);
+
+/// `chat/poll` — fetch recent messages for a room. Enveloped, no handle.
+pub struct ChatPollCommand;
+
+impl crate::sdk_codegen::CommandSpec for ChatPollCommand {
+    const NAME: &'static str = "chat/poll";
+    const ACCESS_LEVEL: crate::sdk_codegen::AccessLevel = crate::sdk_codegen::AccessLevel::AiSafe;
+    const WIRE: crate::sdk_codegen::WireShape = crate::sdk_codegen::WireShape::Enveloped;
+    type Params = ChatPollParams;
+    type Result = ChatPollResult;
+}
+
+crate::register_command!(ChatPollCommand);
+
 #[cfg(test)]
 mod tests {
     use super::*;

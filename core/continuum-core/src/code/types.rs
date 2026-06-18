@@ -349,3 +349,11 @@ pub const ALLOWED_EXTENSIONS: &[&str] = &[
 
 /// Maximum file size for write operations (1MB).
 pub const MAX_WRITE_SIZE: u64 = 1_048_576;
+
+// NOTE: `code/*` commands are deliberately NOT registered via `CommandSpec` yet.
+// There is no Rust `code` ServiceModule — `code/read` et al. are served today by
+// the legacy TS mixin (`bindings/modules/code.ts`), which carries a `persona_id`
+// param and a nested `{success, result}` IPC envelope. Declaring a CommandSpec
+// here would describe a wire that doesn't exist on the new transport. When the
+// code surface is ported to a real Rust ServiceModule on continuum-client, add
+// the CommandSpec then (with the params the handler actually parses) — not before.

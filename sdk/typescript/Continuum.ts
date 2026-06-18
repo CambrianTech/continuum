@@ -76,7 +76,31 @@ export class Continuum {
     params: CommandMap[K]['params'],
     target?: Target,
   ): Promise<Handle> {
-    const result = (await this.commands.execute(name, params, target)) as { uri: string };
-    return handleFrom(result.uri, this.transport);
+    // A URI-addressed Handle (Handle.ts) needs a `uri` in the result. The typed
+    // result is `CommandMap[K]['result']` — which, post-envelope, has NO `uri`
+    // member (an Enveloped command carries its handle as `CommandResponse.handle:
+    // HandleRef {owner,id,…}`, owner+id routed, not URI routed). So the old
+    // `as { uri: string }` cast was unsound (BigMama's #1674 catch). We can't
+    // statically know a command is URI-open-style yet, so narrow to the loose
+    // `{ uri?: unknown }` (every object satisfies that — a sound upcast, no
+    // suppression) and validate at runtime: a command that didn't return a
+    // resource URI fails loudly here, not as a silent `handleFrom(undefined)`.
+    //
+    // DESIGN follow-up (with BigMama): the URI Handle (live/stream resources) and
+    // the HandleRef envelope (inference-session resources) are two resource
+    // models. `open()` serves the URI one; a HandleRef-based `openSession()` (or
+    // teaching Handle to route owner+id) is the reconciliation — tracked, not in
+    // this PR.
+    const result = await this.commands.execute(name, params, target);
+    const uri = (result as { uri?: unknown }).uri;
+    if (typeof uri !== 'string') {
+      throw new Error(
+        `Continuum.open('${name}'): command did not return a resource \`uri\`. ` +
+          `open() is for URI-addressed resources; a HandleRef-minting command ` +
+          `(e.g. ai/inference/open) carries its handle in CommandResponse.handle, ` +
+          `not a uri.`,
+      );
+    }
+    return handleFrom(uri, this.transport);
   }
 }

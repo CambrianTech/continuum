@@ -13,7 +13,7 @@
 
 import type { Transport, Subscription, Target } from './transport';
 import { buildEventTopic, stampContext } from './transport';
-import type { EventMap, EventClass } from './generated/CommandMap';
+import type { EventMap, EventClass } from './generated/EventMap';
 
 /** Metadata delivered alongside each event (from the redone publisher frame). */
 export interface EventMeta {

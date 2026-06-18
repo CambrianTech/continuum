@@ -45,7 +45,7 @@ impl<T: Transport> CommandClient<T> {
     {
         let mut params_value = serde_json::to_value(params)?;
         self.stamp_context(&mut params_value);
-        let result_value = self.transport.request(command, params_value).await?;
+        let result_value = self.transport.execute(command, params_value).await?;
         Ok(serde_json::from_value(result_value)?)
     }
 
