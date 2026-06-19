@@ -10,15 +10,19 @@
 //! [`ConnectionDispatch`] (forwards each tool call to the core over a
 //! `continuum_client::Connection`, gated like any caller).
 //!
-//! ## Configuration (env, fail-loud — no fallbacks)
+//! ## Configuration — turnkey by default (auto-discovers the local core)
 //!
-//! - `CONTINUUM_HOME`   — the airc scope/home dir (e.g. `~/.airc` or a repo `.airc`).
-//! - `CONTINUUM_SOCKET` — the core daemon's IPC socket path.
-//! - `CONTINUUM_PEER`   — the core's peer id (UUID) this client targets.
-//! - `CONTINUUM_AGENT`  — this client's agent name (default `continuum-mcp`).
+//! With **no config at all** the server auto-discovers the running local core
+//! via airc ([`continuum_core::airc::discover`]) — the same liveness probe the
+//! core uses — so the MCP client config can be just `command: "continuum-mcp"`.
+//! No manual peer-id/socket lookup (that lookup was the friction that bred
+//! unreliability). Each value is overridable via env when needed:
 //!
-//! MCP clients pass these via their server config's `env` block, mirroring how
-//! the old TS server received its connection config.
+//! - `CONTINUUM_SOCKET` — airc daemon socket. Default: discovered.
+//! - `CONTINUUM_PEER`   — the core's airc peer id (UUID). Default: discovered.
+//! - `CONTINUUM_HOME`   — airc scope/home dir. Default: `$AIRC_HOME`, else
+//!   `$HOME/.airc`.
+//! - `CONTINUUM_AGENT`  — this client's agent name. Default: `continuum-mcp`.
 //!
 //! ## stdout discipline
 //!
@@ -30,6 +34,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use continuum_client::Connection;
+use continuum_core::airc::{discover, AircDiscovery};
 use continuum_core::modules::mcp_protocol::McpServer;
 use continuum_core::modules::mcp_transport::{ConnectionDispatch, StdioRunner};
 use uuid::Uuid;
@@ -37,28 +42,66 @@ use uuid::Uuid;
 const SERVER_NAME: &str = "continuum-mcp";
 const SERVER_VERSION: &str = env!("CARGO_PKG_VERSION");
 
-/// Read a required env var or fail loud (no silent fallback — a misconfigured
-/// MCP server should refuse to start, not connect to the wrong place).
-fn require_env(key: &str) -> Result<String, String> {
-    std::env::var(key).map_err(|_| format!("missing required env var {key}"))
+/// Resolve socket + peer: env override wins, else auto-discover the local core.
+/// Discovery is the canonical liveness probe — if the core isn't up (or the
+/// socket is stale) it fails loud here rather than hanging on a bad target.
+async fn resolve_target() -> Result<(String, Uuid), String> {
+    let env_socket = std::env::var("CONTINUUM_SOCKET").ok();
+    let env_peer = std::env::var("CONTINUUM_PEER").ok();
+
+    // Both supplied → use them (no discovery round-trip needed).
+    if let (Some(socket), Some(peer_str)) = (&env_socket, &env_peer) {
+        let peer = Uuid::parse_str(peer_str)
+            .map_err(|e| format!("CONTINUUM_PEER is not a valid UUID: {e}"))?;
+        return Ok((socket.clone(), peer));
+    }
+
+    // Otherwise discover the local core, then let any env value override.
+    match discover().await {
+        AircDiscovery::Healthy { socket, peer_id, .. } => {
+            let socket = env_socket.unwrap_or_else(|| socket.to_string_lossy().into_owned());
+            let peer = match env_peer {
+                Some(p) => Uuid::parse_str(&p)
+                    .map_err(|e| format!("CONTINUUM_PEER is not a valid UUID: {e}"))?,
+                None => peer_id,
+            };
+            Ok((socket, peer))
+        }
+        other => Err(format!(
+            "could not discover a healthy local core ({}); is `npm start` running? \
+             Override with CONTINUUM_SOCKET + CONTINUUM_PEER.",
+            other.kind()
+        )),
+    }
+}
+
+/// Resolve the airc scope/home: `CONTINUUM_HOME`, else `AIRC_HOME`, else
+/// `$HOME/.airc` (the machine-account scope the core attaches under).
+fn resolve_home() -> Result<PathBuf, String> {
+    if let Ok(h) = std::env::var("CONTINUUM_HOME") {
+        return Ok(PathBuf::from(h));
+    }
+    if let Ok(h) = std::env::var("AIRC_HOME") {
+        return Ok(PathBuf::from(h));
+    }
+    let home = std::env::var("HOME").map_err(|_| {
+        "cannot resolve airc home: set CONTINUUM_HOME (or HOME/AIRC_HOME)".to_string()
+    })?;
+    Ok(PathBuf::from(home).join(".airc"))
 }
 
 #[tokio::main]
 async fn main() -> Result<(), String> {
-    let home = require_env("CONTINUUM_HOME")?;
-    let socket = require_env("CONTINUUM_SOCKET")?;
-    let peer_str = require_env("CONTINUUM_PEER")?;
     let agent = std::env::var("CONTINUUM_AGENT").unwrap_or_else(|_| SERVER_NAME.to_string());
-
-    // Parse the peer id FIRST — a bad id fails cheaply before we touch the
-    // daemon, and never fabricates a target (mirrors continuum-client-ffi).
-    let peer = Uuid::parse_str(&peer_str)
-        .map_err(|e| format!("CONTINUUM_PEER is not a valid UUID: {e}"))?;
+    let home = resolve_home()?;
+    let (socket, peer) = resolve_target().await?;
 
     // Diagnostics → stderr only (stdout is the JSON-RPC channel).
-    eprintln!("{SERVER_NAME} {SERVER_VERSION}: attaching to core at {socket} as '{agent}' (peer {peer})");
+    eprintln!(
+        "{SERVER_NAME} {SERVER_VERSION}: attaching to core at {socket} as '{agent}' (peer {peer})"
+    );
 
-    let airc = airc_lib::Airc::attach_as(PathBuf::from(home), &agent, socket)
+    let airc = airc_lib::Airc::attach_as(home, &agent, socket)
         .await
         .map_err(|e| format!("airc attach failed: {e}"))?;
     let connection = Connection::connect(Arc::new(airc), peer);
