@@ -29,6 +29,9 @@
 **"How do PersonaUsers learn and evolve?"**
 -> Read [PERSONA-GENOMIC-ARCHITECTURE.md](../personas/PERSONA-GENOMIC-ARCHITECTURE.md)
 
+**"How is the monolith decomposed into composable services/containers?"**
+-> Read [MODULAR-DECOMPOSITION.md](../architecture/MODULAR-DECOMPOSITION.md) — service profiles over the existing BootMode/ModuleCategory seam ("a good AWS template"), co-location constraints (Bevy+LiveKit+GPU), per-service health/restart/independent-test, container layout
+
 **"Which daemon should I use for X?"**
 -> Read [DAEMON-RESPONSIBILITIES.md](../infrastructure/DAEMON-RESPONSIBILITIES.md)
 
