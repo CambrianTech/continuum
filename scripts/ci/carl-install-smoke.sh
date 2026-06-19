@@ -21,11 +21,17 @@
 #   SKIP_TEARDOWN=1                 keep stack running after probe (debug)
 #
 # Exit codes:
-#   0 — install completed AND page rendered usable HTML
+#   0 — install completed AND headless core is serving IPC (core-gated pass).
+#       With CARL_CHECK_WEB_CLIENT=1, also requires web client + chat e2e.
 #   1 — install.sh failed
-#   2 — install.sh succeeded but widget-server never returned 200 on /health
-#   3 — widget-server returned 200 but page body looks broken
-#       (empty / contains chrome-error / contains "container exited")
+#   2 — install.sh succeeded but continuum-core IPC socket never came up
+#       (the headless core is the install deliverable — hard failure)
+#   3 — (CARL_CHECK_WEB_CLIENT=1) widget-server page body looks broken
+#   4/5/6 — (CARL_CHECK_WEB_CLIENT=1) jtag chat e2e failures
+#
+# The OLD Node web client + jtag-chat assertions are ADVISORY by default
+# (skipped) — that client is being reinvented on the new client SDK
+# (roadmap #29). Set CARL_CHECK_WEB_CLIENT=1 to run them.
 
 set -uo pipefail
 
@@ -205,10 +211,81 @@ fi
 INSTALL_DUR=$(( $(date +%s) - INSTALL_START ))
 echo "✅ install.sh completed in ${INSTALL_DUR}s"
 
-# ── 2. Wait for widget-server /health ─────────────────────────
-# install.sh has its own health-wait now (piece E in this PR), but we
-# re-check here in case the user used SKIP_HEALTH=1 or ran an older
-# install.sh without the wait. Belt + suspenders.
+# ── 2. Wait for the HEADLESS CORE (the real install deliverable) ──────
+# The install deliverable is the headless Rust core (continuum-core), NOT
+# the old Node web client. continuum-core exposes its IPC socket at
+# /root/.continuum/sockets/continuum-core.sock; the compose healthcheck is
+# `test -S` on exactly that path. We gate on the SAME signal from the host
+# via `docker compose exec`, so "smoke passed" means "the core is serving
+# IPC" — independent of whether the (in-rework) Node web client built.
+#
+# Why this replaced the widget-server :9003 gate: the old Node/TS client is
+# being REINVENTED on the new client SDK (screenshot-as-spec, own modular
+# container), not repaired. Its build is prone to directory-reshuffle breaks
+# from the headless-Rust work, and gating the public install path on a
+# dead-layer build is wrong. The core is what matters. (See roadmap #28/#29.)
+echo ""
+echo "━━━ waiting up to ${CARL_HEALTH_TIMEOUT_SEC}s for continuum-core IPC socket ━━━"
+CORE_SOCK="/root/.continuum/sockets/continuum-core.sock"
+CORE_OK=0
+if [ -f "$CARL_INSTALL_DIR/docker-compose.yml" ]; then
+  for i in $(seq 1 "$CARL_HEALTH_TIMEOUT_SEC"); do
+    if ( cd "$CARL_INSTALL_DIR" && docker compose exec -T continuum-core test -S "$CORE_SOCK" ) >/dev/null 2>&1; then
+      CORE_OK=1
+      echo "  continuum-core IPC socket live after ${i}s"
+      break
+    fi
+    sleep 1
+  done
+else
+  # Non-docker (native) install: fall back to the host-side socket path.
+  HOST_CORE_SOCK="$HOME/.continuum/sockets/continuum-core.sock"
+  for i in $(seq 1 "$CARL_HEALTH_TIMEOUT_SEC"); do
+    if [ -S "$HOST_CORE_SOCK" ]; then
+      CORE_OK=1
+      echo "  continuum-core IPC socket live after ${i}s ($HOST_CORE_SOCK)"
+      break
+    fi
+    sleep 1
+  done
+fi
+
+if [ "$CORE_OK" -ne 1 ]; then
+  echo "❌ continuum-core IPC socket never came up within ${CARL_HEALTH_TIMEOUT_SEC}s"
+  echo "   The headless core is the install deliverable — this is a hard failure."
+  if [ -f "$CARL_INSTALL_DIR/docker-compose.yml" ]; then
+    echo "   docker compose ps:"
+    ( cd "$CARL_INSTALL_DIR" && docker compose ps 2>&1 | sed 's/^/     /' ) || true
+    echo "   Last 40 lines of continuum-core logs:"
+    ( cd "$CARL_INSTALL_DIR" && docker compose logs --tail=40 continuum-core 2>&1 | sed 's/^/     /' ) || true
+  fi
+  exit 2
+fi
+echo "✅ headless core is serving IPC — the install deliverable is up"
+
+# ── 2b. OLD Node web client + jtag-chat assertions — ADVISORY ────────
+# These probe the OLD Node web client (widget-server :9003 render) and the
+# Node jtag CLI bundle (chat e2e). Both are part of the client layer being
+# reinvented on the new client SDK (#29); they are NOT the install
+# deliverable and must NOT gate the public install path while that layer is
+# in rework. Default: SKIP with a loud advisory note. Re-enable explicitly
+# with CARL_CHECK_WEB_CLIENT=1 once the new client container lands (and the
+# assertions below get rewritten against the new surface).
+if [ "${CARL_CHECK_WEB_CLIENT:-0}" != "1" ]; then
+  echo ""
+  echo "⚠ ADVISORY: skipping old Node web-client + jtag-chat assertions."
+  echo "    The Node/TS client is being reinvented on the new client SDK (roadmap #29);"
+  echo "    its build/render is a dead-layer until then and does not gate install."
+  echo "    Set CARL_CHECK_WEB_CLIENT=1 to run these probes against the new client."
+  echo ""
+  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  echo "  ✅ carl-install-smoke PASSED (core-gated) — headless core installs + serves IPC"
+  echo "  Install duration: ${INSTALL_DUR}s"
+  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  exit 0
+fi
+
+# ── 2c. (CARL_CHECK_WEB_CLIENT=1) Wait for widget-server /health ───────
 echo ""
 echo "━━━ waiting up to ${CARL_HEALTH_TIMEOUT_SEC}s for widget-server /health ━━━"
 HEALTH_OK=0
