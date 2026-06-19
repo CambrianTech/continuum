@@ -252,6 +252,33 @@ pub struct ContractDisputedPayload {
     pub disputed_event_hash: Option<String>,
 }
 
+// ─── SDK EventSpec registrations (sdk_codegen) ─────────────────────────────
+//
+// The codegen view of the contract events: class + ts-rs payload, so the
+// generated EventMap + typed EventApi (api.onContractProposed/emitContractPaid)
+// flow from the same Rust declaration as the runtime EventClassConfig below.
+// `declare_event_spec!(Ident, CLASS_CONST, PayloadType)` is local sugar — one
+// line per event, registered into the auto-discovered event registry.
+macro_rules! declare_event_spec {
+    ($ident:ident, $class:expr, $payload:ty) => {
+        pub struct $ident;
+        impl crate::sdk_codegen::EventSpec for $ident {
+            const CLASS: &'static str = $class;
+            type Payload = $payload;
+        }
+        crate::register_event!($ident);
+    };
+}
+
+declare_event_spec!(ContractProposedEvent, EVENT_CONTRACT_PROPOSED, ContractProposedPayload);
+declare_event_spec!(ContractBidEvent, EVENT_CONTRACT_BID, ContractBidPayload);
+declare_event_spec!(ContractAcceptedEvent, EVENT_CONTRACT_ACCEPTED, ContractAcceptedPayload);
+declare_event_spec!(ContractExecutingEvent, EVENT_CONTRACT_EXECUTING, ContractExecutingPayload);
+declare_event_spec!(ContractDeliveredEvent, EVENT_CONTRACT_DELIVERED, ContractDeliveredPayload);
+declare_event_spec!(ContractVerifiedEvent, EVENT_CONTRACT_VERIFIED, ContractVerifiedPayload);
+declare_event_spec!(ContractPaidEvent, EVENT_CONTRACT_PAID, ContractPaidPayload);
+declare_event_spec!(ContractDisputedEvent, EVENT_CONTRACT_DISPUTED, ContractDisputedPayload);
+
 // ─── EventClass registration helper ───────────────────────────────────────
 
 /// Register all 8 contract event classes with the L1-1 registry.

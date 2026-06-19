@@ -52,8 +52,8 @@ export class Events {
    * `source` addresses whose events (a peer's/room's, across the grid); `filter`
    * is applied SERVER-SIDE so non-matching events never cross the wire.
    *
-   *   events.subscribe('data:chat_messages:created', { onEvent: (m, {sequence}) => … });
-   *   events.subscribe('grid:peer:joined', handlers, { source: { peer }, filter: { runtime: 'persona' } });
+   *   events.subscribe('contract:proposed', { onEvent: (p, {sequence}) => … });
+   *   events.subscribe('contract:bid', handlers, { source: { peer }, filter: { bidderId: 'b1' } });
    */
   subscribe<K extends EventClass>(
     eventClass: K,

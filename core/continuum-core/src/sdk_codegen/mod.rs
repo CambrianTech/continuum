@@ -53,8 +53,10 @@ use std::path::Path;
 use ts_rs::{Config, Dependency, TS};
 
 pub mod emit;
+pub mod events;
 pub mod handler;
 pub use emit::write_typescript_sdk;
+pub use events::{event_registry, generate_event_api, generate_event_map, EventDescriptor, EventSpec};
 pub use handler::{dispatch, CommandError, CommandHandler, Ctx, Outcome};
 
 /// The capability a command declares.
@@ -317,24 +319,35 @@ fn render_imports(commands: &[CommandDescriptor], import_base: &str) -> String {
     // vendored wire files (which import each other), never here, so importing them
     // would be dead imports (and would break under `noUnusedLocals`). Vendoring
     // (emit.rs) still copies the full closure; that's a separate concern.
-    let mut by_module: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    let mut refs: Vec<&TypeRef> = Vec::new();
     for c in commands {
-        for t in [&c.params, &c.result] {
-            by_module
-                .entry(t.module.clone())
-                .or_default()
-                .insert(t.name.clone());
-        }
+        refs.push(&c.params);
+        refs.push(&c.result);
     }
+    let mut out = render_import_lines(&refs, import_base);
+    // Enveloped commands name the envelope generics; import them once.
     if commands.iter().any(|c| c.wire.is_enveloped()) {
+        out.push_str(&format!(
+            "import type {{ CommandRequest }} from '{import_base}/{ENVELOPE_REQUEST_MODULE}';\n"
+        ));
+        out.push_str(&format!(
+            "import type {{ CommandResponse }} from '{import_base}/{ENVELOPE_RESPONSE_MODULE}';\n"
+        ));
+    }
+    out
+}
+
+/// The shared import-block primitive: a set of `TypeRef`s grouped by module +
+/// deduped into `import type { A, B } from '<base>/<module>'` lines (names + lines
+/// sorted for stable output). Both the command and event surfaces build on this so
+/// they can't drift on import shape.
+fn render_import_lines(refs: &[&TypeRef], import_base: &str) -> String {
+    let mut by_module: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for t in refs {
         by_module
-            .entry(ENVELOPE_REQUEST_MODULE.to_string())
+            .entry(t.module.clone())
             .or_default()
-            .insert("CommandRequest".to_string());
-        by_module
-            .entry(ENVELOPE_RESPONSE_MODULE.to_string())
-            .or_default()
-            .insert("CommandResponse".to_string());
+            .insert(t.name.clone());
     }
     let mut out = String::new();
     for (module, names) in &by_module {

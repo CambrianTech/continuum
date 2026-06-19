@@ -20,32 +20,34 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
+use super::events::{generate_event_api, generate_event_map, EventDescriptor};
 use super::{generate_command_api, generate_command_map, CommandDescriptor};
 
 /// Where the vendored wire types land inside the SDK's generated dir, and the
 /// import base the emitted map/api use to reach them.
 const WIRE_SUBDIR: &str = "wire";
 
-/// Write the full TypeScript SDK command surface into `out_dir` (the SDK's
-/// `generated/` directory), vendoring every wire type from `protocol_dir`.
+/// Write the full TypeScript SDK surface (BOTH primitives) into `out_dir` (the
+/// SDK's `generated/` directory), vendoring every wire type from `protocol_dir`.
 ///
 /// Produces:
-/// - `out_dir/wire/**` — the transitive closure of ts-rs `.ts` types the
-///   commands reference, copied from `protocol_dir`, structure preserved.
-/// - `out_dir/CommandMap.ts` — `CommandMap`/`CommandName`, importing `./wire/*`.
-/// - `out_dir/CommandApi.ts` — the typed string-free accessors, importing
-///   `./wire/*` + the `Commands` facade (one dir up: `../Commands`).
+/// - `out_dir/wire/**` — the transitive closure of ts-rs `.ts` types the commands
+///   AND events reference, copied from `protocol_dir`, structure preserved.
+/// - `out_dir/CommandMap.ts` + `out_dir/CommandApi.ts` — the command surface.
+/// - `out_dir/EventMap.ts` + `out_dir/EventApi.ts` — the event surface.
 ///
-/// Pure mechanical projection of the registry + the ts-rs output — no hand
-/// editing, so a Rust type change reflows the whole SDK on regeneration.
+/// Pure mechanical projection of the registries + the ts-rs output — no hand
+/// editing, so a Rust type/event change reflows the whole SDK on regeneration.
 pub fn write_typescript_sdk(
     commands: &[CommandDescriptor],
+    events: &[EventDescriptor],
     protocol_dir: &Path,
     out_dir: &Path,
 ) -> io::Result<()> {
     // 1. Seed module set: every type each command references (transitive type
     //    closure already captured in `type_refs`) + the envelope generics when any
-    //    command is Enveloped (HandleRef rides in via their own imports).
+    //    command is Enveloped (HandleRef rides in via their own imports) + each
+    //    event's payload (its own transitive imports are followed during vendoring).
     let mut seeds: BTreeSet<String> = BTreeSet::new();
     for c in commands {
         for t in &c.type_refs {
@@ -56,10 +58,13 @@ pub fn write_typescript_sdk(
         seeds.insert("runtime/CommandRequest".to_string());
         seeds.insert("runtime/CommandResponse".to_string());
     }
+    for e in events {
+        seeds.insert(e.payload.module.clone());
+    }
 
     // 2. Vendor: copy each seed file + everything it transitively imports. Clean
-    //    the wire tree first so a removed/renamed command leaves no orphan vendored
-    //    type behind (only `wire/` — sibling hand files like EventMap.ts are kept).
+    //    the wire tree first so a removed/renamed command/event leaves no orphan
+    //    vendored type behind (only `wire/` — sibling files are untouched).
     let wire_dir = out_dir.join(WIRE_SUBDIR);
     let _ = fs::remove_dir_all(&wire_dir);
     let mut copied: BTreeSet<String> = BTreeSet::new();
@@ -67,12 +72,22 @@ pub fn write_typescript_sdk(
         copy_with_deps(module, protocol_dir, &wire_dir, &mut copied)?;
     }
 
-    // 3. Emit the map + the accessor API, importing the vendored tree locally.
+    // 3. Emit both primitives' surfaces, importing the vendored tree locally.
     let import_base = format!("./{WIRE_SUBDIR}");
     fs::create_dir_all(out_dir)?;
     fs::write(
         out_dir.join("CommandMap.ts"),
         generate_command_map(commands, &import_base),
+    )?;
+    fs::write(
+        // EventMap.ts: class -> payload, importing the vendored payloads.
+        out_dir.join("EventMap.ts"),
+        generate_event_map(events, &import_base),
+    )?;
+    fs::write(
+        // EventApi.ts sits in generated/; EventMap is a sibling, Events one dir up.
+        out_dir.join("EventApi.ts"),
+        generate_event_api(events, "./EventMap", "../Events"),
     )?;
     fs::write(
         out_dir.join("CommandApi.ts"),
@@ -178,7 +193,7 @@ fn resolve_relative_module(module_dir: Option<&Path>, spec: &str) -> Option<Stri
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sdk_codegen::command_registry;
+    use crate::sdk_codegen::{command_registry, event_registry};
 
     fn protocol_dir() -> PathBuf {
         // core/continuum-core → ../../protocol/typescript
@@ -192,9 +207,8 @@ mod tests {
     /// committed. Only writes when the protocol bindings exist (they're produced by
     /// the export_bindings tests in the same run / a prior one).
     ///
-    /// NOTE: this writes ONLY the generated command surface + vendored wire types.
-    /// `generated/EventMap.ts` is hand-maintained (events aren't Rust-sourced yet)
-    /// and is deliberately left untouched.
+    /// Writes BOTH primitives' generated surfaces (CommandMap/CommandApi +
+    /// EventMap/EventApi) + the vendored wire tree, all from the Rust registries.
     #[test]
     fn generates_live_typescript_sdk() {
         let protocol = protocol_dir();
@@ -202,8 +216,7 @@ mod tests {
             return;
         }
         let out = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../sdk/typescript/generated");
-        let registry = command_registry();
-        write_typescript_sdk(&registry, &protocol, &out)
+        write_typescript_sdk(&command_registry(), &event_registry(), &protocol, &out)
             .expect("regenerate the committed TypeScript SDK");
     }
 
@@ -220,11 +233,11 @@ mod tests {
             // fail (the export_bindings tests produce them).
             return;
         }
-        let registry = command_registry();
         let out = std::env::temp_dir().join("continuum_sdk_emit_closed_tree_test");
         let _ = fs::remove_dir_all(&out);
 
-        write_typescript_sdk(&registry, &protocol, &out).expect("emit SDK");
+        write_typescript_sdk(&command_registry(), &event_registry(), &protocol, &out)
+            .expect("emit SDK");
 
         // Top-level surface written.
         let map = fs::read_to_string(out.join("CommandMap.ts")).expect("CommandMap.ts");

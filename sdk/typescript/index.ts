@@ -9,7 +9,7 @@
  *   import { Continuum } from '@continuum/sdk-typescript';
  *   const continuum = Continuum.connect(transport);        // transport = the facade binding
  *   const users = await continuum.commands.execute('data/list', { collection: 'users' });
- *   continuum.events.subscribe('data:users:created', { onEvent: (u) => … });
+ *   continuum.events.subscribe('contract:proposed', { onEvent: (p) => … });
  *   continuum.commands.provide('interface/screenshot', async (p) => webCapture(p));
  *   const conn = await continuum.open('live/connect', { room }, { env: 'web' });
  */
@@ -32,5 +32,6 @@ export type {
 export { buildCommandUri, buildEventTopic, stampContext } from './transport';
 export type { CommandMap, CommandName } from './generated/CommandMap';
 export type { EventMap, EventClass } from './generated/EventMap';
-/** Typed, string-free command accessors generated from the Rust command specs. */
+/** Typed, string-free accessors generated from the Rust command/event specs. */
 export { CommandApi } from './generated/CommandApi';
+export { EventApi } from './generated/EventApi';
