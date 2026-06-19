@@ -742,49 +742,47 @@ fi
 ok "$CONTAINER_CMD $($CONTAINER_CMD version --format '{{.Client.Version}}' 2>/dev/null || echo 'ready')"
 ok "Source: $INSTALL_DIR"
 
-# ── 3a. Build host-side CLI bundle (REQUIRED for jtag fast path) ──
-# Without dist/cli-bundle.js, src/jtag falls back to `tsx cli.ts`
-# which can't resolve tsconfig path aliases at runtime → every jtag
-# invocation fails with ERR_MODULE_NOT_FOUND. The bundle is what
-# every host-side jtag user actually needs. Pre-2026-05-03 install.sh
-# never built it on Linux (Docker-only flow); fresh users' first
-# jtag invocation has been broken for months. Joel: "months of
-# trying to get continuum working out-of-box for Carl."
+# ── 3a. Build host-side CLI bundle (BEST-EFFORT — old Node client layer) ──
+# The jtag CLI bundle (dist/cli-bundle.js) is part of the OLD Node/TS client
+# layer. That layer is being REINVENTED on the new client SDK, not repaired
+# (screenshot-as-spec rebuild as its own modular container — see the
+# client-SDK rework). With the headless-Rust work it's also prone to
+# directory-reshuffle breakage (e.g. browser-index resolving to tools/
+# instead of src/). So the host-side bundle build is now BEST-EFFORT and
+# NON-BLOCKING: the install deliverable is the headless Rust core (brought
+# up below via the container runtime), not this bundle.
 #
-# 2026-05-03 reliability fix: be LOUD about success/failure. Pre-fix
-# wrapped npm in `| tail -2` which silently ate exit codes. Now uses
-# explicit set -o pipefail equivalent via PIPESTATUS check, AND
-# verifies dist/cli-bundle.js exists post-build. Loud success = user
-# sees "✅ jtag bundle ready"; loud failure = user sees the actual
-# npm error + a die() so installation can't claim success while
-# leaving jtag broken.
-PHASE="host-side jtag CLI bundle"
+# When the bundle builds, jtag gets its fast path. When it doesn't, install
+# still SUCCEEDS — the core is up; jtag falls back to `tsx cli.ts`, and the
+# new client SDK is the real path forward. We warn loudly (never silently
+# claim success) but we never abort the whole install on this old layer.
+PHASE="host-side jtag CLI bundle (best-effort)"
+CLI_BUNDLE_OK=0
 if [ ! -f "$INSTALL_DIR/src/package.json" ]; then
-  fail "src/package.json missing in $INSTALL_DIR — clone incomplete? Re-run with: rm -rf $INSTALL_DIR && curl ... | bash"
+  warn "src/package.json missing — skipping host-side jtag CLI bundle (headless core install continues)."
+elif ! command -v npm >/dev/null 2>&1; then
+  warn "npm not on PATH — skipping host-side jtag CLI bundle (headless core install continues; install Node.js to get the jtag fast path)."
+else
+  info "Building host-side jtag CLI bundle (best-effort, ~30-60s)..."
+  # build:cli takes dist/cli.js as INPUT (esbuild input file). dist/cli.js
+  # is OUTPUT of build:ts. So the right invocation is `npm run build`
+  # (which is build:ts → postbuild → build:cli per package.json scripts).
+  if (
+    set -e
+    cd "$INSTALL_DIR/src"
+    echo "  → npm install (~10s)..."
+    npm install 2>&1 | tail -5
+    echo "  → npm run build (TypeScript compile + esbuild bundle, ~30-50s)..."
+    npm run build 2>&1 | tail -10
+  ) && [ -f "$INSTALL_DIR/src/dist/cli-bundle.js" ]; then
+    CLI_BUNDLE_OK=1
+    ok "jtag CLI bundle ready ($INSTALL_DIR/src/dist/cli-bundle.js)"
+  else
+    warn "Host-side jtag CLI bundle did not build (old Node client layer, under rework)."
+    warn "  Install CONTINUES — the headless core is the deliverable. jtag will fall"
+    warn "  back to 'tsx cli.ts'. To retry manually: cd $INSTALL_DIR/src && npm install && npm run build"
+  fi
 fi
-if ! command -v npm >/dev/null 2>&1; then
-  fail "npm not found on PATH but required for host-side jtag CLI bundle. Install Node.js (https://nodejs.org) and re-run."
-fi
-info "Building host-side jtag CLI bundle (~30-60s — first install)..."
-# build:cli takes dist/cli.js as INPUT (esbuild input file). dist/cli.js
-# is OUTPUT of build:ts. So the right invocation is `npm run build`
-# (which is build:ts → postbuild → build:cli per package.json scripts).
-# Pre-fix only ran build:cli → esbuild's missing-input failed silently
-# (the script suppresses stderr with `2>/dev/null`), no bundle written,
-# install completed "successfully" with broken jtag.
-(
-  set -e
-  cd "$INSTALL_DIR/src"
-  echo "  → npm install (~10s)..."
-  npm install 2>&1 | tail -5 || { echo "  ✗ npm install failed"; exit 1; }
-  echo "  → npm run build (TypeScript compile + esbuild bundle, ~30-50s)..."
-  npm run build 2>&1 | tail -10 || { echo "  ✗ npm run build failed"; exit 1; }
-) || fail "Host-side bundle build failed (see lines above). jtag CLI cannot work without dist/cli-bundle.js. Manually retry: cd $INSTALL_DIR/src && npm install && npm run build"
-# Verify the bundle actually exists — npm exit 0 + missing file = silent failure.
-if [ ! -f "$INSTALL_DIR/src/dist/cli-bundle.js" ]; then
-  fail "dist/cli-bundle.js was NOT created by build:cli (esbuild silently failed?). Manually retry: cd $INSTALL_DIR/src && npm install && npm run build:cli — and inspect output."
-fi
-ok "jtag CLI bundle ready ($INSTALL_DIR/src/dist/cli-bundle.js)"
 
 # ── 3b. Install continuum command (modular, headless-safe) ─
 # Was an inline `sudo cp` that crashed on "no TTY for password" when the
