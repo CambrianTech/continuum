@@ -851,9 +851,29 @@ pub const MODULES: &[ModuleSpec] = &[
 /// error message rather than complaining about modules that cannot
 /// be registered.
 pub fn required_modules(discovery: &AircDiscovery, mode: BootMode) -> Vec<&'static str> {
+    // The whole-substrate (monolith) profile — every group. Preserves the exact
+    // historical behavior; slim processes call `required_modules_for_profile`.
+    required_modules_for_profile(discovery, mode, &ServiceProfile::all())
+}
+
+/// The required-module set for a process hosting only `profile`'s service
+/// groups. Filters `MODULES` by BOTH dimensions: the module's
+/// [`ServiceGroup`] must be in the profile (placement) AND its
+/// [`ModuleCategory`] conditionality must be satisfied for `(discovery, mode)`.
+///
+/// A slim process (e.g. `RuntimeShell + GridTransport`) boots only its groups;
+/// commands for modules it doesn't host resolve over the bus (`route_command`).
+/// `ServiceProfile::all()` reproduces the monolith exactly — decomposition is
+/// optional placement, never forced fragmentation.
+pub fn required_modules_for_profile(
+    discovery: &AircDiscovery,
+    mode: BootMode,
+    profile: &ServiceProfile,
+) -> Vec<&'static str> {
     let needs_persona_hosting = mode.requires_persona_hosting() && discovery.can_host_personas();
     MODULES
         .iter()
+        .filter(|spec| profile.hosts(spec.group))
         .filter(|spec| match spec.category {
             ModuleCategory::Core => true,
             ModuleCategory::PersonaHosting => needs_persona_hosting,
@@ -880,6 +900,110 @@ pub fn group_of(module: &str) -> Option<ServiceGroup> {
         .find(|spec| spec.name == module)
         .map(|spec| spec.group)
 }
+
+impl ServiceGroup {
+    /// All groups in canonical order — the basis for `ServiceProfile::all()`
+    /// and for iterating the taxonomy.
+    pub const ALL: [ServiceGroup; 7] = [
+        ServiceGroup::RuntimeShell,
+        ServiceGroup::ResourceGov,
+        ServiceGroup::Inference,
+        ServiceGroup::Cognition,
+        ServiceGroup::Forge,
+        ServiceGroup::GridTransport,
+        ServiceGroup::Live,
+    ];
+
+    /// The kebab-case wire label (`runtime-shell`, `grid-transport`, …) used in
+    /// `--profile=...` and logs. Round-trips with [`ServiceGroup::from_str`].
+    pub fn label(self) -> &'static str {
+        match self {
+            ServiceGroup::RuntimeShell => "runtime-shell",
+            ServiceGroup::ResourceGov => "resource-gov",
+            ServiceGroup::Inference => "inference",
+            ServiceGroup::Cognition => "cognition",
+            ServiceGroup::Forge => "forge",
+            ServiceGroup::GridTransport => "grid-transport",
+            ServiceGroup::Live => "live",
+        }
+    }
+}
+
+impl std::str::FromStr for ServiceGroup {
+    type Err = ServiceProfileParseError;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "runtime-shell" | "shell" => Ok(ServiceGroup::RuntimeShell),
+            "resource-gov" | "resources" => Ok(ServiceGroup::ResourceGov),
+            "inference" => Ok(ServiceGroup::Inference),
+            "cognition" => Ok(ServiceGroup::Cognition),
+            "forge" => Ok(ServiceGroup::Forge),
+            "grid-transport" | "grid" => Ok(ServiceGroup::GridTransport),
+            "live" => Ok(ServiceGroup::Live),
+            other => Err(ServiceProfileParseError(other.to_string())),
+        }
+    }
+}
+
+/// The set of [`ServiceGroup`]s a process hosts — its placement profile. A node
+/// declares one ("a good AWS template"); modules outside it are reached over the
+/// bus. `RuntimeShell` is always included (a node is unaddressable without the
+/// command/event/data shell) — so an operator can't accidentally compose a node
+/// that can't even serve health.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServiceProfile {
+    groups: std::collections::HashSet<ServiceGroup>,
+}
+
+impl ServiceProfile {
+    /// The whole substrate — every group. Reproduces the monolith exactly.
+    pub fn all() -> Self {
+        Self {
+            groups: ServiceGroup::ALL.into_iter().collect(),
+        }
+    }
+
+    /// A profile hosting exactly `groups` (+ the always-on `RuntimeShell`).
+    pub fn from_groups(groups: impl IntoIterator<Item = ServiceGroup>) -> Self {
+        let mut set: std::collections::HashSet<ServiceGroup> = groups.into_iter().collect();
+        set.insert(ServiceGroup::RuntimeShell);
+        Self { groups: set }
+    }
+
+    /// Does this profile host `group`?
+    pub fn hosts(&self, group: ServiceGroup) -> bool {
+        self.groups.contains(&group)
+    }
+
+    /// The hosted groups, canonical order (deterministic for logs/tests).
+    pub fn groups(&self) -> Vec<ServiceGroup> {
+        ServiceGroup::ALL
+            .into_iter()
+            .filter(|g| self.groups.contains(g))
+            .collect()
+    }
+}
+
+impl std::str::FromStr for ServiceProfile {
+    type Err = ServiceProfileParseError;
+    /// Parse a comma-separated group list (`runtime-shell,grid-transport,cognition`).
+    /// Empty / `all` / `full` → every group (the monolith default).
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let s = s.trim();
+        if s.is_empty() || s.eq_ignore_ascii_case("all") || s.eq_ignore_ascii_case("full") {
+            return Ok(ServiceProfile::all());
+        }
+        let groups = s
+            .split(',')
+            .map(|g| g.trim().parse::<ServiceGroup>())
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(ServiceProfile::from_groups(groups))
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("unknown service group {0:?} — valid: runtime-shell, resource-gov, inference, cognition, forge, grid-transport, live (or 'all')")]
+pub struct ServiceProfileParseError(pub String);
 
 /// Every module name the substrate knows about — derived from
 /// `MODULES`, not a parallel list. Used by the
@@ -961,6 +1085,97 @@ mod conditional_modules_tests {
         let req = required_modules(&degraded(), BootMode::FullCitizen);
         assert!(!req.contains(&"persona_instance_manager"));
         assert!(!req.contains(&"persona-rag-inspect"));
+    }
+
+    // ── ServiceProfile (the operational decomposition — slice 2) ────────
+    //
+    // A profile = the set of ServiceGroups a process hosts. These pin that the
+    // all-groups profile reproduces the monolith EXACTLY (zero regression) and
+    // that a slim profile yields only its groups' modules.
+
+    /// `required_modules` (the monolith) == `required_modules_for_profile(.., all())`
+    /// for every (discovery, mode) — the delegation is behavior-preserving.
+    #[test]
+    fn all_profile_reproduces_the_monolith_exactly() {
+        let cells = [
+            (healthy(), BootMode::FullCitizen),
+            (healthy(), BootMode::InferenceOnly),
+            (healthy(), BootMode::FailFast),
+            (degraded(), BootMode::FullCitizen),
+            (degraded(), BootMode::InferenceOnly),
+        ];
+        for (d, m) in cells {
+            assert_eq!(
+                required_modules(&d, m),
+                required_modules_for_profile(&d, m, &ServiceProfile::all()),
+                "all() profile must equal the monolith required set for ({}, {})",
+                d.kind(),
+                m.label()
+            );
+        }
+    }
+
+    /// A slim profile hosts ONLY its groups' modules (+ always-on RuntimeShell),
+    /// and nothing from excluded groups. This is the operational decomposition:
+    /// a minimal node boots the shell + bus and routes the rest over the grid.
+    #[test]
+    fn slim_profile_hosts_only_its_groups() {
+        let profile = ServiceProfile::from_groups([ServiceGroup::GridTransport]);
+        let req = required_modules_for_profile(&healthy(), BootMode::FullCitizen, &profile);
+
+        // Hosts RuntimeShell (always) + GridTransport.
+        for name in modules_in_group(ServiceGroup::RuntimeShell) {
+            assert!(req.contains(&name), "shell module {name:?} must be hosted");
+        }
+        for name in modules_in_group(ServiceGroup::GridTransport) {
+            assert!(req.contains(&name), "grid module {name:?} must be hosted");
+        }
+        // Hosts NOTHING from excluded groups (Inference, Cognition, Forge, Live, ResourceGov).
+        for g in [
+            ServiceGroup::Inference,
+            ServiceGroup::Cognition,
+            ServiceGroup::Forge,
+            ServiceGroup::Live,
+            ServiceGroup::ResourceGov,
+        ] {
+            for name in modules_in_group(g) {
+                assert!(!req.contains(&name), "excluded {:?} module {name:?} must NOT be hosted", g);
+            }
+        }
+    }
+
+    /// RuntimeShell is implicitly always hosted — even a profile that didn't name
+    /// it gets it (a node must be addressable). Guards against composing a node
+    /// that can't serve health/commands.
+    #[test]
+    fn runtime_shell_is_always_hosted() {
+        let profile = ServiceProfile::from_groups([ServiceGroup::Forge]);
+        assert!(profile.hosts(ServiceGroup::RuntimeShell));
+        let req = required_modules_for_profile(&healthy(), BootMode::InferenceOnly, &profile);
+        assert!(req.contains(&"health") && req.contains(&"data") && req.contains(&"events"));
+    }
+
+    /// Profile parsing: comma list round-trips; `all`/empty → every group;
+    /// unknown group → actionable error. The "AWS template" surface.
+    #[test]
+    fn profile_parses_from_group_list() {
+        use std::str::FromStr;
+        let p = ServiceProfile::from_str("grid-transport,cognition").unwrap();
+        assert!(p.hosts(ServiceGroup::GridTransport));
+        assert!(p.hosts(ServiceGroup::Cognition));
+        assert!(p.hosts(ServiceGroup::RuntimeShell)); // always
+        assert!(!p.hosts(ServiceGroup::Live));
+
+        assert_eq!(ServiceProfile::from_str("all").unwrap(), ServiceProfile::all());
+        assert_eq!(ServiceProfile::from_str("").unwrap(), ServiceProfile::all());
+
+        let err = ServiceProfile::from_str("grid,bogus").unwrap_err();
+        assert!(format!("{err}").contains("bogus"));
+
+        // Group labels round-trip.
+        for g in ServiceGroup::ALL {
+            assert_eq!(g.label().parse::<ServiceGroup>().unwrap(), g);
+        }
     }
 
     // ── ServiceGroup (the decomposition dimension) ──────────────────────
