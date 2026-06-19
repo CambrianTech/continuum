@@ -647,6 +647,39 @@ Rules:
 - A PR older than 48 hours without a concrete blocker is presumed stale until proven otherwise.
 - If a PR is correct but incomplete, finish and merge it to canary; do not recreate the same work on a new branch.
 
+### 0B. Unsloth As The Inference + Training Engine
+
+**Goal**: leverage unsloth (Apache-2.0 core; llama.cpp underneath — the backend
+Continuum already targets) as the inference + LoRA-training engine, so Continuum
+spends its effort on the organism (cognition, genome, grid, collaboration) not on
+GPU plumbing. **Design worked out** in
+[UNSLOTH-INTEGRATION.md](../architecture/UNSLOTH-INTEGRATION.md).
+
+Decisions locked:
+- **UIs stay separate** (unsloth Studio UI is AGPL-3.0 + serves `X-Frame-Options:
+  DENY` / CSP `frame-ancestors 'none'`): no source-merge either way. Continuum
+  keeps its own UI; launch unsloth's as its own window from a Settings link.
+- **Three headless brain seams**, all process-boundary / network-API (Node-free,
+  AGPL-clean): (1) Continuum **as an MCP server** (Rust-native — slice 1 landed
+  #1680, retires the Node `src/mcp-server.ts`); (2) Continuum **as an
+  OpenAI-compatible provider** (persona-as-model); (3) unsloth **as a Continuum
+  inference backend** behind the `AIProviderAdapter` boundary (preferred, NOT a
+  hard dependency — `solve-for-public-users` + beta-risk insulation).
+- **Media**: capability negotiation — native base64 image content-parts over
+  `/v1` when supported (verified for vision GGUFs), else the existing local
+  sensory bridge (vision-describe / STT → text); the real-time WebRTC/avatar layer
+  never crosses the wire (compute-lease boundary).
+- **Docker/grid**: light persona containers (no CUDA) + one shared grid-addressable
+  unsloth GPU node; personas lease `ai/generate` across the grid (see
+  [INFERENCE-LANES-REALISTIC](../architecture/INFERENCE-LANES-REALISTIC.md)).
+- **Training**: adopt unsloth standards — ShareGPT JSONL (≈ genome-trained-on-chats)
+  + Recipes (≈ [ForgeRecipe](../architecture/FORGE-RECIPE-AS-ENTITY.md)); share via
+  Hub/HF.
+
+Build order: MCP transport bin (retire TS) → inference adapter + capability
+negotiation → OpenAI-compatible endpoint → Docker fleet → training convergence.
+To be built collaboratively over airc (personas leasing unsloth across the grid).
+
 ### 0A. AIRC As The Development Substrate
 
 **Goal**: Continuum should be able to develop itself through a shared grid of
