@@ -39,6 +39,9 @@ pub mod grid_interceptor;
 pub mod in_process_transport;
 pub mod late_bound;
 pub mod message_bus;
+/// Per-module TDD harness — boots a single module in isolation. Test-only.
+#[cfg(any(test, feature = "test-fixtures"))]
+pub mod module_harness;
 pub mod module_context;
 pub mod module_logger;
 pub mod module_metrics;
