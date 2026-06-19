@@ -309,6 +309,11 @@ unexpected_cfgs = "allow"
 tokio-test = "0.4"
 tempfile = "3"                   # Temp directories for code module tests
 
+# Enable continuum-client's test-fixtures (the `mock` transport) in TEST builds
+# only — production links the regular dep above without it. Lets tests drive a
+# real `Connection` over `MockTransport` (e.g. the MCP ConnectionDispatch test).
+continuum-client = { path = "../../client/continuum-client", features = ["test-fixtures"] }
+
 # Cross-airc integration tests (tests/airc_ipc_roundtrip.rs). The fixture
 # spawns two real Airc peers on LAN loopback. `continuum-client` is now a
 # regular dependency (see [dependencies]) because `InProcessTransport` — the
