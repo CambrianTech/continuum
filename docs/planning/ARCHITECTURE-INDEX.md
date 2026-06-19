@@ -32,6 +32,9 @@
 **"How is the monolith decomposed into composable services/containers?"**
 -> Read [MODULAR-DECOMPOSITION.md](../architecture/MODULAR-DECOMPOSITION.md) — service profiles over the existing BootMode/ModuleCategory seam ("a good AWS template"), co-location constraints (Bevy+LiveKit+GPU), per-service health/restart/independent-test, container layout
 
+**"How does Continuum leverage unsloth for inference + training?"**
+-> Read [UNSLOTH-INTEGRATION.md](../architecture/UNSLOTH-INTEGRATION.md) — three headless brain seams (MCP, OpenAI-compatible, inference backend), UIs stay separate, media capability negotiation, grid-leased compute
+
 **"Which daemon should I use for X?"**
 -> Read [DAEMON-RESPONSIBILITIES.md](../infrastructure/DAEMON-RESPONSIBILITIES.md)
 
