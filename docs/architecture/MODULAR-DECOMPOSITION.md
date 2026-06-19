@@ -148,7 +148,35 @@ locality tiers — InProcessTransport / CoreIpcTransport / AircIpcTransport — 
 6. **Containerize per profile** (§6) honoring placement constraints; validate via
    compose-up + the #22 integration smoke inside containers.
 
-## 9. Guardrails (per CONCURRENCY-STYLE-GUIDE)
+## 9. This IS the grid (not merely grid-friendly)
+
+Decomposition and grid distribution are the *same mechanism* — which is the
+payoff of designing everything on one consistent set of primitives:
+
+- **The profiles ARE grid roles.** "Inference node," "Live node," "light citizen
+  node" aren't new code — they're the same binary booting a different profile.
+  (The "same Rust binary, different `SubstrateGovernor` policy" theme of
+  GENOME-FOUNDRY-SENTINEL, extended to "same binary, different service
+  composition.")
+- **Compute-leasing falls out for free.** A laptop leasing `ai/generate` from a
+  GPU node is *literally* the Inference service group living on a different node,
+  reached over the bus via `route_command`. The monolith can't express that — it
+  is all-or-nothing per machine.
+- **Heterogeneous hardware just works.** A node hosts only the profiles its
+  hardware supports; missing-faculty degrade-not-panic (#26) is the per-faculty
+  version of the same idea.
+- **Healing is per-service.** A down profile re-routes around (the resilience
+  lesson at the service layer) instead of a whole peer vanishing.
+- **Scale each group independently** — N light citizens, M shared GPU engines —
+  like auto-scaling groups, declaratively.
+
+Because the substrate is one fluent design (concurrency + separation of concerns
+applied uniformly), the grid is not a layer bolted on top — it is what the module
+graph looks like when its nodes are placed across machines. The unsloth move
+already proved the first decomposition: inference pulled out to its own GPU
+process behind `/v1`.
+
+## 10. Guardrails (per CONCURRENCY-STYLE-GUIDE)
 - No parallel manager/coordinator hierarchy — profiles reuse `Runtime` +
   `ModuleRegistry`, not a new orchestrator.
 - Each service still own-task + `interval` tick + `watch` snapshot; no sleep-loops.
