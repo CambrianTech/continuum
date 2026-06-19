@@ -5,6 +5,16 @@
 //! client (unsloth Studio, Claude Code) speaks JSON-RPC, and this handler turns
 //! each call into a continuum command dispatch — no Node, no TS in the loop.
 //!
+//! ## Strongly typed protocol
+//!
+//! Every MCP message shape is a real serde struct (`JsonRpcRequest`,
+//! `InitializeResult`, `ListToolsResult`, `CallToolParams`, `CallToolResult`,
+//! `ContentBlock`, …), parsed in and constructed out. Raw `serde_json::Value`
+//! appears ONLY at the two genuinely-dynamic seams: a tool call's `arguments`
+//! and a command's result payload (both are per-command JSON the protocol layer
+//! must pass through, not interpret). So the PROTOCOL is type-checked end to end;
+//! only the command payload it ferries is dynamic.
+//!
 //! ## The MCP server IS a client ([[persona-is-a-client]])
 //!
 //! The handler holds nothing but a [`CommandDispatch`] — the same
@@ -12,24 +22,22 @@
 //! module internals:
 //!
 //! - `tools/list` → `dispatch.execute("mcp/list-tools", {})` (the catalog in
-//!   [`super::mcp`] — single source of truth for "commands ARE tools").
+//!   [`super::mcp`] — single source of truth for "commands ARE tools"), and the
+//!   returned tools are validated into typed [`MCPTool`]s.
 //! - `tools/call` → maps the MCP tool name back to a command path and
 //!   `dispatch.execute(command, arguments)`.
 //!
-//! So this layer is pure protocol framing over the command verb. In production
-//! the `CommandDispatch` is a `continuum_client::Connection` over the in-process
-//! or airc transport (gated like any caller); in tests it's a mock. The
-//! transport + the stdio/HTTP bin that pumps bytes into [`McpServer::handle_message`]
-//! is the next slice — this slice is the protocol, pure and testable.
-//!
-//! ## Scope (slice 1)
-//!
-//! `initialize`, `notifications/initialized`, `tools/list`, `tools/call`, plus
-//! JSON-RPC error framing. Pure: a JSON-RPC message string in, an optional
-//! response string out (None for notifications). No transport, no process.
+//! In production the `CommandDispatch` is a `continuum_client::Connection` over
+//! the in-process or airc transport (gated like any caller); in tests a mock.
+//! The transport + the stdio/HTTP bin that pumps bytes into
+//! [`McpServer::handle_message`] is the next slice — this slice is the protocol,
+//! pure and testable.
 
 use async_trait::async_trait;
-use serde_json::{json, Value};
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+
+use super::mcp::MCPTool;
 
 /// The MCP protocol revision this server advertises. Bump as the spec moves;
 /// `2024-11-05` is the broadly-supported baseline (Claude Code, unsloth, etc.).
@@ -43,6 +51,125 @@ mod codes {
     pub const INVALID_PARAMS: i64 = -32602;
     pub const INTERNAL_ERROR: i64 = -32603;
 }
+
+// ─── JSON-RPC envelope (typed) ──────────────────────────────────────────────
+
+/// An inbound JSON-RPC 2.0 message. `id` absent ⇒ notification (no response).
+/// `params` stays `Value` here because its shape is method-dependent; each
+/// method deserializes it into its own typed params struct.
+#[derive(Debug, Deserialize)]
+struct JsonRpcRequest {
+    #[serde(default)]
+    id: Option<Value>,
+    method: String,
+    #[serde(default)]
+    params: Value,
+}
+
+/// A successful JSON-RPC response with a typed `result`.
+#[derive(Debug, Serialize)]
+struct JsonRpcSuccess<T: Serialize> {
+    jsonrpc: &'static str,
+    id: Value,
+    result: T,
+}
+
+/// A JSON-RPC error response.
+#[derive(Debug, Serialize)]
+struct JsonRpcErrorResponse {
+    jsonrpc: &'static str,
+    id: Value,
+    error: JsonRpcError,
+}
+
+#[derive(Debug, Serialize)]
+struct JsonRpcError {
+    code: i64,
+    message: String,
+}
+
+// ─── MCP method params / results (typed) ────────────────────────────────────
+
+/// `initialize` result — protocol version + capabilities + serverInfo, the
+/// handshake an MCP client requires before listing/calling tools.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct InitializeResult {
+    protocol_version: &'static str,
+    capabilities: ServerCapabilities,
+    server_info: ServerInfo,
+}
+
+/// Capabilities this server advertises. We expose `tools` (continuum commands
+/// surfaced as MCP tools); the empty object is the MCP "supported, no sub-caps"
+/// shape.
+#[derive(Debug, Serialize)]
+struct ServerCapabilities {
+    tools: ToolsCapability,
+}
+
+#[derive(Debug, Serialize)]
+struct ToolsCapability {}
+
+#[derive(Debug, Serialize)]
+struct ServerInfo {
+    name: String,
+    version: String,
+}
+
+/// `tools/list` result — the typed tool catalog.
+#[derive(Debug, Serialize)]
+struct ListToolsResult {
+    tools: Vec<MCPTool>,
+}
+
+/// The catalog command (`mcp/list-tools`) result we deserialize the tools out of.
+#[derive(Debug, Deserialize)]
+struct CatalogResult {
+    #[serde(default)]
+    tools: Vec<MCPTool>,
+}
+
+/// `tools/call` params. `arguments` stays `Value`: it's the called command's
+/// own params, per-tool dynamic JSON the protocol passes straight through.
+#[derive(Debug, Deserialize)]
+struct CallToolParams {
+    name: String,
+    #[serde(default)]
+    arguments: Value,
+}
+
+/// `tools/call` result — content blocks + the tool-level error flag. A command
+/// refusal is `is_error: true` content (the model reads it), NOT a protocol error.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CallToolResult {
+    content: Vec<ContentBlock>,
+    is_error: bool,
+}
+
+impl CallToolResult {
+    /// One text block carrying a serialized JSON payload (a command result or an
+    /// error object), with the tool-error flag.
+    fn text(payload: &Value, is_error: bool) -> Self {
+        Self {
+            content: vec![ContentBlock::Text {
+                text: payload.to_string(),
+            }],
+            is_error,
+        }
+    }
+}
+
+/// An MCP content block. Tagged by `type`; `text` today, extensible (image,
+/// resource) as the server grows multi-modal tool results.
+#[derive(Debug, Serialize)]
+#[serde(tag = "type", rename_all = "lowercase")]
+enum ContentBlock {
+    Text { text: String },
+}
+
+// ─── dispatch seam ──────────────────────────────────────────────────────────
 
 /// The one verb the MCP server needs: dispatch a continuum command and get JSON
 /// back (or a refusal string). Implemented in production by a
@@ -64,8 +191,7 @@ pub trait CommandDispatch: Send + Sync {
 /// underscore names (`mcp_search_tools`, `mcp_tool_help`) whose real commands use
 /// a hyphen (`mcp/search-tools`, `mcp/tool-help`), so a blind `_`→`/` would
 /// produce `mcp/search/tools`. Map those explicitly; everything else is the
-/// general rule. (Tool names already use `_` for `/`, so a hyphen in a non-meta
-/// command name round-trips fine — only the meta-tools collide.)
+/// general rule.
 fn tool_name_to_command(tool_name: &str) -> String {
     match tool_name {
         "mcp_search_tools" => "mcp/search-tools".to_string(),
@@ -85,7 +211,11 @@ pub struct McpServer<D: CommandDispatch> {
 impl<D: CommandDispatch> McpServer<D> {
     /// Build a server over `dispatch`. `server_name`/`server_version` are
     /// surfaced in the `initialize` handshake's `serverInfo`.
-    pub fn new(dispatch: D, server_name: impl Into<String>, server_version: impl Into<String>) -> Self {
+    pub fn new(
+        dispatch: D,
+        server_name: impl Into<String>,
+        server_version: impl Into<String>,
+    ) -> Self {
         Self {
             dispatch,
             server_name: server_name.into(),
@@ -97,114 +227,134 @@ impl<D: CommandDispatch> McpServer<D> {
     /// (success or error), `None` for notifications (no `id`) — the transport
     /// writes `Some` back to the client and drops `None`.
     pub async fn handle_message(&self, message: &str) -> Option<String> {
-        let req: Value = match serde_json::from_str(message) {
+        // Parse the raw envelope first so we can recover `id` for error replies
+        // even when the typed deserialize below fails.
+        let raw: Value = match serde_json::from_str(message) {
             Ok(v) => v,
             Err(e) => {
-                // Parse error: no id available, per JSON-RPC reply with null id.
-                return Some(error_response(Value::Null, codes::PARSE_ERROR, &format!("parse error: {e}")));
+                return Some(error_response(
+                    Value::Null,
+                    codes::PARSE_ERROR,
+                    &format!("parse error: {e}"),
+                ));
+            }
+        };
+        let id = raw.get("id").cloned();
+
+        let req: JsonRpcRequest = match serde_json::from_value(raw) {
+            Ok(r) => r,
+            Err(e) => {
+                // Valid JSON but not a valid request (e.g. missing `method`).
+                return id.map(|id| {
+                    error_response(id, codes::INVALID_REQUEST, &format!("invalid request: {e}"))
+                });
             }
         };
 
-        let id = req.get("id").cloned();
-        let method = req.get("method").and_then(|m| m.as_str());
-
-        let Some(method) = method else {
-            return id.map(|id| error_response(id, codes::INVALID_REQUEST, "missing `method`"));
-        };
-
-        // Notifications (no id) get no response regardless of method.
-        let is_notification = id.is_none();
-
-        match method {
-            "initialize" => self.wrap(id, self.initialize_result()),
+        match req.method.as_str() {
+            "initialize" => self.wrap(req.id, Ok(self.initialize_result())),
             "notifications/initialized" | "initialized" => None,
-            "ping" => self.wrap(id, Ok(json!({}))),
+            "ping" => self.wrap(req.id, Ok(EmptyResult {})),
             "tools/list" => {
                 let result = self.tools_list().await;
-                self.wrap(id, result)
+                self.wrap(req.id, result)
             }
             "tools/call" => {
-                let params = req.get("params").cloned().unwrap_or(Value::Null);
-                let result = self.tools_call(params).await;
-                self.wrap(id, result)
+                let result = self.tools_call(req.params).await;
+                self.wrap(req.id, result)
             }
-            _ if is_notification => None,
-            _ => id.map(|id| {
-                error_response(id, codes::METHOD_NOT_FOUND, &format!("method not found: {method}"))
+            // Unknown method: notifications stay silent; requests get an error.
+            _ => req.id.map(|id| {
+                error_response(
+                    id,
+                    codes::METHOD_NOT_FOUND,
+                    &format!("method not found: {}", req.method),
+                )
             }),
         }
     }
 
-    /// Wrap a method result into a JSON-RPC response, or `None` for a
-    /// notification (no id). An `Err` becomes a JSON-RPC error response.
-    fn wrap(&self, id: Option<Value>, result: Result<Value, McpError>) -> Option<String> {
+    /// Wrap a typed method result into a JSON-RPC success/error response, or
+    /// `None` for a notification (no id).
+    fn wrap<T: Serialize>(&self, id: Option<Value>, result: Result<T, McpError>) -> Option<String> {
         let id = id?;
         Some(match result {
-            Ok(value) => json!({ "jsonrpc": "2.0", "id": id, "result": value }).to_string(),
+            Ok(value) => serde_json::to_string(&JsonRpcSuccess {
+                jsonrpc: "2.0",
+                id,
+                result: value,
+            })
+            .unwrap_or_else(|e| {
+                error_response(Value::Null, codes::INTERNAL_ERROR, &format!("serialize: {e}"))
+            }),
             Err(e) => error_response(id, e.code, &e.message),
         })
     }
 
-    /// The `initialize` handshake result — protocol version + capabilities +
-    /// serverInfo. We advertise the `tools` capability (this server exposes
-    /// continuum commands as tools).
-    fn initialize_result(&self) -> Result<Value, McpError> {
-        Ok(json!({
-            "protocolVersion": MCP_PROTOCOL_VERSION,
-            "capabilities": { "tools": {} },
-            "serverInfo": { "name": self.server_name, "version": self.server_version },
-        }))
-    }
-
-    /// `tools/list` → the catalog from `mcp/list-tools`, reshaped to the MCP
-    /// `{ tools: [...] }` envelope. The catalog's `MCPTool` shape already matches
-    /// MCP (`name`, `description`, `inputSchema`), so we pass the array through.
-    async fn tools_list(&self) -> Result<Value, McpError> {
-        let resp = self
-            .dispatch
-            .execute("mcp/list-tools", json!({}))
-            .await
-            .map_err(McpError::internal)?;
-        let tools = resp
-            .get("tools")
-            .cloned()
-            .unwrap_or_else(|| json!([]));
-        Ok(json!({ "tools": tools }))
-    }
-
-    /// `tools/call` → dispatch the underlying command, wrap its JSON result as an
-    /// MCP `CallToolResult` (`content: [{ type: "text", text }]`). A command
-    /// refusal becomes `isError: true` content (the MCP convention — the model
-    /// sees the failure rather than the call throwing at the protocol layer).
-    async fn tools_call(&self, params: Value) -> Result<Value, McpError> {
-        let name = params
-            .get("name")
-            .and_then(|n| n.as_str())
-            .ok_or_else(|| McpError::new(codes::INVALID_PARAMS, "tools/call: missing `name`"))?;
-        let arguments = params.get("arguments").cloned().unwrap_or_else(|| json!({}));
-
-        let command = tool_name_to_command(name);
-        match self.dispatch.execute(&command, arguments).await {
-            Ok(result) => Ok(tool_content(&result, false)),
-            // A refused command is a TOOL error, not a protocol error: surface it
-            // in the result content so the calling model can read + react.
-            Err(reason) => Ok(tool_content(&json!({ "error": reason }), true)),
+    fn initialize_result(&self) -> InitializeResult {
+        InitializeResult {
+            protocol_version: MCP_PROTOCOL_VERSION,
+            capabilities: ServerCapabilities {
+                tools: ToolsCapability {},
+            },
+            server_info: ServerInfo {
+                name: self.server_name.clone(),
+                version: self.server_version.clone(),
+            },
         }
     }
+
+    /// `tools/list` → the catalog from `mcp/list-tools`, validated into typed
+    /// [`MCPTool`]s. The catalog is the single source of truth (commands ARE
+    /// tools); deserializing it here also proves the catalog conforms to the
+    /// MCP tool shape.
+    async fn tools_list(&self) -> Result<ListToolsResult, McpError> {
+        let resp = self
+            .dispatch
+            .execute("mcp/list-tools", Value::Object(Default::default()))
+            .await
+            .map_err(McpError::internal)?;
+        let catalog: CatalogResult = serde_json::from_value(resp)
+            .map_err(|e| McpError::internal(format!("catalog shape: {e}")))?;
+        Ok(ListToolsResult {
+            tools: catalog.tools,
+        })
+    }
+
+    /// `tools/call` → dispatch the underlying command, wrap its JSON result as a
+    /// typed [`CallToolResult`]. A command refusal becomes `isError` content
+    /// (the MCP convention — the model sees the failure rather than the call
+    /// throwing at the protocol layer).
+    async fn tools_call(&self, params: Value) -> Result<CallToolResult, McpError> {
+        let params: CallToolParams = serde_json::from_value(params)
+            .map_err(|e| McpError::new(codes::INVALID_PARAMS, format!("tools/call params: {e}")))?;
+
+        let command = tool_name_to_command(&params.name);
+        Ok(match self.dispatch.execute(&command, params.arguments).await {
+            Ok(result) => CallToolResult::text(&result, false),
+            Err(reason) => CallToolResult::text(&serde_json::json!({ "error": reason }), true),
+        })
+    }
 }
 
-/// Build an MCP `CallToolResult` from a JSON payload: one text content block
-/// carrying the serialized JSON, plus the `isError` flag.
-fn tool_content(payload: &Value, is_error: bool) -> Value {
-    json!({
-        "content": [ { "type": "text", "text": payload.to_string() } ],
-        "isError": is_error,
-    })
-}
+/// Empty `{}` result (e.g. `ping`).
+#[derive(Debug, Serialize)]
+struct EmptyResult {}
 
 /// A JSON-RPC error response string.
 fn error_response(id: Value, code: i64, message: &str) -> String {
-    json!({ "jsonrpc": "2.0", "id": id, "error": { "code": code, "message": message } }).to_string()
+    serde_json::to_string(&JsonRpcErrorResponse {
+        jsonrpc: "2.0",
+        id,
+        error: JsonRpcError {
+            code,
+            message: message.to_string(),
+        },
+    })
+    .unwrap_or_else(|_| {
+        // Last-resort literal — serialization of this fixed shape can't realistically fail.
+        format!(r#"{{"jsonrpc":"2.0","id":null,"error":{{"code":{code},"message":"error"}}}}"#)
+    })
 }
 
 /// A protocol-level error (maps to a JSON-RPC `error` object).
@@ -215,7 +365,10 @@ struct McpError {
 
 impl McpError {
     fn new(code: i64, message: impl Into<String>) -> Self {
-        Self { code, message: message.into() }
+        Self {
+            code,
+            message: message.into(),
+        }
     }
     fn internal(message: impl Into<String>) -> Self {
         Self::new(codes::INTERNAL_ERROR, message)
@@ -225,6 +378,7 @@ impl McpError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
     use std::sync::Mutex;
 
     /// Mock dispatch: records the (command, params) it saw and returns a canned
@@ -258,7 +412,10 @@ mod tests {
     #[async_trait]
     impl CommandDispatch for MockDispatch {
         async fn execute(&self, command: &str, params: Value) -> Result<Value, String> {
-            self.calls.lock().unwrap().push((command.to_string(), params.clone()));
+            self.calls
+                .lock()
+                .unwrap()
+                .push((command.to_string(), params.clone()));
             if self.fail_on.as_deref() == Some(command) {
                 return Err(format!("{command}: refused by mock"));
             }
@@ -274,8 +431,8 @@ mod tests {
     }
 
     // what this catches: the initialize handshake returns the protocol version +
-    // tools capability + serverInfo — the shape an MCP client (unsloth/Claude
-    // Code) requires before it will list/call tools.
+    // tools capability + serverInfo — the typed shape an MCP client (unsloth/
+    // Claude Code) requires before it will list/call tools.
     #[tokio::test]
     async fn initialize_returns_capabilities_and_server_info() {
         let s = server(MockDispatch::new());
@@ -286,16 +443,19 @@ mod tests {
         let v: Value = serde_json::from_str(&resp).unwrap();
         assert_eq!(v["id"], 1);
         assert_eq!(v["result"]["protocolVersion"], MCP_PROTOCOL_VERSION);
-        assert!(v["result"]["capabilities"]["tools"].is_object(), "advertises tools capability");
+        assert!(
+            v["result"]["capabilities"]["tools"].is_object(),
+            "advertises tools capability"
+        );
         assert_eq!(v["result"]["serverInfo"]["name"], "continuum-mcp");
     }
 
     // what this catches: tools/list pulls from the catalog command (single source
-    // of truth — commands ARE tools) and reshapes to the MCP {tools:[...]} envelope.
+    // of truth — commands ARE tools), validates into typed MCPTool, and reshapes
+    // to the MCP {tools:[...]} envelope.
     #[tokio::test]
-    async fn tools_list_proxies_the_catalog_command() {
-        let d = MockDispatch::new();
-        let s = server(d);
+    async fn tools_list_proxies_and_types_the_catalog() {
+        let s = server(MockDispatch::new());
         let resp = s
             .handle_message(r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#)
             .await
@@ -304,13 +464,13 @@ mod tests {
         let tools = v["result"]["tools"].as_array().expect("tools array");
         assert_eq!(tools.len(), 2);
         assert_eq!(tools[0]["name"], "ping");
-        // It dispatched the catalog command, not reached into module internals.
+        assert_eq!(tools[1]["inputSchema"]["type"], "object", "typed MCPTool round-trip");
         assert_eq!(s.dispatch.calls.lock().unwrap()[0].0, "mcp/list-tools");
     }
 
     // what this catches: tools/call maps the MCP tool name back to the command
     // path and dispatches it with the given arguments; the JSON result is wrapped
-    // as MCP text content. This is the core "MCP call → headless command" bridge.
+    // as a typed CallToolResult text block.
     #[tokio::test]
     async fn tools_call_maps_name_and_dispatches() {
         let s = server(MockDispatch::new());
@@ -322,13 +482,12 @@ mod tests {
             .unwrap();
         let v: Value = serde_json::from_str(&resp).unwrap();
         assert_eq!(v["result"]["isError"], false);
-        // dispatched the slashed command with the arguments verbatim
         let (cmd, params) = s.dispatch.calls.lock().unwrap()[0].clone();
         assert_eq!(cmd, "interface/screenshot");
         assert_eq!(params["querySelector"], "body");
-        // result wrapped as text content carrying the command's JSON
         let text = v["result"]["content"][0]["text"].as_str().unwrap();
         assert!(text.contains("interface/screenshot"));
+        assert_eq!(v["result"]["content"][0]["type"], "text");
     }
 
     // what this catches: the meta-tool name exception (underscore tool name →
@@ -358,7 +517,23 @@ mod tests {
         let v: Value = serde_json::from_str(&resp).unwrap();
         assert!(v.get("error").is_none(), "not a protocol error");
         assert_eq!(v["result"]["isError"], true);
-        assert!(v["result"]["content"][0]["text"].as_str().unwrap().contains("refused"));
+        assert!(v["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("refused"));
+    }
+
+    // what this catches: missing `name` on tools/call is an INVALID_PARAMS
+    // protocol error (the typed CallToolParams deserialize fails loudly).
+    #[tokio::test]
+    async fn tools_call_missing_name_is_invalid_params() {
+        let s = server(MockDispatch::new());
+        let resp = s
+            .handle_message(r#"{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"arguments":{}}}"#)
+            .await
+            .unwrap();
+        let v: Value = serde_json::from_str(&resp).unwrap();
+        assert_eq!(v["error"]["code"], codes::INVALID_PARAMS);
     }
 
     // what this catches: notifications (no id) get NO response; a request with an
@@ -366,12 +541,10 @@ mod tests {
     #[tokio::test]
     async fn notifications_silent_and_unknown_method_errors() {
         let s = server(MockDispatch::new());
-        // notifications/initialized is a notification → no response
         assert!(s
             .handle_message(r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#)
             .await
             .is_none());
-        // unknown method WITH id → method-not-found error
         let resp = s
             .handle_message(r#"{"jsonrpc":"2.0","id":9,"method":"bogus/method"}"#)
             .await
@@ -380,14 +553,23 @@ mod tests {
         assert_eq!(v["error"]["code"], codes::METHOD_NOT_FOUND);
     }
 
-    // what this catches: malformed JSON yields a JSON-RPC parse error (null id),
-    // never a panic — the transport stays alive on garbage input.
+    // what this catches: malformed JSON → parse error (null id); valid JSON
+    // missing `method` → invalid request. Neither panics — the transport stays
+    // alive on garbage input.
     #[tokio::test]
-    async fn malformed_json_is_parse_error_not_panic() {
+    async fn malformed_and_invalid_requests_error_cleanly() {
         let s = server(MockDispatch::new());
-        let resp = s.handle_message("{not json").await.unwrap();
-        let v: Value = serde_json::from_str(&resp).unwrap();
-        assert_eq!(v["error"]["code"], codes::PARSE_ERROR);
-        assert!(v["id"].is_null());
+        let parse = s.handle_message("{not json").await.unwrap();
+        let pv: Value = serde_json::from_str(&parse).unwrap();
+        assert_eq!(pv["error"]["code"], codes::PARSE_ERROR);
+        assert!(pv["id"].is_null());
+
+        let invalid = s
+            .handle_message(r#"{"jsonrpc":"2.0","id":7,"params":{}}"#)
+            .await
+            .unwrap();
+        let iv: Value = serde_json::from_str(&invalid).unwrap();
+        assert_eq!(iv["error"]["code"], codes::INVALID_REQUEST);
+        assert_eq!(iv["id"], 7);
     }
 }
