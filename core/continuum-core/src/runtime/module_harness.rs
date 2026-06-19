@@ -27,6 +27,7 @@ use super::module_context::ModuleContext;
 use super::registry::ModuleRegistry;
 use super::service_module::{CommandResult, ServiceModule};
 use super::shared_compute::SharedCompute;
+use crate::vdd::record::{HarnessStatus, StandardVddRecord};
 
 /// A minimal runtime hosting exactly the module(s) under test — the smallest
 /// thing that can dispatch a real command to them.
@@ -103,6 +104,123 @@ impl ModuleHarness {
     /// The registry, for assertions about what's hosted (e.g. command schemas).
     pub fn registry(&self) -> &Arc<ModuleRegistry> {
         &self.registry
+    }
+
+    /// VALIDATION-driven dev (VDD) per module: run `command` `runs` times against
+    /// the isolated module and collect per-run latency — so a test can gate on a
+    /// MEASURED property (p95 under X) rather than just pass/fail. The VDD twin of
+    /// `execute` (correctness): same one-line harness, now measuring *how well*.
+    ///
+    /// Latency is wall-clock around the real dispatch (executor → module). It
+    /// includes the harness's fixed dispatch overhead, which is constant per
+    /// module — so it's sound for regression baselining a module against itself.
+    pub async fn measure(
+        &self,
+        command: &str,
+        params: Value,
+        runs: usize,
+    ) -> CommandBench {
+        let mut latencies = Vec::with_capacity(runs);
+        let mut errors = 0usize;
+        for _ in 0..runs {
+            let start = std::time::Instant::now();
+            let outcome = self.execute_json(command, params.clone()).await;
+            let elapsed = start.elapsed();
+            match outcome {
+                Ok(_) => latencies.push(elapsed),
+                Err(_) => errors += 1,
+            }
+        }
+        latencies.sort_unstable();
+        CommandBench {
+            command: command.to_string(),
+            runs,
+            errors,
+            latencies,
+        }
+    }
+}
+
+/// A latency measurement of one command over N runs — the VDD per-module result.
+/// Sorted successful-run latencies + an error count. Offers percentiles and
+/// regression-gate assertions, and converts to a [`StandardVddRecord`] so it
+/// plugs into the existing VDD report/replay substrate.
+#[derive(Debug, Clone)]
+pub struct CommandBench {
+    pub command: String,
+    pub runs: usize,
+    pub errors: usize,
+    /// Successful-run latencies, ascending.
+    pub latencies: Vec<std::time::Duration>,
+}
+
+impl CommandBench {
+    fn percentile(&self, p: f64) -> std::time::Duration {
+        if self.latencies.is_empty() {
+            return std::time::Duration::ZERO;
+        }
+        // Nearest-rank: index = ceil(p/100 * n) - 1, clamped — robust for small N.
+        let n = self.latencies.len();
+        let rank = ((p / 100.0) * n as f64).ceil() as usize;
+        let idx = rank.saturating_sub(1).min(n - 1);
+        self.latencies[idx]
+    }
+
+    pub fn p50(&self) -> std::time::Duration {
+        self.percentile(50.0)
+    }
+    pub fn p95(&self) -> std::time::Duration {
+        self.percentile(95.0)
+    }
+    pub fn min(&self) -> std::time::Duration {
+        self.latencies.first().copied().unwrap_or_default()
+    }
+    pub fn max(&self) -> std::time::Duration {
+        self.latencies.last().copied().unwrap_or_default()
+    }
+
+    /// Regression gate: every run succeeded (no errors). A measurement over a
+    /// flaky command isn't a valid latency baseline.
+    pub fn assert_all_ok(&self) {
+        assert_eq!(
+            self.errors, 0,
+            "VDD: {} run(s) of {:?} errored — not a clean measurement",
+            self.errors, self.command
+        );
+    }
+
+    /// Regression gate: p95 latency under `max`. The VDD assertion — a test fails
+    /// when a module's latency regresses past its baseline, not just when it breaks.
+    pub fn assert_p95_under(&self, max: std::time::Duration) {
+        self.assert_all_ok();
+        let p95 = self.p95();
+        assert!(
+            p95 <= max,
+            "VDD regression: {} p95 = {:?} exceeds baseline {:?} (p50 {:?}, max {:?}, n={})",
+            self.command,
+            p95,
+            max,
+            self.p50(),
+            self.max(),
+            self.latencies.len()
+        );
+    }
+
+    /// Project into a [`StandardVddRecord`] (execution_ms = p50) so the
+    /// measurement persists for cross-run baselining + the `cargo-continuum-vdd`
+    /// report/replay. Status reflects whether all runs succeeded.
+    pub fn to_vdd_record(&self, scenario: impl Into<String>, git_sha: impl Into<String>) -> StandardVddRecord {
+        let mut rec = StandardVddRecord::minimal(scenario, self.command.clone(), git_sha);
+        rec.execution_ms = Some(self.p50().as_millis() as u64);
+        rec.error_count = self.errors as u32;
+        rec.responses_expected = self.runs as u32;
+        rec.responses_observed = self.latencies.len() as u32;
+        rec.status = if self.errors == 0 {
+            HarnessStatus::Pass
+        } else {
+            HarnessStatus::Fail
+        };
+        rec
     }
 }
 
@@ -200,5 +318,34 @@ mod tests {
         // wrong expected type → loud error, not a silent default
         let typed: Result<Greeting, String> = h.execute("greet/refuse", json!({})).await;
         assert!(typed.is_err());
+    }
+
+    // what this catches (the VDD dimension): measure() runs the command N times,
+    // collects latency, and the p95 gate passes for a fast command. This is the
+    // per-module VDD loop — a test gating on a MEASURED property, and the bench
+    // projects into a StandardVddRecord for baselining/replay.
+    #[tokio::test]
+    async fn harness_measures_latency_and_gates_p95() {
+        let h = ModuleHarness::with(Arc::new(GreeterModule {
+            initialized: Arc::new(AtomicBool::new(false)),
+        }))
+        .await;
+
+        let bench = h.measure("greet/hello", json!({ "who": "vdd" }), 50).await;
+        assert_eq!(bench.runs, 50);
+        assert_eq!(bench.errors, 0, "all runs succeeded");
+        assert_eq!(bench.latencies.len(), 50);
+        assert!(bench.p50() <= bench.p95(), "p50 <= p95");
+        assert!(bench.min() <= bench.max());
+        // A trivial in-process command is fast — generous gate avoids CI flake
+        // while still pinning that the VDD assertion mechanism works.
+        bench.assert_p95_under(std::time::Duration::from_millis(250));
+
+        // Projects into the VDD record substrate for baselining/replay.
+        let rec = bench.to_vdd_record("greeter-hello-bench", "test-sha");
+        assert_eq!(rec.command, "greet/hello");
+        assert_eq!(rec.status, HarnessStatus::Pass);
+        assert!(rec.execution_ms.is_some(), "p50 recorded as execution_ms");
+        assert_eq!(rec.error_count, 0);
     }
 }

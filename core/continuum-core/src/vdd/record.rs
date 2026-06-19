@@ -63,6 +63,57 @@ pub struct StandardVddRecord {
 }
 
 impl StandardVddRecord {
+    /// A minimal record for a single measured command (the per-module VDD case,
+    /// e.g. `ModuleHarness::measure`). Latency/score fields start `None` and the
+    /// caller fills what it measured (`execution_ms`, `tok_per_sec`, …). Hardware/
+    /// backend come from the same env vars as `chat_roundtrip`, so records from
+    /// any harness compare apples-to-apples. Status starts `Pass` (a clean
+    /// measurement); flip to `Fail` if a gate/assertion was violated.
+    pub fn minimal(
+        scenario: impl Into<String>,
+        command: impl Into<String>,
+        git_sha: impl Into<String>,
+    ) -> Self {
+        Self {
+            scenario: scenario.into(),
+            platform: std::env::consts::OS.to_string(),
+            hardware: std::env::var("CONTINUUM_HARNESS_HARDWARE_CLASS")
+                .unwrap_or_else(|_| "unknown".to_string()),
+            backend: std::env::var("CONTINUUM_HARNESS_BACKEND")
+                .unwrap_or_else(|_| "unknown".to_string()),
+            git_sha: git_sha.into(),
+            command: command.into(),
+            model: None,
+            gpu_layers: None,
+            unsupported_layers: Vec::new(),
+            cold_start_ms: None,
+            first_token_ms: None,
+            first_response_ms: None,
+            all_responses_ms: None,
+            responses_expected: 0,
+            responses_observed: 0,
+            silence_reasons: Vec::new(),
+            tok_per_sec: None,
+            cpu_pct_avg: None,
+            cpu_pct_peak: None,
+            rss_mb: None,
+            gpu_util_pct_avg: None,
+            gpu_memory_mb: None,
+            queue_wait_ms: None,
+            execution_ms: None,
+            coalesced_count: 0,
+            deferred_count: 0,
+            stale_drop_count: 0,
+            error_count: 0,
+            degraded_reason: None,
+            log_refs: Vec::new(),
+            next_bottleneck: None,
+            policy_version: None,
+            cascade_step: None,
+            status: HarnessStatus::Pass,
+        }
+    }
+
     pub fn chat_roundtrip(
         git_sha: impl Into<String>,
         command: impl Into<String>,
