@@ -50,6 +50,8 @@ pub mod launch_mode;
 pub mod live;
 pub mod logger;
 pub mod mcp;
+pub mod mcp_protocol;
+pub mod mcp_transport;
 pub mod memory;
 pub mod models;
 pub mod persona_allocator;

@@ -109,7 +109,7 @@ echo ""
 # Step 1: System dependencies
 # ============================================================================
 
-echo -e "${YELLOW}[1/8] System dependencies${NC}"
+echo -e "${YELLOW}[1/9] System dependencies${NC}"
 
 install_system_deps() {
   case "$PLATFORM" in
@@ -255,7 +255,7 @@ fi
 # Step 2: Node.js
 # ============================================================================
 
-echo -e "${YELLOW}[2/8] Node.js${NC}"
+echo -e "${YELLOW}[2/9] Node.js${NC}"
 
 install_node() {
   if command -v node &>/dev/null; then
@@ -289,7 +289,7 @@ install_node
 # Step 3: Rust
 # ============================================================================
 
-echo -e "${YELLOW}[3/8] Rust${NC}"
+echo -e "${YELLOW}[3/9] Rust${NC}"
 
 install_rust() {
   if command -v rustc &>/dev/null; then
@@ -310,7 +310,7 @@ export PATH="$HOME/.cargo/bin:$PATH"
 # Step 4: Python ML environment (if GPU detected)
 # ============================================================================
 
-echo -e "${YELLOW}[4/8] Python ML environment${NC}"
+echo -e "${YELLOW}[4/9] Python ML environment${NC}"
 
 VENV_DIR="$HOME/.continuum/venv"
 
@@ -363,7 +363,7 @@ fi
 # ============================================================================
 
 if [ "$SKIP_BUILD" = "0" ]; then
-  echo -e "${YELLOW}[5/8] Building Continuum${NC}"
+  echo -e "${YELLOW}[5/9] Building Continuum${NC}"
 
   echo -e "  Installing npm dependencies..."
   npm install --silent 2>&1 | tail -3
@@ -403,7 +403,7 @@ mkdir -p "$CONFIG_DIR/bin"
 # PostgreSQL
 # ============================================================================
 
-echo -e "${YELLOW}[6/8] PostgreSQL${NC}"
+echo -e "${YELLOW}[6/9] PostgreSQL${NC}"
 
 install_postgres() {
   # macOS: keg-only postgres may not be in PATH — find it
@@ -480,7 +480,7 @@ install_postgres
 # LiveKit SFU server (voice/video calls)
 # ============================================================================
 
-echo -e "${YELLOW}[7/8] LiveKit SFU${NC}"
+echo -e "${YELLOW}[7/9] LiveKit SFU${NC}"
 
 install_livekit() {
   if [ -f "$PROJECT_DIR/workers/livekit-server" ] || command -v livekit-server &>/dev/null; then
@@ -500,10 +500,47 @@ install_livekit() {
 install_livekit
 
 # ============================================================================
+# Unsloth — inference + LoRA-training engine (preferred local backend)
+# ============================================================================
+#
+# Unsloth (Apache-2.0 core; llama.cpp underneath — the backend Continuum already
+# targets) is the PREFERRED local inference + training engine: Continuum points
+# its AIProviderAdapter at unsloth's OpenAI-compatible /v1 and surfaces its
+# commands to unsloth chat over MCP (continuum-mcp). See
+# docs/architecture/UNSLOTH-INTEGRATION.md.
+#
+# Installed by default (it's the engine), but NON-FATAL and behind the adapter
+# boundary — Continuum still runs with another provider if this is absent
+# (solve-for-public-users). Skip with CONTINUUM_NO_UNSLOTH=1. Idempotent.
+# Real installer per unsloth docs: curl -fsSL https://unsloth.ai/install.sh | sh
+# (macOS/Linux). Runs as a local web server: `unsloth studio -p 8888`.
+echo -e "${YELLOW}[8/9] Unsloth (inference + training engine)${NC}"
+if [ "${CONTINUUM_NO_UNSLOTH:-0}" = "1" ]; then
+  echo -e "  ${GREEN}⏭  Skipped (CONTINUUM_NO_UNSLOTH=1).${NC}"
+elif command -v unsloth &>/dev/null; then
+  echo -e "  ${GREEN}✅ unsloth already installed${NC}"
+else
+  case "$PLATFORM" in
+    macos|linux|wsl)
+      # Non-fatal: a failed engine install must not abort the whole installer.
+      if curl -fsSL https://unsloth.ai/install.sh | sh; then
+        echo -e "  ${GREEN}✅ unsloth installed — launch: unsloth studio -p 8888${NC}"
+      else
+        echo -e "  ${YELLOW}⚠  unsloth install failed — Continuum still runs with another"
+        echo -e "     provider. Re-run later: curl -fsSL https://unsloth.ai/install.sh | sh${NC}"
+      fi
+      ;;
+    *)
+      echo -e "  ${YELLOW}⏭  Unsupported platform for the unsloth installer; skipping.${NC}"
+      ;;
+  esac
+fi
+
+# ============================================================================
 # Tailscale mesh VPN (multi-tower networking)
 # ============================================================================
 
-echo -e "${YELLOW}[8/8] Tailscale (grid mode only)${NC}"
+echo -e "${YELLOW}[9/9] Tailscale (grid mode only)${NC}"
 
 # Tailscale is OPTIONAL — it's the substrate for grid (multi-machine) mode
 # where peers reach each other for forge/inference distribution. Single-
