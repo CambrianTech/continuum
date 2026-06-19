@@ -114,6 +114,17 @@ if [ -n "$CONTINUUM_RELEASE" ]; then
   PROFILE_LABEL="release"
 fi
 
+# ── Build the continuum-mcp bin ──────────────────────────────────────
+# The MCP server is a separate stdio bin that MCP clients (unsloth Studio,
+# Claude Code) SPAWN — it isn't launched by us, so it must exist on disk after
+# `npm start`. Build it here (same crate/manifest/features/profile as the core,
+# so it's a fast incremental once the core is built) rather than via a raw
+# `cargo build` — all Rust bins build through the npm start path. It replaces
+# the Node `src/mcp-server.ts`; an MCP client config points at the built binary.
+echo "▶ building continuum-mcp (Rust MCP server bin)"
+cargo build --manifest-path "$CORE_MANIFEST" --bin continuum-mcp $PROFILE_FLAG $CONTINUUM_FEATURES \
+  || echo "⚠ continuum-mcp build failed — MCP server unavailable (core still launches)" >&2
+
 echo "▶ continuum-core-server starting"
 echo "  profile:  $PROFILE_LABEL"
 echo "  features: $CONTINUUM_FEATURES"
