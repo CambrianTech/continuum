@@ -723,58 +723,116 @@ pub enum ModuleCategory {
 /// so a row that's never reachable surfaces in CI. The
 /// `expected_modules_snapshot` integration test (A.2.2) cross-checks
 /// this list against actual registrations at boot.
-pub const MODULES: &[(&str, ModuleCategory)] = &[
-    // Infrastructure / health
-    ("health", ModuleCategory::Core),
-    ("auth", ModuleCategory::Core),
-    ("system", ModuleCategory::Core),
-    ("events", ModuleCategory::Core),
-    ("logger", ModuleCategory::Core),
-    ("runtime", ModuleCategory::Core),
-    ("mcp", ModuleCategory::Core),
-    ("data", ModuleCategory::Core),
-    // Resource governance
-    ("gpu", ModuleCategory::Core),
-    ("resource-broker", ModuleCategory::Core),
-    ("pressure-broker", ModuleCategory::Core),
-    // AI / inference
-    ("inference", ModuleCategory::Core),
-    ("inference-coordinator", ModuleCategory::Core),
-    ("ai-inference-handle", ModuleCategory::Core),
-    ("inference-llm", ModuleCategory::Core),
-    ("ai_provider", ModuleCategory::Core),
-    ("embedding", ModuleCategory::Core),
-    ("search", ModuleCategory::Core),
-    ("tool-parsing", ModuleCategory::Core),
-    ("vision", ModuleCategory::Core),
-    ("models", ModuleCategory::Core),
-    ("memory", ModuleCategory::Core),
-    ("rag", ModuleCategory::Core),
-    // Persona substrate (always-built — cognition/allocator work
-    // without an AIRC daemon)
-    ("cognition", ModuleCategory::Core),
-    ("channel", ModuleCategory::Core),
-    ("persona_allocator", ModuleCategory::Core),
-    ("agent", ModuleCategory::Core),
-    // Persona substrate (AIRC-Healthy-conditional — registers only
-    // when discovery succeeded across all four sub-steps)
-    ("persona_instance_manager", ModuleCategory::PersonaHosting),
-    ("persona-rag-inspect", ModuleCategory::PersonaHosting),
-    // Forge / sentinel / plasticity / training
-    ("forge", ModuleCategory::Core),
-    ("sentinel", ModuleCategory::Core),
-    ("plasticity", ModuleCategory::Core),
-    ("dataset", ModuleCategory::Core),
-    ("vdd", ModuleCategory::Core),
-    ("cargo", ModuleCategory::Core),
-    ("code", ModuleCategory::Core),
-    // Substrate transports
-    ("airc", ModuleCategory::Core),
-    ("grid", ModuleCategory::Core),
-    // Live presence — Slice B' splits these into renderer + voice
-    // sidecars
-    ("live", ModuleCategory::Core),
-    ("avatar", ModuleCategory::Core),
+/// The CONCERN a module belongs to — the decomposition dimension (orthogonal to
+/// [`ModuleCategory`], which is the conditionality dimension). A process hosts a
+/// *profile* = a set of `ServiceGroup`s; modules outside it are reached over the
+/// bus (`route_command`). The groups partition `MODULES` exactly. See
+/// docs/architecture/MODULAR-DECOMPOSITION.md.
+///
+/// `ServiceGroup` says WHERE a module can be placed (which process/container);
+/// `ModuleCategory` says WHETHER it registers in a given `(discovery, mode)`.
+/// One row carries both — still one source of truth, two views.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ServiceGroup {
+    /// The minimal addressable substrate every node needs: commands/events/
+    /// data/health/auth/system/runtime/mcp. A node is nothing without it.
+    RuntimeShell,
+    /// Per-node hardware governance (GPU, resource + pressure brokers).
+    ResourceGov,
+    /// The inference engine (llm/provider/embedding/vision/models/search/
+    /// tool-parsing). Increasingly external (unsloth) behind the AIProviderAdapter.
+    Inference,
+    /// The organism's brain — cognition/channel/allocator/agent/memory/rag +
+    /// the persona-host modules.
+    Cognition,
+    /// Training / dev / self-improvement (forge/sentinel/plasticity/dataset/
+    /// vdd/cargo/code). Bursty, GPU-heavy, schedulable separately.
+    Forge,
+    /// The bus itself (airc + grid transports).
+    GridTransport,
+    /// Avatar presence: Bevy render + LiveKit SFU. CO-LOCATED with the GPU (the
+    /// readback→framebuffer→WebRTC transfer can't cross a process boundary).
+    Live,
+}
+
+/// One module's placement metadata: its concern ([`ServiceGroup`]) + its
+/// conditionality ([`ModuleCategory`]). Rows of [`MODULES`].
+#[derive(Debug, Clone, Copy)]
+pub struct ModuleSpec {
+    pub name: &'static str,
+    pub group: ServiceGroup,
+    pub category: ModuleCategory,
+}
+
+impl ModuleSpec {
+    const fn new(name: &'static str, group: ServiceGroup, category: ModuleCategory) -> Self {
+        Self {
+            name,
+            group,
+            category,
+        }
+    }
+}
+
+pub const MODULES: &[ModuleSpec] = &[
+    // RuntimeShell — the minimal addressable substrate
+    ModuleSpec::new("health", ServiceGroup::RuntimeShell, ModuleCategory::Core),
+    ModuleSpec::new("auth", ServiceGroup::RuntimeShell, ModuleCategory::Core),
+    ModuleSpec::new("system", ServiceGroup::RuntimeShell, ModuleCategory::Core),
+    ModuleSpec::new("events", ServiceGroup::RuntimeShell, ModuleCategory::Core),
+    ModuleSpec::new("logger", ServiceGroup::RuntimeShell, ModuleCategory::Core),
+    ModuleSpec::new("runtime", ServiceGroup::RuntimeShell, ModuleCategory::Core),
+    ModuleSpec::new("mcp", ServiceGroup::RuntimeShell, ModuleCategory::Core),
+    ModuleSpec::new("data", ServiceGroup::RuntimeShell, ModuleCategory::Core),
+    // ResourceGov — hardware governance
+    ModuleSpec::new("gpu", ServiceGroup::ResourceGov, ModuleCategory::Core),
+    ModuleSpec::new("resource-broker", ServiceGroup::ResourceGov, ModuleCategory::Core),
+    ModuleSpec::new("pressure-broker", ServiceGroup::ResourceGov, ModuleCategory::Core),
+    // Inference — the engine
+    ModuleSpec::new("inference", ServiceGroup::Inference, ModuleCategory::Core),
+    ModuleSpec::new("inference-coordinator", ServiceGroup::Inference, ModuleCategory::Core),
+    ModuleSpec::new("ai-inference-handle", ServiceGroup::Inference, ModuleCategory::Core),
+    ModuleSpec::new("inference-llm", ServiceGroup::Inference, ModuleCategory::Core),
+    ModuleSpec::new("ai_provider", ServiceGroup::Inference, ModuleCategory::Core),
+    ModuleSpec::new("embedding", ServiceGroup::Inference, ModuleCategory::Core),
+    ModuleSpec::new("search", ServiceGroup::Inference, ModuleCategory::Core),
+    ModuleSpec::new("tool-parsing", ServiceGroup::Inference, ModuleCategory::Core),
+    ModuleSpec::new("vision", ServiceGroup::Inference, ModuleCategory::Core),
+    ModuleSpec::new("models", ServiceGroup::Inference, ModuleCategory::Core),
+    // Cognition — the brain (always-built modules + the persona-host conditionals)
+    ModuleSpec::new("memory", ServiceGroup::Cognition, ModuleCategory::Core),
+    ModuleSpec::new("rag", ServiceGroup::Cognition, ModuleCategory::Core),
+    ModuleSpec::new("cognition", ServiceGroup::Cognition, ModuleCategory::Core),
+    ModuleSpec::new("channel", ServiceGroup::Cognition, ModuleCategory::Core),
+    ModuleSpec::new("persona_allocator", ServiceGroup::Cognition, ModuleCategory::Core),
+    ModuleSpec::new("agent", ServiceGroup::Cognition, ModuleCategory::Core),
+    // Cognition — AIRC-Healthy-conditional persona hosting (registers only when
+    // discovery succeeded across all four sub-steps)
+    ModuleSpec::new(
+        "persona_instance_manager",
+        ServiceGroup::Cognition,
+        ModuleCategory::PersonaHosting,
+    ),
+    ModuleSpec::new(
+        "persona-rag-inspect",
+        ServiceGroup::Cognition,
+        ModuleCategory::PersonaHosting,
+    ),
+    // Forge — training / dev / self-improvement
+    ModuleSpec::new("forge", ServiceGroup::Forge, ModuleCategory::Core),
+    ModuleSpec::new("sentinel", ServiceGroup::Forge, ModuleCategory::Core),
+    ModuleSpec::new("plasticity", ServiceGroup::Forge, ModuleCategory::Core),
+    ModuleSpec::new("dataset", ServiceGroup::Forge, ModuleCategory::Core),
+    ModuleSpec::new("vdd", ServiceGroup::Forge, ModuleCategory::Core),
+    ModuleSpec::new("cargo", ServiceGroup::Forge, ModuleCategory::Core),
+    ModuleSpec::new("code", ServiceGroup::Forge, ModuleCategory::Core),
+    // GridTransport — the bus
+    ModuleSpec::new("airc", ServiceGroup::GridTransport, ModuleCategory::Core),
+    ModuleSpec::new("grid", ServiceGroup::GridTransport, ModuleCategory::Core),
+    // Live — Bevy render + LiveKit SFU, CO-LOCATED with the GPU (Slice B' splits
+    // these into renderer + voice sidecars within the same VM)
+    ModuleSpec::new("live", ServiceGroup::Live, ModuleCategory::Core),
+    ModuleSpec::new("avatar", ServiceGroup::Live, ModuleCategory::Core),
 ];
 
 /// Compute the required-module set for a given `(discovery, mode)` —
@@ -796,12 +854,31 @@ pub fn required_modules(discovery: &AircDiscovery, mode: BootMode) -> Vec<&'stat
     let needs_persona_hosting = mode.requires_persona_hosting() && discovery.can_host_personas();
     MODULES
         .iter()
-        .filter(|(_, cat)| match cat {
+        .filter(|spec| match spec.category {
             ModuleCategory::Core => true,
             ModuleCategory::PersonaHosting => needs_persona_hosting,
         })
-        .map(|(name, _)| *name)
+        .map(|spec| spec.name)
         .collect()
+}
+
+/// The modules in a [`ServiceGroup`] — the decomposition view of `MODULES`. A
+/// process profile is a set of groups; `modules_in_group` enumerates each.
+/// Derived from the single `MODULES` source (no parallel list).
+pub fn modules_in_group(group: ServiceGroup) -> Vec<&'static str> {
+    MODULES
+        .iter()
+        .filter(|spec| spec.group == group)
+        .map(|spec| spec.name)
+        .collect()
+}
+
+/// The [`ServiceGroup`] a module belongs to, or `None` if the name is unknown.
+pub fn group_of(module: &str) -> Option<ServiceGroup> {
+    MODULES
+        .iter()
+        .find(|spec| spec.name == module)
+        .map(|spec| spec.group)
 }
 
 /// Every module name the substrate knows about — derived from
@@ -809,7 +886,7 @@ pub fn required_modules(discovery: &AircDiscovery, mode: BootMode) -> Vec<&'stat
 /// `expected_modules_snapshot` integration test (A.2.2) as the
 /// snapshot baseline.
 pub fn all_known_modules() -> Vec<&'static str> {
-    MODULES.iter().map(|(name, _)| *name).collect()
+    MODULES.iter().map(|spec| spec.name).collect()
 }
 
 // MODULES is the substrate's ONE source of truth — `required_modules`
@@ -886,12 +963,86 @@ mod conditional_modules_tests {
         assert!(!req.contains(&"persona-rag-inspect"));
     }
 
+    // ── ServiceGroup (the decomposition dimension) ──────────────────────
+    //
+    // These pin the concern-grouping that profiles/containers select on, and
+    // that it's a clean PARTITION of MODULES derived from the single source.
+
+    /// Every module belongs to exactly one group, and the groups partition
+    /// `all_known_modules` (sum of group sizes == total). A profile selecting a
+    /// set of groups thus yields a well-defined, gap-free module set.
+    #[test]
+    fn service_groups_partition_all_modules() {
+        use ServiceGroup::*;
+        let all_groups = [
+            RuntimeShell,
+            ResourceGov,
+            Inference,
+            Cognition,
+            Forge,
+            GridTransport,
+            Live,
+        ];
+        let total: usize = all_groups.iter().map(|g| modules_in_group(*g).len()).sum();
+        assert_eq!(
+            total,
+            all_known_modules().len(),
+            "group sizes must sum to the total — every module grouped exactly once"
+        );
+        for name in all_known_modules() {
+            assert!(group_of(name).is_some(), "module {name:?} has no ServiceGroup");
+        }
+        for g in all_groups {
+            assert!(!modules_in_group(g).is_empty(), "ServiceGroup {g:?} is empty");
+        }
+    }
+
+    /// The RuntimeShell — the minimal substrate every node hosts — is exactly
+    /// the addressable-core set. Pinned so a future move can't silently drop a
+    /// load-bearing module out of the shell (or smuggle a heavy one in).
+    #[test]
+    fn runtime_shell_is_the_minimal_addressable_set() {
+        let mut shell = modules_in_group(ServiceGroup::RuntimeShell);
+        shell.sort();
+        let mut expected = vec![
+            "auth", "data", "events", "health", "logger", "mcp", "runtime", "system",
+        ];
+        expected.sort();
+        assert_eq!(shell, expected, "RuntimeShell must be exactly the addressable core");
+    }
+
+    /// Live = Bevy render + LiveKit SFU — the CO-LOCATED group (must share the
+    /// GPU/VM; the framebuffer→WebRTC transfer can't cross a process boundary).
+    #[test]
+    fn live_group_is_the_colocated_gpu_pair() {
+        let mut live = modules_in_group(ServiceGroup::Live);
+        live.sort();
+        assert_eq!(live, vec!["avatar", "live"], "Live = the co-located Bevy+LiveKit pair");
+    }
+
+    /// ServiceGroup (concern) and ModuleCategory (conditionality) are
+    /// ORTHOGONAL: the persona-host conditionals live in Cognition (a concern)
+    /// yet are PersonaHosting (a conditionality), and that gating is unchanged.
+    #[test]
+    fn group_and_category_are_orthogonal() {
+        let cognition = modules_in_group(ServiceGroup::Cognition);
+        assert!(cognition.contains(&"cognition"), "Cognition holds the always-on brain");
+        assert!(
+            cognition.contains(&"persona_instance_manager"),
+            "Cognition also holds the PersonaHosting-conditional modules"
+        );
+        // …still gated by ModuleCategory: absent under InferenceOnly even though
+        // it's in the Cognition group (behavior preserved by this refactor).
+        assert!(!required_modules(&healthy(), BootMode::InferenceOnly)
+            .contains(&"persona_instance_manager"));
+    }
+
     /// Drift catcher: every entry in `MODULES` MUST have a unique
     /// name. Duplicate registrations would make the conditional
     /// dispatch ambiguous (which category wins?).
     #[test]
     fn modules_list_has_unique_names() {
-        let mut names: Vec<&str> = MODULES.iter().map(|(n, _)| *n).collect();
+        let mut names: Vec<&str> = MODULES.iter().map(|spec| spec.name).collect();
         let original_len = names.len();
         names.sort();
         names.dedup();
@@ -916,11 +1067,11 @@ mod conditional_modules_tests {
     fn required_modules_size_matches_category_dispatch() {
         let core_count = MODULES
             .iter()
-            .filter(|(_, c)| matches!(c, ModuleCategory::Core))
+            .filter(|spec| matches!(spec.category, ModuleCategory::Core))
             .count();
         let hosting_count = MODULES
             .iter()
-            .filter(|(_, c)| matches!(c, ModuleCategory::PersonaHosting))
+            .filter(|spec| matches!(spec.category, ModuleCategory::PersonaHosting))
             .count();
         let all_count = core_count + hosting_count;
 
@@ -951,7 +1102,7 @@ mod conditional_modules_tests {
     /// this catches it.
     #[test]
     fn all_known_modules_derives_from_modules() {
-        let expected: Vec<&str> = MODULES.iter().map(|(n, _)| *n).collect();
+        let expected: Vec<&str> = MODULES.iter().map(|spec| spec.name).collect();
         assert_eq!(all_known_modules(), expected);
     }
 
@@ -971,10 +1122,11 @@ mod conditional_modules_tests {
         ];
         for (discovery, mode) in cells {
             let req = required_modules(&discovery, mode);
-            for (name, cat) in MODULES {
+            for spec in MODULES {
+                let (name, cat) = (spec.name, spec.category);
                 if matches!(cat, ModuleCategory::Core) {
                     assert!(
-                        req.contains(name),
+                        req.contains(&name),
                         "Core module {name:?} missing from required set for \
                          (discovery={}, mode={})",
                         discovery.kind(),
@@ -994,8 +1146,8 @@ mod conditional_modules_tests {
     fn persona_hosting_modules_appear_only_when_dispatched() {
         let host_modules: Vec<&str> = MODULES
             .iter()
-            .filter(|(_, c)| matches!(c, ModuleCategory::PersonaHosting))
-            .map(|(n, _)| *n)
+            .filter(|spec| matches!(spec.category, ModuleCategory::PersonaHosting))
+            .map(|spec| spec.name)
             .collect();
 
         for name in &host_modules {
