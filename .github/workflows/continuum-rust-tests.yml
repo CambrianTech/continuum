@@ -71,21 +71,21 @@ jobs:
             libclang-dev clang build-essential \
             libglib2.0-dev libasound2-dev libva-dev
 
-      # Cache cargo registry + git index + target dir. Hashing Cargo.lock
-      # invalidates when any dep changes; restore-keys keeps a warm-ish
-      # cache across lock bumps. The target dir is the big one — a cold
-      # continuum-core build is ~3-6 minutes; a warm rebuild after a
-      # single-file change is well under a minute.
+      # Cargo cache via Swatinem/rust-cache — NOT a raw actions/cache of `target`.
+      # The old approach cached the ENTIRE `target/` dir (incl. continuum-core's
+      # own multi-GB debug artifacts) with restore-keys fallback, so the cache
+      # grew unboundedly across lock bumps until the ~5.6 GB tarball overflowed
+      # the runner's ~14 GB disk on restore ("No space left on device"). rust-cache
+      # caches the DEPENDENCY artifacts + registry/git but prunes the workspace
+      # crates' own output (the big, fast-to-rebuild part) and cleans before save,
+      # so the cache stays small + bounded. `shared-key` keeps the two Rust
+      # workflows warming each other (replaces the old shared cache key).
       - name: Cache cargo state
-        uses: actions/cache@v4
+        uses: Swatinem/rust-cache@v2
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: cargo-${{ runner.os }}-rust1.95-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            cargo-${{ runner.os }}-rust1.95-
+          shared-key: continuum-rust-1.95
+          # Key already includes Cargo.lock hash + rustc; this caps any drift.
+          cache-on-failure: true
 
       # `--lib` runs unit tests only — skips integration/doc tests + the
       # workers binaries. This is the minimum gate; broader coverage comes
