@@ -171,6 +171,102 @@ impl DatasetModule {
         CommandResult::json(&manifest)
     }
 
+    /// Convert recorded persona turns into a ShareGPT/chat training dataset.
+    ///
+    /// This is the rooms→training-data bridge of the coordination↔learning
+    /// flywheel: a persona's recorded room turns (the system prompt + the user
+    /// message → the persona's spoken response) become SFT examples in the SAME
+    /// `{messages:[{role,content}]}` format the CSV importer emits, then flow
+    /// through the SAME split/write/manifest path. The JSONL is unsloth's
+    /// canonical training input — train a LoRA genome on "chats like this one".
+    ///
+    /// Source = the recorder's per-turn JSON captures (default
+    /// `~/.continuum/fixtures/persona-respond`), NOT engrams — engrams are
+    /// curated *recall* memory, not paired SFT turns. Only `spoke` turns yield a
+    /// training pair; `silent` / errored / malformed turns are skipped.
+    ///
+    /// Params: `turnsDir` (default recorder dir), `name`, `splitRatio` (0.8),
+    /// `includeSystem` (true), `includeHistory` (false), `personaId`/`roomId`
+    /// filters, `outputDir`.
+    async fn from_turns(&self, params: Value) -> Result<CommandResult, String> {
+        let turns_dir = params
+            .get("turnsDir")
+            .and_then(|v| v.as_str())
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+                PathBuf::from(home).join(".continuum/fixtures/persona-respond")
+            });
+        if !turns_dir.is_dir() {
+            return Err(format!(
+                "turnsDir not found: {} — point it at the recorder's per-turn JSON dir \
+                 (default ~/.continuum/fixtures/persona-respond)",
+                turns_dir.display()
+            ));
+        }
+
+        let output_dir = self.resolve_datasets_root(&params);
+        let name = params
+            .get("name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("persona-turns");
+        let split_ratio = params
+            .get("splitRatio")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.8);
+        let include_system = params
+            .get("includeSystem")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true);
+        let include_history = params
+            .get("includeHistory")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let persona_filter = params.get("personaId").and_then(|v| v.as_str());
+        let room_filter = params.get("roomId").and_then(|v| v.as_str());
+
+        let mut examples: Vec<Value> = Vec::new();
+        let entries = std::fs::read_dir(&turns_dir)
+            .map_err(|e| format!("Failed to read turnsDir {}: {e}", turns_dir.display()))?;
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("json") {
+                continue;
+            }
+            let Ok(text) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            let Ok(turn) = serde_json::from_str::<Value>(&text) else {
+                continue;
+            };
+
+            if let Some(pid) = persona_filter {
+                if turn.get("personaId").and_then(|v| v.as_str()) != Some(pid) {
+                    continue;
+                }
+            }
+            if let Some(rid) = room_filter {
+                if turn.get("roomId").and_then(|v| v.as_str()) != Some(rid) {
+                    continue;
+                }
+            }
+
+            if let Some(example) = turn_to_example(&turn, include_system, include_history) {
+                examples.push(example);
+            }
+        }
+
+        if examples.is_empty() {
+            return Err(format!(
+                "No spoke turns found in {} (after filters) — nothing to train on",
+                turns_dir.display()
+            ));
+        }
+
+        let manifest = self.split_and_write(name, &output_dir, &examples, split_ratio, None)?;
+        CommandResult::json(&manifest)
+    }
+
     /// Import RealClassEval dataset from cloned repo directory → structured JSONL + manifest.
     ///
     /// The RealClassEval repo has this structure:
@@ -511,6 +607,7 @@ impl ServiceModule for DatasetModule {
         match command {
             "dataset/import-csv" => self.import_csv(params).await,
             "dataset/import-realclasseval" => self.import_realclasseval(params).await,
+            "dataset/from-turns" => self.from_turns(params).await,
             "dataset/list" => self.list_datasets(params).await,
             "dataset/info" => self.dataset_info(params).await,
             _ => Err(format!("Unknown dataset command: {command}")),
@@ -564,6 +661,65 @@ fn find_test_file(tests_dir: &Path, snippet_id: &str) -> Option<String> {
     }
 
     None
+}
+
+/// Convert one recorded persona turn (recorder JSON) into a chat SFT example.
+///
+/// Returns `None` for non-`spoke` / empty / malformed turns — they aren't a
+/// training pair. The recorder shape: `rustRequest.{systemPrompt,messageText,
+/// recentHistory[]}` + `rustResponse` (a `PersonaResponse` enum, so a spoken
+/// turn is `{"kind":"spoke","text":...}`). History items are attributed to
+/// `assistant` when the sender is this persona, else `user`.
+fn turn_to_example(turn: &Value, include_system: bool, include_history: bool) -> Option<Value> {
+    let req = turn.get("rustRequest")?;
+    let resp = turn.get("rustResponse")?;
+
+    // Only a turn the persona actually spoke is a (user → assistant) pair.
+    if resp.get("kind").and_then(|k| k.as_str()) != Some("spoke") {
+        return None;
+    }
+    let assistant = resp.get("text").and_then(|t| t.as_str())?.trim();
+    let user = req.get("messageText").and_then(|t| t.as_str())?.trim();
+    if user.is_empty() || assistant.is_empty() {
+        return None;
+    }
+
+    let persona_name = turn.get("personaName").and_then(|v| v.as_str()).unwrap_or("");
+    let mut messages: Vec<Value> = Vec::new();
+
+    if include_system {
+        if let Some(sys) = req.get("systemPrompt").and_then(|s| s.as_str()) {
+            let sys = sys.trim();
+            if !sys.is_empty() {
+                messages.push(json!({ "role": "system", "content": sys }));
+            }
+        }
+    }
+
+    if include_history {
+        if let Some(hist) = req.get("recentHistory").and_then(|h| h.as_array()) {
+            for h in hist {
+                let Some(text) = h.get("text").and_then(|t| t.as_str()) else {
+                    continue;
+                };
+                let text = text.trim();
+                if text.is_empty() {
+                    continue;
+                }
+                let sender = h.get("senderName").and_then(|s| s.as_str()).unwrap_or("");
+                let role = if !persona_name.is_empty() && sender == persona_name {
+                    "assistant"
+                } else {
+                    "user"
+                };
+                messages.push(json!({ "role": role, "content": text }));
+            }
+        }
+    }
+
+    messages.push(json!({ "role": "user", "content": user }));
+    messages.push(json!({ "role": "assistant", "content": assistant }));
+    Some(json!({ "messages": messages }))
 }
 
 /// Write examples as JSONL (one JSON object per line).
@@ -627,6 +783,90 @@ mod tests {
         assert!(output_dir.join("train.jsonl").exists());
         assert!(output_dir.join("eval.jsonl").exists());
         assert!(output_dir.join("manifest.json").exists());
+    }
+
+    // what this catches: the rooms→training-data bridge — recorded persona
+    // turns (the recorder's per-turn JSON) convert to {messages:[{role,content}]}
+    // SFT examples through the SAME split/write path as the CSV importer, and
+    // only `spoke` turns become training pairs (silent turns are dropped).
+    #[tokio::test]
+    async fn test_from_turns_builds_sft_dataset_from_spoke_turns() {
+        let tmp = TempDir::new().unwrap();
+        let turns_dir = tmp.path().join("turns");
+        std::fs::create_dir_all(&turns_dir).unwrap();
+
+        // A spoke turn → becomes one (system + user + assistant) example.
+        let spoke = json!({
+            "schemaVersion": 1,
+            "personaId": "11111111-1111-1111-1111-111111111111",
+            "personaName": "Gastro",
+            "roomId": "22222222-2222-2222-2222-222222222222",
+            "rustRequest": {
+                "systemPrompt": "You are a gastroenterology specialist.",
+                "messageText": "What causes reflux?",
+                "recentHistory": []
+            },
+            "rustResponse": { "kind": "spoke", "text": "Lower esophageal sphincter dysfunction." }
+        });
+        create_test_csv(&turns_dir, "a-rust.json", &spoke.to_string());
+
+        // A silent turn → NOT a training pair, must be skipped.
+        let silent = json!({
+            "personaId": "11111111-1111-1111-1111-111111111111",
+            "roomId": "22222222-2222-2222-2222-222222222222",
+            "rustRequest": { "systemPrompt": "sys", "messageText": "ignored?", "recentHistory": [] },
+            "rustResponse": { "kind": "silent" }
+        });
+        create_test_csv(&turns_dir, "b-rust.json", &silent.to_string());
+
+        let output_dir = tmp.path().join("out");
+        let module = DatasetModule::new();
+        let params = json!({
+            "turnsDir": turns_dir.to_str().unwrap(),
+            "outputDir": output_dir.to_str().unwrap(),
+            "name": "gastro-turns",
+            "splitRatio": 1.0,
+        });
+
+        let result = module.from_turns(params).await.unwrap();
+        let CommandResult::Json(v) = result else {
+            panic!("expected JSON manifest");
+        };
+        assert_eq!(v["name"], "gastro-turns");
+        assert_eq!(v["total_examples"], 1, "only the spoke turn is a pair");
+
+        // The written example is a chat SFT record: system + user + assistant.
+        let train = std::fs::read_to_string(output_dir.join("train.jsonl")).unwrap();
+        let example: Value = serde_json::from_str(train.lines().next().unwrap()).unwrap();
+        let msgs = example["messages"].as_array().unwrap();
+        assert_eq!(msgs.len(), 3);
+        assert_eq!(msgs[0]["role"], "system");
+        assert_eq!(msgs[1]["role"], "user");
+        assert_eq!(msgs[1]["content"], "What causes reflux?");
+        assert_eq!(msgs[2]["role"], "assistant");
+        assert_eq!(msgs[2]["content"], "Lower esophageal sphincter dysfunction.");
+    }
+
+    // what this catches: a turnsDir with no spoke turns is an explicit error
+    // (nothing to train on), not a silent empty dataset.
+    #[tokio::test]
+    async fn test_from_turns_errors_when_no_spoke_turns() {
+        let tmp = TempDir::new().unwrap();
+        let turns_dir = tmp.path().join("turns");
+        std::fs::create_dir_all(&turns_dir).unwrap();
+        let silent = json!({
+            "rustRequest": { "systemPrompt": "s", "messageText": "m", "recentHistory": [] },
+            "rustResponse": { "kind": "silent" }
+        });
+        create_test_csv(&turns_dir, "only-silent-rust.json", &silent.to_string());
+
+        let module = DatasetModule::new();
+        let params = json!({
+            "turnsDir": turns_dir.to_str().unwrap(),
+            "outputDir": tmp.path().join("out").to_str().unwrap(),
+        });
+        let err = module.from_turns(params).await.unwrap_err();
+        assert!(err.contains("No spoke turns"), "got: {err}");
     }
 
     #[tokio::test]
