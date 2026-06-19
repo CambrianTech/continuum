@@ -687,3 +687,91 @@ impl ServiceModule for MCPModule {
         self
     }
 }
+
+#[cfg(test)]
+mod tests {
+    //! Per-module TDD for the MCP catalog, via `ModuleHarness` — the module is
+    //! booted in ISOLATION (registry + context + executor, no monolith) and
+    //! initialized (its tool cache builds from its own command_schemas), then
+    //! driven through the real dispatch chain. Assertions pin only the STABLE
+    //! surface (the hardcoded meta-tools), so they're deterministic regardless of
+    //! whatever `generated/command-schemas.json` happens to be present.
+
+    use super::*;
+    use crate::runtime::module_harness::ModuleHarness;
+    use serde_json::json;
+    use std::sync::Arc;
+
+    async fn harness() -> ModuleHarness {
+        ModuleHarness::with(Arc::new(MCPModule::new())).await
+    }
+
+    // what this catches: mcp/list-tools returns the catalog, including the
+    // always-present meta-tools — proving the harness initialized the module (its
+    // cache built) and dispatched the command in isolation.
+    #[tokio::test]
+    async fn list_tools_includes_the_meta_tools() {
+        let h = harness().await;
+        let out = h.execute_json("mcp/list-tools", json!({})).await.unwrap();
+        assert_eq!(out["success"], true);
+        let tools = out["tools"].as_array().expect("tools array");
+        let names: Vec<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
+        assert!(names.contains(&"mcp_search_tools"), "meta-tool present: {names:?}");
+        assert!(names.contains(&"mcp_tool_help"), "meta-tool present: {names:?}");
+        assert_eq!(out["count"], tools.len(), "count matches the array length");
+    }
+
+    // what this catches: mcp/search-tools scores + filters by keyword — searching
+    // "search" surfaces mcp_search_tools.
+    #[tokio::test]
+    async fn search_tools_finds_by_keyword() {
+        let h = harness().await;
+        let out = h
+            .execute_json("mcp/search-tools", json!({ "query": "search" }))
+            .await
+            .unwrap();
+        assert_eq!(out["success"], true);
+        let names: Vec<&str> = out["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|t| t["name"].as_str())
+            .collect();
+        assert!(names.contains(&"mcp_search_tools"), "keyword match: {names:?}");
+    }
+
+    // what this catches: mcp/search-tools requires `query` — a missing required
+    // param is a loud refusal (the substrate error string), not a panic/empty.
+    #[tokio::test]
+    async fn search_tools_requires_query() {
+        let h = harness().await;
+        let err = h.execute_json("mcp/search-tools", json!({})).await.unwrap_err();
+        assert!(!err.is_empty(), "missing query must refuse, got: {err:?}");
+    }
+
+    // what this catches: mcp/tool-help returns typed params for a known tool, and
+    // a clean not-found (with a hint) for an unknown one — both success-shaped,
+    // never a panic.
+    #[tokio::test]
+    async fn tool_help_known_and_unknown() {
+        let h = harness().await;
+
+        let known = h
+            .execute_json("mcp/tool-help", json!({ "tool": "mcp_search_tools" }))
+            .await
+            .unwrap();
+        assert_eq!(known["success"], true, "help for a known tool: {known}");
+        let params: Vec<&str> = known["help"]["params"]
+            .as_array()
+            .map(|a| a.iter().filter_map(|p| p["name"].as_str()).collect())
+            .unwrap_or_default();
+        assert!(params.contains(&"query"), "tool-help lists the tool's params: {params:?}");
+
+        let unknown = h
+            .execute_json("mcp/tool-help", json!({ "tool": "definitely-not-a-tool" }))
+            .await
+            .unwrap();
+        assert_eq!(unknown["success"], false);
+        assert!(unknown["hint"].is_string(), "not-found carries a hint");
+    }
+}
