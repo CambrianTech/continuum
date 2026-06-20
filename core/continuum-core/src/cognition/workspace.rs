@@ -26,6 +26,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use futures_util::future::join_all;
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 /// Identifier for a cognitive faculty — a *structural name* (like a brain
 /// region), NOT a cognition decision. `Custom` keeps the set open so new
@@ -138,14 +139,31 @@ pub struct Workspace {
     /// The consolidated burst / world-state at service time. Opaque to the
     /// core — the channel/recipe adapter shapes it.
     pub world_state: String,
+    /// The CONTEXT this tick reasons within — the room/conversation the turn is
+    /// for (the third ID tier, contextId; see
+    /// docs/architecture/IDENTITY-SCOPE-PEER-LIVENESS-MODEL.md Part A). Faculties
+    /// scope their actions to it: the deliberation faculty stamps tool calls with
+    /// this room so a persona's hands act in the SAME room the turn is about, not
+    /// a phantom `nil` room. `Uuid::nil()` only in faculty-isolation tests that
+    /// don't run in a room. NEVER a session id — context is durable, session is
+    /// ephemeral and never load-bearing for where an action lands.
+    pub room_id: Uuid,
     /// What entered the bounded workspace and is broadcast (the persona's "now").
     pub broadcast: Vec<Contribution>,
 }
 
 impl Workspace {
     pub fn new(world_state: impl Into<String>) -> Self {
+        Self::in_room(world_state, Uuid::nil())
+    }
+
+    /// Construct scoped to a specific room/context (the contextId the turn acts
+    /// within). The live persona path always uses this; `new` is the nil-room
+    /// shorthand for faculty-isolation tests.
+    pub fn in_room(world_state: impl Into<String>, room_id: Uuid) -> Self {
         Self {
             world_state: world_state.into(),
+            room_id,
             broadcast: Vec::new(),
         }
     }
@@ -249,6 +267,9 @@ impl Arbiter for SalienceArbiter {
 #[derive(Debug, Clone)]
 pub struct WorkspaceTrace {
     pub world_state: String,
+    /// The room/context this tick reasoned within (contextId) — so a replayed
+    /// trace correlates to the room it happened in, not a floating burst.
+    pub room_id: Uuid,
     /// ALL bids this tick, winners and losers, across BOTH phases — the full
     /// competition (perception phase-1 context bids + deliberation phase-2 bids).
     pub bids: Vec<Contribution>,
@@ -325,7 +346,19 @@ impl WorkspaceCycle {
     /// is never blind to recall. Still one tick over the consolidated burst, still
     /// `O(capacity)` for the bounded context — no per-event slowdown.
     pub async fn run(&self, world_state: impl Into<String>) -> Workspace {
-        let mut ws = Workspace::new(world_state);
+        self.run_in_room(world_state, Uuid::nil()).await
+    }
+
+    /// Same as [`run`](Self::run) but scoped to a room/context (the contextId the
+    /// turn acts within). The live persona path uses THIS so the deliberation
+    /// faculty stamps tool calls with the real room — `run` is the nil-room
+    /// shorthand for tests that aren't room-scoped.
+    pub async fn run_in_room(
+        &self,
+        world_state: impl Into<String>,
+        room_id: Uuid,
+    ) -> Workspace {
+        let mut ws = Workspace::in_room(world_state, room_id);
 
         // --- Phase 1: perception. Context faculties react to the raw world-state. ---
         let perception: Vec<&Arc<dyn Faculty>> = self
@@ -369,6 +402,7 @@ impl WorkspaceCycle {
         all_bids.extend(decision_bids);
         self.capture.record(&WorkspaceTrace {
             world_state: ws.world_state.clone(),
+            room_id: ws.room_id,
             bids: all_bids,
             context_broadcast,
             broadcast: ws.broadcast.clone(),
