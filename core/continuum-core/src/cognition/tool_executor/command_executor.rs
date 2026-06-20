@@ -493,9 +493,9 @@ mod tests {
         // each persona firing a 50-call tool batch (genuine parallelism via
         // tokio::spawn on the multi-thread runtime), and prints the throughput
         // curve so the knee is visible. Latency per batch is recorded through our
-        // own `PerformanceStats` (atomic avg/min/max) — not eprintln. Per-call
-        // dispatch is timed by the `time_async!` probe inside execute_native_batch;
-        // enable the `cognition` log category to capture that seam live.
+        // own `PerformanceStats` (atomic avg/min/max) — not eprintln. (Per-call
+        // dispatch is intentionally NOT separately probed on the hot path; the
+        // batch latency here is the measurement.)
         //
         // This is exploratory, not a brittle perf-threshold gate: it asserts only
         // correctness (every op completes). The printed curve is the artifact you
