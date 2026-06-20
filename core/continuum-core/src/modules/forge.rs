@@ -96,6 +96,11 @@ impl ServiceModule for ForgeModule {
                     .map_err(|e| format!("forge/train: invalid params: {e}"))?;
                 run_unsloth_train(parsed).await
             }
+            "forge/export" => {
+                let parsed: ForgeExportParams = serde_json::from_value(params)
+                    .map_err(|e| format!("forge/export: invalid params: {e}"))?;
+                run_unsloth_export(parsed).await
+            }
             other => Err(format!("Unknown forge command: {other}")),
         }
     }
@@ -293,6 +298,100 @@ async fn run_unsloth_train(p: ForgeTrainParams) -> Result<CommandResult, String>
         "dataset_path": p.dataset_path,
         "output_dir": p.output_dir,
         "training_type": p.training_type,
+        "stdout": stdout,
+    })))
+}
+
+//=============================================================================
+// forge/export — the package stage (Phase 5, slice 2).
+//
+// Turns a trained checkpoint into the PAGEABLE genome layer — the unit the grid
+// exchanges. `--format lora` exports the LoRA adapter (the genome layer);
+// `gguf` exports a quantized standalone. This is the "reproduction" step: a
+// layer packaged so it can be paged in, verified, and spread P2P. The grid card
+// (content-addressed hash + emit to the catalog) is the next slice.
+// See memory lora-layers-as-p2p-exchanged-genome.
+//=============================================================================
+
+/// Inputs for `forge/export`. `checkpoint` is `forge/train`'s output dir.
+#[derive(Debug, Deserialize)]
+struct ForgeExportParams {
+    /// The trained checkpoint directory (a `forge/train` output-dir).
+    checkpoint: String,
+    /// Where the exported artifact is written.
+    output_dir: String,
+    /// Export format: "lora" (the pageable genome layer — default), "gguf",
+    /// "merged-16bit", "merged-4bit".
+    #[serde(default = "default_export_format")]
+    format: String,
+    /// GGUF quantization (only applied when `format == "gguf"`): q4_k_m,
+    /// q5_k_m, q8_0, f16.
+    #[serde(default = "default_quantization")]
+    quantization: String,
+}
+
+fn default_export_format() -> String {
+    "lora".to_string()
+}
+fn default_quantization() -> String {
+    "q4_k_m".to_string()
+}
+
+/// Build the `unsloth export` argument vector. Pure — unit-testable without
+/// spawning a process or owning a real checkpoint, so the invocation continuum
+/// constructs is pinned independently of an actual export run.
+fn build_export_args(p: &ForgeExportParams) -> Vec<String> {
+    let mut args = vec![
+        "export".to_string(),
+        p.checkpoint.clone(),
+        p.output_dir.clone(),
+        "--format".to_string(),
+        p.format.clone(),
+    ];
+    // Quantization only applies to the GGUF path.
+    if p.format == "gguf" {
+        args.push("--quantization".to_string());
+        args.push(p.quantization.clone());
+    }
+    args
+}
+
+/// Drive `unsloth export` on a trained checkpoint. Off the main thread.
+async fn run_unsloth_export(p: ForgeExportParams) -> Result<CommandResult, String> {
+    let bin = unsloth_bin().ok_or_else(|| {
+        "unsloth not found on PATH or ~/.local/bin — the training engine must be installed \
+         (curl -fsSL https://unsloth.ai/install.sh | sh)"
+            .to_string()
+    })?;
+
+    if !PathBuf::from(&p.checkpoint).is_dir() {
+        return Err(format!(
+            "checkpoint not found: {} — train one with `forge/train` first",
+            p.checkpoint
+        ));
+    }
+
+    let args = build_export_args(&p);
+    let output = tokio::process::Command::new(&bin)
+        .args(&args)
+        .output()
+        .await
+        .map_err(|e| format!("failed to launch unsloth export: {e}"))?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    if !output.status.success() {
+        return Err(format!(
+            "unsloth export exited {}: {}",
+            output.status.code().unwrap_or(-1),
+            if stderr.is_empty() { &stdout } else { &stderr }
+        ));
+    }
+
+    Ok(CommandResult::Json(json!({
+        "format": p.format,
+        "checkpoint": p.checkpoint,
+        "output_dir": p.output_dir,
         "stdout": stdout,
     })))
 }
@@ -551,5 +650,66 @@ mod tests {
             // surface it as a skip, since the invocation itself was built + launched.
             Err(e) => println!("SKIP: unsloth rejected the dry-run (env limit, not wiring): {e}"),
         }
+    }
+
+    // ── forge/export — the package stage (Phase 5, slice 2) ──
+
+    // what this catches: the LoRA-export invocation continuum builds. The
+    // pageable genome layer is `--format lora`; quantization is NOT passed for
+    // it (only GGUF quantizes). Pure arg-builder — deterministic, no unsloth or
+    // checkpoint needed.
+    #[test]
+    fn export_args_for_lora_omit_quantization() {
+        let p = ForgeExportParams {
+            checkpoint: "/ckpt".to_string(),
+            output_dir: "/out".to_string(),
+            format: "lora".to_string(),
+            quantization: "q4_k_m".to_string(),
+        };
+        let args = build_export_args(&p);
+        assert_eq!(
+            args,
+            vec!["export", "/ckpt", "/out", "--format", "lora"],
+            "lora export must not pass --quantization"
+        );
+    }
+
+    // what this catches: the GGUF path DOES thread quantization through (the
+    // grid can want a quantized standalone, not just the adapter).
+    #[test]
+    fn export_args_for_gguf_include_quantization() {
+        let p = ForgeExportParams {
+            checkpoint: "/ckpt".to_string(),
+            output_dir: "/out".to_string(),
+            format: "gguf".to_string(),
+            quantization: "q5_k_m".to_string(),
+        };
+        let args = build_export_args(&p);
+        assert_eq!(
+            args,
+            vec!["export", "/ckpt", "/out", "--format", "gguf", "--quantization", "q5_k_m"]
+        );
+    }
+
+    // what this catches: forge/export errors clearly when the checkpoint is
+    // missing (you can't package a layer that wasn't trained). Skip-if-no-unsloth
+    // (the bin check runs first, like forge/train).
+    #[tokio::test]
+    async fn forge_export_errors_on_missing_checkpoint() {
+        if unsloth_bin().is_none() {
+            println!("SKIP: no unsloth binary — can't reach the checkpoint guard.");
+            return;
+        }
+        let params = json!({
+            "checkpoint": "/nonexistent/ckpt",
+            "output_dir": "/tmp/forge-export-out",
+            "format": "lora",
+        });
+        let module = ForgeModule::new();
+        let err = module
+            .handle_command("forge/export", params)
+            .await
+            .expect_err("missing checkpoint must error");
+        assert!(err.contains("checkpoint not found"), "got: {err}");
     }
 }
