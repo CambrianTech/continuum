@@ -406,12 +406,36 @@ impl Faculty for LlmDeliberationFaculty {
                 }
             };
 
-            if iterations < self.max_tool_iterations
+            let wants_tools = matches!(resp.finish_reason, FinishReason::ToolUse);
+
+            if wants_tools
+                && iterations < self.max_tool_iterations
                 && self.try_tool_round(&resp, &mut messages).await
             {
                 iterations += 1;
                 continue; // tools answered → re-generate over their results
             }
+
+            // The model still wanted to act but we're NOT acting — the tool-
+            // iteration cap was hit, or no executor is wired. If it left no
+            // verdict text, that is NOT a chosen silence: abstain this tick
+            // rather than fabricate a PASS out of empty tool-call text (a
+            // model cut off mid-reasoning is not the model choosing silence —
+            // same rule as the inference-failure branch above). Non-empty text
+            // is honored: a model that says "PASS" alongside a tool call has
+            // expressed a real verdict.
+            if wants_tools && resp.text.trim().is_empty() {
+                tracing::warn!(
+                    persona = %self.persona_name,
+                    iterations,
+                    max = self.max_tool_iterations,
+                    "deliberation: model wanted to act but couldn't (tool-iteration \
+                     cap or no executor) and left no verdict text; abstaining this \
+                     tick (no fabricated PASS)"
+                );
+                return None;
+            }
+
             return Some(self.verdict(&resp.text));
         }
     }
@@ -719,5 +743,38 @@ mod tests {
             1,
             "no executor → no tool round, single generate"
         );
+    }
+
+    // what this catches: the fabricated-silence regression. A model that wants
+    // to act but CAN'T (no executor / tool-iteration cap) and leaves NO verdict
+    // text must ABSTAIN, not be turned into a chosen PASS. Before the fix,
+    // decision_from_response("") → Pass silently converted a cut-off model into
+    // "chose silence" — violating the no-fallbacks doctrine (silence is the
+    // model's choice, never a substrate artifact).
+    #[tokio::test]
+    async fn tool_want_with_empty_text_and_no_executor_abstains() {
+        let persona = Uuid::new_v4();
+        let call = ToolCall {
+            id: "t1".to_string(),
+            name: "code/read".to_string(),
+            input: json!({}),
+        };
+        // Model wants a tool but emits NO verdict text — and no executor exists.
+        let adapter = Arc::new(ScriptedAdapter::new(vec![make_response(
+            FinishReason::ToolUse,
+            "",
+            Some(vec![call]),
+        )]));
+        let faculty =
+            LlmDeliberationFaculty::new(persona, "Ivar", "You are Ivar.", adapter.clone())
+                .with_tools(vec![read_tool()]);
+
+        let ws = Workspace::new("anything");
+        // Abstain (no contribution) — NOT a fabricated Pass.
+        assert!(
+            faculty.contribute(&ws).await.is_none(),
+            "model cut off with no text must abstain, not fabricate a PASS"
+        );
+        assert_eq!(adapter.call_count(), 1, "single generate, no tool round");
     }
 }
