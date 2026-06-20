@@ -61,16 +61,15 @@ const RERANK_CANDIDATE_MULTIPLIER: usize = 4;
 /// relevance) and DIFF the resulting traces — tuning by evidence, not guessing.
 pub const DEFAULT_RELEVANCE_WEIGHT: f32 = 0.5;
 
-/// Blend cosine-relevance (to the burst) with the memory's salience-decay score
+/// Blend a precomputed cosine-relevance with the memory's salience-decay score
 /// at relevance `weight` (0.0 = pure salience, 1.0 = pure relevance).
-fn blended_score(
-    salience: f32,
-    weight: f32,
-    query: &[f32],
-    embedder: &dyn EmbeddingProvider,
-    content: &str,
-) -> f32 {
-    let rel = cosine_similarity(query, &embedder.embed(content));
+///
+/// `rel` is precomputed because embedding is now async — recall awaits the
+/// embeds in a loop, then blends; you can't `.await` inside a sort comparator.
+/// `weight` is the per-faculty configurable relevance weight
+/// ([`RecallFaculty::with_relevance_weight`]), so the replay A/B bench can sweep
+/// it.
+fn blend(salience: f32, rel: f32, weight: f32) -> f32 {
     weight * rel + (1.0 - weight) * salience
 }
 
@@ -191,15 +190,16 @@ impl Faculty for RecallFaculty {
         // final_score IS salience (candidates already in that order).
         let mut scored: Vec<(f32, Engram, f32)> = match &self.embedder {
             Some(embedder) => {
-                let query = embedder.embed(&ws.world_state);
-                let mut s: Vec<(f32, Engram, f32)> = candidates
-                    .into_iter()
-                    .map(|(engram, salience)| {
-                        let blended =
-                            blended_score(salience, self.relevance_weight, &query, embedder.as_ref(), &engram.content);
-                        (blended, engram, salience)
-                    })
-                    .collect();
+                // Embedding is async (the neural/grid backends do IO); the cache
+                // makes repeats a sync hit. Pre-embed the query + each candidate in
+                // a loop (can't .await inside a sort comparator), then sort. Blend
+                // at the per-faculty configurable relevance weight (#1656).
+                let query = embedder.embed(&ws.world_state).await;
+                let mut s: Vec<(f32, Engram, f32)> = Vec::with_capacity(candidates.len());
+                for (engram, salience) in candidates {
+                    let rel = cosine_similarity(&query, &embedder.embed(&engram.content).await);
+                    s.push((blend(salience, rel, self.relevance_weight), engram, salience));
+                }
                 s.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
                 s
             }
@@ -215,7 +215,7 @@ impl Faculty for RecallFaculty {
         let surfaced_ids: Vec<Uuid> = scored.iter().map(|(_, e, _)| e.id).collect();
         self.admission_state.record_recall_hits(&surfaced_ids, now);
 
-        // The faculty's bid salience: max(blended_score, intrinsic_salience). The
+        // The faculty's bid salience: max(blended score, intrinsic_salience). The
         // `.max` removes the regression where a lexically-thin burst (cosine ≈ 0)
         // would halve recall's bid to 0.5·salience and silently under-weight it
         // in the arbiter — recall now never bids BELOW the surfaced memory's own
