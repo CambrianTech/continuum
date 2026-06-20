@@ -54,12 +54,27 @@ pub fn to_corpus_memory(memory: &ConsolidatedMemory) -> CorpusMemory {
             }
             .to_string(),
             content: memory.content.clone(),
-            context: serde_json::json!({
-                "sessionId": memory.session_id.to_string(),
-                "synthesizedFrom": memory.synthesized_from.iter()
-                    .map(|u| u.to_string())
-                    .collect::<Vec<_>>(),
-            }),
+            // Tag the memory with its ROOM (contextId) — what recall scores on
+            // (recall.rs reads "roomId"). Previously this emitted only
+            // "sessionId", so the room bonus NEVER matched and memory lost its
+            // room affinity on reconnect. Emit the canonical "contextId" plus the
+            // "roomId" key recall reads today; keep sessionId as labelled session
+            // metadata (NOT a context substitute). Omit the room keys entirely
+            // when there's no context rather than writing nil.
+            context: {
+                let mut ctx = serde_json::json!({
+                    "sessionId": memory.session_id.to_string(),
+                    "synthesizedFrom": memory.synthesized_from.iter()
+                        .map(|u| u.to_string())
+                        .collect::<Vec<_>>(),
+                });
+                if let Some(context_id) = memory.context_id {
+                    let id = context_id.to_string();
+                    ctx["contextId"] = serde_json::json!(id);
+                    ctx["roomId"] = serde_json::json!(id);
+                }
+                ctx
+            },
             timestamp: ms_to_rfc3339(memory.timestamp_ms),
             importance: memory.importance,
             access_count: 0,
@@ -282,10 +297,12 @@ mod tests {
         // `MemoryType::Decision => "decision"` with
         // `MemoryType::Decision => "observation"` → memory_type
         // assertion fails. Reverted.
+        let room = Uuid::from_u128(0xC0);
         let m = ConsolidatedMemory {
             id: Uuid::from_u128(100),
             persona_id: Uuid::from_u128(42),
             session_id: Uuid::from_u128(7),
+            context_id: Some(room),
             memory_type: MemoryType::Decision,
             content: "chose path A".to_string(),
             importance: 0.9,
@@ -298,6 +315,19 @@ mod tests {
         let cm = to_corpus_memory(&m);
         assert_eq!(cm.record.memory_type, "decision");
         assert_eq!(cm.record.content, "chose path A");
+        // what this catches: the memory carries its ROOM under the key recall
+        // scores on ("roomId") + the canonical "contextId". Regression here =
+        // recall's room bonus silently never matches and memory loses room
+        // affinity on reconnect (it used to emit only "sessionId").
+        assert_eq!(
+            cm.record.context["roomId"].as_str(),
+            Some(room.to_string().as_str()),
+            "memory must carry its room under the key recall reads"
+        );
+        assert_eq!(
+            cm.record.context["contextId"].as_str(),
+            Some(room.to_string().as_str())
+        );
         assert_eq!(cm.record.importance, 0.9);
         assert_eq!(cm.record.tags, vec!["code".to_string()]);
         assert_eq!(cm.record.source.as_deref(), Some("consolidation"));
