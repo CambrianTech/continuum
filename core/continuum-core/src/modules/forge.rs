@@ -101,6 +101,11 @@ impl ServiceModule for ForgeModule {
                     .map_err(|e| format!("forge/export: invalid params: {e}"))?;
                 run_unsloth_export(parsed).await
             }
+            "forge/decide" => {
+                let parsed: DecideParams = serde_json::from_value(params)
+                    .map_err(|e| format!("forge/decide: invalid params: {e}"))?;
+                Ok(CommandResult::Json(decide_assemble_or_train(&parsed)))
+            }
             other => Err(format!("Unknown forge command: {other}")),
         }
     }
@@ -394,6 +399,82 @@ async fn run_unsloth_export(p: ForgeExportParams) -> Result<CommandResult, Strin
         "output_dir": p.output_dir,
         "stdout": stdout,
     })))
+}
+
+//=============================================================================
+// forge/decide — "assemble the best self, or train" (the product-thesis decision)
+//
+// The request has been scored against the trust-scoped market: each candidate
+// (an existing model / LoRA genome) has a measured `score` from `vdd/score`, and
+// the current self has a `baseline`. THIS decides, deterministically: adopt the
+// best candidate that clears the adopt margin (assemble — zero training), else
+// the market came up short → TRAIN a fresh layer to fill the gap. Pure — the
+// candidates' scores come from elsewhere; this is the decision the whole
+// "ask anything → assemble best self, or train" loop turns on.
+// See docs/genome/SELF-EVOLVING-GENOME.md + memory ask-anything-assemble-best-self-or-train.
+//=============================================================================
+
+/// One scored candidate from the (trust-scoped) market search: a model or LoRA
+/// genome, with its measured eval `score` (from `vdd/score`).
+#[derive(Debug, Clone, Deserialize)]
+struct Candidate {
+    label: String,
+    /// Held-out eval score ∈ [0,1] (the `vdd/score` of assembling this candidate).
+    score: f64,
+}
+
+#[derive(Debug, Deserialize)]
+struct DecideParams {
+    /// The current self's score on the same held-out set (base / status quo).
+    baseline: f64,
+    /// Scored candidates from the market (may be empty → nothing to assemble).
+    #[serde(default)]
+    candidates: Vec<Candidate>,
+    /// Minimum lift over baseline to bother ADOPTING a candidate rather than
+    /// training. Below this, the market hasn't earned the swap → train.
+    #[serde(default = "default_adopt_margin")]
+    adopt_margin: f64,
+}
+
+fn default_adopt_margin() -> f64 {
+    0.02
+}
+
+/// Pure decision: assemble the best-scoring candidate if it clears
+/// `baseline + adopt_margin`; otherwise train. Returns the decision + the lift
+/// the winning (or best-available) candidate would provide.
+fn decide_assemble_or_train(p: &DecideParams) -> Value {
+    // Best available candidate by measured capability (score). Cost-weighted
+    // value-density is the eviction/composition decision, not this one.
+    let best = p
+        .candidates
+        .iter()
+        .max_by(|a, b| a.score.partial_cmp(&b.score).unwrap_or(std::cmp::Ordering::Equal));
+
+    match best {
+        Some(c) if c.score - p.baseline >= p.adopt_margin => serde_json::json!({
+            "action": "assemble",
+            "chosen": c.label,
+            "score": c.score,
+            "baseline": p.baseline,
+            "lift": c.score - p.baseline,
+            "reason": "market candidate clears the adopt margin — assemble (zero training)",
+        }),
+        Some(c) => serde_json::json!({
+            "action": "train",
+            "best_candidate": c.label,
+            "best_score": c.score,
+            "baseline": p.baseline,
+            "best_lift": c.score - p.baseline,
+            "gap": p.adopt_margin - (c.score - p.baseline),
+            "reason": "no market candidate clears the adopt margin — forage + train to fill the gap",
+        }),
+        None => serde_json::json!({
+            "action": "train",
+            "baseline": p.baseline,
+            "reason": "market returned no candidates — train from the best available base",
+        }),
+    }
 }
 
 //=============================================================================
@@ -711,5 +792,65 @@ mod tests {
             .await
             .expect_err("missing checkpoint must error");
         assert!(err.contains("checkpoint not found"), "got: {err}");
+    }
+
+    // ── forge/decide — "assemble best self, or train" (product-thesis decision) ──
+
+    // what this catches: when a market candidate clears the adopt margin, ASSEMBLE
+    // it (zero training) and report the lift. This is the "shop before you build"
+    // fast path — the whole point of not starting from zero.
+    #[tokio::test]
+    async fn decide_assembles_when_market_candidate_clears_margin() {
+        let module = ForgeModule::new();
+        let params = json!({
+            "baseline": 0.60,
+            "adopt_margin": 0.02,
+            "candidates": [
+                {"label": "peer-A/rust-lora", "score": 0.72},
+                {"label": "peer-B/rust-lora", "score": 0.81},
+            ]
+        });
+        let v = match module.handle_command("forge/decide", params).await.unwrap() {
+            CommandResult::Json(v) => v,
+            _ => panic!("json"),
+        };
+        assert_eq!(v["action"], "assemble");
+        assert_eq!(v["chosen"], "peer-B/rust-lora"); // best score wins
+        assert!((v["lift"].as_f64().unwrap() - 0.21).abs() < 1e-9);
+    }
+
+    // what this catches: when no candidate clears the margin, the market came up
+    // short → TRAIN (forage + forge), reporting the gap to close. This is the slow
+    // path the fitness GAP triggers.
+    #[tokio::test]
+    async fn decide_trains_when_market_falls_short() {
+        let module = ForgeModule::new();
+        let params = json!({
+            "baseline": 0.80,
+            "adopt_margin": 0.05,
+            "candidates": [ {"label": "peer/old-lora", "score": 0.81} ] // +0.01 < 0.05
+        });
+        let v = match module.handle_command("forge/decide", params).await.unwrap() {
+            CommandResult::Json(v) => v,
+            _ => panic!("json"),
+        };
+        assert_eq!(v["action"], "train");
+        assert_eq!(v["best_candidate"], "peer/old-lora");
+        assert!((v["gap"].as_f64().unwrap() - 0.04).abs() < 1e-9);
+    }
+
+    // what this catches: an empty market (nothing to assemble) → train from base.
+    #[tokio::test]
+    async fn decide_trains_when_market_empty() {
+        let module = ForgeModule::new();
+        let v = match module
+            .handle_command("forge/decide", json!({ "baseline": 0.5, "candidates": [] }))
+            .await
+            .unwrap()
+        {
+            CommandResult::Json(v) => v,
+            _ => panic!("json"),
+        };
+        assert_eq!(v["action"], "train");
     }
 }
