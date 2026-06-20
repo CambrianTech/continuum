@@ -46,7 +46,7 @@ use super::types::{
 use super::ToolExecutor;
 use crate::ai::types::{ToolCall as NativeToolCall, ToolResult as NativeToolResult};
 use crate::runtime::InProcessTransport;
-use continuum_client::Connection;
+use continuum_client::{ClientError, Connection};
 
 /// Routes a persona's native tool calls to core commands through the uniform
 /// `continuum_client` [`Connection`] over the local [`InProcessTransport`]. The
@@ -118,13 +118,14 @@ impl ToolExecutor for CommandToolExecutor {
                 // Value-native dispatch: the input is already a Value, so go
                 // through execute_value — no to_value/from_value round-trip. The
                 // one clone is the genuine borrowed→owned boundary copy (we must
-                // own it to stamp the scope). Timed via the sanctioned probe (a
-                // no-op unless logging is enabled), NOT eprintln.
-                let outcome: Result<Value, _> = crate::time_async!(
-                    "cognition.tools",
-                    "tool_call",
-                    conn.commands().execute_value(command.as_ref(), call.input.clone())
-                );
+                // own it to stamp the scope). No per-call timing guard here: it
+                // would allocate on every call (TimingGuard is not a no-op when
+                // logging is off), and dispatch latency is already captured by the
+                // executor's command_completed event + measured by the load harness.
+                let outcome: Result<Value, _> = conn
+                    .commands()
+                    .execute_value(command.as_ref(), call.input.clone())
+                    .await;
                 (call.id.clone(), outcome)
             }
         });
@@ -141,12 +142,20 @@ impl ToolExecutor for CommandToolExecutor {
                 // A failed tool call is NOT a batch failure — it's fed back to the
                 // model as an error result so it can recover (retry, fix args,
                 // pick another tool). Batch-level `Err` is reserved for the
-                // executor/transport itself being unavailable.
-                Err(e) => NativeToolResult {
-                    tool_use_id,
-                    content: truncate_on_boundary(e.to_string(), max_result_chars),
-                    is_error: Some(true),
-                },
+                // executor/transport itself being unavailable. Surface the
+                // substrate's OWN reason (e.g. "Unknown command: …"), not the
+                // client-wrapper prefix, so the model recovers on the real message.
+                Err(e) => {
+                    let content = match e {
+                        ClientError::Refused { reason, .. } => reason,
+                        other => other.to_string(),
+                    };
+                    NativeToolResult {
+                        tool_use_id,
+                        content: truncate_on_boundary(content, max_result_chars),
+                        is_error: Some(true),
+                    }
+                }
             })
             .collect();
 
@@ -246,8 +255,10 @@ mod tests {
 
     /// Build a persona's tool executor over the uniform client: a
     /// `Connection<InProcessTransport>` carrying `persona`'s identity, dispatching
-    /// into `registry` via a shared executor. This is the exact shape
-    /// `build_workspace_cycle` constructs per persona.
+    /// into `registry` via a shared executor. This is the shape the spawn path
+    /// WILL construct per persona; the live wiring into `build_workspace_cycle`
+    /// lands in the next slice of #15 — this executor is not yet wired into
+    /// cognition.
     fn exec_over(registry: Arc<ModuleRegistry>, persona: Uuid) -> CommandToolExecutor {
         let executor = Arc::new(CommandExecutor::new(registry));
         let transport = InProcessTransport::new(executor, Some(CallerIdentity::airc(persona)));
@@ -272,7 +283,10 @@ mod tests {
             name: "test/echo".to_string(),
             input: json!({ "path": "deploy.md" }),
         }];
-        let out = exec.execute_native_batch(&calls, &ctx(), 8000).await.unwrap();
+        let out = exec
+            .execute_native_batch(&calls, &ctx(), 8000)
+            .await
+            .unwrap();
         assert_eq!(out.results.len(), 1);
         assert_eq!(out.results[0].tool_use_id, "t1");
         assert!(out.results[0].is_error.is_none(), "successful tool call");
@@ -293,8 +307,14 @@ mod tests {
             name: "test_echo".to_string(),
             input: json!({ "ok": true }),
         }];
-        let out = exec.execute_native_batch(&calls, &ctx(), 8000).await.unwrap();
-        assert!(out.results[0].is_error.is_none(), "test_echo → test/echo routed");
+        let out = exec
+            .execute_native_batch(&calls, &ctx(), 8000)
+            .await
+            .unwrap();
+        assert!(
+            out.results[0].is_error.is_none(),
+            "test_echo → test/echo routed"
+        );
     }
 
     // what this catches: a failed tool call is fed back as an ERROR RESULT (so the
@@ -311,7 +331,23 @@ mod tests {
             .execute_native_batch(&calls, &ctx(), 8000)
             .await
             .expect("batch itself succeeds");
-        assert_eq!(out.results[0].is_error, Some(true), "per-call error, batch ok");
+        assert_eq!(
+            out.results[0].is_error,
+            Some(true),
+            "per-call error, batch ok"
+        );
+        // the model sees the SUBSTRATE's reason, not the client-wrapper prefix —
+        // so it recovers on the real message (regression-pins the Err arm that
+        // unwraps ClientError::Refused.reason instead of Display).
+        let content = &out.results[0].content;
+        assert!(
+            content.contains("nonexistent"),
+            "surfaces the real reason: {content}"
+        );
+        assert!(
+            !content.contains("refused"),
+            "no client-wrapper prefix leaks to the model: {content}"
+        );
     }
 
     /// Concurrency + load proofs. Gated behind `stress-tests` per the test
@@ -434,7 +470,8 @@ mod tests {
                 .map(|_| {
                     let exec = persona_over(executor.clone());
                     tokio::spawn(async move {
-                        exec.execute_native_batch(&load_calls(1), &ctx(), 8000).await
+                        exec.execute_native_batch(&load_calls(1), &ctx(), 8000)
+                            .await
                     })
                 })
                 .collect();
