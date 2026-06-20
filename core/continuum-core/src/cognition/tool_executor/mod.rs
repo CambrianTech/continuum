@@ -28,8 +28,10 @@
 //! - When the time comes to port, add the impl module in the pattern
 //!   already laid here — no caller-code changes
 
+pub mod command_executor;
 pub mod types;
 
+pub use command_executor::CommandToolExecutor;
 pub use types::{
     MediaItemLite, NativeBatchOutcome, ParsedToolBatch, PersonaMediaConfigLite, ToolError,
     ToolExecutionContext, ToolInvocation, ToolOutcome,
