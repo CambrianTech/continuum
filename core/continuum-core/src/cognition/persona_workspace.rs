@@ -401,6 +401,7 @@ mod tests {
         // ---- EXACTLY what the LLM was fed (reconstruct the pre-deliberation ws) ----
         let context_ws = Workspace {
             world_state: burst.to_string(),
+            room_id: trace.room_id,
             broadcast: trace.context_broadcast.clone(),
         };
         let view = delib.prompt_view(&context_ws);

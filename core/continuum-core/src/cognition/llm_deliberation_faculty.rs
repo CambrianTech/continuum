@@ -190,15 +190,20 @@ impl LlmDeliberationFaculty {
         }
     }
 
-    /// Context for tool execution this tick. session/context ids are nil for now
-    /// (the Workspace cycle isn't session-scoped yet); they thread in when the
-    /// recipe-executor passes the live session — a follow-up, flagged not faked.
-    fn tool_context(&self) -> ToolExecutionContext {
+    /// Context for tool execution this tick. `context_id` is the room the turn
+    /// acts within (`ws.room_id`, the third ID tier) — so the persona's hands
+    /// scope every command to the SAME room the turn is about, never a phantom
+    /// `nil` room (the `scoped(nil)` bug). `session_id` stays nil deliberately:
+    /// it is the EPHEMERAL connection instance and is NEVER load-bearing for
+    /// where a tool action lands (per IDENTITY-SCOPE-PEER-LIVENESS-MODEL.md A.5,
+    /// session never feeds trust or scope); it threads in only if/when a stable
+    /// session token is needed, separate from context.
+    fn tool_context(&self, ws: &Workspace) -> ToolExecutionContext {
         ToolExecutionContext {
             persona_id: self.persona_id,
             persona_name: self.persona_name.clone(),
             session_id: uuid::Uuid::nil(),
-            context_id: uuid::Uuid::nil(),
+            context_id: ws.room_id,
             caller_context: serde_json::Value::Null,
             persona_config: super::tool_executor::PersonaMediaConfigLite {
                 auto_load_media: false,
@@ -222,6 +227,7 @@ impl LlmDeliberationFaculty {
         &self,
         resp: &TextGenerationResponse,
         messages: &mut Vec<ChatMessage>,
+        ws: &Workspace,
     ) -> bool {
         if self.tools.is_empty() {
             return false;
@@ -241,7 +247,7 @@ impl LlmDeliberationFaculty {
         // then the results — the agent transcript the model reasons over next.
         messages.push(ChatMessage::assistant_tool_use(&calls));
         match executor
-            .execute_native_batch(&calls, &self.tool_context(), TOOL_RESULT_MAX_CHARS)
+            .execute_native_batch(&calls, &self.tool_context(ws), TOOL_RESULT_MAX_CHARS)
             .await
         {
             Ok(outcome) => {
@@ -410,7 +416,7 @@ impl Faculty for LlmDeliberationFaculty {
 
             if wants_tools
                 && iterations < self.max_tool_iterations
-                && self.try_tool_round(&resp, &mut messages).await
+                && self.try_tool_round(&resp, &mut messages, ws).await
             {
                 iterations += 1;
                 continue; // tools answered → re-generate over their results
@@ -603,6 +609,9 @@ mod tests {
     /// loop consumes native `tool_calls` and never parses or stores here.
     struct RecordingExecutor {
         calls: Mutex<Vec<ToolCall>>,
+        /// The contextId (room) the executor was handed — proves tool calls are
+        /// scoped to the turn's room, not a phantom nil.
+        seen_context: Mutex<Option<Uuid>>,
         result_content: String,
     }
 
@@ -611,9 +620,10 @@ mod tests {
         async fn execute_native_batch(
             &self,
             calls: &[ToolCall],
-            _ctx: &ToolExecutionContext,
+            ctx: &ToolExecutionContext,
             _max_result_chars: usize,
         ) -> Result<NativeBatchOutcome, ToolError> {
+            *self.seen_context.lock().unwrap() = Some(ctx.context_id);
             self.calls.lock().unwrap().extend_from_slice(calls);
             let results = calls
                 .iter()
@@ -669,6 +679,7 @@ mod tests {
         ]));
         let executor = Arc::new(RecordingExecutor {
             calls: Mutex::new(Vec::new()),
+            seen_context: Mutex::new(None),
             result_content: "deploy.md: fix merged 4pm, pipeline green".to_string(),
         });
 
@@ -709,6 +720,46 @@ mod tests {
             threaded,
             "re-prompt must thread the tool result back to the model"
         );
+    }
+
+    // what this catches: the nil-scope bug — tool calls MUST be scoped to the
+    // room the turn is for (ws.room_id = contextId), not Uuid::nil() (a phantom
+    // room). Regression here = a persona's hands act in the wrong room, which is
+    // both a correctness bug and a security one (commands land outside the
+    // authorized context). See IDENTITY-SCOPE-PEER-LIVENESS-MODEL.md A.6 step 3.
+    #[tokio::test]
+    async fn tool_calls_are_scoped_to_the_turns_room() {
+        let persona = Uuid::new_v4();
+        let room = Uuid::new_v4();
+        let call = ToolCall {
+            id: "t1".to_string(),
+            name: "code/read".to_string(),
+            input: json!({ "path": "deploy.md" }),
+        };
+        let adapter = Arc::new(ScriptedAdapter::new(vec![
+            make_response(FinishReason::ToolUse, "", Some(vec![call])),
+            make_response(FinishReason::Stop, "done", None),
+        ]));
+        let executor = Arc::new(RecordingExecutor {
+            calls: Mutex::new(Vec::new()),
+            seen_context: Mutex::new(None),
+            result_content: "ok".to_string(),
+        });
+        let faculty = LlmDeliberationFaculty::new(persona, "Ivar", "You are Ivar.", adapter)
+            .with_tools(vec![read_tool()])
+            .with_tool_executor(executor.clone());
+
+        // Run the turn IN a specific room — the contextId the persona acts within.
+        let ws = Workspace::in_room("teammate asks: status?", room);
+        faculty.contribute(&ws).await.expect("verdict");
+
+        let seen = *executor.seen_context.lock().unwrap();
+        assert_eq!(
+            seen,
+            Some(room),
+            "tool execution must be scoped to the turn's room (contextId), not nil"
+        );
+        assert_ne!(seen, Some(Uuid::nil()), "must not be the phantom nil room");
     }
 
     // what this catches: the can_act gate. Tools authorized but NO executor

@@ -710,7 +710,18 @@ async fn serve_persona_loop_inner(
                 // WHERE). Recall (the persona's own memories) is injected by the
                 // RecallFaculty inside the cycle — so "given this RAG, do I have
                 // what I need?" is: this burst + recalled memory.
-                let ws = cycle.run(workspace_burst).await;
+                // Scope the cognition tick to the room this turn is FOR (the
+                // contextId), so the deliberation faculty stamps tool calls with
+                // it and the persona's hands act in the real room, not a phantom
+                // nil one. The serviced room is `ctx.identity.default_room` — the
+                // same room the burst header above declares. (IncomingMessage
+                // carries no per-message room yet; a per-message contextId on the
+                // cognition input is the deeper fix — A.6 / the missing context
+                // axis. Today default_room is the correct available context.)
+                // See IDENTITY-SCOPE-PEER-LIVENESS-MODEL.md A.6 step 3.
+                let ws = cycle
+                    .run_in_room(workspace_burst, ctx.identity.default_room)
+                    .await;
                 phase_timings.respond_ms = respond_started.elapsed().as_millis() as u64;
                 match ws.decision() {
                     Some(crate::cognition::workspace::Decision::Speak { text })
