@@ -1,14 +1,26 @@
 #!/bin/bash
-# Continuum Tower Install — One command to get a tower running.
+# Continuum — FROM-SOURCE developer/self-host build.
 #
-# Usage:
+# ┌───────────────────────────────────────────────────────────────────────┐
+# │  MOST USERS DO NOT RUN THIS. To just *use* Continuum, run the one-      │
+# │  command installer (pre-built Docker images, no compiler needed):      │
+# │    • Windows:      irm https://cambriantech.github.io/continuum/install.ps1 | iex
+# │    • Linux/macOS:  curl -fsSL https://cambriantech.github.io/continuum/install.sh | bash
+# │  On Windows that handles WSL2 + Docker + GPU for you — no shell choice. │
+# └───────────────────────────────────────────────────────────────────────┘
+#
+# This script is the FROM-SOURCE path: compiles continuum-core + workers and
+# installs the full dev toolchain. Use it only if you are building/hacking on
+# Continuum itself.
+#
+# Usage (must be a real Linux userland — WSL2/Ubuntu, native Linux, or macOS;
+# NOT Git Bash/MSYS, which has no apt/toolchain and is rejected up front):
 #   git clone https://github.com/CambrianTech/continuum.git
-#   cd continuum/src
-#   bash scripts/install.sh
+#   cd continuum && bash tools/scripts/install.sh
 #
-# Works on: macOS (Apple Silicon), Ubuntu/Debian (x86_64), WSL2
-# Installs: Node.js, Rust, Python venv (with ML packages if GPU detected), system deps
-# Idempotent: safe to run multiple times (skips what's already installed)
+# Installs: Node.js, Rust (pinned via rust-toolchain.toml), Python venv (+ ML
+#   packages and the CUDA toolkit when a GPU is detected), system deps.
+# Idempotent: safe to re-run (skips what's already installed).
 
 set -eo pipefail
 
@@ -37,6 +49,25 @@ echo ""
 
 PLATFORM=$(preflight_detect_platform)
 echo -e "  Platform: ${GREEN}${PLATFORM}${NC}"
+
+# Fail fast on an unsupported host shell. The from-source dev install needs a
+# real Linux userland (apt + the build toolchain). Git Bash / MSYS / Cygwin are
+# Windows shells with no package manager, so the Node/npm/Rust steps would
+# cascade into "command not found" — better to stop with a clear redirect.
+case "$PLATFORM" in
+  windows-shell)
+    echo -e "  ${RED}✗ This is Git Bash / MSYS on Windows — not a Linux environment.${NC}"
+    echo -e "  ${YELLOW}Continuum's from-source install needs WSL2 Ubuntu. Either:${NC}"
+    echo -e "  ${YELLOW}  • open WSL ('wsl') and run this from your WSL checkout, OR${NC}"
+    echo -e "  ${YELLOW}  • use the Docker-first Windows installer: install.ps1${NC}"
+    exit 1
+    ;;
+  unknown)
+    echo -e "  ${RED}✗ Unsupported platform ($(uname -s)). This installer supports${NC}"
+    echo -e "  ${YELLOW}  WSL2/Linux and macOS. On Windows use WSL2 or install.ps1.${NC}"
+    exit 1
+    ;;
+esac
 
 # ============================================================================
 # Modular install steps (new pattern — see INSTALL-ARCHITECTURE.md)
@@ -91,9 +122,14 @@ detect_gpu() {
     [ -f /usr/lib/wsl/lib/nvidia-smi ] && smi_path="/usr/lib/wsl/lib/nvidia-smi"
     local vram=$($smi_path --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null | head -1)
     echo -e "  GPU:      ${GREEN}${GPU_NAME} (CUDA, ${vram}MiB VRAM)${NC}"
-    # Check for nvcc (CUDA compiler — needed for training, not inference)
-    if ! command -v nvcc &>/dev/null; then
-      echo -e "  CUDA:     ${YELLOW}nvcc not found — inference works, training needs CUDA toolkit${NC}"
+    # nvcc (CUDA compiler) is REQUIRED to build `--features cuda` — candle-kernels
+    # + cudarc compile GPU kernels at build time. `install_cuda_toolkit` (below)
+    # provisions it when missing/too-old. A Blackwell GPU (sm_120, e.g. RTX 5090)
+    # needs CUDA >= 12.8; without nvcc the build falls back to CPU.
+    if command -v nvcc &>/dev/null; then
+      echo -e "  CUDA:     ${GREEN}nvcc $(nvcc --version 2>/dev/null | grep -oP 'release \K[0-9.]+' | head -1) present${NC}"
+    else
+      echo -e "  CUDA:     ${YELLOW}nvcc not found — will install CUDA toolkit (required for GPU inference)${NC}"
     fi
   elif $HAS_METAL; then
     echo -e "  GPU:      ${GREEN}${GPU_NAME}${NC}"
@@ -104,6 +140,67 @@ detect_gpu() {
 
 detect_gpu
 echo ""
+
+# ============================================================================
+# CUDA toolkit (nvcc) — provisioned as a detected prerequisite
+# ============================================================================
+# Modern-app behavior: a CUDA GPU is useless for GPU inference without nvcc
+# (the build needs it to compile candle-kernels/cudarc), so if one is present
+# and the toolkit is missing or below the Blackwell floor, install it. Fully
+# idempotent — a re-run/update skips when a recent-enough toolkit exists.
+install_cuda_toolkit() {
+  $HAS_CUDA || return 0
+  case "$PLATFORM" in linux|wsl) ;; *) return 0 ;; esac
+
+  # Blackwell (sm_120 / RTX 5090) needs >= 12.8; 12.9 is the newest 12.x with
+  # broad cudarc/candle support. Bump TARGET as the toolchain validates newer.
+  local MIN="12.8" TARGET="12-9"
+  if command -v nvcc &>/dev/null; then
+    local cur=$(nvcc --version 2>/dev/null | grep -oP 'release \K[0-9]+\.[0-9]+' | head -1)
+    if [ -n "$cur" ] && [ "$(printf '%s\n%s\n' "$MIN" "$cur" | sort -V | head -1)" = "$MIN" ]; then
+      echo -e "  ${GREEN}✅ CUDA toolkit $cur already present (>= $MIN) — skipping${NC}"
+      return 0
+    fi
+    echo -e "  ${YELLOW}nvcc ${cur:-unknown} is below the Blackwell floor $MIN — upgrading${NC}"
+  fi
+
+  # Tiered sudo — same one-prompt contract as install_system_deps.
+  local SUDO="" CAN_SUDO=true
+  if [ "$(id -u)" -eq 0 ]; then SUDO=""
+  elif sudo -n true 2>/dev/null; then SUDO="sudo"
+  elif [ -t 0 ]; then SUDO="sudo"
+  else CAN_SUDO=false; fi
+  if ! $CAN_SUDO; then
+    echo -e "  ${RED}CUDA toolkit needed but no terminal for sudo. Re-run in a terminal:${NC}"
+    echo -e "  ${YELLOW}  cd src && bash scripts/install.sh${NC}"
+    return 0
+  fi
+  ensure_sudo_warmed
+
+  # NVIDIA CUDA apt repo. wsl-ubuntu for WSL2 (the GPU driver is the Windows
+  # host driver passed through — NEVER install a Linux driver under WSL);
+  # ubuntu2404 for native Linux. sbsa for aarch64.
+  local distro="ubuntu2404"
+  [ "$PLATFORM" = "wsl" ] && distro="wsl-ubuntu"
+  local cuda_arch="x86_64"
+  [ "$(uname -m)" = "aarch64" ] && cuda_arch="sbsa"
+  local keyring="/tmp/cuda-keyring.deb"
+  echo -e "  Installing CUDA toolkit ${TARGET//-/.} (~3GB) from NVIDIA ${distro} repo..."
+  if curl -fsSL -o "$keyring" \
+      "https://developer.download.nvidia.com/compute/cuda/repos/${distro}/${cuda_arch}/cuda-keyring_1.1-1_all.deb"; then
+    $SUDO dpkg -i "$keyring" >/dev/null 2>&1
+    rm -f "$keyring"
+    $SUDO apt-get update -qq
+    if $SUDO apt-get install -y "cuda-toolkit-${TARGET}"; then
+      echo -e "  ${GREEN}✅ CUDA toolkit installed -> /usr/local/cuda-${TARGET//-/.}/bin/nvcc${NC}"
+      echo -e "  ${YELLOW}     (cargo-features.sh adds /usr/local/cuda/bin to PATH for --features cuda)${NC}"
+    else
+      echo -e "  ${YELLOW}⚠️ CUDA toolkit install failed — GPU inference falls back to CPU until resolved${NC}"
+    fi
+  else
+    echo -e "  ${YELLOW}⚠️ Could not fetch NVIDIA cuda-keyring — skipping CUDA toolkit (CPU fallback)${NC}"
+  fi
+}
 
 # ============================================================================
 # Step 1: System dependencies
@@ -241,6 +338,10 @@ install_system_deps() {
 
 install_system_deps
 
+# Provision the CUDA toolkit if a CUDA GPU was detected (no-op otherwise,
+# idempotent on re-run). Runs after system deps so apt + curl are ready.
+install_cuda_toolkit
+
 # CONTINUUM_DEPS_ONLY=1 — called by npm start to check deps without full build.
 # Still installs all infrastructure (Node, Rust, Python, Postgres, LiveKit, Tailscale)
 # but skips the build step (npm install, tsc, cargo build).
@@ -280,6 +381,15 @@ install_node() {
       nvm use 22
       ;;
   esac
+  # Verify the install actually put node on PATH — don't claim success on a
+  # bare "node: command not found" (e.g. nvm sourced into a subshell that
+  # didn't persist, or an unsupported shell). Fail loud and actionable.
+  if ! command -v node &>/dev/null; then
+    echo -e "  ${RED}✗ Node.js install ran but 'node' is still not on PATH.${NC}"
+    echo -e "  ${YELLOW}  Open a new shell (or 'source ~/.nvm/nvm.sh') and re-run,${NC}"
+    echo -e "  ${YELLOW}  or install Node 22 via your platform's package manager.${NC}"
+    exit 1
+  fi
   echo -e "  ${GREEN}✅ Node.js $(node --version) installed${NC}"
 }
 
@@ -365,8 +475,23 @@ fi
 if [ "$SKIP_BUILD" = "0" ]; then
   echo -e "${YELLOW}[5/9] Building Continuum${NC}"
 
+  # Preflight: the build needs npm. Without this check, a missing npm only
+  # surfaces as "npm: command not found" swallowed by the `| tail` pipe, and
+  # the install appears to continue. Stop loud and actionable instead.
+  if ! command -v npm &>/dev/null; then
+    echo -e "  ${RED}✗ npm not found — cannot build. Node.js/npm must be installed${NC}"
+    echo -e "  ${YELLOW}  and on PATH (the [2/8] Node.js step provides them on a${NC}"
+    echo -e "  ${YELLOW}  supported platform). Open a fresh shell and re-run.${NC}"
+    exit 1
+  fi
+
   echo -e "  Installing npm dependencies..."
   npm install --silent 2>&1 | tail -3
+  # PIPESTATUS[0] is npm's real exit code (the pipe's own status is tail's).
+  if [ "${PIPESTATUS[0]}" -ne 0 ]; then
+    echo -e "  ${RED}✗ npm install failed${NC}"
+    exit 1
+  fi
 
   echo -e "  Building TypeScript..."
   npm run build:ts 2>&1 | tail -1

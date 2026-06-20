@@ -36,6 +36,10 @@ preflight_detect_platform() {
         echo "linux"
       fi
       ;;
+    # Git Bash / MSYS2 / Cygwin: a Unix-like shell on the Windows host, NOT a
+    # Linux userland. No apt/Linux toolchain here, so the from-source dev
+    # install can't run — callers redirect to WSL2 (or the Docker install.ps1).
+    MINGW*|MSYS*|CYGWIN*) echo "windows-shell" ;;
     *) echo "unknown" ;;
   esac
 }
