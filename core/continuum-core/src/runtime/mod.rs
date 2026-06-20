@@ -69,6 +69,7 @@ pub use command_envelope::{CommandRequest, CommandResponse};
 pub use command_events::{CommandCompletedEvent, COMMAND_COMPLETED_TOPIC};
 pub use command_executor::CommandExecutor;
 pub use command_interceptor::{CommandInterceptor, InterceptorOutcome};
+pub use in_process_transport::InProcessTransport;
 pub use grid_interceptor::GridInterceptor;
 pub use late_bound::LateBound;
 pub use control::{ModuleInfo, RuntimeControl};
