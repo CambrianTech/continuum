@@ -40,10 +40,10 @@ pub mod grid_interceptor;
 pub mod in_process_transport;
 pub mod late_bound;
 pub mod message_bus;
+pub mod module_context;
 /// Per-module TDD harness — boots a single module in isolation. Test-only.
 #[cfg(any(test, feature = "test-fixtures"))]
 pub mod module_harness;
-pub mod module_context;
 pub mod module_logger;
 pub mod module_metrics;
 pub mod per_key_gate;
@@ -57,21 +57,22 @@ pub mod shared_compute;
 
 pub use boot_mode::{extract_boot_mode, BootMode, BootModeParseError};
 
+pub use airc_interceptor::AircInterceptor;
 pub use artifact_handle::{ArtifactKey, ArtifactSelector, Cadence};
 pub use brain_region::{
     BrainRegion, CadenceHint, ComputeClass, MemoryClass, PersonaLifecycle, PressureLevel,
     PressureProfile, PressureSignalKind, RegionContext, RegionError, RegionId, RegionSignal,
     SleepPhase, TickOutcome,
 };
-pub use airc_interceptor::AircInterceptor;
 pub use cell_shapes::{HandleRef, LambdaPlaceholder, StreamPlaceholder};
 pub use command_envelope::{CommandRequest, CommandResponse};
 pub use command_events::{CommandCompletedEvent, COMMAND_COMPLETED_TOPIC};
 pub use command_executor::CommandExecutor;
 pub use command_interceptor::{CommandInterceptor, InterceptorOutcome};
-pub use grid_interceptor::GridInterceptor;
-pub use late_bound::LateBound;
 pub use control::{ModuleInfo, RuntimeControl};
+pub use grid_interceptor::GridInterceptor;
+pub use in_process_transport::InProcessTransport;
+pub use late_bound::LateBound;
 pub use message_bus::MessageBus;
 pub use module_context::ModuleContext;
 pub use module_logger::ModuleLogger;

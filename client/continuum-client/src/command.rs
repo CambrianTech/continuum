@@ -35,17 +35,39 @@ impl<T: Transport> CommandClient<T> {
         }
     }
 
-    /// Execute a command with typed params and result. Serializes params
-    /// at the boundary; deserializes the result; surfaces substrate
-    /// refusal as `ClientError::Refused`.
+    /// Value-native dispatch — the zero-waste path. For callers that already hold
+    /// a `serde_json::Value` (a persona's `ToolExecutor`, the recipe walker, any
+    /// substrate-internal command), the typed [`execute`] would `to_value` /
+    /// `from_value` a `Value` *into an identical `Value`* — two full tree walks of
+    /// pure waste. This path stamps the scope and forwards the `Value` straight to
+    /// the transport: **copy only where a boundary forces it** (the wire, in
+    /// `AircIpcTransport`; never at all for `InProcessTransport`), never on a
+    /// same-type round-trip. Identity is kernel-injected; only `contextId` is
+    /// client-stamped here.
+    ///
+    /// [`execute`]: CommandClient::execute
+    pub async fn execute_value(
+        &self,
+        command: &str,
+        mut params: Value,
+    ) -> Result<Value, ClientError> {
+        self.stamp_context(&mut params);
+        self.transport.execute(command, params).await
+    }
+
+    /// Execute a command with typed params and result. The typed boundary is the
+    /// ONE place a serde round-trip is genuinely required (arbitrary `P`/`R`);
+    /// the scope-stamp + transport hop are delegated to [`execute_value`] so there
+    /// is a single dispatch path. Surfaces substrate refusal as
+    /// [`ClientError::Refused`]. Callers already holding a `Value` should call
+    /// [`execute_value`] directly to skip the round-trip entirely.
     pub async fn execute<P, R>(&self, command: &str, params: P) -> Result<R, ClientError>
     where
         P: Serialize,
         R: DeserializeOwned,
     {
-        let mut params_value = serde_json::to_value(params)?;
-        self.stamp_context(&mut params_value);
-        let result_value = self.transport.execute(command, params_value).await?;
+        let params_value = serde_json::to_value(params)?;
+        let result_value = self.execute_value(command, params_value).await?;
         Ok(serde_json::from_value(result_value)?)
     }
 
@@ -65,5 +87,43 @@ impl<T: Transport> CommandClient<T> {
                 Value::String(context_id.to_string()),
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::mock::MockTransport;
+    use serde_json::json;
+    use std::sync::Mutex;
+
+    // what this catches: execute_value forwards the Value to the transport with
+    // contextId stamped (when scoped) and returns the transport's Value verbatim —
+    // NO serde round-trip. This is the zero-waste path the persona ToolExecutor +
+    // recipe walker take; a regression that reintroduced to_value/from_value would
+    // still pass functionally but burn CPU, so this also documents the contract.
+    #[tokio::test]
+    async fn execute_value_stamps_scope_and_forwards_verbatim() {
+        let seen: Arc<Mutex<Option<Value>>> = Arc::new(Mutex::new(None));
+        let cap = Arc::clone(&seen);
+        let mock = MockTransport::new();
+        mock.respond_to("code/read", move |params| {
+            *cap.lock().unwrap() = Some(params);
+            Ok(json!({ "content": "hi" }))
+        });
+        let ctx = Uuid::new_v4();
+        let client = CommandClient::with_context(Arc::new(mock), Some(ctx));
+
+        let out = client
+            .execute_value("code/read", json!({ "path": "a.rs" }))
+            .await
+            .expect("execute_value");
+
+        // result returned verbatim
+        assert_eq!(out, json!({ "content": "hi" }));
+        // params reached the transport with the scope stamped
+        let sent = seen.lock().unwrap().clone().expect("transport saw params");
+        assert_eq!(sent["path"], "a.rs");
+        assert_eq!(sent["contextId"], json!(ctx.to_string()));
     }
 }

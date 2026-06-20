@@ -85,14 +85,19 @@ fn command_result_to_value(command: &str, result: CommandResult) -> Result<Value
         CommandResult::Handle(handle) => {
             serde_json::to_value(&handle).map_err(|e| ClientError::Codec(e.to_string()))
         }
-        CommandResult::Binary { .. } => Err(ClientError::Transport(format!(
-            "command `{command}` returned a Binary result; the in-process JSON \
-             boundary can't carry raw bytes (route binary through a handle)"
-        ))),
-        CommandResult::Stream(_) | CommandResult::Lambda(_) => Err(ClientError::Transport(format!(
-            "command `{command}` returned a Stream/Lambda result (reserved kinds, \
+        // Mirror `CommandResult::to_json_value`: a Binary result surfaces its
+        // metadata JSON (the raw bytes travel out-of-band via a handle, not on
+        // this boundary). Returning the metadata — rather than erroring — keeps
+        // the in-process client path behavior-equivalent to the direct executor
+        // path it replaces, so a persona calling a Binary-returning command sees
+        // the same success+metadata it always did.
+        CommandResult::Binary { metadata, .. } => Ok(metadata),
+        CommandResult::Stream(_) | CommandResult::Lambda(_) => {
+            Err(ClientError::Transport(format!(
+                "command `{command}` returned a Stream/Lambda result (reserved kinds, \
              not yet on the wire)"
-        ))),
+            )))
+        }
     }
 }
 
@@ -279,5 +284,22 @@ mod tests {
             transport.emit("x", json!({})).await.unwrap_err(),
             ClientError::NotImplemented(_)
         ));
+    }
+
+    // what this catches: a Binary command result surfaces its METADATA as a
+    // success (bytes travel out-of-band via a handle), NOT a transport error —
+    // mirroring `CommandResult::to_json_value`. This keeps the in-process client
+    // path behavior-equivalent to the direct executor path it replaces, so a
+    // persona calling a Binary-returning command (screenshot, embedding) sees
+    // the same success+metadata it always did. Regression-pins that arm.
+    #[test]
+    fn binary_result_surfaces_metadata_not_error() {
+        let result = CommandResult::Binary {
+            metadata: json!({ "mime": "image/png", "bytes": 3 }),
+            data: vec![1, 2, 3],
+        };
+        let v = command_result_to_value("interface/screenshot", result)
+            .expect("Binary → metadata, not a transport error");
+        assert_eq!(v, json!({ "mime": "image/png", "bytes": 3 }));
     }
 }
