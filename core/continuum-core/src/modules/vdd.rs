@@ -35,7 +35,7 @@ use crate::utils::params::Params;
 use crate::vdd::reader::{latest_per_scenario, read_records, VddReadOptions, VddRecordEntry};
 use crate::vdd::record::HarnessStatus;
 use async_trait::async_trait;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::any::Any;
 use std::path::{Path, PathBuf};
@@ -131,6 +131,13 @@ impl ServiceModule for VddModule {
                 ))
             }
 
+            "vdd/score" => {
+                let _timer = TimingGuard::new("module", "vdd_score");
+                let parsed: VddScoreParams = serde_json::from_value(params)
+                    .map_err(|e| format!("vdd/score: invalid params: {e}"))?;
+                Ok(CommandResult::Json(score_eval_set(&parsed)))
+            }
+
             other => Err(format!("Unknown vdd command: {other}")),
         }
     }
@@ -138,6 +145,100 @@ impl ServiceModule for VddModule {
     fn as_any(&self) -> &dyn Any {
         self
     }
+}
+
+// ============================================================================
+// vdd/score — the measurement core of the self-evolving-genome A/B harness
+// (slice 1). Score a model's answers against a held-out set → accuracy. The
+// A/B *lift* = score(base+LoRA) − score(base); run this twice and diff. The
+// generation half (run the set through the gateway) is the next brick; this is
+// the deterministic scorer it composes with. See docs/genome/SELF-EVOLVING-GENOME.md.
+// ============================================================================
+
+/// One held-out evaluation case: the model's `actual` answer vs the `expected`.
+#[derive(Debug, Clone, Deserialize)]
+struct ScoreCase {
+    #[serde(default)]
+    prompt: String,
+    expected: String,
+    actual: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct VddScoreParams {
+    /// The held-out cases to score.
+    cases: Vec<ScoreCase>,
+    /// Match method: "exact" (case-insensitive equality) or "contains"
+    /// (expected appears in actual, case-insensitive — the lenient default).
+    #[serde(default = "default_score_method")]
+    method: String,
+    /// What's being scored, e.g. "base" or "base+lora-rust" — so the A/B can
+    /// label the two runs it diffs.
+    #[serde(default)]
+    label: String,
+    /// Scenario tag for the record.
+    #[serde(default = "default_score_scenario")]
+    scenario: String,
+}
+
+fn default_score_method() -> String {
+    "contains".to_string()
+}
+fn default_score_scenario() -> String {
+    "genome-ab-eval".to_string()
+}
+
+/// Is one case correct under `method`? Pure — the unit of measurement.
+fn case_correct(method: &str, expected: &str, actual: &str) -> bool {
+    let e = expected.trim();
+    let a = actual.trim();
+    match method {
+        "exact" => a.eq_ignore_ascii_case(e),
+        // "contains" (default): the expected answer appears in the response.
+        _ => a.to_lowercase().contains(&e.to_lowercase()),
+    }
+}
+
+/// Score a set → (correct, total). Pure.
+fn score_cases(method: &str, cases: &[ScoreCase]) -> (u32, u32) {
+    let total = cases.len() as u32;
+    let correct = cases
+        .iter()
+        .filter(|c| case_correct(method, &c.expected, &c.actual))
+        .count() as u32;
+    (correct, total)
+}
+
+/// Score an eval set and return the measurement: accuracy + per-case verdicts.
+/// Deterministic — no model run, so the scorer is pinned independently of any
+/// provider. `score` ∈ [0,1] is the number the A/B's *lift* is a difference of.
+fn score_eval_set(p: &VddScoreParams) -> Value {
+    let (correct, total) = score_cases(&p.method, &p.cases);
+    let score = if total == 0 {
+        0.0
+    } else {
+        correct as f64 / total as f64
+    };
+    let per_case: Vec<Value> = p
+        .cases
+        .iter()
+        .map(|c| {
+            serde_json::json!({
+                "prompt": c.prompt,
+                "expected": c.expected,
+                "correct": case_correct(&p.method, &c.expected, &c.actual),
+            })
+        })
+        .collect();
+    serde_json::json!({
+        "scenario": p.scenario,
+        "label": p.label,
+        "method": p.method,
+        "total": total,
+        "correct": correct,
+        "score": score,
+        "cases": per_case,
+    })
 }
 
 /// On-the-wire shape returned by `vdd/report`. Stable, camelCase
@@ -519,5 +620,83 @@ mod tests {
                 .contains(tmp.path().file_name().unwrap().to_str().unwrap()),
             "artifact_root surfaces the resolved root path"
         );
+    }
+
+    // ── vdd/score — slice 1 measurement core ──
+
+    fn case(expected: &str, actual: &str) -> ScoreCase {
+        ScoreCase {
+            prompt: String::new(),
+            expected: expected.to_string(),
+            actual: actual.to_string(),
+        }
+    }
+
+    // what this catches: the unit of measurement. "contains" is lenient +
+    // case-insensitive; "exact" is strict equality (trimmed, case-insensitive).
+    // Get this wrong and every downstream lift number is wrong.
+    #[test]
+    fn case_correct_methods() {
+        assert!(case_correct("contains", "Paris", "The capital is paris."));
+        assert!(!case_correct("contains", "Paris", "The capital is London."));
+        assert!(case_correct("exact", "4", " 4 "));
+        assert!(!case_correct("exact", "4", "the answer is 4"));
+    }
+
+    // what this catches: accuracy over a set — correct/total. This IS the score
+    // the A/B diffs.
+    #[test]
+    fn score_cases_counts_accuracy() {
+        let cases = vec![
+            case("4", "4"),                 // correct (contains)
+            case("Paris", "paris is it"),   // correct
+            case("blue", "the sky is red"), // wrong
+        ];
+        let (correct, total) = score_cases("contains", &cases);
+        assert_eq!((correct, total), (2, 3));
+    }
+
+    // what this catches: the vdd/score command end-to-end returns the accuracy
+    // measurement, AND that two labeled runs COMPOSE into a lift (the whole point
+    // of slice 1: lift = score(base+LoRA) − score(base)).
+    #[tokio::test]
+    async fn vdd_score_measures_and_composes_into_lift() {
+        let module = VddModule::default();
+
+        // "base" gets 1/2; "base+lora" gets 2/2 on the same held-out set.
+        let base = serde_json::json!({
+            "label": "base",
+            "method": "contains",
+            "cases": [
+                {"expected": "4", "actual": "4"},
+                {"expected": "spatial hash", "actual": "use a quadtree"},
+            ]
+        });
+        let lora = serde_json::json!({
+            "label": "base+lora",
+            "method": "contains",
+            "cases": [
+                {"expected": "4", "actual": "4"},
+                {"expected": "spatial hash", "actual": "use a spatial hash grid"},
+            ]
+        });
+
+        let v_base = match module.handle_command("vdd/score", base).await.unwrap() {
+            CommandResult::Json(v) => v,
+            _ => panic!("json"),
+        };
+        let v_lora = match module.handle_command("vdd/score", lora).await.unwrap() {
+            CommandResult::Json(v) => v,
+            _ => panic!("json"),
+        };
+
+        let s_base = v_base["score"].as_f64().unwrap();
+        let s_lora = v_lora["score"].as_f64().unwrap();
+        assert_eq!(s_base, 0.5);
+        assert_eq!(s_lora, 1.0);
+
+        // The keystone number: lift.
+        let lift = s_lora - s_base;
+        assert!((lift - 0.5).abs() < 1e-9, "lift = score(lora) − score(base) = 0.5");
     }
 }
