@@ -364,6 +364,21 @@ impl AIProviderModule {
             }
         }
 
+        // Unsloth — the universal model gateway (local OpenAI-compatible server
+        // at UNSLOTH_BASE_URL). Registered when UNSLOTH_API_KEY is configured;
+        // its live /v1/models catalog decides which models it actually serves
+        // (local llama.cpp + any cloud provider keyed inside unsloth Studio).
+        // Additive priority for now — making the gateway the *preferred* route
+        // is a separate routing-policy change.
+        if get_secret("UNSLOTH_API_KEY").is_some() {
+            self.log().info("Registering Unsloth gateway adapter");
+            let mut a = OpenAICompatibleAdapter::from_registry("unsloth");
+            match a.initialize().await {
+                Ok(()) => registry.register(Arc::new(a), 9),
+                Err(e) => self.log().warn(&format!("Unsloth initialize failed: {e} — not registered")),
+            }
+        }
+
         // In-process llama.cpp adapter — bypasses DMR's container Metal toolchain,
         // which on M5 Pro fails to compile the tensor-API source (`has tensor=false`)
         // and falls back to a degraded path running at 22 tok/s. Our host-built

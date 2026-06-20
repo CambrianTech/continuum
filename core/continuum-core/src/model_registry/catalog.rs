@@ -523,6 +523,24 @@ pub fn providers() -> Vec<Provider> {
             kind: ProviderKind::Local,
             model_prefixes: &[],
         }),
+        // Unsloth — the universal model gateway. A local OpenAI-compatible server
+        // (like DMR) that serves local models (llama.cpp) AND fans out to cloud
+        // providers via the keys the user configures in unsloth Studio. Continuum
+        // holds ONE credential (UNSLOTH_API_KEY) and reaches every model through
+        // it. Dynamic catalog: the live model list comes from /v1/models, so
+        // `model_prefixes` is empty and routing relies on runtime discovery.
+        // `default_model` is required by the adapter trait (it returns &str);
+        // it's a fallback only — the real model is chosen per request.
+        provider(ProviderSpec {
+            id: "unsloth",
+            name: "Unsloth (universal model gateway)",
+            base_url: "http://127.0.0.1:8888/v1",
+            api_key_env: Some("UNSLOTH_API_KEY"),
+            default_model: Some("continuum-ai/qwen3.5-4b-code-forged-GGUF"),
+            auth: AuthKind::Bearer,
+            kind: ProviderKind::Local,
+            model_prefixes: &[],
+        }),
         provider(ProviderSpec {
             id: "llamacpp-local",
             name: "Llama.cpp (in-process Metal/CUDA)",
