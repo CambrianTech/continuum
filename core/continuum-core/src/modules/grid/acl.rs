@@ -102,16 +102,46 @@ pub fn is_command_authorized(command: &str, trust: TrustLevel) -> bool {
     }
 }
 
-/// Determine the access level for a command using the rule table.
-/// First matching rule wins (rules are sorted by specificity).
+/// The set of commands a command declared `AccessLevel::AiSafe` in its own
+/// CommandSpec — the single source of truth for "safe for an autonomous AI
+/// caller." Collected ONCE from the (static, inventory-built) command registry.
+/// This is the reconciliation the `AccessLevel` placeholder always called for:
+/// the command's OWN declaration drives authorization, not a parallel allow-list.
+fn ai_safe_commands() -> &'static std::collections::HashSet<String> {
+    static AI_SAFE: OnceLock<std::collections::HashSet<String>> = OnceLock::new();
+    AI_SAFE.get_or_init(|| {
+        crate::sdk_codegen::command_registry()
+            .iter()
+            .filter(|d| d.access_level == crate::sdk_codegen::AccessLevel::AiSafe)
+            .map(|d| d.name.to_string())
+            .collect()
+    })
+}
+
+/// Determine the access level for a command.
+///
+/// Order (security-significant):
+/// 1. Explicit grid rules EXCEPT the `""` wildcard — sensitive ops a persona must
+///    NEVER do remotely (`data/delete`, `data/update`, `grid/pair`, `grid/trust`)
+///    and `ai/generate` (Provisional). Most-specific-prefix wins.
+/// 2. The command's OWN declared `AccessLevel::AiSafe` → `Provisional` (a persona's
+///    curated, safe-for-AI tool surface — what makes its hands actually work).
+/// 3. Default → `Owner` (the `""` wildcard): unknown/unclassified = locked down.
 fn command_access_level(command: &str) -> CommandAccess {
     for rule in default_rules() {
-        if rule.prefix.is_empty() || command.starts_with(rule.prefix) {
+        if rule.prefix.is_empty() {
+            continue; // the wildcard is the LAST resort, after the AiSafe check
+        }
+        if command.starts_with(rule.prefix) {
             return rule.access;
         }
     }
-    // Should never reach here since "" prefix matches everything
-    CommandAccess::LocalOnly
+    // The command's declared destiny: AiSafe = safe for an AI caller → Provisional.
+    if ai_safe_commands().contains(command) {
+        return CommandAccess::Provisional;
+    }
+    // Unclassified → Owner (the `""` wildcard's level): default-deny for personas.
+    CommandAccess::Owner
 }
 
 #[cfg(test)]
@@ -162,6 +192,25 @@ mod tests {
         // The Provisional rule must NOT leak access to other commands.
         assert!(!is_command_authorized("data/delete", TrustLevel::Provisional));
         assert!(!is_command_authorized("gpu/stats", TrustLevel::Provisional));
+    }
+
+    // what this catches: THE reconciliation that lets a persona's hands work — a
+    // command that declares `AccessLevel::AiSafe` in its own spec is runnable at
+    // Provisional (the persona's trust), WITHOUT opening Owner-gated ops. This is
+    // why `ping` (the live failure: "no policy granting access") now succeeds for a
+    // persona, while `data/delete`/`grid/trust` stay Owner-only.
+    #[test]
+    fn ai_safe_commands_are_provisional_for_personas() {
+        // Declared-AiSafe commands → a Provisional persona may run them.
+        assert!(is_command_authorized("ping", TrustLevel::Provisional));
+        assert!(is_command_authorized("data/list", TrustLevel::Provisional));
+        // Owner-gated sensitive ops stay Owner-only even for a Provisional persona.
+        assert!(!is_command_authorized("data/delete", TrustLevel::Provisional));
+        assert!(!is_command_authorized(commands::TRUST, TrustLevel::Provisional));
+        // Unclassified (not AiSafe, no explicit rule) defaults to Owner → denied.
+        assert!(!is_command_authorized("genome/train", TrustLevel::Provisional));
+        // Blocked is denied even for AiSafe.
+        assert!(!is_command_authorized("ping", TrustLevel::Blocked));
     }
 
     #[test]
