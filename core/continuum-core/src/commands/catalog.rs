@@ -18,7 +18,7 @@ use crate::sdk_codegen::{command_registry, ActionCommand, CommandError, Ctx, Wir
 
 /// Params for `commands/list` — an optional case-insensitive name substring to
 /// filter by (so a tray can ask "what `data/*` commands exist?"). Empty ⇒ all.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 #[ts(export, export_to = "../../../protocol/typescript/commands/CommandsListParams.ts")]
 pub struct CommandsListParams {
@@ -44,6 +44,12 @@ pub struct CommandInfo {
     pub wire: String,
     /// The params type name — the canonical schema every interface adapts to.
     pub params_type: String,
+    /// The params' JSON Schema (derived from the Rust type), or `null` if the
+    /// command hasn't declared one yet. THE single source every SDK/interface
+    /// adapts from — CLI flags, web forms, mobile pickers, AI tool `input_schema`,
+    /// and `cu <cmd> --help`.
+    #[ts(type = "unknown")]
+    pub params_schema: serde_json::Value,
 }
 
 /// Result of `commands/list` — the live catalog.
@@ -91,6 +97,7 @@ impl ActionCommand for CommandsList {
                 }
                 .to_string(),
                 params_type: d.params.name.clone(),
+                params_schema: d.params_schema.clone(),
             })
             .collect();
         Ok(CommandsListResult { commands })

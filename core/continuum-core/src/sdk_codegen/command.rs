@@ -146,8 +146,9 @@ pub trait ActionCommand: Send + Sync + Sized + 'static {
     /// empty (falls back to a name-based description).
     const DESCRIPTION: &'static str = "";
 
-    /// The typed request payload (a ts-rs wire type).
-    type Params: TS + DeserializeOwned + Send + 'static;
+    /// The typed request payload (a ts-rs wire type). `JsonSchema` so its schema
+    /// is derived automatically (no hand-authoring) and exposed to every SDK.
+    type Params: TS + DeserializeOwned + schemars::JsonSchema + Send + 'static;
     /// The typed response payload (a ts-rs wire type).
     type Output: TS + Serialize + Send + 'static;
 
@@ -165,6 +166,13 @@ impl<T: ActionCommand> CommandSpec for T {
     const WIRE: WireShape = WireShape::Bare;
     type Params = <T as ActionCommand>::Params;
     type Result = <T as ActionCommand>::Output;
+
+    /// Derived AUTOMATICALLY from the params type — the base trait's payoff: every
+    /// `ActionCommand` exposes a real param schema to every SDK, no hand-authoring.
+    fn params_schema() -> serde_json::Value {
+        serde_json::to_value(schemars::schema_for!(<T as ActionCommand>::Params))
+            .unwrap_or(serde_json::Value::Null)
+    }
 }
 
 /// `ActionCommand` ⟹ `CommandHandler`. The handler IS the action object (`Spec =
@@ -191,7 +199,7 @@ mod tests {
     use std::sync::atomic::{AtomicU32, Ordering};
     use std::sync::Arc;
 
-    #[derive(Debug, Clone, Serialize, Deserialize, TS, PartialEq)]
+    #[derive(Debug, Clone, Serialize, Deserialize, TS, PartialEq, schemars::JsonSchema)]
     struct EchoParams {
         text: String,
     }

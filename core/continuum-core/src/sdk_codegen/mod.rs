@@ -180,6 +180,18 @@ pub trait CommandSpec {
     /// [`WIRE`](CommandSpec::WIRE) is `Enveloped` the generated surface wraps this
     /// in `CommandResponse<T>`; otherwise it's used directly.
     type Result: TS + 'static;
+
+    /// The params' JSON Schema — the canonical, machine-readable input contract
+    /// every interface adapts FROM (CLI flags, web forms, mobile pickers, AI tool
+    /// `input_schema`). Default `Null` (no schema). The base traits
+    /// ([`ActionCommand`](crate::sdk_codegen::ActionCommand), …) override this to
+    /// derive it AUTOMATICALLY from the Rust type via `schemars` — so a command
+    /// declared (or ported) onto a base trait gains a real schema with no extra
+    /// code, and every SDK handles it symmetrically. Manual `CommandSpec` impls
+    /// keep `Null` until migrated.
+    fn params_schema() -> serde_json::Value {
+        serde_json::Value::Null
+    }
 }
 
 /// A TS type the generated surface references: its TS name + the module it's
@@ -242,6 +254,10 @@ pub struct CommandDescriptor {
     /// The handler's real wire convention (decides envelope wrapping).
     pub wire: WireShape,
     pub params: TypeRef,
+    /// The params' JSON Schema (from [`CommandSpec::params_schema`]) — the
+    /// canonical input contract every SDK/interface adapts from. `Null` when the
+    /// command hasn't declared one yet (manual `CommandSpec` not on a base trait).
+    pub params_schema: serde_json::Value,
     pub result: TypeRef,
     /// Every TS type the params/result transitively need (themselves + nested
     /// deps), so the generated module imports them all — nothing dangles.
@@ -274,6 +290,7 @@ impl CommandDescriptor {
             description: C::DESCRIPTION,
             wire: C::WIRE,
             params,
+            params_schema: C::params_schema(),
             result,
             type_refs,
         }

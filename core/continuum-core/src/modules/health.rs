@@ -15,7 +15,7 @@ use ts_rs::TS;
 
 /// Params for `ping` — the canonical health/liveness command every SDK exposes.
 /// An optional echo message round-trips so a caller can correlate.
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 #[ts(export, export_to = "../../../protocol/typescript/health/PingParams.ts")]
 pub struct PingParams {

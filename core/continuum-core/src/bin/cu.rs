@@ -53,10 +53,112 @@ async fn run() -> Result<(), String> {
         }
         "start" => start().await,
         "stop" => stop().await,
-        // Anything else is a command name → dispatch it to the running core, with
-        // params adapted procedurally from the rest of the args (no per-command code).
-        command => dispatch(&command.to_string(), args.collect()).await,
+        // Anything else is a command name. `--help`/`-h` renders the manual in the
+        // CLI's paradigm (bash flags), adapted from the SAME schema the AI gets as
+        // a tool spec. Otherwise dispatch, params adapted procedurally.
+        command => {
+            let rest: Vec<String> = args.collect();
+            if rest.iter().any(|a| a == "--help" || a == "-h") {
+                help_for(&command.to_string()).await
+            } else {
+                dispatch(&command.to_string(), rest).await
+            }
+        }
     }
+}
+
+/// `cu <command> --help` — the CLI adapter for the command's manual: query the
+/// live registry (`commands/list`) for the command's description + params schema,
+/// then render it as bash usage. Same single source the AI tool adapter reads;
+/// only the rendering differs by paradigm ("the manual matches the paradigm").
+async fn help_for(command: &str) -> Result<(), String> {
+    let list = connection()
+        .commands()
+        .execute_value("commands/list", serde_json::json!({ "filter": command }))
+        .await
+        .map_err(|e| format!("commands/list: {e}"))?;
+    let info = list
+        .get("commands")
+        .and_then(|c| c.as_array())
+        .and_then(|cmds| {
+            cmds.iter()
+                .find(|c| c.get("name").and_then(|n| n.as_str()) == Some(command))
+        })
+        .ok_or_else(|| format!("unknown command `{command}` (try: cu commands/list)"))?;
+    println!("{}", render_cli_help(command, info));
+    Ok(())
+}
+
+/// Render a command's `CommandInfo` (from commands/list) as CLI/bash help. Pure
+/// (Value in, String out) so it's unit-testable without a running core.
+fn render_cli_help(command: &str, info: &Value) -> String {
+    let desc = info.get("description").and_then(|d| d.as_str()).unwrap_or("");
+    let mut out = format!("{command} — {desc}\n\n");
+    out.push_str(&format!(
+        "Usage: cu {command} [--flag value ...]   (or a single JSON object)\n"
+    ));
+
+    let schema = info.get("paramsSchema");
+    let required: Vec<&str> = schema
+        .and_then(|s| s.get("required"))
+        .and_then(|r| r.as_array())
+        .map(|a| a.iter().filter_map(|x| x.as_str()).collect())
+        .unwrap_or_default();
+    match schema.and_then(|s| s.get("properties")).and_then(|p| p.as_object()) {
+        Some(props) if !props.is_empty() => {
+            out.push_str("\nParams:\n");
+            for (name, spec) in props {
+                let ty = schema_type_str(spec);
+                let pdesc = spec.get("description").and_then(|d| d.as_str()).unwrap_or("");
+                let req = if required.contains(&name.as_str()) {
+                    "  (required)"
+                } else {
+                    ""
+                };
+                out.push_str(&format!(
+                    "  --{:<22} {:<9} {}{}\n",
+                    camel_to_kebab(name),
+                    ty,
+                    pdesc,
+                    req
+                ));
+            }
+        }
+        _ => out.push_str("\n(no params)\n"),
+    }
+    out
+}
+
+/// Best-effort JSON-Schema type label for a property (handles `"type":"string"`,
+/// `"type":["string","null"]` for optionals, or an unschematized field).
+fn schema_type_str(spec: &Value) -> String {
+    match spec.get("type") {
+        Some(Value::String(s)) => format!("<{s}>"),
+        Some(Value::Array(a)) => {
+            let first = a
+                .iter()
+                .filter_map(|v| v.as_str())
+                .find(|s| *s != "null")
+                .unwrap_or("any");
+            format!("<{first}>")
+        }
+        _ => "<value>".to_string(),
+    }
+}
+
+/// camelCase → kebab-case for display (`roundTripMs` → `round-trip-ms`). cu's
+/// adapter accepts either form, so the displayed flag is also a valid one.
+fn camel_to_kebab(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 4);
+    for ch in s.chars() {
+        if ch.is_ascii_uppercase() {
+            out.push('-');
+            out.extend(ch.to_lowercase());
+        } else {
+            out.push(ch);
+        }
+    }
+    out
 }
 
 fn socket_path() -> String {
@@ -355,6 +457,36 @@ mod tests {
         assert_eq!(to_camel_case("round-trip-ms"), "roundTripMs");
         assert_eq!(to_camel_case("round_trip_ms"), "roundTripMs");
         assert_eq!(to_camel_case("message"), "message");
+        // round-trips with the display direction
+        assert_eq!(camel_to_kebab("roundTripMs"), "round-trip-ms");
+        assert_eq!(camel_to_kebab("message"), "message");
+    }
+
+    // what this catches: the CLI help adapter renders a command's manual in the
+    // bash paradigm from the SAME schema the AI adapter reads as a tool spec — flags
+    // (camelCase property → --kebab), types, descriptions, required markers. "The
+    // instructions manual matches the paradigm" (Joel 2026-06-21), single source.
+    #[test]
+    fn help_renders_schema_as_bash_flags() {
+        let info = json!({
+            "name": "ping",
+            "description": "Health check.",
+            "paramsSchema": {
+                "type": "object",
+                "properties": {
+                    "message": { "type": "string", "description": "Echoed back." },
+                    "roundTripMs": { "type": "integer" }
+                },
+                "required": ["message"]
+            }
+        });
+        let help = render_cli_help("ping", &info);
+        assert!(help.contains("ping — Health check."), "header: {help}");
+        assert!(help.contains("--message"), "flag from property: {help}");
+        assert!(help.contains("Echoed back."), "prop description: {help}");
+        assert!(help.contains("(required)"), "required marker: {help}");
+        assert!(help.contains("--round-trip-ms"), "camel→kebab flag: {help}");
+        assert!(help.contains("<integer>"), "type label: {help}");
     }
 }
 

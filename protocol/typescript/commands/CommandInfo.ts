@@ -24,4 +24,11 @@ wire: string,
 /**
  * The params type name — the canonical schema every interface adapts to.
  */
-paramsType: string, };
+paramsType: string, 
+/**
+ * The params' JSON Schema (derived from the Rust type), or `null` if the
+ * command hasn't declared one yet. THE single source every SDK/interface
+ * adapts from — CLI flags, web forms, mobile pickers, AI tool `input_schema`,
+ * and `cu <cmd> --help`.
+ */
+paramsSchema: unknown, };
