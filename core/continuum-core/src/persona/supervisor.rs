@@ -86,6 +86,36 @@ impl PersonaAdapterFactory for LlamaCppPersonaAdapterFactory {
     }
 }
 
+/// Routes a persona's reasoning through the **unsloth gateway** (the
+/// OpenAI-compatible `/v1` adapter). Chosen 2026-06-21 (Joel) over teaching the
+/// in-process llama.cpp adapter tool-calling: unsloth does **native function
+/// calling for free** (the OpenAI-compatible adapter already sends `tools` +
+/// parses `tool_calls` → `FinishReason::ToolUse`), so the persona's HANDS
+/// actually fire instead of the model narrating fake tool use. Aligns with
+/// "lean on unsloth, delete redundant code" ([[unsloth-universal-model-gateway]]):
+/// the in-process chat path becomes redundant (a later delete).
+///
+/// All personas share the one gateway adapter (it's a meta-provider); the model
+/// served is unsloth's loaded model (`UNSLOTH_MODEL` — point it at the 4b
+/// code-forged GGUF so reasoning isn't downgraded to the 0.5B). Requests carry
+/// `model: None`, so unsloth uses its loaded model.
+pub struct UnslothPersonaAdapterFactory;
+
+#[async_trait]
+impl PersonaAdapterFactory for UnslothPersonaAdapterFactory {
+    async fn build_adapter(
+        &self,
+        _profile: &PersonaInferenceProfile,
+    ) -> Result<Arc<dyn AIProviderAdapter>, String> {
+        let mut adapter = crate::ai::openai_adapter::OpenAICompatibleAdapter::from_registry("unsloth");
+        adapter
+            .initialize()
+            .await
+            .map_err(|e| format!("Unsloth persona adapter initialize failed: {e}"))?;
+        Ok(Arc::new(adapter))
+    }
+}
+
 /// One row of the supervisor's roster — and the substrate's
 /// per-persona context object. Analog of Android's `Context`:
 /// the single struct every persona-scoped function reads from.

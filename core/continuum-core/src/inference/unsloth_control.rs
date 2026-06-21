@@ -25,8 +25,30 @@ use serde_json::json;
 
 use crate::config_env;
 
-/// Default unsloth host when `UNSLOTH_BASE_URL` is unset.
-const DEFAULT_HOST: &str = "http://127.0.0.1:8888";
+/// Default unsloth host when `UNSLOTH_BASE_URL` is unset. THE one constant for
+/// the default endpoint — referenced by [`unsloth_base_url`] and the provider
+/// catalog, so the default lives in exactly one place.
+pub const DEFAULT_HOST: &str = "http://127.0.0.1:8888";
+
+/// **THE one accessor for the unsloth endpoint.** The single place that reads the
+/// `UNSLOTH_BASE_URL` setting (or [`DEFAULT_HOST`]) and returns the canonical
+/// **host root** (no trailing `/v1`, no trailing slash). Every consumer asks
+/// `unsloth_control` for this — the keystone's HTTP client AND the gateway
+/// adapter registration — so the endpoint lives in ONE form, read in ONE place.
+/// No other module reads `UNSLOTH_BASE_URL` or strips `/v1` on its own.
+///
+/// Callers append their own path: serving is `{base}/v1/...`, management is
+/// `{base}/api/...`. Accepting an operator-pasted `…/v1` and normalizing it here
+/// (once) is why there is no double-`/v1` 405 anywhere.
+pub fn unsloth_base_url() -> String {
+    let raw = config_env::read("UNSLOTH_BASE_URL").unwrap_or_else(|| DEFAULT_HOST.to_string());
+    let trimmed = raw.trim_end_matches('/');
+    trimmed
+        .strip_suffix("/v1")
+        .unwrap_or(trimmed)
+        .trim_end_matches('/')
+        .to_string()
+}
 
 /// What `ensure_model_loaded` did — the inspectable outcome.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -154,18 +176,12 @@ pub struct UnslothHttp {
 }
 
 impl UnslothHttp {
-    /// Build from config: `UNSLOTH_BASE_URL` (the `/v1` URL) + `UNSLOTH_API_KEY`.
-    /// We derive the host root by stripping a trailing `/v1`, since the model
-    /// management lives under `/api/*` and serving under `/v1/*` on the same host.
+    /// Build from config via the single [`unsloth_base_url`] accessor (host root)
+    /// + `UNSLOTH_API_KEY`. No env read or `/v1` handling here — that lives in the
+    /// one accessor.
     pub fn from_config() -> Self {
-        let base = config_env::read("UNSLOTH_BASE_URL").unwrap_or_else(|| DEFAULT_HOST.to_string());
-        let host = base
-            .trim_end_matches('/')
-            .trim_end_matches("/v1")
-            .trim_end_matches('/')
-            .to_string();
         Self {
-            host,
+            host: unsloth_base_url(),
             api_key: config_env::read("UNSLOTH_API_KEY"),
             client: reqwest::Client::new(),
         }

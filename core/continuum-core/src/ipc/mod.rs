@@ -1423,7 +1423,11 @@ pub fn start_server(
             crate::persona::spawner_module::PersonaSpawnerModule::new(hw_cap, tier_cat)
                 .with_serving(serving_model, serving_lanes),
             instance_manager.clone(),
-            std::sync::Arc::new(crate::persona::supervisor::LlamaCppPersonaAdapterFactory),
+            // Persona reasoning routes through the unsloth gateway: native
+            // function-calling (the persona's HANDS actually fire) for free,
+            // vs the in-process llama.cpp adapter which silently dropped tools.
+            // Joel 2026-06-21; [[unsloth-universal-model-gateway]].
+            std::sync::Arc::new(crate::persona::supervisor::UnslothPersonaAdapterFactory),
             tier_id,
             crate::model_registry::global(),
             rt_handle.clone(),

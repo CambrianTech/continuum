@@ -534,7 +534,11 @@ pub fn providers() -> Vec<Provider> {
         provider(ProviderSpec {
             id: "unsloth",
             name: "Unsloth (universal model gateway)",
-            base_url: "http://127.0.0.1:8888/v1",
+            // THE one constant for the default endpoint. At registration the
+            // adapter is given the runtime value from `unsloth_control::unsloth_base_url()`
+            // (the single accessor), so the endpoint has one owner; this is just
+            // the compile-time default, kept identical via the shared const.
+            base_url: crate::inference::unsloth_control::DEFAULT_HOST,
             api_key_env: Some("UNSLOTH_API_KEY"),
             default_model: Some("continuum-ai/qwen3.5-4b-code-forged-GGUF"),
             auth: AuthKind::Bearer,
