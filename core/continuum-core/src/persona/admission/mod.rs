@@ -199,6 +199,10 @@ pub struct AdmissionContext<'a> {
     /// Wall-clock (epoch ms) at the start of this admission attempt.
     /// Recipes use this for `admitted_at_ms` + quarantine expiry.
     pub now_ms: u64,
+    /// The room/conversation this admission happens in (the contextId), so the
+    /// minted engram is keyed to its room within the persona's identity. `None`
+    /// for contextless admissions. See IDENTITY-SCOPE-PEER-LIVENESS-MODEL.md A.
+    pub context_id: Option<Uuid>,
     /// Content-hash dedup oracle (recipe consults).
     pub seen_content: &'a dyn SeenContentLookup,
     /// Wire-event replay oracle (gate consults).
@@ -215,9 +219,17 @@ impl<'a> AdmissionContext<'a> {
         Self {
             config,
             now_ms: now_ms(),
+            context_id: None,
             seen_content,
             seen_events,
         }
+    }
+
+    /// Scope this admission to a room/conversation (the contextId), so minted
+    /// engrams are keyed to their room within the persona's identity.
+    pub fn with_context(mut self, context_id: Uuid) -> Self {
+        self.context_id = Some(context_id);
+        self
     }
 }
 
@@ -384,6 +396,7 @@ pub fn build_engram_from_candidate(
 ) -> Engram {
     Engram {
         id: Uuid::new_v4(),
+        context_id: ctx.context_id,
         kind: candidate.kind,
         content: candidate.content.clone(),
         origin: candidate.origin.clone(),
@@ -563,11 +576,39 @@ mod tests {
         events: &'a InMemoryEvents,
     ) -> AdmissionContext<'a> {
         AdmissionContext {
+            context_id: None,
             config,
             now_ms: FIXED_NOW_MS,
             seen_content: content,
             seen_events: events,
         }
+    }
+
+    // ── context (room) carried onto the engram ──────────────────────────
+
+    // what this catches: an admitted engram carries its ROOM (contextId) from
+    // the admission context, so a persona's memory is keyed to the conversation
+    // it happened in (within the persona's identity), not contextless. Regression
+    // here = engrams lose their room and per-room recall can't scope. See
+    // docs/architecture/IDENTITY-SCOPE-PEER-LIVENESS-MODEL.md Part A.
+    #[test]
+    fn admitted_engram_carries_its_room_context() {
+        let cfg = AdmissionConfig::permissive_v1();
+        let content = InMemoryContent::default();
+        let events = InMemoryEvents::default();
+        let room = Uuid::new_v4();
+        let ctx = permissive_ctx(&cfg, &content, &events).with_context(room);
+        let cand = candidate(
+            "remember this",
+            TrustState::ApprovedPeer,
+            EngramOrigin::Airc(airc_ref("msg-ctx", "sig", "hash", "v1")),
+        );
+        let engram = build_engram_from_candidate(&cand, &ctx);
+        assert_eq!(
+            engram.context_id,
+            Some(room),
+            "engram must carry the room it was admitted in"
+        );
     }
 
     // ── envelope verification ───────────────────────────────────────────
@@ -717,6 +758,7 @@ mod tests {
         let content = InMemoryContent::default();
         let events = InMemoryEvents::default();
         let ctx = AdmissionContext {
+            context_id: None,
             config: &cfg,
             now_ms: FIXED_NOW_MS,
             seen_content: &content,

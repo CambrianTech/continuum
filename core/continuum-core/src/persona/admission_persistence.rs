@@ -402,6 +402,7 @@ mod tests {
 
     fn sample_engram(content: &str) -> Engram {
         Engram {
+            context_id: None,
             id: Uuid::new_v4(),
             kind: EngramKind::Episodic,
             content: content.to_string(),

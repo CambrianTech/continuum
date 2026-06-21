@@ -268,6 +268,7 @@ mod tests {
             let id = Uuid::new_v4();
             ids.push(id);
             let engram = Engram {
+                context_id: None,
                 id,
                 kind: EngramKind::Episodic,
                 content: format!("memory body number {i}"),
@@ -456,6 +457,7 @@ mod tests {
             let mut mk = |content: &str, salience: f32, age_ms: u64| {
                 let id = Uuid::new_v4();
                 state.push_for_test(Engram {
+                    context_id: None,
                     id,
                     kind: EngramKind::Episodic,
                     content: content.to_string(),
@@ -628,6 +630,7 @@ mod tests {
             let mut mk = |content: &str, salience: f32, age: u64| {
                 let id = Uuid::new_v4();
                 state.push_for_test(Engram {
+                    context_id: None,
                     id,
                     kind: EngramKind::Episodic,
                     content: content.to_string(),
