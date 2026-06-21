@@ -604,6 +604,66 @@ mod tests {
 
     }
 
+    /// What this catches: the PORTABILITY invariant for a persona's
+    /// context-keyed memory — "move the home, keep the self." A persona's
+    /// `(token, engram_db)` lives in one home; its identity resolves from that
+    /// home (airc-lib's `attach_as`), so moving the home to another node and
+    /// re-spawning yields the same individual with the same memory. This proves
+    /// the memory half locally: write an engram tagged with its room
+    /// (contextId), drop the store (the home goes quiet / moves), re-open
+    /// `OrmStore<Engram>` from the SAME path (spawn-from-the-moved-home), and
+    /// confirm the engram returns with its room intact. This is the exact shape
+    /// of the eventual cross-node M5⇄BigMama persona move. See
+    /// docs/architecture/IDENTITY-SCOPE-PEER-LIVENESS-MODEL.md Part A.
+    #[tokio::test]
+    async fn engram_context_survives_home_reopen_portability_proof() {
+        use crate::orm::adapter::{AdapterConfig, StorageAdapter};
+        use crate::orm::sqlite::SqliteAdapter;
+        use crate::orm::OrmStore;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join("engrams.sqlite");
+        let room = Uuid::new_v4();
+
+        // ── Lifetime 1: persona alive on "node A" — admit a room-keyed engram ──
+        let engram_id = {
+            let mut adapter = SqliteAdapter::new();
+            let mut config = AdapterConfig::default();
+            config.connection_string = path.to_string_lossy().into_owned();
+            adapter.initialize(config).await.expect("adapter init");
+            let adapter: Arc<dyn StorageAdapter> = Arc::new(adapter);
+            let store = OrmStore::<Engram>::new(adapter).await.unwrap();
+
+            let mut engram = sample_engram("portable memory");
+            engram.context_id = Some(room);
+            let id = engram.id;
+            store.save(id, &engram).await.expect("save engram");
+            id
+            // store + adapter dropped here — the home goes quiet / moves nodes
+        };
+
+        // ── Lifetime 2: spawn from the SAME home on "node B" ──
+        let mut adapter2 = SqliteAdapter::new();
+        let mut config2 = AdapterConfig::default();
+        config2.connection_string = path.to_string_lossy().into_owned();
+        adapter2.initialize(config2).await.expect("adapter init 2");
+        let adapter2: Arc<dyn StorageAdapter> = Arc::new(adapter2);
+        let store2 = OrmStore::<Engram>::new(adapter2).await.unwrap();
+
+        let loaded = store2
+            .find_by_id(engram_id)
+            .await
+            .expect("find_by_id")
+            .expect("engram present after re-opening the moved home");
+        assert_eq!(
+            loaded.context_id,
+            Some(room),
+            "the engram's room (contextId) must survive the home move — \
+             memory arrives keyed by the same conversation"
+        );
+        assert_eq!(loaded.content, "portable memory");
+    }
+
     /// What this catches: OrmPersistenceSink + OrmLoader form a
     /// complete persistence cycle. Admission observation lands on
     /// disk via the OrmStore; the loader reads it back. The proof
