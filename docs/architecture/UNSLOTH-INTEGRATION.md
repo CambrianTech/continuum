@@ -32,6 +32,27 @@ worlds — by composing unsloth's engine with continuum's organism.
 
 ---
 
+## 1.5 Decision record (2026-06-21): lean client, install-dependency, trim the fat
+
+Joel committed the strategy to its endpoint: **"lean on unsloth till we get ourselves fast; then we can make our own adapters and phase out unsloth if we feel like it."** Concretely:
+
+- **unsloth is a declared INSTALL DEPENDENCY** (already co-installed). continuum becomes a **lean client** that carries **no ML of its own** for the gateway path. One manual step ever — the `UNSLOTH_API_KEY` — then automatic (delegate model up/down/select to unsloth; provider keys live in unsloth's advanced settings).
+- **Trim the fat (binary + install + native-link surface), in order:**
+  1. **Embeddings → unsloth `/v1/embeddings`; DELETE `ort` + `fastembed` + the `libonnxruntime` dep** (`FastEmbedProvider`, `ModuleBackedEmbeddingProvider`, fastembed `EmbeddingModule`). ONNX is the wrong tech — heavy native dylib, panics on absence, install-friction. Deleting it shrinks the binary, removes an install step, and **deletes the startup ORT panic at its root** (don't patch it — remove the dep). Keep `LexicalEmbedder` (pure-Rust, zero-dep) as the degrade fallback.
+  2. **Formalize unsloth as an install dependency** (installer ensures it + the key — autowire #33).
+  3. **Inference → unsloth; retire the local `llama`/ggml/Metal compile** — the big trim (build time, binary size, the libllama double-free dance, the per-platform native linking all become unsloth's problem).
+- **Everything is behind a trait** (`AIProviderAdapter`, `EmbeddingProvider` — both already exist). unsloth is **impl #1**. Our own optimized Candle/llama.cpp adapter is **impl #2, built when we choose**; "phase out unsloth" = delete an impl. **Reversible by construction:** the local ML work stays in git history + the tree, so removing it now is "move it behind a future adapter," not "throw it away" — it re-plugs as impl #2, already written.
+
+### No feature is lost (audit)
+| Capability | Owner after the trim |
+|---|---|
+| Inference, embeddings, LoRA training, base-model selection + lifecycle, **media/multimodal**, model sharing (HF / its registry), provider-key vault | **unsloth** (the engine) |
+| Cognition / persona brain, memory + portable identity, airc mesh & coordination, the **foundry/forge** (sentinel-ai-contracted novel weights/arch), the **genome market** (P2P trust-scoped discovery + A/B economy) | **continuum** (the organism — never unsloth's job) |
+
+**Foundry handoff (the one path worth naming):** the foundry *generates* a novel artifact (continuum-unique; unsloth fine-tunes, it doesn't forge) → **load it into unsloth via API** as a served model → serve via `/v1`, share via unsloth (HF/registry) **or** continuum's airc genome-exchange (trust-scope decides which). The genome flywheel still turns; continuum's market sits *on top of* unsloth's train+serve+share.
+
+**Why now:** this is the headless-solid + lean-install push — it's what makes "easy to start, performant, alpha-this-week" real, and it directly fixes the failure mode that forced the redesign (too hard to install, not performant).
+
 ## 2. The decisive constraint: license
 
 Unsloth is **dual-licensed**:
