@@ -17,7 +17,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use uuid::Uuid;
 
-use super::embedding::{CachingEmbeddingProvider, LexicalEmbedder};
+use super::embedding::{CachingEmbeddingProvider, EmbeddingProvider, LexicalEmbedder};
 use super::llm_deliberation_faculty::LlmDeliberationFaculty;
 use super::rag_source_faculty::{RagSourceFaculty, SaliencePolicy};
 use super::recall_faculty::RecallFaculty;
@@ -53,6 +53,14 @@ pub struct PersonaBrainConfig {
     /// classification BigMama's separation-of-concerns requires: the salience
     /// policy lives HERE, never inside `RagSource`.
     pub grounding_sources: Vec<GroundingSource>,
+    /// The recall embedder for this persona's hippocampus. `None` → the lexical
+    /// bootstrap (works on any machine, zero deps). The live spawn path sets
+    /// `Some` via [`resolve_recall_embedder`], which prefers the neural embedder
+    /// when the embed model serves and falls back to lexical otherwise. Already
+    /// wrapped in the content-addressed cache by the resolver, so it's used as-is.
+    ///
+    /// [`resolve_recall_embedder`]: super::embedding::resolve_recall_embedder
+    pub embedder: Option<Arc<dyn EmbeddingProvider>>,
 }
 
 /// A grounding [`RagSource`] plus the [`SaliencePolicy`] under which it competes
@@ -98,16 +106,17 @@ impl GroundingSource {
 pub fn build_workspace_cycle(cfg: PersonaBrainConfig) -> WorkspaceCycle {
     let mut faculties: Vec<Arc<dyn Faculty>> = Vec::with_capacity(2 + cfg.grounding_sources.len());
 
-    // Relevance recall ON by default — the lexical bootstrap embedder works on
-    // any machine (no model), and relevance > recency is strictly better for
-    // coherence. Wrapped in the process-global content-addressed cache so a
-    // message is embedded ONCE and shared across every persona (the
-    // compute-once-per-content optimization — never 14× for 14 personas). A
-    // neural embedder slots in behind the same cache later.
+    // Relevance recall ON by default. The embedder comes from the spawn path
+    // (`resolve_recall_embedder`): neural when the embed model serves, lexical
+    // otherwise — already wrapped in the process-global content-addressed cache
+    // so a message is embedded ONCE and shared across every persona (never 14× for
+    // 14 personas). `None` (harnesses) falls back to the lexical bootstrap, which
+    // works on any machine with no model. Relevance > recency either way.
+    let embedder = cfg.embedder.unwrap_or_else(|| {
+        Arc::new(CachingEmbeddingProvider::new(Arc::new(LexicalEmbedder::new())))
+    });
     faculties.push(Arc::new(
-        RecallFaculty::new(cfg.persona_id, cfg.admission).with_embedder(Arc::new(
-            CachingEmbeddingProvider::new(Arc::new(LexicalEmbedder::new())),
-        )),
+        RecallFaculty::new(cfg.persona_id, cfg.admission).with_embedder(embedder),
     ));
 
     // Bridge each grounding source into a perception-tier faculty under its
@@ -249,6 +258,7 @@ mod tests {
             adapter: Arc::new(HeuristicInferenceAdapter::new()),
             capacity: None,
             grounding_sources: Vec::new(),
+            embedder: None,
         }
     }
 

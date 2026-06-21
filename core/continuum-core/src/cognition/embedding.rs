@@ -327,6 +327,57 @@ impl EmbeddingProvider for NeuralEmbeddingProvider {
     }
 }
 
+// ─── Live recall embedder resolution ───────────────────────────────────────────
+
+/// The grid's canonical retrieval embedding model + its dimensionality. One
+/// embedding SPACE across the grid keeps vectors comparable everywhere
+/// ([[embeddings-are-per-content-computed-once-shared]]). Overridable via
+/// `UNSLOTH_EMBED_MODEL` for a grid that serves a different embed model.
+pub const CANONICAL_EMBED_MODEL: &str = "qwen3-embedding-0.6b";
+/// Qwen3-Embedding-0.6B vector dimensionality (advisory metadata; the real
+/// length comes from the response).
+pub const CANONICAL_EMBED_DIM: usize = 1024;
+
+/// Does a probe vector indicate a *working* neural embedder? Usable = non-empty,
+/// at least one non-zero component, and all-finite. An empty / all-zero / NaN
+/// probe means the embed model isn't actually serving (model not loaded, endpoint
+/// error → `NeuralEmbeddingProvider` degraded to an empty vec), so the caller must
+/// fall back rather than embed every memory into "no signal". Pure → TDD'd.
+fn probe_indicates_usable(probe: &[f32]) -> bool {
+    !probe.is_empty() && probe.iter().any(|x| *x != 0.0) && probe.iter().all(|x| x.is_finite())
+}
+
+/// Resolve the embedder for the live recall path. Prefers the **neural** embedder
+/// (semantic relevance through `adapter`) but only when a one-shot probe proves
+/// the embed model actually serves; otherwise falls back to the **lexical**
+/// bootstrap. The choice is PROCESS-STABLE — decided once here, never per-embed —
+/// because a query and the stored vectors must live in the SAME embedding space
+/// (mixing neural and lexical per call makes cosine meaningless). The result is
+/// wrapped in the content-addressed cache so each message is embedded ONCE and
+/// shared across every persona (the latency win; further perf is a later pass).
+///
+/// Always returns a usable embedder — never errors, never panics: a persona on a
+/// box with no embed model still gets real lexical relevance ("solve for public
+/// users" / degrade-not-panic).
+pub async fn resolve_recall_embedder(adapter: Arc<dyn AIProviderAdapter>) -> Arc<dyn EmbeddingProvider> {
+    if adapter.capabilities().supports_embeddings {
+        let model = crate::config_env::read("UNSLOTH_EMBED_MODEL")
+            .filter(|m| !m.trim().is_empty())
+            .unwrap_or_else(|| CANONICAL_EMBED_MODEL.to_string());
+        let neural = NeuralEmbeddingProvider::new(adapter, model.clone(), CANONICAL_EMBED_DIM);
+        let probe = neural.embed("probe").await;
+        if probe_indicates_usable(&probe) {
+            tracing::info!(model = %model, "recall: neural embedder live (probe ok)");
+            return Arc::new(CachingEmbeddingProvider::new(Arc::new(neural)));
+        }
+        tracing::warn!(
+            model = %model,
+            "recall: neural embed probe returned no signal — falling back to lexical embedder"
+        );
+    }
+    Arc::new(CachingEmbeddingProvider::new(Arc::new(LexicalEmbedder::new())))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -446,6 +497,110 @@ mod tests {
         let _ = cached.embed("first message").await;
         let _ = cached.embed("a different message").await;
         assert_eq!(inner.calls.load(Ordering::SeqCst), 2);
+    }
+
+    // what this catches: the probe gate — only a non-empty, non-zero, all-finite
+    // vector counts as "neural is live". Empty / all-zero / NaN all mean "no
+    // signal" → fall back to lexical. Regression here = embedding every memory
+    // into a zero vector (recall returns nothing) instead of using lexical.
+    #[test]
+    fn probe_gate_distinguishes_usable_from_no_signal() {
+        assert!(probe_indicates_usable(&[0.0, 0.1, 0.0]));
+        assert!(!probe_indicates_usable(&[]), "empty = no signal");
+        assert!(!probe_indicates_usable(&[0.0, 0.0]), "all-zero = no signal");
+        assert!(!probe_indicates_usable(&[f32::NAN, 1.0]), "NaN = no signal");
+        assert!(!probe_indicates_usable(&[f32::INFINITY, 1.0]), "Inf = no signal");
+    }
+
+    /// Minimal adapter whose embeddings are configurable, to drive the resolver
+    /// without a network. `embeds` = the vector create_embedding returns (empty
+    /// simulates "model not loaded"); `supports` = the capability flag.
+    struct FakeEmbedAdapter {
+        supports: bool,
+        embeds: Vec<f32>,
+    }
+    #[async_trait]
+    impl AIProviderAdapter for FakeEmbedAdapter {
+        fn provider_id(&self) -> &str {
+            "fake"
+        }
+        fn name(&self) -> &str {
+            "fake"
+        }
+        fn default_model(&self) -> &str {
+            "fake-model"
+        }
+        fn capabilities(&self) -> crate::ai::adapter::AdapterCapabilities {
+            crate::ai::adapter::AdapterCapabilities {
+                supports_embeddings: self.supports,
+                ..Default::default()
+            }
+        }
+        async fn generate_text(
+            &self,
+            _request: crate::ai::types::TextGenerationRequest,
+        ) -> Result<crate::ai::types::TextGenerationResponse, String> {
+            Err("not used".into())
+        }
+        async fn create_embedding(
+            &self,
+            _request: crate::ai::types::EmbeddingRequest,
+        ) -> Result<crate::ai::types::EmbeddingResponse, String> {
+            Ok(crate::ai::types::EmbeddingResponse {
+                embeddings: vec![self.embeds.clone()],
+                model: "fake-model".into(),
+                provider: "fake".into(),
+                usage: crate::ai::types::UsageMetrics {
+                    input_tokens: 0,
+                    output_tokens: 0,
+                    total_tokens: 0,
+                    estimated_cost: None,
+                },
+                response_time_ms: 0,
+            })
+        }
+    }
+
+    // what this catches: when the adapter serves real embeddings, the live path
+    // resolves to the NEURAL embedder (semantic recall), not lexical. id() of a
+    // neural-backed provider is the model slug.
+    #[tokio::test]
+    async fn resolver_picks_neural_when_embed_model_serves() {
+        let adapter = Arc::new(FakeEmbedAdapter {
+            supports: true,
+            embeds: vec![0.1, 0.2, 0.3],
+        });
+        let embedder = resolve_recall_embedder(adapter).await;
+        assert_eq!(
+            embedder.id(),
+            CANONICAL_EMBED_MODEL,
+            "neural embedder's id is the model slug"
+        );
+    }
+
+    // what this catches: THE NO-SIGNAL GUARD — an adapter that claims embedding
+    // support but returns an empty vector (model not loaded) must fall back to
+    // lexical, NOT embed everything into nothing.
+    #[tokio::test]
+    async fn resolver_falls_back_to_lexical_when_probe_empty() {
+        let adapter = Arc::new(FakeEmbedAdapter {
+            supports: true,
+            embeds: vec![],
+        });
+        let embedder = resolve_recall_embedder(adapter).await;
+        assert_eq!(embedder.id(), "lexical-fnv-tf", "must fall back to lexical");
+    }
+
+    // what this catches: an adapter with no embedding capability skips the probe
+    // entirely and uses lexical — no wasted round-trip, always a working embedder.
+    #[tokio::test]
+    async fn resolver_uses_lexical_when_adapter_lacks_embeddings() {
+        let adapter = Arc::new(FakeEmbedAdapter {
+            supports: false,
+            embeds: vec![0.1],
+        });
+        let embedder = resolve_recall_embedder(adapter).await;
+        assert_eq!(embedder.id(), "lexical-fnv-tf");
     }
 
     // what this catches: vectors from DIFFERENT embedding spaces (provider ids)

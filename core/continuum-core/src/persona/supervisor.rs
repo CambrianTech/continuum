@@ -570,6 +570,13 @@ pub async fn materialize_adapters(
                     admission: cognition.admission.clone(),
                     adapter: adapter.clone(),
                     capacity: None,
+                    // Neural recall when the embed model serves, lexical otherwise
+                    // — decided once here (process-stable; query + stored vectors
+                    // must share one embedding space). Already cached by the
+                    // resolver (embed-once-per-content, shared across personas).
+                    embedder: Some(
+                        crate::cognition::embedding::resolve_recall_embedder(adapter.clone()).await,
+                    ),
                     // Roster + doctrine bridged into the brain as STANDING-FRAMING
                     // grounding faculties (high salience floor). Without these the
                     // gating cutover routes decisions through the Workspace and the
