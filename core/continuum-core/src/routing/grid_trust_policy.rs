@@ -83,6 +83,13 @@ pub fn caller_trust(caller: Option<&CallerIdentity>) -> TrustLevel {
         None => TrustLevel::Owner,
         Some(c) => match c.source {
             CallerSource::Local => TrustLevel::Owner,
+            // TODO(airc-trust-bridge): EVERY airc caller maps to the Provisional
+            // ceiling regardless of the peer's real grid trust — so a `Blocked`
+            // peer is NOT distinguished here and gets Provisional's AiSafe surface.
+            // This preserves prior gate behavior; closing it needs the airc↔grid
+            // per-peer trust resolution (so Blocked/Trusted/Owner peers map to their
+            // real level). Until then, upstream airc enrollment must keep blocked
+            // peers from reaching the gate. Flagged by adversarial review 2026-06-21.
             CallerSource::Airc => AIRC_CALLER_CEILING,
         },
     }

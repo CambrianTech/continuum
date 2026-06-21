@@ -185,6 +185,14 @@ mod tests {
             "AiSafe command visible at Provisional"
         );
 
+        // Non-vacuous: the Provisional surface is non-empty (so the subset loop
+        // below actually checks something) and never larger than the owner surface.
+        assert!(
+            !provisional.commands.is_empty(),
+            "Provisional surface must be non-empty (else the subset check is vacuous)"
+        );
+        assert!(provisional.commands.len() <= owner.commands.len());
+
         // Provisional ⊆ Owner, and everything shown to the Provisional caller is
         // actually authorized at Provisional (listed == callable).
         let owner_names: HashSet<&str> =

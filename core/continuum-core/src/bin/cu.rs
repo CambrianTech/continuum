@@ -130,8 +130,14 @@ fn render_cli_help(command: &str, info: &Value) -> String {
 }
 
 /// Best-effort JSON-Schema type label for a property (handles `"type":"string"`,
-/// `"type":["string","null"]` for optionals, or an unschematized field).
+/// `"type":["string","null"]` for optionals, a `$ref` to a nested type, or an
+/// unschematized field).
 fn schema_type_str(spec: &Value) -> String {
+    // A nested struct/enum is a `$ref` (e.g. "#/definitions/Foo") — show its name
+    // rather than an opaque <value>.
+    if let Some(r) = spec.get("$ref").and_then(|v| v.as_str()) {
+        return format!("<{}>", r.rsplit('/').next().unwrap_or(r));
+    }
     match spec.get("type") {
         Some(Value::String(s)) => format!("<{s}>"),
         Some(Value::Array(a)) => {
@@ -220,20 +226,32 @@ fn params_from_args(args: &[String]) -> Result<Value, String> {
                 args[i]
             )
         })?;
-        let key = to_camel_case(raw_key);
+        // Support BOTH `--key value` and the muscle-memory `--key=value` form.
+        // Splitting on the first `=` means `--filter=data/` parses to
+        // {filter: "data/"} instead of a junk `{"filter=data/": true}` key.
+        if let Some((k, v)) = raw_key.split_once('=') {
+            map.insert(to_camel_case(k), coerce(v));
+            i += 1;
+            continue;
+        }
         // A value follows unless the next arg is another flag (or there is none).
         let has_value = args.get(i + 1).is_some_and(|n| !n.starts_with("--"));
         if has_value {
-            let raw = &args[i + 1];
-            let val = serde_json::from_str::<Value>(raw).unwrap_or_else(|_| Value::String(raw.clone()));
-            map.insert(key, val);
+            map.insert(to_camel_case(raw_key), coerce(&args[i + 1]));
             i += 2;
         } else {
-            map.insert(key, Value::Bool(true));
+            map.insert(to_camel_case(raw_key), Value::Bool(true));
             i += 1;
         }
     }
     Ok(Value::Object(map))
+}
+
+/// Coerce a CLI string value: try JSON first (`5`→number, `true`→bool, `{…}`→
+/// object), else keep it a string. The one rule for every command, no schema
+/// needed (schema-aware coercion is a follow-up once commands/list schemas drive it).
+fn coerce(raw: &str) -> Value {
+    serde_json::from_str::<Value>(raw).unwrap_or_else(|_| Value::String(raw.to_string()))
 }
 
 /// kebab/snake → camelCase (`round-trip-ms`/`round_trip_ms` → `roundTripMs`).
@@ -446,6 +464,18 @@ mod tests {
         assert_eq!(
             params_from_args(&["--verbose".into()]).unwrap(),
             json!({ "verbose": true })
+        );
+
+        // `--key=value` form (muscle memory) — split on first `=`, NOT a junk key.
+        assert_eq!(
+            params_from_args(&["--filter=data/".into()]).unwrap(),
+            json!({ "filter": "data/" }),
+            "--key=value splits correctly (regression: was {{\"filter=data/\": true}})"
+        );
+        assert_eq!(
+            params_from_args(&["--round-trip-ms=5".into()]).unwrap(),
+            json!({ "roundTripMs": 5 }),
+            "--key=value coerces + camelCases"
         );
 
         // a non-flag, non-JSON arg is a clear error (not silently swallowed)

@@ -87,6 +87,14 @@ pub fn descriptor_to_tool_spec(d: &CommandDescriptor) -> NativeToolSpec {
 /// Project a command's params JSON Schema into the LLM [`ToolInputSchema`]. A
 /// `Null` schema (command not yet on a base trait) → an open object. Otherwise
 /// lift `type`/`properties`/`required` straight from the derived schema.
+///
+/// TODO(nested-params): `ToolInputSchema` carries only type/properties/required,
+/// so a params type with a NESTED struct/enum (schemars emits a `$ref` +
+/// `definitions`) currently ships a tool schema whose `$ref` can't resolve. All
+/// commands today have flat params (ping/commands/list/system-info), so this is
+/// latent — but the first nested-param command needs `definitions`/`$defs` carried
+/// through (extend ToolInputSchema or pass the whole schema). Flagged by
+/// adversarial review 2026-06-21.
 fn tool_input_schema_from(schema: &serde_json::Value) -> ToolInputSchema {
     if schema.is_null() {
         return ToolInputSchema {

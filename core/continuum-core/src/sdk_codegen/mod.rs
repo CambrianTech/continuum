@@ -554,24 +554,38 @@ macro_rules! register_stateless_command {
 /// The command registry — the generator's input, ASSEMBLED from every
 /// `register_command!` submission across the crate. Sorted by name so the
 /// generated output is deterministic regardless of inventory iteration order.
+///
+/// **Built ONCE, then cached.** The inventory is link-time-static and each
+/// descriptor's `params_schema()` runs `schemars` reflection — so rebuilding per
+/// call (the old behavior) made `commands/list` and the persona tool surface
+/// O(commands × reflection) every invocation. The descriptors are
+/// after-boot-immutable, so they're computed once into a `OnceLock` and cloned out
+/// (a cheap `Vec`/`Value` clone vs. re-reflecting every command). The duplicate-
+/// name check + sort happen once, inside the init.
 pub fn command_registry() -> Vec<CommandDescriptor> {
-    let mut descriptors: Vec<CommandDescriptor> = inventory::iter::<CommandRegistration>()
-        .map(|reg| (reg.descriptor_fn)())
-        .collect();
-    descriptors.sort_by(|a, b| a.name.cmp(b.name));
-    // Hard-fail on a duplicate command NAME. The "no central list" design removes
-    // the human backstop that would otherwise catch a collision, so the registry
-    // must catch it itself — two CommandSpec impls claiming the same name would
-    // silently emit a conflicting/duplicate CommandMap key (a TS error or a silent
-    // shadow). Sorted above, so duplicates are adjacent.
-    if let Some(dup) = descriptors.windows(2).find(|w| w[0].name == w[1].name) {
-        panic!(
-            "sdk_codegen: duplicate command NAME '{}' — two CommandSpec impls claim \
-             it. Command names must be unique across the whole registry.",
-            dup[0].name
-        );
-    }
-    descriptors
+    static REGISTRY: std::sync::OnceLock<Vec<CommandDescriptor>> = std::sync::OnceLock::new();
+    REGISTRY
+        .get_or_init(|| {
+            let mut descriptors: Vec<CommandDescriptor> =
+                inventory::iter::<CommandRegistration>()
+                    .map(|reg| (reg.descriptor_fn)())
+                    .collect();
+            descriptors.sort_by(|a, b| a.name.cmp(b.name));
+            // Hard-fail on a duplicate command NAME. The "no central list" design
+            // removes the human backstop that would otherwise catch a collision, so
+            // the registry must catch it itself — two CommandSpec impls claiming the
+            // same name would silently emit a conflicting/duplicate CommandMap key (a
+            // TS error or a silent shadow). Sorted above, so duplicates are adjacent.
+            if let Some(dup) = descriptors.windows(2).find(|w| w[0].name == w[1].name) {
+                panic!(
+                    "sdk_codegen: duplicate command NAME '{}' — two CommandSpec impls \
+                     claim it. Command names must be unique across the whole registry.",
+                    dup[0].name
+                );
+            }
+            descriptors
+        })
+        .clone()
 }
 
 // No demo/fixture commands: the generator is validated against the REAL

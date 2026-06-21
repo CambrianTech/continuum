@@ -279,6 +279,17 @@ impl Runtime {
         // See docs/architecture/COMMAND-ORGANIZATION.md.
         if let Some(cmd) = self.registry.route_object(command) {
             // IPC/local socket path — caller is the local owner (None).
+            //
+            // NOTE (adversarial review 2026-06-21): the typed object path does NOT
+            // pass through the per-MODULE concurrency limiter or ModuleMetrics below
+            // — a DynCommand object is module-independent, so it has no module to key
+            // those on. This is deliberate, not an oversight: per-command throughput
+            // leasing + observability belong to the command framework (the executor
+            // already emits `command:completed` on the in-process/persona route), not
+            // the legacy per-module path. Until per-command metrics land, migrated
+            // commands are absent from ModuleMetrics on THIS local route (acceptable
+            // for the trivial commands migrated so far; revisit before migrating a
+            // hot/contended command). Tracked for the command-framework metrics slice.
             return Some(dispatch_object_with_panic_guard(cmd, params, None).await);
         }
         let (module, full_cmd) = self.registry.route_command(command)?;

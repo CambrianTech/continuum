@@ -739,41 +739,68 @@ mod tests {
         }
     }
 
-    // what this catches: NO ESCALATION THROUGH COMPOSITION. A command composing
-    // another calls `executor.execute_with_caller(sub, params, ctx.caller.clone())`
-    // — propagating the ORIGINAL caller. The gate then enforces THAT caller's trust
-    // on the sub-call, so an airc/Provisional caller cannot reach an Owner-only
-    // command (`data/delete`) by composing, while the local owner can. This pins the
-    // guarantee the COMMAND-ORGANIZATION doc claims: identity flows through
-    // composition (and across the grid), never escalating.
+    // what this catches: NO ESCALATION THROUGH COMPOSITION, via a REAL composing
+    // handler (not just the gate). `Composer` is an ActionCommand whose `run`
+    // composes a sub-command with `ctx.caller.clone()` — exactly the pattern a
+    // dep-holding command uses. Invoked as the local owner the sub-call passes the
+    // gate; invoked as an airc/Provisional caller the propagated identity is gated,
+    // so it CANNOT reach the Owner-only `data/delete`. This pins that identity flows
+    // through composition (and, by the same mechanism, across the grid), never
+    // escalating — the guarantee the COMMAND-ORGANIZATION doc claims.
     #[tokio::test]
-    async fn composed_call_propagates_caller_no_escalation() {
+    async fn composing_handler_propagates_ctx_caller_no_escalation() {
         use crate::routing::{CallerIdentity, GridTrustAuthPolicy};
+        use crate::sdk_codegen::{ActionCommand, CommandError, Ctx};
+
+        #[derive(Default, serde::Serialize, serde::Deserialize, ts_rs::TS, schemars::JsonSchema)]
+        struct NoParams {}
+        #[derive(serde::Serialize, serde::Deserialize, ts_rs::TS)]
+        struct Out {
+            forbidden: bool,
+        }
+
+        // A command that COMPOSES another, propagating its own caller (ctx.caller).
+        struct Composer {
+            exec: Arc<CommandExecutor>,
+        }
+        #[async_trait]
+        impl ActionCommand for Composer {
+            const NAME: &'static str = "test/composer";
+            type Params = NoParams;
+            type Output = Out;
+            async fn run(&self, ctx: &Ctx, _p: NoParams) -> Result<Out, CommandError> {
+                let r = self
+                    .exec
+                    .execute_with_caller(
+                        "data/delete",
+                        Value::Object(Default::default()),
+                        ctx.caller.clone(),
+                    )
+                    .await;
+                Ok(Out {
+                    forbidden: r.as_ref().err().map(|e| e.contains("forbidden")).unwrap_or(false),
+                })
+            }
+        }
 
         let registry = Arc::new(ModuleRegistry::new());
         let exec =
-            CommandExecutor::new(registry).with_policy(Arc::new(GridTrustAuthPolicy::new()));
+            Arc::new(CommandExecutor::new(registry).with_policy(Arc::new(GridTrustAuthPolicy::new())));
+        let composer = Composer { exec: exec.clone() };
 
-        // Owner (caller None, the local-owner default a composing handler would
-        // pass if ctx.caller were None) — NOT gate-forbidden (passes the gate;
-        // here it then fails to route, a DIFFERENT error, which is fine).
-        let owner = exec
-            .execute_with_caller("data/delete", Value::Object(Default::default()), None)
-            .await;
-        assert!(
-            !owner.as_ref().err().map(|e| e.contains("forbidden")).unwrap_or(false),
-            "owner composing data/delete must NOT be gate-forbidden: {owner:?}"
-        );
+        // Composed as the local owner (ctx.caller None) → sub-call NOT gate-forbidden.
+        let owner = composer.run(&Ctx::default(), NoParams {}).await.unwrap();
+        assert!(!owner.forbidden, "owner composing data/delete is not forbidden");
 
-        // airc/Provisional caller — FORBIDDEN at the gate. A persona or cross-grid
-        // peer composing into an Owner-only command is refused; no escalation.
-        let airc = CallerIdentity::airc(uuid::Uuid::new_v4());
-        let escalated = exec
-            .execute_with_caller("data/delete", Value::Object(Default::default()), Some(airc))
-            .await;
+        // Composed as an airc/Provisional caller → identity propagated → FORBIDDEN.
+        let airc_ctx = Ctx {
+            caller: Some(CallerIdentity::airc(uuid::Uuid::new_v4())),
+            ..Default::default()
+        };
+        let escalated = composer.run(&airc_ctx, NoParams {}).await.unwrap();
         assert!(
-            escalated.as_ref().err().map(|e| e.contains("forbidden")).unwrap_or(false),
-            "airc caller composing data/delete MUST be forbidden — no escalation: {escalated:?}"
+            escalated.forbidden,
+            "airc composing data/delete must be forbidden — handler propagated ctx.caller, no escalation"
         );
     }
 
