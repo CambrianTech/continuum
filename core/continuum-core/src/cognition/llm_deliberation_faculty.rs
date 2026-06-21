@@ -37,6 +37,7 @@ use crate::ai::adapter::AIProviderAdapter;
 use crate::ai::types::{
     ChatMessage, FinishReason, NativeToolSpec, TextGenerationRequest, TextGenerationResponse,
 };
+use crate::persona::text_analysis::clean_response;
 use crate::persona::prompt_assembly::{
     looks_like_silence_token, SILENCE_AFFORDANCE_BLOCK, SILENCE_TOKEN,
 };
@@ -63,7 +64,16 @@ const DEFAULT_MAX_TOKENS: u32 = 512;
 /// we infer from a single deliberation response — a deliberation faculty answers
 /// the burst it was given.
 pub fn decision_from_response(text: &str) -> Decision {
-    let trimmed = text.trim();
+    // Strip `<think>`/`<thinking>` chain-of-thought before deciding. qwen3.5-family
+    // models emit a reasoning block (often an EMPTY `<think></think>`) ahead of the
+    // answer; the spoken text must NEVER carry those tags into the room. The legacy
+    // respond() path already cleaned; the workspace path (now the live decision
+    // path) reached `say` raw — this closes that gap at the single point where model
+    // text becomes a Speak decision, so every consumer of the decision gets clean
+    // text. An only-`<think>` response cleans to empty → Pass (silence), matching
+    // the "only thinking → don't speak" behavior.
+    let cleaned = clean_response(text);
+    let trimmed = cleaned.text.trim();
     if trimmed.is_empty() || looks_like_silence_token(trimmed) || starts_with_silence_token(trimmed)
     {
         Decision::Pass
@@ -468,6 +478,33 @@ mod tests {
             Decision::Speak { text } => assert!(text.contains("ship the deploy")),
             other => panic!("expected Speak, got {other:?}"),
         }
+    }
+
+    // what this catches: qwen3.5 chain-of-thought tags leaking into the spoken
+    // text. The model prefixes an (often empty) <think></think> block before the
+    // answer; the live workspace path reached `say` raw and broadcast the tags
+    // into the room (observed on Asha's first turn). The Speak text must be clean.
+    #[test]
+    fn decision_strips_think_tags_from_spoken_text() {
+        // Empty think block (the exact shape observed live) + real answer.
+        match decision_from_response("<think>\n</think>\nI'm Asha, here to help.") {
+            Decision::Speak { text } => {
+                assert!(!text.contains("<think>"), "think tag leaked: {text:?}");
+                assert!(!text.contains("</think>"), "close tag leaked: {text:?}");
+                assert!(text.starts_with("I'm Asha"), "answer preserved: {text:?}");
+            }
+            other => panic!("expected Speak, got {other:?}"),
+        }
+        // Non-empty reasoning block is also stripped from the spoken text.
+        match decision_from_response("<think>weigh options</think>Ship it.") {
+            Decision::Speak { text } => assert_eq!(text, "Ship it."),
+            other => panic!("expected Speak, got {other:?}"),
+        }
+        // An ONLY-thinking response (no answer) cleans to empty → silence.
+        assert_eq!(
+            decision_from_response("<think>I won't answer this</think>"),
+            Decision::Pass
+        );
     }
 
     // what this catches: end-to-end through a REAL adapter (the deterministic
