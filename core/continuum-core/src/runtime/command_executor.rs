@@ -739,6 +739,44 @@ mod tests {
         }
     }
 
+    // what this catches: NO ESCALATION THROUGH COMPOSITION. A command composing
+    // another calls `executor.execute_with_caller(sub, params, ctx.caller.clone())`
+    // — propagating the ORIGINAL caller. The gate then enforces THAT caller's trust
+    // on the sub-call, so an airc/Provisional caller cannot reach an Owner-only
+    // command (`data/delete`) by composing, while the local owner can. This pins the
+    // guarantee the COMMAND-ORGANIZATION doc claims: identity flows through
+    // composition (and across the grid), never escalating.
+    #[tokio::test]
+    async fn composed_call_propagates_caller_no_escalation() {
+        use crate::routing::{CallerIdentity, GridTrustAuthPolicy};
+
+        let registry = Arc::new(ModuleRegistry::new());
+        let exec =
+            CommandExecutor::new(registry).with_policy(Arc::new(GridTrustAuthPolicy::new()));
+
+        // Owner (caller None, the local-owner default a composing handler would
+        // pass if ctx.caller were None) — NOT gate-forbidden (passes the gate;
+        // here it then fails to route, a DIFFERENT error, which is fine).
+        let owner = exec
+            .execute_with_caller("data/delete", Value::Object(Default::default()), None)
+            .await;
+        assert!(
+            !owner.as_ref().err().map(|e| e.contains("forbidden")).unwrap_or(false),
+            "owner composing data/delete must NOT be gate-forbidden: {owner:?}"
+        );
+
+        // airc/Provisional caller — FORBIDDEN at the gate. A persona or cross-grid
+        // peer composing into an Owner-only command is refused; no escalation.
+        let airc = CallerIdentity::airc(uuid::Uuid::new_v4());
+        let escalated = exec
+            .execute_with_caller("data/delete", Value::Object(Default::default()), Some(airc))
+            .await;
+        assert!(
+            escalated.as_ref().err().map(|e| e.contains("forbidden")).unwrap_or(false),
+            "airc caller composing data/delete MUST be forbidden — no escalation: {escalated:?}"
+        );
+    }
+
     #[tokio::test]
     async fn interceptors_walked_in_insertion_order_when_all_decline() {
         let last_seen = Arc::new(AtomicUsize::new(0));
