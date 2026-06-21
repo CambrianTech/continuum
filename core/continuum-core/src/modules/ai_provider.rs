@@ -372,7 +372,11 @@ impl AIProviderModule {
         // is a separate routing-policy change.
         if get_secret("UNSLOTH_API_KEY").is_some() {
             self.log().info("Registering Unsloth gateway adapter");
-            let mut a = OpenAICompatibleAdapter::from_registry("unsloth");
+            // Base URL comes from the ONE owner of the unsloth endpoint
+            // (`unsloth_control::unsloth_base_url`) — not the catalog literal — so
+            // there is a single source of truth for where unsloth lives.
+            let mut a = OpenAICompatibleAdapter::from_registry("unsloth")
+                .with_runtime_base_url(crate::inference::unsloth_control::unsloth_base_url());
             match a.initialize().await {
                 Ok(()) => registry.register(Arc::new(a), 9),
                 Err(e) => self.log().warn(&format!("Unsloth initialize failed: {e} — not registered")),

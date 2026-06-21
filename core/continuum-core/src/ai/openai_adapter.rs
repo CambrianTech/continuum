@@ -140,6 +140,18 @@ impl OpenAICompatibleAdapter {
         self
     }
 
+    /// The host root that request URLs append `/v1/...` to — the runtime override
+    /// if set, else the configured base. ONE resolution point for all request
+    /// sites (was copy-pasted 4×). The value is already canonical (bare host): the
+    /// catalog stores bare hosts, and the unsloth gateway is registered with the
+    /// single [`unsloth_base_url`](crate::inference::unsloth_control::unsloth_base_url)
+    /// accessor — so no per-site normalization is needed or wanted here.
+    fn api_base(&self) -> &str {
+        self.runtime_base_url
+            .as_deref()
+            .unwrap_or(self.config.base_url.as_str())
+    }
+
     /// Fetch the live model list from the provider's /v1/models endpoint.
     /// Used by adapters that have dynamic catalogs (DMR above all — the list
     /// changes every time the user runs `docker model pull`). Populates
@@ -147,10 +159,7 @@ impl OpenAICompatibleAdapter {
     /// data is preferred over empty data. Never silently succeeds with an
     /// empty set — returns Err if the endpoint responds with nothing.
     async fn refresh_runtime_models(&self) -> Result<(), String> {
-        let base_url = self
-            .runtime_base_url
-            .as_deref()
-            .unwrap_or(self.config.base_url.as_str());
+        let base_url = self.api_base();
         let url = format!("{}/v1/models", base_url);
 
         let mut req = self.client.get(&url);
@@ -753,10 +762,7 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
         }
 
         // Make request - use runtime base URL if set, otherwise config base URL
-        let base_url = self
-            .runtime_base_url
-            .as_deref()
-            .unwrap_or(self.config.base_url.as_str());
+        let base_url = self.api_base();
         let url = format!("{}/v1/chat/completions", base_url);
 
         let mut request_builder = self
@@ -956,10 +962,7 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
 
         let body = build_embedding_body(&request.input, &model);
 
-        let base_url = self
-            .runtime_base_url
-            .as_deref()
-            .unwrap_or(self.config.base_url.as_str());
+        let base_url = self.api_base();
         let url = format!("{base_url}/v1/embeddings");
 
         let mut request_builder = self
@@ -1021,10 +1024,7 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
         let start = Instant::now();
 
         // Try to list models as health check
-        let base_url = self
-            .runtime_base_url
-            .as_deref()
-            .unwrap_or(self.config.base_url.as_str());
+        let base_url = self.api_base();
         let url = format!("{}/v1/models", base_url);
 
         let mut request_builder = self
