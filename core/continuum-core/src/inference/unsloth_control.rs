@@ -90,6 +90,61 @@ pub async fn ensure_model_loaded(api: &dyn UnslothControl, desired_model: &str) 
     }
 }
 
+/// Startup decision: should boot fuel the engine, and with which model?
+/// Pure + inspectable so the config logic is TDD-tested apart from any I/O —
+/// we never hardcode a machine-specific model path; the model is config-driven.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StartupModelAction {
+    /// `UNSLOTH_MODEL` is set + non-empty → ensure this model is loaded at boot.
+    Ensure(String),
+    /// No model configured → skip auto-fuel (with the reason, for the log). The
+    /// engine stays as-is; a persona's first inference will surface the empty
+    /// engine, and the operator can set `UNSLOTH_MODEL` to auto-fuel next boot.
+    Skip(String),
+}
+
+/// Decide the boot action from the configured `UNSLOTH_MODEL` value. Trims
+/// whitespace; an unset OR blank value → [`StartupModelAction::Skip`]. No
+/// default model is baked in — auto-picking from `/api/hub/cached-models` is a
+/// future enhancement, not a hardcoded path.
+pub fn startup_model_action(configured: Option<String>) -> StartupModelAction {
+    match configured.map(|s| s.trim().to_string()) {
+        Some(model) if !model.is_empty() => StartupModelAction::Ensure(model),
+        _ => StartupModelAction::Skip(
+            "UNSLOTH_MODEL unset — skipping auto-fuel; set it to load a model at boot".to_string(),
+        ),
+    }
+}
+
+/// Boot convenience: read `UNSLOTH_MODEL` from config, and if set, ensure unsloth
+/// has it loaded (delegating to [`ensure_model_loaded`] over the real HTTP
+/// surface). Degrade-safe end to end — logs the outcome and never panics, so it
+/// can be spawned as a fire-and-forget startup task. Returns the action taken so
+/// callers/tests can assert without scraping logs.
+pub async fn ensure_startup_model() -> StartupModelAction {
+    let action = startup_model_action(config_env::read("UNSLOTH_MODEL"));
+    match &action {
+        StartupModelAction::Ensure(model) => {
+            let outcome = ensure_model_loaded(&UnslothHttp::from_config(), model).await;
+            match &outcome {
+                EnsureOutcome::AlreadyLoaded => {
+                    tracing::info!(target: "unsloth", model = %model, "startup: model already loaded");
+                }
+                EnsureOutcome::Loaded { model } => {
+                    tracing::info!(target: "unsloth", model = %model, "startup: loaded model into engine");
+                }
+                EnsureOutcome::Degraded { reason } => {
+                    tracing::warn!(target: "unsloth", %reason, "startup: model auto-fuel degraded — substrate continues on fallback");
+                }
+            }
+        }
+        StartupModelAction::Skip(reason) => {
+            tracing::info!(target: "unsloth", %reason, "startup: skipping model auto-fuel");
+        }
+    }
+    action
+}
+
 /// Real reqwest impl of [`UnslothControl`] over unsloth's HTTP surface.
 pub struct UnslothHttp {
     /// Host root (no `/v1`), e.g. `http://127.0.0.1:8888`.
@@ -251,5 +306,46 @@ mod tests {
             }
             other => panic!("expected Degraded, got {other:?}"),
         }
+    }
+
+    // what this catches: a configured model name → Ensure(that model). This is
+    // the "automatic after the key" path — boot fuels the engine from config.
+    #[test]
+    fn configured_model_means_ensure() {
+        assert_eq!(
+            startup_model_action(Some("qwen2.5-0.5b".to_string())),
+            StartupModelAction::Ensure("qwen2.5-0.5b".to_string())
+        );
+    }
+
+    // what this catches: NO hardcoded default — unset config must Skip, not load
+    // some machine-specific path. Regression here = a baked-in model path that's
+    // wrong on every box but the one it was written on.
+    #[test]
+    fn unset_model_skips_no_hardcoded_default() {
+        match startup_model_action(None) {
+            StartupModelAction::Skip(_) => {}
+            other => panic!("expected Skip, got {other:?}"),
+        }
+    }
+
+    // what this catches: a blank/whitespace UNSLOTH_MODEL is treated as unset
+    // (config files love empty strings) — Skip, never attempt to load "".
+    #[test]
+    fn blank_model_is_treated_as_unset() {
+        match startup_model_action(Some("   ".to_string())) {
+            StartupModelAction::Skip(_) => {}
+            other => panic!("expected Skip for blank, got {other:?}"),
+        }
+    }
+
+    // what this catches: a configured value with surrounding whitespace is
+    // trimmed before use — `UNSLOTH_MODEL=qwen \n` must not request " qwen ".
+    #[test]
+    fn configured_model_is_trimmed() {
+        assert_eq!(
+            startup_model_action(Some("  qwen2.5-0.5b  ".to_string())),
+            StartupModelAction::Ensure("qwen2.5-0.5b".to_string())
+        );
     }
 }
