@@ -371,7 +371,17 @@ impl CommandExecutor {
             }
         }
 
-        // 2. Try the local Rust module registry.
+        // 2. Typed path wins: a registered DynCommand object routes DIRECTLY —
+        //    O(1) lock-free map lookup, no prefix scan, no per-module match arm.
+        //    A migrated command lives here and beats its module's legacy
+        //    handle_command arm; see docs/architecture/COMMAND-ORGANIZATION.md.
+        if let Some(cmd) = self.registry.route_object(command) {
+            log.debug(&format!("Routing '{}' to DynCommand object (typed path)", command));
+            return super::runtime::dispatch_object_with_panic_guard(cmd, params).await;
+        }
+
+        // 3. Fallback: prefix-routed local Rust module registry (un-migrated
+        //    commands still flow through the module's handle_command match).
         if let Some((module, cmd)) = self.registry.route_command(command) {
             log.debug(&format!("Routing '{}' to local Rust module", command));
             let module_name = module.config().name;
@@ -383,8 +393,8 @@ impl CommandExecutor {
                 .await;
         }
 
-        // 3. No Rust module owns this command. Refuse to silently
-        //    route to the TS bridge — that path was the
+        // 4. No DynCommand object and no Rust module owns this command.
+        //    Refuse to silently route to the TS bridge — that path was the
         //    [[no-fallbacks-ever]] violation flagged as task #219. A
         //    substrate that silently routes unmigrated commands to
         //    `CommandRouterServer` appears "broken in headless mode"
@@ -693,6 +703,35 @@ mod tests {
 
         fn name(&self) -> &'static str {
             "always-handle"
+        }
+    }
+
+    // what this catches: the TYPED PATH end-to-end through the REAL executor —
+    // `ping` (migrated to a DynCommand object via ActionCommand) dispatches all the
+    // way through CommandExecutor::execute, which consults the registry's object map
+    // (step 2) BEFORE any prefix routing, and returns the bare PingResult. This is
+    // the integration proof that the per-module match arm is gone for ping and the
+    // self-routing object map serves it. Pure headless Rust — no Node, no socket,
+    // no npm start.
+    #[tokio::test]
+    async fn ping_dispatches_through_executor_via_typed_object_path() {
+        let registry = Arc::new(ModuleRegistry::new());
+        registry.register(Arc::new(crate::modules::health::HealthModule::new()));
+        let executor = CommandExecutor::new(registry);
+
+        let result = executor
+            .execute("ping", serde_json::json!({}))
+            .await
+            .expect("ping dispatches through the executor");
+        match result {
+            CommandResult::Json(v) => {
+                assert_eq!(v["ok"], true, "ping returned the bare PingResult");
+                assert!(
+                    v.get("success").is_none(),
+                    "Bare wire — no envelope wrapping on the typed path"
+                );
+            }
+            other => panic!("expected Json, got {other:?}"),
         }
     }
 
