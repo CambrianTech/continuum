@@ -27,11 +27,28 @@
 //! later, exactly where it belongs.
 
 use crate::ai::types::{NativeToolSpec, ToolInputSchema};
+use crate::modules::grid::acl::is_command_authorized;
+use crate::modules::grid::node::TrustLevel;
 use crate::sdk_codegen::{command_registry, AccessLevel, CommandDescriptor};
 use serde_json::json;
 
-/// The persona's tool surface: every `AiSafe` command, projected to a tool spec.
-/// Dynamic — derived from the live [`command_registry`], nothing hardcoded.
+/// The persona's tool surface: every command it is AUTHORIZED to run at `trust`,
+/// projected to a tool spec. **Offer == authorized, by construction** — a persona
+/// is NEVER shown a tool the gate would refuse (no "offer ping then deny it"). The
+/// SAME [`is_command_authorized`] the executor enforces decides what's offered, so
+/// the two can't drift, and opening a command to a trust level auto-adds it here.
+/// Dynamic from the live [`command_registry`]; nothing hardcoded.
+pub fn authorized_tool_specs(trust: TrustLevel) -> Vec<NativeToolSpec> {
+    command_registry()
+        .iter()
+        .filter(|d| is_command_authorized(d.name, trust))
+        .map(descriptor_to_tool_spec)
+        .collect()
+}
+
+/// The `AiSafe`-only surface — retained for callers/diagnostics that specifically
+/// want the declared-safe set. Personas should use [`authorized_tool_specs`] so
+/// the offer matches what they can actually run.
 pub fn ai_safe_tool_specs() -> Vec<NativeToolSpec> {
     command_registry()
         .iter()

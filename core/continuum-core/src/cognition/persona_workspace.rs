@@ -152,8 +152,15 @@ pub fn build_workspace_cycle(cfg: PersonaBrainConfig) -> WorkspaceCycle {
         cfg.adapter,
     );
     if let Some(executor) = cfg.tool_executor {
+        // Offer EXACTLY what this persona is authorized to run (offer ==
+        // authorized) — never a tool the gate would refuse. A persona is an airc
+        // caller (Provisional trust, per GridTrustAuthPolicy); widening what a
+        // persona can do = opening more commands to Provisional, which auto-widens
+        // this surface (no second list to keep in sync).
         deliberation = deliberation
-            .with_tools(super::persona_tools::ai_safe_tool_specs())
+            .with_tools(super::persona_tools::authorized_tool_specs(
+                crate::modules::grid::node::TrustLevel::Provisional,
+            ))
             .with_tool_executor(executor);
     }
     faculties.push(Arc::new(deliberation));
