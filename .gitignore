@@ -12,6 +12,15 @@ dist/
 *.tgz
 continuum-jtag-*.tgz
 
+# Rust build artifacts. The cargo WORKSPACE root is the repo root, so
+# `cargo run --manifest-path core/continuum-core/...` (start-server.sh / cu start)
+# builds into /target — multi-GB, never committed. `**/target/` also covers the
+# shared cache symlink target and any per-crate ghost dirs. (The canonical build
+# target is $HOME/.continuum/cache/cargo-target via CARGO_TARGET_DIR; /target is
+# what the workspace-root cargo run uses when the env var isn't set.)
+/target/
+**/target/
+
 # Generated CSS-in-JS modules emitted by src/scripts/compile-sass.ts
 # from sibling .scss source files. Pure build output — never hand-edited.
 src/widgets/**/public/*.styles.ts
