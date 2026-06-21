@@ -84,7 +84,18 @@ impl ResumeOrMintProvider {
         continuum_root: &Path,
         min_personas: usize,
     ) -> Result<Self, PersonaIdentityError> {
-        let personas_dir = continuum_root.join("personas");
+        // Scan the CANONICAL citizen layout (`<root>/citizens/personas/`) — the
+        // same parent `citizen_home_path` writes homes under — NOT the pre-Slice-4
+        // `<root>/personas/` this used to join. The old literal never matched where
+        // the runtime actually persists homes, so it found nothing and minted a
+        // stranger every boot instead of resuming — breaking persona persistence /
+        // self-determination (a persona's identity.key + engrams.sqlite were on
+        // disk but unseen). `citizens_kind_dir` is the single source of truth, so
+        // the read path can't drift from the write path again.
+        let personas_dir = crate::context::citizens_kind_dir(
+            continuum_root,
+            crate::identity::IdentityKind::Persona,
+        );
         let resumed = scan_personas_dir(&personas_dir).await?;
         tracing::info!(
             personas_dir = %personas_dir.display(),
@@ -254,7 +265,13 @@ mod tests {
     #[tokio::test]
     async fn resumes_existing_persona_from_seed() {
         let temp = TempDir::new().unwrap();
-        let personas_dir = temp.path().join("personas").join("Pax");
+        // Mirror PRODUCTION layout via the same helper the resumer uses, so this
+        // test exercises the real scan path (the bug was the resumer reading a
+        // different literal than the writer — a hardcoded `personas/` here would
+        // re-introduce exactly that blind spot).
+        let personas_dir =
+            crate::context::citizens_kind_dir(temp.path(), crate::identity::IdentityKind::Persona)
+                .join("Pax");
         let seed_path = personas_dir.join("seed.json");
         let seed = PersonaSeedFile::V1 {
             persona_id: Uuid::parse_str("9d17560c-dbb4-4f9e-86f0-4ceac5d2aff7").unwrap(),
@@ -279,7 +296,13 @@ mod tests {
     #[tokio::test]
     async fn resumes_one_plus_mints_to_floor() {
         let temp = TempDir::new().unwrap();
-        let personas_dir = temp.path().join("personas").join("Pax");
+        // Mirror PRODUCTION layout via the same helper the resumer uses, so this
+        // test exercises the real scan path (the bug was the resumer reading a
+        // different literal than the writer — a hardcoded `personas/` here would
+        // re-introduce exactly that blind spot).
+        let personas_dir =
+            crate::context::citizens_kind_dir(temp.path(), crate::identity::IdentityKind::Persona)
+                .join("Pax");
         let seed_path = personas_dir.join("seed.json");
         let seed = PersonaSeedFile::V1 {
             persona_id: Uuid::new_v4(),
@@ -303,8 +326,13 @@ mod tests {
     #[tokio::test]
     async fn corrupted_seed_is_skipped_not_fatal() {
         let temp = TempDir::new().unwrap();
+        // Canonical citizen layout (same helper production scans).
+        let citizens = crate::context::citizens_kind_dir(
+            temp.path(),
+            crate::identity::IdentityKind::Persona,
+        );
         // Good persona.
-        let good = temp.path().join("personas").join("Pax").join("seed.json");
+        let good = citizens.join("Pax").join("seed.json");
         let seed = PersonaSeedFile::V1 {
             persona_id: Uuid::new_v4(),
             agent_name: "Pax".to_string(),
@@ -312,7 +340,7 @@ mod tests {
         };
         write_seed_atomic(&good, &seed).await.unwrap();
         // Corrupted persona.
-        let bad_dir = temp.path().join("personas").join("Broken");
+        let bad_dir = citizens.join("Broken");
         tokio::fs::create_dir_all(&bad_dir).await.unwrap();
         tokio::fs::write(bad_dir.join("seed.json"), b"definitely not json")
             .await

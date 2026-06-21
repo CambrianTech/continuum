@@ -88,6 +88,20 @@ pub fn citizen_home_path(
     path.join(label).join("airc")
 }
 
+/// The directory CONTAINING every citizen home of a given kind:
+/// `<continuum_root>/citizens/<kind_slug>/`. This is the parent that
+/// [`citizen_home_path`] places `<label>/airc/` under — the single source of
+/// truth for "where do I scan to enumerate the personas/agents/… on this box."
+/// Resume/discovery code MUST derive its scan root from here, never re-literal
+/// `join("personas")` (the pre-Slice-4 path), so the write path and the read
+/// path can never drift apart again.
+///
+/// (Agent kinds nest a `<provider>/` level below this; enumerate per-provider
+/// subdirs for those. Persona/Human/Jtag/Web place `<label>/` directly here.)
+pub fn citizens_kind_dir(continuum_root: &Path, kind: IdentityKind) -> PathBuf {
+    continuum_root.join("citizens").join(kind_slug(kind))
+}
+
 /// Pre-Slice-4 layouts, kept for migration detection (Slice 4 hard-
 /// errors on these per [[no-fallbacks-ever]]).
 ///
