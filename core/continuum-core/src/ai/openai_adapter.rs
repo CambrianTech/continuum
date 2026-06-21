@@ -51,6 +51,12 @@ pub struct OpenAICompatibleConfig {
     /// Whether this provider requires an Authorization header. Derived
     /// from `Provider.auth`: Bearer → true, ApiKey → true, None → false.
     pub requires_auth: bool,
+    /// How this provider exchanges tool calls. Native = real OpenAI
+    /// function-calling; JsonInPrompt = describe tools in the prompt + parse the
+    /// JSON call from the response (for gateways/models that ignore the `tools`
+    /// param, e.g. unsloth+GGUF — proven 2026-06-21). Gateway-level for now;
+    /// per-model refinement (from the gateway's model data) is the follow-up.
+    pub tool_protocol: super::json_in_prompt_tools::ToolProtocol,
 }
 
 /// OpenAI-compatible adapter implementation
@@ -325,6 +331,15 @@ impl OpenAICompatibleAdapter {
             models,
             model_prefixes: provider.model_prefixes.clone(),
             requires_auth,
+            // unsloth's GGUF path ignores the OpenAI `tools` param (proven), so it
+            // uses prompt-based tools; cloud OpenAI-compatible providers do native
+            // function-calling. Keyed by GATEWAY, not a specific model — refine to
+            // per-model from the gateway's model capabilities later.
+            tool_protocol: if provider.id == "unsloth" {
+                super::json_in_prompt_tools::ToolProtocol::JsonInPrompt
+            } else {
+                super::json_in_prompt_tools::ToolProtocol::Native
+            },
         })
     }
 
@@ -653,7 +668,18 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
         let model: &str = &resolved_model;
 
         // Build request body
-        let messages = self.format_messages(&request.messages, request.system_prompt.as_deref());
+        let mut messages = self.format_messages(&request.messages, request.system_prompt.as_deref());
+
+        // JsonInPrompt tool offering: for gateways/models that ignore the OpenAI
+        // `tools` param (unsloth+GGUF), describe the tools IN the prompt and ask
+        // for a strict JSON call. Appended as a system message; the matching parse
+        // happens on the response below. Native providers skip this (tool_prompt →
+        // None) and use the `tools` param instead.
+        if let Some(tools) = request.tools.as_ref() {
+            if let Some(block) = self.config.tool_protocol.tool_prompt(tools) {
+                messages.push(json!({ "role": "system", "content": block }));
+            }
+        }
 
         let mut body = json!({
             "model": model,
@@ -726,9 +752,15 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
             );
         }
 
-        // Add tools if provided
+        // Add tools via the native OpenAI `tools` param — ONLY for Native
+        // providers. JsonInPrompt providers already had the tools described in the
+        // prompt above (sending the param too would be ignored or confuse them).
         if let Some(tools) = &request.tools {
-            if !tools.is_empty() && self.config.supports_tools {
+            if !tools.is_empty()
+                && self.config.supports_tools
+                && self.config.tool_protocol
+                    == super::json_in_prompt_tools::ToolProtocol::Native
+            {
                 let openai_tools: Vec<Value> = tools
                     .iter()
                     .map(|tool| {
@@ -869,14 +901,14 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
             .ok_or_else(|| "No completion in response".to_string())?;
 
         let text = choice.message.content.clone().unwrap_or_default();
-        let finish_reason = choice
+        let mut finish_reason = choice
             .finish_reason
             .as_deref()
             .map(|r| self.map_finish_reason(r))
             .unwrap_or(FinishReason::Stop);
 
-        // Parse tool calls
-        let tool_calls: Option<Vec<ToolCall>> = choice.message.tool_calls.as_ref().map(|tcs| {
+        // Parse native tool calls
+        let mut tool_calls: Option<Vec<ToolCall>> = choice.message.tool_calls.as_ref().map(|tcs| {
             tcs.iter()
                 .map(|tc| {
                     let input: Value = serde_json::from_str(&tc.function.arguments)
@@ -889,6 +921,17 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
                 })
                 .collect()
         });
+
+        // JsonInPrompt synthesis: when the gateway/model doesn't do native function
+        // calling, the model answers as TEXT containing the JSON tool call from the
+        // injected contract. Lift it into the canonical ToolUse shape so the agent
+        // loop executes it EXACTLY like a native call (one seam, model-agnostic).
+        if tool_calls.as_ref().map_or(true, |t| t.is_empty()) {
+            if let Some(call) = self.config.tool_protocol.parse_text_call(&text) {
+                finish_reason = FinishReason::ToolUse;
+                tool_calls = Some(vec![call]);
+            }
+        }
 
         // Build content blocks
         let mut content_blocks = Vec::new();
