@@ -259,7 +259,11 @@ impl<R: IsMemorable> InboxAdmissionRunner<R> {
         trace: Option<&mut CognitionTrace>,
     ) -> Result<AdmissionDecision, AdmissionError> {
         let candidate = inbox_message_to_candidate(msg, &self.trust_mapping);
-        let ctx = AdmissionContext::new(&self.config, seen_content, seen_events);
+        // Scope the admission to the message's room (the contextId), so the
+        // minted engram is keyed to its conversation within the persona's
+        // identity (per IDENTITY-SCOPE-PEER-LIVENESS-MODEL.md Part A).
+        let ctx = AdmissionContext::new(&self.config, seen_content, seen_events)
+            .with_context(msg.room_id);
         AdmissionGate::admit(&candidate, &self.recipe, &ctx, trace)
     }
 }

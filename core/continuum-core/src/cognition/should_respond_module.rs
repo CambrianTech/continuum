@@ -118,6 +118,7 @@ mod tests {
         let state = Arc::new(AdmissionState::new(recall_meta.clone()));
         let id = Uuid::new_v4();
         let engram = Engram {
+            context_id: None,
             id,
             kind: EngramKind::Episodic,
             content: "we agreed to ship the deploy fix after review".to_string(),

@@ -295,6 +295,7 @@ mod tests {
         // source's scoring + packing behavior.
         for i in 0..count {
             let engram = Engram {
+                context_id: None,
                 id: Uuid::new_v4(),
                 kind: EngramKind::Episodic,
                 content: format!("engram body number {i}"),

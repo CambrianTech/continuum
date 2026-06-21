@@ -905,6 +905,7 @@ mod tests {
             .expect("metadata store");
 
         let engram = Engram {
+            context_id: None,
             id: Uuid::new_v4(),
             kind: EngramKind::Episodic,
             content: "anchor".to_string(),

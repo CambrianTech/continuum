@@ -482,6 +482,7 @@ mod tests {
 
     fn make_test_engram(now_ms: u64, idx: usize) -> Engram {
         Engram {
+            context_id: None,
             id: Uuid::new_v4(),
             kind: EngramKind::Episodic,
             content: format!("test engram body {idx}"),

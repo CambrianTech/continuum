@@ -833,6 +833,7 @@ mod tests {
 
     fn synthetic_engram_with_chat_origin(content: &str) -> Engram {
         Engram {
+            context_id: None,
             id: Uuid::new_v4(),
             kind: EngramKind::Episodic,
             content: content.to_string(),
@@ -852,6 +853,7 @@ mod tests {
 
     fn synthetic_engram_with_airc_origin(content: &str, message_id: &str) -> Engram {
         Engram {
+            context_id: None,
             id: Uuid::new_v4(),
             kind: EngramKind::Episodic,
             content: content.to_string(),
