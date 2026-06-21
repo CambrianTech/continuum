@@ -5,12 +5,11 @@
 //! the ServiceModule trait design is proven for the simplest case.
 
 use crate::runtime::{CommandResult, ModuleConfig, ModuleContext, ModulePriority, ServiceModule};
-use crate::sdk_codegen::{ActionCommand, CommandError, Ctx, DynCommand};
+use crate::sdk_codegen::{ActionCommand, CommandError, Ctx};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::any::Any;
-use std::sync::Arc;
 use std::time::Instant;
 use ts_rs::TS;
 
@@ -39,9 +38,10 @@ pub struct PingResult {
 
 /// `ping` — the canonical self-routing command. As an [`ActionCommand`] it gets
 /// `CommandSpec` (Bare wire), `CommandHandler`, AND `DynCommand` from the blanket
-/// impls — so this ONE type + a `run` body is the whole command, and it routes
-/// through the kernel's typed object map (no `handle_command` match arm). The
-/// trivial outlier proving the base-trait hierarchy on the live dispatch path.
+/// impls — so this ONE type + a `run` body is the whole command. It is STATELESS,
+/// so `register_stateless_command!` puts it on the kernel's typed object map with
+/// ZERO host-module ceremony (no `handle_command` arm, no `commands()` override).
+#[derive(Default)]
 pub struct PingCommand;
 
 #[async_trait]
@@ -59,7 +59,7 @@ impl ActionCommand for PingCommand {
         })
     }
 }
-crate::register_command!(PingCommand);
+crate::register_stateless_command!(PingCommand);
 
 pub struct HealthModule {
     started_at: Instant,
@@ -85,9 +85,10 @@ impl ServiceModule for HealthModule {
         ModuleConfig {
             name: "health",
             priority: ModulePriority::Normal,
-            // `ping` is NOT here — it routes through the typed object map (see
-            // `commands()` below), not the prefix table. Only the un-migrated
-            // `health-`/`get-` verbs still prefix-route to `handle_command`.
+            // `ping` is NOT here — it's a STATELESS self-routing command
+            // (`register_stateless_command!`), live on the typed object map with no
+            // host-module ceremony. Only the un-migrated `health-`/`get-` verbs
+            // still prefix-route to `handle_command`.
             command_prefixes: &["health-", "get-"],
             event_subscriptions: &[],
             needs_dedicated_thread: false,
@@ -98,12 +99,6 @@ impl ServiceModule for HealthModule {
 
     async fn initialize(&self, _ctx: &ModuleContext) -> Result<(), String> {
         Ok(())
-    }
-
-    /// `ping` is a self-routing [`DynCommand`] object (typed path) — the kernel
-    /// routes the name straight to it, so there's no `"ping" =>` arm below.
-    fn commands(&self) -> Vec<Arc<dyn DynCommand>> {
-        vec![Arc::new(PingCommand)]
     }
 
     async fn handle_command(&self, command: &str, _params: Value) -> Result<CommandResult, String> {
@@ -158,6 +153,7 @@ mod tests {
     #[tokio::test]
     async fn ping_routes_through_the_typed_object_map() {
         use crate::runtime::ModuleRegistry;
+        use std::sync::Arc;
         let registry = ModuleRegistry::new();
         registry.register(Arc::new(HealthModule::new()));
 

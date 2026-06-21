@@ -22,6 +22,8 @@
 //! shape, get the routable object. See
 //! [docs/architecture/COMMAND-ORGANIZATION.md](../../../../docs/architecture/COMMAND-ORGANIZATION.md).
 
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use serde::{de::DeserializeOwned, Serialize};
 use serde_json::Value;
@@ -82,6 +84,43 @@ where
     async fn invoke(&self, params: Value) -> Result<CommandResult, String> {
         dispatch(self, params).await
     }
+}
+
+/// A self-registering STATELESS command object — captures no deps, so it can be
+/// constructed at link time and dropped straight into the kernel's command map
+/// with ZERO host-module ceremony. This is what kills the "every command needs a
+/// module to expose it" friction: a stateless command does
+/// `register_command!(MyCmd)` (already in the static descriptor registry) and is
+/// ALSO live on the runtime typed path via this inventory. Dep-holding commands
+/// still come from a module's [`ServiceModule::commands`] (the deps must be
+/// constructed somewhere). See docs/architecture/COMMAND-ORGANIZATION.md.
+pub struct StatelessCommand {
+    ctor: fn() -> Arc<dyn DynCommand>,
+}
+
+impl StatelessCommand {
+    /// Build a registration from a no-arg constructor (the `|| Arc::new(MyCmd)`
+    /// the [`crate::register_stateless_command!`] macro supplies).
+    pub const fn new(ctor: fn() -> Arc<dyn DynCommand>) -> Self {
+        Self { ctor }
+    }
+    /// Construct the command object.
+    pub fn build(&self) -> Arc<dyn DynCommand> {
+        (self.ctor)()
+    }
+}
+
+inventory::collect!(StatelessCommand);
+
+/// Every stateless command object, assembled from `register_stateless_command!`
+/// submissions across the crate — the kernel seeds its command map with these at
+/// startup (no module needed). Sorted by name for deterministic order.
+pub fn stateless_command_objects() -> Vec<Arc<dyn DynCommand>> {
+    let mut objs: Vec<Arc<dyn DynCommand>> = inventory::iter::<StatelessCommand>()
+        .map(|s| s.build())
+        .collect();
+    objs.sort_by(|a, b| a.name().cmp(b.name()));
+    objs
 }
 
 /// A fire-and-forget verb: typed params in, typed output out, no handle, runs

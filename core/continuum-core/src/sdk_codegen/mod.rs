@@ -60,7 +60,7 @@ pub mod command;
 pub mod emit;
 pub mod events;
 pub mod handler;
-pub use command::{ActionCommand, DynCommand};
+pub use command::{stateless_command_objects, ActionCommand, DynCommand, StatelessCommand};
 #[cfg(feature = "ts-codegen")]
 pub use emit::write_typescript_sdk;
 pub use events::{event_registry, EventDescriptor, EventSpec};
@@ -507,6 +507,28 @@ macro_rules! register_command {
         inventory::submit! {
             $crate::sdk_codegen::CommandRegistration::new(
                 || $crate::sdk_codegen::CommandDescriptor::of::<$cmd>(),
+            )
+        }
+    };
+}
+
+/// Self-register a STATELESS command at its own declaration site — ONE line, no
+/// host module. Registers BOTH the static descriptor (for codegen / ACL / the
+/// persona tool surface) AND a runtime constructor (so the kernel routes the
+/// command name directly to the object). The command type must be `Default`
+/// (stateless ⇒ trivially constructible). Dep-holding commands can't use this —
+/// they come from a module's `commands()` so their deps get constructed.
+/// ```ignore
+/// register_stateless_command!(PingCommand);
+/// ```
+#[macro_export]
+macro_rules! register_stateless_command {
+    ($cmd:ty) => {
+        $crate::register_command!($cmd);
+        inventory::submit! {
+            $crate::sdk_codegen::StatelessCommand::new(
+                || ::std::sync::Arc::new(<$cmd as ::std::default::Default>::default())
+                    as ::std::sync::Arc<dyn $crate::sdk_codegen::DynCommand>,
             )
         }
     };

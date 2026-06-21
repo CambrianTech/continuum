@@ -49,14 +49,29 @@ impl Default for ModuleRegistry {
 
 impl ModuleRegistry {
     pub fn new() -> Self {
-        Self {
+        let registry = Self {
             modules: DashMap::new(),
             configs: DashMap::new(),
             metrics: DashMap::new(),
             command_routes: RwLock::new(Vec::new()),
             type_routes: DashMap::new(),
             command_objects: DashMap::new(),
+        };
+        // Seed the typed object map with every self-registering STATELESS command
+        // (zero host-module ceremony — see register_stateless_command!). Dep-holding
+        // commands are added later via module.commands() in register().
+        for cmd in crate::sdk_codegen::stateless_command_objects() {
+            let name = cmd.name();
+            if let Some(prev) = registry.command_objects.insert(name, cmd) {
+                panic!(
+                    "ModuleRegistry: duplicate stateless command object '{}' (prev '{}'). \
+                     Command names must be unique across the whole registry.",
+                    name,
+                    prev.name()
+                );
+            }
         }
+        registry
     }
 
     /// Register a module. Auto-wires command routing from its config.

@@ -29,6 +29,7 @@ pub mod airc;
 pub mod audio_constants;
 pub mod code;
 pub mod cognition;
+pub mod commands;
 pub mod comms;
 pub mod concurrency;
 pub mod config_env;
