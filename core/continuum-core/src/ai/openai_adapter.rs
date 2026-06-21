@@ -27,8 +27,9 @@ use crate::{clog_info, clog_warn};
 use super::adapter::{AIProviderAdapter, AdapterCapabilities, ApiStyle};
 use super::registry_bridge::models_for_provider_via_registry;
 use super::types::{
-    ChatMessage, ContentPart, FinishReason, HealthState, HealthStatus, MessageContent, ModelInfo,
-    TextGenerationRequest, TextGenerationResponse, ToolCall, ToolChoice, UsageMetrics,
+    ChatMessage, ContentPart, EmbeddingInput, EmbeddingRequest, EmbeddingResponse, FinishReason,
+    HealthState, HealthStatus, MessageContent, ModelInfo, TextGenerationRequest,
+    TextGenerationResponse, ToolCall, ToolChoice, UsageMetrics,
 };
 
 /// Runtime-resolved config carried by each `OpenAICompatibleAdapter`
@@ -508,7 +509,11 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
             supports_tool_use: supports_tools,
             supports_vision,
             supports_streaming: true,
-            supports_embeddings: self.config.provider_id == "openai",
+            // Embeddings: OpenAI itself, plus unsloth — the universal model
+            // gateway exposes OpenAI-compatible `/v1/embeddings`, so continuum's
+            // neural recall path embeds through it (UNSLOTH-INTEGRATION.md). This
+            // is what lets us delete the local fastembed/ONNX embedder.
+            supports_embeddings: matches!(self.config.provider_id.as_str(), "openai" | "unsloth"),
             supports_audio: false,
             supports_image_generation: self.config.provider_id == "openai",
             is_local: false,
@@ -925,6 +930,81 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
         })
     }
 
+    /// Create embeddings over the OpenAI-compatible `/v1/embeddings` endpoint.
+    /// This is the path continuum's neural recall ([`NeuralEmbeddingProvider`])
+    /// takes through the unsloth gateway — it replaces the in-process
+    /// fastembed/ONNX embedder. Degrades to an `Err` (never panics) when the
+    /// endpoint is unreachable or the model isn't an embedding model; the caller
+    /// falls back to the lexical embedder.
+    ///
+    /// [`NeuralEmbeddingProvider`]: crate::cognition::embedding::NeuralEmbeddingProvider
+    async fn create_embedding(
+        &self,
+        request: EmbeddingRequest,
+    ) -> Result<EmbeddingResponse, String> {
+        let start = Instant::now();
+
+        // The model is the embedding SPACE identity — no silent default among
+        // chat models ([[no-fallbacks-ever]]). NeuralEmbeddingProvider always
+        // pins the canonical embedding slug; a None here is a config error.
+        let model = request.model.clone().ok_or_else(|| {
+            format!(
+                "{} embeddings require an explicit model (the embedding-space identity)",
+                self.config.name
+            )
+        })?;
+
+        let body = build_embedding_body(&request.input, &model);
+
+        let base_url = self
+            .runtime_base_url
+            .as_deref()
+            .unwrap_or(self.config.base_url.as_str());
+        let url = format!("{base_url}/v1/embeddings");
+
+        let mut request_builder = self
+            .client
+            .post(&url)
+            .header("Content-Type", "application/json");
+        if self.config.requires_auth {
+            if let Some(api_key) = &self.api_key {
+                request_builder =
+                    request_builder.header("Authorization", format!("Bearer {api_key}"));
+            }
+        }
+
+        let response = request_builder
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| format!("{} embeddings POST failed: {e}", self.config.name))?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let err_body = response.text().await.unwrap_or_default();
+            return Err(format!(
+                "{} /v1/embeddings {status}: {err_body}",
+                self.config.name
+            ));
+        }
+
+        let json: Value = response
+            .json()
+            .await
+            .map_err(|e| format!("{} embeddings response parse failed: {e}", self.config.name))?;
+
+        let embeddings = parse_embedding_response(&json)?;
+        let usage = parse_embedding_usage(&json);
+
+        Ok(EmbeddingResponse {
+            embeddings,
+            model,
+            provider: self.config.provider_id.clone(),
+            usage,
+            response_time_ms: start.elapsed().as_millis() as u64,
+        })
+    }
+
     async fn health_check(&self) -> HealthStatus {
         // Only require API key if provider needs auth
         if self.config.requires_auth && self.api_key.is_none() {
@@ -1040,5 +1120,132 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
             .model_prefixes
             .iter()
             .any(|prefix| lower.starts_with(&prefix.to_lowercase()))
+    }
+}
+
+// ─── /v1/embeddings helpers (pure — TDD'd apart from the HTTP I/O) ──────────────
+
+/// Build the OpenAI-compatible `/v1/embeddings` request body. A single input is
+/// sent as a string and a batch as an array — both shapes the spec accepts —
+/// and `model` is the embedding-space identity (already resolved by the caller).
+fn build_embedding_body(input: &EmbeddingInput, model: &str) -> Value {
+    let input = match input {
+        EmbeddingInput::Single(s) => json!(s),
+        EmbeddingInput::Multiple(v) => json!(v),
+    };
+    json!({ "input": input, "model": model })
+}
+
+/// Parse an OpenAI-compatible `/v1/embeddings` response into vectors ordered by
+/// the response's `index` field. The spec does NOT guarantee `data` comes back
+/// in input order, so we sort by `index` — getting this wrong silently
+/// misaligns every vector with its source text (a corruption, not a crash).
+/// Errors (rather than fabricating a vector) when `data` is missing or an entry
+/// has no `embedding`, so a misconfigured endpoint degrades to the lexical
+/// fallback instead of poisoning recall with junk.
+fn parse_embedding_response(body: &Value) -> Result<Vec<Vec<f32>>, String> {
+    let data = body
+        .get("data")
+        .and_then(|d| d.as_array())
+        .ok_or_else(|| format!("embeddings response missing `data` array: {body}"))?;
+
+    let mut indexed: Vec<(usize, Vec<f32>)> = Vec::with_capacity(data.len());
+    for (i, item) in data.iter().enumerate() {
+        let idx = item
+            .get("index")
+            .and_then(|v| v.as_u64())
+            .map(|v| v as usize)
+            .unwrap_or(i);
+        let emb = item
+            .get("embedding")
+            .and_then(|v| v.as_array())
+            .ok_or_else(|| format!("embeddings response item {i} missing `embedding`"))?;
+        let vec: Vec<f32> = emb.iter().map(|n| n.as_f64().unwrap_or(0.0) as f32).collect();
+        indexed.push((idx, vec));
+    }
+    indexed.sort_by_key(|(i, _)| *i);
+    Ok(indexed.into_iter().map(|(_, v)| v).collect())
+}
+
+/// Extract token usage from an embeddings response, defaulting missing fields to
+/// 0 — usage is observability, never load-bearing, so a provider that omits it
+/// must not fail the embed.
+fn parse_embedding_usage(body: &Value) -> UsageMetrics {
+    let usage = body.get("usage");
+    let prompt = usage
+        .and_then(|u| u.get("prompt_tokens"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0) as u32;
+    let total = usage
+        .and_then(|u| u.get("total_tokens"))
+        .and_then(|v| v.as_u64())
+        .map(|v| v as u32)
+        .unwrap_or(prompt);
+    UsageMetrics {
+        input_tokens: prompt,
+        output_tokens: 0,
+        total_tokens: total,
+        estimated_cost: None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // what this catches: a single string input serializes as a JSON string (not
+    // a 1-element array) and the resolved model is carried through — the request
+    // shape unsloth/OpenAI actually expects.
+    #[test]
+    fn build_body_single_input() {
+        let body = build_embedding_body(&EmbeddingInput::Single("hello".into()), "qwen3-embed");
+        assert_eq!(body["input"], json!("hello"));
+        assert_eq!(body["model"], json!("qwen3-embed"));
+    }
+
+    // what this catches: a batch input serializes as a JSON array, so batched
+    // embeds (the recall hot path) go out in one request.
+    #[test]
+    fn build_body_batch_input() {
+        let body = build_embedding_body(
+            &EmbeddingInput::Multiple(vec!["a".into(), "b".into()]),
+            "qwen3-embed",
+        );
+        assert_eq!(body["input"], json!(["a", "b"]));
+    }
+
+    // what this catches: THE CORRUPTION GUARD — `data` returned out of order is
+    // re-sorted by `index`, so vector[k] always corresponds to input[k]. A
+    // regression here silently pairs every memory with the wrong vector.
+    #[test]
+    fn parse_response_orders_by_index() {
+        let body = json!({
+            "data": [
+                { "index": 1, "embedding": [0.4, 0.5] },
+                { "index": 0, "embedding": [0.1, 0.2] },
+            ],
+            "model": "qwen3-embed",
+            "usage": { "prompt_tokens": 3, "total_tokens": 3 }
+        });
+        let vecs = parse_embedding_response(&body).unwrap();
+        assert_eq!(vecs, vec![vec![0.1, 0.2], vec![0.4, 0.5]]);
+    }
+
+    // what this catches: a malformed response (no `data`) is an Err, NOT a
+    // panic and NOT an empty success — so recall degrades to the lexical
+    // fallback instead of treating "no signal" as a real (empty) embedding.
+    #[test]
+    fn parse_response_missing_data_errors() {
+        let body = json!({ "object": "error", "message": "no model loaded" });
+        assert!(parse_embedding_response(&body).is_err());
+    }
+
+    // what this catches: usage is optional — a provider that omits it yields
+    // zeroed metrics, never an error (usage is observability, not load-bearing).
+    #[test]
+    fn parse_usage_defaults_to_zero_when_absent() {
+        let usage = parse_embedding_usage(&json!({ "data": [] }));
+        assert_eq!(usage.input_tokens, 0);
+        assert_eq!(usage.total_tokens, 0);
     }
 }
