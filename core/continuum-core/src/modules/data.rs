@@ -3719,6 +3719,9 @@ pub struct DataListCommand;
 impl crate::sdk_codegen::CommandSpec for DataListCommand {
     const NAME: &'static str = "data/list";
     const ACCESS_LEVEL: crate::sdk_codegen::AccessLevel = crate::sdk_codegen::AccessLevel::AiSafe;
+    const DESCRIPTION: &'static str =
+        "List entities from a data collection (rooms, users, messages, …). Params \
+         carry the collection name and optional ordering/filtering.";
     const WIRE: crate::sdk_codegen::WireShape = crate::sdk_codegen::WireShape::Bare;
     type Params = DataListParams;
     type Result = DataListResult;

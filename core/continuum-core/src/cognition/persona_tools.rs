@@ -48,9 +48,15 @@ pub fn ai_safe_tool_specs() -> Vec<NativeToolSpec> {
 pub fn descriptor_to_tool_spec(d: &CommandDescriptor) -> NativeToolSpec {
     NativeToolSpec {
         name: d.name.to_string(),
-        // Best-effort until commands declare a description: name the command and
-        // its param type so the model has a handle. Real description slots here.
-        description: format!("Command `{}` (params: {}).", d.name, d.params.name),
+        // The command's own declared DESCRIPTION (headless, compartmentalized) when
+        // present; otherwise fall back to a name + param-type handle so the model
+        // still has something. A command becomes a GOOD tool simply by declaring
+        // `const DESCRIPTION` in its own file — no change here.
+        description: if d.description.is_empty() {
+            format!("Command `{}` (params: {}).", d.name, d.params.name)
+        } else {
+            d.description.to_string()
+        },
         // Open object — the command validates its own typed params. A declared
         // param JSON schema replaces this when the metadata mechanism lands.
         input_schema: ToolInputSchema {

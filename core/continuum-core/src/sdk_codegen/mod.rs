@@ -158,6 +158,14 @@ pub trait CommandSpec {
     const NAME: &'static str;
     /// The capability this command requires.
     const ACCESS_LEVEL: AccessLevel;
+    /// One-line, model-facing description of what this command DOES — surfaced
+    /// into a persona's DYNAMIC tool surface (`command_registry × AiSafe`,
+    /// `cognition::persona_tools`) so the reasoner knows when to call it. This is
+    /// HEADLESS metadata (a Rust const), declared by the command itself in its own
+    /// file (compartmentalized, like its `ACCESS_LEVEL`) — nothing to do with the
+    /// TS emitter. Defaults to empty; the tool projection falls back to a
+    /// name-based description when unset, so existing commands need no change.
+    const DESCRIPTION: &'static str = "";
     /// The handler's ACTUAL wire convention — decides whether the generated
     /// surface is enveloped or bare. MUST match what the handler really does
     /// (a mismatch is a type that lies about the wire).
@@ -225,6 +233,10 @@ fn module_of(output_path: &Path) -> String {
 pub struct CommandDescriptor {
     pub name: &'static str,
     pub access_level: AccessLevel,
+    /// Headless, model-facing description (from [`CommandSpec::DESCRIPTION`]) —
+    /// what the persona tool surface shows the reasoner. Empty when the command
+    /// hasn't declared one yet.
+    pub description: &'static str,
     /// The handler's real wire convention (decides envelope wrapping).
     pub wire: WireShape,
     pub params: TypeRef,
@@ -257,6 +269,7 @@ impl CommandDescriptor {
         Self {
             name: C::NAME,
             access_level: C::ACCESS_LEVEL,
+            description: C::DESCRIPTION,
             wire: C::WIRE,
             params,
             result,
