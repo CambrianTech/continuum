@@ -158,11 +158,37 @@ pub fn build_workspace_cycle(cfg: PersonaBrainConfig) -> WorkspaceCycle {
     }
     faculties.push(Arc::new(deliberation));
 
-    WorkspaceCycle::new(
+    let cycle = WorkspaceCycle::new(
         faculties,
         Arc::new(SalienceArbiter),
         cfg.capacity.unwrap_or(DEFAULT_WORKSPACE_CAPACITY),
-    )
+    );
+
+    // Make the LIVE brain observable: capture every tick's full competition (all
+    // bids incl. losers, the assembled context the decider saw, the decision) to
+    // a per-persona JSONL. The always-on recorder watches the legacy respond()
+    // path; THIS is what instruments the path that actually runs. Best-effort —
+    // if the fixtures dir can't be opened we log and run with Noop capture; a
+    // persona's mind never fails to assemble over an observability hiccup.
+    match std::env::var("HOME").map(|h| {
+        std::path::Path::new(&h).join(".continuum/fixtures/workspace-traces")
+    }) {
+        Ok(dir) => match super::workspace_capture::JsonlWorkspaceCaptureSink::open(
+            &dir,
+            cfg.persona_id,
+        ) {
+            Ok(sink) => cycle.with_capture(Arc::new(sink)),
+            Err(e) => {
+                tracing::warn!(
+                    persona_id = %cfg.persona_id,
+                    error = %e,
+                    "workspace trace capture unavailable; running with Noop capture"
+                );
+                cycle
+            }
+        },
+        Err(_) => cycle, // HOME unset — opt-out, no capture (no warning spam)
+    }
 }
 
 /// Persona-scoped registry of continuous minds. One `Arc<WorkspaceCycle>` per
