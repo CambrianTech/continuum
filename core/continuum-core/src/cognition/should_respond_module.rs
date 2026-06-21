@@ -159,6 +159,7 @@ mod tests {
             capacity: None,
             grounding_sources: Vec::new(),
             embedder: None,
+            tool_executor: None,
         });
         registry
     }

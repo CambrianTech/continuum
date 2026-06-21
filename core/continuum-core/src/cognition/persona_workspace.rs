@@ -61,6 +61,15 @@ pub struct PersonaBrainConfig {
     ///
     /// [`resolve_recall_embedder`]: super::embedding::resolve_recall_embedder
     pub embedder: Option<Arc<dyn EmbeddingProvider>>,
+    /// The persona's HANDS. `Some` → the deliberation faculty is offered the
+    /// dynamic `AiSafe` tool surface ([`ai_safe_tool_specs`]) and routes the
+    /// model's tool calls through this executor (a `CommandToolExecutor` carrying
+    /// the persona's identity, so the `GridTrustAuthPolicy` ACL gates execution).
+    /// `None` → speak-only (no tools offered) — the safe default for harnesses and
+    /// for any persona whose spawn path hasn't built an executor.
+    ///
+    /// [`ai_safe_tool_specs`]: super::persona_tools::ai_safe_tool_specs
+    pub tool_executor: Option<Arc<dyn crate::cognition::tool_executor::ToolExecutor>>,
 }
 
 /// A grounding [`RagSource`] plus the [`SaliencePolicy`] under which it competes
@@ -131,12 +140,23 @@ pub fn build_workspace_cycle(cfg: PersonaBrainConfig) -> WorkspaceCycle {
     }
 
     // The reasoner runs in phase 2 over everything the perception tier surfaced.
-    faculties.push(Arc::new(LlmDeliberationFaculty::new(
+    // With a tool executor (the persona's HANDS), it's offered the dynamic AiSafe
+    // tool surface and can ACT, not just speak — every tool call routed through
+    // the persona's identity-bearing executor, so the ACL gates what it may do.
+    // Without one, it's speak-only (the safe default). The tool SURFACE is the
+    // single source of truth (`command_registry × AiSafe`), never hardcoded.
+    let mut deliberation = LlmDeliberationFaculty::new(
         cfg.persona_id,
         cfg.persona_name,
         cfg.system_prompt,
         cfg.adapter,
-    )));
+    );
+    if let Some(executor) = cfg.tool_executor {
+        deliberation = deliberation
+            .with_tools(super::persona_tools::ai_safe_tool_specs())
+            .with_tool_executor(executor);
+    }
+    faculties.push(Arc::new(deliberation));
 
     WorkspaceCycle::new(
         faculties,
@@ -259,6 +279,7 @@ mod tests {
             capacity: None,
             grounding_sources: Vec::new(),
             embedder: None,
+            tool_executor: None,
         }
     }
 

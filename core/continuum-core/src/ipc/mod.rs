@@ -1259,7 +1259,12 @@ pub fn start_server(
     // spawned supervisor task can safely dereference `executor()` in
     // its eventual `bootstrap_one` calls. None in `--mode=inference-only`
     // where personas are not hosted at all.
-    let mut persona_supervisor_executor_ready_tx: Option<tokio::sync::oneshot::Sender<()>> = None;
+    // Carries the WIRED executor (GridTrustAuthPolicy + interceptors) to the
+    // persona supervisor task once it's built — both the readiness signal AND the
+    // executor the personas' hands ride. One channel, two jobs (order + payload).
+    let mut persona_supervisor_executor_ready_tx: Option<
+        tokio::sync::oneshot::Sender<Arc<crate::runtime::CommandExecutor>>,
+    > = None;
 
     if let Some((daemon_socket, default_room)) = persona_bootstrap_deps {
         let continuum_root = crate::modules::persona_instance_manager::resolve_continuum_root();
@@ -1440,22 +1445,26 @@ pub fn start_server(
         // The spawn task literally cannot reach `executor()` before
         // the global is initialized — the ordering is enforced by
         // the channel, not by relative I/O latency.
-        let (executor_ready_tx, executor_ready_rx) = tokio::sync::oneshot::channel::<()>();
+        let (executor_ready_tx, executor_ready_rx) =
+            tokio::sync::oneshot::channel::<Arc<crate::runtime::CommandExecutor>>();
         persona_supervisor_executor_ready_tx = Some(executor_ready_tx);
         rt_handle.spawn(async move {
-            // Wait for the IPC thread to signal `init_executor` done.
-            // If the sender is dropped without sending (substrate
-            // shutdown mid-boot), exit cleanly without attempting
-            // to bootstrap personas against an uninitialized
-            // executor.
-            if executor_ready_rx.await.is_err() {
-                tracing::warn!(
-                    "persona supervisor task aborting: executor-ready signal dropped \
-                     before fire (substrate shutdown mid-boot? init_executor never \
-                     reached?). No personas bootstrapped this run."
-                );
-                return;
-            }
+            // Wait for the IPC thread to deliver the WIRED executor (this both
+            // gates ordering AND hands us the executor the personas' hands ride).
+            // If the sender is dropped without sending (substrate shutdown
+            // mid-boot), exit cleanly without bootstrapping personas against an
+            // uninitialized executor.
+            let tool_executor = match executor_ready_rx.await {
+                Ok(ex) => ex,
+                Err(_) => {
+                    tracing::warn!(
+                        "persona supervisor task aborting: executor-ready signal dropped \
+                         before fire (substrate shutdown mid-boot? init_executor never \
+                         reached?). No personas bootstrapped this run."
+                    );
+                    return;
+                }
+            };
             use crate::persona::resume_or_mint_provider::ResumeOrMintProvider;
             let mut provider =
                 match ResumeOrMintProvider::new(&continuum_root_for_boot, 1).await {
@@ -1470,7 +1479,9 @@ pub fn start_server(
                         return;
                     }
                 };
-            let summary = supervisor.spawn_all(&mut provider).await;
+            let summary = supervisor
+                .spawn_all(&mut provider, Some(tool_executor))
+                .await;
             tracing::info!(
                 hosted = summary.hosted,
                 failed = summary.failed(),
@@ -1679,7 +1690,9 @@ pub fn start_server(
     // means the receiver was dropped — substrate shutdown mid-boot —
     // and the supervisor already exited; ignoring is correct.
     if let Some(tx) = persona_supervisor_executor_ready_tx.take() {
-        let _ = tx.send(());
+        // Deliver the WIRED executor (GridTrustAuthPolicy + interceptors) — the
+        // personas' hands ride exactly this, so the ACL gates what they touch.
+        let _ = tx.send(Arc::clone(&executor));
     }
 
     let listener = UnixListener::bind(socket_path)?;
