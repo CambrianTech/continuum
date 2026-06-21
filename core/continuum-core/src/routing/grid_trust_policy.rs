@@ -72,23 +72,36 @@ impl GridTrustAuthPolicy {
 /// `Trusted`/`Owner` command.
 const AIRC_CALLER_CEILING: TrustLevel = TrustLevel::Provisional;
 
+/// The effective grid [`TrustLevel`] of a caller — the ONE place the caller→trust
+/// rule lives, so the [`gate`](GridTrustAuthPolicy::gate) and every trust-aware
+/// consumer (e.g. `commands/list` filtering "what can THIS caller call") share it
+/// and can't drift. Local / substrate callers are the owner on their own box;
+/// airc-sourced callers are capped at [`AIRC_CALLER_CEILING`] until the airc↔grid
+/// per-peer trust bridge resolves a peer's real level.
+pub fn caller_trust(caller: Option<&CallerIdentity>) -> TrustLevel {
+    match caller {
+        None => TrustLevel::Owner,
+        Some(c) => match c.source {
+            CallerSource::Local => TrustLevel::Owner,
+            CallerSource::Airc => AIRC_CALLER_CEILING,
+        },
+    }
+}
+
 impl AuthPolicy for GridTrustAuthPolicy {
     fn gate(&self, decision: &RouteDecision, caller: Option<&CallerIdentity>) -> Verdict {
-        match caller {
-            // Substrate's own code — implicitly trusted.
-            None => Verdict::Allowed,
-            // Local caller — not the cross-grid surface this gate guards.
-            Some(c) if matches!(c.source, CallerSource::Local) => Verdict::Allowed,
-            // Cross-grid (airc) caller — enforce the grid ACL, capped.
-            Some(_) => {
-                let path = decision.path();
-                if is_command_authorized(path, AIRC_CALLER_CEILING) {
-                    Verdict::Allowed
-                } else {
-                    Verdict::Forbidden {
-                        reason: ForbiddenReason::NoPermissionForUri(path.to_string()),
-                    }
-                }
+        let trust = caller_trust(caller);
+        // Owner (local / substrate) — full access; not the cross-grid surface this
+        // gate constrains. Otherwise enforce the grid ACL at the caller's trust.
+        if trust >= TrustLevel::Owner {
+            return Verdict::Allowed;
+        }
+        let path = decision.path();
+        if is_command_authorized(path, trust) {
+            Verdict::Allowed
+        } else {
+            Verdict::Forbidden {
+                reason: ForbiddenReason::NoPermissionForUri(path.to_string()),
             }
         }
     }

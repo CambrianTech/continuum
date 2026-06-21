@@ -31,7 +31,7 @@ use ts_rs::TS;
 
 use crate::runtime::CommandResult;
 
-use super::handler::{dispatch, CommandError, CommandHandler, Ctx, Outcome};
+use super::handler::{CommandError, CommandHandler, Ctx, Outcome};
 use super::{AccessLevel, CommandDescriptor, CommandSpec, WireShape};
 
 /// The type-erased command object — the unit the kernel routes to DIRECTLY.
@@ -56,10 +56,16 @@ pub trait DynCommand: Send + Sync {
     fn descriptor(&self) -> CommandDescriptor;
 
     /// Parse the JSON envelope → run the typed handler → shape the reply per the
-    /// command's [`WireShape`] → map errors to the refusal channel. Internally
-    /// just the existing [`dispatch`]; the type erasure happens here so the kernel
-    /// can call it without knowing `Params`/`Result`.
-    async fn invoke(&self, params: Value) -> Result<CommandResult, String>;
+    /// command's [`WireShape`] → map errors to the refusal channel. `caller` is the
+    /// authenticated identity the executor already gated on (threaded into [`Ctx`]
+    /// so the handler can gate/scope/compose by identity). Internally just
+    /// [`dispatch_with_caller`]; the type erasure happens here so the kernel can
+    /// call it without knowing `Params`/`Result`.
+    async fn invoke(
+        &self,
+        params: Value,
+        caller: Option<crate::routing::CallerIdentity>,
+    ) -> Result<CommandResult, String>;
 }
 
 /// Every [`CommandHandler`] IS a routable command object. This is what lets a
@@ -81,8 +87,12 @@ where
         CommandDescriptor::of::<H::Spec>()
     }
 
-    async fn invoke(&self, params: Value) -> Result<CommandResult, String> {
-        dispatch(self, params).await
+    async fn invoke(
+        &self,
+        params: Value,
+        caller: Option<crate::routing::CallerIdentity>,
+    ) -> Result<CommandResult, String> {
+        super::dispatch_with_caller(self, params, caller).await
     }
 }
 
@@ -261,7 +271,7 @@ mod tests {
         assert_eq!(d.wire, WireShape::Bare, "ActionCommand is Bare");
 
         let cr = cmd
-            .invoke(serde_json::json!({ "text": "hi" }))
+            .invoke(serde_json::json!({ "text": "hi" }), None)
             .await
             .expect("invoke ok");
         match cr {
@@ -291,8 +301,8 @@ mod tests {
         );
 
         // Two invokes through the type-erased object hit the captured state.
-        let first = cmd.invoke(serde_json::json!({ "text": "a" })).await.unwrap();
-        let second = cmd.invoke(serde_json::json!({ "text": "a" })).await.unwrap();
+        let first = cmd.invoke(serde_json::json!({ "text": "a" }), None).await.unwrap();
+        let second = cmd.invoke(serde_json::json!({ "text": "a" }), None).await.unwrap();
         if let (CommandResult::Json(a), CommandResult::Json(b)) = (first, second) {
             assert_eq!(a["echoed"], "a#1");
             assert_eq!(b["echoed"], "a#2", "shared state advanced across calls");
@@ -309,7 +319,7 @@ mod tests {
     async fn invoke_maps_bad_params_to_named_refusal() {
         let cmd = EchoAction;
         let err = cmd
-            .invoke(serde_json::json!({ "text": 123 }))
+            .invoke(serde_json::json!({ "text": 123 }), None)
             .await
             .expect_err("type mismatch must refuse");
         assert!(err.starts_with("test/echo-action: [invalid]"), "named + categorized: {err}");

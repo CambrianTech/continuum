@@ -377,7 +377,11 @@ impl CommandExecutor {
         //    handle_command arm; see docs/architecture/COMMAND-ORGANIZATION.md.
         if let Some(cmd) = self.registry.route_object(command) {
             log.debug(&format!("Routing '{}' to DynCommand object (typed path)", command));
-            return super::runtime::dispatch_object_with_panic_guard(cmd, params).await;
+            // Thread the gated caller into the command's Ctx — the SAME identity
+            // the policy gate just saw (persona / cross-grid airc sender), so the
+            // handler can gate/scope/compose by identity.
+            return super::runtime::dispatch_object_with_panic_guard(cmd, params, caller.cloned())
+                .await;
         }
 
         // 3. Fallback: prefix-routed local Rust module registry (un-migrated

@@ -66,7 +66,7 @@ pub use emit::write_typescript_sdk;
 pub use events::{event_registry, EventDescriptor, EventSpec};
 #[cfg(feature = "ts-codegen")]
 pub use events::{generate_event_api, generate_event_map};
-pub use handler::{dispatch, CommandError, CommandHandler, Ctx, Outcome};
+pub use handler::{dispatch, dispatch_with_caller, CommandError, CommandHandler, Ctx, Outcome};
 
 /// The capability a command declares.
 ///

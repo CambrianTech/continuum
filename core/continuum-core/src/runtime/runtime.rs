@@ -278,7 +278,8 @@ impl Runtime {
         // consult must live here too until the dispatch paths are unified.
         // See docs/architecture/COMMAND-ORGANIZATION.md.
         if let Some(cmd) = self.registry.route_object(command) {
-            return Some(dispatch_object_with_panic_guard(cmd, params).await);
+            // IPC/local socket path — caller is the local owner (None).
+            return Some(dispatch_object_with_panic_guard(cmd, params, None).await);
         }
         let (module, full_cmd) = self.registry.route_command(command)?;
         let module_name = module.config().name;
@@ -335,7 +336,7 @@ impl Runtime {
         if let Some(cmd) = self.registry.route_object(command) {
             let (tx, rx) = std::sync::mpsc::sync_channel(1);
             rt_handle.spawn(async move {
-                let _ = tx.send(dispatch_object_with_panic_guard(cmd, params).await);
+                let _ = tx.send(dispatch_object_with_panic_guard(cmd, params, None).await);
             });
             let result = match rx.recv_timeout(std::time::Duration::from_secs(60)) {
                 Ok(result) => result,
@@ -724,9 +725,12 @@ pub(crate) async fn dispatch_with_panic_guard(
 pub(crate) async fn dispatch_object_with_panic_guard(
     cmd: Arc<dyn crate::sdk_codegen::DynCommand>,
     params: serde_json::Value,
+    caller: Option<crate::routing::CallerIdentity>,
 ) -> Result<CommandResult, String> {
     let name = cmd.name();
-    let result = AssertUnwindSafe(cmd.invoke(params)).catch_unwind().await;
+    let result = AssertUnwindSafe(cmd.invoke(params, caller))
+        .catch_unwind()
+        .await;
     match result {
         Ok(r) => r,
         Err(panic) => {

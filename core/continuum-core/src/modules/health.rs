@@ -171,7 +171,7 @@ mod tests {
             .route_object("ping")
             .expect("ping resolves through the typed object map");
         let cr = cmd
-            .invoke(serde_json::json!({}))
+            .invoke(serde_json::json!({}), None)
             .await
             .expect("ping invoke ok");
         match cr {

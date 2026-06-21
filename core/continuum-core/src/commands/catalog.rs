@@ -14,6 +14,8 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
+use crate::modules::grid::acl::is_command_authorized;
+use crate::routing::caller_trust;
 use crate::sdk_codegen::{command_registry, ActionCommand, CommandError, Ctx, WireShape};
 
 /// Params for `commands/list` — an optional case-insensitive name substring to
@@ -76,12 +78,19 @@ impl ActionCommand for CommandsList {
 
     async fn run(
         &self,
-        _ctx: &Ctx,
+        ctx: &Ctx,
         params: CommandsListParams,
     ) -> Result<CommandsListResult, CommandError> {
         let needle = params.filter.as_deref().map(|s| s.to_lowercase());
+        // Listed == callable, BY IDENTITY: show only what THIS caller could
+        // actually run at its effective trust (local owner sees all; a persona /
+        // cross-grid peer at Provisional sees only its authorized surface). Same
+        // trust rule the executor's gate uses (`caller_trust`), so list and call
+        // can't drift — no separate allow-table.
+        let trust = caller_trust(ctx.caller.as_ref());
         let commands = command_registry()
             .iter()
+            .filter(|d| is_command_authorized(d.name, trust))
             .filter(|d| match &needle {
                 Some(n) => d.name.to_lowercase().contains(n),
                 None => true,
@@ -141,5 +150,56 @@ mod tests {
             "filter narrows by name substring"
         );
         assert!(!filtered.commands.is_empty());
+    }
+
+    // what this catches: LISTED == CALLABLE, BY IDENTITY. A local owner (caller
+    // None) sees the full surface; an airc/Provisional caller sees only what it
+    // could actually run — and every command it's shown IS authorized at its trust
+    // (same `caller_trust` + `is_command_authorized` the executor's gate uses, so
+    // discovery and dispatch can't drift). This is the persona/cross-grid guarantee
+    // the user asked for at the discovery surface, not just the call surface.
+    #[tokio::test]
+    async fn list_is_gated_by_caller_identity() {
+        use crate::modules::grid::node::TrustLevel;
+        use crate::routing::CallerIdentity;
+        use std::collections::HashSet;
+        use uuid::Uuid;
+
+        let owner = CommandsList
+            .run(&Ctx::default(), CommandsListParams { filter: None })
+            .await
+            .unwrap();
+        let airc_ctx = Ctx {
+            caller: Some(CallerIdentity::airc(Uuid::new_v4())),
+            ..Default::default()
+        };
+        let provisional = CommandsList
+            .run(&airc_ctx, CommandsListParams { filter: None })
+            .await
+            .unwrap();
+
+        // AiSafe ping is visible to both.
+        assert!(owner.commands.iter().any(|c| c.name == "ping"));
+        assert!(
+            provisional.commands.iter().any(|c| c.name == "ping"),
+            "AiSafe command visible at Provisional"
+        );
+
+        // Provisional ⊆ Owner, and everything shown to the Provisional caller is
+        // actually authorized at Provisional (listed == callable).
+        let owner_names: HashSet<&str> =
+            owner.commands.iter().map(|c| c.name.as_str()).collect();
+        for c in &provisional.commands {
+            assert!(
+                owner_names.contains(c.name.as_str()),
+                "provisional surface ⊆ owner surface ({})",
+                c.name
+            );
+            assert!(
+                is_command_authorized(&c.name, TrustLevel::Provisional),
+                "listed must be callable at Provisional: {}",
+                c.name
+            );
+        }
     }
 }
