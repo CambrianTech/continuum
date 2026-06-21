@@ -192,8 +192,12 @@ _archive/
 src/.continuum/sessions/validation/
 /src/widgets/live/public/live-widget.css
 
-# Downloaded model binaries (Whisper, Piper, Silero VAD, etc.)
+# Downloaded model binaries (Whisper, Piper, Silero VAD, Kokoro, Orpheus,
+# pocket-tts, avatars, etc.) — large artifacts fetched by the start script,
+# never committed. `tools/models/` is the current download path (the
+# workers→core/tools restructure left the old `src/workers/models/` rule stale).
 src/workers/models/
+tools/models/
 # AIRC pilot — runtime state is ignored, repo-pilot docs are committed.
 # `.airc/*` ignores the contents (not the directory itself) so the
 # negation patterns below can re-include specific tracked files. See

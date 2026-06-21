@@ -125,6 +125,14 @@ echo "▶ building continuum-mcp (Rust MCP server bin)"
 cargo build --manifest-path "$CORE_MANIFEST" --bin continuum-mcp $PROFILE_FLAG $CONTINUUM_FEATURES \
   || echo "⚠ continuum-mcp build failed — MCP server unavailable (core still launches)" >&2
 
+# ── Build the cu CLI client ──────────────────────────────────────────
+# `cu` is the pure-Rust CLI client (replaces the Node `./jtag`): `cu ping`,
+# `cu <command> [json]` over the core IPC socket via the uniform Connection.
+# Built here so the headless start produces the client on disk too.
+echo "▶ building cu (Rust CLI client)"
+cargo build --manifest-path "$CORE_MANIFEST" --bin cu $PROFILE_FLAG $CONTINUUM_FEATURES \
+  || echo "⚠ cu build failed — CLI client unavailable (core still launches)" >&2
+
 echo "▶ continuum-core-server starting"
 echo "  profile:  $PROFILE_LABEL"
 echo "  features: $CONTINUUM_FEATURES"
