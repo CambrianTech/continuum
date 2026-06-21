@@ -57,6 +57,7 @@ pub mod types;
 pub mod validate_response;
 pub mod vision_describe;
 pub mod workspace;
+pub mod workspace_capture;
 
 pub use adaptive_throughput::*;
 pub use model_resolver::*;
