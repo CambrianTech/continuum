@@ -53,8 +53,9 @@ async fn run() -> Result<(), String> {
         }
         "start" => start().await,
         "stop" => stop().await,
-        // Anything else is a command name → dispatch it to the running core.
-        command => dispatch(&command.to_string(), args.next()).await,
+        // Anything else is a command name → dispatch it to the running core, with
+        // params adapted procedurally from the rest of the args (no per-command code).
+        command => dispatch(&command.to_string(), args.collect()).await,
     }
 }
 
@@ -63,12 +64,8 @@ fn socket_path() -> String {
 }
 
 /// Dispatch a single command to the running core through the uniform Connection.
-async fn dispatch(command: &str, raw_params: Option<String>) -> Result<(), String> {
-    let params: Value = match raw_params {
-        Some(raw) => serde_json::from_str(&raw)
-            .map_err(|e| format!("invalid JSON params: {e}\n(got: {raw})"))?,
-        None => Value::Object(Default::default()),
-    };
+async fn dispatch(command: &str, args: Vec<String>) -> Result<(), String> {
+    let params = params_from_args(&args)?;
     let result = connection()
         .commands()
         .execute_value(command, params)
@@ -79,6 +76,79 @@ async fn dispatch(command: &str, raw_params: Option<String>) -> Result<(), Strin
         serde_json::to_string_pretty(&result).unwrap_or_else(|_| result.to_string())
     );
     Ok(())
+}
+
+/// Adapt CLI args into command params — the CLI's edge of the uniform
+/// param-adaptation principle (meet humans/AIs in the middle at every interface).
+/// PROCEDURAL and generic: ONE rule for ALL commands, never a per-command switch.
+///
+/// Three forms, in precedence:
+/// 1. nothing → `{}`.
+/// 2. a single positional JSON object/array → used verbatim (the AI / power-user
+///    path; same payload a tool call would send).
+/// 3. `--key value` / `--flag` pairs → a JSON object, built by one loop:
+///    - keys are normalized kebab/snake → camelCase (`--round-trip-ms` →
+///      `roundTripMs`), matching the canonical camelCase wire fields;
+///    - values are coerced by trying JSON first (`5`→number, `true`→bool,
+///      `{...}`→object), falling back to a string — so humans type `--count 5`
+///      and the typed command still receives a number;
+///    - a bare `--flag` (no following value) is `true`.
+///
+/// Schema-AWARE coercion/validation (knowing each field's exact type) lands when
+/// the registry exposes param JSON schemas via `commands/list`; until then this
+/// generic coercion covers the common cases without any per-command code.
+fn params_from_args(args: &[String]) -> Result<Value, String> {
+    if args.is_empty() {
+        return Ok(Value::Object(Default::default()));
+    }
+    if args.len() == 1 {
+        let t = args[0].trim_start();
+        if t.starts_with('{') || t.starts_with('[') {
+            return serde_json::from_str(&args[0])
+                .map_err(|e| format!("invalid JSON params: {e}\n(got: {})", args[0]));
+        }
+    }
+
+    let mut map = serde_json::Map::new();
+    let mut i = 0;
+    while i < args.len() {
+        let raw_key = args[i].strip_prefix("--").ok_or_else(|| {
+            format!(
+                "expected `--key value` or a single JSON object, got `{}`",
+                args[i]
+            )
+        })?;
+        let key = to_camel_case(raw_key);
+        // A value follows unless the next arg is another flag (or there is none).
+        let has_value = args.get(i + 1).is_some_and(|n| !n.starts_with("--"));
+        if has_value {
+            let raw = &args[i + 1];
+            let val = serde_json::from_str::<Value>(raw).unwrap_or_else(|_| Value::String(raw.clone()));
+            map.insert(key, val);
+            i += 2;
+        } else {
+            map.insert(key, Value::Bool(true));
+            i += 1;
+        }
+    }
+    Ok(Value::Object(map))
+}
+
+/// kebab/snake → camelCase (`round-trip-ms`/`round_trip_ms` → `roundTripMs`).
+fn to_camel_case(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut upper = false;
+    for ch in s.chars() {
+        if ch == '-' || ch == '_' {
+            upper = true;
+        } else if upper {
+            out.extend(ch.to_uppercase());
+            upper = false;
+        } else {
+            out.push(ch);
+        }
+    }
+    out
 }
 
 fn connection() -> Connection<CoreIpcTransport> {
@@ -233,8 +303,63 @@ fn tail(path: &str, n: usize) -> String {
     lines[start..].join("\n")
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    // what this catches: the PROCEDURAL param adapter — one generic rule for all
+    // commands, no per-command switch. Covers the three forms + coercion +
+    // kebab/snake→camelCase + bare flags. This is the CLI edge of "meet humans/AIs
+    // in the middle at every interface" (Joel 2026-06-21).
+    #[test]
+    fn params_adapt_procedurally_from_args() {
+        // 1. nothing → empty object
+        assert_eq!(params_from_args(&[]).unwrap(), json!({}));
+
+        // 2. positional JSON verbatim (the AI / tool-call path)
+        assert_eq!(
+            params_from_args(&[r#"{"message":"hi"}"#.to_string()]).unwrap(),
+            json!({ "message": "hi" })
+        );
+
+        // 3. --key value with coercion: string stays string, number→number,
+        //    bool→bool; keys camelCased from kebab/snake.
+        let p = params_from_args(&[
+            "--message".into(),
+            "hi".into(),
+            "--round-trip-ms".into(),
+            "5".into(),
+            "--enabled".into(),
+            "true".into(),
+        ])
+        .unwrap();
+        assert_eq!(
+            p,
+            json!({ "message": "hi", "roundTripMs": 5, "enabled": true }),
+            "coerced + camelCased automatically, one generic rule"
+        );
+
+        // bare flag (no value) → true
+        assert_eq!(
+            params_from_args(&["--verbose".into()]).unwrap(),
+            json!({ "verbose": true })
+        );
+
+        // a non-flag, non-JSON arg is a clear error (not silently swallowed)
+        assert!(params_from_args(&["oops".into()]).is_err());
+    }
+
+    #[test]
+    fn camel_case_normalizes_kebab_and_snake() {
+        assert_eq!(to_camel_case("round-trip-ms"), "roundTripMs");
+        assert_eq!(to_camel_case("round_trip_ms"), "roundTripMs");
+        assert_eq!(to_camel_case("message"), "message");
+    }
+}
+
 fn usage() -> String {
-    "usage: cu <start|stop|command> [json-params]\n\
+    "usage: cu <start|stop|command> [json | --key value ...]\n\
      \n\
      Lifecycle:\n  \
        cu start                 build + run the headless Rust core (detached), wait until ready\n  \
@@ -242,8 +367,10 @@ fn usage() -> String {
      \n\
      Commands (dispatch to the running core):\n  \
        cu ping\n  \
-       cu ping '{\"message\":\"hi\"}'\n  \
-       cu data/list '{\"collection\":\"users\"}'\n\
+       cu ping --message hi                 # --key value, coerced + camelCased automatically\n  \
+       cu ping '{\"message\":\"hi\"}'           # or a single JSON object (AI / power-user path)\n  \
+       cu commands/list                     # discover commands dynamically (single source)\n  \
+       cu commands/list --filter data/\n\
      \n\
      Env: CONTINUUM_CORE_SOCKET (default /tmp/continuum-core.sock)\n     \
           CONTINUUM_START_SCRIPT (override the start script path)"
