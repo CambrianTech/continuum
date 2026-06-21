@@ -55,10 +55,12 @@ use ts_rs::{Config, Dependency, TS};
 /// The legacy TypeScript-SDK emitter — OFF by default (`ts-codegen` feature).
 /// Nothing live consumes its output; the headless command framework below is
 /// always compiled. See the `ts-codegen` feature note in Cargo.toml.
+pub mod command;
 #[cfg(feature = "ts-codegen")]
 pub mod emit;
 pub mod events;
 pub mod handler;
+pub use command::{ActionCommand, DynCommand};
 #[cfg(feature = "ts-codegen")]
 pub use emit::write_typescript_sdk;
 pub use events::{event_registry, EventDescriptor, EventSpec};
