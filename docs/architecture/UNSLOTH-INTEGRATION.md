@@ -99,6 +99,34 @@ Two uncanny alignments with things we already designed:
 
 ---
 
+## 3.5 Control surface — grounded API map (probed live 2026-06-21)
+
+unsloth Studio exposes TWO HTTP surfaces on `:8888`: the OpenAI-compatible **`/v1`**
+(serving) and the **`/api/*`** management backend ("Unsloth UI Backend — Training
+and Model Management", spec at `/openapi.json`). Probed against the running
+instance — **this is the complete delegation surface; every capability we delegate
+has an endpoint:**
+
+| Need | Endpoint(s) |
+|---|---|
+| Is a model loaded / what's loaded | `GET /api/inference/status` · `GET /api/inference/models` · `GET /v1/models` |
+| **Load a model (keystone auto-load)** | `POST /api/inference/load` (+ `GET /api/inference/load-progress`) |
+| Unload / bring a model down | `POST /api/inference/unload` |
+| Is a model embedding-capable | `GET /api/models/check-embedding/{name}` |
+| Is a model vision-capable (media) | `GET /api/models/check-vision/{name}` |
+| Download a model (HF pull) | `POST /api/hub/download` (+ progress/cancel) |
+| What's cached locally | `GET /api/hub/cached-models` · `/api/hub/cached-gguf` |
+| Inference / Embeddings | `POST /v1/chat/completions` · `POST /v1/embeddings` |
+| **Foundry handoff: forged checkpoint → serve/export** | `POST /api/export/load-checkpoint` · `POST /api/export/export/gguf` |
+| Training data | `POST /api/datasets/upload` · `/api/data-recipe/*` |
+| Health probe | `GET /api/health` |
+
+**Implications:**
+- **Auto-load (#24) is clean HTTP, not a CLI subprocess:** startup → `GET /api/inference/status`; if empty → `POST /api/inference/load {configured model}` → poll `load-progress` → `GET /api/health`. Reliable + hands-off after the key — the reliable-startup keystone.
+- **Embeddings (#40):** verify an embedding-capable model via `check-embedding`, ensure it's loaded, embed via `/v1/embeddings`.
+- **Foundry handoff is real + endpoint-backed:** forge → `POST /api/export/load-checkpoint` → serve/`export/gguf` — the §1.5 handoff made concrete.
+- **CRITICAL live state (2026-06-21):** unsloth is running but **EMPTY** — `/v1/models` → `[]`, `/v1/embeddings` → `"No GGUF model loaded"`. Nothing serves until auto-load runs. This is THE prerequisite for "peers online" and for testing #40: **the engine needs fuel.** Local GGUFs exist (`~/.continuum/genome/models/qwen2.5-0.5b-instruct`, `qwen35-4b-code-forged`) to load against.
+
 ## 4. UIs stay separate (no merge, either direction)
 
 Verified from the live app:
