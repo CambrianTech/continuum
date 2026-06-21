@@ -259,6 +259,11 @@ impl PersonaSpawnSupervisor {
     pub async fn spawn_all(
         &self,
         provider: &mut dyn PersonaIdentityProvider,
+        // The substrate's wired `CommandExecutor` (GridTrustAuthPolicy +
+        // interceptors), delivered through the executor-ready oneshot. Each
+        // persona's HANDS are built over it (identity-scoped), so the ACL gates
+        // what they may do. `None` → personas spawn speak-only (no hands).
+        tool_command_executor: Option<Arc<crate::runtime::CommandExecutor>>,
     ) -> BootSummary {
         let plans = match bootstrap_planned(
             &self.spawner,
@@ -302,11 +307,28 @@ impl PersonaSpawnSupervisor {
         // [[personas-are-citizens-airc-is-identity-provider]] the
         // citizen type is what the substrate carries; the concrete
         // runtime is one impl among future BaseUser variants.
-        let hosted_results = materialize_adapters(plans, &*self.factory, move |pid| {
-            registry_for_lookup
-                .get(pid)
-                .map(|r| r as Arc<dyn crate::persona::airc_citizen::AircCitizen>)
-        })
+        // Per-persona HANDS: a CommandToolExecutor over the wired executor,
+        // scoped to the persona's identity (so the ACL gates it). Cheap — each is
+        // an Arc bump on the shared executor + connection. `None` executor →
+        // every persona is speak-only.
+        let tool_exec_source = tool_command_executor.clone();
+        let hosted_results = materialize_adapters(
+            plans,
+            &*self.factory,
+            move |pid| {
+                registry_for_lookup
+                    .get(pid)
+                    .map(|r| r as Arc<dyn crate::persona::airc_citizen::AircCitizen>)
+            },
+            move |pid| {
+                tool_exec_source.clone().map(|ex| {
+                    Arc::new(crate::cognition::tool_executor::CommandToolExecutor::for_persona(
+                        ex, pid,
+                    ))
+                        as Arc<dyn crate::cognition::tool_executor::ToolExecutor>
+                })
+            },
+        )
         .await;
 
         let mut summary = BootSummary::default();

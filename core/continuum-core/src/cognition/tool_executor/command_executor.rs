@@ -45,8 +45,10 @@ use super::types::{
 };
 use super::ToolExecutor;
 use crate::ai::types::{ToolCall as NativeToolCall, ToolResult as NativeToolResult};
-use crate::runtime::InProcessTransport;
+use crate::routing::CallerIdentity;
+use crate::runtime::{CommandExecutor, InProcessTransport};
 use continuum_client::{ClientError, Connection};
+use std::sync::Arc;
 
 /// Routes a persona's native tool calls to core commands through the uniform
 /// `continuum_client` [`Connection`] over the local [`InProcessTransport`]. The
@@ -66,6 +68,23 @@ pub struct CommandToolExecutor {
 impl CommandToolExecutor {
     pub fn new(conn: Connection<InProcessTransport>) -> Self {
         Self { conn }
+    }
+
+    /// Build a persona's hands over the uniform client: a
+    /// `Connection<InProcessTransport>` carrying the persona's OWN
+    /// [`CallerIdentity`], dispatching through the **substrate's wired**
+    /// [`CommandExecutor`] (the one `start_server` built with the
+    /// [`GridTrustAuthPolicy`](crate::routing::GridTrustAuthPolicy) + interceptors).
+    ///
+    /// Taking the wired executor — NOT a fresh `CommandExecutor::new(registry)`,
+    /// which has an AllowAll default policy and no interceptors — is the
+    /// load-bearing security choice: the identity makes the persona gated AS
+    /// ITSELF, so an Owner-gated command (`data/delete`, `grid/trust`) is REFUSED
+    /// at execution even though it may appear in the tool surface. Offer = the
+    /// `AiSafe` surface; execute = authorized-by-identity ([[persona-is-a-client]]).
+    pub fn for_persona(executor: Arc<CommandExecutor>, persona: Uuid) -> Self {
+        let transport = InProcessTransport::new(executor, Some(CallerIdentity::airc(persona)));
+        Self::new(Connection::new(transport))
     }
 }
 
@@ -196,7 +215,6 @@ impl ToolExecutor for CommandToolExecutor {
 mod tests {
     use super::*;
     use crate::cognition::tool_executor::types::PersonaMediaConfigLite;
-    use crate::routing::CallerIdentity;
     use crate::runtime::{
         CommandExecutor, CommandResult, ModuleConfig, ModuleContext, ModulePriority,
         ModuleRegistry, ServiceModule,
@@ -260,9 +278,10 @@ mod tests {
     /// lands in the next slice of #15 — this executor is not yet wired into
     /// cognition.
     fn exec_over(registry: Arc<ModuleRegistry>, persona: Uuid) -> CommandToolExecutor {
+        // Exercises the SAME production factory the spawn path uses, over an
+        // executor built from this test registry.
         let executor = Arc::new(CommandExecutor::new(registry));
-        let transport = InProcessTransport::new(executor, Some(CallerIdentity::airc(persona)));
-        CommandToolExecutor::new(Connection::new(transport))
+        CommandToolExecutor::for_persona(executor, persona)
     }
 
     fn executor_with_echo() -> CommandToolExecutor {

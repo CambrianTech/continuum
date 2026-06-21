@@ -401,6 +401,15 @@ pub async fn materialize_adapters(
     plans: Vec<MaterializedPersonaPlan>,
     factory: &dyn PersonaAdapterFactory,
     runtime_lookup: impl Fn(uuid::Uuid) -> Option<Arc<dyn AircCitizen>>,
+    // The persona's HANDS, built per persona by the caller (the `ipc` bootstrap,
+    // which holds the command `ModuleRegistry`). Closure DI keeps the supervisor
+    // decoupled from the command runtime — same shape as `runtime_lookup`. Returns
+    // `None` → that persona is speak-only. The executor carries the persona's
+    // identity, so the `GridTrustAuthPolicy` ACL gates what its hands may touch.
+    tool_executor_for: impl Fn(
+        uuid::Uuid,
+    )
+        -> Option<Arc<dyn crate::cognition::tool_executor::ToolExecutor>>,
 ) -> Vec<Result<PersonaContext, SupervisorError>> {
     let mut out = Vec::with_capacity(plans.len());
     for (slot_index, plan) in plans.into_iter().enumerate() {
@@ -590,6 +599,9 @@ pub async fn materialize_adapters(
                             doctrine_source,
                         ),
                     ],
+                    // The persona's HANDS — built by the caller for THIS persona's
+                    // identity (None → speak-only). What turns "talks" into "acts".
+                    tool_executor: tool_executor_for(identity.persona_id),
                 },
             )),
         );
@@ -783,7 +795,7 @@ mod tests {
 
         let factory = ScriptedPersonaAdapterFactory::heuristic();
         let hosted =
-            materialize_adapters(plans, &factory, StubAircCitizen::fresh_lookup()).await;
+            materialize_adapters(plans, &factory, StubAircCitizen::fresh_lookup(), |_| None).await;
 
         assert_eq!(hosted.len(), 2);
         assert_eq!(factory.build_count(), 2);
@@ -829,7 +841,7 @@ mod tests {
 
         let factory = ScriptedPersonaAdapterFactory::heuristic();
         let hosted =
-            materialize_adapters(plans, &factory, StubAircCitizen::fresh_lookup()).await;
+            materialize_adapters(plans, &factory, StubAircCitizen::fresh_lookup(), |_| None).await;
 
         assert_eq!(hosted.len(), 2);
         // Factory called exactly once — for the Ok row only.
@@ -864,7 +876,7 @@ mod tests {
         let factory =
             ScriptedPersonaAdapterFactory::always_fails("simulated factory rejection");
         let hosted =
-            materialize_adapters(plans, &factory, StubAircCitizen::fresh_lookup()).await;
+            materialize_adapters(plans, &factory, StubAircCitizen::fresh_lookup(), |_| None).await;
 
         assert_eq!(hosted.len(), 1);
         match &hosted[0] {
@@ -887,7 +899,7 @@ mod tests {
     #[tokio::test]
     async fn empty_plans_yields_empty_hosted() {
         let factory = ScriptedPersonaAdapterFactory::heuristic();
-        let hosted = materialize_adapters(vec![], &factory, |_| None).await;
+        let hosted = materialize_adapters(vec![], &factory, |_| None, |_| None).await;
         assert!(hosted.is_empty());
         assert_eq!(factory.build_count(), 0);
     }
@@ -916,7 +928,7 @@ mod tests {
         let factory = ScriptedPersonaAdapterFactory::heuristic();
         // `|_| None` here is the substrate-bug shape we're locking in:
         // the registry exists but doesn't contain this persona_id.
-        let hosted = materialize_adapters(plans, &factory, |_| None).await;
+        let hosted = materialize_adapters(plans, &factory, |_| None, |_| None).await;
 
         assert_eq!(hosted.len(), 1);
         // Factory MUST NOT be called when the runtime lookup fails —
@@ -975,7 +987,7 @@ mod tests {
                     as Arc<dyn crate::persona::airc_citizen::AircCitizen>)
             }
         };
-        let hosted = materialize_adapters(plans, &factory, lookup).await;
+        let hosted = materialize_adapters(plans, &factory, lookup, |_| None).await;
 
         assert_eq!(hosted.len(), 2);
         // Factory ran exactly once — for Paige, not Pax.
@@ -1019,7 +1031,7 @@ mod tests {
 
         let (factory, counts) = ScriptedPersonaAdapterFactory::heuristic_with_counters();
         let hosted =
-            materialize_adapters(plans, &factory, StubAircCitizen::fresh_lookup()).await;
+            materialize_adapters(plans, &factory, StubAircCitizen::fresh_lookup(), |_| None).await;
 
         // Both slots materialize cleanly.
         assert_eq!(hosted.len(), 2);
@@ -1049,7 +1061,7 @@ mod tests {
             "simulated warmup failure",
         );
         let hosted =
-            materialize_adapters(plans, &factory, StubAircCitizen::fresh_lookup()).await;
+            materialize_adapters(plans, &factory, StubAircCitizen::fresh_lookup(), |_| None).await;
 
         assert_eq!(hosted.len(), 1);
         match &hosted[0] {
@@ -1084,7 +1096,7 @@ mod tests {
             profile: Ok(fake_profile("Paige", "model-a")),
         }];
         let hosted_ok =
-            materialize_adapters(ok_plan, &factory_ok, StubAircCitizen::fresh_lookup())
+            materialize_adapters(ok_plan, &factory_ok, StubAircCitizen::fresh_lookup(), |_| None)
                 .await;
         assert!(hosted_ok[0].is_ok(), "ok-warmup adapter materializes");
         assert_eq!(ok_counts.warmups(), 1);
@@ -1101,6 +1113,7 @@ mod tests {
             fail_plan,
             &factory_fail,
             StubAircCitizen::fresh_lookup(),
+            |_| None,
         )
         .await;
         assert!(
