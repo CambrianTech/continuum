@@ -158,6 +158,7 @@ mod tests {
             adapter: Arc::new(HeuristicInferenceAdapter::new()),
             capacity: None,
             grounding_sources: Vec::new(),
+            embedder: None,
         });
         registry
     }
