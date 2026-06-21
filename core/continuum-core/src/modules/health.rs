@@ -43,6 +43,8 @@ pub struct PingCommand;
 impl crate::sdk_codegen::CommandSpec for PingCommand {
     const NAME: &'static str = "ping";
     const ACCESS_LEVEL: crate::sdk_codegen::AccessLevel = crate::sdk_codegen::AccessLevel::AiSafe;
+    const DESCRIPTION: &'static str =
+        "Health check: confirm the substrate is alive and responding. Returns a pong.";
     const WIRE: crate::sdk_codegen::WireShape = crate::sdk_codegen::WireShape::Bare;
     type Params = PingParams;
     type Result = PingResult;

@@ -188,6 +188,9 @@ pub struct ChatSendCommand;
 impl crate::sdk_codegen::CommandSpec for ChatSendCommand {
     const NAME: &'static str = "chat/send";
     const ACCESS_LEVEL: crate::sdk_codegen::AccessLevel = crate::sdk_codegen::AccessLevel::AiSafe;
+    const DESCRIPTION: &'static str =
+        "Send a chat message to a room. Use to post a message addressed to others; \
+         params carry the room and the message text.";
     const WIRE: crate::sdk_codegen::WireShape = crate::sdk_codegen::WireShape::Enveloped;
     type Params = ChatSendParams;
     type Result = ChatSendResult;
@@ -201,6 +204,9 @@ pub struct ChatPollCommand;
 impl crate::sdk_codegen::CommandSpec for ChatPollCommand {
     const NAME: &'static str = "chat/poll";
     const ACCESS_LEVEL: crate::sdk_codegen::AccessLevel = crate::sdk_codegen::AccessLevel::AiSafe;
+    const DESCRIPTION: &'static str =
+        "Fetch recent messages for a room — read the latest conversation. Params \
+         carry the room and how many messages to retrieve.";
     const WIRE: crate::sdk_codegen::WireShape = crate::sdk_codegen::WireShape::Enveloped;
     type Params = ChatPollParams;
     type Result = ChatPollResult;
