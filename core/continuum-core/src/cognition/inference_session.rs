@@ -83,6 +83,20 @@ impl InferenceSessionRegistry {
         self.sessions.remove(&id).is_some()
     }
 
+    /// Keep an inference relationship ESTABLISHED: if `prior` is still live, reuse
+    /// it; otherwise open a fresh lease on `model`. Returns `(session, reused)`.
+    /// This is the self-healing seam — a caller passes its last handle every turn
+    /// and transparently re-homes onto a new lease when the old node/handle is gone,
+    /// never crashing on a lost handle ([[long-running-commands-are-handle-based]]).
+    pub fn ensure(&self, prior: Option<Uuid>, model: String) -> (Arc<InferenceSession>, bool) {
+        if let Some(id) = prior {
+            if let Some(s) = self.find(id) {
+                return (s, true);
+            }
+        }
+        (self.open(model), false)
+    }
+
     pub fn len(&self) -> usize {
         self.sessions.len()
     }
@@ -303,10 +317,71 @@ impl ActionCommand for InferenceGenerateCommand {
     }
 }
 
+// ─────────────────────────── ai/inference/ensure ─────────────────────────────
+
+/// Keep the inference relationship established: pass your last handle; get it back
+/// if still live, or a freshly re-resolved lease if it was lost (node down, closed).
+/// The self-healing entry point — a persona calls this each turn and never crashes
+/// on a dead handle; it just re-homes onto a new lease.
+pub struct InferenceEnsureCommand;
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, TS, JsonSchema)]
+pub struct InferenceEnsureParams {
+    /// The handle from last time, if any. If still live it's reused; else re-resolved.
+    #[serde(default)]
+    #[ts(optional, type = "string")]
+    pub handle: Option<Uuid>,
+    /// Model to bind a fresh lease to (omit → discovered served model).
+    #[serde(default)]
+    pub model: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, TS)]
+pub struct InferenceEnsureOutput {
+    #[ts(type = "string")]
+    pub handle: Uuid,
+    pub model: String,
+    /// True = the prior handle was still live and reused; false = re-resolved fresh.
+    pub reused: bool,
+}
+
+#[async_trait]
+impl ActionCommand for InferenceEnsureCommand {
+    const NAME: &'static str = "ai/inference/ensure";
+    const ACCESS: AccessLevel = AccessLevel::AiSafe;
+    const DESCRIPTION: &'static str =
+        "Keep inference established: pass your last handle; get it back if live, else a \
+         freshly re-resolved lease (self-healing — a dead handle re-homes, never crashes).";
+    type Params = InferenceEnsureParams;
+    type Output = InferenceEnsureOutput;
+
+    async fn run(&self, _ctx: &Ctx, p: InferenceEnsureParams) -> Result<InferenceEnsureOutput, CommandError> {
+        // Reuse-if-live needs no model resolution; only re-resolve a model when we
+        // must open fresh (don't probe the gateway on the happy path).
+        if let Some(id) = p.handle {
+            if let Some(s) = global_inference_sessions().find(id) {
+                return Ok(InferenceEnsureOutput {
+                    handle: s.id,
+                    model: s.model.clone(),
+                    reused: true,
+                });
+            }
+        }
+        let model = resolve_model(p.model).await?;
+        let (s, reused) = global_inference_sessions().ensure(None, model);
+        Ok(InferenceEnsureOutput {
+            handle: s.id,
+            model: s.model.clone(),
+            reused,
+        })
+    }
+}
+
 crate::register_command!(InferenceOpenCommand);
 crate::register_command!(InferenceFindCommand);
 crate::register_command!(InferenceCloseCommand);
 crate::register_command!(InferenceGenerateCommand);
+crate::register_command!(InferenceEnsureCommand);
 
 #[cfg(test)]
 mod tests {
@@ -323,6 +398,24 @@ mod tests {
         assert!(reg.close(s.id), "close releases the live lease");
         assert!(reg.find(s.id).is_none(), "lost handle → None, the recover signal");
         assert!(!reg.close(s.id), "double-close is idempotent, not an error");
+    }
+
+    // what this catches: THE SELF-HEALING SEAM — ensure reuses a live handle, but
+    // when the prior handle is gone (node down / closed) it re-homes onto a fresh
+    // lease instead of failing. A lost handle never crashes the caller.
+    #[test]
+    fn ensure_reuses_live_else_rehomes() {
+        let reg = InferenceSessionRegistry::new();
+        let s = reg.open("m".into());
+        let (same, reused) = reg.ensure(Some(s.id), "m".into());
+        assert!(reused && same.id == s.id, "live handle is reused");
+
+        reg.close(s.id); // node went down / lease lost
+        let (fresh, reused2) = reg.ensure(Some(s.id), "m".into());
+        assert!(!reused2 && fresh.id != s.id, "lost handle re-homes onto a fresh lease");
+
+        let (cold, reused3) = reg.ensure(None, "m".into());
+        assert!(!reused3 && cold.id != fresh.id, "no prior handle → fresh lease");
     }
 
     // what this catches: each open is a distinct lease (distinct handles), and the
