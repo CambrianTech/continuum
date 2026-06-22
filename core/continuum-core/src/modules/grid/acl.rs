@@ -176,6 +176,14 @@ mod tests {
         // grid/pair requires Owner
         assert!(!is_command_authorized("grid/pair", TrustLevel::Trusted));
         assert!(is_command_authorized("grid/pair", TrustLevel::Owner));
+
+        // grid/grant/issue (minting capability grants) is OWNER-ONLY — load-bearing
+        // for the contracted grid: only the local operator may sell its personas'
+        // compute. A remote peer must NEVER reach issuance (it would let a grantee
+        // mint its own grants). Pins the property the GrantIssuanceModule relies on.
+        assert!(!is_command_authorized("grid/grant/issue", TrustLevel::Trusted));
+        assert!(!is_command_authorized("grid/grant/issue", TrustLevel::Provisional));
+        assert!(is_command_authorized("grid/grant/issue", TrustLevel::Owner));
     }
 
     // what this catches: cross-grid inference (ai/generate) is admitted at

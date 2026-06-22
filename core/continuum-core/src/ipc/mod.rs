@@ -1327,6 +1327,22 @@ pub fn start_server(
              `persona/instances/bootstrap`"
         );
 
+        // `grid/grant/issue`: the owner mints capability grants signed by a running
+        // persona's airc identity (sharing the same runtime registry). Owner-gated
+        // by ACL (not in the cross-grid allow-list), so only the local operator can
+        // sell its personas' compute. Closes the contracted-grid loop with an
+        // operator surface over `routing::grant_issuance::issue_grant`.
+        runtime.register(Arc::new(
+            crate::modules::grant_issuance::GrantIssuanceModule::new(
+                instance_manager.registry().clone(),
+            ),
+        ));
+        log_info!(
+            "ipc",
+            "server",
+            "GrantIssuanceModule registered — owner can mint grants via `grid/grant/issue`"
+        );
+
         // ── persona/rag-inspect — RAG introspection callable from any AI ──
         //
         // FilesystemPersonaResolver reads the persona's seed.json + attaches
