@@ -18,8 +18,10 @@ export PATH="/opt/homebrew/bin:$PATH"
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$HOME/.continuum/cache/cargo-target}"
 BIN="$CARGO_TARGET_DIR/debug/continuum-core-server"
 
-# ── env: keys + the dylibs the faculties need (so ONNX doesn't panic on dlopen) ──
-set -a; [ -f "$PROJECT_DIR/config.env" ] && . "$PROJECT_DIR/config.env"; set +a
+# ── env: ONLY non-secret runtime vars. Secrets have ONE owner: ~/.continuum/config.env,
+# which the core reads DIRECTLY (secrets.rs / config_env.rs). We do NOT source any
+# config.env into the process env — that would be a second place for the same keys
+# (the repo config.env is a duplicate smell; see task #34). [[config-env-single-owner]]
 if [ -f /opt/homebrew/lib/libonnxruntime.dylib ]; then
   export ORT_DYLIB_PATH="/opt/homebrew/lib/libonnxruntime.dylib"
 elif [ -f /usr/local/lib/libonnxruntime.so ]; then
@@ -49,13 +51,19 @@ echo "▸ verifying launch…"
 ok=1
 for _ in $(seq 1 90); do [ -S "$SOCK" ] && break; sleep 1; done
 if [ -S "$SOCK" ]; then echo "  ✓ socket up ($SOCK)"; else echo "  ✗ socket never appeared"; ok=0; fi
-# give boot a moment to reach airc + model load
-for _ in $(seq 1 40); do grep -q "load_tensors: offloaded" "$LOG" 2>/dev/null && break; sleep 1; done
+# wait for the intentional inference boot_status line (the authoritative signal)
+for _ in $(seq 1 60); do grep -q "\] inference: " "$LOG" 2>/dev/null && break; sleep 1; done
 
 grep -qE "airc: ✓|airc.*socket=" "$LOG" && echo "  ✓ airc connected" || { echo "  ✗ airc NOT connected"; ok=0; }
-grep -qE "load_tensors: offloaded|MTL.*model buffer" "$LOG" && echo "  ✓ model loaded (GPU)" || echo "  ⚠ no model-load line yet"
 if grep -qiE "panic" "$LOG"; then echo "  ✗ PANIC in boot log:"; grep -iE "panic" "$LOG" | head -3 | sed 's/^/      /'; ok=0; else echo "  ✓ no panics"; fi
-# unsloth: report whether the gateway is even configured (it may be local-gguf only)
-if [ -n "${UNSLOTH_API_KEY:-}" ]; then echo "  ✓ unsloth key present"; else echo "  • unsloth not configured (local gguf inference)"; fi
+# Inference path — the AUTHORITATIVE intentional signal (the boot_status assertion).
+# ✗ = unsloth gateway not registered → fail loud. No guessing from env.
+INF=$(grep -E "\] inference: " "$LOG" | tail -1)
+case "$INF" in
+  *✓*) echo "  ${INF##*] }";;
+  *⚠*) echo "  ${INF##*] }";;
+  *✗*) echo "  ${INF##*] }"; ok=0;;
+  *)   echo "  ✗ no inference boot line — core did not assert an inference path"; ok=0;;
+esac
 
 [ "$ok" = 1 ] && echo "✓ core up: $(pgrep -f "continuum-core-server $SOCK" | head -1)" || { echo "✗ launch incomplete — see $LOG"; exit 1; }

@@ -370,6 +370,7 @@ impl AIProviderModule {
         // (local llama.cpp + any cloud provider keyed inside unsloth Studio).
         // Additive priority for now — making the gateway the *preferred* route
         // is a separate routing-policy change.
+        let mut unsloth_registered = false;
         if get_secret("UNSLOTH_API_KEY").is_some() {
             self.log().info("Registering Unsloth gateway adapter");
             // Base URL comes from the ONE owner of the unsloth endpoint
@@ -378,7 +379,10 @@ impl AIProviderModule {
             let mut a = OpenAICompatibleAdapter::from_registry("unsloth")
                 .with_runtime_base_url(crate::inference::unsloth_control::unsloth_base_url());
             match a.initialize().await {
-                Ok(()) => registry.register(Arc::new(a), 9),
+                Ok(()) => {
+                    registry.register(Arc::new(a), 9);
+                    unsloth_registered = true;
+                }
                 Err(e) => self.log().warn(&format!("Unsloth initialize failed: {e} — not registered")),
             }
         }
@@ -629,6 +633,33 @@ impl AIProviderModule {
         if available.is_empty() {
             self.log()
                 .warn("No providers available! Add API keys to ~/.continuum/config.env");
+        }
+
+        // Intentional boot assertion: announce the ACTIVE inference path so a silent
+        // local fallback can NEVER go unnoticed again ("we didn't even know unsloth
+        // wasn't used"). unsloth is THE gateway; local llama is opt-in only.
+        // [[fallbacks-are-illegal-fail-loud]]
+        {
+            use crate::runtime::boot_status::{boot_status, BootStatusKind};
+            let base = crate::inference::unsloth_control::unsloth_base_url();
+            match (unsloth_registered, local_llama_opt_in) {
+                (true, false) => boot_status(
+                    "inference",
+                    BootStatusKind::Ok,
+                    &format!("unsloth gateway @ {base} — sole inference path"),
+                ),
+                (true, true) => boot_status(
+                    "inference",
+                    BootStatusKind::Degraded,
+                    &format!("unsloth gateway @ {base} + local llama opt-in (CONTINUUM_LOCAL_LLAMA=1) ALSO active"),
+                ),
+                (false, _) => boot_status(
+                    "inference",
+                    BootStatusKind::Failed,
+                    "unsloth gateway NOT registered — set UNSLOTH_API_KEY in ~/.continuum/config.env \
+                     (open unsloth Studio to generate one). Inference gateway REQUIRED; no local fallback.",
+                ),
+            }
         }
 
         Ok(())
