@@ -286,6 +286,17 @@ which is exactly §1's "don't gate the mind" at the channel granularity.
   is keyed on the *shared* elements, so an element's embedding is computed once and
   every persona's recall reads the hit. *The proof that faculties are first-class
   bus-wired concerns, not batch entries.* (No inference; still flood-safe.)
+  - **Primitives SHIPPED** (`cognition/channel_element.rs`, `channel_digest.rs`,
+    `channel_digest_region.rs`; 18 tests): `ChannelElement`/`ChannelElementCache`
+    (reference-passed frame, embedding once-across-personas via lazy `OnceCell` over
+    the existing `CachingEmbeddingProvider`); `ChannelDigest`/`ChannelBookmarks`
+    (consolidated since-bookmark + N-before window); `ChannelDigestRegion`
+    (`BrainRegion` pre-staging into a `DashMapReadyBuffer`, via a `PersonaChannelReader`
+    abstraction so it unit-tests without a daemon).
+  - **Remaining to go live:** register the region in the governor at boot, and have
+    the workspace's room-context path **peek the ready-buffer** instead of reading
+    `page_recent` raw — without standing up a *parallel* allocator (task #8). Then
+    QA via the glass box + ask the persona directly.
 - **Slice 3 — `PersonaCognitionRegion` + `VolitionFaculty` (the demand brain).**
   The persona advances what *it* wants; `VolitionFaculty` is a **wake source**
   (self-initiate from interest), not a polled bid. It reads `ChannelDigest`s and
