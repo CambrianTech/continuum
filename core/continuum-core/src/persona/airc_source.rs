@@ -213,7 +213,6 @@ impl RagSource for AircRagSource {
             persona_id = %self.persona_id,
             room = %room_id,
             window = digest.elements.len(),
-            unread = digest.unread().len(),
             budget,
             items_packed = items.len(),
             tokens_used,

@@ -401,11 +401,17 @@ impl ActionCommand for InferenceEnsureCommand {
     }
 }
 
-crate::register_command!(InferenceOpenCommand);
-crate::register_command!(InferenceFindCommand);
-crate::register_command!(InferenceCloseCommand);
-crate::register_command!(InferenceGenerateCommand);
-crate::register_command!(InferenceEnsureCommand);
+// NOTE: these ai/inference/* commands DUPLICATE the pre-existing handle system in
+// `inference/handle_module.rs` (ai/inference/open/generate/close) — registering them
+// panics the registry on duplicate names. They are NOT registered. Reconciling this
+// module's per-persona session helper with the canonical handle_module is task #17
+// ("Reconcile the two handle models"). evaluate_response uses the registry helper
+// (InferenceSessionRegistry) directly, not these commands.
+//   crate::register_command!(InferenceOpenCommand);  — DUP of handle_module
+//   crate::register_command!(InferenceFindCommand);
+//   crate::register_command!(InferenceCloseCommand); — DUP of handle_module
+//   crate::register_command!(InferenceGenerateCommand); — DUP of handle_module
+//   crate::register_command!(InferenceEnsureCommand);
 
 #[cfg(test)]
 mod tests {
