@@ -359,6 +359,25 @@ impl LlmDeliberationFaculty {
              have nothing worth adding, stay silent.",
             name = self.persona_name,
         );
+        // Act-don't-announce: when this persona HAS tools, small models tend to
+        // narrate a plan ("I'll use X", "let's start by…") as a chat turn instead
+        // of emitting the tool call — so nothing happens (observed: a multi-step
+        // challenge produced a `speak` verdict, the card never moved). This block
+        // steers the FIRST concrete action into an actual tool call. Only included
+        // when tools are offered; pure-chat turns keep the say-your-piece framing.
+        if !self.tools.is_empty() {
+            s.push_str(
+                "\n\n[Acting with your tools]\n\
+                 You have tools, and using them is how you get things done. When the \
+                 task needs a tool, CALL it THIS turn — emit the actual tool call. Do \
+                 NOT announce or describe it first (\"I'll use…\", \"let me…\", \"let's \
+                 start by…\"): narration does NOTHING; only a real tool call acts. Take \
+                 the FIRST concrete step now — you'll get the result back and can \
+                 continue (e.g. search → read → edit → run). If you catch yourself \
+                 writing what you are ABOUT to do, stop and do it instead. Speak only \
+                 to report what you actually did or found, after the tool calls.",
+            );
+        }
         // Reuse the ONE silence contract — PASS = first-class choice to stay quiet.
         s.push_str(SILENCE_AFFORDANCE_BLOCK);
         s
