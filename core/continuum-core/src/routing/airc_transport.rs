@@ -70,8 +70,10 @@ use serde_json::Value;
 
 use airc_core::{Body, MentionTarget, PeerId};
 use airc_lib::Airc;
+use airc_protocol::headers_keys::HEADER_AIRC_CAPABILITY_GRANT;
 
 use super::airc_command_protocol::command_request_from_route_decision;
+use super::presented_grant_store::PresentedGrantStore;
 use super::{
     AircCommandRequest, AircCommandResponse, PeerRef, RouteDecision, Transport,
     COMMAND_REQUEST_BODY_HINT, HEADER_COMMAND_ENV, HEADER_COMMAND_KIND, HEADER_COMMAND_PATH,
@@ -94,6 +96,12 @@ pub use continuum_airc_protocol::DEFAULT_COMMAND_DEADLINE as DEFAULT_DEADLINE;
 pub struct AircTransport {
     airc: Arc<Airc>,
     deadline: Duration,
+    /// Capability grants this node holds to present on outbound requests (the
+    /// grantee side of the contracted grid). `None` → present nothing (tier-gated
+    /// access only). `Some` → on a peer-targeted dispatch, stamp the held grant for
+    /// that peer onto `HEADER_AIRC_CAPABILITY_GRANT` so the receiver can authorize
+    /// the command against it.
+    grant_store: Option<Arc<dyn PresentedGrantStore>>,
 }
 
 impl std::fmt::Debug for AircTransport {
@@ -111,12 +119,21 @@ impl AircTransport {
         Self {
             airc,
             deadline: DEFAULT_DEADLINE,
+            grant_store: None,
         }
     }
 
     /// Replace the default deadline. Builder-style.
     pub fn with_deadline(mut self, deadline: Duration) -> Self {
         self.deadline = deadline;
+        self
+    }
+
+    /// Present held capability grants on outbound peer requests. Builder-style.
+    /// When set, a dispatch to a peer this node holds a grant for stamps that grant
+    /// on the request so the peer can authorize the command against it.
+    pub fn with_grant_store(mut self, grant_store: Arc<dyn PresentedGrantStore>) -> Self {
+        self.grant_store = Some(grant_store);
         self
     }
 
@@ -299,7 +316,18 @@ impl Transport for AircTransport {
         })?;
         let body = Body::Json(body_value);
 
-        let headers = Self::build_headers(&request);
+        let mut headers = Self::build_headers(&request);
+
+        // Present a held capability grant (the grantee side of the contracted grid):
+        // if this node holds a grant for the target PEER, stamp it so the receiver
+        // can authorize the command against the owner's signature instead of the
+        // bare tier ceiling. Only peer targets carry a single owner to present to;
+        // room / wildcard targets have no single verifier, so nothing is stamped.
+        if let (Some(store), MentionTarget::Peer(peer_id)) = (&self.grant_store, &target) {
+            if let Some(grant_b64) = store.grant_for(*peer_id) {
+                headers.insert(HEADER_AIRC_CAPABILITY_GRANT.to_string(), grant_b64);
+            }
+        }
 
         // Send + await. airc-lib stamps correlation_id, reply_to,
         // deadline automatically; the reply stream is armed BEFORE

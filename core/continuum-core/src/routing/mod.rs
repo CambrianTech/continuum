@@ -38,6 +38,7 @@ pub mod grid_capability;
 pub mod grid_trust_policy;
 #[macro_use]
 pub mod macros;
+pub mod presented_grant_store;
 pub mod probe_file_sink;
 pub mod probe_router;
 pub(crate) mod probe_span_meta;
