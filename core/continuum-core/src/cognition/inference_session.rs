@@ -23,6 +23,8 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 use uuid::Uuid;
 
+use crate::ai::types::ChatMessage;
+use crate::modules::ai_provider::{generate_text, global_registry};
 use crate::sdk_codegen::{AccessLevel, ActionCommand, CommandError, Ctx, DynCommand};
 
 /// A live inference lease: a handle bound to a concrete model. Held in the global
@@ -232,9 +234,79 @@ impl ActionCommand for InferenceCloseCommand {
     }
 }
 
+// ─────────────────────────── ai/inference/generate ───────────────────────────
+
+/// Generate OVER a live handle: the "use the handle to infer" step. Looks up the
+/// lease (NotFound if lost — the caller re-opens), binds the request to the
+/// session's model, and delegates to the registered provider (unsloth) via the one
+/// `generate_text` path — no parallel inference path, no one-shot bypass.
+pub struct InferenceGenerateCommand;
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, TS, JsonSchema)]
+pub struct InferenceGenerateParams {
+    #[ts(type = "string")]
+    pub handle: Uuid,
+    /// The user prompt to generate from.
+    pub prompt: String,
+    /// Optional system prompt.
+    #[serde(default)]
+    pub system: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, TS)]
+pub struct InferenceGenerateOutput {
+    pub text: String,
+    pub model: String,
+}
+
+#[async_trait]
+impl ActionCommand for InferenceGenerateCommand {
+    const NAME: &'static str = "ai/inference/generate";
+    const ACCESS: AccessLevel = AccessLevel::AiSafe;
+    const DESCRIPTION: &'static str =
+        "Generate over an open inference handle. The lease's model is used; delegates \
+         to the registered gateway via the one generate path. NotFound if the handle \
+         is lost (re-open) — no fallback.";
+    type Params = InferenceGenerateParams;
+    type Output = InferenceGenerateOutput;
+
+    async fn run(&self, _ctx: &Ctx, p: InferenceGenerateParams) -> Result<InferenceGenerateOutput, CommandError> {
+        let session = global_inference_sessions()
+            .find(p.handle)
+            .ok_or_else(|| CommandError::NotFound(format!("inference handle {} is not live — re-open", p.handle)))?;
+
+        // Round-trip messages through ChatMessage's own serde so we don't hand-encode
+        // the MessageContent shape; bind to the session's model; route via the ONE
+        // generate path (no parallel inference path).
+        let user_msg = serde_json::to_value(ChatMessage::text("user", &p.prompt))
+            .map_err(|e| CommandError::Internal(format!("encode message: {e}")))?;
+        let mut request = serde_json::json!({
+            "messages": [user_msg],
+            "model": session.model,
+            "provider": "unsloth",
+        });
+        if let Some(sys) = p.system.filter(|s| !s.trim().is_empty()) {
+            request["systemPrompt"] = serde_json::Value::String(sys);
+        }
+        let request = serde_json::from_value(request)
+            .map_err(|e| CommandError::Internal(format!("build request: {e}")))?;
+
+        let registry = global_registry();
+        let guard = registry.read().await;
+        let resp = generate_text(&guard, request)
+            .await
+            .map_err(CommandError::Internal)?;
+        Ok(InferenceGenerateOutput {
+            text: resp.text,
+            model: session.model.clone(),
+        })
+    }
+}
+
 crate::register_command!(InferenceOpenCommand);
 crate::register_command!(InferenceFindCommand);
 crate::register_command!(InferenceCloseCommand);
+crate::register_command!(InferenceGenerateCommand);
 
 #[cfg(test)]
 mod tests {
