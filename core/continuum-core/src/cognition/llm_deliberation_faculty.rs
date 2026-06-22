@@ -122,6 +122,13 @@ pub struct LlmDeliberationFaculty {
     tool_executor: Option<Arc<dyn ToolExecutor>>,
     /// Bound on tool-use rounds per tick ([`DEFAULT_MAX_TOOL_ITERATIONS`]).
     max_tool_iterations: usize,
+    /// Where this faculty records its chain-of-thought after a verdict, so the
+    /// persona can resume its train of thought next turn (the
+    /// [`WorkingMemory`](crate::cognition::working_memory::WorkingMemory)
+    /// `WorkingMemoryFaculty` reads). `None` → reasoning is dropped (the prior
+    /// behavior). Only the suppressed-thinking default makes `reasoning` empty, so
+    /// this self-activates exactly when thinking is on.
+    working_memory: Option<Arc<crate::cognition::working_memory::WorkingMemory>>,
 }
 
 impl LlmDeliberationFaculty {
@@ -142,7 +149,18 @@ impl LlmDeliberationFaculty {
             tools: Vec::new(),
             tool_executor: None,
             max_tool_iterations: DEFAULT_MAX_TOOL_ITERATIONS,
+            working_memory: None,
         }
+    }
+
+    /// Record this faculty's reasoning into `memory` after each verdict, so the
+    /// persona carries its train of thought forward across turns.
+    pub fn with_working_memory(
+        mut self,
+        memory: Arc<crate::cognition::working_memory::WorkingMemory>,
+    ) -> Self {
+        self.working_memory = Some(memory);
+        self
     }
 
     pub fn with_model(mut self, model: impl Into<String>) -> Self {
@@ -452,6 +470,15 @@ impl Faculty for LlmDeliberationFaculty {
                 return None;
             }
 
+            // Record the chain-of-thought that produced THIS verdict into working
+            // memory, so next turn the persona resumes its train of thought instead
+            // of re-deriving it cold. `reasoning` is `Some` only when thinking is
+            // enabled (the adapter separated a `<think>` block); suppressed turns
+            // record nothing. The room only ever saw `resp.text` — reasoning lives
+            // in working memory + the harness, never the wire.
+            if let (Some(wm), Some(reasoning)) = (&self.working_memory, &resp.reasoning) {
+                wm.record(reasoning);
+            }
             return Some(self.verdict(&resp.text));
         }
     }
@@ -758,6 +785,57 @@ mod tests {
             threaded,
             "re-prompt must thread the tool result back to the model"
         );
+    }
+
+    // what this catches: THE working-memory write path — after a verdict, the
+    // faculty records the turn's separated reasoning into working memory so the
+    // persona can resume its train of thought next turn. The room only saw the
+    // verdict text; the reasoning lives in working memory.
+    #[tokio::test]
+    async fn verdict_records_reasoning_into_working_memory() {
+        use crate::cognition::working_memory::WorkingMemory;
+
+        let mut resp = make_response(FinishReason::Stop, "Ship it.", None);
+        resp.reasoning = Some("Weighed the risk; the fix is small and tested.".to_string());
+        let adapter = Arc::new(ScriptedAdapter::new(vec![resp]));
+        let wm = Arc::new(WorkingMemory::new(3));
+
+        let faculty = LlmDeliberationFaculty::new(Uuid::new_v4(), "Ivar", "You are Ivar.", adapter)
+            .with_working_memory(Arc::clone(&wm));
+
+        let ws = Workspace::new("should we ship the deploy?");
+        let c = faculty.contribute(&ws).await.expect("verdict");
+        // The room got only the clean verdict text…
+        match c.decision {
+            Some(Decision::Speak { text }) => assert_eq!(text, "Ship it."),
+            other => panic!("expected Speak, got {other:?}"),
+        }
+        // …and the reasoning was captured into working memory for next turn.
+        assert_eq!(
+            wm.recent(),
+            vec!["Weighed the risk; the fix is small and tested."],
+            "the verdict's reasoning is recorded into working memory"
+        );
+    }
+
+    // what this catches: a suppressed-thinking turn (reasoning = None) records
+    // NOTHING — working memory only fills when thinking is actually on.
+    #[tokio::test]
+    async fn suppressed_thinking_records_no_working_memory() {
+        use crate::cognition::working_memory::WorkingMemory;
+
+        // make_response defaults reasoning: None (the suppressed-thinking shape).
+        let adapter = Arc::new(ScriptedAdapter::new(vec![make_response(
+            FinishReason::Stop,
+            "144",
+            None,
+        )]));
+        let wm = Arc::new(WorkingMemory::new(3));
+        let faculty = LlmDeliberationFaculty::new(Uuid::new_v4(), "Ivar", "You are Ivar.", adapter)
+            .with_working_memory(Arc::clone(&wm));
+
+        let _ = faculty.contribute(&Workspace::new("what is 12*12?")).await;
+        assert!(wm.is_empty(), "no reasoning → nothing recorded");
     }
 
     // what this catches: the nil-scope bug — tool calls MUST be scoped to the

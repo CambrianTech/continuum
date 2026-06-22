@@ -21,6 +21,7 @@ use super::embedding::{CachingEmbeddingProvider, EmbeddingProvider, LexicalEmbed
 use super::llm_deliberation_faculty::LlmDeliberationFaculty;
 use super::rag_source_faculty::{RagSourceFaculty, SaliencePolicy};
 use super::recall_faculty::RecallFaculty;
+use super::working_memory::{WorkingMemory, WorkingMemoryFaculty, DEFAULT_WORKING_MEMORY_CAPACITY};
 use super::workspace::{Faculty, SalienceArbiter, WorkspaceCycle};
 use crate::ai::adapter::AIProviderAdapter;
 use crate::persona::admission_state::AdmissionState;
@@ -128,6 +129,15 @@ pub fn build_workspace_cycle(cfg: PersonaBrainConfig) -> WorkspaceCycle {
         RecallFaculty::new(cfg.persona_id, cfg.admission).with_embedder(embedder),
     ));
 
+    // Working memory: the persona's recent chain-of-thought, carried forward across
+    // turns. The deliberator WRITES its reasoning here after each verdict; this
+    // perception-tier faculty READS it into the next tick — so the persona resumes
+    // its train of thought instead of re-deriving it cold. Volatile scratchpad,
+    // distinct from the long-term engram store; self-activates only when thinking is
+    // enabled (suppressed turns record nothing). See `working_memory` module.
+    let working_memory = Arc::new(WorkingMemory::new(DEFAULT_WORKING_MEMORY_CAPACITY));
+    faculties.push(Arc::new(WorkingMemoryFaculty::new(Arc::clone(&working_memory))));
+
     // Bridge each grounding source into a perception-tier faculty under its
     // salience policy. Standing-framing (roster, doctrine) bids at a high floor so
     // the top-k arbiter never evicts the room's rules under attention pressure.
@@ -150,7 +160,8 @@ pub fn build_workspace_cycle(cfg: PersonaBrainConfig) -> WorkspaceCycle {
         cfg.persona_name,
         cfg.system_prompt,
         cfg.adapter,
-    );
+    )
+    .with_working_memory(Arc::clone(&working_memory));
     if let Some(executor) = cfg.tool_executor {
         // Offer EXACTLY what this persona is authorized to run (offer ==
         // authorized) — never a tool the gate would refuse. A persona is an airc

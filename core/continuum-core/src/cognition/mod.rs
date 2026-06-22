@@ -56,6 +56,7 @@ pub mod turn_batch;
 pub mod types;
 pub mod validate_response;
 pub mod vision_describe;
+pub mod working_memory;
 pub mod workspace;
 pub mod workspace_capture;
 
