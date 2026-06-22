@@ -85,7 +85,7 @@ pub use probe_file_sink::{
 pub use probe_router::{ProbeEvent, ProbeRouterLayer, DEFAULT_CHANNEL_CAPACITY};
 pub use tracing_init::{install_probe_tracing, ProbeInstall, ProbeTracingConfig};
 pub use route_decision::{route, RouteDecision, RouteKind};
-pub use grid_trust_policy::{caller_trust, GridTrustAuthPolicy};
+pub use grid_trust_policy::{caller_trust, GridTrustAuthPolicy, PeerTrustSource};
 pub use transport::{ClosureTransport, NotImplementedRemoteTransport, Transport};
 pub use uri_layer::{current_uri_chain, UriCaptureLayer, UriFrame};
 pub use verdict::{DeferredReason, ForbiddenReason, Verdict};

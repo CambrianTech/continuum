@@ -50,19 +50,97 @@
 //! — `events/*/subscribe` falls to the `""`=Owner wildcard). A follow-up
 //! installs a subscribe-appropriate policy on that surface.
 
+use std::sync::Arc;
+
+use uuid::Uuid;
+
 use super::auth_policy::{AuthPolicy, CallerIdentity, CallerSource};
 use super::{ForbiddenReason, RouteDecision, Verdict};
 use crate::modules::grid::acl::is_command_authorized;
 use crate::modules::grid::node::TrustLevel;
 
-/// Production auth policy: ACL-gates cross-grid (airc) callers, passes
-/// local/substrate callers. See module docs.
-#[derive(Debug, Default, Clone, Copy)]
-pub struct GridTrustAuthPolicy;
+/// Resolves a signed peer (by airc `peer_id`) to its grid [`TrustLevel`] — the
+/// airc↔grid trust bridge, behind an abstraction so the policy depends on the
+/// SEAM, not a concrete store (tests use a trivial mock). `None` = "this peer is
+/// unknown" (→ the remote default ceiling), distinct from `Some(Blocked)`
+/// (explicitly denied).
+///
+/// IMPORTANT: the implementor MUST be keyed by the airc `peer_id`. The grid
+/// `NodeRegistry` is NOT a valid source — it keys by transport address, a
+/// different identity space (see modules/grid/registry.rs). A correct source is
+/// airc-side enrollment/trust; wiring it is the airc↔grid identity unification
+/// (task #38). Until that exists, [`GridTrustAuthPolicy::new`] (flat ceiling) is
+/// used and this seam stays mock-tested but un-wired in production.
+pub trait PeerTrustSource: Send + Sync {
+    fn trust_of(&self, peer_id: Uuid) -> Option<TrustLevel>;
+}
+
+/// The trust ceiling for a REMOTE (airc/tcp) caller, even one the grid trusts
+/// highly: a remote peer can be graduated up to [`Trusted`](TrustLevel::Trusted)
+/// but NEVER to `Owner` — Owner-gated commands (`data/delete`, `grid/trust`, …)
+/// stay local-only. The owner is the operator on the box, not a peer on the wire.
+const REMOTE_TRUST_CEILING: TrustLevel = TrustLevel::Trusted;
+
+/// Production auth policy: gates cross-grid (airc) + TCP callers by their resolved
+/// grid trust, passes local/substrate callers. See module docs.
+#[derive(Clone, Default)]
+pub struct GridTrustAuthPolicy {
+    /// The airc↔grid trust bridge. `None` → every remote caller resolves to the
+    /// flat Provisional ceiling (the pre-bridge behavior). `Some` → a remote
+    /// caller's REAL registered trust is honored (capped at
+    /// [`REMOTE_TRUST_CEILING`]); a peer set to `Blocked` is actually denied.
+    trust_source: Option<Arc<dyn PeerTrustSource>>,
+}
+
+impl std::fmt::Debug for GridTrustAuthPolicy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GridTrustAuthPolicy")
+            .field("trust_bridge", &self.trust_source.is_some())
+            .finish()
+    }
+}
 
 impl GridTrustAuthPolicy {
+    /// No trust bridge — every remote caller is capped at the Provisional ceiling
+    /// (pre-bridge behavior; preserved for tests + un-wired callers).
     pub fn new() -> Self {
-        Self
+        Self { trust_source: None }
+    }
+
+    /// Wire the airc↔grid trust bridge with a peer_id-keyed [`PeerTrustSource`]
+    /// (airc-side enrollment/trust — NOT the address-keyed grid `NodeRegistry`).
+    /// A known peer's real trust is then honored (capped at Trusted); a `Blocked`
+    /// peer is denied; an unknown peer keeps the Provisional ceiling. Not yet wired
+    /// in production (no peer_id-keyed source exists — task #38); the seam is
+    /// mock-tested.
+    pub fn with_trust_source(trust_source: Arc<dyn PeerTrustSource>) -> Self {
+        Self {
+            trust_source: Some(trust_source),
+        }
+    }
+
+    /// Resolve a caller's EFFECTIVE trust:
+    /// - `None` / `Local` → `Owner` (the operator on the box).
+    /// - `Airc` / `Tcp` (remote): the peer's registered trust if the bridge knows
+    ///   it, **capped at [`REMOTE_TRUST_CEILING`]** (Owner→Trusted; `Blocked`
+    ///   stays `Blocked` → denied); an unknown peer (or no bridge) → the
+    ///   Provisional ceiling (the cross-grid default that admits `ai/generate`).
+    ///
+    /// This fixes the pre-bridge hole where EVERY airc caller — including one
+    /// explicitly `Blocked` via `grid/trust` — resolved to Provisional.
+    fn resolve_trust(&self, caller: Option<&CallerIdentity>) -> TrustLevel {
+        match caller {
+            None => TrustLevel::Owner,
+            Some(c) => match c.source {
+                CallerSource::Local => TrustLevel::Owner,
+                CallerSource::Airc | CallerSource::Tcp => {
+                    match self.trust_source.as_ref().and_then(|s| s.trust_of(c.peer_id)) {
+                        Some(registered) => registered.min(REMOTE_TRUST_CEILING),
+                        None => TrustLevel::Provisional,
+                    }
+                }
+            },
+        }
     }
 }
 
@@ -104,7 +182,9 @@ pub fn caller_trust(caller: Option<&CallerIdentity>) -> TrustLevel {
 
 impl AuthPolicy for GridTrustAuthPolicy {
     fn gate(&self, decision: &RouteDecision, caller: Option<&CallerIdentity>) -> Verdict {
-        let trust = caller_trust(caller);
+        // Per-peer resolution (the trust bridge): a known remote peer gets its real
+        // trust (capped at Trusted); Blocked is denied; unknown → Provisional.
+        let trust = self.resolve_trust(caller);
         // Owner (local / substrate) — full access; not the cross-grid surface this
         // gate constrains. Otherwise enforce the grid ACL at the caller's trust.
         if trust >= TrustLevel::Owner {
@@ -155,6 +235,71 @@ mod tests {
                 other => panic!("expected Forbidden for {privileged}, got {other:?}"),
             }
         }
+    }
+
+    // what this catches: THE per-peer trust bridge. With a trust source wired, a
+    // remote caller's REAL grid trust is honored — but (1) a Blocked peer is denied
+    // EVERYTHING (the fix: pre-bridge every airc caller got Provisional, so a
+    // grid/trust-Blocked peer could still run AiSafe + ai/generate), (2) a remote
+    // peer is CAPPED at Trusted so Owner-gated commands stay local-only even for an
+    // Owner-registered peer, and (3) an unknown peer keeps the Provisional default.
+    #[test]
+    fn per_peer_trust_bridge_blocks_blocked_and_caps_remote_at_trusted() {
+        use crate::modules::grid::node::TrustLevel;
+        use std::collections::HashMap;
+
+        struct MockTrust(HashMap<Uuid, TrustLevel>);
+        impl PeerTrustSource for MockTrust {
+            fn trust_of(&self, peer_id: Uuid) -> Option<TrustLevel> {
+                self.0.get(&peer_id).copied()
+            }
+        }
+
+        let blocked = Uuid::new_v4();
+        let trusted = Uuid::new_v4();
+        let owner_peer = Uuid::new_v4();
+        let mut m = HashMap::new();
+        m.insert(blocked, TrustLevel::Blocked);
+        m.insert(trusted, TrustLevel::Trusted);
+        m.insert(owner_peer, TrustLevel::Owner);
+        let policy = GridTrustAuthPolicy::with_trust_source(Arc::new(MockTrust(m)));
+
+        // (1) Blocked peer — denied everything, INCLUDING ai/generate and ping.
+        let b = CallerIdentity::airc(blocked);
+        assert!(matches!(
+            policy.gate(&decision("ai/generate"), Some(&b)),
+            Verdict::Forbidden { .. }
+        ));
+        assert!(matches!(
+            policy.gate(&decision("ping"), Some(&b)),
+            Verdict::Forbidden { .. }
+        ));
+
+        // (2) Trusted peer — graduated (≥ Provisional), but Owner commands are
+        // local-only: still forbidden data/delete.
+        let t = CallerIdentity::airc(trusted);
+        assert_eq!(policy.gate(&decision("ai/generate"), Some(&t)), Verdict::Allowed);
+        assert!(matches!(
+            policy.gate(&decision("data/delete"), Some(&t)),
+            Verdict::Forbidden { .. }
+        ));
+
+        // Owner-REGISTERED remote peer is CAPPED at Trusted → still forbidden the
+        // Owner-only command. The owner is the operator on the box, never a peer.
+        let o = CallerIdentity::airc(owner_peer);
+        assert!(
+            matches!(policy.gate(&decision("data/delete"), Some(&o)), Verdict::Forbidden { .. }),
+            "a remote peer is capped at Trusted — Owner-gated commands stay local-only"
+        );
+
+        // (3) Unknown peer (not in the bridge) → Provisional default: ai/generate
+        // allowed, Owner denied — the cross-grid default is preserved.
+        let u = CallerIdentity::airc(Uuid::new_v4());
+        assert_eq!(policy.gate(&decision("ai/generate"), Some(&u)), Verdict::Allowed);
+        assert!(matches!(
+            policy.gate(&decision("data/delete"), Some(&u)),
+            Verdict::Forbidden { .. }
+        ));
     }
 
     // what this catches: a TCP IPC caller (unauthenticated remote socket) is

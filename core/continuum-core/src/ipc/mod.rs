@@ -1707,13 +1707,18 @@ pub fn start_server(
         crate::runtime::CommandExecutor::new(runtime.registry_arc())
             .with_interceptor(Arc::new(crate::runtime::AircInterceptor::new()))
             .with_interceptor(Arc::new(crate::runtime::GridInterceptor::new(grid_state)))
-            // Hard ACL gate (slice 3): replace the AllowAllPolicy default
-            // so cross-grid (airc) callers — incl. a persona's command
-            // inbound pump — are gated by the grid ACL, capped at
-            // Provisional. A remote room peer may request ai/generate and
-            // nothing privileged; local/substrate callers are unaffected.
-            // See routing/grid_trust_policy.rs + docs/grid/
-            // AIRC-NATIVE-IDENTITY-ROOMS-SECURITY.md §5 slice 3.
+            // Hard ACL gate: cross-grid (airc) + TCP callers — incl. a persona's
+            // command inbound pump — are gated by the grid ACL, capped at
+            // Provisional. A remote room peer may request ai/generate and nothing
+            // privileged; local/substrate callers are unaffected.
+            //
+            // NOTE: the per-peer trust BRIDGE (GridTrustAuthPolicy::with_trust_source)
+            // is NOT wired here yet — the grid NodeRegistry is keyed by transport
+            // ADDRESS (Tailscale IP / Reticulum hash), not by the airc peer_id the
+            // CallerIdentity carries, so it can't resolve an airc caller's trust
+            // (it would silently no-op). Wiring awaits a real airc-peer → trust
+            // source (the airc↔grid identity unification, task #38). The flat
+            // ceiling (`new()`) is correct and honest until then.
             .with_policy(Arc::new(crate::routing::GridTrustAuthPolicy::new())),
     );
     runtime
