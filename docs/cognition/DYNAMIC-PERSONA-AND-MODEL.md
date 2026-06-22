@@ -31,17 +31,30 @@ all think with the identical model is not yet the system we describe.
 ## 2. The thesis (what it should be)
 
 Per [[ask-anything-assemble-best-self-or-train]]: given a *need*, the system
-**assembles the best self** (compose a base + LoRA from the trust-scoped market) or
-**forages/trains** to become it. Per [[room-purpose-is-per-recipe-not-an-enum]]:
-behavior is **data**, not an enum. So:
+**assembles the best self** or **forages/trains** to become it. Per
+[[room-purpose-is-per-recipe-not-an-enum]]: behavior is **data**, not an enum. So:
 
-- **Personas are data, generated on demand** — a `PersonaSpec` (name, specialty,
-  persona-card/system-prompt, a *model-selection policy*, trust scope), authored/seeded/
-  created at runtime, never a Rust struct you edit + recompile.
-- **Models are discovered + selected, not hardcoded** — the runnable set comes from
-  unsloth's `/v1/models` ([[unsloth-universal-model-gateway]]) and the P2P genome
-  market within trust scope ([[shop-genome-market]]); selection is by *fitness for the
-  need*, not a static table.
+- **Models are discovered + selected to FIT the hardware** — this is the hard,
+  high-value problem and the priority. Machines vary wildly (a 53 GB M-series, a
+  Windows box with a big discrete GPU, a small laptop, CPU-only). The system must
+  detect the host's real capability and pick the **largest/best model that actually
+  fits** from the discovered set (unsloth's `/v1/models` ∪ the trust-scoped genome
+  market) — never a hardcoded model-per-tier table.
+- **Personas are data — a curated desired list now; generated-on-demand is the ideal
+  endgame.** We already know roughly which personas we want to build (Helper, Coder,
+  specialists…). So near-term a persona is a `PersonaSpec` (data: name, specialty,
+  persona-card, a *model-fit policy*, trust scope) drawn from a curated list;
+  generation-from-need (slice 6) is the aspirational top, not the starting point. The
+  weight of the work is **model fit**, not persona invention.
+
+### Scope: single-machine first; the grid is a deferred capability axis
+
+Most users start on **one machine**, so optimize model-fit for the single host first
+and do our best there. The grid adds a **shared capability** (route a too-big need to a
+peer with the VRAM, [[compute-lease-boundary]] / [[inference-lanes-realistic]]) — a real
+axis, but a *later* one. Design model-fit so "the capability I can reach" can grow from
+"this host" to "this host + grid peers" without reshaping the selection logic, then ship
+the single-host case first.
 
 ## 3. Invariants (the lessons — hold every line)
 
@@ -90,21 +103,28 @@ behavior is **data**, not an enum. So:
 
 ## 5. Slice plan (VDD-gated; each no-fallback + boot-visible)
 
-1. **PersonaSpec as data + `persona/create`.** Define the entity; seed the current
-   Helper as DATA (delete the hardcoded `plan_for_tier` `Vec`); roster becomes a query.
-   Model assignment unchanged this slice. *Proves personas are data, not code.*
-2. **Per-persona model is real.** Adapter sends the spec's selected model id (not
-   `model: None`); two personas demonstrably run two models on the one unsloth gateway.
-   Boot announces each persona's model. *Kills "everyone shares one model."*
-3. **Model discovery from unsloth `/v1/models`.** The runnable set is queried live;
-   `model_resolver` selects from discovered (catalog → priors). Fail loud if the need
-   has no match.
-4. **Fitness selection + assembly.** Select by fitness; compose base + LoRA via the
-   foundry ([[search-then-ab-dont-start-from-zero]]).
-5. **Genome-market discovery (trust-scoped).** Extend discovery to the P2P market within
-   `GridTrustAuthPolicy` scope ([[shop-genome-market]]).
-6. **Persona generation from need.** A manager/sentinel persona authors a `PersonaSpec`
-   from a gap; model-search assembles; spawn. The cooperative system grows its own team.
+Reordered to lead with **model-fit** (the priority), single-host first.
+
+1. **Capability detection + model discovery (single host).** Detect the host's real
+   capability (VRAM/tier — the boot log already prints `GPU=… VRAM=…`) and discover the
+   runnable set from unsloth's `/v1/models`. Boot announces both. The static
+   `catalog.rs` becomes priors. *No selection logic yet — just "what can I run, on what."*
+2. **Fit selection (replace `model_per_tier`).** Given capability + the discovered set,
+   select the **largest/best model that fits** for a need; delete the hardcoded
+   `model_per_tier` table and `plan_for_tier`'s model strings. Fail loud if nothing fits
+   (name the gap — don't silently pick a tiny default). *This is the core de-hardcoding.*
+3. **Per-persona model is real.** Adapter sends the **selected** model id (kill
+   `model: None`); personas can run different fitted models/LoRAs on the one gateway;
+   boot announces each persona's model. *Kills "everyone shares one model."*
+4. **PersonaSpec as data + `persona/create`.** Personas become data drawn from a curated
+   list (delete `plan_for_tier`'s hardcoded roster `Vec`); roster = a query; each spec
+   carries a model-fit policy consumed by slice 2.
+5. **Fitness + foundry assembly + genome-market discovery (trust-scoped).** Compose
+   base + LoRA for the need; extend discovery to the P2P market within
+   `GridTrustAuthPolicy` scope ([[shop-genome-market]], [[search-then-ab-dont-start-from-zero]]).
+6. **Grid-shared capability + persona generation from need (aspirational).** "Capability
+   I can reach" grows to include grid peers (route too-big needs, [[compute-lease-boundary]]);
+   a manager/sentinel persona authors a `PersonaSpec` from a gap and the system assembles + spawns it.
 
 ## 6. Code map
 
