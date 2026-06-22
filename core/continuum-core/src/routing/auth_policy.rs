@@ -86,6 +86,12 @@ pub enum CallerSource {
     /// peer or sentinel. The transport layer extracted the sender's
     /// peer_id from the signed envelope before constructing this.
     Airc,
+    /// The caller arrived over the core's TCP IPC listener — an
+    /// UNauthenticated remote socket (e.g. a host-side client reaching a
+    /// containerized core). Unlike [`Airc`](CallerSource::Airc) there is no
+    /// signed envelope, so it must NOT be treated as local/owner: it is gated
+    /// at the remote (non-owner) trust ceiling like any cross-grid caller.
+    Tcp,
 }
 
 /// Caller identity passed to the auth gate. Cross-grid dispatches
@@ -119,6 +125,16 @@ impl CallerIdentity {
         Self {
             peer_id,
             source: CallerSource::Local,
+        }
+    }
+
+    /// Construct a TCP-sourced (unauthenticated remote socket) caller identity.
+    /// The IPC server stamps this on connections from the TCP listener so they
+    /// are gated as remote (non-owner), never as local/owner.
+    pub fn tcp(peer_id: Uuid) -> Self {
+        Self {
+            peer_id,
+            source: CallerSource::Tcp,
         }
     }
 }

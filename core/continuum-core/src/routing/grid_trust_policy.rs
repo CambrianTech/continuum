@@ -91,6 +91,13 @@ pub fn caller_trust(caller: Option<&CallerIdentity>) -> TrustLevel {
             // real level). Until then, upstream airc enrollment must keep blocked
             // peers from reaching the gate. Flagged by adversarial review 2026-06-21.
             CallerSource::Airc => AIRC_CALLER_CEILING,
+            // A TCP IPC caller is an unauthenticated remote socket — never owner.
+            // Capped at the same remote ceiling as airc (Provisional): it can run
+            // the AiSafe surface but NOT Owner-gated commands (data/delete,
+            // grid/trust, …). Closes the "TCP == local owner" hole (security review
+            // 2026-06-21). Stricter-than-airc (it has no verified peer) is a future
+            // refinement; non-owner is the load-bearing guarantee.
+            CallerSource::Tcp => AIRC_CALLER_CEILING,
         },
     }
 }
@@ -146,6 +153,35 @@ mod tests {
                     reason: ForbiddenReason::NoPermissionForUri(uri),
                 } => assert_eq!(uri, privileged),
                 other => panic!("expected Forbidden for {privileged}, got {other:?}"),
+            }
+        }
+    }
+
+    // what this catches: a TCP IPC caller (unauthenticated remote socket) is
+    // remote-not-owner — capped at Provisional, so it can run the AiSafe surface
+    // (ai/generate) but is FORBIDDEN every Owner-gated command. This is the policy
+    // half of the "TCP == local owner" fix; the IPC server reuses this exact
+    // caller_trust + is_command_authorized at its dispatch boundary.
+    #[test]
+    fn tcp_caller_is_remote_not_owner() {
+        use crate::modules::grid::node::TrustLevel;
+        let policy = GridTrustAuthPolicy::new();
+        let tcp = CallerIdentity::tcp(Uuid::new_v4());
+
+        assert_eq!(
+            caller_trust(Some(&tcp)),
+            TrustLevel::Provisional,
+            "TCP is remote — capped at Provisional, never Owner"
+        );
+        assert_eq!(
+            policy.gate(&decision("ai/generate"), Some(&tcp)),
+            Verdict::Allowed,
+            "TCP may run the cross-grid-inference surface"
+        );
+        for owner_only in ["data/delete", "grid/trust", "grid/pair"] {
+            match policy.gate(&decision(owner_only), Some(&tcp)) {
+                Verdict::Forbidden { .. } => {}
+                other => panic!("TCP must be forbidden for {owner_only}, got {other:?}"),
             }
         }
     }

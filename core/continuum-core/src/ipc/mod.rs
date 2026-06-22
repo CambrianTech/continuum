@@ -257,7 +257,17 @@ fn send_binary_frame<S: Write>(
 /// The TS client multiplexes via requestId — responses can arrive in any order.
 /// This eliminates the sequential bottleneck where 6 concurrent requests from
 /// RAGComposer (global-awareness, semantic-memory, etc.) were serialized per-connection.
-fn handle_client<S: IpcStream>(stream: S, state: Arc<ServerState>) -> std::io::Result<()> {
+/// `caller` is the connection's identity: `None` for the LOCAL Unix socket
+/// (owner-by-locality — the operator on the box), `Some(CallerIdentity::tcp(..))`
+/// for the TCP listener (an unauthenticated remote socket). TCP-sourced commands
+/// are ACL-gated at the remote (non-owner) ceiling at the dispatch boundary, so a
+/// TCP peer can never run Owner-gated commands (`data/delete`, `grid/trust`, …) —
+/// closing the "TCP == local owner" hole (security review 2026-06-21).
+fn handle_client<S: IpcStream>(
+    stream: S,
+    state: Arc<ServerState>,
+    caller: Option<crate::routing::CallerIdentity>,
+) -> std::io::Result<()> {
     let peer_addr = stream.peer_addr_str();
     log_debug!("ipc", "server", "Client connected: {}", peer_addr);
 
@@ -333,11 +343,35 @@ fn handle_client<S: IpcStream>(stream: S, state: Arc<ServerState>) -> std::io::R
         // tokio handles thousands of concurrent tasks without blocking any OS threads.
         let state = state.clone();
         let tx = tx.clone();
+        let caller = caller.clone();
         let rt_handle = state.rt_handle.clone();
         rt_handle.spawn(async move {
             let handle_result = if let Some(ref cmd) = command {
+                // Boundary gate for a REMOTE (TCP) caller: the route_command path is
+                // owner-by-locality (ungated) for the local Unix socket, so a remote
+                // caller MUST be ACL-gated here at its trust ceiling. Owner-gated
+                // commands are refused; no unauthenticated Owner execution over TCP.
+                // Local (caller == None) skips this — the operator on the box is owner.
+                if let Some(ref c) = caller {
+                    let trust = crate::routing::caller_trust(Some(c));
+                    if !crate::modules::grid::acl::is_command_authorized(cmd, trust) {
+                        let _ = tx.send((
+                            request_id,
+                            HandleResult::Json(Response::error(format!(
+                                "forbidden: command '{cmd}' is not permitted for a remote \
+                                 (TCP) caller — Owner-gated commands are local-only"
+                            ))),
+                        ));
+                        return;
+                    }
+                }
                 let rss_before = current_rss_mb();
-                let result = state.runtime.route_command(cmd, json_value.clone()).await;
+                // Thread the caller so the typed object path sees the REMOTE identity
+                // (composition then propagates remote-not-owner — no escalation).
+                let result = state
+                    .runtime
+                    .route_command(cmd, json_value.clone(), caller.clone())
+                    .await;
                 let rss_after = current_rss_mb();
                 log_command_rss_delta(cmd, rss_before, rss_after);
 
@@ -1782,7 +1816,18 @@ pub fn start_server(
                                     Ok(stream) => {
                                         let state = tcp_state.clone();
                                         std::thread::spawn(move || {
-                                            if let Err(e) = handle_client(stream, state) {
+                                            // TCP = unauthenticated remote socket →
+                                            // stamp a non-owner identity so the
+                                            // dispatch boundary ACL-gates it (no Owner
+                                            // commands over TCP). peer_id is nil (no
+                                            // verified peer); trust comes from the Tcp
+                                            // source, not the id.
+                                            let caller = Some(
+                                                crate::routing::CallerIdentity::tcp(
+                                                    uuid::Uuid::nil(),
+                                                ),
+                                            );
+                                            if let Err(e) = handle_client(stream, state, caller) {
                                                 log_error!(
                                                     "ipc",
                                                     "server",
@@ -1880,9 +1925,10 @@ pub fn start_server(
             Ok(stream) => {
                 let state = state.clone();
 
-                // Spawn thread for concurrent handling
+                // Spawn thread for concurrent handling. Unix socket = LOCAL caller
+                // (the operator on the box) → None = owner-by-locality.
                 std::thread::spawn(move || {
-                    if let Err(e) = handle_client(stream, state) {
+                    if let Err(e) = handle_client(stream, state, None) {
                         log_error!("ipc", "server", "Client error: {}", e);
                     }
                 });

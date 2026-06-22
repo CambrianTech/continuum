@@ -271,26 +271,30 @@ impl Runtime {
         &self,
         command: &str,
         params: serde_json::Value,
+        caller: Option<crate::routing::CallerIdentity>,
     ) -> Option<Result<CommandResult, String>> {
         // Typed path wins: a registered DynCommand object routes DIRECTLY (O(1),
         // lock-free), ahead of the prefix table — same precedence the
         // CommandExecutor uses. This is the live socket route (cu / IPC), so the
         // consult must live here too until the dispatch paths are unified.
         // See docs/architecture/COMMAND-ORGANIZATION.md.
+        //
+        // `caller` is the connection's identity: `None` for the LOCAL Unix socket
+        // (owner-by-locality) and a non-owner remote identity for a TCP-sourced
+        // connection (the IPC server stamps it + ACL-gates the top-level command at
+        // the boundary). Threading it means a command composing another over TCP
+        // composes as the REMOTE caller, not silently as owner — no escalation.
         if let Some(cmd) = self.registry.route_object(command) {
-            // IPC/local socket path — caller is the local owner (None).
-            //
             // NOTE (adversarial review 2026-06-21): the typed object path does NOT
             // pass through the per-MODULE concurrency limiter or ModuleMetrics below
             // — a DynCommand object is module-independent, so it has no module to key
-            // those on. This is deliberate, not an oversight: per-command throughput
-            // leasing + observability belong to the command framework (the executor
-            // already emits `command:completed` on the in-process/persona route), not
-            // the legacy per-module path. Until per-command metrics land, migrated
-            // commands are absent from ModuleMetrics on THIS local route (acceptable
-            // for the trivial commands migrated so far; revisit before migrating a
-            // hot/contended command). Tracked for the command-framework metrics slice.
-            return Some(dispatch_object_with_panic_guard(cmd, params, None).await);
+            // those on. This is deliberate: per-command throughput leasing +
+            // observability belong to the command framework (the executor already
+            // emits `command:completed` on the in-process/persona route), not the
+            // legacy per-module path. Migrated commands are absent from ModuleMetrics
+            // on THIS local route (acceptable for the trivial commands migrated so
+            // far; revisit before migrating a hot/contended command).
+            return Some(dispatch_object_with_panic_guard(cmd, params, caller).await);
         }
         let (module, full_cmd) = self.registry.route_command(command)?;
         let module_name = module.config().name;
