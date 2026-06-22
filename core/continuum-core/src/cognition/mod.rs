@@ -30,6 +30,7 @@
 pub mod adaptive_throughput;
 pub mod audit;
 pub mod channel_digest;
+pub mod channel_digest_region;
 pub mod channel_element;
 pub mod check_redundancy;
 pub mod embedding;
