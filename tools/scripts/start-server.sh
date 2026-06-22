@@ -37,6 +37,31 @@ CORE_MANIFEST="$REPO_ROOT/core/continuum-core/Cargo.toml"
 [ -f "$HOME/.cargo/env" ] && source "$HOME/.cargo/env"
 [ -f "$HOME/.continuum/config.env" ] && { set -a; source "$HOME/.continuum/config.env"; set +a; }
 
+# Locate cargo deterministically. A background task / detached shell does NOT
+# inherit the interactive PATH, so cargo (rustup at ~/.cargo/bin OR homebrew at
+# /opt/homebrew/bin) may be invisible. Prepend the known install dirs, then
+# require cargo to exist — fail LOUD rather than printing "core still launches"
+# and then dying at `exec cargo` (the silent-fallthrough this script did on
+# 2026-06-22). [[fallbacks-are-illegal-fail-loud]].
+export PATH="$HOME/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
+if ! command -v cargo >/dev/null 2>&1; then
+  echo "✗ FATAL: cargo not found on PATH (looked in ~/.cargo/bin, /opt/homebrew/bin," >&2
+  echo "  /usr/local/bin, and the inherited PATH). Install Rust, then re-run." >&2
+  exit 1
+fi
+
+# ── Single-owner build target ────────────────────────────────────────
+# This script is the ONE start path ([[validate-via-pure-rust-not-npm-jtag]]).
+# It must therefore own CARGO_TARGET_DIR so every `cu start` — no matter which
+# shell or background task invokes it — builds into and runs from the SAME
+# binary. Without this, a shell that lacks the export builds a 396MB ghost into
+# the repo's ./target while another shell ran from ~/.continuum/cache, leaving
+# two diverging continuum-core-server processes fighting over one socket (the
+# "more than one shell running" / 18GB ghost-target incident, 2026-06-22).
+# An explicit per-shell export still wins (deliberate one-shot against a clean
+# target); we only supply the default so the unattended path can't diverge.
+export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$HOME/.continuum/cache/cargo-target}"
+
 if [ -z "$ORT_DYLIB_PATH" ]; then
   if [ -f "$HOME/.continuum/lib/libonnxruntime.so" ]; then
     export ORT_DYLIB_PATH="$HOME/.continuum/lib/libonnxruntime.so"

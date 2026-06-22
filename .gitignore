@@ -214,3 +214,4 @@ tools/models/
 .airc/*
 !.airc/*.md
 !.airc/manifest.json
+/config.env
