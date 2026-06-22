@@ -255,6 +255,36 @@ pub async fn write_seed_atomic(
     Ok(())
 }
 
+/// Ensure `seed_path` holds a seed for the LIVE identity (`persona_id` +
+/// `agent_name`), self-healing a missing, corrupt, or drifted seed. Idempotent: a
+/// resumed persona rewrites the same content; a persona whose seed was deleted or
+/// damaged gets it re-written from her running identity — so she can never be
+/// re-minted as a stranger while her home (engrams + airc key) sits on disk.
+///
+/// CRUCIALLY preserves `created_at_ms` (her birth time is stable across restarts):
+/// the existing seed's timestamp wins; `fallback_created_at_ms` is used ONLY when
+/// no readable seed exists (first mint, or healing a corrupt one). Without this,
+/// rewriting every boot would reset her age.
+pub async fn ensure_seed(
+    seed_path: &Path,
+    persona_id: Uuid,
+    agent_name: &str,
+    fallback_created_at_ms: u64,
+) -> Result<(), PersonaSeedError> {
+    let created_at_ms = match read_seed(seed_path).await {
+        Ok(existing) => existing.created_at_ms(),
+        // Missing or corrupt → treat fallback as the birth time. (A corrupt seed is
+        // being healed; we can't trust its timestamp, so the live boot stands in.)
+        Err(_) => fallback_created_at_ms,
+    };
+    let seed = PersonaSeedFile::V1 {
+        persona_id,
+        agent_name: agent_name.to_string(),
+        created_at_ms,
+    };
+    write_seed_atomic(seed_path, &seed).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -285,6 +315,52 @@ mod tests {
         let path = temp.path().join("nonexistent-seed.json");
         let err = read_seed(&path).await.unwrap_err();
         assert!(err.is_not_found(), "expected NotFound, got {err:?}");
+    }
+
+    // what this catches: ensure_seed writes a missing seed from the live identity
+    // (self-heal) using the fallback birth time — so a persona whose seed was lost
+    // is NOT re-minted as a stranger next boot.
+    #[tokio::test]
+    async fn ensure_seed_creates_missing_with_fallback_birth_time() {
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join("seed.json");
+        let id = Uuid::new_v4();
+        ensure_seed(&path, id, "Asha", 4242).await.unwrap();
+        let read = read_seed(&path).await.unwrap();
+        assert_eq!(read.persona_id(), id);
+        assert_eq!(read.agent_name(), "Asha");
+        assert_eq!(read.created_at_ms(), 4242, "no prior seed → fallback is birth time");
+    }
+
+    // what this catches: re-running ensure_seed on an EXISTING seed PRESERVES the
+    // original created_at_ms (the persona's stable age) even though a new fallback
+    // is passed — the bug that would silently reset a resumed persona's birth time
+    // every boot. The live persona_id/name still get refreshed (drift-heal).
+    #[tokio::test]
+    async fn ensure_seed_preserves_birth_time_on_resume() {
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join("seed.json");
+        let id = Uuid::new_v4();
+        ensure_seed(&path, id, "Asha", 1000).await.unwrap();
+        // Second boot: a different fallback, but the original 1000 must survive.
+        ensure_seed(&path, id, "Asha", 9_999_999).await.unwrap();
+        let read = read_seed(&path).await.unwrap();
+        assert_eq!(read.created_at_ms(), 1000, "birth time is stable across resumes");
+        assert_eq!(read.persona_id(), id);
+    }
+
+    // what this catches: a CORRUPT seed is healed (overwritten from the live
+    // identity) rather than left to poison resume — the persona stays herself.
+    #[tokio::test]
+    async fn ensure_seed_heals_corrupt_seed() {
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join("seed.json");
+        tokio::fs::write(&path, b"definitely not json").await.unwrap();
+        let id = Uuid::new_v4();
+        ensure_seed(&path, id, "Asha", 5555).await.unwrap();
+        let read = read_seed(&path).await.unwrap();
+        assert_eq!(read.persona_id(), id);
+        assert_eq!(read.created_at_ms(), 5555, "corrupt seed's timestamp is untrusted → fallback");
     }
 
     #[tokio::test]

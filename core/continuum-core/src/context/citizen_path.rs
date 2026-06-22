@@ -139,6 +139,30 @@ mod tests {
         assert_eq!(path, PathBuf::from("/r/citizens/personas/maya/airc"));
     }
 
+    // what this catches: THE bug that minted a stranger every boot (filling
+    // `personas-archive/`). The instance manager WRITES seed.json at
+    // `citizen_home_path(...).parent()/seed.json`; the resumer SCANS
+    // `citizens_kind_dir(...)` for `<subdir>/seed.json`. If those two ever diverge
+    // (as they did when the resumer hard-coded `personas/` instead of
+    // `citizens/personas/`), the write lands where the read never looks → no
+    // persona ever resumes. This pins write-path == read-path for a Persona.
+    #[test]
+    fn seed_write_path_lives_under_the_resumer_scan_dir() {
+        let root = PathBuf::from("/r");
+        let label = "asha";
+        let home = citizen_home_path(&root, IdentityKind::Persona, None, label);
+        // The instance manager derives the seed path from the home's parent.
+        let seed_path = home.parent().expect("home has a parent").join("seed.json");
+        // The resumer scans this dir's `<label>/seed.json`.
+        let scan_dir = citizens_kind_dir(&root, IdentityKind::Persona);
+        assert_eq!(
+            seed_path,
+            scan_dir.join(label).join("seed.json"),
+            "the seed the bootstrap writes MUST land where the resumer scans — else \
+             personas never resume and a stranger is minted every boot"
+        );
+    }
+
     #[test]
     fn agent_path_carries_provider_segment() {
         let root = PathBuf::from("/r");

@@ -59,7 +59,7 @@ use uuid::Uuid;
 
 use crate::persona::identity_provider::{PersonaIdentityIntent, PersonaIdentitySource};
 use crate::persona::resume_or_mint_provider::now_ms;
-use crate::persona::seed::{write_seed_atomic, PersonaSeedFile};
+use crate::persona::seed::ensure_seed;
 use crate::persona::{
     agent_name_from_identity, PersonaAircRuntime, PersonaAircRuntimeError,
     PersonaAircRuntimeRegistry,
@@ -234,47 +234,46 @@ impl PersonaInstanceManagerModule {
         )
         .await?;
 
-        // For freshly-minted personas, write seed.json so next boot
-        // can resume them. Failure here is non-fatal — the persona
-        // bootstrapped fine, she just won't survive a restart.
-        // Logged at warn so operators see and can act.
-        if intent.source == PersonaIdentitySource::FreshlyMinted {
-            // runtime.home() is `<continuum_root>/personas/<name>/airc/`.
-            // seed.json lives one level up at
-            // `<continuum_root>/personas/<name>/seed.json` — alongside
-            // the airc subdirectory, not inside it. This matches the
-            // doctrine that airc owns identity (the keypair inside
-            // airc/) and continuum owns the application-layer mapping
-            // (seed.json one level out).
-            let seed_path = runtime
-                .home()
-                .parent()
-                .map(|p| p.join("seed.json"))
-                .unwrap_or_else(|| runtime.home().join("seed.json"));
-            // Slice 1B of #142: write the POST-COLLAPSE persona_id —
-            // i.e. `runtime.persona_id()` (which equals
-            // `runtime.airc().peer_id().as_uuid()`) — to seed.json,
-            // NOT the discarded `intent.persona_id` from the
-            // pre-bootstrap mint. The seed.rs contract says
-            // "Must NOT change across restarts"; honoring it means
-            // the on-disk Uuid IS the substrate identity (peer_id),
-            // not the historical-artifact seed Uuid.
-            let seed = PersonaSeedFile::V1 {
-                persona_id: runtime.persona_id(),
-                agent_name: runtime.agent_name().to_string(),
-                created_at_ms: now_ms(),
-            };
-            if let Err(e) = write_seed_atomic(&seed_path, &seed).await {
-                tracing::warn!(
-                    error = %e,
-                    persona_id = %runtime.persona_id(),
-                    agent_name = %runtime.agent_name(),
-                    seed_path = %seed_path.display(),
-                    "failed to write seed.json — persona is online but won't survive restart. \
-                     Resolve disk/permission issue + restart to re-mint, or write the seed \
-                     manually."
-                );
-            }
+        // Persist (or self-heal) seed.json so this persona resumes as HERSELF next
+        // boot. Runs for EVERY bootstrap — minted AND resumed — not just on mint:
+        // `ensure_seed` is idempotent for a resumed persona (rewrites the same
+        // content, preserving her birth time) and SELF-HEALS a seed that went
+        // missing or corrupt while her home (engrams + airc key) survived. Without
+        // the always-run, a single failed mint-write or a deleted seed orphaned her
+        // memory and re-minted a stranger next boot — exactly how `personas-archive/`
+        // filled up. Failure here is non-fatal (she's online) but logged at warn.
+        //
+        // `runtime.home()` is `<continuum_root>/citizens/personas/<name>/airc/`;
+        // seed.json lives one level up at `…/citizens/personas/<name>/seed.json`
+        // (alongside the airc subdir, not inside it) — the SAME `<name>/` the
+        // resumer scans via `citizens_kind_dir`. airc owns identity (the keypair in
+        // airc/); continuum owns the application-layer mapping (seed.json one level
+        // out). The on-disk persona_id is `runtime.persona_id()` (== the airc
+        // peer_id, the post-collapse identity), honoring seed.rs's
+        // "Must NOT change across restarts" — NOT the discarded pre-mint
+        // `intent.persona_id`.
+        let seed_path = runtime
+            .home()
+            .parent()
+            .map(|p| p.join("seed.json"))
+            .unwrap_or_else(|| runtime.home().join("seed.json"));
+        if let Err(e) = ensure_seed(
+            &seed_path,
+            runtime.persona_id(),
+            runtime.agent_name(),
+            now_ms(),
+        )
+        .await
+        {
+            tracing::warn!(
+                error = %e,
+                persona_id = %runtime.persona_id(),
+                agent_name = %runtime.agent_name(),
+                seed_path = %seed_path.display(),
+                "failed to persist seed.json — persona is online but may not survive a \
+                 restart as herself. Resolve disk/permission issue + restart, or write \
+                 the seed manually."
+            );
         }
 
         let info = PersonaInstanceInfo::from_runtime(&runtime);
