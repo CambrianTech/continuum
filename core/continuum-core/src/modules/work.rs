@@ -29,7 +29,8 @@ use ts_rs::TS;
 use uuid::Uuid;
 
 use airc_lib::{
-    Airc, ClaimId, ClaimWorkCard, CreateWorkCard, Priority, ReleaseWorkClaim, RepoId, WorkCardId,
+    Airc, CardState, ChangeWorkCardState, ClaimId, ClaimWorkCard, CreateWorkCard, HeartbeatWorkClaim,
+    Priority, ReleaseWorkClaim, RepoId, WorkCardId,
 };
 
 use crate::persona::PersonaAircRuntimeRegistry;
@@ -71,6 +72,27 @@ fn parse_card_id(s: &str) -> Result<WorkCardId, CommandError> {
     Uuid::parse_str(s)
         .map(WorkCardId::from_uuid)
         .map_err(|e| CommandError::Invalid(format!("invalid card_id '{s}': {e}")))
+}
+
+fn parse_claim_id(s: &str) -> Result<ClaimId, CommandError> {
+    Uuid::parse_str(s)
+        .map(ClaimId::from_uuid)
+        .map_err(|e| CommandError::Invalid(format!("invalid claim_id '{s}': {e}")))
+}
+
+fn parse_state(s: &str) -> Result<CardState, CommandError> {
+    match s.to_ascii_lowercase().as_str() {
+        "open" => Ok(CardState::Open),
+        "claimed" => Ok(CardState::Claimed),
+        "in_progress" | "inprogress" | "in-progress" => Ok(CardState::InProgress),
+        "blocked" => Ok(CardState::Blocked),
+        "review" => Ok(CardState::Review),
+        "merged" => Ok(CardState::Merged),
+        "closed" | "done" => Ok(CardState::Closed),
+        other => Err(CommandError::Invalid(format!(
+            "unknown card state '{other}' (open|claimed|in_progress|blocked|review|merged|closed)"
+        ))),
+    }
 }
 
 // ─────────────────────────── work/claim ──────────────────────────
@@ -226,11 +248,105 @@ impl ActionCommand for WorkRelease {
     }
 }
 
+// ─────────────────────────── work/state ──────────────────────────
+
+/// Move a card through its lifecycle (open→in_progress→review→closed, etc).
+pub struct WorkState {
+    pub registry: PersonaAircRuntimeRegistry,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
+pub struct WorkStateParams {
+    /// The card id (UUID) to transition.
+    pub card_id: String,
+    /// New state: open | claimed | in_progress | blocked | review | merged | closed.
+    pub state: String,
+}
+
+#[derive(Debug, Clone, Serialize, TS)]
+pub struct WorkStateResult {
+    pub card_id: String,
+    pub state: String,
+}
+
+#[async_trait]
+impl ActionCommand for WorkState {
+    const NAME: &'static str = "work/state";
+    const ACCESS: AccessLevel = AccessLevel::Privileged;
+    const DESCRIPTION: &'static str =
+        "Move a work card through its lifecycle: in_progress when you start, review when a PR is up, \
+         blocked if stuck, closed when done. States: open|claimed|in_progress|blocked|review|merged|closed.";
+    type Params = WorkStateParams;
+    type Output = WorkStateResult;
+
+    async fn run(&self, ctx: &Ctx, p: WorkStateParams) -> Result<WorkStateResult, CommandError> {
+        let airc = persona_airc(&self.registry, ctx)?;
+        let card_id = parse_card_id(&p.card_id)?;
+        let state = parse_state(&p.state)?;
+        airc.change_work_card_state(ChangeWorkCardState { card_id, state })
+            .await
+            .map_err(|e| CommandError::Internal(e.to_string()))?;
+        Ok(WorkStateResult {
+            card_id: p.card_id,
+            state: p.state,
+        })
+    }
+}
+
+// ─────────────────────────── work/heartbeat ──────────────────────
+
+/// Extend this persona's claim lease on a card during long work.
+pub struct WorkHeartbeat {
+    pub registry: PersonaAircRuntimeRegistry,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
+pub struct WorkHeartbeatParams {
+    /// The card id (UUID) whose claim to extend.
+    pub card_id: String,
+    /// The claim_id from work/claim.
+    pub claim_id: String,
+    /// New lease length in ms. Defaults to 30 min.
+    #[serde(default)]
+    pub ttl_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, TS)]
+pub struct WorkHeartbeatResult {
+    pub extended: bool,
+}
+
+#[async_trait]
+impl ActionCommand for WorkHeartbeat {
+    const NAME: &'static str = "work/heartbeat";
+    const ACCESS: AccessLevel = AccessLevel::Privileged;
+    const DESCRIPTION: &'static str =
+        "Extend your claim lease on a card so it doesn't go stale during long work (pass card_id + claim_id).";
+    type Params = WorkHeartbeatParams;
+    type Output = WorkHeartbeatResult;
+
+    async fn run(&self, ctx: &Ctx, p: WorkHeartbeatParams) -> Result<WorkHeartbeatResult, CommandError> {
+        let airc = persona_airc(&self.registry, ctx)?;
+        let card_id = parse_card_id(&p.card_id)?;
+        let claim_id = parse_claim_id(&p.claim_id)?;
+        airc.heartbeat_work_claim(HeartbeatWorkClaim {
+            card_id,
+            claim_id,
+            ttl_ms: p.ttl_ms.unwrap_or(DEFAULT_CLAIM_TTL_MS),
+        })
+        .await
+        .map_err(|e| CommandError::Internal(e.to_string()))?;
+        Ok(WorkHeartbeatResult { extended: true })
+    }
+}
+
 // ─────────────────── one registry: descriptors + objects ─────────────────
 
 crate::register_command!(WorkClaim);
 crate::register_command!(WorkCreate);
 crate::register_command!(WorkRelease);
+crate::register_command!(WorkState);
+crate::register_command!(WorkHeartbeat);
 
 /// The kanban module — holds the persona airc-runtime registry so each work tool
 /// can resolve the CALLER's own airc handle and act as that persona.
@@ -272,6 +388,8 @@ impl ServiceModule for WorkModule {
             Arc::new(WorkClaim { registry: self.registry.clone() }),
             Arc::new(WorkCreate { registry: self.registry.clone() }),
             Arc::new(WorkRelease { registry: self.registry.clone() }),
+            Arc::new(WorkState { registry: self.registry.clone() }),
+            Arc::new(WorkHeartbeat { registry: self.registry.clone() }),
         ]
     }
 
