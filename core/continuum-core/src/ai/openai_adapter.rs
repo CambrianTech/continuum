@@ -37,6 +37,25 @@ use super::types::{
 /// — no hand-written literals. Fields that the registry doesn't know
 /// about (HTTP concerns — auth shape, Authorization header requirement)
 /// are derived from `Provider.auth`, not separately configured.
+/// Per-gateway thinking policy for reasoning models. The gateway can't always
+/// honor `chat_template_kwargs.enable_thinking` (verified: unsloth/llama.cpp
+/// ignores it for this forged model), but Qwen3's `/no_think` SOFT-SWITCH in the
+/// message works — the model emits an empty `<think></think>` then answers
+/// directly. This is the model-specific knob the adapter owns (same boundary as
+/// reasoning separation); higher layers express a model-agnostic intent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ThinkingMode {
+    /// Leave the model at its default — reasoning models think every turn. Output
+    /// is still reasoning-stripped by [`extract_reasoning`] (the safety net).
+    #[default]
+    Default,
+    /// Suppress chain-of-thought via the model's soft-switch. Faster turns, and the
+    /// runaway-loop failure mode can't happen (no reasoning is generated). For a
+    /// small reasoning model whose "thinking" tends to ramble, this is usually the
+    /// better default; a task that genuinely needs deliberation re-enables it.
+    Suppress,
+}
+
 #[derive(Debug, Clone)]
 pub struct OpenAICompatibleConfig {
     pub provider_id: String,
@@ -57,6 +76,10 @@ pub struct OpenAICompatibleConfig {
     /// param, e.g. unsloth+GGUF — proven 2026-06-21). Gateway-level for now;
     /// per-model refinement (from the gateway's model data) is the follow-up.
     pub tool_protocol: super::json_in_prompt_tools::ToolProtocol,
+    /// Whether to suppress the model's chain-of-thought for this gateway (Qwen3
+    /// `/no_think` soft-switch). Gateway-level for now; per-task/per-request
+    /// refinement is the follow-up.
+    pub thinking: ThinkingMode,
 }
 
 /// OpenAI-compatible adapter implementation
@@ -340,6 +363,22 @@ impl OpenAICompatibleAdapter {
             } else {
                 super::json_in_prompt_tools::ToolProtocol::Native
             },
+            // The local unsloth/GGUF reasoning gateway defaults to SUPPRESS: this
+            // forged 4B's chain-of-thought tends to ramble + loop (latency + the
+            // runaway-leak failure mode), and the model answers correctly without
+            // it (verified live). Operator override: `UNSLOTH_THINKING=on` keeps
+            // thinking (the reasoning-strip still protects the room). Cloud
+            // providers keep their default — their reasoning is theirs to manage.
+            thinking: {
+                let keep_thinking = std::env::var("UNSLOTH_THINKING")
+                    .map(|v| v.trim().eq_ignore_ascii_case("on"))
+                    .unwrap_or(false);
+                if provider.id == "unsloth" && !keep_thinking {
+                    ThinkingMode::Suppress
+                } else {
+                    ThinkingMode::Default
+                }
+            },
         })
     }
 
@@ -457,6 +496,14 @@ impl OpenAICompatibleAdapter {
             }
         }
 
+        // Thinking toggle: when this gateway suppresses reasoning, append Qwen3's
+        // `/no_think` soft-switch to the last user turn so the model skips its
+        // chain-of-thought and answers directly. Model-specific token, owned here at
+        // the adapter boundary; higher layers never speak `/no_think`.
+        if self.config.thinking == ThinkingMode::Suppress {
+            apply_no_think_switch(&mut result);
+        }
+
         result
     }
 
@@ -557,6 +604,26 @@ pub(crate) fn extract_reasoning(
                 (!reasoning.is_empty()).then(|| reasoning.to_string()),
             )
         }
+    }
+}
+
+/// Append Qwen3's `/no_think` soft-switch to the LAST user message in a built
+/// OpenAI message array, suppressing chain-of-thought for the turn (the model emits
+/// an empty `<think></think>` then answers directly — which [`extract_reasoning`]
+/// reduces to clean text + no reasoning). Operates on string content (chat turns);
+/// multimodal/array content is left untouched (a follow-up can append a text part).
+/// No user message → no-op.
+fn apply_no_think_switch(messages: &mut [Value]) {
+    for m in messages.iter_mut().rev() {
+        if m.get("role").and_then(|r| r.as_str()) != Some("user") {
+            continue;
+        }
+        if let Some(content) = m.get_mut("content") {
+            if let Some(s) = content.as_str() {
+                *content = Value::String(format!("{s}\n/no_think"));
+            }
+        }
+        return;
     }
 }
 
@@ -1357,6 +1424,34 @@ mod tests {
         let (text, reasoning) = extract_reasoning("<think></think>\n\n{\"ok\":true}", None);
         assert_eq!(text, "{\"ok\":true}");
         assert!(reasoning.is_none(), "empty think block confers no reasoning");
+    }
+
+    // what this catches: the thinking toggle's mechanism — `/no_think` is appended
+    // to the LAST user message (Qwen3 soft-switch), not the system or an earlier
+    // turn. Verified live: this makes the model emit an empty think block + a direct
+    // answer (which extract_reasoning reduces to clean text).
+    #[test]
+    fn apply_no_think_switch_targets_last_user_message() {
+        let mut msgs = vec![
+            json!({"role": "system", "content": "be helpful"}),
+            json!({"role": "user", "content": "earlier turn"}),
+            json!({"role": "assistant", "content": "earlier reply"}),
+            json!({"role": "user", "content": "what is 2+2?"}),
+        ];
+        apply_no_think_switch(&mut msgs);
+        assert_eq!(msgs[3]["content"], json!("what is 2+2?\n/no_think"));
+        // earlier user turn + system untouched
+        assert_eq!(msgs[1]["content"], json!("earlier turn"));
+        assert_eq!(msgs[0]["content"], json!("be helpful"));
+    }
+
+    // what this catches: no user message → no-op (never corrupts a system-only or
+    // tool-only message array).
+    #[test]
+    fn apply_no_think_switch_noop_without_user() {
+        let mut msgs = vec![json!({"role": "system", "content": "be helpful"})];
+        apply_no_think_switch(&mut msgs);
+        assert_eq!(msgs[0]["content"], json!("be helpful"), "no user turn → unchanged");
     }
 
     // what this catches: a single string input serializes as a JSON string (not
