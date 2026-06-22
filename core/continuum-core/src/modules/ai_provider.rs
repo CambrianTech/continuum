@@ -636,29 +636,55 @@ impl AIProviderModule {
         }
 
         // Intentional boot assertion: announce the ACTIVE inference path so a silent
-        // local fallback can NEVER go unnoticed again ("we didn't even know unsloth
-        // wasn't used"). unsloth is THE gateway; local llama is opt-in only.
-        // [[fallbacks-are-illegal-fail-loud]]
+        // fallback can NEVER go unnoticed again ("we didn't even know unsloth wasn't
+        // used"). Registration only means key-present + adapter-configured — it does
+        // NOT mean unsloth is serving. So we PROBE reachability here, making startup
+        // impervious to unsloth being down / uninstalled / not yet started: that is
+        // caught LOUD, never falsely reported ✓. [[fallbacks-are-illegal-fail-loud]]
         {
+            use crate::inference::unsloth_control::{UnslothControl, UnslothHttp};
             use crate::runtime::boot_status::{boot_status, BootStatusKind};
             let base = crate::inference::unsloth_control::unsloth_base_url();
-            match (unsloth_registered, local_llama_opt_in) {
-                (true, false) => boot_status(
-                    "inference",
-                    BootStatusKind::Ok,
-                    &format!("unsloth gateway @ {base} — sole inference path"),
-                ),
-                (true, true) => boot_status(
-                    "inference",
-                    BootStatusKind::Degraded,
-                    &format!("unsloth gateway @ {base} + local llama opt-in (CONTINUUM_LOCAL_LLAMA=1) ALSO active"),
-                ),
-                (false, _) => boot_status(
+            let local_note = if local_llama_opt_in {
+                " (+ CONTINUUM_LOCAL_LLAMA opt-in ALSO active)"
+            } else {
+                " — sole inference path"
+            };
+            if !unsloth_registered {
+                boot_status(
                     "inference",
                     BootStatusKind::Failed,
                     "unsloth gateway NOT registered — set UNSLOTH_API_KEY in ~/.continuum/config.env \
                      (open unsloth Studio to generate one). Inference gateway REQUIRED; no local fallback.",
-                ),
+                );
+            } else {
+                match UnslothHttp::from_config().model_loaded().await {
+                    Ok(true) => boot_status(
+                        "inference",
+                        if local_llama_opt_in {
+                            BootStatusKind::Degraded
+                        } else {
+                            BootStatusKind::Ok
+                        },
+                        &format!("unsloth gateway @ {base} — reachable, model loaded{local_note}"),
+                    ),
+                    Ok(false) => boot_status(
+                        "inference",
+                        BootStatusKind::Degraded,
+                        &format!(
+                            "unsloth gateway @ {base} reachable but NO model loaded — load one \
+                             (UNSLOTH_MODEL / unsloth Studio){local_note}"
+                        ),
+                    ),
+                    Err(e) => boot_status(
+                        "inference",
+                        BootStatusKind::Failed,
+                        &format!(
+                            "unsloth gateway @ {base} NOT reachable ({e}) — is unsloth Studio \
+                             running/installed? Inference gateway REQUIRED; no local fallback."
+                        ),
+                    ),
+                }
             }
         }
 
