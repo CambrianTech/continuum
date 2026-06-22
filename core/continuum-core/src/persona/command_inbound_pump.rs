@@ -65,6 +65,7 @@
 //!   dispatch failure surfaces; the pump never silently drops what
 //!   it's supposed to be carrying.
 
+use std::path::Path;
 use std::sync::Arc;
 
 use airc_lib::adapter::ConsumerAdapter;
@@ -75,8 +76,57 @@ use tokio::task::JoinHandle;
 use tracing::{debug, warn};
 use uuid::Uuid;
 
+use crate::routing::epoch_watermark::{SqliteEpochWatermark, WatermarkError};
+use crate::routing::grid_capability::GrantAuthorizer;
 use crate::routing::CommandRequestHandler;
 use crate::runtime::command_executor::CommandExecutor;
+
+/// Why constructing a persona's [`GrantAuthorizer`] failed at boot. Distinct from
+/// [`AircError`] because the watermark store + owner-key resolution are continuum
+/// concerns, not airc ones.
+#[derive(Debug, thiserror::Error)]
+pub enum GrantAuthorizerBuildError {
+    /// This node's own enrolled public key is unavailable — it is self-enrolled at
+    /// `Airc::open`, so this should not happen; if it does we refuse to build a
+    /// verifier with no pinned issuer rather than trust the wrong key.
+    #[error("this node's own enrolled public key is unavailable — cannot pin the grant issuer")]
+    OwnerKeyUnavailable,
+    /// Could not resolve this node's local mesh identity (the expected mesh a grant
+    /// must be scoped to).
+    #[error("resolve local mesh identity: {0}")]
+    Mesh(#[source] AircError),
+    /// Could not open the durable epoch-watermark store (the anti-replay state).
+    #[error("open grant epoch watermark store: {0}")]
+    Watermark(#[source] WatermarkError),
+}
+
+/// Build this persona node's [`GrantAuthorizer`] — the verifier for capability
+/// grants visiting peers present. "This node is the owner": the trusted issuer key
+/// is the node's OWN enrolled ed25519 key (it self-signs the grants it hands out),
+/// the expected mesh is the node's own mesh, and the anti-replay watermark is a
+/// DURABLE SQLite store under the persona home (survives restart — the review hard
+/// gate). Provider≠owner (verifying grants the owner signed on a different box) is
+/// a later generalization needing pinned-issuer-key distribution.
+pub async fn build_grant_authorizer(
+    airc: &Arc<Airc>,
+    home: &Path,
+) -> Result<Arc<GrantAuthorizer>, GrantAuthorizerBuildError> {
+    let owner_pubkey = airc
+        .peer_public_key(airc.peer_id())
+        .ok_or(GrantAuthorizerBuildError::OwnerKeyUnavailable)?
+        .to_vec();
+    let mesh = airc
+        .mesh_identity()
+        .await
+        .map_err(GrantAuthorizerBuildError::Mesh)?;
+    let watermark = SqliteEpochWatermark::open(&home.join("grant_watermark.sqlite"))
+        .map_err(GrantAuthorizerBuildError::Watermark)?;
+    Ok(Arc::new(GrantAuthorizer::with_watermark(
+        owner_pubkey,
+        mesh,
+        Arc::new(watermark),
+    )))
+}
 
 /// One persona's command inbound pump. Holds the JoinHandle so the
 /// owning `PersonaAircRuntime` can abort + await on shutdown.
@@ -112,13 +162,19 @@ impl PersonaCommandInboundPump {
         persona_id: Uuid,
         airc: Arc<Airc>,
         executor: Arc<CommandExecutor>,
+        grant_authorizer: Arc<GrantAuthorizer>,
     ) -> Result<Self, AircError> {
         // Subscribe BEFORE spawning so failure surfaces at the call
         // site. The stream moves into the spawned task; subsequent
         // stream errors (lag, end-of-stream) are runtime concerns,
         // not install-time concerns.
         let stream = airc.subscribe().await?;
-        let handler = CommandRequestHandler::new(Arc::clone(&airc), executor);
+        // The handler VERIFIES presented capability grants against the authorizer
+        // (built from this node's own key + mesh + durable watermark). A peer
+        // presenting an owner-signed grant gets the conferred command past its tier
+        // ceiling; absent/invalid grants fall back to tier gating.
+        let handler =
+            CommandRequestHandler::with_grant_authorizer(Arc::clone(&airc), executor, grant_authorizer);
         let handle = tokio::spawn(run(persona_id, airc, handler, stream));
         Ok(Self { persona_id, handle })
     }

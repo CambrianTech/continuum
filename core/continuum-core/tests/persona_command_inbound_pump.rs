@@ -155,10 +155,20 @@ async fn persona_command_pump_makes_persona_addressable_for_ai_generate() {
     // same error; here we unwrap because the loopback fixture's
     // subscribe must succeed for the test to make sense.
     let persona_id = loop_back.peer_a_id();
+    // Production-shape: the persona builds its capability-grant authorizer (own key
+    // + mesh + a durable watermark under its home) before installing the pump.
+    let home = tempfile::tempdir().expect("tempdir for grant watermark");
+    let grant_authorizer = continuum_core::persona::command_inbound_pump::build_grant_authorizer(
+        loop_back.peer_a(),
+        home.path(),
+    )
+    .await
+    .expect("build grant authorizer for the loopback fixture");
     let pump = PersonaCommandInboundPump::spawn(
         persona_id,
         Arc::clone(loop_back.peer_a()),
         executor,
+        grant_authorizer,
     )
     .await
     .expect(

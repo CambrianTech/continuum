@@ -108,6 +108,18 @@ pub enum PersonaAircRuntimeError {
         source: AircError,
     },
     #[error(
+        "failed to build the capability-grant authorizer for persona {agent_name:?}: \
+         {source} — the persona could not stand up its grant verifier (own key / mesh / \
+         durable watermark), so it could not safely honor presented grants. Per \
+         [[no-fallbacks-ever]] the substrate refuses to declare the persona ready \
+         rather than fall back to an unverified or non-durable grant path."
+    )]
+    GrantAuthorizerBuild {
+        agent_name: String,
+        #[source]
+        source: crate::persona::command_inbound_pump::GrantAuthorizerBuildError,
+    },
+    #[error(
         "PersonaInstanceManagerModule::bootstrap_one for {agent_name:?} ran before \
          the substrate `CommandExecutor` was installed — boot ordering bug. \
          `start_server` must call `install_executor_on_all` BEFORE accepting any \
@@ -337,11 +349,19 @@ impl PersonaAircRuntime {
         // failure — we refuse to declare the persona ready while it
         // would silently ignore cross-grid command envelopes.
         let airc_arc = Arc::new(airc);
+        let grant_authorizer =
+            crate::persona::command_inbound_pump::build_grant_authorizer(&airc_arc, &home)
+                .await
+                .map_err(|source| PersonaAircRuntimeError::GrantAuthorizerBuild {
+                    agent_name: agent_name.clone(),
+                    source,
+                })?;
         let command_pump =
             crate::persona::command_inbound_pump::PersonaCommandInboundPump::spawn(
                 persona_id,
                 Arc::clone(&airc_arc),
                 executor,
+                grant_authorizer,
             )
             .await
             .map_err(|source| PersonaAircRuntimeError::CommandPumpInstall {
@@ -467,10 +487,18 @@ impl PersonaAircRuntime {
         if let Some(existing) = self.command_pump.take() {
             existing.abort();
         }
+        let grant_authorizer =
+            crate::persona::command_inbound_pump::build_grant_authorizer(&self.airc, &self.home)
+                .await
+                .map_err(|source| PersonaAircRuntimeError::GrantAuthorizerBuild {
+                    agent_name: self.agent_name.clone(),
+                    source,
+                })?;
         let pump = crate::persona::command_inbound_pump::PersonaCommandInboundPump::spawn(
             self.persona_id,
             Arc::clone(&self.airc),
             executor,
+            grant_authorizer,
         )
         .await
         .map_err(|source| PersonaAircRuntimeError::CommandPumpInstall {

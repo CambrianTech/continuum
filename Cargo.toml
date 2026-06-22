@@ -79,11 +79,15 @@ members = [
 # is #[serde(default)]; the new TranscriptKind variant has no exhaustive match
 # against it), so the bump is decode-compatible — re-validate daemon_transport
 # + persona attach on bump regardless.
-airc-core = { git = "https://github.com/CambrianTech/airc", rev = "a7ae4f4" }
-airc-protocol = { git = "https://github.com/CambrianTech/airc", rev = "a7ae4f4" }
-airc-ipc = { git = "https://github.com/CambrianTech/airc", rev = "a7ae4f4" }
-airc-lib = { git = "https://github.com/CambrianTech/airc", rev = "a7ae4f4" }
-airc-wire = { git = "https://github.com/CambrianTech/airc", rev = "a7ae4f4" }
+#
+# 2026-06-22 bump a7ae4f4 → 4aa717d (airc#1277): widens `Airc::mesh_identity`
+# to pub so the command handler can pin this node's mesh as the expected mesh
+# when verifying a presented capability grant (else WrongMesh). Visibility-only.
+airc-core = { git = "https://github.com/CambrianTech/airc", rev = "4aa717d" }
+airc-protocol = { git = "https://github.com/CambrianTech/airc", rev = "4aa717d" }
+airc-ipc = { git = "https://github.com/CambrianTech/airc", rev = "4aa717d" }
+airc-lib = { git = "https://github.com/CambrianTech/airc", rev = "4aa717d" }
+airc-wire = { git = "https://github.com/CambrianTech/airc", rev = "4aa717d" }
 
 # Candle ML framework — patched via [patch.crates-io] below.
 # Fixes: Metal buffer pool leak (#2271), RoPE NEOX convention (#3410)
