@@ -146,20 +146,151 @@ concerns*, which recompute and invalidate *their* dependents in turn. The govern
 schedules change-woken concerns + real-time lanes + the heartbeat; it does **not**
 poll everyone on a clock.
 
+## 3.3 Consolidation + shared elements: the channel as a reference-passed frame
+
+Two wastes a naive inbox commits — and both fixes come straight from CBAR's frame.
+
+**Waste 1 — per-message looping.** 25 new messages in #general is *not* 25
+cognition loops. A human doesn't process a Slack channel message-by-message as each
+arrives; they click the channel, read the last-N at once, form one impression,
+decide once. So a concern **consolidates before it runs**: it wakes on *"this
+channel has fresh activity"* (coalesced/debounced — not one signal per message) and
+reads the channel's recent elements as **one `ChannelDigest`** — last-N, already
+assembled. One read, one decision over the batch — not N.
+
+**Waste 2 — per-persona recomputation.** 14 personas reading the same message must
+not embed it 14 times. An element's derived artifacts are properties of the
+**content**, not of the persona reading it
+([[embeddings-are-per-content-computed-once-shared]]) — exactly CBAR's
+reference-passed frame: the frame's grayscale/pyramid is computed **once** and
+*referenced by every analyzer*; each analyzer's *interpretation* is its own.
+
+So the unit is the **element**, content-addressed and reference-passed:
+
+```
+ChannelElement (Arc, content-addressed by SHA of content)    ← the CBAR frame
+  • the raw message
+  • SHARED artifacts, computed ONCE by background enrichers, referenced by all:
+      embedding (Qwen3-Embedding-0.6B), vision-description, transcription,
+      tokenization, summary, extracted facts
+ChannelDigest (Vec<Arc<ChannelElement>>)                     ← a cheap per-persona window
+  • the channel's elements since this persona's bookmark, + N-before-bookmark for
+    grounding context; just Arc references over the shared elements — cheap to slice
+```
+
+**The window is anchored on a per-channel bookmark (the Slack unread marker).** Each
+persona keeps a **bookmark per channel** — a last-read cursor, cheap per-persona
+state (it's a "relationship" property, not content). The default digest is *what's
+since the bookmark* plus **N-before-bookmark** for grounding — N a default or
+**recipe-defined** ([[room-purpose-is-per-recipe-not-an-enum]]). If a persona needs
+more, it **asks for it** — a `channel/context` tool/command pulls further back
+on-demand (handle-based, [[long-running-commands-are-handle-based]]), never eager.
+So the digest is *not* a globally-cached heavy reassembly: it's a cheap per-persona
+slice of `Arc` references over the **shared** elements, whose artifacts are cache
+hits. Shared layer = the elements (content artifacts); per-persona = the bookmark +
+the window selection. The content-vs-relationship line stays clean.
+
+**The window is a working set, not the system of record — these are airc rooms.**
+The full message history is already durable and searchable in airc
+([[airc-native-identity-rooms-security]]); continuum does **not** re-store it. The
+bookmark + digest are just the persona's *attention working set* over a store that
+already holds everything — so a persona can **always go back and read any message,
+or search the room**, via command (scrollback / `channel/context` / room search),
+exactly like a human scrolling up or hitting ⌘F in Slack. The `ChannelElement` cache
+is therefore a content-addressed cache of *derived artifacts* (embeddings,
+descriptions) **keyed to airc's messages**, never a parallel copy of the messages
+themselves — airc stays the single source of truth ([[persona-is-a-client]], the
+compression principle). Nothing is ever lost by not being in the window; the window
+just bounds what's *pulled into thought by default*, and full history is one command
+away.
+
+**The decision over a digest is itself a command — so N events → ≤1 inference.**
+20 chat events in #general do not cost 20 inferences; they cost **at most one**, and
+often **zero**. When volition "clicks" a channel, the act it takes is an action
+command, and most of those spend no model tokens at all
+([[control-and-collaboration-are-inherent-in-commands]]):
+
+| Outcome | Command | Inference? |
+|---|---|---|
+| Respond | emit a turn | **one** inference over the consolidated digest |
+| Ignore entirely | advance bookmark to tip (mark-read) | none |
+| Skip / forward to the end | advance bookmark past the middle to latest | none |
+| Pause / revisit later | leave bookmark behind + schedule a re-attend drive | none |
+
+The expensive thing (inference) is gated behind a cheap decision, and the
+cheap-but-not-free pre-filter ("is this even for me?") is the per-persona
+*relationship* read (salience, already-responded, interests) — not a model call. So
+a burst of activity resolves to one consolidated inference if the persona chooses to
+speak, and to a no-token bookmark move if it chooses to ignore, skip, or defer.
+Because all four are the same kind of thing — commands — they're uniform,
+glass-box-observable, and steerable, with no bespoke control flow for "ignore."
+
+**The split that makes it efficient — the same split CBAR makes:**
+
+| Property of the CONTENT → compute ONCE, share across all personas | Property of the persona's RELATIONSHIP to it → cheap, per-persona |
+|---|---|
+| embedding, vision-description, transcription, summary, extracted facts | salience-to-me, have-I-already-responded, matches-my-interests, my-relation-to-the-author |
+
+The heavy work (the artifacts) is the shared frame; the per-persona work is only
+the *interpretation* — the decision — which is cheap and reads the pre-enriched
+digest. N personas × M messages costs **M enrichments**, not N×M.
+
+**How it lands on the concern mesh (§3, §3.1, §3.2):**
+- A new message **invalidates its channel's digest** (CBAR `needsRefresh`) and
+  wakes the artifact enrichers for *that element only* (incremental — unchanged
+  elements keep their cached artifacts; the digest re-assembles from elements that
+  are mostly already enriched).
+- Enrichers settle artifacts onto the content-addressed element (§3.1 —
+  background, once, shared), the same way `VisionDescriptionService` / STT already
+  cache by content hash. No persona ever computes an element artifact inline.
+- A persona's volition concern is woken by *"channel X has a fresh, ready digest,"*
+  not per message. It reads the digest (cheap), self-determines respond / ignore /
+  **revisit-later** — the element stays in the substrate, so a later drive can
+  re-attend the thread. Nothing is forced; nothing is lost.
+
+**The mechanism is the cache — lazy, content-addressed, once-only.** We don't need
+an eager pipeline that pre-enriches everything; that would just be the metronome
+wearing a dataflow hat. The artifact is a **content-addressed cache entry, computed
+lazily on first demand and memoized** — exactly how embeddings already work
+([[embeddings-are-per-content-computed-once-shared]], and how
+`VisionDescriptionService` / STT cache by SHA). First access computes (or wakes the
+enricher); an **in-flight-dedup** guard means the other 13 personas asking
+concurrently *await the same computation* rather than racing 14 of them; every
+access after is a hit. So "compute once, shared by all" and "lazy" are the same
+property: the cache key is the content hash, the value is the `Arc<artifact>`, and
+the cache is the shared substrate the §3.1 enrichers settle into. A `ChannelElement`
+is just a bundle of such cache entries; a `ChannelDigest` is a cheap, lazily
+re-assembled view over them. **Caching is what lets the concern mesh be free and
+ungated and still never do the same work twice** — no scheduler decides what to
+pre-compute; demand pulls a value through the cache exactly once.
+
+**The Slack-attention model this gives the persona.** A channel with elements past
+the bookmark carries a "badge" (unread). The persona's volition (slice 3) allocates
+attention *across* channels by interest/drive — it "clicks" the channel it cares
+about, reads the consolidated digest (since-bookmark + N-before for grounding),
+decides respond / ignore / revisit-later, and **advances its bookmark** when it has
+engaged — or leaves it behind to revisit the thread when a drive resurfaces.
+Attention is **allocated across** channels, never a loop **over all** of them —
+which is exactly §1's "don't gate the mind" at the channel granularity.
+
 ## 4. Slice plan
 
 - **Slice 1 — `SubstrateGovernor` heartbeat. ✅ SHIPPED** (`runtime/substrate_governor.rs`,
   commit e5dd7a63d). Deterministic daemon, ticks regions per live persona with
   `catch_unwind`+timeout isolation, publishes a `watch` snapshot, observable via
   `governor/status`. No regions schedule inference yet → flood-safe.
-- **Slice 2 — Recall as a pre-staging concern.** Make a recall `BrainRegion` emit
-  into a ready-buffer; the workspace's recall path **consumes the snapshot**
-  instead of computing inline. *The proof that faculties are first-class bus-wired
-  concerns, not batch entries.* (No inference; still flood-safe.)
+- **Slice 2 — Recall as a pre-staging concern + the shared-element/digest cache (§3.3).**
+  Make a recall `BrainRegion` emit into a ready-buffer; the workspace's recall path
+  **consumes the snapshot** instead of computing inline. Land the content-addressed
+  `ChannelElement` cache + `ChannelDigest` here — the ready-buffer recall pre-stages
+  is keyed on the *shared* elements, so an element's embedding is computed once and
+  every persona's recall reads the hit. *The proof that faculties are first-class
+  bus-wired concerns, not batch entries.* (No inference; still flood-safe.)
 - **Slice 3 — `PersonaCognitionRegion` + `VolitionFaculty` (the demand brain).**
   The persona advances what *it* wants; `VolitionFaculty` is a **wake source**
-  (self-initiate from interest), not a polled bid. Cognition pulse = event + drive,
-  not the governor tick.
+  (self-initiate from interest), not a polled bid. It reads `ChannelDigest`s and
+  allocates attention *across* channels (the Slack-attention model, §3.3). Cognition
+  pulse = event + drive, not the governor tick.
 - **Slice 4 — Adaptive cadence + concurrent fan-out + multi-tower router (supply).**
   Governor honors `CadenceHint`, fans region/persona ticks out **concurrently**
   (bounded by leases — parallel *but governed*), and places `ai/generate` on a
@@ -179,6 +310,7 @@ poll everyone on a clock.
 | Event substrate | `runtime/message_bus.rs` (`broadcast`/`watch`/`mpsc`) | exists |
 | Inference command + cross-grid ACL | `ai/openai_adapter.rs`, `modules/grid/acl.rs` (`ai/generate` Provisional) | exists; multi-tower router = slice 4 |
 | Leases / pressure | `cognition/throughput_lease.rs`, `system_resources/memory_pressure.rs`, `paging/broker.rs` | exist; wire into governor scheduling |
+| Shared element + channel digest (the reference-passed frame, §3.3) | rag layer, beside the content-addressed artifact caches (`VisionDescriptionService`, embedding cache) | `ChannelElement`/`ChannelDigest` = to build, slice 2; cache + in-flight-dedup pattern already exists to reuse |
 
 The bones exist. The build is **wiring them into a free, ungated, concurrent
 mind** — slice by slice, each held to §1.
