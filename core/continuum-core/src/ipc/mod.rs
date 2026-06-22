@@ -1310,6 +1310,14 @@ pub fn start_server(
         // resolve the calling persona's live airc runtime. Registered before the
         // executor is built so its typed commands land on the one registry.
         runtime.register(Arc::new(crate::modules::work::WorkModule::new(registry.clone())));
+        // SubstrateGovernor — the deterministic cognitive-region scheduler daemon.
+        // Slice 1: live + observable (governor/status) + ticking per live persona,
+        // flood-safe (no regions schedule inference yet). Cognitive regions
+        // (hippocampus, PersonaCognitionRegion) plug into `new(regions, …)` next.
+        runtime.register(Arc::new(crate::runtime::SubstrateGovernor::new(
+            Vec::new(),
+            registry.clone(),
+        )));
         let instance_manager = Arc::new(
             crate::modules::persona_instance_manager::PersonaInstanceManagerModule::new(
                 registry,

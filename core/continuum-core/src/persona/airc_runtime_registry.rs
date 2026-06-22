@@ -132,6 +132,14 @@ impl PersonaAircRuntimeRegistry {
         self.inner.get(&persona_id).map(|entry| entry.runtime.clone())
     }
 
+    /// Every live persona's id — the set the SubstrateGovernor ticks cognitive
+    /// regions FOR (one tick per region per live persona). Snapshot (O(N), N =
+    /// tens), so the governor's scheduling loop never holds a DashMap guard across
+    /// its per-persona tick work.
+    pub fn live_personas(&self) -> Vec<Uuid> {
+        self.inner.iter().map(|e| *e.key()).collect()
+    }
+
     /// Look up a persona by their airc agent_name. Scans the
     /// registry — O(N). Acceptable for the registry sizes we expect
     /// (tens, not millions) AND for the use cases this resolves

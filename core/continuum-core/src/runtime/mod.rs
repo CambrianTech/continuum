@@ -54,10 +54,12 @@ pub mod registry;
 pub mod runtime;
 pub mod service_module;
 pub mod shared_compute;
+pub mod substrate_governor;
 
 pub use boot_mode::{extract_boot_mode, BootMode, BootModeParseError};
 
 pub use airc_interceptor::AircInterceptor;
+pub use substrate_governor::{GovernorSnapshot, SubstrateGovernor};
 pub use artifact_handle::{ArtifactKey, ArtifactSelector, Cadence};
 pub use brain_region::{
     BrainRegion, CadenceHint, ComputeClass, MemoryClass, PersonaLifecycle, PressureLevel,
