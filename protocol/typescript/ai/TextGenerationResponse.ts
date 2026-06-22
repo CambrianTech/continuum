@@ -18,6 +18,15 @@ content?: Array<ContentPart>,
  */
 toolCalls?: Array<ToolCall>, 
 /**
+ * The model's separated chain-of-thought / "thinking", when it is a reasoning
+ * model. SEPARATED FROM `text` at the adapter boundary so reasoning NEVER
+ * reaches the user/room — `text` is the clean answer; this is captured for the
+ * glass-box harness + memory consolidation. Sources: a server `reasoning_content`
+ * field, or inline `<think>…</think>` the adapter strips out. `None` for
+ * non-reasoning models or turns with no thinking.
+ */
+reasoning?: string, 
+/**
  * Routing info for observability
  */
 routing?: RoutingInfo, error?: string, };

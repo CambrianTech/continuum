@@ -33,9 +33,13 @@ pub mod auth_policy;
 pub mod command_handler;
 pub mod command_uri;
 pub mod environment;
+pub mod epoch_watermark;
+pub mod grant_issuance;
+pub mod grid_capability;
 pub mod grid_trust_policy;
 #[macro_use]
 pub mod macros;
+pub mod presented_grant_store;
 pub mod probe_file_sink;
 pub mod probe_router;
 pub(crate) mod probe_span_meta;
@@ -85,7 +89,7 @@ pub use probe_file_sink::{
 pub use probe_router::{ProbeEvent, ProbeRouterLayer, DEFAULT_CHANNEL_CAPACITY};
 pub use tracing_init::{install_probe_tracing, ProbeInstall, ProbeTracingConfig};
 pub use route_decision::{route, RouteDecision, RouteKind};
-pub use grid_trust_policy::GridTrustAuthPolicy;
+pub use grid_trust_policy::{caller_trust, GridTrustAuthPolicy, PeerTrustSource};
 pub use transport::{ClosureTransport, NotImplementedRemoteTransport, Transport};
 pub use uri_layer::{current_uri_chain, UriCaptureLayer, UriFrame};
 pub use verdict::{DeferredReason, ForbiddenReason, Verdict};

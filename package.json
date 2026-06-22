@@ -12,7 +12,6 @@
     "dev:web": "npm run dev -w @continuum/web",
     "dev:desktop": "npm run dev -w @continuum/desktop",
     "build:clients": "npm run build -w @continuum/sdk-typescript && npm run build -w @continuum/web",
-    "desktop:legacy": "bash tools/scripts/parallel-start.sh",
     "stop": "bash tools/scripts/system-stop.sh",
     "install:continuum": "bash tools/scripts/install.sh",
     "setup:git-hooks": "bash tools/scripts/setup-git-hooks.sh",

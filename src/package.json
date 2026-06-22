@@ -127,7 +127,7 @@
     "worker:status": "jq -r '.workers[] | select(.enabled != false) | .name' workers/workers-config.json | while read n; do pgrep -f \"$n-worker\" > /dev/null && echo \"✅ $n-worker running\" || echo \"❌ $n-worker NOT running\"; done",
     "worker:restart": "npm run worker:stop && npm run worker:start",
     "system:ensure": "npm run signal:check || (npm run system:start && npm run signal:wait)",
-    "start": "bash ../tools/scripts/parallel-start.sh",
+    "start": "bash ../tools/scripts/start-server.sh",
     "start-server": "bash ../tools/scripts/start-server.sh",
     "start:no-dashboard": "npm run smart-build && npm run system:deploy && npm run worker:start && npm run restart:quick",
     "start:clean": "bash ../tools/scripts/system-stop.sh && npm run clean:logs && npm run build && npm run worker:start && npx tsx ../tools/scripts/launch-active-example.ts --verbose && npm run data:seed",

@@ -172,6 +172,15 @@ impl NodeRegistry {
     }
 }
 
+// NOTE: NodeRegistry intentionally does NOT implement
+// `routing::PeerTrustSource`. It is keyed by transport ADDRESS
+// (`address_to_node_id` → Tailscale IP / Reticulum hash), NOT by the airc
+// `peer_id` that a `CallerIdentity` carries — so resolving an airc caller's trust
+// through this registry would silently miss every time. The airc↔grid trust
+// bridge needs a peer_id-keyed trust source (airc-side enrollment/trust), which is
+// the airc↔grid identity unification (task #38). Until that exists, the auth gate
+// uses its flat Provisional ceiling. See routing/grid_trust_policy.rs.
+
 /// Derive a canonical node_id from a transport address.
 fn address_to_node_id(address: &TransportAddress) -> String {
     match address {

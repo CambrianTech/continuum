@@ -41,6 +41,7 @@ pub mod forge;
 pub mod generator;
 pub mod genome;
 pub mod gpu;
+pub mod grant_issuance;
 pub mod grid;
 pub mod health;
 pub mod hippocampus;

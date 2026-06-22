@@ -329,6 +329,16 @@ pub struct TextGenerationResponse {
     #[ts(optional)]
     pub tool_calls: Option<Vec<ToolCall>>,
 
+    /// The model's separated chain-of-thought / "thinking", when it is a reasoning
+    /// model. SEPARATED FROM `text` at the adapter boundary so reasoning NEVER
+    /// reaches the user/room — `text` is the clean answer; this is captured for the
+    /// glass-box harness + memory consolidation. Sources: a server `reasoning_content`
+    /// field, or inline `<think>…</think>` the adapter strips out. `None` for
+    /// non-reasoning models or turns with no thinking.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub reasoning: Option<String>,
+
     /// Routing info for observability
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]

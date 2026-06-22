@@ -469,6 +469,10 @@ impl AIProviderAdapter for AnthropicAdapter {
             } else {
                 Some(tool_calls)
             },
+            // TODO: Anthropic extended-thinking blocks could populate this; until
+            // that's wired, Claude reasoning isn't separated here (it doesn't leak —
+            // Claude doesn't emit inline <think> in text).
+            reasoning: None,
             routing: None,
             error: None,
         })

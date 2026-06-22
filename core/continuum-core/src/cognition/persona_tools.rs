@@ -74,13 +74,50 @@ pub fn descriptor_to_tool_spec(d: &CommandDescriptor) -> NativeToolSpec {
         } else {
             d.description.to_string()
         },
-        // Open object — the command validates its own typed params. A declared
-        // param JSON schema replaces this when the metadata mechanism lands.
-        input_schema: ToolInputSchema {
+        // The command's REAL param schema (derived automatically from its Rust
+        // type by the base traits) becomes the tool's `input_schema` — so the
+        // reasoner sees exactly what fields a tool takes, same schema every other
+        // SDK adapts from. Commands not yet on a base trait carry a `Null` schema;
+        // those fall back to an open object (the command still validates its typed
+        // params). One source, every interface ([[command-organization]]).
+        input_schema: tool_input_schema_from(&d.params_schema),
+    }
+}
+
+/// Project a command's params JSON Schema into the LLM [`ToolInputSchema`]. A
+/// `Null` schema (command not yet on a base trait) → an open object. Otherwise
+/// lift `type`/`properties`/`required` straight from the derived schema.
+///
+/// TODO(nested-params): `ToolInputSchema` carries only type/properties/required,
+/// so a params type with a NESTED struct/enum (schemars emits a `$ref` +
+/// `definitions`) currently ships a tool schema whose `$ref` can't resolve. All
+/// commands today have flat params (ping/commands/list/system-info), so this is
+/// latent — but the first nested-param command needs `definitions`/`$defs` carried
+/// through (extend ToolInputSchema or pass the whole schema). Flagged by
+/// adversarial review 2026-06-21.
+fn tool_input_schema_from(schema: &serde_json::Value) -> ToolInputSchema {
+    if schema.is_null() {
+        return ToolInputSchema {
             schema_type: "object".to_string(),
             properties: json!({}),
             required: None,
-        },
+        };
+    }
+    ToolInputSchema {
+        schema_type: schema
+            .get("type")
+            .and_then(|v| v.as_str())
+            .unwrap_or("object")
+            .to_string(),
+        properties: schema
+            .get("properties")
+            .cloned()
+            .unwrap_or_else(|| json!({})),
+        required: schema.get("required").and_then(|v| v.as_array()).map(|a| {
+            a.iter()
+                .filter_map(|x| x.as_str().map(String::from))
+                .collect()
+        }),
     }
 }
 

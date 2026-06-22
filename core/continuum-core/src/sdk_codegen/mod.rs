@@ -55,16 +55,18 @@ use ts_rs::{Config, Dependency, TS};
 /// The legacy TypeScript-SDK emitter — OFF by default (`ts-codegen` feature).
 /// Nothing live consumes its output; the headless command framework below is
 /// always compiled. See the `ts-codegen` feature note in Cargo.toml.
+pub mod command;
 #[cfg(feature = "ts-codegen")]
 pub mod emit;
 pub mod events;
 pub mod handler;
+pub use command::{stateless_command_objects, ActionCommand, DynCommand, StatelessCommand};
 #[cfg(feature = "ts-codegen")]
 pub use emit::write_typescript_sdk;
 pub use events::{event_registry, EventDescriptor, EventSpec};
 #[cfg(feature = "ts-codegen")]
 pub use events::{generate_event_api, generate_event_map};
-pub use handler::{dispatch, CommandError, CommandHandler, Ctx, Outcome};
+pub use handler::{dispatch, dispatch_with_caller, CommandError, CommandHandler, Ctx, Outcome};
 
 /// The capability a command declares.
 ///
@@ -178,6 +180,18 @@ pub trait CommandSpec {
     /// [`WIRE`](CommandSpec::WIRE) is `Enveloped` the generated surface wraps this
     /// in `CommandResponse<T>`; otherwise it's used directly.
     type Result: TS + 'static;
+
+    /// The params' JSON Schema — the canonical, machine-readable input contract
+    /// every interface adapts FROM (CLI flags, web forms, mobile pickers, AI tool
+    /// `input_schema`). Default `Null` (no schema). The base traits
+    /// ([`ActionCommand`](crate::sdk_codegen::ActionCommand), …) override this to
+    /// derive it AUTOMATICALLY from the Rust type via `schemars` — so a command
+    /// declared (or ported) onto a base trait gains a real schema with no extra
+    /// code, and every SDK handles it symmetrically. Manual `CommandSpec` impls
+    /// keep `Null` until migrated.
+    fn params_schema() -> serde_json::Value {
+        serde_json::Value::Null
+    }
 }
 
 /// A TS type the generated surface references: its TS name + the module it's
@@ -240,6 +254,10 @@ pub struct CommandDescriptor {
     /// The handler's real wire convention (decides envelope wrapping).
     pub wire: WireShape,
     pub params: TypeRef,
+    /// The params' JSON Schema (from [`CommandSpec::params_schema`]) — the
+    /// canonical input contract every SDK/interface adapts from. `Null` when the
+    /// command hasn't declared one yet (manual `CommandSpec` not on a base trait).
+    pub params_schema: serde_json::Value,
     pub result: TypeRef,
     /// Every TS type the params/result transitively need (themselves + nested
     /// deps), so the generated module imports them all — nothing dangles.
@@ -272,6 +290,7 @@ impl CommandDescriptor {
             description: C::DESCRIPTION,
             wire: C::WIRE,
             params,
+            params_schema: C::params_schema(),
             result,
             type_refs,
         }
@@ -510,27 +529,63 @@ macro_rules! register_command {
     };
 }
 
+/// Self-register a STATELESS command at its own declaration site — ONE line, no
+/// host module. Registers BOTH the static descriptor (for codegen / ACL / the
+/// persona tool surface) AND a runtime constructor (so the kernel routes the
+/// command name directly to the object). The command type must be `Default`
+/// (stateless ⇒ trivially constructible). Dep-holding commands can't use this —
+/// they come from a module's `commands()` so their deps get constructed.
+/// ```ignore
+/// register_stateless_command!(PingCommand);
+/// ```
+#[macro_export]
+macro_rules! register_stateless_command {
+    ($cmd:ty) => {
+        $crate::register_command!($cmd);
+        inventory::submit! {
+            $crate::sdk_codegen::StatelessCommand::new(
+                || ::std::sync::Arc::new(<$cmd as ::std::default::Default>::default())
+                    as ::std::sync::Arc<dyn $crate::sdk_codegen::DynCommand>,
+            )
+        }
+    };
+}
+
 /// The command registry — the generator's input, ASSEMBLED from every
 /// `register_command!` submission across the crate. Sorted by name so the
 /// generated output is deterministic regardless of inventory iteration order.
+///
+/// **Built ONCE, then cached.** The inventory is link-time-static and each
+/// descriptor's `params_schema()` runs `schemars` reflection — so rebuilding per
+/// call (the old behavior) made `commands/list` and the persona tool surface
+/// O(commands × reflection) every invocation. The descriptors are
+/// after-boot-immutable, so they're computed once into a `OnceLock` and cloned out
+/// (a cheap `Vec`/`Value` clone vs. re-reflecting every command). The duplicate-
+/// name check + sort happen once, inside the init.
 pub fn command_registry() -> Vec<CommandDescriptor> {
-    let mut descriptors: Vec<CommandDescriptor> = inventory::iter::<CommandRegistration>()
-        .map(|reg| (reg.descriptor_fn)())
-        .collect();
-    descriptors.sort_by(|a, b| a.name.cmp(b.name));
-    // Hard-fail on a duplicate command NAME. The "no central list" design removes
-    // the human backstop that would otherwise catch a collision, so the registry
-    // must catch it itself — two CommandSpec impls claiming the same name would
-    // silently emit a conflicting/duplicate CommandMap key (a TS error or a silent
-    // shadow). Sorted above, so duplicates are adjacent.
-    if let Some(dup) = descriptors.windows(2).find(|w| w[0].name == w[1].name) {
-        panic!(
-            "sdk_codegen: duplicate command NAME '{}' — two CommandSpec impls claim \
-             it. Command names must be unique across the whole registry.",
-            dup[0].name
-        );
-    }
-    descriptors
+    static REGISTRY: std::sync::OnceLock<Vec<CommandDescriptor>> = std::sync::OnceLock::new();
+    REGISTRY
+        .get_or_init(|| {
+            let mut descriptors: Vec<CommandDescriptor> =
+                inventory::iter::<CommandRegistration>()
+                    .map(|reg| (reg.descriptor_fn)())
+                    .collect();
+            descriptors.sort_by(|a, b| a.name.cmp(b.name));
+            // Hard-fail on a duplicate command NAME. The "no central list" design
+            // removes the human backstop that would otherwise catch a collision, so
+            // the registry must catch it itself — two CommandSpec impls claiming the
+            // same name would silently emit a conflicting/duplicate CommandMap key (a
+            // TS error or a silent shadow). Sorted above, so duplicates are adjacent.
+            if let Some(dup) = descriptors.windows(2).find(|w| w[0].name == w[1].name) {
+                panic!(
+                    "sdk_codegen: duplicate command NAME '{}' — two CommandSpec impls \
+                     claim it. Command names must be unique across the whole registry.",
+                    dup[0].name
+                );
+            }
+            descriptors
+        })
+        .clone()
 }
 
 // No demo/fixture commands: the generator is validated against the REAL

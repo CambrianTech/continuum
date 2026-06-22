@@ -11,6 +11,12 @@ crate-type = ["cdylib", "rlib"]  # cdylib for FFI, rlib for other Rust
 name = "continuum-core-server"
 path = "src/main.rs"
 
+# `cu` — the pure-Rust CLI client (replaces the legacy Node `./jtag`). Talks to a
+# running core over its IPC socket via the uniform Connection. See src/bin/cu.rs.
+[[bin]]
+name = "cu"
+path = "src/bin/cu.rs"
+
 [[bin]]
 name = "dequantize-gguf"
 path = "src/bin/dequantize_gguf.rs"
@@ -32,6 +38,10 @@ tokio.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
+# JSON Schema generation from serde types — the runtime param schema every SDK
+# (CLI/web/mobile/RAG-tools) adapts from. Derived automatically by the command
+# base traits; uuid1 so Uuid fields schema-ize as string. See COMMAND-ORGANIZATION.md.
+schemars = { version = "0.8", features = ["uuid1"] }
 # Procedural derive macros for ORM entities — #[derive(Entity)].
 # Same crate would be path-deps elsewhere; explicit path makes the
 # dev loop tight (no version juggle while the macro evolves).

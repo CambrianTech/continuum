@@ -37,6 +37,25 @@ use super::types::{
 /// — no hand-written literals. Fields that the registry doesn't know
 /// about (HTTP concerns — auth shape, Authorization header requirement)
 /// are derived from `Provider.auth`, not separately configured.
+/// Per-gateway thinking policy for reasoning models. The gateway can't always
+/// honor `chat_template_kwargs.enable_thinking` (verified: unsloth/llama.cpp
+/// ignores it for this forged model), but Qwen3's `/no_think` SOFT-SWITCH in the
+/// message works — the model emits an empty `<think></think>` then answers
+/// directly. This is the model-specific knob the adapter owns (same boundary as
+/// reasoning separation); higher layers express a model-agnostic intent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ThinkingMode {
+    /// Leave the model at its default — reasoning models think every turn. Output
+    /// is still reasoning-stripped by [`extract_reasoning`] (the safety net).
+    #[default]
+    Default,
+    /// Suppress chain-of-thought via the model's soft-switch. Faster turns, and the
+    /// runaway-loop failure mode can't happen (no reasoning is generated). For a
+    /// small reasoning model whose "thinking" tends to ramble, this is usually the
+    /// better default; a task that genuinely needs deliberation re-enables it.
+    Suppress,
+}
+
 #[derive(Debug, Clone)]
 pub struct OpenAICompatibleConfig {
     pub provider_id: String,
@@ -57,6 +76,10 @@ pub struct OpenAICompatibleConfig {
     /// param, e.g. unsloth+GGUF — proven 2026-06-21). Gateway-level for now;
     /// per-model refinement (from the gateway's model data) is the follow-up.
     pub tool_protocol: super::json_in_prompt_tools::ToolProtocol,
+    /// Whether to suppress the model's chain-of-thought for this gateway (Qwen3
+    /// `/no_think` soft-switch). Gateway-level for now; per-task/per-request
+    /// refinement is the follow-up.
+    pub thinking: ThinkingMode,
 }
 
 /// OpenAI-compatible adapter implementation
@@ -340,6 +363,22 @@ impl OpenAICompatibleAdapter {
             } else {
                 super::json_in_prompt_tools::ToolProtocol::Native
             },
+            // The local unsloth/GGUF reasoning gateway defaults to SUPPRESS: this
+            // forged 4B's chain-of-thought tends to ramble + loop (latency + the
+            // runaway-leak failure mode), and the model answers correctly without
+            // it (verified live). Operator override: `UNSLOTH_THINKING=on` keeps
+            // thinking (the reasoning-strip still protects the room). Cloud
+            // providers keep their default — their reasoning is theirs to manage.
+            thinking: {
+                let keep_thinking = std::env::var("UNSLOTH_THINKING")
+                    .map(|v| v.trim().eq_ignore_ascii_case("on"))
+                    .unwrap_or(false);
+                if provider.id == "unsloth" && !keep_thinking {
+                    ThinkingMode::Suppress
+                } else {
+                    ThinkingMode::Default
+                }
+            },
         })
     }
 
@@ -457,6 +496,14 @@ impl OpenAICompatibleAdapter {
             }
         }
 
+        // Thinking toggle: when this gateway suppresses reasoning, append Qwen3's
+        // `/no_think` soft-switch to the last user turn so the model skips its
+        // chain-of-thought and answers directly. Model-specific token, owned here at
+        // the adapter boundary; higher layers never speak `/no_think`.
+        if self.config.thinking == ThinkingMode::Suppress {
+            apply_no_think_switch(&mut result);
+        }
+
         result
     }
 
@@ -489,7 +536,95 @@ struct OpenAIChoice {
 #[derive(Debug, Deserialize)]
 struct OpenAIMessage {
     content: Option<String>,
+    /// Server-separated reasoning (vLLM `--reasoning-parser`, future unsloth). When
+    /// present, `content` is already the clean answer and this is the chain-of-
+    /// thought. Most llama.cpp-backed gateways (today's unsloth) DON'T set this —
+    /// they emit `<think>…</think>` inline in `content` instead, which
+    /// [`extract_reasoning`] handles.
+    reasoning_content: Option<String>,
     tool_calls: Option<Vec<OpenAIToolCall>>,
+}
+
+/// Separate a reasoning model's chain-of-thought from its user-facing answer at the
+/// ADAPTER boundary, so reasoning is captured (for the glass-box harness) but NEVER
+/// reaches the room. Precedence:
+///
+/// 1. A server-provided `reasoning_content` (vLLM-style parsers) — authoritative;
+///    `content` is already clean.
+/// 2. Inline `<think>…</think>` in `content` (unsloth/llama.cpp today) — the block
+///    is reasoning; everything OUTSIDE it is the answer.
+/// 3. An UNCLOSED `<think>` — the model ran out of tokens mid-thought (the runaway
+///    loop that leaked into the room): the whole tail is reasoning and there is NO
+///    answer. Returns empty text so the caller refuses to post, never leaking raw
+///    reasoning.
+///
+/// Returns `(clean_text, reasoning)`. Pure + synchronous → unit-tested in isolation.
+pub(crate) fn extract_reasoning(
+    content: &str,
+    reasoning_content: Option<&str>,
+) -> (String, Option<String>) {
+    // (1) Server already split it out — trust that; content is the clean answer.
+    if let Some(rc) = reasoning_content {
+        let rc = rc.trim();
+        if !rc.is_empty() {
+            return (content.trim().to_string(), Some(rc.to_string()));
+        }
+    }
+
+    const OPEN: &str = "<think>";
+    const CLOSE: &str = "</think>";
+    let Some(open_idx) = content.find(OPEN) else {
+        // (no think) plain content.
+        return (content.trim().to_string(), None);
+    };
+    let before = content[..open_idx].trim();
+    let after_open = &content[open_idx + OPEN.len()..];
+
+    match after_open.find(CLOSE) {
+        // (2) Well-formed <think>…</think>: answer is whatever sits OUTSIDE the block.
+        Some(close_rel) => {
+            let reasoning = after_open[..close_rel].trim();
+            let after_close = after_open[close_rel + CLOSE.len()..].trim();
+            let mut text = String::from(before);
+            if !text.is_empty() && !after_close.is_empty() {
+                text.push('\n');
+            }
+            text.push_str(after_close);
+            (
+                text.trim().to_string(),
+                (!reasoning.is_empty()).then(|| reasoning.to_string()),
+            )
+        }
+        // (3) Unclosed <think>: truncated thinking → no answer (text is whatever
+        // preceded the block, normally empty). The reasoning is the runaway tail.
+        None => {
+            let reasoning = after_open.trim();
+            (
+                before.to_string(),
+                (!reasoning.is_empty()).then(|| reasoning.to_string()),
+            )
+        }
+    }
+}
+
+/// Append Qwen3's `/no_think` soft-switch to the LAST user message in a built
+/// OpenAI message array, suppressing chain-of-thought for the turn (the model emits
+/// an empty `<think></think>` then answers directly — which [`extract_reasoning`]
+/// reduces to clean text + no reasoning). Operates on string content (chat turns);
+/// multimodal/array content is left untouched (a follow-up can append a text part).
+/// No user message → no-op.
+fn apply_no_think_switch(messages: &mut [Value]) {
+    for m in messages.iter_mut().rev() {
+        if m.get("role").and_then(|r| r.as_str()) != Some("user") {
+            continue;
+        }
+        if let Some(content) = m.get_mut("content") {
+            if let Some(s) = content.as_str() {
+                *content = Value::String(format!("{s}\n/no_think"));
+            }
+        }
+        return;
+    }
 }
 
 #[allow(dead_code)]
@@ -900,7 +1035,12 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
             .first()
             .ok_or_else(|| "No completion in response".to_string())?;
 
-        let text = choice.message.content.clone().unwrap_or_default();
+        // Separate reasoning from the answer AT THE BOUNDARY: a reasoning model's
+        // `<think>…</think>` (or a server `reasoning_content`) is captured for the
+        // harness/memory and stripped from `text` so it can NEVER reach the room.
+        let raw_content = choice.message.content.clone().unwrap_or_default();
+        let (text, reasoning) =
+            extract_reasoning(&raw_content, choice.message.reasoning_content.as_deref());
         let mut finish_reason = choice
             .finish_reason
             .as_deref()
@@ -974,6 +1114,7 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
                 Some(content_blocks)
             },
             tool_calls,
+            reasoning,
             routing: None,
             error: None,
         })
@@ -1235,6 +1376,83 @@ fn parse_embedding_usage(body: &Value) -> UsageMetrics {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches: a well-formed <think>…</think> (unsloth/llama.cpp today) is
+    // SEPARATED — reasoning captured, the answer after </think> is the clean text.
+    // This is the leak Asha hit: without it the whole think block reached the room.
+    #[test]
+    fn extract_reasoning_splits_well_formed_think_block() {
+        let raw = "<think>\nThe capital is Paris. Keep it to one sentence.\n</think>\n\nParis is the capital of France.";
+        let (text, reasoning) = extract_reasoning(raw, None);
+        assert_eq!(text, "Paris is the capital of France.");
+        assert_eq!(
+            reasoning.as_deref(),
+            Some("The capital is Paris. Keep it to one sentence.")
+        );
+        assert!(!text.contains("<think>"), "answer must be free of reasoning tags");
+    }
+
+    // what this catches: THE runaway loop — an UNCLOSED <think> (model ran out of
+    // tokens mid-thought). There is NO answer, so text is empty (the caller refuses
+    // to post) and the raw reasoning is captured, NOT leaked.
+    #[test]
+    fn extract_reasoning_unclosed_think_yields_empty_answer() {
+        let raw = "<think>\nWait, the recall section... wait, no... wait, the recall section";
+        let (text, reasoning) = extract_reasoning(raw, None);
+        assert_eq!(text, "", "a truncated think block produces no postable answer");
+        assert!(reasoning.unwrap().contains("recall section"));
+    }
+
+    // what this catches: a server that already splits reasoning into
+    // `reasoning_content` (vLLM-style) is trusted — content is the clean answer,
+    // the field is the reasoning, no tag parsing.
+    #[test]
+    fn extract_reasoning_prefers_server_reasoning_content() {
+        let (text, reasoning) = extract_reasoning("Paris.", Some("I recall France's capital."));
+        assert_eq!(text, "Paris.");
+        assert_eq!(reasoning.as_deref(), Some("I recall France's capital."));
+    }
+
+    // what this catches: a plain answer with no reasoning passes through untouched,
+    // and an empty `<think></think>` (the JSON-path shape) yields no reasoning.
+    #[test]
+    fn extract_reasoning_plain_and_empty_think() {
+        let (text, reasoning) = extract_reasoning("Just the answer.", None);
+        assert_eq!(text, "Just the answer.");
+        assert!(reasoning.is_none());
+
+        let (text, reasoning) = extract_reasoning("<think></think>\n\n{\"ok\":true}", None);
+        assert_eq!(text, "{\"ok\":true}");
+        assert!(reasoning.is_none(), "empty think block confers no reasoning");
+    }
+
+    // what this catches: the thinking toggle's mechanism — `/no_think` is appended
+    // to the LAST user message (Qwen3 soft-switch), not the system or an earlier
+    // turn. Verified live: this makes the model emit an empty think block + a direct
+    // answer (which extract_reasoning reduces to clean text).
+    #[test]
+    fn apply_no_think_switch_targets_last_user_message() {
+        let mut msgs = vec![
+            json!({"role": "system", "content": "be helpful"}),
+            json!({"role": "user", "content": "earlier turn"}),
+            json!({"role": "assistant", "content": "earlier reply"}),
+            json!({"role": "user", "content": "what is 2+2?"}),
+        ];
+        apply_no_think_switch(&mut msgs);
+        assert_eq!(msgs[3]["content"], json!("what is 2+2?\n/no_think"));
+        // earlier user turn + system untouched
+        assert_eq!(msgs[1]["content"], json!("earlier turn"));
+        assert_eq!(msgs[0]["content"], json!("be helpful"));
+    }
+
+    // what this catches: no user message → no-op (never corrupts a system-only or
+    // tool-only message array).
+    #[test]
+    fn apply_no_think_switch_noop_without_user() {
+        let mut msgs = vec![json!({"role": "system", "content": "be helpful"})];
+        apply_no_think_switch(&mut msgs);
+        assert_eq!(msgs[0]["content"], json!("be helpful"), "no user turn → unchanged");
+    }
 
     // what this catches: a single string input serializes as a JSON string (not
     // a 1-element array) and the resolved model is carried through — the request

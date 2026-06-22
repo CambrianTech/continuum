@@ -271,7 +271,31 @@ impl Runtime {
         &self,
         command: &str,
         params: serde_json::Value,
+        caller: Option<crate::routing::CallerIdentity>,
     ) -> Option<Result<CommandResult, String>> {
+        // Typed path wins: a registered DynCommand object routes DIRECTLY (O(1),
+        // lock-free), ahead of the prefix table — same precedence the
+        // CommandExecutor uses. This is the live socket route (cu / IPC), so the
+        // consult must live here too until the dispatch paths are unified.
+        // See docs/architecture/COMMAND-ORGANIZATION.md.
+        //
+        // `caller` is the connection's identity: `None` for the LOCAL Unix socket
+        // (owner-by-locality) and a non-owner remote identity for a TCP-sourced
+        // connection (the IPC server stamps it + ACL-gates the top-level command at
+        // the boundary). Threading it means a command composing another over TCP
+        // composes as the REMOTE caller, not silently as owner — no escalation.
+        if let Some(cmd) = self.registry.route_object(command) {
+            // NOTE (adversarial review 2026-06-21): the typed object path does NOT
+            // pass through the per-MODULE concurrency limiter or ModuleMetrics below
+            // — a DynCommand object is module-independent, so it has no module to key
+            // those on. This is deliberate: per-command throughput leasing +
+            // observability belong to the command framework (the executor already
+            // emits `command:completed` on the in-process/persona route), not the
+            // legacy per-module path. Migrated commands are absent from ModuleMetrics
+            // on THIS local route (acceptable for the trivial commands migrated so
+            // far; revisit before migrating a hot/contended command).
+            return Some(dispatch_object_with_panic_guard(cmd, params, caller).await);
+        }
         let (module, full_cmd) = self.registry.route_command(command)?;
         let module_name = module.config().name;
 
@@ -322,6 +346,26 @@ impl Runtime {
         params: serde_json::Value,
         rt_handle: &tokio::runtime::Handle,
     ) -> Option<Result<CommandResult, String>> {
+        // Typed path wins (see route_command). Bridge the async object dispatch
+        // onto rt_handle with the same 60s safety-net timeout the module path uses.
+        if let Some(cmd) = self.registry.route_object(command) {
+            let (tx, rx) = std::sync::mpsc::sync_channel(1);
+            rt_handle.spawn(async move {
+                let _ = tx.send(dispatch_object_with_panic_guard(cmd, params, None).await);
+            });
+            let result = match rx.recv_timeout(std::time::Duration::from_secs(60)) {
+                Ok(result) => result,
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    error!("Command timed out after 60s (rayon safety net): {command}");
+                    Err(format!("Command timed out after 60s: {command}"))
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                    error!("Command handler task panicked or was cancelled: {command}");
+                    Err(format!("Command handler failed: {command}"))
+                }
+            };
+            return Some(result);
+        }
         let (module, full_cmd) = self.registry.route_command(command)?;
         let module_name = module.config().name;
 
@@ -684,6 +728,35 @@ pub(crate) async fn dispatch_with_panic_guard(
             Err(format!(
                 "command '{full_cmd}' panicked in module '{module_name}': {panic_msg}"
             ))
+        }
+    }
+}
+
+/// Dispatch a self-routing [`DynCommand`](crate::sdk_codegen::DynCommand) object
+/// under the same `catch_unwind` guard the module path uses. Persona tool calls
+/// flow through here; a panicking handler converts to a typed `Err` instead of
+/// poisoning the caller's task. The object owns its deps + knows its name, so the
+/// guard needs nothing but the object and the params.
+pub(crate) async fn dispatch_object_with_panic_guard(
+    cmd: Arc<dyn crate::sdk_codegen::DynCommand>,
+    params: serde_json::Value,
+    caller: Option<crate::routing::CallerIdentity>,
+) -> Result<CommandResult, String> {
+    let name = cmd.name();
+    let result = AssertUnwindSafe(cmd.invoke(params, caller))
+        .catch_unwind()
+        .await;
+    match result {
+        Ok(r) => r,
+        Err(panic) => {
+            let panic_msg = panic_message(&*panic);
+            error!("Command '{}' panicked in DynCommand object: {}", name, panic_msg);
+            crate::probe!(
+                class = "command.dispatch.panicked",
+                command = name,
+                reason = %panic_msg
+            );
+            Err(format!("command '{name}' panicked: {panic_msg}"))
         }
     }
 }

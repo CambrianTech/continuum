@@ -176,6 +176,14 @@ mod tests {
         // grid/pair requires Owner
         assert!(!is_command_authorized("grid/pair", TrustLevel::Trusted));
         assert!(is_command_authorized("grid/pair", TrustLevel::Owner));
+
+        // grid/grant/issue (minting capability grants) is OWNER-ONLY — load-bearing
+        // for the contracted grid: only the local operator may sell its personas'
+        // compute. A remote peer must NEVER reach issuance (it would let a grantee
+        // mint its own grants). Pins the property the GrantIssuanceModule relies on.
+        assert!(!is_command_authorized("grid/grant/issue", TrustLevel::Trusted));
+        assert!(!is_command_authorized("grid/grant/issue", TrustLevel::Provisional));
+        assert!(is_command_authorized("grid/grant/issue", TrustLevel::Owner));
     }
 
     // what this catches: cross-grid inference (ai/generate) is admitted at
@@ -211,6 +219,29 @@ mod tests {
         assert!(!is_command_authorized("genome/train", TrustLevel::Provisional));
         // Blocked is denied even for AiSafe.
         assert!(!is_command_authorized("ping", TrustLevel::Blocked));
+    }
+
+    // what this catches: destructive data commands MUST stay Owner-only — never
+    // reachable at Provisional (so never over an unauthenticated TCP socket nor by a
+    // cross-grid Provisional peer). data/delete + data/update have explicit Owner
+    // rules; data/truncate + data/clear-all are unclassified → Owner default-deny.
+    // The footgun this defuses (adversarial review 2026-06-21): `ActionCommand`
+    // defaults ACCESS to AiSafe, so migrating one of these to a command object and
+    // forgetting `const ACCESS = Privileged` would silently make it
+    // Provisional-reachable. If that happens, THIS test trips in CI.
+    #[test]
+    fn destructive_data_commands_stay_owner_only() {
+        for cmd in ["data/delete", "data/update", "data/truncate", "data/clear-all"] {
+            assert!(
+                !is_command_authorized(cmd, TrustLevel::Provisional),
+                "{cmd} must NOT be reachable at Provisional — it's a destructive, \
+                 Owner-only command (a remote/TCP caller must never run it)"
+            );
+            assert!(
+                is_command_authorized(cmd, TrustLevel::Owner),
+                "{cmd} stays runnable by the local owner"
+            );
+        }
     }
 
     #[test]

@@ -5,7 +5,7 @@
 //! the ServiceModule trait design is proven for the simplest case.
 
 use crate::runtime::{CommandResult, ModuleConfig, ModuleContext, ModulePriority, ServiceModule};
-use crate::sdk_codegen::{dispatch, CommandError, CommandHandler, Ctx, Outcome};
+use crate::sdk_codegen::{ActionCommand, CommandError, Ctx};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -15,7 +15,7 @@ use ts_rs::TS;
 
 /// Params for `ping` — the canonical health/liveness command every SDK exposes.
 /// An optional echo message round-trips so a caller can correlate.
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 #[ts(export, export_to = "../../../protocol/typescript/health/PingParams.ts")]
 pub struct PingParams {
@@ -36,33 +36,30 @@ pub struct PingResult {
     pub round_trip_ms: u32,
 }
 
-/// `ping` — Bare: bare `PingParams` in, bare `PingResult` out. The simplest
-/// command, authored with the typed trait (a trivial-outlier proof of the
-/// authoring surface alongside the ai/inference family).
+/// `ping` — the canonical self-routing command. As an [`ActionCommand`] it gets
+/// `CommandSpec` (Bare wire), `CommandHandler`, AND `DynCommand` from the blanket
+/// impls — so this ONE type + a `run` body is the whole command. It is STATELESS,
+/// so `register_stateless_command!` puts it on the kernel's typed object map with
+/// ZERO host-module ceremony (no `handle_command` arm, no `commands()` override).
+#[derive(Default)]
 pub struct PingCommand;
-impl crate::sdk_codegen::CommandSpec for PingCommand {
+
+#[async_trait]
+impl ActionCommand for PingCommand {
     const NAME: &'static str = "ping";
-    const ACCESS_LEVEL: crate::sdk_codegen::AccessLevel = crate::sdk_codegen::AccessLevel::AiSafe;
     const DESCRIPTION: &'static str =
         "Health check: confirm the substrate is alive and responding. Returns a pong.";
-    const WIRE: crate::sdk_codegen::WireShape = crate::sdk_codegen::WireShape::Bare;
     type Params = PingParams;
-    type Result = PingResult;
-}
-crate::register_command!(PingCommand);
+    type Output = PingResult;
 
-struct PingHandler;
-#[async_trait]
-impl CommandHandler for PingHandler {
-    type Spec = PingCommand;
-    async fn execute(&self, _ctx: &Ctx, _p: PingParams) -> Result<Outcome<PingResult>, CommandError> {
+    async fn run(&self, _ctx: &Ctx, _p: PingParams) -> Result<PingResult, CommandError> {
         Ok(PingResult {
             ok: true,
             round_trip_ms: 0,
-        }
-        .into())
+        })
     }
 }
+crate::register_stateless_command!(PingCommand);
 
 pub struct HealthModule {
     started_at: Instant,
@@ -88,7 +85,11 @@ impl ServiceModule for HealthModule {
         ModuleConfig {
             name: "health",
             priority: ModulePriority::Normal,
-            command_prefixes: &["health-", "get-", "ping"],
+            // `ping` is NOT here — it's a STATELESS self-routing command
+            // (`register_stateless_command!`), live on the typed object map with no
+            // host-module ceremony. Only the un-migrated `health-`/`get-` verbs
+            // still prefix-route to `handle_command`.
+            command_prefixes: &["health-", "get-"],
             event_subscriptions: &[],
             needs_dedicated_thread: false,
             max_concurrency: 0,
@@ -100,10 +101,8 @@ impl ServiceModule for HealthModule {
         Ok(())
     }
 
-    async fn handle_command(&self, command: &str, params: Value) -> Result<CommandResult, String> {
+    async fn handle_command(&self, command: &str, _params: Value) -> Result<CommandResult, String> {
         match command {
-            "ping" => dispatch(&PingHandler, params).await,
-
             "health-check" => {
                 let uptime_secs = self.started_at.elapsed().as_secs();
                 Ok(CommandResult::Json(serde_json::json!({
@@ -141,6 +140,46 @@ mod tests {
         if let Ok(CommandResult::Json(json)) = result {
             assert_eq!(json["healthy"], true);
             assert!(json["uptime_seconds"].is_number());
+        }
+    }
+
+    // what this catches: `ping` migrated to the TYPED PATH end-to-end — it is NOT
+    // in the prefix table (so the legacy handle_command match can't serve it), and
+    // it IS in the registry's DynCommand object map, where it invokes to the bare
+    // PingResult (no envelope). This is the proof that a base-trait command
+    // (ActionCommand ⟹ DynCommand) self-routes through the kernel registry with no
+    // per-module match arm. Regression here = the typed path silently falling back
+    // to prefix routing (or ping vanishing entirely).
+    #[tokio::test]
+    async fn ping_routes_through_the_typed_object_map() {
+        use crate::runtime::ModuleRegistry;
+        use std::sync::Arc;
+        let registry = ModuleRegistry::new();
+        registry.register(Arc::new(HealthModule::new()));
+
+        // Not prefix-routed any more — only the typed object map serves it.
+        assert!(
+            registry.route_command("ping").is_none(),
+            "ping must NOT be on the prefix table (it's a DynCommand object)"
+        );
+        assert!(
+            registry.list_command_objects().contains(&"ping"),
+            "ping is registered as a self-routing command object"
+        );
+
+        let cmd = registry
+            .route_object("ping")
+            .expect("ping resolves through the typed object map");
+        let cr = cmd
+            .invoke(serde_json::json!({}), None)
+            .await
+            .expect("ping invoke ok");
+        match cr {
+            CommandResult::Json(v) => {
+                assert_eq!(v["ok"], true);
+                assert!(v.get("success").is_none(), "Bare wire — no envelope");
+            }
+            other => panic!("expected Json, got {other:?}"),
         }
     }
 }

@@ -31,6 +31,14 @@ pub struct ModuleRegistry {
 
     /// TypeId -> module name for typed discovery.
     type_routes: DashMap<TypeId, &'static str>,
+
+    /// command name -> self-routing command object. The typed-path map: a
+    /// migrated command routes DIRECTLY here (O(1), no prefix scan, no per-module
+    /// match arm), and the executor consults this BEFORE the prefix table so the
+    /// typed path wins. Populated from each module's
+    /// [`ServiceModule::commands`](super::service_module::ServiceModule::commands)
+    /// at `register()`. See docs/architecture/COMMAND-ORGANIZATION.md.
+    command_objects: DashMap<&'static str, Arc<dyn crate::sdk_codegen::DynCommand>>,
 }
 
 impl Default for ModuleRegistry {
@@ -41,13 +49,29 @@ impl Default for ModuleRegistry {
 
 impl ModuleRegistry {
     pub fn new() -> Self {
-        Self {
+        let registry = Self {
             modules: DashMap::new(),
             configs: DashMap::new(),
             metrics: DashMap::new(),
             command_routes: RwLock::new(Vec::new()),
             type_routes: DashMap::new(),
+            command_objects: DashMap::new(),
+        };
+        // Seed the typed object map with every self-registering STATELESS command
+        // (zero host-module ceremony — see register_stateless_command!). Dep-holding
+        // commands are added later via module.commands() in register().
+        for cmd in crate::sdk_codegen::stateless_command_objects() {
+            let name = cmd.name();
+            if let Some(prev) = registry.command_objects.insert(name, cmd) {
+                panic!(
+                    "ModuleRegistry: duplicate stateless command object '{}' (prev '{}'). \
+                     Command names must be unique across the whole registry.",
+                    name,
+                    prev.name()
+                );
+            }
         }
+        registry
     }
 
     /// Register a module. Auto-wires command routing from its config.
@@ -77,6 +101,26 @@ impl ModuleRegistry {
             routes.sort_by(|a, b| b.0.len().cmp(&a.0.len()));
         }
 
+        // Register the module's self-routing command objects (the typed path).
+        // Each captures the module's deps; the executor routes a command name to
+        // the object DIRECTLY, ahead of the prefix table. A duplicate name across
+        // modules is a hard error — the "no central list" design removes the human
+        // backstop, so the map must catch the collision itself (mirrors
+        // sdk_codegen::command_registry's duplicate-name panic).
+        for cmd in module.commands() {
+            let cmd_name = cmd.name();
+            if let Some(existing) = self.command_objects.insert(cmd_name, cmd) {
+                panic!(
+                    "ModuleRegistry: duplicate command object '{}' — module '{}' \
+                     claims a name already registered (prev descriptor: '{}'). \
+                     Command names must be unique across the whole registry.",
+                    cmd_name,
+                    name,
+                    existing.name()
+                );
+            }
+        }
+
         // Register type for downcast discovery
         let type_id = (*module).as_any().type_id();
         self.type_routes.insert(type_id, name);
@@ -96,6 +140,23 @@ impl ModuleRegistry {
             }
         }
         None
+    }
+
+    /// Route a command name to its self-routing [`DynCommand`] object, if one is
+    /// registered (the typed path). O(1) lock-free read of an after-boot-immutable
+    /// map — the executor consults this BEFORE the prefix table so a migrated
+    /// command wins over its module's legacy `handle_command` arm.
+    pub fn route_object(
+        &self,
+        command: &str,
+    ) -> Option<Arc<dyn crate::sdk_codegen::DynCommand>> {
+        self.command_objects.get(command).map(|e| e.value().clone())
+    }
+
+    /// List all registered command-object names (debugging / health-check /
+    /// migration tracking — what's on the typed path vs still prefix-routed).
+    pub fn list_command_objects(&self) -> Vec<&'static str> {
+        self.command_objects.iter().map(|e| *e.key()).collect()
     }
 
     /// Get module by name.

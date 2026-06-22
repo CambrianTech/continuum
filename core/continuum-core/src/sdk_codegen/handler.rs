@@ -124,6 +124,13 @@ pub struct Ctx {
     pub user_id: Option<Uuid>,
     /// Conversation/room scope (client-stamped).
     pub context_id: Option<Uuid>,
+    /// WHO is calling — the authenticated caller identity the executor's gate
+    /// already saw (`None` = substrate's own local code = owner; `Some(airc …)` =
+    /// a persona or a cross-grid peer, verified by airc). Threaded so a handler can
+    /// gate/scope BY identity (e.g. `commands/list` showing only what THIS caller
+    /// may run) and propagate it when composing other commands — the same identity
+    /// that crossed the grid keeps flowing, never escalating.
+    pub caller: Option<crate::routing::CallerIdentity>,
 }
 
 impl Ctx {
@@ -207,6 +214,23 @@ where
     <H::Spec as CommandSpec>::Params: DeserializeOwned,
     <H::Spec as CommandSpec>::Result: Serialize,
 {
+    dispatch_with_caller(handler, params, None).await
+}
+
+/// Like [`dispatch`], but threads the authenticated `caller` into [`Ctx`] so the
+/// handler can gate/scope by identity and propagate it through composition. The
+/// executor passes the caller it already gated on (persona / cross-grid airc
+/// sender); local in-process / IPC dispatches pass `None` (owner).
+pub async fn dispatch_with_caller<H>(
+    handler: &H,
+    params: serde_json::Value,
+    caller: Option<crate::routing::CallerIdentity>,
+) -> Result<CommandResult, String>
+where
+    H: CommandHandler,
+    <H::Spec as CommandSpec>::Params: DeserializeOwned,
+    <H::Spec as CommandSpec>::Result: Serialize,
+{
     let name = <H::Spec as CommandSpec>::NAME;
     let req = CommandRequest::<<H::Spec as CommandSpec>::Params>::from_value(params)
         .map_err(|e| format!("{name}: [invalid] {e}"))?;
@@ -215,6 +239,7 @@ where
         session_id: req.session_id,
         user_id: req.user_id,
         context_id: req.context_id,
+        caller,
     };
 
     let outcome = handler

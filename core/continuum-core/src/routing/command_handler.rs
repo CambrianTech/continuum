@@ -62,19 +62,35 @@
 //! AircTransport's outbound path.
 
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use airc_core::{Body, PeerId, TranscriptEvent};
 use airc_lib::adapter::{AdapterError, ConsumerAdapter};
+use airc_lib::grid_auth::SignedCapabilityGrant;
 use airc_lib::Airc;
+use airc_protocol::headers_keys::HEADER_AIRC_CAPABILITY_GRANT;
 use airc_protocol::{HEADER_AIRC_CORRELATION_ID, HEADER_AIRC_REPLY_TO};
 use async_trait::async_trait;
+use base64::{engine::general_purpose::STANDARD, Engine};
+use tracing::{debug, warn};
 use uuid::Uuid;
 
+use super::grid_capability::{GrantAuthOutcome, GrantAuthorizer};
 use super::{
     AircCommandRequest, AircCommandResponse, CallerIdentity, CommandUri, COMMAND_REQUEST_BODY_HINT,
     COMMAND_RESPONSE_BODY_HINT, HEADER_COMMAND_STATUS, HEADER_CONTINUUM_BODY_HINT,
 };
 use crate::runtime::{CommandExecutor, CommandResult};
+
+/// Current wall-clock epoch-ms (for grant expiry + replay checks). `unwrap_or(0)`
+/// only on a pre-1970 clock — which reads as "everything is expired", the
+/// fail-closed direction for a capability check.
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
 
 /// Stable adapter name. Registered in the airc adapter registry so
 /// operators can introspect what's consuming command envelopes.
@@ -86,6 +102,13 @@ pub const HANDLER_NAME: &str = "continuum.command.handler";
 pub struct CommandRequestHandler {
     airc: Arc<Airc>,
     executor: Arc<CommandExecutor>,
+    /// Verifies a capability grant the caller presents (the contracted-grid path).
+    /// `None` → grants are ignored; a caller is gated purely by tier (the current
+    /// default). `Some` → a presented [`SignedCapabilityGrant`] is verified against
+    /// the owner key + this node's mesh + the AUTHENTICATED sender key, and its
+    /// conferred capabilities ride into the gate via
+    /// [`CallerIdentity::with_granted_capabilities`].
+    grant_authorizer: Option<Arc<GrantAuthorizer>>,
 }
 
 /// Parsed pieces of an incoming envelope. Pure data; the rest of
@@ -104,15 +127,41 @@ pub struct ParsedEnvelope {
     pub correlation_id: Uuid,
     /// The typed request body.
     pub request: AircCommandRequest,
+    /// A capability grant the caller PRESENTED on the envelope (base64
+    /// [`HEADER_AIRC_CAPABILITY_GRANT`], decoded). `None` if absent. Decoded in
+    /// [`parse_envelope`](CommandRequestHandler::parse_envelope) so the parse step
+    /// stays the one place the wire shape is read; verified later against the
+    /// authenticated sender key.
+    pub presented_grant: Option<SignedCapabilityGrant>,
 }
 
 impl CommandRequestHandler {
     /// Build a handler against an existing airc handle and the
-    /// substrate's CommandExecutor. Returns `Arc<Self>` because the
-    /// airc adapter registry stores adapters as
-    /// `Arc<dyn ConsumerAdapter>`.
+    /// substrate's CommandExecutor, with NO grant authorizer — a caller is gated
+    /// purely by tier (presented grants are ignored). Returns `Arc<Self>` because
+    /// the airc adapter registry stores adapters as `Arc<dyn ConsumerAdapter>`.
     pub fn new(airc: Arc<Airc>, executor: Arc<CommandExecutor>) -> Arc<Self> {
-        Arc::new(Self { airc, executor })
+        Arc::new(Self {
+            airc,
+            executor,
+            grant_authorizer: None,
+        })
+    }
+
+    /// Build a handler that VERIFIES presented capability grants (the
+    /// contracted-grid path). A caller presenting an owner-signed grant that
+    /// confers the command is authorized regardless of its tier ceiling; absent or
+    /// invalid grants fall back to tier gating.
+    pub fn with_grant_authorizer(
+        airc: Arc<Airc>,
+        executor: Arc<CommandExecutor>,
+        grant_authorizer: Arc<GrantAuthorizer>,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            airc,
+            executor,
+            grant_authorizer: Some(grant_authorizer),
+        })
     }
 
     /// Parse a `TranscriptEvent` into the typed pieces the handler
@@ -168,11 +217,33 @@ impl CommandRequestHandler {
             AdapterError::Consumer(format!("decode AircCommandRequest from body JSON: {e}"))
         })?;
 
+        // Optional capability grant the caller presents (base64 JSON). Absent is
+        // normal (tier-gated call). PRESENT-but-undecodable is a client error we
+        // surface LOUDLY (per [[no-fallbacks-ever]]) rather than silently dropping
+        // — the caller intended to present a grant; we won't pretend they didn't.
+        let presented_grant = match envelope.headers.get(HEADER_AIRC_CAPABILITY_GRANT) {
+            None => None,
+            Some(b64) => {
+                let bytes = STANDARD.decode(b64).map_err(|e| {
+                    AdapterError::Consumer(format!(
+                        "header {HEADER_AIRC_CAPABILITY_GRANT} is not valid base64: {e}"
+                    ))
+                })?;
+                let grant: SignedCapabilityGrant = serde_json::from_slice(&bytes).map_err(|e| {
+                    AdapterError::Consumer(format!(
+                        "header {HEADER_AIRC_CAPABILITY_GRANT} did not decode as a SignedCapabilityGrant: {e}"
+                    ))
+                })?;
+                Some(grant)
+            }
+        };
+
         Ok(ParsedEnvelope {
             caller_peer_id,
             reply_to,
             correlation_id,
             request,
+            presented_grant,
         })
     }
 
@@ -185,16 +256,76 @@ impl CommandRequestHandler {
     /// executor-side of the handler is exercisable without standing
     /// up real airc plumbing.
     pub async fn process_request(&self, parsed: &ParsedEnvelope) -> AircCommandResponse {
-        Self::process_request_via(&self.executor, parsed).await
+        // Verify any presented capability grant against the AUTHENTICATED sender
+        // key; on success its conferred capabilities ride into the gate. Absent /
+        // invalid grant → empty caps → pure tier gating (unchanged behavior).
+        let granted = self.verify_presented_grant(parsed).await;
+        let caller =
+            CallerIdentity::airc(parsed.caller_peer_id.0).with_granted_capabilities(granted);
+        Self::dispatch_request(&self.executor, parsed, caller).await
     }
 
-    /// Process a request against a borrowed `CommandExecutor` directly.
-    /// Same behavior as [`Self::process_request`] but constructable
-    /// without an `Arc<Airc>` — tests + the `LocalGridTransport`
-    /// fixture lease this.
+    /// Verify the grant the caller presented (if any) and return the capability
+    /// tags it confers — empty when there is no authorizer, no presented grant, or
+    /// the grant fails to authorize.
+    ///
+    /// The presenting key is `airc.peer_public_key(sender)` — the enrolled key from
+    /// the SAME registry that signature-verified the inbound envelope, so it is the
+    /// AUTHENTICATED sender's key, never the grant's self-asserted `grantee_pubkey`
+    /// (the hard gate the review flagged). A non-Authorized outcome logs at debug +
+    /// confers nothing; the caller then falls back to tier gating.
+    async fn verify_presented_grant(&self, parsed: &ParsedEnvelope) -> Vec<String> {
+        let (Some(authorizer), Some(grant)) =
+            (self.grant_authorizer.as_ref(), parsed.presented_grant.as_ref())
+        else {
+            return Vec::new();
+        };
+        let Some(presenting) = self.airc.peer_public_key(parsed.caller_peer_id) else {
+            warn!(
+                caller = %parsed.caller_peer_id.0,
+                "presented a capability grant but the sender is not enrolled — \
+                 cannot establish an authenticated presenting key; ignoring the grant"
+            );
+            return Vec::new();
+        };
+        match authorizer
+            .authorize_command(grant, &presenting, &parsed.request.path, now_ms())
+            .await
+        {
+            GrantAuthOutcome::Authorized => grant.grant.capabilities.clone(),
+            other => {
+                debug!(
+                    caller = %parsed.caller_peer_id.0,
+                    path = %parsed.request.path,
+                    outcome = ?other,
+                    "presented capability grant did not authorize; falling back to tier gate"
+                );
+                Vec::new()
+            }
+        }
+    }
+
+    /// Process a request against a borrowed `CommandExecutor` directly, with NO
+    /// grant verification (the caller is the plain authenticated sender). Same
+    /// behavior as the pre-grant path — tests + the `LocalGridTransport` fixture
+    /// lease this without an `Arc<Airc>`. The grant-aware path is
+    /// [`process_request`](Self::process_request).
     pub async fn process_request_via(
         executor: &CommandExecutor,
         parsed: &ParsedEnvelope,
+    ) -> AircCommandResponse {
+        let caller = CallerIdentity::airc(parsed.caller_peer_id.0);
+        Self::dispatch_request(executor, parsed, caller).await
+    }
+
+    /// Dispatch the parsed request through the executor as `caller` (whose
+    /// `granted_capabilities` the gate honors). Shared by the grant-aware
+    /// [`process_request`](Self::process_request) and the plain
+    /// [`process_request_via`](Self::process_request_via).
+    async fn dispatch_request(
+        executor: &CommandExecutor,
+        parsed: &ParsedEnvelope,
+        caller: CallerIdentity,
     ) -> AircCommandResponse {
         // PR #1529 reviewer 2 BLOCK fix: the request envelope carries
         // `kind` (peer / room / broadcast) and `env` (the embodiment
@@ -234,12 +365,11 @@ impl CommandRequestHandler {
         }
 
         // The path the remote dispatched maps to a local URI. The
-        // local AuthPolicy gate sees the remote caller and decides
-        // whether to allow — the gate's verdict variants
-        // (Allowed / Forbidden / Deferred) propagate as the canonical
+        // local AuthPolicy gate sees the remote caller (including any verified
+        // granted capabilities) and decides whether to allow — the gate's verdict
+        // variants (Allowed / Forbidden / Deferred) propagate as the canonical
         // error string from execute_with_caller's Err arm.
         let uri = CommandUri::local(&parsed.request.path);
-        let caller = CallerIdentity::airc(parsed.caller_peer_id.0);
 
         match executor
             .execute_with_caller(uri, parsed.request.params.clone(), Some(caller))
@@ -373,6 +503,75 @@ mod tests {
         assert_eq!(parsed.reply_to, reply_to);
         assert_eq!(parsed.correlation_id, correlation);
         assert_eq!(parsed.request, request);
+        // No capability-grant header → no presented grant (the tier-gated default).
+        assert!(parsed.presented_grant.is_none());
+    }
+
+    /// base64(JSON) of an owner-signed grant — the wire shape a caller presents in
+    /// [`HEADER_AIRC_CAPABILITY_GRANT`].
+    fn signed_grant_header(
+        owner: &airc_protocol::PeerKeypair,
+        grantee: PeerId,
+        grantee_pubkey: Vec<u8>,
+        caps: &[&str],
+    ) -> String {
+        use airc_lib::grid_auth::{CapabilityGrant, SignedCapabilityGrant};
+        use airc_lib::subscriptions::MeshIdentity;
+        let grant = CapabilityGrant {
+            grantee,
+            grantee_pubkey,
+            capabilities: caps.iter().map(|c| c.to_string()).collect(),
+            granted_in: MeshIdentity::new("test-mesh"),
+            issued_at_ms: 1,
+            expires_at_ms: None,
+            epoch: 1,
+        };
+        let signed = SignedCapabilityGrant::sign(owner, grant).expect("sign grant");
+        STANDARD.encode(serde_json::to_vec(&signed).expect("serialize grant"))
+    }
+
+    // what this catches: parse_envelope DECODES a presented capability grant from
+    // the base64 HEADER_AIRC_CAPABILITY_GRANT into the typed SignedCapabilityGrant
+    // (the wire shape the verifier later checks). This is the one place the grant
+    // wire format is read.
+    #[test]
+    fn parse_envelope_extracts_presented_grant() {
+        let owner = airc_protocol::PeerKeypair::generate();
+        let grantee = PeerId::new();
+        let request = sample_request();
+        let mut envelope = make_envelope(grantee, PeerId::new(), Uuid::new_v4(), &request);
+        envelope.headers.insert(
+            HEADER_AIRC_CAPABILITY_GRANT.to_string(),
+            signed_grant_header(&owner, grantee, vec![1, 2, 3], &["ai/generate"]),
+        );
+
+        let parsed = CommandRequestHandler::parse_envelope(&envelope).expect("parse succeeds");
+        let grant = parsed.presented_grant.expect("grant decoded");
+        assert_eq!(grant.grant.capabilities, vec!["ai/generate".to_string()]);
+        assert_eq!(grant.grant.grantee, grantee);
+    }
+
+    // what this catches: a PRESENT but undecodable grant header is surfaced LOUDLY
+    // (per [[no-fallbacks-ever]]) rather than silently dropped — the caller intended
+    // to present a grant; we don't pretend they didn't.
+    #[test]
+    fn parse_envelope_rejects_malformed_grant_header() {
+        let mut envelope =
+            make_envelope(PeerId::new(), PeerId::new(), Uuid::new_v4(), &sample_request());
+        envelope.headers.insert(
+            HEADER_AIRC_CAPABILITY_GRANT.to_string(),
+            "!!!not-base64!!!".to_string(),
+        );
+
+        let err = CommandRequestHandler::parse_envelope(&envelope)
+            .expect_err("malformed grant header should fail");
+        match err {
+            AdapterError::Consumer(msg) => assert!(
+                msg.contains(HEADER_AIRC_CAPABILITY_GRANT),
+                "error must name the grant header, got: {msg}"
+            ),
+            other => panic!("expected Consumer error, got {other:?}"),
+        }
     }
 
     #[test]
@@ -525,6 +724,7 @@ mod tests {
             reply_to: PeerId::new(),
             correlation_id: Uuid::new_v4(),
             request,
+            presented_grant: None,
         }
     }
 
@@ -657,6 +857,7 @@ mod tests {
                 env: None,
                 params: serde_json::Value::Null,
             },
+            presented_grant: None,
         };
 
         // The path doesn't resolve to a module, so execute_with_caller

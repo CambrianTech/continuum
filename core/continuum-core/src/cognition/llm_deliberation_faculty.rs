@@ -579,6 +579,7 @@ mod tests {
             request_id: "scripted".to_string(),
             content: None,
             tool_calls,
+            reasoning: None,
             routing: None,
             error: None,
         }

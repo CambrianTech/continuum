@@ -419,6 +419,20 @@ pub trait ServiceModule: Send + Sync + Any {
         // Default: module doesn't dispatch commands.
     }
 
+    /// The self-routing command objects this module contributes to the kernel's
+    /// `name -> Arc<dyn DynCommand>` map (see
+    /// [docs/architecture/COMMAND-ORGANIZATION.md]). Each
+    /// [`DynCommand`](crate::sdk_codegen::DynCommand) captures the module's deps
+    /// at construction (an `Arc<Shared>`), so the kernel can route a command name
+    /// DIRECTLY to it — no prefix scan, no per-module `match` arm. Default: none,
+    /// so a module that hasn't migrated keeps routing through the legacy
+    /// prefix → [`handle_command`](ServiceModule::handle_command) path. A module
+    /// migrates a command by returning its object here and dropping its match arm;
+    /// the typed object wins over the prefix fallback in the executor.
+    fn commands(&self) -> Vec<std::sync::Arc<dyn crate::sdk_codegen::DynCommand>> {
+        Vec::new()
+    }
+
     /// Downcast support for typed discovery.
     /// Enables registry.module_as::<VoiceModule>() — like CBAR's getAnalyzerOfType<T>().
     fn as_any(&self) -> &dyn Any;

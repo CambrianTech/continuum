@@ -86,6 +86,12 @@ pub enum CallerSource {
     /// peer or sentinel. The transport layer extracted the sender's
     /// peer_id from the signed envelope before constructing this.
     Airc,
+    /// The caller arrived over the core's TCP IPC listener — an
+    /// UNauthenticated remote socket (e.g. a host-side client reaching a
+    /// containerized core). Unlike [`Airc`](CallerSource::Airc) there is no
+    /// signed envelope, so it must NOT be treated as local/owner: it is gated
+    /// at the remote (non-owner) trust ceiling like any cross-grid caller.
+    Tcp,
 }
 
 /// Caller identity passed to the auth gate. Cross-grid dispatches
@@ -99,16 +105,31 @@ pub enum CallerSource {
 pub struct CallerIdentity {
     pub peer_id: Uuid,
     pub source: CallerSource,
+    /// Capability tags a transport boundary has CRYPTOGRAPHICALLY VERIFIED this
+    /// caller may exercise for THIS dispatch — the conferred capabilities of an
+    /// owner-signed `SignedCapabilityGrant` the caller presented, populated ONLY
+    /// after [`GrantAuthorizer::authorize_command`](crate::routing::grid_capability::GrantAuthorizer::authorize_command)
+    /// returns `Authorized` (signature + key-binding + mesh + expiry + epoch all
+    /// checked against the AUTHENTICATED sender key).
+    ///
+    /// Default empty. A policy MAY treat a command conferred by these caps as
+    /// authorized regardless of the caller's tier ceiling (the contracted-grid
+    /// fast-path) — which is sound ONLY because the boundary verified them; no
+    /// local/Tcp constructor ever populates this, and the field carries the
+    /// SAME boundary-aware capability semantics the gate re-checks. Never set it
+    /// from unverified input.
+    pub granted_capabilities: Vec<String>,
 }
 
 impl CallerIdentity {
     /// Construct an airc-sourced caller identity. Used by the
-    /// (future) airc transport when it extracts the sender's peer_id
+    /// airc transport when it extracts the sender's peer_id
     /// from a verified envelope.
     pub fn airc(peer_id: Uuid) -> Self {
         Self {
             peer_id,
             source: CallerSource::Airc,
+            granted_capabilities: Vec::new(),
         }
     }
 
@@ -119,7 +140,29 @@ impl CallerIdentity {
         Self {
             peer_id,
             source: CallerSource::Local,
+            granted_capabilities: Vec::new(),
         }
+    }
+
+    /// Construct a TCP-sourced (unauthenticated remote socket) caller identity.
+    /// The IPC server stamps this on connections from the TCP listener so they
+    /// are gated as remote (non-owner), never as local/owner.
+    pub fn tcp(peer_id: Uuid) -> Self {
+        Self {
+            peer_id,
+            source: CallerSource::Tcp,
+            granted_capabilities: Vec::new(),
+        }
+    }
+
+    /// Attach the capability tags a transport boundary VERIFIED this caller may
+    /// exercise (see [`granted_capabilities`](Self::granted_capabilities)). Called
+    /// by the airc command handler after a presented `SignedCapabilityGrant`
+    /// authorizes against the authenticated sender key — NEVER from unverified
+    /// input. Builder-style so the boundary can layer it onto `airc(peer_id)`.
+    pub fn with_granted_capabilities(mut self, capabilities: Vec<String>) -> Self {
+        self.granted_capabilities = capabilities;
+        self
     }
 }
 
