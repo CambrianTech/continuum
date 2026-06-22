@@ -253,6 +253,34 @@ impl UnslothHttp {
             None => rb,
         }
     }
+
+    /// Discover the models the gateway currently serves: `GET /v1/models` →
+    /// `data[].id`. This is the live runnable-set discovery for model-fit
+    /// (DYNAMIC-PERSONA-AND-MODEL slice 1) — what unsloth can actually serve right
+    /// now, queried live, NOT a static catalog. `Err` = gateway unreachable.
+    pub async fn list_models(&self) -> Result<Vec<String>, UnslothError> {
+        let url = format!("{}/v1/models", self.host);
+        let resp = self
+            .authed(self.client.get(&url))
+            .send()
+            .await
+            .map_err(|e| UnslothError::Unreachable(e.to_string()))?;
+        if !resp.status().is_success() {
+            return Err(UnslothError::Api(format!("/v1/models {}", resp.status())));
+        }
+        let body: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| UnslothError::Api(e.to_string()))?;
+        Ok(body["data"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|m| m["id"].as_str().map(|s| s.to_string()))
+                    .collect()
+            })
+            .unwrap_or_default())
+    }
 }
 
 #[async_trait]

@@ -642,7 +642,7 @@ impl AIProviderModule {
         // impervious to unsloth being down / uninstalled / not yet started: that is
         // caught LOUD, never falsely reported ✓. [[fallbacks-are-illegal-fail-loud]]
         {
-            use crate::inference::unsloth_control::{UnslothControl, UnslothHttp};
+            use crate::inference::unsloth_control::UnslothHttp;
             use crate::runtime::boot_status::{boot_status, BootStatusKind};
             let base = crate::inference::unsloth_control::unsloth_base_url();
             let local_note = if local_llama_opt_in {
@@ -658,17 +658,34 @@ impl AIProviderModule {
                      (open unsloth Studio to generate one). Inference gateway REQUIRED; no local fallback.",
                 );
             } else {
-                match UnslothHttp::from_config().model_loaded().await {
-                    Ok(true) => boot_status(
-                        "inference",
-                        if local_llama_opt_in {
-                            BootStatusKind::Degraded
+                // Probe reachability AND discover the runnable set (slice 1): list the
+                // models unsloth actually serves, named at boot. No static catalog guess.
+                match UnslothHttp::from_config().list_models().await {
+                    Ok(models) if !models.is_empty() => {
+                        let names: Vec<&str> = models
+                            .iter()
+                            .map(|m| m.rsplit('/').next().unwrap_or(m))
+                            .collect();
+                        let shown = names.iter().take(3).cloned().collect::<Vec<_>>().join(", ");
+                        let more = if names.len() > 3 {
+                            format!(" +{}", names.len() - 3)
                         } else {
-                            BootStatusKind::Ok
-                        },
-                        &format!("unsloth gateway @ {base} — reachable, model loaded{local_note}"),
-                    ),
-                    Ok(false) => boot_status(
+                            String::new()
+                        };
+                        boot_status(
+                            "inference",
+                            if local_llama_opt_in {
+                                BootStatusKind::Degraded
+                            } else {
+                                BootStatusKind::Ok
+                            },
+                            &format!(
+                                "unsloth gateway @ {base} — reachable, {n} model(s): {shown}{more}{local_note}",
+                                n = models.len()
+                            ),
+                        );
+                    }
+                    Ok(_) => boot_status(
                         "inference",
                         BootStatusKind::Degraded,
                         &format!(
