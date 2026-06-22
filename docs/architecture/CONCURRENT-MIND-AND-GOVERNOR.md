@@ -108,6 +108,44 @@ async enricher that settles into RAG/engrams/caches?"** — almost always yes, a
 almost never a gated foreground step. The workspace stays a thin reader of a richly
 enriched world.
 
+## 3.2 Cause and effect: invalidation propagation, not servicing
+
+The reference is CBAR's CV analyzer graph (`cb-mobile-sdk/cpp/cbar`). It is **not**
+"run every analyzer every frame." It's cause-and-effect via three mechanisms — and
+the concern-mesh must inherit all three:
+
+1. **Type-based dependency fetch.** An analyzer pulls its upstream's output by TYPE
+   (`getAnalyzerOfType<T>()`); continuum's analog is `module_as::<T>()` / a typed
+   concern lookup. Concerns wire by *capability*, not a hardcoded edge list.
+2. **Invalidation propagation (the heart).** A change calls `needsRefresh()` on the
+   dependents it affects (`CBP_AreaAnalyzer::needsRefresh` → resets `m_lastRunTime`);
+   they recompute; everything else **skips** (its last result stands, cached). A
+   change *ripples to exactly the dependents it affects* — incremental/memoized
+   recompute driven by CHANGE, never by a clock.
+3. **Declared-cadence lanes.** Analyzers declare `needsRealTime()`/`videoOnly()`;
+   the dispatcher runs real-time ones synchronously per frame and delayed ones on
+   **their own threads, throttled** (`frameIndex % 3`). Cadence per declaration.
+
+So: a new input **invalidates exactly its dependents, which recompute; the rest
+sleep.** Sweeping everyone every tick is the anti-pattern.
+
+**Mapping to the concern-mesh:**
+- A concern's output (a new engram admitted, a fresh embedding, a new burst,
+  a resolved inference handle) **invalidates its dependents' ready-buffers** (a
+  needs-refresh signal) → they recompute incrementally + cache; unchanged
+  dependents idle.
+- Concerns fetch dependencies by **type/capability**, not a wired list.
+- **Real-time concerns** (react to a new burst now) vs **background concerns**
+  (own task, change-woken, throttled) — declared, governor-scheduled into lanes.
+
+**Correction this forces on the governor:** the slice-1 fixed-cadence region
+**sweep is "dumb servicing."** Relegate that tick to a slow fallback heartbeat
+(housekeeping + the sleep-phase "dream" only). The **primary** driver is
+invalidation/change propagation — a new input wakes *exactly the dependent
+concerns*, which recompute and invalidate *their* dependents in turn. The governor
+schedules change-woken concerns + real-time lanes + the heartbeat; it does **not**
+poll everyone on a clock.
+
 ## 4. Slice plan
 
 - **Slice 1 — `SubstrateGovernor` heartbeat. ✅ SHIPPED** (`runtime/substrate_governor.rs`,
