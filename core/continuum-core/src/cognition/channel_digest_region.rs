@@ -66,12 +66,23 @@ pub struct ChannelDigestRegion {
 }
 
 impl ChannelDigestRegion {
-    /// Build with the shared digest builder + the persona/channel source.
+    /// Build with the shared digest builder + the persona/channel source, owning a
+    /// fresh ready-buffer (tests / standalone).
     pub fn new(builder: Arc<ChannelDigestBuilder>, personas: Arc<dyn PersonaChannelReader>) -> Self {
+        Self::with_buffer(builder, personas, Arc::new(DashMapReadyBuffer::new()))
+    }
+
+    /// Build sharing an EXISTING ready-buffer — the production path, so the
+    /// consumer (a RAG source) peeks the same buffer the region publishes into.
+    pub fn with_buffer(
+        builder: Arc<ChannelDigestBuilder>,
+        personas: Arc<dyn PersonaChannelReader>,
+        digests: Arc<DigestBuffer>,
+    ) -> Self {
         Self {
             builder,
             personas,
-            digests: Arc::new(DashMapReadyBuffer::new()),
+            digests,
             grounding: DEFAULT_GROUNDING,
             fetch_limit: DEFAULT_FETCH_LIMIT,
         }

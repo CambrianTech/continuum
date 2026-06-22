@@ -1311,11 +1311,19 @@ pub fn start_server(
         // executor is built so its typed commands land on the one registry.
         runtime.register(Arc::new(crate::modules::work::WorkModule::new(registry.clone())));
         // SubstrateGovernor — the deterministic cognitive-region scheduler daemon.
-        // Slice 1: live + observable (governor/status) + ticking per live persona,
-        // flood-safe (no regions schedule inference yet). Cognitive regions
-        // (hippocampus, PersonaCognitionRegion) plug into `new(regions, …)` next.
+        // Schedules the ChannelDigestRegion: per live persona it pre-stages the
+        // persona's current-channel digest into the SHARED digest buffer
+        // (channel_substrate globals) that AircRagSource peeks. Flood-safe — building
+        // a digest runs NO inference (element embeddings are lazy). Slice 2C live.
+        let digest_region: Arc<dyn crate::runtime::BrainRegion> = Arc::new(
+            crate::cognition::channel_digest_region::ChannelDigestRegion::with_buffer(
+                crate::cognition::channel_substrate::global_channel_digest_builder(),
+                Arc::new(registry.clone()) as Arc<dyn crate::cognition::channel_digest_region::PersonaChannelReader>,
+                crate::cognition::channel_substrate::global_channel_digest_buffer(),
+            ),
+        );
         runtime.register(Arc::new(crate::runtime::SubstrateGovernor::new(
-            Vec::new(),
+            vec![digest_region],
             registry.clone(),
         )));
         let instance_manager = Arc::new(

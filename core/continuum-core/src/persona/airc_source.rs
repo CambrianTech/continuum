@@ -1,41 +1,29 @@
-//! AircRagSource — reads real airc TranscriptEvents from the persona's
-//! current room and packages them as RagItems for the L1 budget
-//! allocator.
+//! AircRagSource — delivers a persona's current-channel context to the L1 budget
+//! allocator as a consolidated [`ChannelDigest`] (CONCURRENT-MIND §3.3), NOT a raw
+//! per-message page.
 //!
-//! Per Joel (2026-05-31): "see how a real rag from airc would look."
+//! ### Single path, no fallback
 //!
-//! ### Architecture
+//! The `ChannelDigest` is the ONLY representation of channel context
+//! ([[consolidate-before-concern-shared-elements-via-cache]]). `deliver` obtains it
+//! one of two ways that produce the IDENTICAL shape (so this is lazy-compute-once,
+//! not a fallback per [[no-fallbacks-ever]]):
 //!
-//! Abstracts an `AircTranscriptReader` trait that exposes the single
-//! `page_recent(limit)` operation. The real implementation rides on
-//! `airc_lib::Airc::page_recent`; test doubles stub it out so unit
-//! tests don't need a running airc daemon. This is the same
-//! polymorphism rails per [[organization-purity-as-we-migrate]] —
-//! adapter-first methodology: ship the trait + one heuristic
-//! implementation + a stub for tests.
+//! - **pre-staged** — [`ChannelDigestRegion`] published it into the shared buffer;
+//!   `deliver` peeks the freshest snapshot (the hot path does no work), or
+//! - **built once** — not yet staged, so `deliver` builds it via the SAME
+//!   `ChannelDigestBuilder` (page_recent → shared elements → bookmark split).
+//!
+//! `page_recent` survives only as the read primitive *inside* the builder, never as
+//! an alternate context path. The old raw `pack_within_budget` + continuation-cursor
+//! packing is gone — the digest's window IS the budget shape.
 //!
 //! ### Why it matters
 //!
-//! `EngramSource` proves the trait against the in-process engram
-//! store. `AircRagSource` proves it against actual airc message
-//! data the persona is hosting on the substrate. Together they
-//! demonstrate the trait shape composes against multiple real-
-//! world backing stores without source changes to either the
-//! allocator or the assembly layer. This is the substrate's
-//! "every base model includable + every data source pluggable"
-//! thesis in code form (per
-//! [[docs/architecture/EVERY-MODEL-INCLUDED-VIA-L1-BUDGET.md]]).
-//!
-//! ### Doctrine alignment
-//!
-//! - [[substrate-is-a-good-citizen-on-the-host]]: errors from the
-//!   reader return an empty delivery + tracing::warn — cognition
-//!   stays up even when airc subsystem is degraded
-//! - [[RTOS-brain-no-region-on-hot-path]]: page_recent goes through
-//!   the reader trait; production impl handles its own async I/O;
-//!   the cognition hot path doesn't block on airc
-//! - Persona-scoped at construction: cross-persona ctx returns
-//!   empty (defense in depth, same shape as EngramSource)
+//! One consumer, one allocator (task #8): the persona's room context is exactly the
+//! consolidated digest every other persona shares element-for-element. airc stays
+//! the system of record; the digest window only bounds what's pulled into thought
+//! by default ([[persona-is-a-client]]).
 
 use std::sync::Arc;
 
@@ -43,33 +31,40 @@ use airc_core::TranscriptEvent;
 use airc_lib::AircError;
 use async_trait::async_trait;
 
+use crate::cognition::channel_digest::{ChannelDigest, ChannelDigestBuilder, DEFAULT_GROUNDING};
+use crate::cognition::channel_digest_region::DigestBuffer;
+use crate::cognition::channel_substrate::{
+    global_channel_digest_buffer, global_channel_digest_builder,
+};
+use crate::cognition::channel_element::ChannelElement;
 use crate::persona::rag_budget::{
     ContinuationCursor, RagContext, RagDelivery, RagItem, RagSource, ResolutionPreference,
 };
+use crate::runtime::ready_buffer::ReadyBuffer;
 
-/// Source identifier — used by budget presets, telemetry, cursor
-/// scope checks.
+/// Source identifier — used by budget presets, telemetry, cursor scope checks.
 const SOURCE_ID: &str = "airc";
 
-/// Rough chars/token estimate — same heuristic EngramSource uses.
-/// Real tokenizer integration lands in slice 12+.
+/// Default newest-events fetch cap when building a digest on demand (mirrors the
+/// region's). The recipe-defined grounding window slices within this.
+const FETCH_LIMIT: usize = 100;
+
+/// Rough chars/token estimate — same heuristic the rest of the budget layer uses.
 fn estimate_tokens(content: &str) -> u32 {
     ((content.chars().count() / 4) as u32).saturating_add(1)
 }
 
-/// Abstract reader over airc transcript events. Production impl
-/// rides on `airc_lib::Airc`; tests use a stub that returns canned
-/// events without needing a daemon.
+/// Abstract reader over airc transcript events. Production impl rides on
+/// `airc_lib::Airc`; tests use a stub that returns canned events without a daemon.
 #[async_trait]
 pub trait AircTranscriptReader: Send + Sync {
-    /// Return up to `limit` most-recent transcript events, newest-
-    /// first per airc convention.
+    /// Return up to `limit` most-recent transcript events, newest-first per airc
+    /// convention.
     async fn page_recent(&self, limit: usize) -> Result<Vec<TranscriptEvent>, AircError>;
 }
 
-/// `airc_lib::Airc` satisfies the reader contract directly via its
-/// existing `page_recent` method. Orphan rule OK — the trait is
-/// ours (defined in this crate).
+/// `airc_lib::Airc` satisfies the reader contract directly via its existing
+/// `page_recent` method. Orphan rule OK — the trait is ours.
 #[async_trait]
 impl AircTranscriptReader for airc_lib::Airc {
     async fn page_recent(&self, limit: usize) -> Result<Vec<TranscriptEvent>, AircError> {
@@ -77,127 +72,86 @@ impl AircTranscriptReader for airc_lib::Airc {
     }
 }
 
-/// AircRagSource — persona-bound, reads from any `AircTranscriptReader`.
+/// Persona-bound source delivering the consolidated channel digest.
 pub struct AircRagSource {
     persona_id: uuid::Uuid,
     reader: Arc<dyn AircTranscriptReader>,
-    /// Maximum events to fetch per deliver call. Production default
-    /// = 100; tests can configure smaller. The L1 budget allocator
-    /// determines how many of these get included in the prompt; the
-    /// fetch cap is a separate concern (don't hammer airc for 10k
-    /// events when the budget only fits 20).
+    builder: Arc<ChannelDigestBuilder>,
+    buffer: Arc<DigestBuffer>,
+    grounding: usize,
     fetch_limit: usize,
 }
 
 impl AircRagSource {
+    /// Production constructor — shares the process-global digest substrate so every
+    /// persona reuses one element cache + bookmark store + pre-staged buffer.
     pub fn new(persona_id: uuid::Uuid, reader: Arc<dyn AircTranscriptReader>) -> Self {
         Self {
             persona_id,
             reader,
-            fetch_limit: 100,
+            builder: global_channel_digest_builder(),
+            buffer: global_channel_digest_buffer(),
+            grounding: DEFAULT_GROUNDING,
+            fetch_limit: FETCH_LIMIT,
         }
     }
 
+    /// Override the newest-events fetch cap used when building a digest on demand.
     pub fn with_fetch_limit(mut self, fetch_limit: usize) -> Self {
         self.fetch_limit = fetch_limit;
         self
     }
 
-    /// Extract a text representation from a TranscriptEvent's body.
-    /// Returns `None` for events without a text body — they're
-    /// skipped (non-text events don't belong in a text-only prompt
-    /// at slice 10.6 fidelity; future slices may add multimodal
-    /// items).
-    fn extract_text(event: &TranscriptEvent) -> Option<String> {
-        let body = event.body.as_ref()?;
-        body.as_text().map(|s| s.to_string())
+    /// Format a digest into budget-packed `RagItem`s. Walks the window newest-first
+    /// accumulating tokens until budget, then emits chronological (oldest-first) so
+    /// the chat template reads turns in order. Each item is tagged `unread` vs
+    /// grounding so the prompt builder / glass box can tell them apart.
+    fn pack_digest(digest: &ChannelDigest, budget: u32) -> (Vec<RagItem>, u32) {
+        let mut keep: Vec<usize> = Vec::new();
+        let mut tokens_used: u32 = 0;
+        for (idx, el) in digest.elements.iter().enumerate().rev() {
+            let Some(text) = el.text() else { continue };
+            let tokens = estimate_tokens(text);
+            if tokens_used.saturating_add(tokens) > budget {
+                break;
+            }
+            tokens_used += tokens;
+            keep.push(idx);
+        }
+        keep.reverse();
+        let items = keep
+            .into_iter()
+            .map(|idx| Self::format_item(&digest.elements[idx], idx >= digest.unread_start))
+            .collect();
+        (items, tokens_used)
     }
 
-    /// Format one event as RagItem content. Slice 10.6 uses just the
-    /// text body. Future slices may add structured prefixes (peer
-    /// alias, room nick, timestamp) as the prompt-assembly contract
-    /// firms up.
-    fn format_item(event: &TranscriptEvent, text: String, score: f32) -> RagItem {
+    fn format_item(element: &Arc<ChannelElement>, unread: bool) -> RagItem {
+        let ev = element.event();
+        let text = element.text().unwrap_or_default().to_string();
         let tokens = estimate_tokens(&text);
         RagItem {
             content: text,
             tokens,
             metadata: serde_json::json!({
-                "event_id": event.event_id.as_uuid().to_string(),
-                "room_id": event.room_id.as_uuid().to_string(),
-                "peer_id": event.peer_id.as_uuid().to_string(),
-                "occurred_at_ms": event.occurred_at_ms,
-                "lamport": event.lamport,
-                "score": score,
+                "event_id": ev.event_id.as_uuid().to_string(),
+                "room_id": ev.room_id.as_uuid().to_string(),
+                "peer_id": ev.peer_id.as_uuid().to_string(),
+                "occurred_at_ms": ev.occurred_at_ms,
+                "lamport": ev.lamport,
+                "unread": unread,
             }),
         }
     }
 
-    /// Pack ranked events into RagItems within budget. Returns
-    /// (items, tokens_used, last_lamport_consumed). The last_lamport
-    /// is what the continuation cursor carries for resume.
-    /// Pack as many of the newest events as fit in `budget`.
-    ///
-    /// `page_recent(limit)` returns the newest N events in chronological
-    /// (lamport-ascending) order — events[0] is the OLDEST of the N
-    /// newest, events[N-1] is the very newest. If we packed
-    /// oldest-first we'd drop the newest events on budget overflow —
-    /// catastrophic for cognition, which exists to respond to the
-    /// MOST RECENT message. Per [[no-fallbacks-ever]] the substrate
-    /// makes the right choice deterministically: walk backwards from
-    /// the newest accumulating tokens, stop when budget would be
-    /// exceeded, then re-emit in chronological order so the LLM sees
-    /// the conversation as humans wrote it.
-    ///
-    /// `start_rank` is kept for the continuation cursor surface but
-    /// in the cognition hot path (continuation not used) it's 0 →
-    /// the function "tails" the newest budget-worth.
-    fn pack_within_budget(
-        events: &[TranscriptEvent],
-        start_rank: usize,
-        budget: u32,
-    ) -> (Vec<RagItem>, u32, usize) {
-        let scope = &events[start_rank.min(events.len())..];
-
-        // Walk backwards (newest first), collecting indices that fit.
-        let mut keep_indices: Vec<usize> = Vec::new();
-        let mut tokens_used: u32 = 0;
-        let mut oldest_kept = scope.len();
-        for (offset, event) in scope.iter().enumerate().rev() {
-            let Some(text) = Self::extract_text(event) else {
-                continue;
-            };
-            let tokens = estimate_tokens(&text);
-            if tokens_used.saturating_add(tokens) > budget {
-                break;
-            }
-            tokens_used += tokens;
-            keep_indices.push(offset);
-            oldest_kept = offset;
+    fn empty(resolution: ResolutionPreference) -> RagDelivery {
+        RagDelivery {
+            source_id: SOURCE_ID.to_string(),
+            items: Vec::new(),
+            tokens_used: 0,
+            continuation: None,
+            resolution_used: resolution,
         }
-        // Reverse → chronological order (oldest first within the kept
-        // window). The model's chat-template-built prompt reads the
-        // user turns in order, so this is the order they should be
-        // appended.
-        keep_indices.reverse();
-
-        let mut items = Vec::with_capacity(keep_indices.len());
-        for offset in keep_indices {
-            let event = &scope[offset];
-            let text = Self::extract_text(event).expect("non-text events filtered above");
-            // Recency-only scoring: each event gets its 1/(rank+1)
-            // score where rank is its position in the ORIGINAL
-            // events slice (newer == lower rank == higher score).
-            let absolute_idx = start_rank + offset;
-            let score = 1.0 / (absolute_idx as f32 + 1.0);
-            items.push(Self::format_item(event, text, score));
-        }
-        // `next_rank` is the absolute index of the oldest event we
-        // KEPT. Continuation (when reused) pages backwards from
-        // there — older messages, same persona/source. For the
-        // cognition hot path the continuation cursor is unused.
-        let next_rank = start_rank + oldest_kept;
-        (items, tokens_used, next_rank)
     }
 }
 
@@ -213,122 +167,87 @@ impl RagSource for AircRagSource {
         budget: u32,
         resolution: ResolutionPreference,
     ) -> RagDelivery {
+        // Defense in depth: never serve another persona's context.
         if ctx.persona_id != self.persona_id {
-            return RagDelivery {
-                source_id: SOURCE_ID.to_string(),
-                items: Vec::new(),
-                tokens_used: 0,
-                continuation: None,
-                resolution_used: ResolutionPreference::Placeholder,
-            };
+            return Self::empty(ResolutionPreference::Placeholder);
         }
-        let events = match self.reader.page_recent(self.fetch_limit).await {
-            Ok(e) => e,
-            Err(err) => {
-                tracing::warn!(
-                    error = %err,
-                    persona_id = %self.persona_id,
-                    "airc rag: page_recent failed — returning empty delivery, cognition stays up"
-                );
-                return RagDelivery {
-                    source_id: SOURCE_ID.to_string(),
-                    items: Vec::new(),
-                    tokens_used: 0,
-                    continuation: None,
-                    resolution_used: ResolutionPreference::Placeholder,
-                };
-            }
+        // No channel scope → no channel context. Not a fallback — there's simply no
+        // room to digest (background consolidation / idle tick).
+        let Some(room) = ctx.airc_room else {
+            return Self::empty(ResolutionPreference::Placeholder);
         };
-        let (items, tokens_used, next_rank) = Self::pack_within_budget(&events, 0, budget);
+        let room_id = room.as_uuid();
 
-        // Per [[observability-is-half-the-architecture]]: this is the
-        // mechanic's view of "did page_recent return events at all?
-        // did the budget allocator give me room? did anything get
-        // packed?" Lives at DEBUG by default so the per-turn fire
-        // doesn't spam INFO; light it up when a coherence
-        // regression smells like a budget / fetch problem.
+        // Pre-staged by the region, or built once now via the SAME builder. Identical
+        // shape either way (lazy compute-once, not a fallback).
+        let digest = match self.buffer.peek(&(self.persona_id, room_id)) {
+            Some(d) => d,
+            None => match self
+                .builder
+                .build(
+                    self.persona_id,
+                    room_id,
+                    self.reader.as_ref(),
+                    self.fetch_limit,
+                    self.grounding,
+                )
+                .await
+            {
+                Ok(d) => Arc::new(d),
+                Err(err) => {
+                    tracing::warn!(
+                        error = %err,
+                        persona_id = %self.persona_id,
+                        room = %room_id,
+                        "airc rag: digest build failed — empty delivery, cognition stays up"
+                    );
+                    return Self::empty(ResolutionPreference::Placeholder);
+                }
+            },
+        };
+
+        let (items, tokens_used) = Self::pack_digest(&digest, budget);
         tracing::debug!(
             persona_id = %self.persona_id,
-            fetch_limit = self.fetch_limit,
-            events_returned = events.len(),
+            room = %room_id,
+            window = digest.elements.len(),
+            unread = digest.unread().len(),
             budget,
             items_packed = items.len(),
             tokens_used,
-            "airc_rag: deliver"
+            "airc_rag: deliver (digest)"
         );
-
-        let continuation = if next_rank < events.len() {
-            Some(ContinuationCursor {
-                persona_id: self.persona_id,
-                source_id: SOURCE_ID.to_string(),
-                opaque: serde_json::json!({ "next_rank": next_rank }),
-            })
-        } else {
-            None
-        };
         RagDelivery {
             source_id: SOURCE_ID.to_string(),
             items,
             tokens_used,
-            continuation,
+            // The digest IS the window. More history = a command (scrollback/search),
+            // not a budget continuation cursor.
+            continuation: None,
             resolution_used: resolution,
         }
     }
 
     async fn deliver_continuation(
         &self,
-        ctx: &RagContext,
-        cursor: ContinuationCursor,
-        budget: u32,
+        _ctx: &RagContext,
+        _cursor: ContinuationCursor,
+        _budget: u32,
     ) -> Option<RagDelivery> {
-        if ctx.persona_id != self.persona_id {
-            return None;
-        }
-        if cursor.persona_id != self.persona_id {
-            return None;
-        }
-        if cursor.source_id != SOURCE_ID {
-            return None;
-        }
-        let next_rank: usize = cursor.opaque.get("next_rank")?.as_u64()? as usize;
-        let events = match self.reader.page_recent(self.fetch_limit).await {
-            Ok(e) => e,
-            Err(err) => {
-                tracing::warn!(
-                    error = %err,
-                    persona_id = %self.persona_id,
-                    "airc rag: page_recent failed during continuation"
-                );
-                return None;
-            }
-        };
-        if next_rank >= events.len() {
-            return None;
-        }
-        let (items, tokens_used, new_next_rank) =
-            Self::pack_within_budget(&events, next_rank, budget);
-        let continuation = if new_next_rank < events.len() {
-            Some(ContinuationCursor {
-                persona_id: self.persona_id,
-                source_id: SOURCE_ID.to_string(),
-                opaque: serde_json::json!({ "next_rank": new_next_rank }),
-            })
-        } else {
-            None
-        };
-        Some(RagDelivery {
-            source_id: SOURCE_ID.to_string(),
-            items,
-            tokens_used,
-            continuation,
-            resolution_used: ResolutionPreference::Raw,
-        })
+        // No continuation in the digest model — the consolidated window is the unit.
+        // Reaching further back is an explicit scrollback/search command, not a
+        // budget-allocator cursor.
+        None
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cognition::channel_digest::ChannelBookmarks;
+    use crate::cognition::channel_element::ChannelElementCache;
+    use crate::cognition::embedding::EmbeddingProvider;
+    use crate::runtime::ready_buffer::DashMapReadyBuffer;
     use airc_core::{
         Body, ClientId, EventId, Headers, MentionTarget, PeerId, RoomId, TranscriptKind,
     };
@@ -339,17 +258,24 @@ mod tests {
         Uuid::parse_str("00000000-0000-0000-0000-000000000aaa").unwrap()
     }
 
-    fn ctx() -> RagContext {
-        RagContext::for_persona(persona(), 1_000_000)
+    struct NoopEmbedder;
+    #[async_trait]
+    impl EmbeddingProvider for NoopEmbedder {
+        fn id(&self) -> &str {
+            "noop"
+        }
+        fn dim(&self) -> usize {
+            1
+        }
+        async fn embed(&self, _text: &str) -> Vec<f32> {
+            vec![0.0]
+        }
     }
 
-    /// Test double — returns pre-canned events. Optionally returns an
-    /// error to simulate airc subsystem failure.
     struct StubReader {
         events: Vec<TranscriptEvent>,
         fail: Mutex<bool>,
     }
-
     impl StubReader {
         fn new(events: Vec<TranscriptEvent>) -> Self {
             Self {
@@ -361,29 +287,52 @@ mod tests {
             *self.fail.lock().unwrap() = fail;
         }
     }
-
     #[async_trait]
     impl AircTranscriptReader for StubReader {
         async fn page_recent(&self, limit: usize) -> Result<Vec<TranscriptEvent>, AircError> {
             if *self.fail.lock().unwrap() {
-                // AircError doesn't have a Custom variant; use any
-                // trivially-constructable variant to simulate failure.
                 return Err(AircError::UnknownPeer(PeerId::new()));
             }
             Ok(self.events.iter().take(limit).cloned().collect())
         }
     }
 
-    fn make_event(text: Option<&str>, lamport: u64) -> TranscriptEvent {
+    /// Source over an ISOLATED digest substrate (own cache/bookmarks/buffer) so
+    /// tests don't touch process globals.
+    fn isolated_source(
+        reader: Arc<dyn AircTranscriptReader>,
+    ) -> (AircRagSource, Arc<ChannelBookmarks>, Arc<DigestBuffer>) {
+        let cache = Arc::new(ChannelElementCache::new(Arc::new(NoopEmbedder)));
+        let bookmarks = Arc::new(ChannelBookmarks::new());
+        let builder = Arc::new(ChannelDigestBuilder::new(cache, bookmarks.clone()));
+        let buffer = Arc::new(DashMapReadyBuffer::new());
+        let source = AircRagSource {
+            persona_id: persona(),
+            reader,
+            builder,
+            buffer: buffer.clone(),
+            grounding: 0,
+            fetch_limit: FETCH_LIMIT,
+        };
+        (source, bookmarks, buffer)
+    }
+
+    fn ctx_in(room: RoomId) -> RagContext {
+        let mut c = RagContext::for_persona(persona(), 1_000_000);
+        c.substrate.airc_room = Some(room);
+        c
+    }
+
+    fn event_in(room: RoomId, text: Option<&str>, lamport: u64) -> TranscriptEvent {
         TranscriptEvent {
             event_id: EventId::new(),
-            room_id: RoomId::new(),
+            room_id: room,
             peer_id: PeerId::new(),
             client_id: ClientId::new(),
             kind: TranscriptKind::Message,
             occurred_at_ms: 1_000_000 + lamport,
             lamport,
-            target: MentionTarget::Room(RoomId::new()),
+            target: MentionTarget::Room(room),
             headers: Headers::default(),
             body: text.map(Body::text),
             attachment: None,
@@ -392,148 +341,98 @@ mod tests {
         }
     }
 
-    // ---- TDD tests ----
-
+    // what this catches: a fresh channel delivers its messages as the consolidated
+    // digest window (the single context path), in chronological order.
     #[tokio::test]
-    async fn empty_room_delivers_nothing() {
-        let reader = Arc::new(StubReader::new(vec![]));
-        let source = AircRagSource::new(persona(), reader);
-        let delivery = source.deliver(&ctx(), 1_000, ResolutionPreference::Raw).await;
-        assert!(delivery.items.is_empty());
-        assert_eq!(delivery.tokens_used, 0);
-        assert!(delivery.continuation.is_none());
-    }
-
-    #[tokio::test]
-    async fn single_text_message_surfaces() {
-        let reader = Arc::new(StubReader::new(vec![make_event(Some("hello world"), 1)]));
-        let source = AircRagSource::new(persona(), reader);
-        let delivery = source.deliver(&ctx(), 1_000, ResolutionPreference::Raw).await;
-        assert_eq!(delivery.items.len(), 1);
-        assert_eq!(delivery.items[0].content, "hello world");
-        assert!(delivery.items[0].metadata.get("event_id").is_some());
-    }
-
-    #[tokio::test]
-    async fn non_text_events_dropped() {
-        // Two events: one with no body (skip), one with text (keep).
+    async fn delivers_channel_digest() {
+        let room = RoomId::new();
         let reader = Arc::new(StubReader::new(vec![
-            make_event(None, 1),
-            make_event(Some("kept"), 2),
+            event_in(room, Some("hello"), 1),
+            event_in(room, Some("world"), 2),
         ]));
-        let source = AircRagSource::new(persona(), reader);
-        let delivery = source.deliver(&ctx(), 1_000, ResolutionPreference::Raw).await;
-        assert_eq!(delivery.items.len(), 1);
-        assert_eq!(delivery.items[0].content, "kept");
-    }
-
-    #[tokio::test]
-    async fn budget_overflow_returns_continuation() {
-        // Three messages, budget too small for all three.
-        let reader = Arc::new(StubReader::new(vec![
-            make_event(Some("aaaaa"), 1), // ~2 tokens
-            make_event(Some("bbbbb"), 2), // ~2 tokens
-            make_event(Some("ccccc"), 3), // ~2 tokens
-        ]));
-        let source = AircRagSource::new(persona(), reader);
-        let delivery = source.deliver(&ctx(), 4, ResolutionPreference::Raw).await;
-        // First fits, second fits (cumulative 4), third doesn't.
+        let (source, _, _) = isolated_source(reader);
+        let delivery = source.deliver(&ctx_in(room), 1_000, ResolutionPreference::Raw).await;
         assert_eq!(delivery.items.len(), 2);
-        assert!(delivery.continuation.is_some());
+        assert_eq!(delivery.items[0].content, "hello");
+        assert_eq!(delivery.items[1].content, "world");
+        assert_eq!(delivery.items[1].metadata.get("unread").and_then(|v| v.as_bool()), Some(true));
     }
 
+    // what this catches: no airc_room in ctx → empty (no channel scope), never a
+    // raw page. There is no alternate context path.
     #[tokio::test]
-    async fn cross_persona_ctx_returns_empty() {
-        let reader = Arc::new(StubReader::new(vec![make_event(Some("secret"), 1)]));
-        let source = AircRagSource::new(persona(), reader);
-        let other = Uuid::parse_str("00000000-0000-0000-0000-000000000bbb").unwrap();
-        let delivery = source
-            .deliver(
-                &RagContext::for_persona(other, 1_000_000),
-                1_000,
-                ResolutionPreference::Raw,
-            )
-            .await;
+    async fn no_room_scope_delivers_empty() {
+        let room = RoomId::new();
+        let reader = Arc::new(StubReader::new(vec![event_in(room, Some("hi"), 1)]));
+        let (source, _, _) = isolated_source(reader);
+        let ctx = RagContext::for_persona(persona(), 1_000_000); // airc_room = None
+        let delivery = source.deliver(&ctx, 1_000, ResolutionPreference::Raw).await;
+        assert!(delivery.items.is_empty());
+    }
+
+    // what this catches: a pre-staged digest in the buffer is served WITHOUT
+    // rebuilding (the hot path peeks the region's snapshot). We seed the buffer with
+    // a digest the reader could not have produced, and confirm it's what's served.
+    #[tokio::test]
+    async fn serves_prestaged_digest_without_rebuild() {
+        let room = RoomId::new();
+        // Reader would return "live"; buffer holds a pre-staged "staged".
+        let reader = Arc::new(StubReader::new(vec![event_in(room, Some("live"), 9)]));
+        let (source, bookmarks, buffer) = isolated_source(reader);
+        // Build a staged digest via a separate builder over the SAME-shape elements.
+        let cache = Arc::new(ChannelElementCache::new(Arc::new(NoopEmbedder)));
+        let staged_builder = ChannelDigestBuilder::new(cache, bookmarks);
+        let staged_reader = StubReader::new(vec![event_in(room, Some("staged"), 1)]);
+        let staged = staged_builder
+            .build(persona(), room.as_uuid(), &staged_reader, 100, 0)
+            .await
+            .unwrap();
+        buffer.publish((persona(), room.as_uuid()), Arc::new(staged));
+
+        let delivery = source.deliver(&ctx_in(room), 1_000, ResolutionPreference::Raw).await;
+        assert_eq!(delivery.items.len(), 1);
+        assert_eq!(delivery.items[0].content, "staged", "served the pre-staged digest, not a rebuild");
+    }
+
+    // what this catches: cross-persona ctx is refused (defense in depth).
+    #[tokio::test]
+    async fn cross_persona_ctx_refused() {
+        let room = RoomId::new();
+        let reader = Arc::new(StubReader::new(vec![event_in(room, Some("secret"), 1)]));
+        let (source, _, _) = isolated_source(reader);
+        let mut other = RagContext::for_persona(Uuid::new_v4(), 1_000_000);
+        other.substrate.airc_room = Some(room);
+        let delivery = source.deliver(&other, 1_000, ResolutionPreference::Raw).await;
         assert!(delivery.items.is_empty());
         assert_eq!(delivery.resolution_used, ResolutionPreference::Placeholder);
     }
 
+    // what this catches: a reader error degrades to empty (cognition stays up), no
+    // panic, no fallback to a raw path.
     #[tokio::test]
-    async fn cross_persona_cursor_refused() {
-        let reader = Arc::new(StubReader::new(vec![make_event(Some("a"), 1)]));
-        let source = AircRagSource::new(persona(), reader);
-        let other = Uuid::parse_str("00000000-0000-0000-0000-000000000bbb").unwrap();
-        let alien_cursor = ContinuationCursor {
-            persona_id: other,
-            source_id: SOURCE_ID.to_string(),
-            opaque: serde_json::json!({ "next_rank": 0 }),
-        };
-        let result = source.deliver_continuation(&ctx(), alien_cursor, 1_000).await;
-        assert!(result.is_none());
-    }
-
-    #[tokio::test]
-    async fn wrong_source_id_cursor_refused() {
-        let reader = Arc::new(StubReader::new(vec![make_event(Some("a"), 1)]));
-        let source = AircRagSource::new(persona(), reader);
-        let alien_cursor = ContinuationCursor {
-            persona_id: persona(),
-            source_id: "memories".to_string(),
-            opaque: serde_json::json!({ "next_rank": 0 }),
-        };
-        let result = source.deliver_continuation(&ctx(), alien_cursor, 1_000).await;
-        assert!(result.is_none());
-    }
-
-    #[tokio::test]
-    async fn reader_error_returns_empty_with_no_panic() {
-        let reader = Arc::new(StubReader::new(vec![make_event(Some("won't be served"), 1)]));
+    async fn reader_error_delivers_empty() {
+        let room = RoomId::new();
+        let reader = Arc::new(StubReader::new(vec![event_in(room, Some("x"), 1)]));
         reader.set_fail(true);
-        let source = AircRagSource::new(persona(), reader);
-        let delivery = source.deliver(&ctx(), 1_000, ResolutionPreference::Raw).await;
+        let (source, _, _) = isolated_source(reader);
+        let delivery = source.deliver(&ctx_in(room), 1_000, ResolutionPreference::Raw).await;
         assert!(delivery.items.is_empty());
         assert_eq!(delivery.tokens_used, 0);
-        // No panic — substrate stays a good citizen even when airc is
-        // degraded.
     }
 
+    // what this catches: budget caps the window — only the newest messages that fit
+    // are packed, and there is NO continuation cursor (the digest is the unit).
     #[tokio::test]
-    async fn continuation_resumes_from_next_rank() {
-        // 5-char items so each is ~2 tokens; budget 4 fits 2, forces
-        // continuation for the remaining 2.
+    async fn budget_caps_window_no_continuation() {
+        let room = RoomId::new();
         let reader = Arc::new(StubReader::new(vec![
-            make_event(Some("aaaaa"), 1),
-            make_event(Some("bbbbb"), 2),
-            make_event(Some("ccccc"), 3),
-            make_event(Some("ddddd"), 4),
+            event_in(room, Some("aaaaa"), 1),
+            event_in(room, Some("bbbbb"), 2),
+            event_in(room, Some("ccccc"), 3),
         ]));
-        let source = AircRagSource::new(persona(), reader);
-        let first = source.deliver(&ctx(), 4, ResolutionPreference::Raw).await;
-        assert!(!first.items.is_empty());
-        let cursor = first.continuation.expect("expected continuation");
-        let second = source
-            .deliver_continuation(&ctx(), cursor, 1_000)
-            .await
-            .expect("continuation should yield");
-        assert_eq!(
-            first.items.len() + second.items.len(),
-            4,
-            "all events should surface across the two calls"
-        );
-    }
-
-    #[tokio::test]
-    async fn fetch_limit_caps_reader_call() {
-        // 5 events available, source configured to fetch only 3.
-        let reader = Arc::new(StubReader::new(vec![
-            make_event(Some("a"), 1),
-            make_event(Some("b"), 2),
-            make_event(Some("c"), 3),
-            make_event(Some("d"), 4),
-            make_event(Some("e"), 5),
-        ]));
-        let source = AircRagSource::new(persona(), reader).with_fetch_limit(3);
-        let delivery = source.deliver(&ctx(), 10_000, ResolutionPreference::Raw).await;
-        assert_eq!(delivery.items.len(), 3, "fetch_limit caps the working set");
+        let (source, _, _) = isolated_source(reader);
+        let delivery = source.deliver(&ctx_in(room), 4, ResolutionPreference::Raw).await;
+        assert_eq!(delivery.items.len(), 2, "two newest fit budget 4");
+        assert!(delivery.continuation.is_none(), "digest model has no continuation cursor");
     }
 }
