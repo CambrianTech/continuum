@@ -129,6 +129,11 @@ pub struct LlmDeliberationFaculty {
     /// behavior). Only the suppressed-thinking default makes `reasoning` empty, so
     /// this self-activates exactly when thinking is on.
     working_memory: Option<Arc<crate::cognition::working_memory::WorkingMemory>>,
+    /// Verbatim LLM-I/O capture — the exact system prompt + message thread sent and
+    /// the raw response, per agent-loop iteration. `None` → no capture (zero cost).
+    /// The live spawn path attaches a per-persona JSONL sink. See
+    /// [`prompt_capture`](crate::cognition::prompt_capture).
+    prompt_capture: Option<Arc<dyn crate::cognition::prompt_capture::PromptCaptureSink>>,
 }
 
 impl LlmDeliberationFaculty {
@@ -150,7 +155,18 @@ impl LlmDeliberationFaculty {
             tool_executor: None,
             max_tool_iterations: DEFAULT_MAX_TOOL_ITERATIONS,
             working_memory: None,
+            prompt_capture: None,
         }
+    }
+
+    /// Attach a verbatim prompt/response capture sink — every LLM call this
+    /// faculty makes is appended to it (best-effort). Off by default.
+    pub fn with_prompt_capture(
+        mut self,
+        sink: Arc<dyn crate::cognition::prompt_capture::PromptCaptureSink>,
+    ) -> Self {
+        self.prompt_capture = Some(sink);
+        self
     }
 
     /// Record this faculty's reasoning into `memory` after each verdict, so the
@@ -458,6 +474,13 @@ impl Faculty for LlmDeliberationFaculty {
                     return None;
                 }
             };
+
+            // Verbatim glass box: the EXACT request thread (system + messages sent
+            // this round) and the raw response. Per agent-loop iteration, so tool
+            // rounds are captured too. Best-effort; never affects the turn.
+            if let Some(cap) = &self.prompt_capture {
+                cap.record(self.persona_id, ws.room_id, iterations, &view.system, &messages, &resp);
+            }
 
             let wants_tools = matches!(resp.finish_reason, FinishReason::ToolUse);
 

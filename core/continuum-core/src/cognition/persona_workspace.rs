@@ -177,6 +177,24 @@ pub fn build_workspace_cycle(cfg: PersonaBrainConfig) -> WorkspaceCycle {
             ))
             .with_tool_executor(executor);
     }
+
+    // Verbatim prompt capture (best-effort): the EXACT system prompt + message
+    // thread + raw response of every deliberation LLM call → a per-persona JSONL
+    // under the same fixtures root as the workspace trace. So "what tokens was she
+    // fed, what did she emit?" is answerable token-for-token. HOME unset → opt-out.
+    if let Ok(dir) = std::env::var("HOME")
+        .map(|h| std::path::Path::new(&h).join(".continuum/fixtures/prompt-captures"))
+    {
+        match super::prompt_capture::JsonlPromptCaptureSink::open(&dir, cfg.persona_id) {
+            Ok(sink) => deliberation = deliberation.with_prompt_capture(Arc::new(sink)),
+            Err(e) => tracing::warn!(
+                persona_id = %cfg.persona_id,
+                error = %e,
+                "prompt capture unavailable; deliberation runs without verbatim capture"
+            ),
+        }
+    }
+
     faculties.push(Arc::new(deliberation));
 
     let cycle = WorkspaceCycle::new(
