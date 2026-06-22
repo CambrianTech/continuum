@@ -602,6 +602,25 @@ impl crate::persona::room_doctrine_source::AircDoctrineReader for PersonaAircRun
 }
 
 #[async_trait::async_trait]
+impl crate::persona::active_work_source::AircWorkReader for PersonaAircRuntime {
+    /// This persona's claimed cards, read from airc's work roster and filtered to
+    /// its own peer — grounding reflects what IT owns, board-wide (all rooms).
+    async fn active_claims(&self) -> Result<Vec<airc_lib::WorkCard>, AircError> {
+        let status = self
+            .airc
+            .work_roster_status(airc_lib::WorkRosterQuery::default())
+            .await?;
+        let me = self.airc.peer_id();
+        Ok(status
+            .rows
+            .into_iter()
+            .find(|r| r.peer == me)
+            .map(|r| r.active_claims)
+            .unwrap_or_default())
+    }
+}
+
+#[async_trait::async_trait]
 impl crate::persona::airc_citizen::AircCitizen for PersonaAircRuntime {
     fn peer_id(&self) -> Uuid {
         self.airc.peer_id().as_uuid()

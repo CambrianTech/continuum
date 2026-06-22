@@ -78,6 +78,7 @@ pub trait AircCitizen:
     AircTranscriptReader
     + crate::persona::room_roster_source::AircRosterReader
     + crate::persona::room_doctrine_source::AircDoctrineReader
+    + crate::persona::active_work_source::AircWorkReader
 {
     /// The airc-side peer identity (Ed25519 pubkey, formatted as Uuid).
     /// Cognition uses this for self-loop filtering; the supervisor uses
@@ -170,6 +171,15 @@ impl crate::persona::room_doctrine_source::AircDoctrineReader for StubAircCitize
         // No daemon in tests → no published doctrine. Cognition runs
         // through cleanly with no [Room operating doctrine] block.
         Ok(None)
+    }
+}
+
+#[async_trait]
+impl crate::persona::active_work_source::AircWorkReader for StubAircCitizen {
+    async fn active_claims(&self) -> Result<Vec<airc_lib::WorkCard>, AircError> {
+        // No daemon in tests → no claimed work. Cognition runs through cleanly
+        // with no [active-work] grounding block.
+        Ok(vec![])
     }
 }
 

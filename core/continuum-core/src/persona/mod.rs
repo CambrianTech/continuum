@@ -71,6 +71,7 @@ pub mod rag_capture;
 pub mod rag_inspect;
 pub mod rag_replay;
 pub mod recall_metadata;
+pub mod active_work_source;
 pub mod recorder;
 pub mod resource_forecast;
 pub mod response;

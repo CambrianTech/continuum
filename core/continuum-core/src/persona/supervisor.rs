@@ -552,6 +552,16 @@ pub async fn materialize_adapters(
         // Same dual-wire as the roster: one Arc, legacy path + brain faculty.
         cognition.set_doctrine_source(doctrine_source.clone());
 
+        // Active-work source: grounds the persona in ITS OWN live work across all
+        // rooms (claimed cards + states), read from airc's work roster. The dynamic
+        // fix for "misremembering my own card" — never hardcode the state; surface
+        // it. Reads the persona's own airc handle (acts as itself).
+        let active_work_source: Arc<dyn crate::persona::rag_budget::RagSource> =
+            Arc::new(crate::persona::active_work_source::ActiveWorkSource::new(
+                identity.persona_id,
+                runtime.clone(),
+            ));
+
         // Disk-backed, per-persona memory: open <home>/engrams.sqlite and
         // rehydrate prior engrams + recall metadata, so memory SURVIVES restart.
         // Without this, admission is in-memory only (NoopSink) and the persona is
@@ -627,6 +637,12 @@ pub async fn materialize_adapters(
                         ),
                         crate::cognition::persona_workspace::GroundingSource::framing(
                             doctrine_source,
+                        ),
+                        // The persona's own live work across rooms — standing framing
+                        // so it always knows what it's working on (cross-activity,
+                        // dynamic, no hardcoded card state).
+                        crate::cognition::persona_workspace::GroundingSource::framing(
+                            active_work_source,
                         ),
                     ],
                     // The persona's HANDS — built by the caller for THIS persona's

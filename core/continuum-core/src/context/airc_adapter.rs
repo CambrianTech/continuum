@@ -70,6 +70,23 @@ impl crate::persona::room_doctrine_source::AircDoctrineReader for AircHandleAdap
 }
 
 #[async_trait]
+impl crate::persona::active_work_source::AircWorkReader for AircHandleAdapter {
+    async fn active_claims(&self) -> Result<Vec<airc_lib::WorkCard>, AircError> {
+        let status = self
+            .inner
+            .work_roster_status(airc_lib::WorkRosterQuery::default())
+            .await?;
+        let me = self.inner.peer_id();
+        Ok(status
+            .rows
+            .into_iter()
+            .find(|r| r.peer == me)
+            .map(|r| r.active_claims)
+            .unwrap_or_default())
+    }
+}
+
+#[async_trait]
 impl AircCitizen for AircHandleAdapter {
     fn peer_id(&self) -> Uuid {
         self.inner.peer_id().as_uuid()
