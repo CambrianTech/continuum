@@ -32,7 +32,10 @@ use airc_core::PeerId;
 use airc_lib::grid_auth::VerifyContext;
 use airc_lib::grid_auth::{CredentialKind, GrantProof, GrantVerdict, GrantVerifier, SignedCapabilityGrant};
 use airc_lib::subscriptions::MeshIdentity;
-use dashmap::DashMap;
+
+use super::epoch_watermark::{
+    EpochWatermarkStore, InMemoryEpochWatermark, WatermarkDecision,
+};
 
 /// Why a presented grant did or didn't authorize a command — a TYPED outcome so
 /// the gate + audit see exactly why (never a bare bool).
@@ -47,6 +50,10 @@ pub enum GrantAuthOutcome {
     Superseded,
     /// The grant verified (and is current) but does NOT confer this command.
     NotGranted,
+    /// The anti-replay watermark store could not be consulted (e.g. the durable
+    /// store errored). Fail-CLOSED: the caller MUST deny — never authorize a grant
+    /// whose replay status is unknown. The string is for audit, not control flow.
+    WatermarkUnavailable(String),
 }
 
 /// ed25519 [`GrantVerifier`] — verifies a grant's signature against the issuer key
@@ -104,77 +111,124 @@ pub struct GrantAuthorizer {
     /// Signature verifier — injectable so tests drive the REAL `authorize_command`
     /// with a stub (no duplicated decision logic). Production = `Ed25519GrantVerifier`.
     verifier: Arc<dyn GrantVerifier + Send + Sync>,
-    /// Highest grant epoch accepted per grantee. The `grid_auth` verifier is
-    /// stateless by design; anti-replay (reject a superseded lower-epoch grant) is
-    /// the CONSUMER's responsibility — this is that state. Latest epoch is
-    /// authoritative (airc's model): re-issue with all caps + a higher epoch;
-    /// revocation = a higher-epoch grant with empty capabilities.
-    /// NOTE (hard gate): in-memory + unbounded today — see module docs.
-    seen_epoch: DashMap<PeerId, u64>,
+    /// Consumer-side anti-replay state: the highest grant epoch accepted per grantee.
+    /// The `grid_auth` verifier is stateless by design; rejecting a superseded
+    /// lower-epoch grant is the CONSUMER's responsibility — this is that state,
+    /// behind the [`EpochWatermarkStore`] seam so production can be DURABLE (survive
+    /// restart) + BOUNDED (the security review's hard gate), while tests use the
+    /// in-memory impl. Latest epoch is authoritative (airc's model): a revocation is
+    /// a higher-epoch grant with empty capabilities.
+    watermark: Arc<dyn EpochWatermarkStore>,
 }
 
 impl GrantAuthorizer {
+    /// Production constructor: real ed25519 verifier + IN-MEMORY watermark. The
+    /// in-memory watermark is NOT durable — callers gating LIVE grant traffic must
+    /// use [`with_watermark`](Self::with_watermark) with a
+    /// [`SqliteEpochWatermark`](super::epoch_watermark::SqliteEpochWatermark) so a
+    /// restart can't reopen the replay window (the review hard gate).
     pub fn new(owner_pubkey: Vec<u8>, mesh: MeshIdentity) -> Self {
         Self::with_verifier(owner_pubkey, mesh, Arc::new(Ed25519GrantVerifier))
     }
 
+    /// Production constructor with an explicit (durable) watermark store — the
+    /// live-traffic path. Pairs the real ed25519 verifier with the caller's store.
+    pub fn with_watermark(
+        owner_pubkey: Vec<u8>,
+        mesh: MeshIdentity,
+        watermark: Arc<dyn EpochWatermarkStore>,
+    ) -> Self {
+        Self {
+            owner_pubkey,
+            mesh,
+            verifier: Arc::new(Ed25519GrantVerifier),
+            watermark,
+        }
+    }
+
     /// Construct with an explicit verifier (production passes `Ed25519GrantVerifier`;
     /// tests pass a stub to exercise the decision logic without real signatures).
+    /// Watermark defaults to in-memory; use [`with_verifier_and_watermark`](Self::with_verifier_and_watermark)
+    /// to inject a durable store too.
     pub fn with_verifier(
         owner_pubkey: Vec<u8>,
         mesh: MeshIdentity,
         verifier: Arc<dyn GrantVerifier + Send + Sync>,
     ) -> Self {
+        Self::with_verifier_and_watermark(
+            owner_pubkey,
+            mesh,
+            verifier,
+            Arc::new(InMemoryEpochWatermark::new()),
+        )
+    }
+
+    /// Full constructor — explicit verifier AND watermark store. The other
+    /// constructors are conveniences over this.
+    pub fn with_verifier_and_watermark(
+        owner_pubkey: Vec<u8>,
+        mesh: MeshIdentity,
+        verifier: Arc<dyn GrantVerifier + Send + Sync>,
+        watermark: Arc<dyn EpochWatermarkStore>,
+    ) -> Self {
         Self {
             owner_pubkey,
             mesh,
             verifier,
-            seen_epoch: DashMap::new(),
+            watermark,
         }
     }
 
     /// Authorize `command` from a peer presenting `signed` with verified key
     /// `presenting_pubkey`, at wall-clock `now_ms`: verify → atomic epoch
-    /// anti-replay → capability check.
-    pub fn authorize_command(
+    /// anti-replay (durable) → capability check.
+    ///
+    /// Async because the durable watermark check runs off the executor
+    /// (`spawn_blocking`). The verify + confers steps are pure; only the watermark
+    /// consult is I/O. Fail-CLOSED: a watermark error yields
+    /// [`WatermarkUnavailable`](GrantAuthOutcome::WatermarkUnavailable), never an
+    /// authorization.
+    pub async fn authorize_command(
         &self,
         signed: &SignedCapabilityGrant,
         presenting_pubkey: &[u8],
         command: &str,
         now_ms: u64,
     ) -> GrantAuthOutcome {
-        let ctx = VerifyContext {
-            now_ms,
-            presenting_pubkey,
-            expected_mesh: &self.mesh,
-            verifier: &*self.verifier,
-            trusted_issuer_pubkey: &self.owner_pubkey,
+        // Scope the VerifyContext so its `&dyn GrantVerifier` borrow is DROPPED
+        // before the `.await` below — otherwise the future would hold a non-Sync
+        // reference across the await point and stop being `Send` (it must be Send to
+        // run on the multi-threaded handler runtime). verify() is pure + sync, so
+        // nothing is lost by completing it first.
+        let verdict = {
+            let ctx = VerifyContext {
+                now_ms,
+                presenting_pubkey,
+                expected_mesh: &self.mesh,
+                verifier: &*self.verifier,
+                trusted_issuer_pubkey: &self.owner_pubkey,
+            };
+            signed.verify(&ctx)
         };
-        match signed.verify(&ctx) {
+        match verdict {
             GrantVerdict::Valid => {}
             other => return GrantAuthOutcome::Invalid(other),
         }
 
-        // Anti-replay, ATOMIC: the check (epoch < watermark?) and the advance happen
-        // inside ONE `entry` critical section, so a superseded epoch can never pass
-        // its check while a higher epoch commits in the gap (the TOCTOU the review
-        // flagged). Latest epoch is authoritative, so ANY valid grant advances the
-        // watermark — which is what makes a revocation (higher-epoch empty-caps
-        // grant) actually supersede older real-caps grants.
+        // Anti-replay against the (durable) watermark. The store's check-and-advance
+        // is ONE atomic critical section, so a superseded epoch can never pass its
+        // check while a higher epoch commits in the gap. Latest epoch is
+        // authoritative, so ANY accepted grant advances the watermark — which is
+        // what makes a revocation (higher-epoch empty-caps grant) supersede older
+        // real-caps grants. A store error fails CLOSED (deny), never open.
+        match self
+            .watermark
+            .check_and_advance(signed.grant.grantee, signed.grant.epoch, now_ms)
+            .await
         {
-            use dashmap::mapref::entry::Entry;
-            let epoch = signed.grant.epoch;
-            match self.seen_epoch.entry(signed.grant.grantee) {
-                Entry::Occupied(mut o) => {
-                    if epoch < *o.get() {
-                        return GrantAuthOutcome::Superseded;
-                    }
-                    *o.get_mut() = epoch;
-                }
-                Entry::Vacant(v) => {
-                    v.insert(epoch);
-                }
-            }
+            Ok(WatermarkDecision::Accepted) => {}
+            Ok(WatermarkDecision::Superseded) => return GrantAuthOutcome::Superseded,
+            Err(e) => return GrantAuthOutcome::WatermarkUnavailable(e.to_string()),
         }
 
         // The grant is current; does it confer THIS command? (Owner-gated commands
@@ -238,18 +292,18 @@ mod tests {
     // what this catches: the happy path through the REAL authorize_command — a grant
     // signed by the owner, bound to the presenting key, in-mesh, unexpired,
     // conferring the command → Authorized; a different command → NotGranted.
-    #[test]
-    fn valid_grant_authorizes_its_capability() {
+    #[tokio::test]
+    async fn valid_grant_authorizes_its_capability() {
         let owner = [1u8; 32];
         let peer = [2u8; 32];
         let g = signed(grant(&["ai/generate"], 1, &peer, PeerId::new()), &owner);
         let a = authorizer(&owner, true);
         assert_eq!(
-            a.authorize_command(&g, &peer, "ai/generate", 100),
+            a.authorize_command(&g, &peer, "ai/generate", 100).await,
             GrantAuthOutcome::Authorized
         );
         assert_eq!(
-            a.authorize_command(&g, &peer, "data/delete", 100),
+            a.authorize_command(&g, &peer, "data/delete", 100).await,
             GrantAuthOutcome::NotGranted
         );
     }
@@ -257,19 +311,19 @@ mod tests {
     // what this catches: BOUNDARY-AWARE capability match — `ai/generate` confers the
     // sub-command `ai/generate/stream` (matches the ACL's prefix semantics) but NOT
     // `ai/generatex` (no bare starts_with over-grant).
-    #[test]
-    fn capability_match_is_boundary_aware() {
+    #[tokio::test]
+    async fn capability_match_is_boundary_aware() {
         let owner = [1u8; 32];
         let peer = [2u8; 32];
         let g = signed(grant(&["ai/generate"], 1, &peer, PeerId::new()), &owner);
         let a = authorizer(&owner, true);
         assert_eq!(
-            a.authorize_command(&g, &peer, "ai/generate/stream", 100),
+            a.authorize_command(&g, &peer, "ai/generate/stream", 100).await,
             GrantAuthOutcome::Authorized,
             "a capability confers its sub-commands on a / boundary"
         );
         assert_eq!(
-            a.authorize_command(&g, &peer, "ai/generatex", 100),
+            a.authorize_command(&g, &peer, "ai/generatex", 100).await,
             GrantAuthOutcome::NotGranted,
             "but NOT a different command sharing the prefix without a boundary"
         );
@@ -278,29 +332,29 @@ mod tests {
     // what this catches: every rejection reason is TYPED + reached through the real
     // method. Untrusted issuer, bad signature, key mismatch (stolen grant on another
     // peer's identity) — distinct verdicts, none silently allowed.
-    #[test]
-    fn rejections_are_typed_and_distinct() {
+    #[tokio::test]
+    async fn rejections_are_typed_and_distinct() {
         let owner = [1u8; 32];
         let peer = [2u8; 32];
 
         // wrong issuer → UntrustedIssuer
         let g = signed(grant(&["ai/generate"], 1, &peer, PeerId::new()), &[9u8; 32]);
         assert_eq!(
-            authorizer(&owner, true).authorize_command(&g, &peer, "ai/generate", 100),
+            authorizer(&owner, true).authorize_command(&g, &peer, "ai/generate", 100).await,
             GrantAuthOutcome::Invalid(GrantVerdict::UntrustedIssuer)
         );
 
         // bad signature → BadSignature (stub returns false)
         let g = signed(grant(&["ai/generate"], 1, &peer, PeerId::new()), &owner);
         assert_eq!(
-            authorizer(&owner, false).authorize_command(&g, &peer, "ai/generate", 100),
+            authorizer(&owner, false).authorize_command(&g, &peer, "ai/generate", 100).await,
             GrantAuthOutcome::Invalid(GrantVerdict::BadSignature)
         );
 
         // a DIFFERENT presenting key than the grant is bound to → KeyMismatch.
         let g = signed(grant(&["ai/generate"], 1, &peer, PeerId::new()), &owner);
         assert_eq!(
-            authorizer(&owner, true).authorize_command(&g, &[7u8; 32], "ai/generate", 100),
+            authorizer(&owner, true).authorize_command(&g, &[7u8; 32], "ai/generate", 100).await,
             GrantAuthOutcome::Invalid(GrantVerdict::KeyMismatch)
         );
     }
@@ -308,8 +362,8 @@ mod tests {
     // what this catches: epoch anti-replay AND that revocation ACTUALLY revokes.
     // Latest epoch is authoritative, so any valid grant advances the watermark —
     // a revocation (higher epoch, empty caps) supersedes the old real-caps grant.
-    #[test]
-    fn epoch_anti_replay_and_revocation_supersedes() {
+    #[tokio::test]
+    async fn epoch_anti_replay_and_revocation_supersedes() {
         let owner = [1u8; 32];
         let peer = [2u8; 32];
         let grantee = PeerId::new();
@@ -318,22 +372,22 @@ mod tests {
 
         // accept epoch 5
         assert_eq!(
-            a.authorize_command(&mk(&["ai/generate"], 5), &peer, "ai/generate", 100),
+            a.authorize_command(&mk(&["ai/generate"], 5), &peer, "ai/generate", 100).await,
             GrantAuthOutcome::Authorized
         );
         // replayed lower epoch 3 → Superseded
         assert_eq!(
-            a.authorize_command(&mk(&["ai/generate"], 3), &peer, "ai/generate", 100),
+            a.authorize_command(&mk(&["ai/generate"], 3), &peer, "ai/generate", 100).await,
             GrantAuthOutcome::Superseded
         );
         // revocation: higher epoch 6, empty caps → advances watermark, confers nothing
         assert_eq!(
-            a.authorize_command(&mk(&[], 6), &peer, "ai/generate", 100),
+            a.authorize_command(&mk(&[], 6), &peer, "ai/generate", 100).await,
             GrantAuthOutcome::NotGranted
         );
         // the revoked epoch-5 grant is now SUPERSEDED — revocation actually revoked.
         assert_eq!(
-            a.authorize_command(&mk(&["ai/generate"], 5), &peer, "ai/generate", 100),
+            a.authorize_command(&mk(&["ai/generate"], 5), &peer, "ai/generate", 100).await,
             GrantAuthOutcome::Superseded,
             "after a higher-epoch revocation, the old grant no longer authorizes"
         );
@@ -393,28 +447,35 @@ mod tests {
     #[cfg(feature = "stress-tests")]
     mod stress {
         use super::*;
+        use crate::routing::epoch_watermark::SqliteEpochWatermark;
         use std::sync::Arc as StdArc;
 
         // what this catches: under heavy concurrent presentation of MANY epochs for
-        // the SAME grantee, the atomic `entry` keeps the watermark monotonic and the
-        // decision consistent — every outcome is a clean Authorized/Superseded (never
-        // corrupt), the final watermark equals the max epoch, and the max-epoch grant
-        // authorizes. A regression to the non-atomic get-then-update would let a
-        // superseded epoch slip an Authorized through (or corrupt the watermark).
+        // the SAME grantee — through the REAL durable (SQLite) watermark — the
+        // serialized transaction keeps the decision consistent (every outcome a clean
+        // Authorized/Superseded, never corrupt), and afterwards a replay below the max
+        // is Superseded while the max-epoch grant still authorizes. A regression to a
+        // non-atomic check-and-advance would let a superseded epoch slip an Authorized
+        // through. (The store's own monotonicity is proven in epoch_watermark stress.)
         #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
         async fn concurrent_same_grantee_epochs_stay_monotonic() {
             const N: u64 = 200;
             let owner = [1u8; 32];
             let peer = [2u8; 32];
             let grantee = PeerId::new();
-            let a = StdArc::new(authorizer(&owner, true));
+            let a = StdArc::new(GrantAuthorizer::with_verifier_and_watermark(
+                owner.to_vec(),
+                mesh(),
+                Arc::new(StubVerifier(true)),
+                Arc::new(SqliteEpochWatermark::in_memory().expect("open")),
+            ));
 
             let mut handles = Vec::new();
             for epoch in 1..=N {
                 let a = a.clone();
                 handles.push(tokio::spawn(async move {
                     let g = signed(grant(&["ai/generate"], epoch, &peer, grantee), &owner);
-                    let out = a.authorize_command(&g, &peer, "ai/generate", 100);
+                    let out = a.authorize_command(&g, &peer, "ai/generate", 100).await;
                     // Every outcome is a clean verdict — never corrupt.
                     assert!(matches!(
                         out,
@@ -425,12 +486,16 @@ mod tests {
             for h in handles {
                 h.await.expect("task");
             }
-            // Watermark settled at the max epoch presented.
-            assert_eq!(*a.seen_epoch.get(&grantee).expect("entry"), N);
-            // The max-epoch grant always authorizes (it's never below the watermark).
+            // A replay below the settled max is superseded…
+            let below = signed(grant(&["ai/generate"], N - 1, &peer, grantee), &owner);
+            assert_eq!(
+                a.authorize_command(&below, &peer, "ai/generate", 100).await,
+                GrantAuthOutcome::Superseded
+            );
+            // …and the max-epoch grant still authorizes (never below the watermark).
             let g = signed(grant(&["ai/generate"], N, &peer, grantee), &owner);
             assert_eq!(
-                a.authorize_command(&g, &peer, "ai/generate", 100),
+                a.authorize_command(&g, &peer, "ai/generate", 100).await,
                 GrantAuthOutcome::Authorized
             );
         }
