@@ -340,8 +340,36 @@ async fn serve_persona_loop_inner(
     // owns the agent contract per the cognition pipeline doc.
     let mut outcome = ServeOutcome::default();
 
-    while let Some(item) = next_event(conversation, &mut outcome).await {
-        let msg = item;
+    // Never-stop heartbeat: a persona is not a request→response handler that goes
+    // idle between messages — it is a mind that always gets time. The loop now
+    // selects between the airc wire and a periodic tick; on a tick the deliberation
+    // concern runs over the CURRENT world-state (no inbound message), so the persona
+    // pursues its own open intentions and goes idle only when its own judgment says
+    // there is nothing to do. [[organic-substrate-continuous-concern-scheduler]].
+    let mut heartbeat = tokio::time::interval(std::time::Duration::from_millis(SELF_TICK_MS));
+    heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    // Burst fingerprint of the last cycle (message OR self-tick), so a heartbeat
+    // over an unchanged world is free. Shared by both paths: a message turn updates
+    // it, so the very next tick doesn't re-deliberate the same burst.
+    let mut last_burst_fp: u64 = 0;
+
+    loop {
+        let wake = tokio::select! {
+            ev = next_event(conversation, &mut outcome) => match ev {
+                Some(m) => Wake::Msg(m),
+                None => Wake::Stop,
+            },
+            _ = heartbeat.tick() => Wake::Tick,
+        };
+        let msg = match wake {
+            Wake::Stop => break,
+            Wake::Tick => {
+                // Heartbeat slice — the mind gets time with no inbound message.
+                run_self_cycle(ctx, conversation, &opts, &mut last_burst_fp).await;
+                continue;
+            }
+            Wake::Msg(m) => m,
+        };
         if msg.lamport <= high_water {
             outcome.turns_skipped += 1;
             continue;
@@ -541,38 +569,17 @@ async fn serve_persona_loop_inner(
         // the same seam carrying their own metadata. Built here where the item
         // metadata is still intact. (Self-echo is safe: own posts never TRIGGER a
         // turn — the `msg.peer_id == own` filter above — only inform context.)
-        let own_peer = ctx.identity.peer_id.to_string();
-        let workspace_burst: String = {
-            use std::fmt::Write as _;
-            let mut b = String::new();
-            let _ = writeln!(b, "[room {}]", ctx.identity.default_room);
-            for item in composed
-                .deliveries
-                .iter()
-                .filter(|d| d.source_id == "airc")
-                .flat_map(|d| d.items.iter())
-            {
-                let who_raw = item
-                    .metadata
-                    .get("peer_id")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("peer");
-                let who = if who_raw == own_peer {
-                    ctx.identity.agent_name.as_str()
-                } else {
-                    who_raw
-                };
-                match item.metadata.get("occurred_at_ms").and_then(|v| v.as_u64()) {
-                    Some(t) => {
-                        let _ = writeln!(b, "[t={t}] {who}: {}", item.content);
-                    }
-                    None => {
-                        let _ = writeln!(b, "{who}: {}", item.content);
-                    }
-                }
-            }
-            b
-        };
+        // Shared burst truth — the same projection the never-stop self-tick uses.
+        let workspace_burst: String = build_workspace_burst(
+            &composed,
+            ctx.identity.default_room,
+            &ctx.identity.peer_id.to_string(),
+            &ctx.identity.agent_name,
+        );
+        // Mark external state as just-deliberated so the next heartbeat tick doesn't
+        // re-run the same world (the message path and the self-tick share the gate;
+        // external-only so the persona's own reply here can't re-trigger a self-tick).
+        last_burst_fp = external_fingerprint(&composed, &ctx.identity.peer_id.to_string());
         // Project the room-roster delivery into TWO consumers from the
         // ONE source of truth (the roster delivery), routed by source_id:
         //   • `room_roster` — the formatted `name [runtime] — avail`
@@ -855,6 +862,146 @@ async fn serve_persona_loop_inner(
     }
 
     Ok(outcome)
+}
+
+/// Never-stop heartbeat period. The deliberation concern gets a slice this often
+/// even with NO inbound message, so a persona pursues its OWN open intentions
+/// instead of going idle the instant it speaks. This is MECHANISM (the scheduler
+/// handing out time), not a judgment — a learned, per-state cadence is a later
+/// slice ([[organic-substrate-continuous-concern-scheduler]] kill-list). Kept
+/// conservative so a full LLM deliberation can't fire faster than the world
+/// meaningfully changes; the burst-fingerprint gate keeps idle ticks free.
+const SELF_TICK_MS: u64 = 3_000;
+
+/// What woke the service loop this cycle. A message from the wire, the never-stop
+/// heartbeat, or the end of the stream. Returned by the `select!` so the borrow of
+/// `conversation` taken inside the select ends before the handler reuses it.
+enum Wake {
+    Msg(IncomingMessage),
+    Tick,
+    Stop,
+}
+
+/// Build the consolidated workspace burst (WHO/WHEN/WHAT per inbox item, own posts
+/// attributed, room as the WHERE) the `WorkspaceCycle` reasons over. A pure
+/// projection of the airc deliveries — extracted so the message turn and the
+/// never-stop self-tick share ONE burst truth ([[compression-principle]]).
+fn build_workspace_burst(
+    composed: &crate::persona::unified::ComposedTurn,
+    room: Uuid,
+    own_peer: &str,
+    agent_name: &str,
+) -> String {
+    use std::fmt::Write as _;
+    let mut b = String::new();
+    let _ = writeln!(b, "[room {room}]");
+    for item in composed
+        .deliveries
+        .iter()
+        .filter(|d| d.source_id == "airc")
+        .flat_map(|d| d.items.iter())
+    {
+        let who_raw = item
+            .metadata
+            .get("peer_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("peer");
+        let who = if who_raw == own_peer { agent_name } else { who_raw };
+        match item.metadata.get("occurred_at_ms").and_then(|v| v.as_u64()) {
+            Some(t) => {
+                let _ = writeln!(b, "[t={t}] {who}: {}", item.content);
+            }
+            None => {
+                let _ = writeln!(b, "{who}: {}", item.content);
+            }
+        }
+    }
+    b
+}
+
+/// The "is anything new in my queue?" MECHANISM for the heartbeat: a fingerprint
+/// of the EXTERNAL airc deliveries only — items NOT authored by this persona. A
+/// concern must not subscribe to its OWN output (the cbar rule): if own posts
+/// counted, the act of speaking would change the world, re-trigger the next slice,
+/// and the persona would talk to itself forever (observed live, 2026-06-22 — 19
+/// self-talk cycles flooding the room). Hashing external-only means: wake on
+/// others' activity, act, and once spoken go back to sleep because nothing
+/// EXTERNAL changed. NOT a judgment — pure change-detection over the subscription
+/// queue. [[organic-substrate-continuous-concern-scheduler]].
+fn external_fingerprint(composed: &crate::persona::unified::ComposedTurn, own_peer: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    for item in composed
+        .deliveries
+        .iter()
+        .filter(|d| d.source_id == "airc")
+        .flat_map(|d| d.items.iter())
+    {
+        let who = item
+            .metadata
+            .get("peer_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("peer");
+        if who == own_peer {
+            continue; // don't subscribe to my own output
+        }
+        item.content.hash(&mut h);
+    }
+    h.finish()
+}
+
+/// The never-stop heartbeat slice for the deliberation concern — a cognition
+/// cycle with NO inbound message. Compose the current world-state; if it CHANGED
+/// since the last cycle (cheap mechanism) run the persona's `WorkspaceCycle` (the
+/// LLM is the judge) and speak if it decides to, else sleep. This is how a persona
+/// follows through on its OWN open intention (it said "I'll search" → next tick its
+/// own post is in the burst → it acts) WITHOUT anyone parsing its words: the mind,
+/// always getting time, judges its own state. `Pass` = woke, nothing to do, sleep.
+async fn run_self_cycle(
+    ctx: &HostedPersona,
+    conversation: &dyn PersonaConversation,
+    opts: &ServeOptions,
+    last_burst_fp: &mut u64,
+) {
+    let now_ms = (opts.now_ms)();
+    let composed = {
+        let cognition = ctx.cognition.lock().await;
+        cognition.compose_for_turn(&ctx.profile, now_ms).await
+    };
+    // Gate on EXTERNAL change only (cbar: don't subscribe to my own output), so my
+    // own speech can't re-trigger my next slice and spiral into self-talk.
+    let fp = external_fingerprint(&composed, &ctx.identity.peer_id.to_string());
+    if fp == *last_burst_fp {
+        return; // nothing NEW from others → back to sleep
+    }
+    *last_burst_fp = fp;
+    let burst = build_workspace_burst(
+        &composed,
+        ctx.identity.default_room,
+        &ctx.identity.peer_id.to_string(),
+        &ctx.identity.agent_name,
+    );
+    let Some(cycle) = crate::cognition::persona_workspace::global().get(&ctx.identity.persona_id)
+    else {
+        return; // no cycle registered (shouldn't happen) — nothing to run
+    };
+    let ws = cycle.run_in_room(burst, ctx.identity.default_room).await;
+    match ws.decision() {
+        Some(crate::cognition::workspace::Decision::Speak { text })
+        | Some(crate::cognition::workspace::Decision::RaiseUnprompted { text }) => {
+            if let Err(e) = conversation.say(text).await {
+                tracing::warn!(persona = %ctx.identity.agent_name, error = %e, "self-cycle say failed");
+                return;
+            }
+            crate::probe!(
+                class = "persona.selftick.spoke",
+                persona = %ctx.identity.agent_name,
+                response_len = text.len(),
+                "never-stop heartbeat — persona pursued its own thread (no inbound message)"
+            );
+        }
+        _ => {} // Pass / None → nothing to do, sleep
+    }
 }
 
 /// Helper: pull the next event from the conversation, handling the
