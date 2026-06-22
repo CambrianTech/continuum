@@ -50,6 +50,23 @@ const DEFAULT_MAX_TOOL_ITERATIONS: usize = 4;
 /// Max chars of a tool result fed back to the model — keeps the re-prompt bounded.
 const TOOL_RESULT_MAX_CHARS: usize = 8_000;
 
+/// True when EVERY call in `calls` was already executed this turn (same name +
+/// args, so it would return the same result). A non-productive repeat: the model
+/// is re-acting instead of reporting what it already found. The agent loop uses
+/// this to stop acting and force a terminal report turn — otherwise a small model
+/// burns its whole tool budget re-issuing one call and then falls silent (observed
+/// live: `ping` called 4× against an identical result, then empty text → no reply).
+/// Empty `calls` is NOT a repeat (there is nothing being re-issued).
+fn all_calls_already_ran(
+    calls: &[crate::ai::types::ToolCall],
+    acted: &[(String, serde_json::Value)],
+) -> bool {
+    !calls.is_empty()
+        && calls
+            .iter()
+            .all(|c| acted.iter().any(|(n, i)| n == &c.name && i == &c.input))
+}
+
 /// Default sampling temperature for deliberation — enough warmth for natural
 /// voice, not so much it drifts.
 const DEFAULT_TEMPERATURE: f32 = 0.7;
@@ -309,6 +326,38 @@ impl LlmDeliberationFaculty {
         }
     }
 
+    /// Terminal REPORT turn for the agent loop. The persona has ACTED (tool results
+    /// are threaded into `messages`) but produced no prose — a small model offered
+    /// tools tends to re-emit a call every round instead of transitioning to an
+    /// answer. Withhold tools (no JSON-call affordance to re-trigger) and ask it to
+    /// report what it found, forcing synthesis over the gathered results instead of
+    /// falling silent. NOT a fallback: this is the loop's report phase, reached only
+    /// after real tool execution produced real results.
+    async fn synthesize_answer(
+        &self,
+        messages: &[ChatMessage],
+        system_prompt: &str,
+    ) -> Option<TextGenerationResponse> {
+        let mut thread = messages.to_vec();
+        thread.push(ChatMessage::text(
+            "user",
+            "You have finished using tools. Reply to the room now in your own words: \
+             say what you found from the tool results above. Do NOT call another tool.",
+        ));
+        let request = self.build_request(thread, None, system_prompt.to_string());
+        match self.adapter.generate_text(request).await {
+            Ok(r) => Some(r),
+            Err(e) => {
+                tracing::warn!(
+                    persona = %self.persona_name,
+                    error = %e,
+                    "synthesize-answer turn failed; abstaining"
+                );
+                None
+            }
+        }
+    }
+
     /// Turn the model's final text into a participation verdict. `salience` is
     /// the faculty's own confidence in its verdict — a placeholder for a model-
     /// derived signal (logprob / uncertainty), NOT a caste weight; it's how sure
@@ -459,6 +508,12 @@ impl Faculty for LlmDeliberationFaculty {
         // stops calling tools (or we hit the bound), the response text is the
         // verdict. A turn is bounded work, not an open-ended agent.
         let mut iterations = 0usize;
+        // Tool calls already executed THIS turn (name + args). Used to detect a
+        // model that re-emits a call it has already run — a stuck "act" loop that
+        // never transitions to reporting (observed live: a small model called
+        // `ping` 4× against the same result, then emitted empty text → silent).
+        // A repeat means stop acting and report what was found.
+        let mut acted_calls: Vec<(String, serde_json::Value)> = Vec::new();
         loop {
             let request = self.build_request(messages.clone(), tools.clone(), view.system.clone());
             let resp = match self.adapter.generate_text(request).await {
@@ -484,32 +539,95 @@ impl Faculty for LlmDeliberationFaculty {
 
             let wants_tools = matches!(resp.finish_reason, FinishReason::ToolUse);
 
-            if wants_tools
-                && iterations < self.max_tool_iterations
-                && self.try_tool_round(&resp, &mut messages, ws).await
-            {
-                iterations += 1;
-                continue; // tools answered → re-generate over their results
+            // A non-productive repeat: every call in this response was already run
+            // this turn with the same args (so it would return the same result).
+            // The model is re-acting instead of reporting — stop acting and let the
+            // terminal report turn below force a written answer.
+            let repeat = wants_tools
+                && resp
+                    .tool_calls
+                    .as_ref()
+                    .is_some_and(|calls| all_calls_already_ran(calls, &acted_calls));
+
+            if wants_tools && !repeat && iterations < self.max_tool_iterations {
+                if self.try_tool_round(&resp, &mut messages, ws).await {
+                    // Record ONLY calls that actually executed (results now threaded
+                    // in), so `acted_calls` means "we have real results" — used both
+                    // to detect a later identical repeat AND to gate the terminal
+                    // report turn. A call that could NOT run (no executor) must NOT
+                    // count, or an inert tool call would masquerade as gathered work.
+                    if let Some(calls) = resp.tool_calls.as_ref() {
+                        for c in calls {
+                            acted_calls.push((c.name.clone(), c.input.clone()));
+                        }
+                    }
+                    iterations += 1;
+                    continue; // tools answered → re-generate over their results
+                }
             }
 
-            // The model still wanted to act but we're NOT acting — the tool-
-            // iteration cap was hit, or no executor is wired. If it left no
-            // verdict text, that is NOT a chosen silence: abstain this tick
-            // rather than fabricate a PASS out of empty tool-call text (a
-            // model cut off mid-reasoning is not the model choosing silence —
-            // same rule as the inference-failure branch above). Non-empty text
-            // is honored: a model that says "PASS" alongside a tool call has
-            // expressed a real verdict.
-            if wants_tools && resp.text.trim().is_empty() {
+            // Reached only when we are NOT continuing the act loop. Three shapes:
+            //
+            //  (a) `wants_tools` AND we already executed real tool calls this turn
+            //      (`acted_calls` non-empty): the model is now repeating or capped
+            //      and re-emitting the JSON envelope instead of reporting. Its text
+            //      is `{"tool_call":...}`, NOT a spoken answer — emitting it verbatim
+            //      would broadcast JSON into the room (observed live). Run a terminal
+            //      REPORT turn with tools withheld so the model must synthesize prose
+            //      over the results it gathered; if even that comes back empty / still
+            //      a tool call, abstain (never fabricate a PASS).
+            //
+            //  (b) `wants_tools` but NOTHING executed (`acted_calls` empty — no
+            //      executor, so the tool call is inert): honor any REAL verdict text
+            //      the model gave alongside the inert call (e.g. "PASS" → silence); if
+            //      it left only the tool-call JSON or empty text, abstain.
+            //
+            //  (c) `!wants_tools` — the model produced prose. That IS the verdict.
+            if wants_tools && !acted_calls.is_empty() {
+                if let Some(answer) = self.synthesize_answer(&messages, &view.system).await {
+                    let clean = answer.text.trim();
+                    // Guard: a habit-driven model may STILL emit the tool-call envelope
+                    // even with tools withheld. Never broadcast that — only real prose
+                    // counts as the report.
+                    let is_tool_json =
+                        crate::ai::json_in_prompt_tools::parse_tool_call(&answer.text).is_some();
+                    if !clean.is_empty() && !is_tool_json {
+                        if let (Some(wm), Some(reasoning)) =
+                            (&self.working_memory, &answer.reasoning)
+                        {
+                            wm.record(reasoning);
+                        }
+                        return Some(self.verdict(&answer.text));
+                    }
+                }
                 tracing::warn!(
                     persona = %self.persona_name,
                     iterations,
                     max = self.max_tool_iterations,
-                    "deliberation: model wanted to act but couldn't (tool-iteration \
-                     cap or no executor) and left no verdict text; abstaining this \
-                     tick (no fabricated PASS)"
+                    acted_calls = acted_calls.len(),
+                    "deliberation: model kept acting and produced no report prose even \
+                     after the terminal synthesize turn; abstaining this tick (no \
+                     fabricated PASS, no broadcasting raw tool-call JSON)"
                 );
                 return None;
+            }
+
+            // `wants_tools` but nothing executed (inert tool call), OR the model's
+            // text IS only the tool-call JSON: that JSON is not a spoken answer.
+            // Abstain rather than broadcast it. A REAL verdict alongside the inert
+            // call (non-empty, non-JSON text) falls through below to be honored.
+            if wants_tools {
+                let is_tool_json =
+                    crate::ai::json_in_prompt_tools::parse_tool_call(&resp.text).is_some();
+                if resp.text.trim().is_empty() || is_tool_json {
+                    tracing::warn!(
+                        persona = %self.persona_name,
+                        iterations,
+                        "deliberation: model wanted a tool it could not run and left no \
+                         verdict text; abstaining this tick (no fabricated PASS)"
+                    );
+                    return None;
+                }
             }
 
             // Record the chain-of-thought that produced THIS verdict into working
@@ -530,6 +648,41 @@ impl Faculty for LlmDeliberationFaculty {
 mod tests {
     use super::*;
     use crate::ai::heuristic_adapter::HeuristicInferenceAdapter;
+
+    // what this catches: the agent-loop repeat guard that stops a persona from
+    // burning its whole tool budget re-issuing one call and then falling silent
+    // (regression for the live "ping ×4 → empty → no reply" loop, 2026-06-22). A
+    // call counts as a repeat ONLY when the same name AND the same args already
+    // ran this turn; a new name, new args, or a fresh (empty-`acted`) call is NOT
+    // a repeat and must still be allowed to execute.
+    #[test]
+    fn repeat_guard_flags_only_an_already_run_call() {
+        let call = |name: &str, args: serde_json::Value| ToolCall {
+            id: "x".into(),
+            name: name.into(),
+            input: args,
+        };
+        let ran = vec![("ping".to_string(), serde_json::json!({}))];
+
+        // exact repeat (same name + same args) → stop acting
+        assert!(all_calls_already_ran(&[call("ping", serde_json::json!({}))], &ran));
+        // same name, DIFFERENT args → not a repeat (could return something new)
+        assert!(!all_calls_already_ran(
+            &[call("ping", serde_json::json!({"message": "hi"}))],
+            &ran
+        ));
+        // different tool entirely → not a repeat
+        assert!(!all_calls_already_ran(&[call("code/read", serde_json::json!({}))], &ran));
+        // first time we have run nothing → never a repeat (must execute)
+        assert!(!all_calls_already_ran(&[call("ping", serde_json::json!({}))], &[]));
+        // a batch is a repeat only if EVERY call already ran (one fresh call ⇒ act)
+        assert!(!all_calls_already_ran(
+            &[call("ping", serde_json::json!({})), call("code/read", serde_json::json!({}))],
+            &ran
+        ));
+        // empty call set is not a repeat (nothing is being re-issued)
+        assert!(!all_calls_already_ran(&[], &ran));
+    }
 
     // what this catches: the PASS silence token maps to Decision::Pass (with or
     // without trailing punctuation); real content maps to Speak. One silence
@@ -826,6 +979,75 @@ mod tests {
         assert!(
             threaded,
             "re-prompt must thread the tool result back to the model"
+        );
+    }
+
+    // what this catches: the never-stops-acting regression (live, 2026-06-22). A
+    // small model re-issued the SAME tool call every round (ping ×4) against an
+    // identical result, exhausted its budget, then emitted empty text → it fell
+    // silent (or worse, broadcast the raw {"tool_call":…} JSON). The loop must (1)
+    // detect the non-productive repeat and stop acting, then (2) run a terminal
+    // REPORT turn with tools WITHHELD so the model synthesizes a prose answer over
+    // the result it already gathered — never silence, never raw JSON in the room.
+    #[tokio::test]
+    async fn repeated_tool_call_triggers_terminal_report_not_silence() {
+        let persona = Uuid::new_v4();
+        let ping = || ToolCall {
+            id: "p".to_string(),
+            name: "ping".to_string(),
+            input: json!({}),
+        };
+        let adapter = Arc::new(ScriptedAdapter::new(vec![
+            // Round 1: call ping (executes, result threaded in).
+            make_response(FinishReason::ToolUse, "", Some(vec![ping()])),
+            // Round 2: call ping AGAIN, identical → detected as a repeat, stop acting.
+            make_response(FinishReason::ToolUse, "", Some(vec![ping()])),
+            // Terminal REPORT turn (tools withheld): the model finally speaks.
+            make_response(FinishReason::Stop, "The core is alive; round-trip 0ms.", None),
+        ]));
+        let executor = Arc::new(RecordingExecutor {
+            calls: Mutex::new(Vec::new()),
+            seen_context: Mutex::new(None),
+            result_content: "{\"ok\":true,\"roundTripMs\":0}".to_string(),
+        });
+        let ping_spec = NativeToolSpec {
+            name: "ping".to_string(),
+            description: "Health check".to_string(),
+            input_schema: ToolInputSchema {
+                schema_type: "object".to_string(),
+                properties: json!({}),
+                required: None,
+            },
+        };
+
+        let faculty =
+            LlmDeliberationFaculty::new(persona, "Asha", "You are Asha.", adapter.clone())
+                .with_tools(vec![ping_spec])
+                .with_tool_executor(executor.clone());
+
+        let ws = Workspace::new("teammate asks: is the core alive?");
+        let c = faculty.contribute(&ws).await.expect("verdict");
+
+        // The persona SPOKE a prose report — not silence, not the raw tool JSON.
+        match c.decision {
+            Some(Decision::Speak { text }) => {
+                assert!(text.contains("alive"), "expected the prose report, got: {text}");
+                assert!(
+                    crate::ai::json_in_prompt_tools::parse_tool_call(&text).is_none(),
+                    "must never broadcast a raw tool-call envelope: {text}"
+                );
+            }
+            other => panic!("expected a spoken report after the repeat, got {other:?}"),
+        }
+        // ping executed exactly ONCE — the identical repeat was NOT re-run.
+        assert_eq!(executor.calls.lock().unwrap().len(), 1, "the repeat must not re-execute");
+        // Three model calls: act, repeat (caught), terminal report. The terminal
+        // report turn must withhold tools so the model can't re-call.
+        assert_eq!(adapter.call_count(), 3, "act + repeat + terminal report");
+        let seen = adapter.seen.lock().unwrap();
+        assert!(
+            seen[2].tools.as_ref().map_or(true, |t| t.is_empty()),
+            "terminal report turn must withhold tools"
         );
     }
 

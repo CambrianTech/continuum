@@ -102,20 +102,43 @@ impl ToolProtocol {
 /// and states the EXACT JSON contract to emit. Kept terse — small models follow a
 /// short, explicit contract far better than a verbose schema.
 pub fn render_tool_instructions(tools: &[NativeToolSpec]) -> String {
-    let mut s = String::with_capacity(256 + tools.len() * 96);
+    let mut s = String::with_capacity(256 + tools.len() * 160);
     s.push_str(
         "You can use tools. To call ONE tool, reply with ONLY this JSON object and \
          nothing else:\n\
-         {\"tool_call\": {\"name\": \"<tool-name>\", \"arguments\": { ... }}}\n\
-         After the tool result comes back, answer normally. If no tool is needed, \
-         just answer normally (no JSON).\n\n\
-         Available tools:\n",
+         {\"tool_call\": {\"name\": \"<tool-name>\", \"arguments\": { <args> }}}\n\
+         Use the EXACT argument field names listed for each tool — do NOT invent field \
+         names (e.g. don't use \"command\"). After the tool result comes back, answer \
+         normally. If no tool is needed, just answer normally (no JSON).\n\n\
+         Available tools (name — description — arguments):\n",
     );
     for t in tools {
         s.push_str("- ");
         s.push_str(&t.name);
         s.push_str(": ");
         s.push_str(&t.description);
+        // Render the argument FIELD NAMES + types so the model passes the right keys
+        // instead of guessing — the deaf-hands fix. Without this the model only sees
+        // an empty `arguments: { ... }` placeholder and invents fields.
+        let req = t.input_schema.required.clone().unwrap_or_default();
+        match t.input_schema.properties.as_object() {
+            Some(props) if !props.is_empty() => {
+                s.push_str("\n    arguments: ");
+                let mut first = true;
+                for (field, spec) in props {
+                    if !first {
+                        s.push_str(", ");
+                    }
+                    first = false;
+                    let ty = spec.get("type").and_then(|v| v.as_str()).unwrap_or("any");
+                    s.push_str(&format!("{field}: {ty}"));
+                    if req.iter().any(|r| r == field) {
+                        s.push_str(" (required)");
+                    }
+                }
+            }
+            _ => s.push_str("\n    arguments: {} (no arguments)"),
+        }
         s.push('\n');
     }
     s
