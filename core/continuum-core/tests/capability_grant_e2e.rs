@@ -19,11 +19,10 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use airc_core::PeerId;
-use airc_lib::grid_auth::CapabilityGrant;
 use airc_test_fixtures::TwoAircLoopback;
 use async_trait::async_trait;
-use base64::{engine::general_purpose::STANDARD, Engine};
 use continuum_core::persona::command_inbound_pump::{build_grant_authorizer, PersonaCommandInboundPump};
+use continuum_core::routing::grant_issuance::{issue_grant, IssueGrantParams};
 use continuum_core::routing::presented_grant_store::InMemoryPresentedGrantStore;
 use continuum_core::routing::{route, AircTransport, CommandUri, GridTrustAuthPolicy, Transport};
 use continuum_core::runtime::command_executor::CommandExecutor;
@@ -114,23 +113,21 @@ async fn owner_signed_grant_lets_grantee_run_a_tier_denied_command() {
         "a remote peer must be DENIED a tier-gated command with no grant; got {denied:?}"
     );
 
-    // --- Owner ISSUES a grant for the grantee conferring exactly compute/echo.
-    let grantee_pubkey = owner
-        .peer_public_key(PeerId(grantee_id))
-        .expect("owner has the grantee enrolled")
-        .to_vec();
-    let mesh = owner.mesh_identity().await.expect("owner mesh identity");
-    let grant = CapabilityGrant {
-        grantee: PeerId(grantee_id),
-        grantee_pubkey,
-        capabilities: vec!["compute/echo".to_string()],
-        granted_in: mesh,
-        issued_at_ms: now_ms(),
-        expires_at_ms: Some(now_ms() + 3_600_000),
-        epoch: 1,
-    };
-    let signed = owner.sign_grant(grant).expect("owner signs the grant");
-    let grant_b64 = STANDARD.encode(serde_json::to_vec(&signed).expect("serialize grant"));
+    // --- Owner ISSUES a grant for the grantee conferring exactly compute/echo,
+    // via the production issuance primitive (binds the grantee's authenticated key
+    // + the owner's mesh + the owner's signature, all from the owner handle).
+    let grant_b64 = issue_grant(
+        owner,
+        now_ms(),
+        IssueGrantParams {
+            grantee: PeerId(grantee_id),
+            capabilities: vec!["compute/echo".to_string()],
+            expires_at_ms: Some(now_ms() + 3_600_000),
+            epoch: 1,
+        },
+    )
+    .await
+    .expect("owner issues the grant");
 
     // --- Grantee HOLDS the grant (keyed by the owner it presents to) + a transport
     // that presents it.

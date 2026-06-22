@@ -34,6 +34,7 @@ pub mod command_handler;
 pub mod command_uri;
 pub mod environment;
 pub mod epoch_watermark;
+pub mod grant_issuance;
 pub mod grid_capability;
 pub mod grid_trust_policy;
 #[macro_use]
