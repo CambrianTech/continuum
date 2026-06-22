@@ -33,6 +33,7 @@
 //! at the tool boundary: the peer_id is airc's, not a continuum-minted param.
 
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use schemars::JsonSchema;
@@ -97,9 +98,12 @@ fn ensure_shell(state: &CodeState, who: &str) -> Result<(), CommandError> {
     Ok(())
 }
 
-/// Default shell timeout (ms) when the caller doesn't set one — a coding agent's
-/// command shouldn't hang its whole turn forever. The model can override per call.
-const DEFAULT_SHELL_TIMEOUT_MS: u64 = 120_000;
+/// How long `code/shell` waits INLINE for completion before handing back a handle
+/// (the execution_id) so the caller polls instead of blocking. Bounded so a
+/// long-running command — a build, a test suite, a TRAINING run, a daemon — NEVER
+/// forces a promise that blocks the turn or times out. The command keeps running;
+/// drive it with `code/shell-poll` / `code/shell-kill`. The model can override.
+const DEFAULT_SHELL_WAIT_MS: u64 = 30_000;
 
 /// Resolve the caller's engine, provisioning it on first use. Returned as a
 /// `DashMap` ref guard the caller borrows the engine through.
@@ -429,8 +433,17 @@ impl ActionCommand for CodeSearch {
 // ─────────────────────────── code/shell ──────────────────────────
 
 /// Run a shell command in the caller's persistent bash session (the agentic
-/// primitive — build, test, git, anything). `Privileged` → the Trusted tier: a
-/// local persona or trusted node may run it; a remote `Provisional` peer may NOT.
+/// primitive — build, test, git, training, a daemon). `Privileged` → the Trusted
+/// tier: a local persona or trusted node may run it; a remote `Provisional` peer
+/// may NOT.
+///
+/// HANDLE-BASED, not a forced promise: the command starts immediately and is
+/// waited on INLINE only up to `wait_ms`. If it finishes in that window the full
+/// result comes back; if not, the response carries `status: running` + the
+/// `execution_id` HANDLE and the command keeps running — poll it with
+/// `code/shell-poll`, stop it with `code/shell-kill`. A long build / test suite /
+/// training run / daemon therefore never blocks the turn or fails as a timed-out
+/// promise (the bug that dumbed down long-running work before).
 pub struct CodeShell {
     pub state: Arc<CodeState>,
 }
@@ -439,10 +452,28 @@ pub struct CodeShell {
 pub struct CodeShellParams {
     /// The shell command line to run (bash), e.g. `cargo check` or `git status`.
     pub cmd: String,
-    /// Max run time in milliseconds before the command is killed. Defaults to
-    /// 120000 (2 min) so a hung command can't wedge the agent's turn.
+    /// How long to wait INLINE for completion before returning the execution_id
+    /// handle to poll. Defaults to 30000 (30s). A long job keeps running past this.
+    #[serde(default)]
+    pub wait_ms: Option<u64>,
+    /// Optional HARD kill timeout (ms) for the command itself. Default: none — a
+    /// long-running command (training, a daemon) runs until it finishes or you
+    /// `code/shell-kill` it. Set this only when you want the command force-stopped.
     #[serde(default)]
     pub timeout_ms: Option<u64>,
+}
+
+/// Snapshot an execution's current state into the wire response. Used both when a
+/// command COMPLETES within the inline window and when it's still RUNNING (handle
+/// handed back with partial output + `exit_code: None`).
+fn shell_response(s: &crate::code::shell_session::ExecutionState) -> ShellExecuteResponse {
+    ShellExecuteResponse {
+        execution_id: s.id.clone(),
+        status: s.status.clone(),
+        stdout: Some(s.stdout_lines.join("\n")),
+        stderr: Some(s.stderr_lines.join("\n")),
+        exit_code: s.exit_code,
+    }
 }
 
 #[async_trait]
@@ -452,19 +483,19 @@ impl ActionCommand for CodeShell {
     // citizens (a local persona / a trusted node), never a Provisional remote peer.
     const ACCESS: AccessLevel = AccessLevel::Privileged;
     const DESCRIPTION: &'static str =
-        "Run a shell command (bash) in your persistent workspace session and wait for the result. \
-         Use for build/test/git/etc. Returns stdout, stderr, and exit code.";
+        "Run a shell command (bash) in your persistent workspace session. Waits inline up to \
+         wait_ms (default 30s); if it finishes you get stdout/stderr/exit_code, otherwise you get \
+         status=running + an execution_id to poll with code/shell-poll. Use for build/test/git/etc.";
     type Params = CodeShellParams;
     type Output = ShellExecuteResponse;
 
     async fn run(&self, ctx: &Ctx, p: CodeShellParams) -> Result<ShellExecuteResponse, CommandError> {
         let who = caller_id(ctx);
         ensure_shell(&self.state, &who)?;
-        let timeout = Some(p.timeout_ms.unwrap_or(DEFAULT_SHELL_TIMEOUT_MS));
 
         // Start the command while briefly holding the shell entry, then DROP the
         // DashMap ref before awaiting — never hold a lock across `.await` (the
-        // wait below blocks the turn, not the shard). [[concurrency-style-guide]]
+        // bounded wait below blocks the turn, not the shard). [[concurrency-style-guide]]
         let state_arc = {
             let mut shell = self
                 .state
@@ -472,32 +503,119 @@ impl ActionCommand for CodeShell {
                 .get_mut(&who)
                 .ok_or_else(|| CommandError::Internal("shell vanished after provisioning".into()))?;
             let exec_id = shell
-                .execute(&p.cmd, timeout, &self.state.rt_handle)
+                .execute(&p.cmd, p.timeout_ms, &self.state.rt_handle)
                 .map_err(CommandError::Internal)?;
             shell
                 .get_execution_state(&exec_id)
                 .ok_or_else(|| CommandError::Internal("execution vanished".into()))?
         };
 
-        // Await completion via the execution's notify (no DashMap lock held).
+        // BOUNDED inline wait: return the moment it completes, or hand back the
+        // handle when the window elapses — never block past wait_ms. No DashMap
+        // lock held across the await.
+        let deadline = Instant::now() + Duration::from_millis(p.wait_ms.unwrap_or(DEFAULT_SHELL_WAIT_MS));
         loop {
             let notify = {
                 let s = state_arc
                     .lock()
                     .map_err(|e| CommandError::Internal(format!("execution lock poisoned: {e}")))?;
                 if s.status != ShellExecutionStatus::Running {
-                    return Ok(ShellExecuteResponse {
-                        execution_id: s.id.clone(),
-                        status: s.status.clone(),
-                        stdout: Some(s.stdout_lines.join("\n")),
-                        stderr: Some(s.stderr_lines.join("\n")),
-                        exit_code: s.exit_code,
-                    });
+                    return Ok(shell_response(&s)); // completed in-window
                 }
                 s.output_notify.clone()
             };
-            notify.notified().await;
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                let s = state_arc
+                    .lock()
+                    .map_err(|e| CommandError::Internal(format!("execution lock poisoned: {e}")))?;
+                return Ok(shell_response(&s)); // still running → hand back the handle
+            }
+            // Wake on new output or when the inline window closes, then re-check.
+            let _ = tokio::time::timeout(remaining, notify.notified()).await;
         }
+    }
+}
+
+// ─────────────────────────── code/shell-poll ─────────────────────
+
+/// Poll a running (or finished) shell execution by its handle — the read half of
+/// the handle-based long-running contract.
+pub struct CodeShellPoll {
+    pub state: Arc<CodeState>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
+pub struct CodeShellPollParams {
+    /// The execution_id handle returned by `code/shell`.
+    pub execution_id: String,
+}
+
+#[async_trait]
+impl ActionCommand for CodeShellPoll {
+    const NAME: &'static str = "code/shell-poll";
+    const ACCESS: AccessLevel = AccessLevel::Privileged;
+    const DESCRIPTION: &'static str =
+        "Poll a shell execution by its execution_id handle: current status, accumulated \
+         stdout/stderr, and exit_code once finished. The non-blocking way to follow a long command.";
+    type Params = CodeShellPollParams;
+    type Output = ShellExecuteResponse;
+
+    async fn run(&self, ctx: &Ctx, p: CodeShellPollParams) -> Result<ShellExecuteResponse, CommandError> {
+        let who = caller_id(ctx);
+        let shell = self
+            .state
+            .shell_sessions
+            .get(&who)
+            .ok_or_else(|| CommandError::NotFound("no shell session for caller".into()))?;
+        let state_arc = shell
+            .get_execution_state(&p.execution_id)
+            .ok_or_else(|| CommandError::NotFound(format!("no execution {}", p.execution_id)))?;
+        let s = state_arc
+            .lock()
+            .map_err(|e| CommandError::Internal(format!("execution lock poisoned: {e}")))?;
+        Ok(shell_response(&s))
+    }
+}
+
+// ─────────────────────────── code/shell-kill ─────────────────────
+
+/// Terminate a running shell execution by its handle.
+pub struct CodeShellKill {
+    pub state: Arc<CodeState>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
+pub struct CodeShellKillParams {
+    /// The execution_id handle returned by `code/shell`.
+    pub execution_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, TS)]
+pub struct CodeShellKillResult {
+    pub killed: bool,
+}
+
+#[async_trait]
+impl ActionCommand for CodeShellKill {
+    const NAME: &'static str = "code/shell-kill";
+    const ACCESS: AccessLevel = AccessLevel::Privileged;
+    const DESCRIPTION: &'static str =
+        "Terminate a running shell execution by its execution_id handle.";
+    type Params = CodeShellKillParams;
+    type Output = CodeShellKillResult;
+
+    async fn run(&self, ctx: &Ctx, p: CodeShellKillParams) -> Result<CodeShellKillResult, CommandError> {
+        let who = caller_id(ctx);
+        let shell = self
+            .state
+            .shell_sessions
+            .get(&who)
+            .ok_or_else(|| CommandError::NotFound("no shell session for caller".into()))?;
+        shell
+            .kill(&p.execution_id)
+            .map_err(CommandError::Internal)?;
+        Ok(CodeShellKillResult { killed: true })
     }
 }
 
@@ -515,6 +633,8 @@ crate::register_command!(CodeGlob);
 crate::register_command!(CodeTree);
 crate::register_command!(CodeSearch);
 crate::register_command!(CodeShell);
+crate::register_command!(CodeShellPoll);
+crate::register_command!(CodeShellKill);
 
 /// The dep-holding command objects the [`CodeModule`](super::code::CodeModule)
 /// contributes to the kernel's typed object map (via `ServiceModule::commands`),
@@ -530,6 +650,8 @@ pub fn command_objects(state: Arc<CodeState>) -> Vec<Arc<dyn DynCommand>> {
         Arc::new(CodeGlob { state: state.clone() }),
         Arc::new(CodeTree { state: state.clone() }),
         Arc::new(CodeSearch { state: state.clone() }),
-        Arc::new(CodeShell { state }),
+        Arc::new(CodeShell { state: state.clone() }),
+        Arc::new(CodeShellPoll { state: state.clone() }),
+        Arc::new(CodeShellKill { state }),
     ]
 }
