@@ -128,15 +128,37 @@ pub fn render_tool_instructions(tools: &[NativeToolSpec]) -> String {
 /// The synthesized [`ToolCall`] gets a fresh id (the agent loop correlates results
 /// by it) and `input` = the model's `arguments` (defaulting to `{}`).
 pub fn parse_tool_call(text: &str) -> Option<ToolCall> {
-    for candidate in json_object_candidates(text) {
-        if let Ok(env) = serde_json::from_str::<ToolCallEnvelope>(candidate) {
-            if env.tool_call.name.trim().is_empty() {
-                continue;
+    parse_tool_calls(text).into_iter().next()
+}
+
+/// Extract ALL tool-call envelopes a model emitted in its text — robust to the
+/// mess real base models produce: ```json fences, surrounding prose, `<think>`
+/// blocks, MULTIPLE calls in one turn, and a MALFORMED sibling (e.g. a call with a
+/// missing closing brace) next to a valid one. A malformed call is skipped; every
+/// well-formed `{"tool_call": {...}}` is returned, in order, de-overlapped.
+///
+/// This is the flexible floor: the BASE MODEL picks the surface format, the adapter
+/// adapts. (A LoRA can later make the model emit native calls; until then this
+/// keeps a persona's hands working regardless of how the model phrases the call.)
+pub fn parse_tool_calls(text: &str) -> Vec<ToolCall> {
+    let bytes = text.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'{' {
+            if let Some(end) = matching_brace_end(bytes, i) {
+                if let Ok(env) = serde_json::from_str::<ToolCallEnvelope>(&text[i..=end]) {
+                    if !env.tool_call.name.trim().is_empty() {
+                        out.push(env.tool_call.into()); // From<ToolCallJson> for ToolCall
+                        i = end + 1; // consume this envelope; don't re-scan its insides
+                        continue;
+                    }
+                }
             }
-            return Some(env.tool_call.into()); // From<ToolCallJson> for ToolCall
         }
+        i += 1;
     }
-    None
+    out
 }
 
 /// Yield substrings of `text` that are balanced `{...}` objects, outermost-first
@@ -260,5 +282,39 @@ mod tests {
             .expect("call");
         assert_eq!(tc.name, "chat/send");
         assert_eq!(tc.input["text"], "use {curly} braces");
+    }
+
+    // what this catches: THE live failure (Asha, 2026-06-22, seen via the prompt
+    // capture) — a base model emitted a MALFORMED first call (missing a closing
+    // brace) followed by a VALID second, wrapped in ``` fences. The old
+    // single-shot parser returned None and the calls never executed (her hands
+    // went dead). parse_tool_calls must skip the malformed one and still extract
+    // the valid one, so a persona's agency survives messy model output.
+    #[test]
+    fn recovers_valid_call_next_to_a_malformed_sibling_in_fences() {
+        let messy = "{\"tool_call\": {\"name\": \"code/read\", \"arguments\": {\"path\": \"df11d4c4\"}}\n\
+                     ```\n\
+                     {\"tool_call\": {\"name\": \"code/write\", \"arguments\": {\"path\": \"df11d4c4\", \"content\": \"it's claimed\"}}}\n\
+                     ```";
+        let calls = parse_tool_calls(messy);
+        assert!(
+            calls.iter().any(|c| c.name == "code/write"),
+            "the well-formed call must be recovered despite the malformed sibling: {calls:?}"
+        );
+        // The single-shot accessor also yields a call now (not None).
+        assert!(parse_tool_call(messy).is_some(), "single-shot must no longer return None");
+    }
+
+    // what this catches: MULTIPLE well-formed calls in one turn are all returned,
+    // in order — a base model that batches tool calls gets all of them executed.
+    #[test]
+    fn extracts_multiple_well_formed_calls() {
+        let two = r#"{"tool_call": {"name": "code/read", "arguments": {"file_path": "a.rs"}}}
+        and then
+        {"tool_call": {"name": "code/search", "arguments": {"pattern": "fn main"}}}"#;
+        let calls = parse_tool_calls(two);
+        assert_eq!(calls.len(), 2, "both calls extracted: {calls:?}");
+        assert_eq!(calls[0].name, "code/read");
+        assert_eq!(calls[1].name, "code/search");
     }
 }

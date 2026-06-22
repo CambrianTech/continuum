@@ -1062,14 +1062,20 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
                 .collect()
         });
 
-        // JsonInPrompt synthesis: when the gateway/model doesn't do native function
-        // calling, the model answers as TEXT containing the JSON tool call from the
-        // injected contract. Lift it into the canonical ToolUse shape so the agent
-        // loop executes it EXACTLY like a native call (one seam, model-agnostic).
+        // UNIVERSAL text-format tool-call fallback. When no NATIVE tool_calls came
+        // back, scan the model's TEXT for `{"tool_call": {...}}` envelopes and lift
+        // them into the canonical ToolUse shape — so the agent loop executes them
+        // EXACTLY like native calls. Run REGARDLESS of declared protocol: the base
+        // model picks the surface format (and a "native" gateway sometimes still
+        // emits the call as content), so the adapter stays flexible and never lets a
+        // persona's hands go dead over a formatting mismatch. Robust to malformed
+        // siblings + multiple calls + ``` fences (see json_in_prompt_tools). A LoRA
+        // can tighten the model to native later; this is the floor that always works.
         if tool_calls.as_ref().map_or(true, |t| t.is_empty()) {
-            if let Some(call) = self.config.tool_protocol.parse_text_call(&text) {
+            let parsed = super::json_in_prompt_tools::parse_tool_calls(&text);
+            if !parsed.is_empty() {
                 finish_reason = FinishReason::ToolUse;
-                tool_calls = Some(vec![call]);
+                tool_calls = Some(parsed);
             }
         }
 
