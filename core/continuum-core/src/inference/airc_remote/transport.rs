@@ -440,6 +440,7 @@ mod tests {
             request_id: "stub".to_string(),
             content: None,
             tool_calls: None,
+            reasoning: None,
             routing: None,
             error: None,
         }

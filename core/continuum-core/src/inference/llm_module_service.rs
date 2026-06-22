@@ -872,6 +872,7 @@ mod tests {
                 text: "stub adapter completion".to_string(),
             }]),
             tool_calls: None,
+            reasoning: None,
             routing: None,
             error: None,
         }

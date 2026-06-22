@@ -489,7 +489,75 @@ struct OpenAIChoice {
 #[derive(Debug, Deserialize)]
 struct OpenAIMessage {
     content: Option<String>,
+    /// Server-separated reasoning (vLLM `--reasoning-parser`, future unsloth). When
+    /// present, `content` is already the clean answer and this is the chain-of-
+    /// thought. Most llama.cpp-backed gateways (today's unsloth) DON'T set this —
+    /// they emit `<think>…</think>` inline in `content` instead, which
+    /// [`extract_reasoning`] handles.
+    reasoning_content: Option<String>,
     tool_calls: Option<Vec<OpenAIToolCall>>,
+}
+
+/// Separate a reasoning model's chain-of-thought from its user-facing answer at the
+/// ADAPTER boundary, so reasoning is captured (for the glass-box harness) but NEVER
+/// reaches the room. Precedence:
+///
+/// 1. A server-provided `reasoning_content` (vLLM-style parsers) — authoritative;
+///    `content` is already clean.
+/// 2. Inline `<think>…</think>` in `content` (unsloth/llama.cpp today) — the block
+///    is reasoning; everything OUTSIDE it is the answer.
+/// 3. An UNCLOSED `<think>` — the model ran out of tokens mid-thought (the runaway
+///    loop that leaked into the room): the whole tail is reasoning and there is NO
+///    answer. Returns empty text so the caller refuses to post, never leaking raw
+///    reasoning.
+///
+/// Returns `(clean_text, reasoning)`. Pure + synchronous → unit-tested in isolation.
+pub(crate) fn extract_reasoning(
+    content: &str,
+    reasoning_content: Option<&str>,
+) -> (String, Option<String>) {
+    // (1) Server already split it out — trust that; content is the clean answer.
+    if let Some(rc) = reasoning_content {
+        let rc = rc.trim();
+        if !rc.is_empty() {
+            return (content.trim().to_string(), Some(rc.to_string()));
+        }
+    }
+
+    const OPEN: &str = "<think>";
+    const CLOSE: &str = "</think>";
+    let Some(open_idx) = content.find(OPEN) else {
+        // (no think) plain content.
+        return (content.trim().to_string(), None);
+    };
+    let before = content[..open_idx].trim();
+    let after_open = &content[open_idx + OPEN.len()..];
+
+    match after_open.find(CLOSE) {
+        // (2) Well-formed <think>…</think>: answer is whatever sits OUTSIDE the block.
+        Some(close_rel) => {
+            let reasoning = after_open[..close_rel].trim();
+            let after_close = after_open[close_rel + CLOSE.len()..].trim();
+            let mut text = String::from(before);
+            if !text.is_empty() && !after_close.is_empty() {
+                text.push('\n');
+            }
+            text.push_str(after_close);
+            (
+                text.trim().to_string(),
+                (!reasoning.is_empty()).then(|| reasoning.to_string()),
+            )
+        }
+        // (3) Unclosed <think>: truncated thinking → no answer (text is whatever
+        // preceded the block, normally empty). The reasoning is the runaway tail.
+        None => {
+            let reasoning = after_open.trim();
+            (
+                before.to_string(),
+                (!reasoning.is_empty()).then(|| reasoning.to_string()),
+            )
+        }
+    }
 }
 
 #[allow(dead_code)]
@@ -900,7 +968,12 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
             .first()
             .ok_or_else(|| "No completion in response".to_string())?;
 
-        let text = choice.message.content.clone().unwrap_or_default();
+        // Separate reasoning from the answer AT THE BOUNDARY: a reasoning model's
+        // `<think>…</think>` (or a server `reasoning_content`) is captured for the
+        // harness/memory and stripped from `text` so it can NEVER reach the room.
+        let raw_content = choice.message.content.clone().unwrap_or_default();
+        let (text, reasoning) =
+            extract_reasoning(&raw_content, choice.message.reasoning_content.as_deref());
         let mut finish_reason = choice
             .finish_reason
             .as_deref()
@@ -974,6 +1047,7 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
                 Some(content_blocks)
             },
             tool_calls,
+            reasoning,
             routing: None,
             error: None,
         })
@@ -1235,6 +1309,55 @@ fn parse_embedding_usage(body: &Value) -> UsageMetrics {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches: a well-formed <think>…</think> (unsloth/llama.cpp today) is
+    // SEPARATED — reasoning captured, the answer after </think> is the clean text.
+    // This is the leak Asha hit: without it the whole think block reached the room.
+    #[test]
+    fn extract_reasoning_splits_well_formed_think_block() {
+        let raw = "<think>\nThe capital is Paris. Keep it to one sentence.\n</think>\n\nParis is the capital of France.";
+        let (text, reasoning) = extract_reasoning(raw, None);
+        assert_eq!(text, "Paris is the capital of France.");
+        assert_eq!(
+            reasoning.as_deref(),
+            Some("The capital is Paris. Keep it to one sentence.")
+        );
+        assert!(!text.contains("<think>"), "answer must be free of reasoning tags");
+    }
+
+    // what this catches: THE runaway loop — an UNCLOSED <think> (model ran out of
+    // tokens mid-thought). There is NO answer, so text is empty (the caller refuses
+    // to post) and the raw reasoning is captured, NOT leaked.
+    #[test]
+    fn extract_reasoning_unclosed_think_yields_empty_answer() {
+        let raw = "<think>\nWait, the recall section... wait, no... wait, the recall section";
+        let (text, reasoning) = extract_reasoning(raw, None);
+        assert_eq!(text, "", "a truncated think block produces no postable answer");
+        assert!(reasoning.unwrap().contains("recall section"));
+    }
+
+    // what this catches: a server that already splits reasoning into
+    // `reasoning_content` (vLLM-style) is trusted — content is the clean answer,
+    // the field is the reasoning, no tag parsing.
+    #[test]
+    fn extract_reasoning_prefers_server_reasoning_content() {
+        let (text, reasoning) = extract_reasoning("Paris.", Some("I recall France's capital."));
+        assert_eq!(text, "Paris.");
+        assert_eq!(reasoning.as_deref(), Some("I recall France's capital."));
+    }
+
+    // what this catches: a plain answer with no reasoning passes through untouched,
+    // and an empty `<think></think>` (the JSON-path shape) yields no reasoning.
+    #[test]
+    fn extract_reasoning_plain_and_empty_think() {
+        let (text, reasoning) = extract_reasoning("Just the answer.", None);
+        assert_eq!(text, "Just the answer.");
+        assert!(reasoning.is_none());
+
+        let (text, reasoning) = extract_reasoning("<think></think>\n\n{\"ok\":true}", None);
+        assert_eq!(text, "{\"ok\":true}");
+        assert!(reasoning.is_none(), "empty think block confers no reasoning");
+    }
 
     // what this catches: a single string input serializes as a JSON string (not
     // a 1-element array) and the resolved model is carried through — the request
