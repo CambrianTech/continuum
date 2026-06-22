@@ -83,11 +83,16 @@ members = [
 # 2026-06-22 bump a7ae4f4 → 4aa717d (airc#1277): widens `Airc::mesh_identity`
 # to pub so the command handler can pin this node's mesh as the expected mesh
 # when verifying a presented capability grant (else WrongMesh). Visibility-only.
-airc-core = { git = "https://github.com/CambrianTech/airc", rev = "4aa717d" }
-airc-protocol = { git = "https://github.com/CambrianTech/airc", rev = "4aa717d" }
-airc-ipc = { git = "https://github.com/CambrianTech/airc", rev = "4aa717d" }
-airc-lib = { git = "https://github.com/CambrianTech/airc", rev = "4aa717d" }
-airc-wire = { git = "https://github.com/CambrianTech/airc", rev = "4aa717d" }
+#
+# 2026-06-22 bump 4aa717d → 55790e1 (airc#1278): `Airc::sign_grant(grant)` —
+# the issuance half: an owner node signs a CapabilityGrant with its own key (key
+# never leaves airc) so a grantee can present it. Powers grid/grant/issue + the
+# end-to-end contracted-grid loop. Additive.
+airc-core = { git = "https://github.com/CambrianTech/airc", rev = "55790e1" }
+airc-protocol = { git = "https://github.com/CambrianTech/airc", rev = "55790e1" }
+airc-ipc = { git = "https://github.com/CambrianTech/airc", rev = "55790e1" }
+airc-lib = { git = "https://github.com/CambrianTech/airc", rev = "55790e1" }
+airc-wire = { git = "https://github.com/CambrianTech/airc", rev = "55790e1" }
 
 # Candle ML framework — patched via [patch.crates-io] below.
 # Fixes: Metal buffer pool leak (#2271), RoPE NEOX convention (#3410)
