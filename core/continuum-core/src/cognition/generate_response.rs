@@ -62,7 +62,11 @@ pub const UNKNOWN_MEMBERS: &str = "unknown members";
 const HOUR_GAP_THRESHOLD_MS: u64 = 60 * 60 * 1000;
 
 /// Routing sentinel for the best available local Qwen/llama.cpp runtime.
-const DEFAULT_GENERATE_PROVIDER: &str = "local";
+// The inference gateway is unsloth (the sole inference path, [[unsloth-universal-model-gateway]]).
+// Was "local" (the in-process llama.cpp adapter) — now gated off, so routing the turn
+// to "local" + a hardcoded model id that the gateway doesn't serve would hard-fail
+// select(). The turn binds to unsloth + the discovered served model via a handle.
+const DEFAULT_GENERATE_PROVIDER: &str = "unsloth";
 
 /// Default model when caller doesn't override.
 const DEFAULT_GENERATE_MODEL: &str = "continuum-ai/qwen3.5-4b-code-forged-GGUF";
@@ -273,12 +277,36 @@ pub async fn evaluate_response(
     request: GenerateResponseRequest,
 ) -> Result<GenerateResponseResult, GenerateResponseError> {
     let start_ms = now_ms();
-    let model = request
-        .model
-        .clone()
-        .unwrap_or_else(|| DEFAULT_GENERATE_MODEL.to_string());
     let timeout_ms = request.timeout_ms.unwrap_or(DEFAULT_GENERATE_TIMEOUT_MS);
     let _lease = acquire_generate_response_lease(&request, start_ms, timeout_ms)?;
+
+    // Bind this turn to the persona's ESTABLISHED inference handle (reused across
+    // turns, re-homed if lost — self-healing), bound to the model unsloth actually
+    // serves (discovered, NOT a hardcoded id that no longer matches the gateway).
+    // The handle is the seam that makes inference grid-routable + survive a node
+    // dropping. [[long-running-commands-are-handle-based]] [[compute-lease-boundary]]
+    let persona_uuid = uuid::Uuid::parse_str(&request.context.persona_id).map_err(|e| {
+        GenerateResponseError::Generation(format!(
+            "persona_id '{}' is not a UUID: {e}",
+            request.context.persona_id
+        ))
+    })?;
+    let sessions = crate::cognition::inference_session::global_inference_sessions();
+    let session = match sessions.persona_session(persona_uuid) {
+        Some(s) => s,
+        None => {
+            // unsloth serves one model today, so bind to the discovered served model
+            // regardless of any (possibly stale) request.model. Fit-selection over a
+            // multi-model gateway is the next slice. Fail loud if nothing serves.
+            let served = crate::cognition::inference_session::resolve_model(None)
+                .await
+                .map_err(|e| GenerateResponseError::Generation(format!(
+                    "inference model resolve failed (unsloth gateway): {e:?}"
+                )))?;
+            sessions.ensure_for_persona(persona_uuid, served)
+        }
+    };
+    let model = session.model.clone();
 
     let inference_request = build_response_generation_request(&request, model.clone(), start_ms);
 

@@ -52,12 +52,16 @@ fn now_ms() -> u64 {
 /// liveness is tracked (so `find` is authoritative and `close` is a real release).
 pub struct InferenceSessionRegistry {
     sessions: DashMap<Uuid, Arc<InferenceSession>>,
+    /// persona → its current handle id, so a persona keeps ONE established lease
+    /// across turns (reused, or re-homed when lost). The self-heal index.
+    by_persona: DashMap<Uuid, Uuid>,
 }
 
 impl InferenceSessionRegistry {
     fn new() -> Self {
         Self {
             sessions: DashMap::new(),
+            by_persona: DashMap::new(),
         }
     }
 
@@ -97,6 +101,26 @@ impl InferenceSessionRegistry {
         (self.open(model), false)
     }
 
+    /// The persona's current live lease, if any (no probe, no open) — the cheap
+    /// happy-path check a per-turn caller uses before resolving a model.
+    pub fn persona_session(&self, persona: Uuid) -> Option<Arc<InferenceSession>> {
+        let hid = *self.by_persona.get(&persona)?;
+        self.find(hid)
+    }
+
+    /// Keep ONE established lease per persona across turns: reuse the persona's live
+    /// handle, or open a fresh one on `model` and index it (re-homing if the prior
+    /// died). This is what makes a persona's inference relationship survive node /
+    /// handle loss without crashing the turn.
+    pub fn ensure_for_persona(&self, persona: Uuid, model: String) -> Arc<InferenceSession> {
+        if let Some(s) = self.persona_session(persona) {
+            return s;
+        }
+        let s = self.open(model);
+        self.by_persona.insert(persona, s.id);
+        s
+    }
+
     pub fn len(&self) -> usize {
         self.sessions.len()
     }
@@ -115,7 +139,7 @@ pub fn global_inference_sessions() -> &'static InferenceSessionRegistry {
 /// Resolve the model a lease should bind to: the explicit `model` if given, else the
 /// model unsloth ACTUALLY serves (discovered, slice 1). Fail loud if neither — never
 /// a stand-in ([[fallbacks-are-illegal-fail-loud]]).
-async fn resolve_model(explicit: Option<String>) -> Result<String, CommandError> {
+pub async fn resolve_model(explicit: Option<String>) -> Result<String, CommandError> {
     if let Some(m) = explicit.filter(|s| !s.trim().is_empty()) {
         return Ok(m);
     }
