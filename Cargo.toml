@@ -65,11 +65,25 @@ members = [
 # continuum#1651 RoomDoctrineSource reads room_doctrine). Also pulls
 # the airc update/doctor/network CLI fixes (#1218-#1222). Re-validate
 # attach_as (refactored open_as + with_daemon_client) on bump.
-airc-core = { git = "https://github.com/CambrianTech/airc", rev = "72824ba" }
-airc-protocol = { git = "https://github.com/CambrianTech/airc", rev = "72824ba" }
-airc-ipc = { git = "https://github.com/CambrianTech/airc", rev = "72824ba" }
-airc-lib = { git = "https://github.com/CambrianTech/airc", rev = "72824ba" }
-airc-wire = { git = "https://github.com/CambrianTech/airc", rev = "72824ba" }
+#
+# 2026-06-22 bump 72824ba → a7ae4f4 (airc canary tip): adopts the
+# capability-grant transport (airc#1276) — the cross-grid command auth
+# gate continuum verifies against (`grid_auth::SignedCapabilityGrant::sign`,
+# `Airc::peer_public_key`, `HEADER_AIRC_CAPABILITY_GRANT`). Also pulls the
+# ~50-commit canary delta since 72824ba: the ai/generate 5090 compute-lease
+# facility (#1242), the ai/embedding grid facility (#1239-1241),
+# `TranscriptKind::ChannelPurposePublished` + `channel_purpose` (the typed
+# room-purpose seam for RoomPurposeSource), the relay self-election +
+# stream-plane crypto (#1247/#1261-1264), and StatusResponse.connected_lan_peers.
+# ABI deltas are ADDITIVE to types continuum only decodes (connected_lan_peers
+# is #[serde(default)]; the new TranscriptKind variant has no exhaustive match
+# against it), so the bump is decode-compatible — re-validate daemon_transport
+# + persona attach on bump regardless.
+airc-core = { git = "https://github.com/CambrianTech/airc", rev = "a7ae4f4" }
+airc-protocol = { git = "https://github.com/CambrianTech/airc", rev = "a7ae4f4" }
+airc-ipc = { git = "https://github.com/CambrianTech/airc", rev = "a7ae4f4" }
+airc-lib = { git = "https://github.com/CambrianTech/airc", rev = "a7ae4f4" }
+airc-wire = { git = "https://github.com/CambrianTech/airc", rev = "a7ae4f4" }
 
 # Candle ML framework — patched via [patch.crates-io] below.
 # Fixes: Metal buffer pool leak (#2271), RoPE NEOX convention (#3410)
