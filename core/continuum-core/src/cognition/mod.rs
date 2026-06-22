@@ -34,6 +34,7 @@ pub mod embedding;
 pub mod generate_recipe;
 pub mod generate_response;
 pub mod host_capability_probe;
+pub mod introspect_commands;
 pub mod llm_deliberation_faculty;
 pub mod model_resolver;
 pub mod persona_tools;
