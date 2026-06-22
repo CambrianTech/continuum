@@ -213,6 +213,29 @@ mod tests {
         assert!(!is_command_authorized("ping", TrustLevel::Blocked));
     }
 
+    // what this catches: destructive data commands MUST stay Owner-only — never
+    // reachable at Provisional (so never over an unauthenticated TCP socket nor by a
+    // cross-grid Provisional peer). data/delete + data/update have explicit Owner
+    // rules; data/truncate + data/clear-all are unclassified → Owner default-deny.
+    // The footgun this defuses (adversarial review 2026-06-21): `ActionCommand`
+    // defaults ACCESS to AiSafe, so migrating one of these to a command object and
+    // forgetting `const ACCESS = Privileged` would silently make it
+    // Provisional-reachable. If that happens, THIS test trips in CI.
+    #[test]
+    fn destructive_data_commands_stay_owner_only() {
+        for cmd in ["data/delete", "data/update", "data/truncate", "data/clear-all"] {
+            assert!(
+                !is_command_authorized(cmd, TrustLevel::Provisional),
+                "{cmd} must NOT be reachable at Provisional — it's a destructive, \
+                 Owner-only command (a remote/TCP caller must never run it)"
+            );
+            assert!(
+                is_command_authorized(cmd, TrustLevel::Owner),
+                "{cmd} stays runnable by the local owner"
+            );
+        }
+    }
+
     #[test]
     fn test_rules_sorted_by_specificity() {
         let rules = default_rules();

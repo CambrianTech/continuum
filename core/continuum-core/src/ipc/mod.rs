@@ -1795,6 +1795,18 @@ pub fn start_server(
     //
     // Unix socket remains the primary path — same binary, same server state,
     // same handle_client code via the IpcStream trait. TCP is additive.
+    //
+    // SECURITY (adversarial review 2026-06-21): TCP callers are stamped
+    // CallerSource::Tcp → Provisional ceiling, so Owner-gated commands
+    // (data/delete, grid/trust, …) are REFUSED — no unauthenticated Owner
+    // execution. BUT the Provisional AiSafe surface IS reachable over this socket
+    // UNauthenticated: arbitrary `data/list`/`data/query` reads, `chat/send`
+    // writes, and `ai/generate` (the intended container use). That is safe on the
+    // default loopback bind; binding 0.0.0.0 exposes that surface to anyone on the
+    // bridge/LAN. TODO(authenticated-tcp): require a shared secret / signed
+    // handshake for the TCP listener (and/or a sub-Provisional read-only ceiling)
+    // before relying on a non-loopback bind — pairs with the airc↔grid per-peer
+    // trust bridge. Until then: do NOT bind 0.0.0.0 on an untrusted network.
     if let Ok(tcp_port_str) = std::env::var("CONTINUUM_CORE_TCP") {
         if let Ok(port) = tcp_port_str.parse::<u16>() {
             if port > 0 {
