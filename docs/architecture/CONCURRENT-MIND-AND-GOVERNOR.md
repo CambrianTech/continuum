@@ -74,6 +74,40 @@ stays local, only token generation routes ([[compute-lease-boundary]]).
 trusted citizen (human or persona) can take the airc manager hat and tune the
 governor with the same verbs — observable in the glass box, gated by trust.
 
+## 3.1 Information flow: enrichment, not pipelines
+
+The dominant pattern is **dataflow, not control flow.** Most cognitive work is a
+**background async enricher** — woken by an event, it does its work (recall,
+embed, describe an image, summarize, consolidate, infer-a-fact) and its output
+**settles into the shared substrate**, where everything else can read it:
+
+```
+event → background enricher → settles into:
+          • RAG ready-buffers   (the pre-staged context the workspace reads)
+          • engrams             (long-term memory; the durable self)
+          • caches              (content-addressed / L1–L5 genome / embeddings /
+                                 vision-descriptions — computed ONCE, shared by all)
+```
+
+Properties this gives us, for free, if we hold the §1 invariants:
+- **The hot path is cheap.** The decision moment (GWT workspace) reads settled,
+  enriched, pre-staged state — it almost never computes inline. Heavy work
+  (embeddings, descriptions, consolidation) happened in the background, once,
+  and is cached + shared ([[optimization-is-always-first]], [[embeddings-are-per-content-computed-once-shared]]).
+- **Information flows naturally.** A turn enriches the RAG; the RAG's use settles
+  into an engram; the engram feeds recall next time; recall pre-stages context;
+  the context shapes the next turn. No gate pushes it through — it propagates,
+  event by event, and the mind's coherence *emerges* at the points where attention
+  reads the confluence.
+- **The same flow IS the learning flow.** Enrichment settling into engrams +
+  caches is exactly the substrate the consolidation/training loop (slice 5) reads.
+  Thinking and learning read the same settled state ([[coordination-learning-flywheel]]).
+
+So when building a concern, the default question is **"can this be a background
+async enricher that settles into RAG/engrams/caches?"** — almost always yes, and
+almost never a gated foreground step. The workspace stays a thin reader of a richly
+enriched world.
+
 ## 4. Slice plan
 
 - **Slice 1 — `SubstrateGovernor` heartbeat. ✅ SHIPPED** (`runtime/substrate_governor.rs`,
