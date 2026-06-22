@@ -293,10 +293,16 @@ which is exactly §1's "don't gate the mind" at the channel granularity.
     (consolidated since-bookmark + N-before window); `ChannelDigestRegion`
     (`BrainRegion` pre-staging into a `DashMapReadyBuffer`, via a `PersonaChannelReader`
     abstraction so it unit-tests without a daemon).
-  - **Remaining to go live:** register the region in the governor at boot, and have
-    the workspace's room-context path **peek the ready-buffer** instead of reading
-    `page_recent` raw — without standing up a *parallel* allocator (task #8). Then
-    QA via the glass box + ask the persona directly.
+  - **Remaining to go live (SINGLE path, no fallback — [[no-fallbacks-ever]]):**
+    the `ChannelDigest` becomes the *only* representation of channel context. Evolve
+    `AircRagSource` to deliver from a digest (pre-staged by the region if present,
+    built once via the same builder if not — the lazy-compute-once pattern, NOT a
+    fallback: identical output, one builder, one shape). **Delete** the legacy raw
+    `pack_within_budget` + continuation-cursor packing — superseded by the digest's
+    windowing. `page_recent` survives only as the read primitive *inside* the
+    builder, never as an alternate context path. Register the region in the governor
+    at boot. One consumer, one allocator (task #8). Then QA via the glass box + ask
+    the persona directly.
 - **Slice 3 — `PersonaCognitionRegion` + `VolitionFaculty` (the demand brain).**
   The persona advances what *it* wants; `VolitionFaculty` is a **wake source**
   (self-initiate from interest), not a polled bid. It reads `ChannelDigest`s and
