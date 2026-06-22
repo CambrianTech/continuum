@@ -3,21 +3,35 @@
 //! The verification engine for [docs/grid/GRID-CAPABILITY-AUTH.md]: a remote peer
 //! presents a `SignedCapabilityGrant` the owner signed; this authorizes a command
 //! iff the grant VERIFIES (issuer-pin → sig → key-binding → mesh → expiry, via
-//! airc's stateless `grid_auth`) AND `grant.grants(command)` AND the grant isn't a
-//! replay of a superseded epoch. Identity + authorization + contract are the one
-//! signed object — no shared trust store, no address↔peer mismatch.
+//! airc's stateless `grid_auth`) AND the grant confers the command AND the grant
+//! isn't a replay of a superseded epoch. Identity + authorization + contract are
+//! the one signed object — no shared trust store, no address↔peer mismatch.
 //!
 //! This is the verification CORE (the heart of the contracted-grid gate). It is a
-//! tested SEAM: it is NOT yet wired to the live dispatch path because the airc
-//! command envelope doesn't carry grants yet (the airc-side transport slice). When
-//! it does, `CommandRequestHandler` extracts the grant + presenting key and calls
-//! [`GrantAuthorizer::authorize_command`] from the gate. See
+//! tested SEAM, NOT yet wired to the live dispatch path because the airc command
+//! envelope doesn't carry grants yet (the airc-side transport slice). See
 //! `[[airc-grid-identity-unification-trust-bridge]]`.
+//!
+//! ## HARD GATES before wiring to live dispatch (adversarial review 2026-06-21)
+//! - **Persist the epoch watermark.** `seen_epoch` is in-memory; a node restart
+//!   would reopen the entire replay window (the grid expects mundane restarts).
+//!   The watermark MUST be durable (per-grantee) before this gates real traffic.
+//! - **Bound the watermark store.** It's owner-bounded today (only owner-signed
+//!   grantees insert), but the for-sale grid implies many transient grantees —
+//!   add expiry-aligned eviction (an entry is dead once all its grants would be
+//!   `Expired`).
+//! - **Presenting key from the AUTHENTICATED sender only.** When
+//!   `CommandRequestHandler` calls [`GrantAuthorizer::authorize_command`], the
+//!   `presenting_pubkey` MUST be the transport-verified sender key, NEVER the
+//!   grant's own `grantee_pubkey` (which would be self-certifying). Consider a
+//!   newtype so the two keys can't be transposed.
+
+use std::sync::Arc;
 
 use airc_core::PeerId;
+use airc_lib::grid_auth::VerifyContext;
 use airc_lib::grid_auth::{CredentialKind, GrantProof, GrantVerdict, GrantVerifier, SignedCapabilityGrant};
 use airc_lib::subscriptions::MeshIdentity;
-use airc_lib::grid_auth::VerifyContext;
 use dashmap::DashMap;
 
 /// Why a presented grant did or didn't authorize a command — a TYPED outcome so
@@ -31,7 +45,7 @@ pub enum GrantAuthOutcome {
     /// The grant verified but a higher epoch was already accepted for this
     /// grantee — a replayed/superseded grant (consumer-side anti-replay).
     Superseded,
-    /// The grant verified but does NOT confer this command's capability.
+    /// The grant verified (and is current) but does NOT confer this command.
     NotGranted,
 }
 
@@ -55,11 +69,22 @@ impl GrantVerifier for Ed25519GrantVerifier {
         let Ok(sig_bytes): Result<[u8; 64], _> = proof.signature.as_slice().try_into() else {
             return false;
         };
-        // verify_strict rejects weak/malleable signatures (the same check the
-        // envelope path uses).
+        // verify_strict rejects weak/malleable/torsion signatures (the anti-
+        // malleability hardening a capability token wants; same as the envelope path).
         vk.verify_strict(message, &ed25519_dalek::Signature::from_bytes(&sig_bytes))
             .is_ok()
     }
+}
+
+/// Does any capability in `capabilities` confer `command`? BOUNDARY-AWARE prefix
+/// match (consistent with the command-ACL's prefix rules): a capability matches the
+/// command exactly OR is a path-prefix of it on a `/` boundary. So `"ai/generate"`
+/// confers `ai/generate` and `ai/generate/stream`, but NOT `ai/generatex` (no bare
+/// `starts_with`, which would be the classic prefix-without-boundary over-grant).
+fn confers(capabilities: &[String], command: &str) -> bool {
+    capabilities
+        .iter()
+        .any(|c| command == c || command.starts_with(&format!("{c}/")))
 }
 
 /// Verifies presented capability grants against the local owner key + mesh, with
@@ -71,28 +96,41 @@ pub struct GrantAuthorizer {
     /// This node's own mesh identity — a grant scoped to a different mesh is
     /// rejected (`WrongMesh`).
     mesh: MeshIdentity,
-    verifier: Ed25519GrantVerifier,
+    /// Signature verifier — injectable so tests drive the REAL `authorize_command`
+    /// with a stub (no duplicated decision logic). Production = `Ed25519GrantVerifier`.
+    verifier: Arc<dyn GrantVerifier + Send + Sync>,
     /// Highest grant epoch accepted per grantee. The `grid_auth` verifier is
     /// stateless by design; anti-replay (reject a superseded lower-epoch grant) is
-    /// the CONSUMER's responsibility — this is that state. Revocation rides the
-    /// same channel (a higher-epoch grant with empty capabilities).
+    /// the CONSUMER's responsibility — this is that state. Latest epoch is
+    /// authoritative (airc's model): re-issue with all caps + a higher epoch;
+    /// revocation = a higher-epoch grant with empty capabilities.
+    /// NOTE (hard gate): in-memory + unbounded today — see module docs.
     seen_epoch: DashMap<PeerId, u64>,
 }
 
 impl GrantAuthorizer {
     pub fn new(owner_pubkey: Vec<u8>, mesh: MeshIdentity) -> Self {
+        Self::with_verifier(owner_pubkey, mesh, Arc::new(Ed25519GrantVerifier))
+    }
+
+    /// Construct with an explicit verifier (production passes `Ed25519GrantVerifier`;
+    /// tests pass a stub to exercise the decision logic without real signatures).
+    pub fn with_verifier(
+        owner_pubkey: Vec<u8>,
+        mesh: MeshIdentity,
+        verifier: Arc<dyn GrantVerifier + Send + Sync>,
+    ) -> Self {
         Self {
             owner_pubkey,
             mesh,
-            verifier: Ed25519GrantVerifier,
+            verifier,
             seen_epoch: DashMap::new(),
         }
     }
 
     /// Authorize `command` from a peer presenting `signed` with verified key
-    /// `presenting_pubkey`, at wall-clock `now_ms`. Verify → epoch anti-replay →
-    /// capability check. A grant that authorizes advances the grantee's accepted
-    /// epoch (so a later replay of a lower epoch is `Superseded`).
+    /// `presenting_pubkey`, at wall-clock `now_ms`: verify → atomic epoch
+    /// anti-replay → capability check.
     pub fn authorize_command(
         &self,
         signed: &SignedCapabilityGrant,
@@ -104,7 +142,7 @@ impl GrantAuthorizer {
             now_ms,
             presenting_pubkey,
             expected_mesh: &self.mesh,
-            verifier: &self.verifier,
+            verifier: &*self.verifier,
             trusted_issuer_pubkey: &self.owner_pubkey,
         };
         match signed.verify(&ctx) {
@@ -112,29 +150,35 @@ impl GrantAuthorizer {
             other => return GrantAuthOutcome::Invalid(other),
         }
 
-        // Anti-replay: reject a grant whose epoch is BELOW the latest accepted for
-        // this grantee (a superseded/replayed grant). Equal or higher is accepted
-        // and advances the watermark — so a revocation (higher epoch, empty caps)
-        // both supersedes old grants and, via the capability check below, confers
-        // nothing.
-        let grantee = signed.grant.grantee;
-        if let Some(seen) = self.seen_epoch.get(&grantee) {
-            if signed.grant.epoch < *seen {
-                return GrantAuthOutcome::Superseded;
+        // Anti-replay, ATOMIC: the check (epoch < watermark?) and the advance happen
+        // inside ONE `entry` critical section, so a superseded epoch can never pass
+        // its check while a higher epoch commits in the gap (the TOCTOU the review
+        // flagged). Latest epoch is authoritative, so ANY valid grant advances the
+        // watermark — which is what makes a revocation (higher-epoch empty-caps
+        // grant) actually supersede older real-caps grants.
+        {
+            use dashmap::mapref::entry::Entry;
+            let epoch = signed.grant.epoch;
+            match self.seen_epoch.entry(signed.grant.grantee) {
+                Entry::Occupied(mut o) => {
+                    if epoch < *o.get() {
+                        return GrantAuthOutcome::Superseded;
+                    }
+                    *o.get_mut() = epoch;
+                }
+                Entry::Vacant(v) => {
+                    v.insert(epoch);
+                }
             }
         }
 
-        if !signed.grants(command) {
-            // Do NOT advance the watermark on a non-granting (but otherwise valid)
-            // grant — only an accepted, authorizing grant should move it.
-            return GrantAuthOutcome::NotGranted;
+        // The grant is current; does it confer THIS command? (Owner-gated commands
+        // are simply never in any remote grant's capability list.)
+        if confers(&signed.grant.capabilities, command) {
+            GrantAuthOutcome::Authorized
+        } else {
+            GrantAuthOutcome::NotGranted
         }
-
-        self.seen_epoch
-            .entry(grantee)
-            .and_modify(|e| *e = (*e).max(signed.grant.epoch))
-            .or_insert(signed.grant.epoch);
-        GrantAuthOutcome::Authorized
     }
 }
 
@@ -144,8 +188,8 @@ mod tests {
     use airc_lib::grid_auth::CapabilityGrant;
 
     // A stub verifier so the grant LOGIC (issuer-pin, key-binding, mesh, expiry,
-    // epoch, capability) is tested without real signatures — the same seam airc
-    // tests against. The real Ed25519 path is exercised separately below.
+    // epoch, capability) is driven through the REAL `authorize_command` without real
+    // signatures. The genuine Ed25519 path is exercised separately below.
     struct StubVerifier(bool);
     impl GrantVerifier for StubVerifier {
         fn verify_signature(&self, _message: &[u8], _proof: &GrantProof) -> bool {
@@ -157,9 +201,15 @@ mod tests {
         MeshIdentity::new("test-mesh")
     }
 
-    fn grant(caps: &[&str], epoch: u64, grantee_key: &[u8]) -> CapabilityGrant {
+    /// An authorizer whose signature verifier is the stub (so we exercise the real
+    /// decision path: verify → atomic epoch → capability).
+    fn authorizer(owner: &[u8], sig_ok: bool) -> GrantAuthorizer {
+        GrantAuthorizer::with_verifier(owner.to_vec(), mesh(), Arc::new(StubVerifier(sig_ok)))
+    }
+
+    fn grant(caps: &[&str], epoch: u64, grantee_key: &[u8], grantee: PeerId) -> CapabilityGrant {
         CapabilityGrant {
-            grantee: PeerId::new(),
+            grantee,
             grantee_pubkey: grantee_key.to_vec(),
             capabilities: caps.iter().map(|c| c.to_string()).collect(),
             granted_in: mesh(),
@@ -167,46 +217,6 @@ mod tests {
             expires_at_ms: None,
             epoch,
         }
-    }
-
-    // Authorizer that uses a chosen stub verdict, so we drive the post-signature
-    // logic deterministically (the Ed25519GrantVerifier is swapped for a stub via a
-    // hand-built VerifyContext in these tests).
-    fn authorize_with(
-        owner: &[u8],
-        signed: &SignedCapabilityGrant,
-        presenting: &[u8],
-        command: &str,
-        now_ms: u64,
-        sig_ok: bool,
-        seen: &DashMap<PeerId, u64>,
-    ) -> GrantAuthOutcome {
-        let m = mesh();
-        let verifier = StubVerifier(sig_ok);
-        let ctx = VerifyContext {
-            now_ms,
-            presenting_pubkey: presenting,
-            expected_mesh: &m,
-            verifier: &verifier,
-            trusted_issuer_pubkey: owner,
-        };
-        match signed.verify(&ctx) {
-            GrantVerdict::Valid => {}
-            other => return GrantAuthOutcome::Invalid(other),
-        }
-        let grantee = signed.grant.grantee;
-        if let Some(s) = seen.get(&grantee) {
-            if signed.grant.epoch < *s {
-                return GrantAuthOutcome::Superseded;
-            }
-        }
-        if !signed.grants(command) {
-            return GrantAuthOutcome::NotGranted;
-        }
-        seen.entry(grantee)
-            .and_modify(|e| *e = (*e).max(signed.grant.epoch))
-            .or_insert(signed.grant.epoch);
-        GrantAuthOutcome::Authorized
     }
 
     fn signed(grant: CapabilityGrant, issuer: &[u8]) -> SignedCapabilityGrant {
@@ -220,116 +230,130 @@ mod tests {
         }
     }
 
-    // what this catches: the happy path — a grant signed by the owner, bound to the
-    // presenting peer's key, in-mesh, unexpired, conferring the command → Authorized.
+    // what this catches: the happy path through the REAL authorize_command — a grant
+    // signed by the owner, bound to the presenting key, in-mesh, unexpired,
+    // conferring the command → Authorized; a different command → NotGranted.
     #[test]
     fn valid_grant_authorizes_its_capability() {
         let owner = [1u8; 32];
         let peer = [2u8; 32];
-        let g = signed(grant(&["ai/generate"], 1, &peer), &owner);
-        let seen = DashMap::new();
+        let g = signed(grant(&["ai/generate"], 1, &peer, PeerId::new()), &owner);
+        let a = authorizer(&owner, true);
         assert_eq!(
-            authorize_with(&owner, &g, &peer, "ai/generate", 100, true, &seen),
+            a.authorize_command(&g, &peer, "ai/generate", 100),
             GrantAuthOutcome::Authorized
         );
-        // ...but does NOT confer a different command.
         assert_eq!(
-            authorize_with(&owner, &g, &peer, "data/delete", 100, true, &seen),
+            a.authorize_command(&g, &peer, "data/delete", 100),
             GrantAuthOutcome::NotGranted
         );
     }
 
-    // what this catches: every rejection reason is TYPED + reached. Untrusted issuer
-    // (wrong owner key), bad signature, key mismatch (stolen grant on another peer's
-    // identity) — all distinct verdicts, none silently allowed.
+    // what this catches: BOUNDARY-AWARE capability match — `ai/generate` confers the
+    // sub-command `ai/generate/stream` (matches the ACL's prefix semantics) but NOT
+    // `ai/generatex` (no bare starts_with over-grant).
+    #[test]
+    fn capability_match_is_boundary_aware() {
+        let owner = [1u8; 32];
+        let peer = [2u8; 32];
+        let g = signed(grant(&["ai/generate"], 1, &peer, PeerId::new()), &owner);
+        let a = authorizer(&owner, true);
+        assert_eq!(
+            a.authorize_command(&g, &peer, "ai/generate/stream", 100),
+            GrantAuthOutcome::Authorized,
+            "a capability confers its sub-commands on a / boundary"
+        );
+        assert_eq!(
+            a.authorize_command(&g, &peer, "ai/generatex", 100),
+            GrantAuthOutcome::NotGranted,
+            "but NOT a different command sharing the prefix without a boundary"
+        );
+    }
+
+    // what this catches: every rejection reason is TYPED + reached through the real
+    // method. Untrusted issuer, bad signature, key mismatch (stolen grant on another
+    // peer's identity) — distinct verdicts, none silently allowed.
     #[test]
     fn rejections_are_typed_and_distinct() {
         let owner = [1u8; 32];
         let peer = [2u8; 32];
-        let seen = DashMap::new();
 
         // wrong issuer → UntrustedIssuer
-        let g = signed(grant(&["ai/generate"], 1, &peer), &[9u8; 32]);
+        let g = signed(grant(&["ai/generate"], 1, &peer, PeerId::new()), &[9u8; 32]);
         assert_eq!(
-            authorize_with(&owner, &g, &peer, "ai/generate", 100, true, &seen),
+            authorizer(&owner, true).authorize_command(&g, &peer, "ai/generate", 100),
             GrantAuthOutcome::Invalid(GrantVerdict::UntrustedIssuer)
         );
 
-        // bad signature → BadSignature
-        let g = signed(grant(&["ai/generate"], 1, &peer), &owner);
+        // bad signature → BadSignature (stub returns false)
+        let g = signed(grant(&["ai/generate"], 1, &peer, PeerId::new()), &owner);
         assert_eq!(
-            authorize_with(&owner, &g, &peer, "ai/generate", 100, false, &seen),
+            authorizer(&owner, false).authorize_command(&g, &peer, "ai/generate", 100),
             GrantAuthOutcome::Invalid(GrantVerdict::BadSignature)
         );
 
-        // a DIFFERENT presenting key than the grant is bound to → KeyMismatch
-        // (a stolen grant can't ride another peer's identity).
-        let g = signed(grant(&["ai/generate"], 1, &peer), &owner);
+        // a DIFFERENT presenting key than the grant is bound to → KeyMismatch.
+        let g = signed(grant(&["ai/generate"], 1, &peer, PeerId::new()), &owner);
         assert_eq!(
-            authorize_with(&owner, &g, &[7u8; 32], "ai/generate", 100, true, &seen),
+            authorizer(&owner, true).authorize_command(&g, &[7u8; 32], "ai/generate", 100),
             GrantAuthOutcome::Invalid(GrantVerdict::KeyMismatch)
         );
     }
 
-    // what this catches: consumer-side epoch anti-replay. After accepting epoch 5, a
-    // replayed epoch-3 grant is Superseded; a revocation (higher epoch, empty caps)
-    // supersedes AND confers nothing.
+    // what this catches: epoch anti-replay AND that revocation ACTUALLY revokes.
+    // Latest epoch is authoritative, so any valid grant advances the watermark —
+    // a revocation (higher epoch, empty caps) supersedes the old real-caps grant.
     #[test]
-    fn epoch_anti_replay_and_revocation() {
+    fn epoch_anti_replay_and_revocation_supersedes() {
         let owner = [1u8; 32];
         let peer = [2u8; 32];
         let grantee = PeerId::new();
-        let seen = DashMap::new();
-
-        let mk = |caps: &[&str], epoch: u64| {
-            let mut grant = grant(caps, epoch, &peer);
-            grant.grantee = grantee; // same grantee across epochs
-            signed(grant, &owner)
-        };
+        let a = authorizer(&owner, true);
+        let mk = |caps: &[&str], epoch: u64| signed(grant(caps, epoch, &peer, grantee), &owner);
 
         // accept epoch 5
         assert_eq!(
-            authorize_with(&owner, &mk(&["ai/generate"], 5), &peer, "ai/generate", 100, true, &seen),
+            a.authorize_command(&mk(&["ai/generate"], 5), &peer, "ai/generate", 100),
             GrantAuthOutcome::Authorized
         );
         // replayed lower epoch 3 → Superseded
         assert_eq!(
-            authorize_with(&owner, &mk(&["ai/generate"], 3), &peer, "ai/generate", 100, true, &seen),
+            a.authorize_command(&mk(&["ai/generate"], 3), &peer, "ai/generate", 100),
             GrantAuthOutcome::Superseded
         );
-        // revocation: higher epoch 6, empty caps → supersedes + confers nothing
+        // revocation: higher epoch 6, empty caps → advances watermark, confers nothing
         assert_eq!(
-            authorize_with(&owner, &mk(&[], 6), &peer, "ai/generate", 100, true, &seen),
+            a.authorize_command(&mk(&[], 6), &peer, "ai/generate", 100),
             GrantAuthOutcome::NotGranted
         );
-        // now even the old epoch-5 grant is superseded (watermark advanced past it
-        // only if 6 was accepted — it wasn't, NotGranted doesn't advance; so 5 still
-        // works). This pins that NotGranted does NOT move the watermark:
+        // the revoked epoch-5 grant is now SUPERSEDED — revocation actually revoked.
         assert_eq!(
-            authorize_with(&owner, &mk(&["ai/generate"], 5), &peer, "ai/generate", 100, true, &seen),
-            GrantAuthOutcome::Authorized
+            a.authorize_command(&mk(&["ai/generate"], 5), &peer, "ai/generate", 100),
+            GrantAuthOutcome::Superseded,
+            "after a higher-epoch revocation, the old grant no longer authorizes"
         );
     }
 
     // what this catches: the REAL Ed25519GrantVerifier verifies a genuine signature
-    // over the grant body's canonical bytes and rejects a tampered one. This is the
-    // production crypto path (the stub tests above cover the surrounding logic).
+    // over the grant body's canonical bytes, and rejects tampered bytes, a tampered
+    // signature, AND malformed (wrong-length / wrong-credential) proofs — the
+    // attacker-controlled-bytes branches, none of which may panic.
     #[test]
-    fn ed25519_verifier_accepts_real_signature_rejects_tampered() {
+    fn ed25519_verifier_accepts_real_and_rejects_malformed() {
         use ed25519_dalek::{Signer, SigningKey};
 
         let sk = SigningKey::from_bytes(&[7u8; 32]);
         let vk = sk.verifying_key();
-        let body = grant(&["ai/generate"], 1, &[2u8; 32]);
+        let body = grant(&["ai/generate"], 1, &[2u8; 32], PeerId::new());
         let bytes = serde_json::to_vec(&body).expect("serialize body");
         let sig = sk.sign(&bytes);
+        let v = Ed25519GrantVerifier;
 
         let good = GrantProof {
             credential: CredentialKind::Ed25519,
             issuer_pubkey: vk.to_bytes().to_vec(),
             signature: sig.to_bytes().to_vec(),
         };
-        let v = Ed25519GrantVerifier;
         assert!(v.verify_signature(&bytes, &good), "genuine signature verifies");
 
         // tampered message → reject
@@ -337,9 +361,73 @@ mod tests {
         tampered[0] ^= 0xFF;
         assert!(!v.verify_signature(&tampered, &good), "tampered body rejected");
 
-        // wrong credential kind → reject (defensive)
-        let mut wrong = good.clone();
-        wrong.signature[0] ^= 0xFF;
-        assert!(!v.verify_signature(&bytes, &wrong), "tampered signature rejected");
+        // tampered signature → reject
+        let mut bad_sig = good.clone();
+        bad_sig.signature[0] ^= 0xFF;
+        assert!(!v.verify_signature(&bytes, &bad_sig), "tampered signature rejected");
+
+        // wrong-length key → reject, no panic
+        let short_key = GrantProof {
+            credential: CredentialKind::Ed25519,
+            issuer_pubkey: vec![0u8; 31],
+            signature: good.signature.clone(),
+        };
+        assert!(!v.verify_signature(&bytes, &short_key), "wrong-length key rejected");
+
+        // wrong-length signature → reject, no panic
+        let short_sig = GrantProof {
+            credential: CredentialKind::Ed25519,
+            issuer_pubkey: good.issuer_pubkey.clone(),
+            signature: vec![0u8; 10],
+        };
+        assert!(!v.verify_signature(&bytes, &short_sig), "wrong-length signature rejected");
+    }
+
+    /// Concurrency proof for the atomic epoch watermark (the TOCTOU fix). Gated
+    /// behind `stress-tests` per the test doctrine.
+    #[cfg(feature = "stress-tests")]
+    mod stress {
+        use super::*;
+        use std::sync::Arc as StdArc;
+
+        // what this catches: under heavy concurrent presentation of MANY epochs for
+        // the SAME grantee, the atomic `entry` keeps the watermark monotonic and the
+        // decision consistent — every outcome is a clean Authorized/Superseded (never
+        // corrupt), the final watermark equals the max epoch, and the max-epoch grant
+        // authorizes. A regression to the non-atomic get-then-update would let a
+        // superseded epoch slip an Authorized through (or corrupt the watermark).
+        #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+        async fn concurrent_same_grantee_epochs_stay_monotonic() {
+            const N: u64 = 200;
+            let owner = [1u8; 32];
+            let peer = [2u8; 32];
+            let grantee = PeerId::new();
+            let a = StdArc::new(authorizer(&owner, true));
+
+            let mut handles = Vec::new();
+            for epoch in 1..=N {
+                let a = a.clone();
+                handles.push(tokio::spawn(async move {
+                    let g = signed(grant(&["ai/generate"], epoch, &peer, grantee), &owner);
+                    let out = a.authorize_command(&g, &peer, "ai/generate", 100);
+                    // Every outcome is a clean verdict — never corrupt.
+                    assert!(matches!(
+                        out,
+                        GrantAuthOutcome::Authorized | GrantAuthOutcome::Superseded
+                    ));
+                }));
+            }
+            for h in handles {
+                h.await.expect("task");
+            }
+            // Watermark settled at the max epoch presented.
+            assert_eq!(*a.seen_epoch.get(&grantee).expect("entry"), N);
+            // The max-epoch grant always authorizes (it's never below the watermark).
+            let g = signed(grant(&["ai/generate"], N, &peer, grantee), &owner);
+            assert_eq!(
+                a.authorize_command(&g, &peer, "ai/generate", 100),
+                GrantAuthOutcome::Authorized
+            );
+        }
     }
 }
