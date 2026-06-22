@@ -84,7 +84,7 @@ pub struct DiffHunk {
 }
 
 /// How to edit a file (four modes).
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 #[ts(export, export_to = "../../../protocol/typescript/code/EditMode.ts")]
 pub enum EditMode {

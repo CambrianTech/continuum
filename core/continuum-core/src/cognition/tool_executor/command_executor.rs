@@ -83,7 +83,11 @@ impl CommandToolExecutor {
     /// at execution even though it may appear in the tool surface. Offer = the
     /// `AiSafe` surface; execute = authorized-by-identity ([[persona-is-a-client]]).
     pub fn for_persona(executor: Arc<CommandExecutor>, persona: Uuid) -> Self {
-        let transport = InProcessTransport::new(executor, Some(CallerIdentity::airc(persona)));
+        // A local persona is the owner's own in-process agent, not a cross-grid
+        // peer: it carries `LocalPersona` identity → resolves to `Trusted` at the
+        // gate (file/shell access), capped below Owner. Unforgeable remotely (the
+        // airc inbound pump stamps `Airc`); only this local spawn path mints it.
+        let transport = InProcessTransport::new(executor, Some(CallerIdentity::local_persona(persona)));
         Self::new(Connection::new(transport))
     }
 }

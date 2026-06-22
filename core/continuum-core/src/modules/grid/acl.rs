@@ -118,6 +118,23 @@ fn ai_safe_commands() -> &'static std::collections::HashSet<String> {
     })
 }
 
+/// The set of commands that declared `AccessLevel::Privileged` in their own
+/// CommandSpec — the "local-operator" tier: powerful tools (shell, git push,
+/// arbitrary file write) safe for a HIGH-trust local citizen (a local persona =
+/// `Trusted`, the owner = `Owner`) but NOT for a remote `Provisional` peer. Same
+/// single-source mechanism as [`ai_safe_commands`]: the command's own declaration
+/// drives authorization, never a parallel allow-list.
+fn privileged_commands() -> &'static std::collections::HashSet<String> {
+    static PRIVILEGED: OnceLock<std::collections::HashSet<String>> = OnceLock::new();
+    PRIVILEGED.get_or_init(|| {
+        crate::sdk_codegen::command_registry()
+            .iter()
+            .filter(|d| d.access_level == crate::sdk_codegen::AccessLevel::Privileged)
+            .map(|d| d.name.to_string())
+            .collect()
+    })
+}
+
 /// Determine the access level for a command.
 ///
 /// Order (security-significant):
@@ -126,11 +143,14 @@ fn ai_safe_commands() -> &'static std::collections::HashSet<String> {
 ///    and `ai/generate` (Provisional). Most-specific-prefix wins.
 /// 2. The command's OWN declared `AccessLevel::AiSafe` → `Provisional` (a persona's
 ///    curated, safe-for-AI tool surface — what makes its hands actually work).
-/// 3. Default → `Owner` (the `""` wildcard): unknown/unclassified = locked down.
+/// 3. The command's OWN declared `AccessLevel::Privileged` → `Trusted` (the
+///    local-operator tier — shell/git/write: a Trusted local persona or a Trusted
+///    grid node may run it; a Provisional remote peer may not).
+/// 4. Default → `Owner` (the `""` wildcard): unknown/unclassified = locked down.
 fn command_access_level(command: &str) -> CommandAccess {
     for rule in default_rules() {
         if rule.prefix.is_empty() {
-            continue; // the wildcard is the LAST resort, after the AiSafe check
+            continue; // the wildcard is the LAST resort, after the declared-tier checks
         }
         if command.starts_with(rule.prefix) {
             return rule.access;
@@ -139,6 +159,10 @@ fn command_access_level(command: &str) -> CommandAccess {
     // The command's declared destiny: AiSafe = safe for an AI caller → Provisional.
     if ai_safe_commands().contains(command) {
         return CommandAccess::Provisional;
+    }
+    // Privileged = local-operator tier → Trusted (local persona / trusted node).
+    if privileged_commands().contains(command) {
+        return CommandAccess::Trusted;
     }
     // Unclassified → Owner (the `""` wildcard's level): default-deny for personas.
     CommandAccess::Owner

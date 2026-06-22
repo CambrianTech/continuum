@@ -86,6 +86,17 @@ pub enum CallerSource {
     /// peer or sentinel. The transport layer extracted the sender's
     /// peer_id from the signed envelope before constructing this.
     Airc,
+    /// The caller is a LOCAL persona running in-process in THIS core —
+    /// the owner's own autonomous agent (e.g. Asha) acting through its
+    /// `CommandToolExecutor` over `InProcessTransport`. It is a local
+    /// citizen of this machine, NOT a cross-grid peer: it resolves to
+    /// `Trusted` (close-to-full access — file/shell/git), capped BELOW
+    /// `Owner` so the most destructive ops (`data/delete`, `grid/trust`)
+    /// stay the human operator's alone. A remote peer can NEVER present
+    /// this source — only the local spawn path
+    /// ([`CallerIdentity::local_persona`]) mints it, so it is unforgeable
+    /// over the wire (the inbound pump stamps [`Airc`](CallerSource::Airc)).
+    LocalPersona,
     /// The caller arrived over the core's TCP IPC listener — an
     /// UNauthenticated remote socket (e.g. a host-side client reaching a
     /// containerized core). Unlike [`Airc`](CallerSource::Airc) there is no
@@ -140,6 +151,19 @@ impl CallerIdentity {
         Self {
             peer_id,
             source: CallerSource::Local,
+            granted_capabilities: Vec::new(),
+        }
+    }
+
+    /// Construct a LOCAL-PERSONA caller identity — the owner's in-process
+    /// autonomous agent (e.g. Asha) acting through its `CommandToolExecutor`.
+    /// Resolves to `Trusted` at the gate (file/shell/git), capped below
+    /// `Owner`. Only the local spawn path calls this; a remote peer can't
+    /// present it (see [`CallerSource::LocalPersona`]).
+    pub fn local_persona(peer_id: Uuid) -> Self {
+        Self {
+            peer_id,
+            source: CallerSource::LocalPersona,
             granted_capabilities: Vec::new(),
         }
     }

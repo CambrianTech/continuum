@@ -164,13 +164,16 @@ pub fn build_workspace_cycle(cfg: PersonaBrainConfig) -> WorkspaceCycle {
     .with_working_memory(Arc::clone(&working_memory));
     if let Some(executor) = cfg.tool_executor {
         // Offer EXACTLY what this persona is authorized to run (offer ==
-        // authorized) — never a tool the gate would refuse. A persona is an airc
-        // caller (Provisional trust, per GridTrustAuthPolicy); widening what a
-        // persona can do = opening more commands to Provisional, which auto-widens
-        // this surface (no second list to keep in sync).
+        // authorized) — never a tool the gate would refuse. A local persona is the
+        // owner's own in-process agent: `LocalPersona` identity → `Trusted` at the
+        // gate (per GridTrustAuthPolicy), so it is offered the Trusted surface —
+        // AiSafe (file read/search) + Privileged (shell/git/write), but NOT the
+        // Owner-gated ops (data/delete, grid/trust). Widening a tier auto-widens
+        // this surface (no second list to keep in sync); offer matches the gate so
+        // the persona is never shown a tool it can't actually run.
         deliberation = deliberation
             .with_tools(super::persona_tools::authorized_tool_specs(
-                crate::modules::grid::node::TrustLevel::Provisional,
+                crate::modules::grid::node::TrustLevel::Trusted,
             ))
             .with_tool_executor(executor);
     }

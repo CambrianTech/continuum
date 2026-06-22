@@ -8,9 +8,8 @@
 //!
 //! Priority: Normal — code operations are important but not time-critical.
 
-use crate::code::types::SearchResult;
 use crate::code::{self, FileEngine, PathSecurity, ShellSession};
-use crate::code::{git_bridge, search, tree};
+use crate::code::git_bridge;
 use crate::log_info;
 use crate::logging::TimingGuard;
 use crate::runtime::{CommandResult, ModuleConfig, ModuleContext, ModulePriority, ServiceModule};
@@ -130,78 +129,9 @@ impl ServiceModule for CodeModule {
                 Ok(CommandResult::Json(serde_json::json!({ "created": true })))
             }
 
-            "code/read" => {
-                let _timer = TimingGuard::new("module", "code_read");
-                let persona_id = p.str("persona_id")?;
-                let file_path = p.str("file_path")?;
-                let start_line = p.u32_opt("start_line");
-                let end_line = p.u32_opt("end_line");
-
-                let engine = self
-                    .state
-                    .file_engines
-                    .get(persona_id)
-                    .ok_or_else(|| format!("No workspace for persona {}", persona_id))?;
-
-                let result = engine
-                    .read(file_path, start_line, end_line)
-                    .map_err(|e| e.to_string())?;
-                Ok(CommandResult::Json(
-                    serde_json::to_value(&result).unwrap_or_default(),
-                ))
-            }
-
-            "code/write" => {
-                let _timer = TimingGuard::new("module", "code_write");
-                let persona_id = p.str("persona_id")?;
-                let file_path = p.str("file_path")?;
-                let content = p.str("content")?;
-                let description = p.str_opt("description");
-
-                let engine = self
-                    .state
-                    .file_engines
-                    .get(persona_id)
-                    .ok_or_else(|| format!("No workspace for persona {}", persona_id))?;
-
-                let result = engine
-                    .write(file_path, content, description)
-                    .map_err(|e| e.to_string())?;
-                log_info!(
-                    "module",
-                    "code",
-                    "Write {} ({} bytes) by {}",
-                    file_path,
-                    result.bytes_written,
-                    persona_id
-                );
-                Ok(CommandResult::Json(
-                    serde_json::to_value(&result).unwrap_or_default(),
-                ))
-            }
-
-            "code/edit" => {
-                let _timer = TimingGuard::new("module", "code_edit");
-                let persona_id = p.str("persona_id")?;
-                let file_path = p.str("file_path")?;
-                let edit: crate::code::EditMode = p.json("edit_mode")?;
-                let description = p.str_opt("description");
-
-                let engine = self
-                    .state
-                    .file_engines
-                    .get(persona_id)
-                    .ok_or_else(|| format!("No workspace for persona {}", persona_id))?;
-
-                let result = engine
-                    .edit(file_path, &edit, description)
-                    .map_err(|e| e.to_string())?;
-                log_info!("module", "code", "Edit {} by {}", file_path, persona_id);
-                Ok(CommandResult::Json(
-                    serde_json::to_value(&result).unwrap_or_default(),
-                ))
-            }
-
+            // code/read, code/write, code/edit are migrated to typed ActionCommands
+            // (modules/code_commands.rs) and route via the object map — caller-scoped
+            // identity, real param schema, one registry. No legacy arm here.
             "code/delete" => {
                 let _timer = TimingGuard::new("module", "code_delete");
                 let persona_id = p.str("persona_id")?;
@@ -303,174 +233,9 @@ impl ServiceModule for CodeModule {
                 ))
             }
 
-            "code/search" => {
-                let _timer = TimingGuard::new("module", "code_search");
-                let persona_id = p.str("persona_id")?;
-                let pattern = p.str("pattern")?;
-                let file_glob = p.str_opt("file_glob");
-                let max_results = p.u64_or("max_results", 100) as u32;
-
-                let engine = self
-                    .state
-                    .file_engines
-                    .get(persona_id)
-                    .ok_or_else(|| format!("No workspace for persona {}", persona_id))?;
-
-                // Search across all roots (workspace + read-only roots like the main repo)
-                let roots = engine.searchable_roots();
-                let mut merged_matches = Vec::new();
-                let mut total_matches = 0u32;
-                let mut files_searched = 0u32;
-
-                for root in &roots {
-                    let remaining = max_results.saturating_sub(merged_matches.len() as u32);
-                    if remaining == 0 {
-                        break;
-                    }
-                    let result = search::search_files(root, pattern, file_glob, remaining);
-                    total_matches += result.total_matches;
-                    files_searched += result.files_searched;
-                    merged_matches.extend(result.matches);
-                }
-
-                // Dedup by file_path + line_number (roots may overlap)
-                merged_matches.sort_by(|a, b| {
-                    a.file_path
-                        .cmp(&b.file_path)
-                        .then(a.line_number.cmp(&b.line_number))
-                });
-                merged_matches
-                    .dedup_by(|a, b| a.file_path == b.file_path && a.line_number == b.line_number);
-                merged_matches.truncate(max_results as usize);
-
-                let result = SearchResult {
-                    success: true,
-                    matches: merged_matches,
-                    total_matches,
-                    files_searched,
-                    error: None,
-                };
-                Ok(CommandResult::Json(
-                    serde_json::to_value(&result).unwrap_or_default(),
-                ))
-            }
-
-            "code/tree" => {
-                let _timer = TimingGuard::new("module", "code_tree");
-                let persona_id = p.str("persona_id")?;
-                let path = p.str_opt("path");
-                let max_depth = p.u64_or("max_depth", 10) as u32;
-                let include_hidden = p.bool_or("include_hidden", false);
-
-                let engine = self
-                    .state
-                    .file_engines
-                    .get(persona_id)
-                    .ok_or_else(|| format!("No workspace for persona {}", persona_id))?;
-
-                // Resolve path against all roots (workspace + read-only roots)
-                let target = if let Some(ref rel_path) = path {
-                    let roots = engine.searchable_roots();
-                    let mut resolved = None;
-                    for root in &roots {
-                        let candidate = root.join(rel_path);
-                        if candidate.exists() && candidate.is_dir() {
-                            resolved = Some(candidate);
-                            break;
-                        }
-                    }
-                    resolved.unwrap_or_else(|| engine.workspace_root().join(rel_path))
-                } else {
-                    // No path specified — default to first read root (the main repo)
-                    // so personas see the actual project, not their stale worktree
-                    let roots = engine.searchable_roots();
-                    if roots.len() > 1 {
-                        roots[1].clone() // First read root (main repo)
-                    } else {
-                        engine.workspace_root().to_path_buf()
-                    }
-                };
-                let result = tree::generate_tree(&target, max_depth, include_hidden);
-                Ok(CommandResult::Json(
-                    serde_json::to_value(&result).unwrap_or_default(),
-                ))
-            }
-
-            // ================================================================
-            // Filesystem introspection — persona-as-developer cluster
-            // ================================================================
-            //
-            // Per docs/planning/PERSONA-AS-DEVELOPER-GAP.md (Priority 1):
-            // close the filesystem-introspection seam so a persona can
-            // probe before generate/module, enumerate before edits,
-            // and list cheaply without paying the full recursive
-            // tree cost.
-            //
-            // All three commands route through FileEngine which
-            // enforces PathSecurity — paths must be inside the
-            // workspace (or a read-only root for queries).
-
-            "code/exists" => {
-                let _timer = TimingGuard::new("module", "code_exists");
-                let persona_id = p.str("persona_id")?;
-                let file_path = p.str("file_path")?;
-
-                let engine = self
-                    .state
-                    .file_engines
-                    .get(persona_id)
-                    .ok_or_else(|| format!("No workspace for persona {}", persona_id))?;
-
-                let result = engine
-                    .exists(file_path)
-                    .map_err(|e| e.to_string())?;
-                Ok(CommandResult::Json(
-                    serde_json::to_value(&result).unwrap_or_default(),
-                ))
-            }
-
-            "code/list" => {
-                let _timer = TimingGuard::new("module", "code_list");
-                let persona_id = p.str("persona_id")?;
-                // Default to "." so callers can omit `path` to list
-                // workspace root — matches the ergonomic expectation
-                // from MODULE-CATALOG §0 examples.
-                let path = p.str_opt("path").unwrap_or(".");
-                let include_hidden = p.bool_or("include_hidden", false);
-
-                let engine = self
-                    .state
-                    .file_engines
-                    .get(persona_id)
-                    .ok_or_else(|| format!("No workspace for persona {}", persona_id))?;
-
-                let result = engine
-                    .list_dir(path, include_hidden)
-                    .map_err(|e| e.to_string())?;
-                Ok(CommandResult::Json(
-                    serde_json::to_value(&result).unwrap_or_default(),
-                ))
-            }
-
-            "code/glob" => {
-                let _timer = TimingGuard::new("module", "code_glob");
-                let persona_id = p.str("persona_id")?;
-                let pattern = p.str("pattern")?;
-                let root = p.str_opt("root");
-
-                let engine = self
-                    .state
-                    .file_engines
-                    .get(persona_id)
-                    .ok_or_else(|| format!("No workspace for persona {}", persona_id))?;
-
-                let result = engine
-                    .glob_match(pattern, root)
-                    .map_err(|e| e.to_string())?;
-                Ok(CommandResult::Json(
-                    serde_json::to_value(&result).unwrap_or_default(),
-                ))
-            }
+            // code/search, code/tree, code/exists, code/list, code/glob are migrated
+            // to typed ActionCommands (modules/code_commands.rs) and route via the
+            // object map — caller-scoped identity, real param schema, one registry.
 
             // ================================================================
             // Git Operations
@@ -836,6 +601,15 @@ impl ServiceModule for CodeModule {
 
             _ => Err(format!("Unknown code command: {command}")),
         }
+    }
+
+    /// The migrated file-operation commands as typed self-routing objects on the
+    /// ONE registry. The executor routes these names directly here (winning over
+    /// the legacy prefix arm), and their `CommandSpec` descriptors flow into
+    /// `command_registry()` → the persona tool surface + grid ACL. See
+    /// [`crate::modules::code_commands`].
+    fn commands(&self) -> Vec<Arc<dyn crate::sdk_codegen::DynCommand>> {
+        crate::modules::code_commands::command_objects(self.state.clone())
     }
 
     fn as_any(&self) -> &dyn Any {

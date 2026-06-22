@@ -29,6 +29,7 @@ pub mod cargo;
 pub mod channel;
 pub mod chat;
 pub mod code;
+pub mod code_commands;
 pub mod cognition;
 pub mod data;
 pub mod dataset;

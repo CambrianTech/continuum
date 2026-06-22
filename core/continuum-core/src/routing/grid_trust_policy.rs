@@ -133,6 +133,11 @@ impl GridTrustAuthPolicy {
             None => TrustLevel::Owner,
             Some(c) => match c.source {
                 CallerSource::Local => TrustLevel::Owner,
+                // A local in-process persona — the owner's own agent on this box —
+                // resolves to Trusted: close-to-full access (file/shell/git via the
+                // Privileged→Trusted tier) but capped below Owner, so the most
+                // destructive ops stay the human operator's. Unforgeable remotely.
+                CallerSource::LocalPersona => TrustLevel::Trusted,
                 CallerSource::Airc | CallerSource::Tcp => {
                     match self.trust_source.as_ref().and_then(|s| s.trust_of(c.peer_id)) {
                         Some(registered) => registered.min(REMOTE_TRUST_CEILING),
@@ -161,6 +166,9 @@ pub fn caller_trust(caller: Option<&CallerIdentity>) -> TrustLevel {
         None => TrustLevel::Owner,
         Some(c) => match c.source {
             CallerSource::Local => TrustLevel::Owner,
+            // A local in-process persona (the owner's agent) is Trusted — the same
+            // resolution as the gate's resolve_trust, so offer == authorized.
+            CallerSource::LocalPersona => TrustLevel::Trusted,
             // TODO(airc-trust-bridge): EVERY airc caller maps to the Provisional
             // ceiling regardless of the peer's real grid trust — so a `Blocked`
             // peer is NOT distinguished here and gets Provisional's AiSafe surface.
@@ -421,6 +429,46 @@ mod tests {
                 Verdict::Forbidden { .. }
             ),
             "a Blocked peer stays denied even with a conferring grant"
+        );
+    }
+
+    // what this catches: THE local-persona trust tier — Asha. A local in-process
+    // persona resolves to Trusted: it may run AiSafe tools (code/read) AND the
+    // Privileged local-operator tier (code/shell — bash), but is STILL denied
+    // Owner-only ops (data/delete stays the human operator's). And a remote
+    // Provisional airc peer is DENIED code/shell — no cross-grid RCE. This is the
+    // gate half of "Asha codes like a peer, the internet doesn't" (relies on
+    // code/read=AiSafe + code/shell=Privileged in the registry).
+    #[test]
+    fn local_persona_is_trusted_runs_shell_but_not_owner_ops() {
+        let policy = GridTrustAuthPolicy::new();
+        let asha = CallerIdentity::local_persona(Uuid::new_v4());
+
+        assert_eq!(
+            caller_trust(Some(&asha)),
+            TrustLevel::Trusted,
+            "a local persona is Trusted — close-to-full access, below Owner"
+        );
+        assert_eq!(
+            policy.gate(&decision("code/read"), Some(&asha)),
+            Verdict::Allowed,
+            "AiSafe file tool"
+        );
+        assert_eq!(
+            policy.gate(&decision("code/shell"), Some(&asha)),
+            Verdict::Allowed,
+            "Privileged bash — allowed for a local persona (Trusted tier)"
+        );
+        assert!(
+            matches!(policy.gate(&decision("data/delete"), Some(&asha)), Verdict::Forbidden { .. }),
+            "Owner-only ops stay the human operator's, even for Asha"
+        );
+
+        // A remote Provisional airc peer must NOT get bash — the RCE boundary.
+        let remote = CallerIdentity::airc(Uuid::new_v4());
+        assert!(
+            matches!(policy.gate(&decision("code/shell"), Some(&remote)), Verdict::Forbidden { .. }),
+            "a remote Provisional peer is denied shell — no cross-grid RCE"
         );
     }
 
