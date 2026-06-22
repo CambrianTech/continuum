@@ -30,6 +30,66 @@ use crate::config_env;
 /// catalog, so the default lives in exactly one place.
 pub const DEFAULT_HOST: &str = "http://127.0.0.1:8888";
 
+/// The canonical location unsloth Studio writes the agent API key — the source of
+/// truth for the gateway credential. Startup recovers from HERE when the key has
+/// been deleted/expired out of `~/.continuum/config.env`.
+fn studio_agent_key_path() -> Option<std::path::PathBuf> {
+    dirs::home_dir().map(|h| {
+        h.join(".unsloth")
+            .join("studio")
+            .join("auth")
+            .join("agent_api_key.json")
+    })
+}
+
+/// Outcome of [`ensure_api_key`] — announced loudly at boot, never silent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApiKeyStatus {
+    /// Already present in `~/.continuum/config.env` (the one owner).
+    Present,
+    /// Was missing; recovered from unsloth Studio and persisted to config.env.
+    RecoveredFromStudio,
+    /// Gone from config.env AND Studio — needs the operator (paste / regenerate).
+    Missing,
+}
+
+/// Impervious-startup key resolution: make `UNSLOTH_API_KEY` resolvable for this
+/// boot, self-healing the common screwup (the key vanished from config.env because
+/// it expired / got deleted / a reinstall wiped it) by recovering it from the
+/// canonical Studio source and persisting it through the ONE owner
+/// ([`config_env::upsert`]). It NEVER silently proceeds without the key — a
+/// truly-gone key returns [`ApiKeyStatus::Missing`] so the caller fails LOUD with
+/// remediation ([[fallbacks-are-illegal-fail-loud]]). Single writer, one config.
+pub fn ensure_api_key() -> ApiKeyStatus {
+    if config_env::read("UNSLOTH_API_KEY")
+        .map(|s| !s.trim().is_empty())
+        .unwrap_or(false)
+    {
+        return ApiKeyStatus::Present;
+    }
+    if let Some(path) = studio_agent_key_path() {
+        if let Ok(bytes) = std::fs::read(&path) {
+            if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&bytes) {
+                if let Some(key) = v
+                    .get("keys")
+                    .and_then(|ks| ks.get(0))
+                    .and_then(|k| k.as_str())
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                {
+                    if config_env::upsert("UNSLOTH_API_KEY", key).is_ok() {
+                        // Make it visible to secrets()'s env overlay too, in case the
+                        // secrets cache loads later in this same process.
+                        std::env::set_var("UNSLOTH_API_KEY", key);
+                        return ApiKeyStatus::RecoveredFromStudio;
+                    }
+                }
+            }
+        }
+    }
+    ApiKeyStatus::Missing
+}
+
 /// **THE one accessor for the unsloth endpoint.** The single place that reads the
 /// `UNSLOTH_BASE_URL` setting (or [`DEFAULT_HOST`]) and returns the canonical
 /// **host root** (no trailing `/v1`, no trailing slash). Every consumer asks

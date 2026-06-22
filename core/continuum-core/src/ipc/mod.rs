@@ -764,6 +764,34 @@ pub fn start_server(
         boot_mode.label()
     );
 
+    // Impervious startup: ensure the unsloth gateway key is resolvable BEFORE any
+    // adapter reads secrets. Self-heals the common screwup (key expired/deleted out
+    // of config.env) by recovering it from the canonical Studio source and
+    // persisting via the ONE owner; a truly-gone key fails LOUD with remediation —
+    // never silent ([[fallbacks-are-illegal-fail-loud]]).
+    {
+        use crate::inference::unsloth_control::{ensure_api_key, ApiKeyStatus};
+        use crate::runtime::boot_status::{boot_status, BootStatusKind};
+        match ensure_api_key() {
+            ApiKeyStatus::Present => boot_status(
+                "unsloth-key",
+                BootStatusKind::Ok,
+                "present in ~/.continuum/config.env",
+            ),
+            ApiKeyStatus::RecoveredFromStudio => boot_status(
+                "unsloth-key",
+                BootStatusKind::Degraded,
+                "was missing — recovered from unsloth Studio and persisted to ~/.continuum/config.env",
+            ),
+            ApiKeyStatus::Missing => boot_status(
+                "unsloth-key",
+                BootStatusKind::Failed,
+                "UNSLOTH_API_KEY gone from ~/.continuum/config.env AND ~/.unsloth/studio/auth/agent_api_key.json \
+                 — open unsloth Studio to generate a key (or paste it into config.env). Inference gateway REQUIRED.",
+            ),
+        }
+    }
+
     // Load the model_registry BEFORE any ServiceModule is constructed.
     // Several adapters (AnthropicAdapter, LlamaCppAdapter, …) read from
     // `model_registry::global()` in their constructors — if init hasn't
