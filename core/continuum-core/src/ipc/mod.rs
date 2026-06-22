@@ -1304,6 +1304,12 @@ pub fn start_server(
         let continuum_root = crate::modules::persona_instance_manager::resolve_continuum_root();
         let daemon_socket_for_rag_inspect = daemon_socket.clone();
         let registry = crate::persona::PersonaAircRuntimeRegistry::new();
+        // Native airc kanban tools — personas claim/create/release cards on the
+        // shared board as THEIR OWN airc key, delegating to airc's work API. Shares
+        // the SAME registry (cheap Clone over an inner Arc) so a work command can
+        // resolve the calling persona's live airc runtime. Registered before the
+        // executor is built so its typed commands land on the one registry.
+        runtime.register(Arc::new(crate::modules::work::WorkModule::new(registry.clone())));
         let instance_manager = Arc::new(
             crate::modules::persona_instance_manager::PersonaInstanceManagerModule::new(
                 registry,
