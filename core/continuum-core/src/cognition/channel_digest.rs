@@ -156,6 +156,19 @@ impl ChannelDigestBuilder {
         grounding: usize,
     ) -> Result<ChannelDigest, AircError> {
         let events = reader.page_recent(fetch_limit).await?;
+        Ok(self.build_from_events(persona_id, room_id, events, grounding))
+    }
+
+    /// Build a digest from PRE-FETCHED events — lets a caller that already paged
+    /// the transcript (e.g. to DERIVE the room when the context didn't carry it)
+    /// reuse those events instead of paging twice. The room split logic is identical.
+    pub fn build_from_events(
+        &self,
+        persona_id: Uuid,
+        room_id: Uuid,
+        events: Vec<TranscriptEvent>,
+        grounding: usize,
+    ) -> ChannelDigest {
         let bookmark = self.bookmarks.last_read(persona_id, room_id);
 
         // Filter to THIS channel — lamport is per-room, so mixing rooms would make
@@ -181,13 +194,13 @@ impl ChannelDigestBuilder {
         let unread_start = first_unread - grounding_start;
         let elements = elements.split_off(grounding_start);
 
-        Ok(ChannelDigest {
+        ChannelDigest {
             room_id,
             persona_id,
             bookmark,
             elements,
             unread_start,
-        })
+        }
     }
 }
 

@@ -171,39 +171,41 @@ impl RagSource for AircRagSource {
         if ctx.persona_id != self.persona_id {
             return Self::empty(ResolutionPreference::Placeholder);
         }
-        // No channel scope → no channel context. Not a fallback — there's simply no
-        // room to digest (background consolidation / idle tick).
-        let Some(room) = ctx.airc_room else {
+        // Page the transcript FIRST, so we can DERIVE the room when the turn's
+        // RagContext didn't carry it (compose_for_turn builds it with airc_room=None).
+        // page_recent is scoped to the persona's current room, so the events' own
+        // room IS the channel — deriving it is correct, not a fallback, and is what
+        // keeps the persona from going deaf to the live conversation.
+        let events = match self.reader.page_recent(self.fetch_limit).await {
+            Ok(e) => e,
+            Err(err) => {
+                tracing::warn!(
+                    error = %err,
+                    persona_id = %self.persona_id,
+                    "airc rag: page_recent failed — empty delivery, cognition stays up"
+                );
+                return Self::empty(ResolutionPreference::Placeholder);
+            }
+        };
+        let Some(room_id) = ctx
+            .airc_room
+            .map(|r| r.as_uuid())
+            .or_else(|| events.last().map(|e| e.room_id.as_uuid()))
+        else {
+            // No room scope AND no transcript — genuinely nothing to digest.
             return Self::empty(ResolutionPreference::Placeholder);
         };
-        let room_id = room.as_uuid();
 
-        // Pre-staged by the region, or built once now via the SAME builder. Identical
-        // shape either way (lazy compute-once, not a fallback).
+        // Pre-staged by the region (if it staged this room), else built once now from
+        // the events we already paged — identical shape (lazy compute-once).
         let digest = match self.buffer.peek(&(self.persona_id, room_id)) {
             Some(d) => d,
-            None => match self
-                .builder
-                .build(
-                    self.persona_id,
-                    room_id,
-                    self.reader.as_ref(),
-                    self.fetch_limit,
-                    self.grounding,
-                )
-                .await
-            {
-                Ok(d) => Arc::new(d),
-                Err(err) => {
-                    tracing::warn!(
-                        error = %err,
-                        persona_id = %self.persona_id,
-                        room = %room_id,
-                        "airc rag: digest build failed — empty delivery, cognition stays up"
-                    );
-                    return Self::empty(ResolutionPreference::Placeholder);
-                }
-            },
+            None => Arc::new(self.builder.build_from_events(
+                self.persona_id,
+                room_id,
+                events,
+                self.grounding,
+            )),
         };
 
         let (items, tokens_used) = Self::pack_digest(&digest, budget);
@@ -358,14 +360,27 @@ mod tests {
         assert_eq!(delivery.items[1].metadata.get("unread").and_then(|v| v.as_bool()), Some(true));
     }
 
-    // what this catches: no airc_room in ctx → empty (no channel scope), never a
-    // raw page. There is no alternate context path.
+    // what this catches: THE DEAF-PERSONA FIX — when the turn's ctx has no airc_room
+    // (compose_for_turn sets None), the room is DERIVED from the transcript (page_recent
+    // is room-scoped) so the persona still hears the conversation, instead of going
+    // deaf. Regression guard for the slice-2 over-strict airc_room requirement.
     #[tokio::test]
-    async fn no_room_scope_delivers_empty() {
+    async fn no_room_scope_derives_room_from_transcript() {
         let room = RoomId::new();
         let reader = Arc::new(StubReader::new(vec![event_in(room, Some("hi"), 1)]));
         let (source, _, _) = isolated_source(reader);
         let ctx = RagContext::for_persona(persona(), 1_000_000); // airc_room = None
+        let delivery = source.deliver(&ctx, 1_000, ResolutionPreference::Raw).await;
+        assert_eq!(delivery.items.len(), 1, "derives the room from the transcript, not deaf");
+        assert_eq!(delivery.items[0].content, "hi");
+    }
+
+    // what this catches: genuinely nothing — no room scope AND no transcript → empty.
+    #[tokio::test]
+    async fn no_room_no_transcript_delivers_empty() {
+        let reader = Arc::new(StubReader::new(vec![]));
+        let (source, _, _) = isolated_source(reader);
+        let ctx = RagContext::for_persona(persona(), 1_000_000);
         let delivery = source.deliver(&ctx, 1_000, ResolutionPreference::Raw).await;
         assert!(delivery.items.is_empty());
     }
