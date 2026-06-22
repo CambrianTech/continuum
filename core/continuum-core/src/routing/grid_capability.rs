@@ -81,7 +81,12 @@ impl GrantVerifier for Ed25519GrantVerifier {
 /// command exactly OR is a path-prefix of it on a `/` boundary. So `"ai/generate"`
 /// confers `ai/generate` and `ai/generate/stream`, but NOT `ai/generatex` (no bare
 /// `starts_with`, which would be the classic prefix-without-boundary over-grant).
-fn confers(capabilities: &[String], command: &str) -> bool {
+///
+/// `pub(crate)` so the gate's grant fast-path
+/// ([`GridTrustAuthPolicy::gate`](crate::routing::GridTrustAuthPolicy)) re-checks a
+/// caller's verified `granted_capabilities` through the SAME matching rule — one
+/// source of truth for capability→command conferral, never a divergent copy.
+pub(crate) fn confers(capabilities: &[String], command: &str) -> bool {
     capabilities
         .iter()
         .any(|c| command == c || command.starts_with(&format!("{c}/")))

@@ -191,6 +191,26 @@ impl AuthPolicy for GridTrustAuthPolicy {
             return Verdict::Allowed;
         }
         let path = decision.path();
+        // Contracted-grid fast-path: a caller presenting an owner-signed capability
+        // grant the airc command handler ALREADY verified (signature + key-binding
+        // + mesh + expiry + epoch, against the authenticated sender key) carries the
+        // conferred tags in `granted_capabilities`. If they confer THIS command, it
+        // is authorized regardless of the tier ceiling — the explicit signed
+        // contract overrides the coarse default trust. Sound because the field is
+        // populated ONLY post-verification by the boundary; re-checked here through
+        // grid_capability::confers (the one capability-match rule) so the gate stays
+        // the authority. NOTE: a Blocked peer is denied BEFORE this (resolve_trust →
+        // is_command_authorized below would deny), but a grant should not resurrect a
+        // Blocked peer — so the fast-path is gated on trust > Blocked.
+        if trust > TrustLevel::Blocked {
+            if let Some(c) = caller {
+                if !c.granted_capabilities.is_empty()
+                    && crate::routing::grid_capability::confers(&c.granted_capabilities, path)
+                {
+                    return Verdict::Allowed;
+                }
+            }
+        }
         if is_command_authorized(path, trust) {
             Verdict::Allowed
         } else {
@@ -329,6 +349,79 @@ mod tests {
                 other => panic!("TCP must be forbidden for {owner_only}, got {other:?}"),
             }
         }
+    }
+
+    // what this catches: THE contracted-grid fast-path. A remote airc caller is
+    // capped at Provisional (only the ai/generate namespace is admitted), so
+    // ai/embedding is normally FORBIDDEN. But when the caller carries a VERIFIED
+    // granted capability for it (the airc handler having authorized an owner-signed
+    // grant against the authenticated sender key), the gate honors the explicit
+    // signed contract and ALLOWS it — overriding the coarse tier default. Without
+    // the grant the same command is denied. This is the gate-side half of the
+    // capability-grant wiring; the handler-side producer populates the field.
+    #[test]
+    fn verified_grant_overrides_tier_ceiling_for_conferred_command() {
+        let policy = GridTrustAuthPolicy::new();
+
+        // Baseline: a plain remote caller is denied ai/embedding (outside the
+        // Provisional ai/generate namespace grant).
+        let plain = CallerIdentity::airc(Uuid::new_v4());
+        assert!(matches!(
+            policy.gate(&decision("ai/embedding"), Some(&plain)),
+            Verdict::Forbidden { .. }
+        ));
+
+        // Same caller, now carrying a verified grant conferring ai/embedding → the
+        // signed contract authorizes it.
+        let granted = CallerIdentity::airc(Uuid::new_v4())
+            .with_granted_capabilities(vec!["ai/embedding".to_string()]);
+        assert_eq!(
+            policy.gate(&decision("ai/embedding"), Some(&granted)),
+            Verdict::Allowed,
+            "an owner-signed, handler-verified grant overrides the tier ceiling"
+        );
+        // Boundary-aware: the grant confers sub-commands on a / boundary…
+        assert_eq!(
+            policy.gate(&decision("ai/embedding/batch"), Some(&granted)),
+            Verdict::Allowed
+        );
+        // …but NOT a command it doesn't confer.
+        assert!(matches!(
+            policy.gate(&decision("data/delete"), Some(&granted)),
+            Verdict::Forbidden { .. }
+        ));
+    }
+
+    // what this catches: a verified grant does NOT resurrect a BLOCKED peer. Even
+    // carrying a conferring capability, a peer the owner explicitly Blocked is
+    // denied — the fast-path is gated on trust > Blocked, so revocation-by-Block
+    // can't be bypassed by also presenting an older grant.
+    #[test]
+    fn verified_grant_does_not_resurrect_a_blocked_peer() {
+        use crate::modules::grid::node::TrustLevel;
+        use std::collections::HashMap;
+
+        struct MockTrust(HashMap<Uuid, TrustLevel>);
+        impl PeerTrustSource for MockTrust {
+            fn trust_of(&self, peer_id: Uuid) -> Option<TrustLevel> {
+                self.0.get(&peer_id).copied()
+            }
+        }
+
+        let blocked = Uuid::new_v4();
+        let mut m = HashMap::new();
+        m.insert(blocked, TrustLevel::Blocked);
+        let policy = GridTrustAuthPolicy::with_trust_source(Arc::new(MockTrust(m)));
+
+        let b = CallerIdentity::airc(blocked)
+            .with_granted_capabilities(vec!["ai/embedding".to_string()]);
+        assert!(
+            matches!(
+                policy.gate(&decision("ai/embedding"), Some(&b)),
+                Verdict::Forbidden { .. }
+            ),
+            "a Blocked peer stays denied even with a conferring grant"
+        );
     }
 
     // what this catches: local + substrate callers are NOT gated — the
