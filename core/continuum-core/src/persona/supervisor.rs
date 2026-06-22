@@ -107,7 +107,26 @@ impl PersonaAdapterFactory for UnslothPersonaAdapterFactory {
         &self,
         _profile: &PersonaInferenceProfile,
     ) -> Result<Arc<dyn AIProviderAdapter>, String> {
-        let mut adapter = crate::ai::openai_adapter::OpenAICompatibleAdapter::from_registry("unsloth");
+        // Model-fit at upstart: the persona runs the model unsloth ACTUALLY serves
+        // (discovered via /v1/models), bound explicitly — not the providers.toml
+        // default (which drifts from what's loaded) nor a hardcoded per-tier id.
+        // Fail LOUD if the gateway serves nothing: a persona cannot upstart without a
+        // model, and we never fall back to a stand-in ([[fallbacks-are-illegal-fail-loud]]).
+        // (slice 2b: when unsloth serves >1, rank by capability/need fit here.)
+        let base = crate::inference::unsloth_control::unsloth_base_url();
+        let served = crate::inference::unsloth_control::UnslothHttp::from_config()
+            .list_models()
+            .await
+            .map_err(|e| format!("unsloth gateway unreachable while selecting model ({base}): {e}"))?;
+        let model = served.into_iter().next().ok_or_else(|| {
+            format!(
+                "unsloth gateway @ {base} serves NO model — load one (UNSLOTH_MODEL / unsloth Studio); \
+                 a persona cannot upstart without a model (no local fallback)"
+            )
+        })?;
+        let mut adapter = crate::ai::openai_adapter::OpenAICompatibleAdapter::from_registry("unsloth")
+            .with_runtime_base_url(base)
+            .with_default_model(model);
         adapter
             .initialize()
             .await

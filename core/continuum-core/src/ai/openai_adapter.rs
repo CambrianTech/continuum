@@ -169,6 +169,15 @@ impl OpenAICompatibleAdapter {
         self
     }
 
+    /// Override the default model id (the one a `request.model: None` resolves to).
+    /// Used at persona upstart to bind the adapter to the model unsloth ACTUALLY
+    /// serves (discovered via `/v1/models`), instead of the providers.toml default
+    /// — which can drift from what's loaded. Called post-construction, before init.
+    pub fn with_default_model(mut self, model: String) -> Self {
+        self.config.default_model = model;
+        self
+    }
+
     /// The host root that request URLs append `/v1/...` to — the runtime override
     /// if set, else the configured base. ONE resolution point for all request
     /// sites (was copy-pasted 4×). The value is already canonical (bare host): the
