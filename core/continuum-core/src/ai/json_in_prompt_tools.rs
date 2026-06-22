@@ -37,7 +37,9 @@ struct ToolCallEnvelope {
 #[derive(Debug, Deserialize)]
 struct ToolCallJson {
     name: String,
-    #[serde(default)]
+    /// `arguments` is the canonical key; `parameters` is accepted as an alias so
+    /// Llama/Mistral-style bare calls (`{"name", "parameters"}`) normalize cleanly.
+    #[serde(default, alias = "parameters")]
     arguments: Value,
 }
 
@@ -131,28 +133,132 @@ pub fn parse_tool_call(text: &str) -> Option<ToolCall> {
     parse_tool_calls(text).into_iter().next()
 }
 
-/// Extract ALL tool-call envelopes a model emitted in its text — robust to the
-/// mess real base models produce: ```json fences, surrounding prose, `<think>`
-/// blocks, MULTIPLE calls in one turn, and a MALFORMED sibling (e.g. a call with a
-/// missing closing brace) next to a valid one. A malformed call is skipped; every
-/// well-formed `{"tool_call": {...}}` is returned, in order, de-overlapped.
+/// Extract every tool call a base model emitted in its text, normalized to the one
+/// canonical [`ToolCall`] — across the VARIETY of surface formats different base
+/// models use. Tries each registered [`ToolCallFormat`] most-specific-first; the
+/// first format that yields any calls wins (a model emits ONE format per turn, so
+/// this avoids cross-format double-counting). Robust to ```json fences, prose,
+/// `<think>` blocks, multiple calls, and a malformed sibling next to a valid one.
 ///
-/// This is the flexible floor: the BASE MODEL picks the surface format, the adapter
-/// adapts. (A LoRA can later make the model emit native calls; until then this
-/// keeps a persona's hands working regardless of how the model phrases the call.)
+/// This is the flexible floor for continuum's dynamic model mix: the BASE MODEL
+/// picks the format, the adapter adapts. Adding support for a new model's format is
+/// ONE new `ToolCallFormat` impl — no change to the adapter or the agent loop
+/// ([[polymorphism-pattern]]). A LoRA can later train a model toward our canonical
+/// envelope, but until then a persona's hands work on any of these.
 pub fn parse_tool_calls(text: &str) -> Vec<ToolCall> {
+    for fmt in tool_call_formats() {
+        let calls = fmt.parse(text);
+        if !calls.is_empty() {
+            return calls;
+        }
+    }
+    Vec::new()
+}
+
+/// One way a base model surfaces a tool call in text. Pure parsing → canonical
+/// [`ToolCall`]s; no model/gateway coupling. The registry ([`tool_call_formats`])
+/// is the single place the supported variety lives.
+trait ToolCallFormat: Send + Sync {
+    /// Stable id (telemetry / "which format matched").
+    fn id(&self) -> &'static str;
+    /// Extract any calls in THIS format from `text` (empty = not this format).
+    fn parse(&self, text: &str) -> Vec<ToolCall>;
+}
+
+/// The supported surface formats, most-specific first. Extend this list to support
+/// a new base model — the only edit a new format requires.
+fn tool_call_formats() -> &'static [&'static dyn ToolCallFormat] {
+    &[&EnvelopeFormat, &TaggedFormat, &BareFormat]
+}
+
+/// `{"tool_call": {"name": "...", "arguments": {...}}}` — continuum's injected
+/// JsonInPrompt contract (and what a LoRA will be trained to emit).
+struct EnvelopeFormat;
+impl ToolCallFormat for EnvelopeFormat {
+    fn id(&self) -> &'static str {
+        "envelope"
+    }
+    fn parse(&self, text: &str) -> Vec<ToolCall> {
+        scan_objects(text, |obj| {
+            serde_json::from_str::<ToolCallEnvelope>(obj)
+                .ok()
+                .map(|e| e.tool_call)
+                .filter(|c| !c.name.trim().is_empty())
+                .map(Into::into)
+        })
+    }
+}
+
+/// `<tool_call>{...}</tool_call>` — Qwen / Hermes / NousResearch style. Strips the
+/// tags and parses the inner object as a bare or enveloped call.
+struct TaggedFormat;
+impl ToolCallFormat for TaggedFormat {
+    fn id(&self) -> &'static str {
+        "tagged"
+    }
+    fn parse(&self, text: &str) -> Vec<ToolCall> {
+        let mut out = Vec::new();
+        let mut rest = text;
+        while let Some(open) = rest.find("<tool_call>") {
+            let after = &rest[open + "<tool_call>".len()..];
+            let inner = match after.find("</tool_call>") {
+                Some(close) => &after[..close],
+                None => after, // unterminated tag — take the remainder
+            };
+            // Inner is usually bare `{name,arguments}`; tolerate an envelope too.
+            out.extend(EnvelopeFormat.parse(inner));
+            if out.is_empty() {
+                out.extend(BareFormat.parse(inner));
+            }
+            rest = match after.find("</tool_call>") {
+                Some(close) => &after[close + "</tool_call>".len()..],
+                None => "",
+            };
+        }
+        out
+    }
+}
+
+/// Bare `{"name": "...", "arguments"|"parameters": {...}}` — Llama / Mistral /
+/// generic. Requires an `arguments`/`parameters` key present so prose containing a
+/// stray `{"name": ...}` isn't mistaken for a call (tried LAST, so our envelope and
+/// tagged models never reach it).
+struct BareFormat;
+impl ToolCallFormat for BareFormat {
+    fn id(&self) -> &'static str {
+        "bare"
+    }
+    fn parse(&self, text: &str) -> Vec<ToolCall> {
+        scan_objects(text, |obj| {
+            if !obj.contains("\"arguments\"") && !obj.contains("\"parameters\"") {
+                return None; // not a tool call — avoid false positives
+            }
+            serde_json::from_str::<ToolCallJson>(obj)
+                .ok()
+                .filter(|c| !c.name.trim().is_empty())
+                .map(Into::into)
+        })
+    }
+}
+
+/// Scan `text` for balanced `{...}` objects (ignoring braces inside JSON strings),
+/// applying `f` to each; collect the `Some` results, skipping past a matched object
+/// so its insides aren't re-scanned. A malformed (unbalanced) object is skipped and
+/// scanning resumes after it. Shared by the object-based formats.
+fn scan_objects<F>(text: &str, f: F) -> Vec<ToolCall>
+where
+    F: Fn(&str) -> Option<ToolCall>,
+{
     let bytes = text.as_bytes();
     let mut out = Vec::new();
     let mut i = 0;
     while i < bytes.len() {
         if bytes[i] == b'{' {
             if let Some(end) = matching_brace_end(bytes, i) {
-                if let Ok(env) = serde_json::from_str::<ToolCallEnvelope>(&text[i..=end]) {
-                    if !env.tool_call.name.trim().is_empty() {
-                        out.push(env.tool_call.into()); // From<ToolCallJson> for ToolCall
-                        i = end + 1; // consume this envelope; don't re-scan its insides
-                        continue;
-                    }
+                if let Some(call) = f(&text[i..=end]) {
+                    out.push(call);
+                    i = end + 1; // consume this object; don't re-scan its insides
+                    continue;
                 }
             }
         }
@@ -316,5 +422,35 @@ mod tests {
         assert_eq!(calls.len(), 2, "both calls extracted: {calls:?}");
         assert_eq!(calls[0].name, "code/read");
         assert_eq!(calls[1].name, "code/search");
+    }
+
+    // what this catches: the DYNAMIC model variety — Qwen/Hermes <tool_call> tags
+    // around a bare {name,arguments}. The registry's TaggedFormat normalizes it to
+    // the same canonical ToolCall, so a different base model "just works".
+    #[test]
+    fn parses_qwen_style_tagged_call() {
+        let q = "<tool_call>\n{\"name\": \"code/read\", \"arguments\": {\"file_path\": \"x.rs\"}}\n</tool_call>";
+        let tc = parse_tool_call(q).expect("tagged call");
+        assert_eq!(tc.name, "code/read");
+        assert_eq!(tc.input["file_path"], "x.rs");
+    }
+
+    // what this catches: Llama/Mistral-style BARE call with `parameters` (not
+    // `arguments`). BareFormat + the `parameters` alias normalize it.
+    #[test]
+    fn parses_llama_style_bare_parameters_call() {
+        let l = r#"sure, calling: {"name": "code/search", "parameters": {"pattern": "todo"}}"#;
+        let tc = parse_tool_call(l).expect("bare call");
+        assert_eq!(tc.name, "code/search");
+        assert_eq!(tc.input["pattern"], "todo");
+    }
+
+    // what this catches: NO false positive — prose mentioning a JSON object with a
+    // `name` but no arguments/parameters is NOT treated as a tool call (the bare
+    // format's guard). A persona musing "my name is Asha" must not fire a tool.
+    #[test]
+    fn prose_with_a_name_field_is_not_a_tool_call() {
+        assert!(parse_tool_calls(r#"I think {"name": "Asha"} is a nice handle."#).is_empty());
+        assert!(parse_tool_call("just answering normally, no tools today").is_none());
     }
 }
