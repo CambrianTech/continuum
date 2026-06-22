@@ -29,6 +29,7 @@
 
 pub mod adaptive_throughput;
 pub mod audit;
+pub mod channel_element;
 pub mod check_redundancy;
 pub mod embedding;
 pub mod generate_recipe;
