@@ -1,19 +1,30 @@
-//! Unsloth model-load keystone (#24) — ensure the engine has a model loaded.
+//! Unsloth model-load keystone (#24) — ensure the gateway's ACTIVE model is the
+//! one the caller is about to generate with.
 //!
 //! unsloth Studio starts **EMPTY** — `/v1/models` → `[]`, and any inference
-//! (`/v1/chat`, `/v1/embeddings`) returns "No GGUF model loaded" until a model
-//! is loaded. So nothing a persona needs serves until *something* tells unsloth
-//! which model to load. This is that something: the reliable-startup keystone —
-//! "automatic after the key." It's pure delegation over unsloth's HTTP
-//! management surface (UNSLOTH-INTEGRATION.md §3.5), never a CLI subprocess:
-//!   - `GET  {base}/v1/models`            — is a model loaded?
+//! (`/v1/chat`, `/v1/embeddings`) returns "No model loaded. Call POST
+//! /inference/load first." until a model is loaded. Worse, the gateway serves a
+//! SINGLE resident model and **ignores the `model` field** on
+//! `/v1/chat/completions`: request M2 while M1 is resident and it silently
+//! answers as M1 (verified 2026-06-23). And it idle-unloads to free VRAM, so a
+//! live persona goes mute mid-life. So "is *something* loaded" is NOT safety —
+//! only "is *the right* model active" is. This is that keystone: pure delegation
+//! over unsloth's HTTP management surface (UNSLOTH-INTEGRATION.md §3.5), never a
+//! CLI subprocess:
+//!   - `GET  {base}/api/inference/status` — which model is ACTIVE (`active_model`)?
 //!   - `POST {base}/api/inference/load`   — load `{model_path}` (loads synchronously)
 //!
+//! The model identifier is dynamic + API-driven: the SAME hub id the persona
+//! generates with is what `/api/inference/load` accepts (verified) — no
+//! filesystem path, no per-model config, works for any of N models. The id that
+//! routes generation also drives the load (one source of truth).
+//!
 //! ## Why a trait (TDD)
-//! The DECISION ("loaded? → skip; empty? → load; unreachable? → degrade") is
-//! separated from the HTTP I/O behind [`UnslothControl`], so [`ensure_model_loaded`]
-//! is unit-tested against a fake with zero network — the logic is the part that
-//! must be correct + reliable. [`UnslothHttp`] is the real reqwest impl.
+//! The DECISION ("right model active? → skip; wrong/none → load; unreachable →
+//! degrade") is separated from the HTTP I/O behind [`UnslothControl`], so
+//! [`ensure_model_active`] is unit-tested against a fake with zero network — the
+//! logic is the part that must be correct + reliable. [`UnslothHttp`] is the real
+//! reqwest impl.
 //!
 //! ## Degrade, never panic ([[substrate-is-a-good-citizen-on-the-host]] / #26)
 //! unsloth unreachable or a failed load → [`EnsureOutcome::Degraded`], logged,
@@ -21,7 +32,9 @@
 //! we never panic on a missing/owned-by-another-process engine.
 
 use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
+use ts_rs::TS;
 
 use crate::config_env;
 
@@ -110,7 +123,7 @@ pub fn unsloth_base_url() -> String {
         .to_string()
 }
 
-/// What `ensure_model_loaded` did — the inspectable outcome.
+/// What `ensure_model_active` did — the inspectable outcome.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EnsureOutcome {
     /// A model was already serving — no-op (steady state, the common case).
@@ -120,6 +133,57 @@ pub enum EnsureOutcome {
     /// unsloth unreachable or the load failed — degraded with the reason. The
     /// caller keeps running on its fallback path; this is NOT fatal.
     Degraded { reason: String },
+}
+
+/// The gateway's live model-residency snapshot — the `ai/inference/status`
+/// payload. `active_model` is THE field that matters for correctness: the
+/// gateway serves a single resident model and IGNORES the per-request `model`,
+/// so only the active model actually answers. `loaded`/`loading` describe the
+/// rest of the residency set; `gguf_variant`/`context_length` describe the
+/// active model's shape (the live context window — task #46's "context window
+/// comes from the engine, not a hardcoded per-tier cap").
+#[derive(Debug, Clone, Default, Serialize, Deserialize, TS)]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/ai_inference/InferenceStatus.ts"
+)]
+#[serde(rename_all = "camelCase")]
+pub struct InferenceStatus {
+    /// The single model serving right now; `null`/absent when the engine is empty.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub active_model: Option<String>,
+    /// Models resident in memory (the gateway can switch among these).
+    pub loaded: Vec<String>,
+    /// Models currently mid-load.
+    pub loading: Vec<String>,
+    /// GGUF quantization variant of the active model, when it is a GGUF.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub gguf_variant: Option<String>,
+    /// The active model's context window in tokens, when the gateway reports it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional, type = "number")]
+    pub context_length: Option<u64>,
+}
+
+/// One model the gateway can LOAD — discovered on disk (HF cache + the models
+/// dir). `id` is the identifier `ai/inference/load` accepts; `display_name` and
+/// `source` are for humans + UIs choosing from the catalog. This is the
+/// loadable set, distinct from the SERVING set returned by `/v1/models`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, TS)]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/ai_inference/LocalModel.ts"
+)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalModel {
+    /// The hub identifier / load id (what `load`/`unload` take as `model`).
+    pub id: String,
+    /// Human-friendly name for catalogs + pickers.
+    pub display_name: String,
+    /// Where the gateway found it — `hf_cache`, `models_dir`, `lmstudio`, …
+    pub source: String,
 }
 
 /// Failure talking to unsloth. `Unreachable` = transport (engine down / wrong
@@ -144,26 +208,46 @@ impl std::fmt::Display for UnslothError {
 /// apart from the HTTP I/O.
 #[async_trait]
 pub trait UnslothControl: Send + Sync {
-    /// Is a model currently loaded + serving? (`GET /v1/models`, non-empty.)
-    async fn model_loaded(&self) -> Result<bool, UnslothError>;
-    /// Load the model at `model_path` (`POST /api/inference/load`). Returns when
-    /// unsloth reports it loaded (the load call is synchronous in practice).
-    async fn load_model(&self, model_path: &str) -> Result<(), UnslothError>;
+    /// Which model is ACTIVE (resident + serving) right now, if any.
+    /// (`GET /api/inference/status` → `active_model`; `None` when nothing is loaded.)
+    ///
+    /// "Which one" — not "is anything loaded" — because the gateway serves a
+    /// single resident model and IGNORES the `model` field on
+    /// `/v1/chat/completions`: ask for M2 while M1 is resident and it silently
+    /// answers as M1 (verified 2026-06-23). So the only safe pre-flight is
+    /// identity ("is the ACTIVE model the one I'm about to generate with"), which
+    /// needs the active model's name, not a boolean.
+    async fn active_model(&self) -> Result<Option<String>, UnslothError>;
+    /// Load `model` (`POST /api/inference/load` with `model_path`). The gateway
+    /// accepts the SAME hub identifier the persona generates with (verified) — no
+    /// filesystem path, no per-model config; the id that routes generation also
+    /// drives the load. Returns when unsloth reports it loaded (synchronous in
+    /// practice).
+    async fn load_model(&self, model: &str) -> Result<(), UnslothError>;
 }
 
-/// The keystone: ensure unsloth has a model serving. Idempotent — if one is
-/// already loaded it's a no-op (steady state); if empty it loads `desired_model`;
-/// if unsloth is unreachable or the load fails it DEGRADES (never panics), so
-/// the substrate stays up and the caller falls back. Pure logic over the trait.
-pub async fn ensure_model_loaded(api: &dyn UnslothControl, desired_model: &str) -> EnsureOutcome {
-    match api.model_loaded().await {
-        Ok(true) => EnsureOutcome::AlreadyLoaded,
-        Ok(false) => match api.load_model(desired_model).await {
+/// The keystone: ensure the gateway's ACTIVE model is `desired` before anyone
+/// generates with it. Idempotent — `desired` already active → no-op (steady
+/// state, no churn); a DIFFERENT model (or none) resident → load `desired`;
+/// unsloth unreachable or a failed load → DEGRADE (never panic) so the substrate
+/// stays up and the caller decides. Pure logic over the trait.
+///
+/// Model-AWARE on purpose: "is `desired` active" not "is anything loaded". With
+/// many models sharing one gateway, "something is loaded" is not safety — the
+/// gateway would silently answer as whatever IS resident — so only "the RIGHT
+/// one is active" is. The inference path treats [`EnsureOutcome::Degraded`] as a
+/// HARD, loud failure: it must never generate against an unguaranteed brain.
+/// `desired` is the persona's own model id (the same string it generates with);
+/// no path, no hardcode, works for any of N models.
+pub async fn ensure_model_active(api: &dyn UnslothControl, desired: &str) -> EnsureOutcome {
+    match api.active_model().await {
+        Ok(Some(active)) if active == desired => EnsureOutcome::AlreadyLoaded,
+        Ok(_) => match api.load_model(desired).await {
             Ok(()) => EnsureOutcome::Loaded {
-                model: desired_model.to_string(),
+                model: desired.to_string(),
             },
             Err(e) => EnsureOutcome::Degraded {
-                reason: format!("load of {desired_model} failed: {e}"),
+                reason: format!("load of {desired} failed: {e}"),
             },
         },
         Err(e) => EnsureOutcome::Degraded {
@@ -199,7 +283,7 @@ pub fn startup_model_action(configured: Option<String>) -> StartupModelAction {
 }
 
 /// Boot convenience: read `UNSLOTH_MODEL` from config, and if set, ensure unsloth
-/// has it loaded (delegating to [`ensure_model_loaded`] over the real HTTP
+/// has it active (delegating to [`ensure_model_active`] over the real HTTP
 /// surface). Degrade-safe end to end — logs the outcome and never panics, so it
 /// can be spawned as a fire-and-forget startup task. Returns the action taken so
 /// callers/tests can assert without scraping logs.
@@ -207,7 +291,7 @@ pub async fn ensure_startup_model() -> StartupModelAction {
     let action = startup_model_action(config_env::read("UNSLOTH_MODEL"));
     match &action {
         StartupModelAction::Ensure(model) => {
-            let outcome = ensure_model_loaded(&UnslothHttp::from_config(), model).await;
+            let outcome = ensure_model_active(&UnslothHttp::from_config(), model).await;
             match &outcome {
                 EnsureOutcome::AlreadyLoaded => {
                     tracing::info!(target: "unsloth", model = %model, "startup: model already loaded");
@@ -240,10 +324,19 @@ impl UnslothHttp {
     /// + `UNSLOTH_API_KEY`. No env read or `/v1` handling here — that lives in the
     /// one accessor.
     pub fn from_config() -> Self {
+        Self::with_client(reqwest::Client::new())
+    }
+
+    /// Like [`from_config`](Self::from_config) but reuses an existing pooled
+    /// `reqwest::Client` (cheap to clone — shares the connection pool). The
+    /// inference path pre-flights `active_model` on EVERY generate, so churning a
+    /// fresh client + pool each call is waste; the adapter hands us its own.
+    /// Host + key still come from the single config owner.
+    pub fn with_client(client: reqwest::Client) -> Self {
         Self {
             host: unsloth_base_url(),
             api_key: config_env::read("UNSLOTH_API_KEY"),
-            client: reqwest::Client::new(),
+            client,
         }
     }
 
@@ -281,32 +374,145 @@ impl UnslothHttp {
             })
             .unwrap_or_default())
     }
-}
 
-#[async_trait]
-impl UnslothControl for UnslothHttp {
-    async fn model_loaded(&self) -> Result<bool, UnslothError> {
-        let url = format!("{}/v1/models", self.host);
+    /// The gateway's live residency snapshot (active + loaded + loading + the
+    /// active model's shape) — one `GET /api/inference/status`. Backs
+    /// `ai/inference/status`. `Err` = gateway unreachable / refused.
+    pub async fn status(&self) -> Result<InferenceStatus, UnslothError> {
+        let url = format!("{}/api/inference/status", self.host);
         let resp = self
             .authed(self.client.get(&url))
             .send()
             .await
             .map_err(|e| UnslothError::Unreachable(e.to_string()))?;
         if !resp.status().is_success() {
-            return Err(UnslothError::Api(format!("/v1/models {}", resp.status())));
+            return Err(UnslothError::Api(format!(
+                "/api/inference/status {}",
+                resp.status()
+            )));
         }
         let body: serde_json::Value = resp
             .json()
             .await
             .map_err(|e| UnslothError::Api(e.to_string()))?;
-        Ok(body["data"].as_array().map(|a| !a.is_empty()).unwrap_or(false))
+        Ok(InferenceStatus {
+            active_model: body["active_model"].as_str().map(str::to_string),
+            loaded: json_str_array(&body["loaded"]),
+            loading: json_str_array(&body["loading"]),
+            gguf_variant: body["gguf_variant"].as_str().map(str::to_string),
+            context_length: body["context_length"].as_u64(),
+        })
     }
 
-    async fn load_model(&self, model_path: &str) -> Result<(), UnslothError> {
+    /// The models the gateway can LOAD — discovered on disk (`GET
+    /// /api/models/local`: HF cache + the models dir). Distinct from
+    /// [`list_models`](Self::list_models), which is the SERVING set
+    /// (`/v1/models`). Backs `ai/inference/models`. `Err` = unreachable /
+    /// refused.
+    pub async fn local_models(&self) -> Result<Vec<LocalModel>, UnslothError> {
+        let url = format!("{}/api/models/local", self.host);
+        let resp = self
+            .authed(self.client.get(&url))
+            .send()
+            .await
+            .map_err(|e| UnslothError::Unreachable(e.to_string()))?;
+        if !resp.status().is_success() {
+            return Err(UnslothError::Api(format!(
+                "/api/models/local {}",
+                resp.status()
+            )));
+        }
+        let body: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| UnslothError::Api(e.to_string()))?;
+        Ok(body["models"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|m| {
+                        let id = m["id"].as_str()?.to_string();
+                        Some(LocalModel {
+                            display_name: m["display_name"]
+                                .as_str()
+                                .unwrap_or(&id)
+                                .to_string(),
+                            source: m["source"].as_str().unwrap_or_default().to_string(),
+                            id,
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default())
+    }
+
+    /// Unload `model` from memory (`POST /api/inference/unload` with
+    /// `model_path` — the gateway routes to the right backend). Frees VRAM.
+    /// Backs `ai/inference/unload`. `Err` = unreachable / refused.
+    pub async fn unload_model(&self, model: &str) -> Result<(), UnslothError> {
+        let url = format!("{}/api/inference/unload", self.host);
+        let resp = self
+            .authed(self.client.post(&url))
+            .json(&json!({ "model_path": model }))
+            .send()
+            .await
+            .map_err(|e| UnslothError::Unreachable(e.to_string()))?;
+        if resp.status().is_success() {
+            Ok(())
+        } else {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            Err(UnslothError::Api(format!(
+                "/api/inference/unload {status}: {body}"
+            )))
+        }
+    }
+}
+
+/// Collect a JSON array-of-strings into a `Vec<String>`, dropping non-strings;
+/// a non-array (or absent) value yields an empty vec. Used to read the gateway
+/// status's `loaded`/`loading` lists.
+fn json_str_array(v: &serde_json::Value) -> Vec<String> {
+    v.as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(|s| s.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+#[async_trait]
+impl UnslothControl for UnslothHttp {
+    async fn active_model(&self) -> Result<Option<String>, UnslothError> {
+        let url = format!("{}/api/inference/status", self.host);
+        let resp = self
+            .authed(self.client.get(&url))
+            .send()
+            .await
+            .map_err(|e| UnslothError::Unreachable(e.to_string()))?;
+        if !resp.status().is_success() {
+            return Err(UnslothError::Api(format!(
+                "/api/inference/status {}",
+                resp.status()
+            )));
+        }
+        let body: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| UnslothError::Api(e.to_string()))?;
+        // `active_model` is the resident model's identifier, `null` when empty.
+        Ok(body["active_model"].as_str().map(|s| s.to_string()))
+    }
+
+    async fn load_model(&self, model: &str) -> Result<(), UnslothError> {
         let url = format!("{}/api/inference/load", self.host);
         let resp = self
             .authed(self.client.post(&url))
-            .json(&json!({ "model_path": model_path }))
+            // The gateway's field is `model_path`, but it accepts the hub
+            // identifier the persona generates with (verified) — not only a
+            // filesystem path. We pass the identifier straight through.
+            .json(&json!({ "model_path": model }))
             .send()
             .await
             .map_err(|e| UnslothError::Unreachable(e.to_string()))?;
@@ -325,17 +531,20 @@ mod tests {
     use super::*;
     use std::sync::Mutex;
 
-    /// Fake control surface: scripted responses + records the calls made, so we
-    /// assert the DECISION without any HTTP.
+    /// Fake control surface: scripted `active_model` + records the load calls
+    /// made, so we assert the DECISION without any HTTP.
     struct FakeUnsloth {
-        loaded: Result<bool, UnslothError>,
+        active: Result<Option<String>, UnslothError>,
         load_result: Result<(), UnslothError>,
         load_calls: Mutex<Vec<String>>,
     }
     impl FakeUnsloth {
-        fn new(loaded: Result<bool, UnslothError>, load_result: Result<(), UnslothError>) -> Self {
+        fn new(
+            active: Result<Option<String>, UnslothError>,
+            load_result: Result<(), UnslothError>,
+        ) -> Self {
             Self {
-                loaded,
+                active,
                 load_result,
                 load_calls: Mutex::new(Vec::new()),
             }
@@ -343,35 +552,53 @@ mod tests {
     }
     #[async_trait]
     impl UnslothControl for FakeUnsloth {
-        async fn model_loaded(&self) -> Result<bool, UnslothError> {
-            self.loaded.clone()
+        async fn active_model(&self) -> Result<Option<String>, UnslothError> {
+            self.active.clone()
         }
-        async fn load_model(&self, model_path: &str) -> Result<(), UnslothError> {
-            self.load_calls.lock().unwrap().push(model_path.to_string());
+        async fn load_model(&self, model: &str) -> Result<(), UnslothError> {
+            self.load_calls.lock().unwrap().push(model.to_string());
             self.load_result.clone()
         }
     }
 
-    // what this catches: steady state — a model already serving must be a NO-OP
-    // (no spurious reload/churn on every startup). Regression here = the engine
-    // gets reloaded needlessly, dropping live work.
+    // what this catches: steady state — the DESIRED model already active must be
+    // a NO-OP (no spurious reload/churn on every generate). Regression here = the
+    // engine gets reloaded needlessly, dropping live work on the hot path.
     #[tokio::test]
-    async fn already_loaded_is_a_noop() {
-        let fake = FakeUnsloth::new(Ok(true), Ok(()));
-        let outcome = ensure_model_loaded(&fake, "qwen.gguf").await;
+    async fn desired_already_active_is_a_noop() {
+        let fake = FakeUnsloth::new(Ok(Some("qwen.gguf".into())), Ok(()));
+        let outcome = ensure_model_active(&fake, "qwen.gguf").await;
         assert_eq!(outcome, EnsureOutcome::AlreadyLoaded);
         assert!(
             fake.load_calls.lock().unwrap().is_empty(),
-            "must NOT load when a model is already serving"
+            "must NOT load when the desired model is already active"
         );
     }
 
-    // what this catches: the keystone path — empty engine → load the desired
-    // model. This is what makes "install → it's just running" true.
+    // what this catches: THE haunting bug — a DIFFERENT model is resident, so the
+    // gateway would silently answer as the wrong brain. We must load the desired
+    // model, not trust the resident one. Regression here = persona B silently
+    // gets persona A's model with no error.
+    #[tokio::test]
+    async fn wrong_model_active_loads_the_desired_one() {
+        let fake = FakeUnsloth::new(Ok(Some("other-model".into())), Ok(()));
+        let outcome = ensure_model_active(&fake, "qwen.gguf").await;
+        assert_eq!(
+            outcome,
+            EnsureOutcome::Loaded {
+                model: "qwen.gguf".to_string()
+            }
+        );
+        assert_eq!(*fake.load_calls.lock().unwrap(), vec!["qwen.gguf".to_string()]);
+    }
+
+    // what this catches: the keystone path — empty engine (or idle-unloaded) →
+    // load the desired model. This is what makes "install → it's just running"
+    // true, and what re-arms a persona after the gateway idle-unloads mid-life.
     #[tokio::test]
     async fn empty_engine_loads_the_desired_model() {
-        let fake = FakeUnsloth::new(Ok(false), Ok(()));
-        let outcome = ensure_model_loaded(&fake, "qwen.gguf").await;
+        let fake = FakeUnsloth::new(Ok(None), Ok(()));
+        let outcome = ensure_model_active(&fake, "qwen.gguf").await;
         assert_eq!(
             outcome,
             EnsureOutcome::Loaded {
@@ -382,12 +609,12 @@ mod tests {
     }
 
     // what this catches: degrade-not-panic when unsloth is DOWN — the substrate
-    // keeps running on its fallback; we never panic on an unreachable engine,
-    // and we don't blindly attempt a load against a dead host.
+    // keeps running; we never panic on an unreachable engine, and we don't
+    // blindly attempt a load against a dead host.
     #[tokio::test]
     async fn unreachable_engine_degrades_without_loading() {
         let fake = FakeUnsloth::new(Err(UnslothError::Unreachable("conn refused".into())), Ok(()));
-        let outcome = ensure_model_loaded(&fake, "qwen.gguf").await;
+        let outcome = ensure_model_active(&fake, "qwen.gguf").await;
         match outcome {
             EnsureOutcome::Degraded { reason } => assert!(reason.contains("status check failed")),
             other => panic!("expected Degraded, got {other:?}"),
@@ -399,11 +626,12 @@ mod tests {
     }
 
     // what this catches: a failed load degrades (not panics) with the reason —
-    // e.g. bad model path. Persona falls back; substrate stays up.
+    // e.g. bad model id. The inference path turns this into a loud generate
+    // failure; it must never silently fall through to the wrong resident model.
     #[tokio::test]
     async fn failed_load_degrades_with_reason() {
-        let fake = FakeUnsloth::new(Ok(false), Err(UnslothError::Api("bad path".into())));
-        let outcome = ensure_model_loaded(&fake, "missing.gguf").await;
+        let fake = FakeUnsloth::new(Ok(None), Err(UnslothError::Api("bad path".into())));
+        let outcome = ensure_model_active(&fake, "missing.gguf").await;
         match outcome {
             EnsureOutcome::Degraded { reason } => {
                 assert!(reason.contains("load of missing.gguf failed"))

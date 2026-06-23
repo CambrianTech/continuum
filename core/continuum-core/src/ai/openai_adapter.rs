@@ -1008,6 +1008,43 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
             );
         }
 
+        // Pre-flight the unsloth gateway's model lifecycle (the boundary this
+        // adapter owns). The gateway serves ONE resident model and IGNORES the
+        // request's `model` field — request M2 while M1 is resident and it
+        // silently answers as M1 (verified) — and it idle-unloads to free VRAM,
+        // so a live persona goes mute mid-life. So before we trust a generation
+        // we GUARANTEE our model is the active one, loading it by its OWN id (the
+        // same string we generate with — dynamic, API-driven, no path/hardcode,
+        // any of N models) if a different model (or none) is resident. We're
+        // inside the held concurrency permit, so for the 1-slot gateway this
+        // adapter can't race its own next request between ensure and generate. If
+        // we can't guarantee it → FAIL LOUD; never generate against an
+        // unguaranteed brain (silently returning the wrong model is the bug that
+        // would haunt us). Cross-persona residency on the shared gateway is the
+        // serving layer's job (#109), not this gate.
+        if self.config.provider_id == "unsloth" {
+            use crate::inference::unsloth_control::{
+                ensure_model_active, EnsureOutcome, UnslothHttp,
+            };
+            let ctrl = UnslothHttp::with_client(self.client.clone());
+            match ensure_model_active(&ctrl, model).await {
+                EnsureOutcome::AlreadyLoaded => {}
+                EnsureOutcome::Loaded { model: loaded } => {
+                    clog_info!(
+                        "unsloth: model '{}' was not active — loaded it before generate",
+                        loaded
+                    );
+                }
+                EnsureOutcome::Degraded { reason } => {
+                    return Err(format!(
+                        "{}: cannot guarantee model '{}' is active on the unsloth gateway \
+                         ({reason}); refusing to generate against an unguaranteed model",
+                        self.config.name, model
+                    ));
+                }
+            }
+        }
+
         let send_start = Instant::now();
         let response = request_builder.json(&body).send().await.map_err(|e| {
             // reqwest::Error's top-level Display often collapses the

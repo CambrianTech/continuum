@@ -45,6 +45,7 @@ pub mod llm_module_bus;
 pub mod llm_module_service;
 pub mod lora;
 pub mod model;
+pub mod model_commands;
 pub mod ort_providers;
 pub mod recipe_budget;
 pub mod throughput_expectation;
