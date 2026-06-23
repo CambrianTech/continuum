@@ -293,7 +293,8 @@ pub struct CodeGlob {
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
 pub struct CodeGlobParams {
-    /// Glob pattern (e.g. `src/**/*.rs`).
+    /// Glob pattern. Use `**/` to recurse from the workspace root regardless
+    /// of layout, e.g. `**/*.rs` matches Rust files anywhere in the tree.
     pub pattern: String,
     /// Optional sub-root to scope the glob, relative to the workspace root.
     #[serde(default)]
@@ -304,7 +305,7 @@ pub struct CodeGlobParams {
 impl ActionCommand for CodeGlob {
     const NAME: &'static str = "code/glob";
     const DESCRIPTION: &'static str =
-        "Find files by glob pattern (e.g. src/**/*.rs). Returns matching workspace-relative paths.";
+        "Find files by glob pattern (e.g. `**/*.rs` matches Rust files at any depth, layout-independent). Returns matching workspace-relative paths.";
     type Params = CodeGlobParams;
     type Output = GlobResult;
 
@@ -377,7 +378,9 @@ pub struct CodeSearch {
 pub struct CodeSearchParams {
     /// Text/regex pattern to search for.
     pub pattern: String,
-    /// Optional glob to restrict which files are searched (e.g. `*.rs`).
+    /// Optional glob to restrict which files are searched. Omit to search ALL
+    /// files. Globs recurse from the workspace root and are layout-independent,
+    /// e.g. `**/*.rs` (NOT `src/**/*.rs` — don't assume the code lives under src/).
     #[serde(default)]
     pub file_glob: Option<String>,
     /// Cap on the number of matches returned. Defaults to 100.
