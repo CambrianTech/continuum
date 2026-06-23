@@ -11,5 +11,6 @@
 //! are exposed through that module's `commands()`.
 
 pub mod catalog;
+pub mod code;
 pub mod help;
 pub mod system;
