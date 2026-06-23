@@ -237,10 +237,11 @@ impl ServiceModule for CodeModule {
             // object map — caller-scoped identity, real param schema, one registry.
 
             // Git Operations migrated to typed ActionCommands — see
-            // `crate::modules::code_git_commands` (the `code/git-*` family is now
-            // descriptor-advertised + routed on the O(1) typed path). The legacy
-            // string arms are deleted; identity is the authenticated caller, never
-            // a spoofable `persona_id` param.
+            // `crate::commands::code::git` (the `code/git/<verb>` family is now
+            // descriptor-advertised + routed on the O(1) typed path, one command per
+            // file with the wire name mirroring the path). The legacy string arms are
+            // deleted; identity is the authenticated caller, never a spoofable
+            // `persona_id` param.
 
             // ================================================================
             // Shell Sessions
@@ -511,8 +512,9 @@ impl ServiceModule for CodeModule {
     /// [`crate::modules::code_commands`].
     fn commands(&self) -> Vec<Arc<dyn crate::sdk_codegen::DynCommand>> {
         let mut objs = crate::modules::code_commands::command_objects(self.state.clone());
-        // The git family (`code/git-*`), migrated to typed ActionCommands.
-        objs.extend(crate::modules::code_git_commands::command_objects(
+        // The git family (`code/git/<verb>`), one command per file under
+        // `crate::commands::code::git`.
+        objs.extend(crate::commands::code::git::command_objects(
             self.state.clone(),
         ));
         objs
