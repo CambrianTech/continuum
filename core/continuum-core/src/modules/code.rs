@@ -9,7 +9,6 @@
 //! Priority: Normal — code operations are important but not time-critical.
 
 use crate::code::{self, FileEngine, PathSecurity, ShellSession};
-use crate::code::git_bridge;
 use crate::log_info;
 use crate::logging::TimingGuard;
 use crate::runtime::{CommandResult, ModuleConfig, ModuleContext, ModulePriority, ServiceModule};
@@ -237,109 +236,11 @@ impl ServiceModule for CodeModule {
             // to typed ActionCommands (modules/code_commands.rs) and route via the
             // object map — caller-scoped identity, real param schema, one registry.
 
-            // ================================================================
-            // Git Operations
-            // ================================================================
-            "code/git-status" => {
-                let _timer = TimingGuard::new("module", "code_git_status");
-                let persona_id = p.str("persona_id")?;
-
-                let engine = self
-                    .state
-                    .file_engines
-                    .get(persona_id)
-                    .ok_or_else(|| format!("No workspace for persona {}", persona_id))?;
-
-                let result = git_bridge::git_status(&engine.workspace_root());
-                Ok(CommandResult::Json(
-                    serde_json::to_value(&result).unwrap_or_default(),
-                ))
-            }
-
-            "code/git-diff" => {
-                let _timer = TimingGuard::new("module", "code_git_diff");
-                let persona_id = p.str("persona_id")?;
-                let staged = p.bool_or("staged", false);
-
-                let engine = self
-                    .state
-                    .file_engines
-                    .get(persona_id)
-                    .ok_or_else(|| format!("No workspace for persona {}", persona_id))?;
-
-                let diff = git_bridge::git_diff(&engine.workspace_root(), staged)?;
-                Ok(CommandResult::Json(serde_json::json!({ "diff": diff })))
-            }
-
-            "code/git-log" => {
-                let _timer = TimingGuard::new("module", "code_git_log");
-                let persona_id = p.str("persona_id")?;
-                let count = p.u64_or("limit", 10) as u32;
-
-                let engine = self
-                    .state
-                    .file_engines
-                    .get(persona_id)
-                    .ok_or_else(|| format!("No workspace for persona {}", persona_id))?;
-
-                let log = git_bridge::git_log(&engine.workspace_root(), count)?;
-                Ok(CommandResult::Json(serde_json::json!({ "log": log })))
-            }
-
-            "code/git-add" => {
-                let _timer = TimingGuard::new("module", "code_git_add");
-                let persona_id = p.str("persona_id")?;
-                let paths: Vec<String> = p.json_or("paths");
-
-                let engine = self
-                    .state
-                    .file_engines
-                    .get(persona_id)
-                    .ok_or_else(|| format!("No workspace for persona {}", persona_id))?;
-
-                let path_refs: Vec<&str> = paths.iter().map(|s| s.as_str()).collect();
-                let output = git_bridge::git_add(&engine.workspace_root(), &path_refs)?;
-                Ok(CommandResult::Json(serde_json::json!({ "output": output })))
-            }
-
-            "code/git-commit" => {
-                let _timer = TimingGuard::new("module", "code_git_commit");
-                let persona_id = p.str("persona_id")?;
-                let message = p.str("message")?;
-
-                let engine = self
-                    .state
-                    .file_engines
-                    .get(persona_id)
-                    .ok_or_else(|| format!("No workspace for persona {}", persona_id))?;
-
-                let hash = git_bridge::git_commit(&engine.workspace_root(), message)?;
-                log_info!(
-                    "module",
-                    "code",
-                    "Git commit by {}: {}",
-                    persona_id,
-                    message
-                );
-                Ok(CommandResult::Json(serde_json::json!({ "hash": hash })))
-            }
-
-            "code/git-push" => {
-                let _timer = TimingGuard::new("module", "code_git_push");
-                let persona_id = p.str("persona_id")?;
-                let remote = p.str_or("remote", "");
-                let branch = p.str_or("branch", "");
-
-                let engine = self
-                    .state
-                    .file_engines
-                    .get(persona_id)
-                    .ok_or_else(|| format!("No workspace for persona {}", persona_id))?;
-
-                let output = git_bridge::git_push(&engine.workspace_root(), remote, branch)?;
-                log_info!("module", "code", "Git push by {}", persona_id);
-                Ok(CommandResult::Json(serde_json::json!({ "output": output })))
-            }
+            // Git Operations migrated to typed ActionCommands — see
+            // `crate::modules::code_git_commands` (the `code/git-*` family is now
+            // descriptor-advertised + routed on the O(1) typed path). The legacy
+            // string arms are deleted; identity is the authenticated caller, never
+            // a spoofable `persona_id` param.
 
             // ================================================================
             // Shell Sessions
@@ -609,7 +510,12 @@ impl ServiceModule for CodeModule {
     /// `command_registry()` → the persona tool surface + grid ACL. See
     /// [`crate::modules::code_commands`].
     fn commands(&self) -> Vec<Arc<dyn crate::sdk_codegen::DynCommand>> {
-        crate::modules::code_commands::command_objects(self.state.clone())
+        let mut objs = crate::modules::code_commands::command_objects(self.state.clone());
+        // The git family (`code/git-*`), migrated to typed ActionCommands.
+        objs.extend(crate::modules::code_git_commands::command_objects(
+            self.state.clone(),
+        ));
+        objs
     }
 
     fn as_any(&self) -> &dyn Any {

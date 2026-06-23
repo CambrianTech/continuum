@@ -551,6 +551,116 @@ macro_rules! register_stateless_command {
     };
 }
 
+/// **The command generator** ([docs/architecture/COMMAND-ORGANIZATION.md] §3).
+///
+/// One declarative block ⟹ the struct, the [`ActionCommand`](crate::sdk_codegen::ActionCommand)
+/// impl (and so, via the blanket impls, `CommandSpec` + `CommandHandler` +
+/// `DynCommand`), and — for the stateless form — registration onto the ONE
+/// registry. The author writes a doc comment (⟹ `DESCRIPTION`), four fields, and
+/// a body. No envelope, no `match` arm, no hand-written `CommandSpec` consts, no
+/// `from_value`. This is how every command is authored going forward; porting a
+/// legacy `handle_command` arm is "fill the body, drop the arm".
+///
+/// **Stateless** (no deps ⇒ `Default` ⇒ auto-registered; lives in `commands/<area>.rs`):
+/// ```ignore
+/// action_command! {
+///     /// Health check: confirm the substrate is alive.
+///     pub struct Ping;
+///     name: "ping",
+///     access: AiSafe,
+///     params: PingParams,
+///     output: PingResult,
+///     run(_ctx, _p) => { Ok(PingResult { ok: true }) }
+/// }
+/// ```
+///
+/// **Dep-holding** (captures `Arc<State>` ⇒ NOT auto-registered; the owning
+/// module's `commands()` constructs it with its deps, and the executor routes the
+/// name straight to the object — winning over the legacy prefix arm):
+/// ```ignore
+/// action_command! {
+///     /// Show git status for the caller's workspace.
+///     pub struct CodeGitStatus { state: Arc<CodeState> }
+///     name: "code/git-status",
+///     access: AiSafe,
+///     params: GitStatusParams,
+///     output: GitStatusResult,
+///     run(this, ctx, p) => { /* uses this.state, ctx, p */ }
+/// }
+/// ```
+///
+/// The body is a normal block. The `run(this, ctx, p)` clause names the THREE
+/// bindings in scope: `this` is the receiver (deps live on `this.state`), `ctx`
+/// the [`Ctx`](crate::sdk_codegen::Ctx), `p` the params. (The receiver is named
+/// explicitly rather than `self` because a macro-introduced `self` is invisible to
+/// the call-site body under macro hygiene — naming it threads call-site hygiene
+/// through.) The body returns `Result<Output, CommandError>` — `?` works.
+#[macro_export]
+macro_rules! action_command {
+    // ── Stateless: unit struct, auto-registered onto the ONE registry. ──
+    (
+        $(#[doc = $doc:literal])*
+        $vis:vis struct $cmd:ident;
+        name: $name:expr,
+        access: $access:ident,
+        params: $params:ty,
+        output: $output:ty,
+        run($this:ident, $ctx:ident, $p:ident) => $body:block
+    ) => {
+        $(#[doc = $doc])*
+        #[derive(::std::default::Default)]
+        $vis struct $cmd;
+        $crate::action_command!(@impl $cmd, $name, $access, [$($doc)*], $params, $output, $this, $ctx, $p, $body);
+        $crate::register_stateless_command!($cmd);
+    };
+
+    // ── Dep-holding: struct carries its deps; registered via the owning
+    //    module's `commands()` (deps need construction, so no Default). ──
+    (
+        $(#[doc = $doc:literal])*
+        $vis:vis struct $cmd:ident { $($field:ident : $fty:ty),+ $(,)? }
+        name: $name:expr,
+        access: $access:ident,
+        params: $params:ty,
+        output: $output:ty,
+        run($this:ident, $ctx:ident, $p:ident) => $body:block
+    ) => {
+        $(#[doc = $doc])*
+        $vis struct $cmd { $(pub $field: $fty),+ }
+        $crate::action_command!(@impl $cmd, $name, $access, [$($doc)*], $params, $output, $this, $ctx, $p, $body);
+        // Register the DESCRIPTOR (type-only — no instance needed) so the command
+        // appears in `command_registry()`, the persona tool surface, the ACL, and
+        // codegen. Its RUNTIME object is constructed with deps by the owning
+        // module's `commands()`; the executor routes the name straight to it.
+        $crate::register_command!($cmd);
+    };
+
+    // ── Internal: the shared `ActionCommand` impl both forms expand to. ──
+    (@impl $cmd:ident, $name:expr, $access:ident, [$($doc:literal)*], $params:ty, $output:ty, $this:ident, $ctx:ident, $p:ident, $body:block) => {
+        #[::async_trait::async_trait]
+        impl $crate::sdk_codegen::ActionCommand for $cmd {
+            const NAME: &'static str = $name;
+            const ACCESS: $crate::sdk_codegen::AccessLevel = $crate::sdk_codegen::AccessLevel::$access;
+            // Doc comment ⟹ model-facing DESCRIPTION. Each `///` line keeps its
+            // leading space, so concatenation separates lines naturally; no docs ⇒ "".
+            const DESCRIPTION: &'static str = ::std::concat!($($doc),*);
+            type Params = $params;
+            type Output = $output;
+            async fn run(
+                &self,
+                $ctx: &$crate::sdk_codegen::Ctx,
+                $p: $params,
+            ) -> ::std::result::Result<$output, $crate::sdk_codegen::CommandError> {
+                // Bind the call-site-named receiver to `&self` so the body can reach
+                // deps (`this.state`). Unit-struct (stateless) commands ignore it.
+                #[allow(unused_variables)]
+                let $this = self;
+                $body
+            }
+        }
+    };
+}
+
 /// The command registry — the generator's input, ASSEMBLED from every
 /// `register_command!` submission across the crate. Sorted by name so the
 /// generated output is deterministic regardless of inventory iteration order.

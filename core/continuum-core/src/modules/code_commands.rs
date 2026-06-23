@@ -53,7 +53,7 @@ use crate::sdk_codegen::{AccessLevel, ActionCommand, CommandError, Ctx, DynComma
 /// (an airc `peer_id`), never a params field. `None` caller is the
 /// substrate-local owner. This is the single point that maps the gated identity
 /// to the per-caller workspace; nothing trusts caller-supplied identity.
-fn caller_id(ctx: &Ctx) -> String {
+pub(crate) fn caller_id(ctx: &Ctx) -> String {
     ctx.caller
         .as_ref()
         .map(|c| c.peer_id.to_string())
@@ -67,7 +67,7 @@ fn caller_id(ctx: &Ctx) -> String {
 /// `create-workspace` with a specific root still wins). Per-caller `FileEngine`s
 /// keep each peer's change-DAG isolated while sharing the repo, exactly like
 /// multiple editor tabs.
-fn ensure_engine(state: &CodeState, who: &str) -> Result<(), CommandError> {
+pub(crate) fn ensure_engine(state: &CodeState, who: &str) -> Result<(), CommandError> {
     if state.file_engines.contains_key(who) {
         return Ok(());
     }
