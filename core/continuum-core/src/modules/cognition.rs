@@ -228,19 +228,37 @@ impl ServiceModule for CognitionModule {
                 let persona_uuid = p.uuid("persona_id")?;
                 let room = p.uuid("room_id").unwrap_or_else(|_| Uuid::nil());
 
-                // Held-out tasks — answers verified against THIS repo. Each asks her
-                // to locate a definition; she must USE her tools to ground it, so a
-                // pass means real codebase competence, not a lucky guess.
-                let builtin = serde_json::json!([
-                    {"id":"build_workspace_burst","prompt":"Which file defines `fn build_workspace_burst` in this repo? Reply with just the path.","expect":"service_loop.rs"},
-                    {"id":"render_ai_help","prompt":"Which file defines `fn render_ai_help`? Reply with just the path.","expect":"help.rs"},
-                    {"id":"workspace_cycle","prompt":"Which file defines the struct `WorkspaceCycle`? Reply with just the path.","expect":"workspace.rs"},
-                    {"id":"external_fingerprint","prompt":"Which file defines `fn external_fingerprint`? Reply with just the path.","expect":"service_loop.rs"},
-                    {"id":"from_captures","prompt":"Which file implements the `dataset/from-captures` command? Reply with just the path.","expect":"dataset.rs"},
-                    {"id":"capture_to_example","prompt":"Which file defines `fn capture_to_example`? Reply with just the path.","expect":"dataset.rs"}
-                ]);
-                let tasks = params.get("tasks").cloned().unwrap_or(builtin);
-                let tasks = tasks
+                // The eval set is DATA, not a hardcoded list (it would rot as the
+                // code it asks about changes). Resolution order: inline `tasks`
+                // param → the `evalSet` JSONL file (default the committed
+                // docs/genome/coder-eval.jsonl, a discriminating mix with headroom)
+                // → a tiny built-in smoke set if neither is present. Authoring a
+                // harder/specialized eval = add lines to the JSONL, no recompile.
+                let tasks_owned: Value = if let Some(inline) = params.get("tasks") {
+                    inline.clone()
+                } else {
+                    let path = params
+                        .get("evalSet")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("docs/genome/coder-eval.jsonl");
+                    match std::fs::read_to_string(path) {
+                        Ok(text) => {
+                            let rows: Vec<Value> = text
+                                .lines()
+                                .map(str::trim)
+                                .filter(|l| !l.is_empty())
+                                .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+                                .collect();
+                            serde_json::Value::Array(rows)
+                        }
+                        // Last-resort smoke set so the command never hard-fails on a
+                        // missing file (e.g. run from a non-repo cwd).
+                        Err(_) => serde_json::json!([
+                            {"id":"render_ai_help","prompt":"Which file defines `fn render_ai_help`? Reply with just the path.","expect":"help.rs"}
+                        ]),
+                    }
+                };
+                let tasks = tasks_owned
                     .as_array()
                     .ok_or_else(|| "tasks must be an array of {id,prompt,expect}".to_string())?;
 

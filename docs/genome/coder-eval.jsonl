@@ -1,0 +1,10 @@
+{"id":"build_workspace_burst","prompt":"Which file defines `fn build_workspace_burst` in this repo? Reply with just the path.","expect":"service_loop.rs"}
+{"id":"render_ai_help","prompt":"Which file defines `fn render_ai_help`? Reply with just the path.","expect":"help.rs"}
+{"id":"workspace_cycle","prompt":"Which file defines the struct `WorkspaceCycle`? Reply with just the path.","expect":"workspace.rs"}
+{"id":"from_captures","prompt":"Which file implements the `dataset/from-captures` command? Reply with just the path.","expect":"dataset.rs"}
+{"id":"self_tick_val","prompt":"What integer value is the SELF_TICK_MS constant set to in this repo? Answer with just the number.","expect":"3000"}
+{"id":"max_iter_val","prompt":"What is DEFAULT_MAX_TOOL_ITERATIONS set to in the deliberation faculty? Answer with just the number.","expect":"4"}
+{"id":"captures_ext","prompt":"What file extension does the dataset/from-captures command read from the captures directory? Answer with the extension.","expect":"jsonl"}
+{"id":"drop_kind","prompt":"Besides an empty response, what kind of response does capture_to_example drop from training data? Answer in a couple words.","expect":"tool"}
+{"id":"decision_variant","prompt":"Name the Decision variant a persona uses to raise something unprompted (initiative, not a reply to a message).","expect":"RaiseUnprompted"}
+{"id":"external_fp_excludes","prompt":"In `fn external_fingerprint`, whose posts are excluded from the change-detection hash — the persona's own, or other peers'? Answer 'own' or 'peers'.","expect":"own"}
