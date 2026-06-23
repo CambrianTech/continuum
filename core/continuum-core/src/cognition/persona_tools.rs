@@ -46,9 +46,15 @@ pub fn authorized_tool_specs(trust: TrustLevel) -> Vec<NativeToolSpec> {
         .collect()
 }
 
-/// The `AiSafe`-only surface — retained for callers/diagnostics that specifically
-/// want the declared-safe set. Personas should use [`authorized_tool_specs`] so
-/// the offer matches what they can actually run.
+/// The raw `AiSafe`-by-declaration surface, IGNORING caller identity and the grid
+/// ACL overrides. This is NOT a persona tool surface and must never become one:
+/// it can over-list (a command declared `AiSafe` but bumped to `Owner` by an
+/// explicit ACL rule would appear here yet be denied at the gate) — exactly the
+/// "listed a tool I can't call" violation Joel forbids. Gated `#[cfg(test)]` so no
+/// production path can reach it: the ONLY way to get a persona's tools is the
+/// identity-gated [`authorized_tool_specs`]. Kept solely to assert the projection
+/// (descriptor → spec) against the registry in tests.
+#[cfg(test)]
 pub fn ai_safe_tool_specs() -> Vec<NativeToolSpec> {
     command_registry()
         .iter()

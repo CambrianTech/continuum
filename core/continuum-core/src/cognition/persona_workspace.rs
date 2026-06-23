@@ -63,13 +63,15 @@ pub struct PersonaBrainConfig {
     /// [`resolve_recall_embedder`]: super::embedding::resolve_recall_embedder
     pub embedder: Option<Arc<dyn EmbeddingProvider>>,
     /// The persona's HANDS. `Some` → the deliberation faculty is offered the
-    /// dynamic `AiSafe` tool surface ([`ai_safe_tool_specs`]) and routes the
-    /// model's tool calls through this executor (a `CommandToolExecutor` carrying
-    /// the persona's identity, so the `GridTrustAuthPolicy` ACL gates execution).
+    /// identity-gated tool surface ([`authorized_tool_specs`], filtered to the
+    /// caller's trust) and routes the model's tool calls through this executor (a
+    /// `CommandToolExecutor` carrying the persona's identity, so the
+    /// `GridTrustAuthPolicy` ACL gates execution). Offer == authorized, so a
+    /// persona is never shown a tool it can't run.
     /// `None` → speak-only (no tools offered) — the safe default for harnesses and
     /// for any persona whose spawn path hasn't built an executor.
     ///
-    /// [`ai_safe_tool_specs`]: super::persona_tools::ai_safe_tool_specs
+    /// [`authorized_tool_specs`]: super::persona_tools::authorized_tool_specs
     pub tool_executor: Option<Arc<dyn crate::cognition::tool_executor::ToolExecutor>>,
 }
 
