@@ -8,3 +8,6 @@
 {"id":"drop_kind","prompt":"Besides an empty response, what kind of response does capture_to_example drop from training data? Answer in a couple words.","expect":"tool"}
 {"id":"decision_variant","prompt":"Name the Decision variant a persona uses to raise something unprompted (initiative, not a reply to a message).","expect":"RaiseUnprompted"}
 {"id":"external_fp_excludes","prompt":"In `fn external_fingerprint`, whose posts are excluded from the change-detection hash — the persona's own, or other peers'? Answer 'own' or 'peers'.","expect":"own"}
+{"id":"why_focused_query","prompt":"Read fn focused_query in core/continuum-core/src/cognition/recall_faculty.rs and explain WHY it exists — what problem does conditioning recall on the whole burst cause? Answer in one sentence.","expect":"dilut"}
+{"id":"causal_external_fp","prompt":"Read fn external_fingerprint in core/continuum-core/src/persona/service_loop.rs. What would break if it hashed the persona's OWN posts too? Answer in one sentence.","expect":"self"}
+{"id":"why_repeat_guard","prompt":"In the deliberation agent loop (llm_deliberation_faculty.rs), why does all_calls_already_ran stop the persona from re-issuing a tool call it already ran? What does it prevent? One sentence.","expect":"loop"}
