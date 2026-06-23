@@ -231,3 +231,24 @@ Each step compiles and tests green before the next (`cargo check` first; escalat
 to `test` only when behavior changed; `CARGO_TARGET_DIR=$HOME/.continuum/cache/
 cargo-target`; `--features metal,accelerate`; `df -h /` after cycles). Validate
 via pure Rust + the `cu` client, never npm/jtag.
+
+> **Steps 3–5 are ONE coupled cut — do not split them.** Today's working tool-use
+> (`[[persona-tool-loop-act-then-report]]`) lives ENTIRELY inside the deliberation
+> faculty's internal `loop {}` (`llm_deliberation_faculty.rs:506–609`): it
+> generates → executes tools via its own `tool_executor` → re-generates →
+> `synthesize_answer`, and emits only `Speak`. So:
+> - Step 4 alone (faculty emits `Act` + stops looping) with the service-loop `Act`
+>   arm still skipping ⇒ the persona acts then goes **mute** every tool-needing turn.
+> - Step 3 alone (service-loop driver executes `Act`) while the faculty keeps its
+>   loop ⇒ the faculty never emits `Act`, so the driver is **dead code**.
+>
+> The cut moves the loop OUT of the faculty and UP into the organic tick: the
+> faculty becomes single-shot (one generation → one verdict, `Act` xor `Speak` xor
+> `Pass`), and the SERVICE layer drives **tick → if `Act`: execute calls, admit the
+> result as an Episodic engram, re-tick → until the workspace SETTLES** (`Speak`/
+> `Pass`, or an act-budget). Each "round" is now a full re-perception (next tick's
+> `RecallFaculty`/burst surfaces the tool-result engram), not a faculty-internal
+> re-prompt. Land 3+4+5 together behind the existing live-tool-use proof so the
+> ping→act→report path that works today still works after the cut. Step 2
+> (`code/run`, the hand) is done and independently callable; it is the safe prereq
+> that does NOT touch this path.
