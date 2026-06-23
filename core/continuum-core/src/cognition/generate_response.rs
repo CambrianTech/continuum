@@ -75,10 +75,6 @@ const DEFAULT_GENERATE_MODEL: &str = "continuum-ai/qwen3.5-4b-code-forged-GGUF";
 /// creativity for natural-language responses.
 const DEFAULT_GENERATE_TEMPERATURE: f32 = 0.7;
 
-/// Default max tokens for short conversational responses; caller can
-/// raise for long-form.
-const DEFAULT_GENERATE_MAX_TOKENS: u32 = 150;
-
 /// Default timeout. Qwen local can be slow under load; this is the hard
 /// ceiling before `tokio::time::timeout` returns Err.
 const DEFAULT_GENERATE_TIMEOUT_MS: u64 = 180_000;
@@ -407,7 +403,10 @@ pub fn build_response_generation_request(
         model: Some(model),
         provider: Some(DEFAULT_GENERATE_PROVIDER.to_string()),
         temperature: Some(request.temperature.unwrap_or(DEFAULT_GENERATE_TEMPERATURE)),
-        max_tokens: Some(request.max_tokens.unwrap_or(DEFAULT_GENERATE_MAX_TOKENS)),
+        // Pass the caller's ceiling through verbatim — `None` (the default) means the
+        // MODEL owns its length (the adapter forwards no cap). We never substitute a
+        // const of our own: a hardcoded floor truncated reasoning models mid-thought.
+        max_tokens: request.max_tokens,
         top_p: None,
         top_k: None,
         repeat_penalty: None,
@@ -1188,10 +1187,10 @@ mod tests {
 
     /// What this catches: defaults — no overrides — produces a
     /// TextGenerationRequest with provider="local", model=Qwen-default,
-    /// temperature=0.7, max_tokens=150, response_format=Text,
-    /// purpose="cognition/generate-response", and persona/room
-    /// attribution carried from the context. Pins the wire shape so
-    /// downstream provider routing doesn't drift silently.
+    /// temperature=0.7, max_tokens=None (the model owns its length),
+    /// response_format=Text, purpose="cognition/generate-response", and
+    /// persona/room attribution carried from the context. Pins the wire
+    /// shape so downstream provider routing doesn't drift silently.
     #[test]
     fn generation_request_uses_documented_defaults() {
         let request = request_with_overrides(None, None, None, None);
@@ -1203,7 +1202,8 @@ mod tests {
         );
         assert_eq!(inference.model.as_deref(), Some(DEFAULT_GENERATE_MODEL));
         assert_eq!(inference.temperature, Some(DEFAULT_GENERATE_TEMPERATURE));
-        assert_eq!(inference.max_tokens, Some(DEFAULT_GENERATE_MAX_TOKENS));
+        // No override + no client default = the model owns its length.
+        assert_eq!(inference.max_tokens, None);
         assert_eq!(
             inference.purpose.as_deref(),
             Some("cognition/generate-response")

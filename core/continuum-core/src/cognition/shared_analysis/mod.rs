@@ -35,8 +35,7 @@ use std::sync::Arc;
 use std::time::SystemTime;
 
 use prompt::{
-    build_prompt, parse_model_output, strip_think_blocks, ANALYSIS_MAX_TOKENS,
-    ANALYSIS_TEMPERATURE, SYSTEM_PROMPT,
+    build_prompt, parse_model_output, strip_think_blocks, ANALYSIS_TEMPERATURE, SYSTEM_PROMPT,
 };
 
 /// Per-process cache of analyses, keyed by `cache_key` (content-addressable).
@@ -273,7 +272,11 @@ async fn run_analysis(
         ),
         provider: Some(DEFAULT_ANALYSIS_PROVIDER.to_string()),
         temperature: Some(ANALYSIS_TEMPERATURE),
-        max_tokens: Some(ANALYSIS_MAX_TOKENS),
+        // Model owns its length (None → adapter forwards no ceiling). This call
+        // is the canonical proof of why: a flat cap (was 500, bumped to 2500)
+        // truncated qwen3.5 mid-reasoning → zero JSON → silent persona failure.
+        // The model runs to its own stop token; the JSON envelope is the bound.
+        max_tokens: None,
         top_p: None,
         top_k: None,
         repeat_penalty: None,

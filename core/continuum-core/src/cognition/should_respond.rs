@@ -16,7 +16,6 @@ use ts_rs::TS;
 
 const GATING_PROVIDER: &str = "groq";
 const DEFAULT_GATING_MODEL: &str = "llama-3.1-8b-instant";
-const GATING_MAX_TOKENS: u32 = 200;
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
@@ -203,7 +202,10 @@ pub async fn evaluate_gating(
         model: Some(model.clone()),
         provider: Some(GATING_PROVIDER.to_string()),
         temperature: Some(request.temperature.unwrap_or(0.3)),
-        max_tokens: Some(GATING_MAX_TOKENS),
+        // Model owns its length — the adapter forwards no ceiling (None). The gating
+        // prompt asks for a short verdict; brevity is the model's to give, not ours
+        // to guillotine (a hard cap truncates a reasoning model mid-thought → empty).
+        max_tokens: None,
         top_p: None,
         top_k: None,
         repeat_penalty: None,

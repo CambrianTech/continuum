@@ -27,11 +27,6 @@ use crate::modules::ai_provider::{generate_text, global_registry};
 /// allow creative pipeline choices.
 const DEFAULT_TEMPERATURE: f32 = 0.4;
 
-/// Token budget for the recipe response. Mirrors TS `maxTokens: 4000` at
-/// line 52 — generous enough for a full RecipeDefinition with 5-7 pipeline
-/// steps, RAG template, strategy, roles, and tags.
-const RECIPE_MAX_TOKENS: u32 = 4000;
-
 /// Default provider when caller doesn't specify. Mirrors TS
 /// `provider = 'anthropic'` default at line 29.
 const DEFAULT_PROVIDER: &str = "anthropic";
@@ -113,7 +108,9 @@ pub async fn generate_recipe_with_ai(
         model: Some(model_id),
         provider: Some(provider_id),
         temperature: Some(temperature.unwrap_or(DEFAULT_TEMPERATURE)),
-        max_tokens: Some(RECIPE_MAX_TOKENS),
+        // Model owns its length (None → adapter forwards no ceiling). A full
+        // RecipeDefinition's JSON envelope bounds the output, not a const of ours.
+        max_tokens: None,
         top_p: None,
         top_k: None,
         repeat_penalty: None,
@@ -190,14 +187,14 @@ mod tests {
         );
     }
 
-    /// What this catches: temperature + max_tokens constants stay at the
-    /// documented values. Drift here changes generation behavior silently
-    /// (higher temp → more creative + more malformed-JSON failures, fewer
-    /// tokens → truncated recipes).
+    /// What this catches: the default temperature stays at the documented
+    /// value. Drift here changes generation behavior silently (higher temp →
+    /// more creative + more malformed-JSON failures). max_tokens is no longer
+    /// pinned: the model owns its generation length (the adapter forwards no
+    /// ceiling), so there's no const to drift.
     #[test]
     fn generation_constants_pinned_to_ts_defaults() {
         assert!((DEFAULT_TEMPERATURE - 0.4).abs() < 1e-6);
-        assert_eq!(RECIPE_MAX_TOKENS, 4000);
     }
 
     /// What this catches: unique_id_override applies cleanly. The TS path

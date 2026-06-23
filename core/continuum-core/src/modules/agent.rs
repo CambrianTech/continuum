@@ -636,7 +636,8 @@ async fn call_llm(
         model: Some(model.to_string()),
         provider: None, // Auto-select based on model name
         temperature: Some(0.7),
-        max_tokens: Some(4000),
+        // Model owns its length (None → adapter forwards no ceiling).
+        max_tokens: None,
         top_p: None,
         top_k: None,
         repeat_penalty: None,

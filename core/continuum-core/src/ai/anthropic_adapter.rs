@@ -328,11 +328,20 @@ impl AIProviderAdapter for AnthropicAdapter {
         let (messages, msg_system) = self.format_messages(&request.messages);
         let system_prompt = request.system_prompt.as_deref().or(msg_system.as_deref());
 
+        // Anthropic's Messages API REQUIRES max_tokens — it cannot be omitted. When
+        // the caller leaves it unset (`None` = "the model owns its length"), derive
+        // the ceiling from the model's reported capability rather than inventing a
+        // magic inline number. The capability is the single authority on this model's
+        // real output limit; the adapter just reads it.
+        let max_tokens = request
+            .max_tokens
+            .unwrap_or_else(|| self.capabilities().max_output_tokens);
+
         // Build request body
         let mut body = json!({
             "model": model,
             "messages": messages,
-            "max_tokens": request.max_tokens.unwrap_or(1024),
+            "max_tokens": max_tokens,
             "temperature": request.temperature.unwrap_or(0.7)
         });
 

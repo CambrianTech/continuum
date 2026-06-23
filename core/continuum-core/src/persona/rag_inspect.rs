@@ -551,19 +551,13 @@ async fn run_inference_probe(
         model: Some(model.clone()),
         provider: None,
         temperature: None,
-        // Cognition output budget. THIS IS A CONSERVATIVE FALLBACK —
-        // the real substrate budgeter (TODO: derive from model
-        // characteristics on the Context per
-        // [[context-is-the-client-airc-token-is-identity]] and
-        // [[intent-driven-api-not-hot-patches]]) should compute
-        // this from the persona's role, the model's typical
-        // response distribution, and the conversation context.
-        // Capable models on capable hardware (5090 + frontier
-        // class) can chatter at length; LCD-tier models on CPU
-        // will self-limit. Do not pin to a tighter value just to
-        // make Intel Mac faster — that handicaps every other
-        // peer on the grid.
-        max_tokens: Some(512),
+        // The MODEL owns its generation length — the adapter forwards no
+        // ceiling when None (unsloth/llama.cpp run to the model's own stop
+        // token). The old 512 "conservative fallback" was exactly the
+        // LCD-tier clamp this comment warned against: it truncated qwen3.5
+        // mid-`<think>` → empty reply. Capable models self-pace; we never
+        // pin a tighter value here.
+        max_tokens: None,
         top_p: None,
         top_k: None,
         repeat_penalty: None,

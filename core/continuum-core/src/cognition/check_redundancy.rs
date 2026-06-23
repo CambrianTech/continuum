@@ -63,7 +63,6 @@ pub const REDUNDANCY_CONVERSATION_WINDOW: usize = 10;
 const REDUNDANCY_PROVIDER: &str = "groq";
 const DEFAULT_REDUNDANCY_MODEL: &str = "llama-3.1-8b-instant";
 const DEFAULT_REDUNDANCY_TEMPERATURE: f32 = 0.2;
-const REDUNDANCY_MAX_TOKENS: u32 = 200;
 
 // ─── IPC request + response shapes ────────────────────────────────────
 
@@ -193,7 +192,9 @@ fn build_redundancy_generation_request(
         model: Some(model),
         provider: Some(REDUNDANCY_PROVIDER.to_string()),
         temperature: Some(DEFAULT_REDUNDANCY_TEMPERATURE),
-        max_tokens: Some(REDUNDANCY_MAX_TOKENS),
+        // Model owns its length (None → adapter forwards no ceiling). The prompt asks
+        // for a short verdict; we never cap generation with a const of our own.
+        max_tokens: None,
         top_p: None,
         top_k: None,
         repeat_penalty: None,
@@ -551,7 +552,8 @@ mod tests {
         assert_eq!(inference.provider.as_deref(), Some(REDUNDANCY_PROVIDER));
         assert_eq!(inference.model.as_deref(), Some(DEFAULT_REDUNDANCY_MODEL));
         assert_eq!(inference.temperature, Some(DEFAULT_REDUNDANCY_TEMPERATURE));
-        assert_eq!(inference.max_tokens, Some(REDUNDANCY_MAX_TOKENS));
+        // No client-imposed ceiling — the model owns its generation length.
+        assert_eq!(inference.max_tokens, None);
         assert_eq!(
             inference.response_format,
             Some(crate::ai::types::ResponseFormat::JsonObject)

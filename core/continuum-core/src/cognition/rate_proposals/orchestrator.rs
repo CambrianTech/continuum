@@ -62,11 +62,6 @@ pub struct RateProposalsResponse {
 /// `temperature ?? 0.7` in ProposalRatingAdapter.ts:67.
 const DEFAULT_TEMPERATURE: f32 = 0.7;
 
-/// Token budget for the rater's response. Matches TS `maxTokens: 500` in
-/// ProposalRatingAdapter.ts:68. Generous enough for ~10 proposals × 3
-/// fields each at conservative line lengths.
-const RATER_MAX_TOKENS: u32 = 500;
-
 /// Run AI-driven rating against the registered provider. Pure async; no
 /// global state mutation. Each call is independent — no caching at this
 /// layer because (a) ratings are turn-specific and (b) the upstream
@@ -103,7 +98,9 @@ pub async fn rate_proposals_with_ai(
         model: Some(model_id),
         provider: Some(model_provider),
         temperature: Some(temperature.unwrap_or(DEFAULT_TEMPERATURE)),
-        max_tokens: Some(RATER_MAX_TOKENS),
+        // Model owns its length (None → adapter forwards no ceiling). The JSON
+        // response_format + prompt bound the rater's output, not a const of ours.
+        max_tokens: None,
         top_p: None,
         top_k: None,
         repeat_penalty: None,
@@ -191,15 +188,6 @@ mod tests {
         // const stays at the documented 0.7 so callers without temperature
         // see consistent behavior across releases.
         assert!((DEFAULT_TEMPERATURE - 0.7).abs() < 1e-9);
-    }
-
-    /// What this catches: the rater max-tokens budget stays within the
-    /// 500-token contract documented in TS. If a future edit bumps the
-    /// budget without updating the doc + shim expectations, the chat
-    /// substrate's per-rater budget accounting drifts.
-    #[test]
-    fn rater_max_tokens_pinned_to_documented_500() {
-        assert_eq!(RATER_MAX_TOKENS, 500);
     }
 
     /// What this catches: response shape ts-rs export. PR-3 shim awaits

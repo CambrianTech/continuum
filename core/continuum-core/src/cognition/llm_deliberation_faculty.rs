@@ -70,8 +70,6 @@ fn all_calls_already_ran(
 /// Default sampling temperature for deliberation — enough warmth for natural
 /// voice, not so much it drifts.
 const DEFAULT_TEMPERATURE: f32 = 0.7;
-/// Default response cap. Deliberation is a turn, not an essay.
-const DEFAULT_MAX_TOKENS: u32 = 512;
 
 /// Map a model's raw output to a participation [`Decision`].
 ///
@@ -127,7 +125,6 @@ pub struct LlmDeliberationFaculty {
     /// Which model to ask for (None → the adapter's default).
     model: Option<String>,
     temperature: f32,
-    max_tokens: u32,
     /// The persona's authorized tool set. Empty → the persona can only SPEAK
     /// (no `tools` passed to the model). Non-empty → the persona can ACT: the
     /// model may emit tool_calls the agent loop executes. Rust-origin contracts,
@@ -167,7 +164,6 @@ impl LlmDeliberationFaculty {
             adapter,
             model: None,
             temperature: DEFAULT_TEMPERATURE,
-            max_tokens: DEFAULT_MAX_TOKENS,
             tools: Vec::new(),
             tool_executor: None,
             max_tool_iterations: DEFAULT_MAX_TOOL_ITERATIONS,
@@ -234,7 +230,11 @@ impl LlmDeliberationFaculty {
             model: self.model.clone(),
             provider: None,
             temperature: Some(self.temperature),
-            max_tokens: Some(self.max_tokens),
+            // The MODEL owns its generation length (the adapter forwards no ceiling
+            // when None → unsloth/llama.cpp run to the model's own stop token). A
+            // deliberation turn ends when the model stops, NOT at a const we picked:
+            // a flat cap truncated qwen3.5 mid-`<think>` → empty reply.
+            max_tokens: None,
             top_p: None,
             top_k: None,
             repeat_penalty: None,

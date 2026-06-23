@@ -829,9 +829,21 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
             "model": model,
             "messages": messages,
             "temperature": request.temperature.unwrap_or(0.7),
-            "max_tokens": request.max_tokens.unwrap_or(2048),
             "stream": false
         });
+
+        // max_tokens — the MODEL owns its generation length, enforced server-side
+        // by unsloth / llama.cpp / the cloud provider. We forward a ceiling ONLY
+        // when the caller set one explicitly; `None` → omit the field so the model
+        // runs to its own stop token or context limit. We never invent a default
+        // here: the old `.unwrap_or(2048)` was a second clamp duplicating a limit
+        // the model already enforces, and it truncated reasoning models mid-`<think>`
+        // (qwen3.5 spends ~500 tokens reasoning before the answer → empty reply).
+        if let Some(max) = request.max_tokens {
+            if let Some(obj) = body.as_object_mut() {
+                obj.insert("max_tokens".to_string(), json!(max));
+            }
+        }
 
         // DMR-specific: llama.cpp's OpenAI-compatible server accepts the
         // llama.cpp-native `repeat_penalty` field as an extension. Until
