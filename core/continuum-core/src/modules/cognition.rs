@@ -215,6 +215,78 @@ impl ServiceModule for CognitionModule {
                 Ok(CommandResult::Json(serde_json::json!({ "created": true })))
             }
 
+            "cognition/eval" => {
+                // Drive a held-out CODER eval through the persona's LIVE cognition
+                // (same model + faculties + tools) → a reproducible pass-rate. This
+                // is how we DETECT whether a change (a trained LoRA, a prompt, a
+                // better base model) actually made her a better coder — the number,
+                // not a vibe (SELF-EVOLVING-GENOME §6 slice 1: until lift is real,
+                // every later slice is a hypothesis). Grading is substring-contains
+                // (does her answer name the right file?); an LLM-judge grader kind
+                // plugs in here later for open-ended tasks. Built-in set unless the
+                // caller passes `tasks: [{id, prompt, expect}]`.
+                let persona_uuid = p.uuid("persona_id")?;
+                let room = p.uuid("room_id").unwrap_or_else(|_| Uuid::nil());
+
+                // Held-out tasks — answers verified against THIS repo. Each asks her
+                // to locate a definition; she must USE her tools to ground it, so a
+                // pass means real codebase competence, not a lucky guess.
+                let builtin = serde_json::json!([
+                    {"id":"build_workspace_burst","prompt":"Which file defines `fn build_workspace_burst` in this repo? Reply with just the path.","expect":"service_loop.rs"},
+                    {"id":"render_ai_help","prompt":"Which file defines `fn render_ai_help`? Reply with just the path.","expect":"help.rs"},
+                    {"id":"workspace_cycle","prompt":"Which file defines the struct `WorkspaceCycle`? Reply with just the path.","expect":"workspace.rs"},
+                    {"id":"external_fingerprint","prompt":"Which file defines `fn external_fingerprint`? Reply with just the path.","expect":"service_loop.rs"},
+                    {"id":"from_captures","prompt":"Which file implements the `dataset/from-captures` command? Reply with just the path.","expect":"dataset.rs"},
+                    {"id":"capture_to_example","prompt":"Which file defines `fn capture_to_example`? Reply with just the path.","expect":"dataset.rs"}
+                ]);
+                let tasks = params.get("tasks").cloned().unwrap_or(builtin);
+                let tasks = tasks
+                    .as_array()
+                    .ok_or_else(|| "tasks must be an array of {id,prompt,expect}".to_string())?;
+
+                let Some(cycle) =
+                    crate::cognition::persona_workspace::global().get(&persona_uuid)
+                else {
+                    return Err(format!(
+                        "no live WorkspaceCycle for persona {persona_uuid} — is it spawned?"
+                    ));
+                };
+
+                let mut pass = 0usize;
+                let mut results = Vec::new();
+                for t in tasks {
+                    let prompt = t.get("prompt").and_then(|v| v.as_str()).unwrap_or("");
+                    let expect = t.get("expect").and_then(|v| v.as_str()).unwrap_or("");
+                    let id = t.get("id").and_then(|v| v.as_str()).unwrap_or("");
+                    // Frame as a room message so her ordinary cognition handles it.
+                    let burst = format!("[eval]\npeer: {prompt}");
+                    let ws = cycle.run_in_room(burst, room).await;
+                    let answer = match ws.decision() {
+                        Some(crate::cognition::workspace::Decision::Speak { text })
+                        | Some(crate::cognition::workspace::Decision::RaiseUnprompted { text }) => {
+                            text.clone()
+                        }
+                        _ => String::new(),
+                    };
+                    let ok = !expect.is_empty()
+                        && answer.to_lowercase().contains(&expect.to_lowercase());
+                    if ok {
+                        pass += 1;
+                    }
+                    results.push(serde_json::json!({
+                        "id": id, "ok": ok, "expect": expect, "answer": answer
+                    }));
+                }
+                let total = tasks.len();
+                Ok(CommandResult::Json(serde_json::json!({
+                    "persona_id": persona_uuid.to_string(),
+                    "score": pass,
+                    "total": total,
+                    "pass_rate": if total > 0 { pass as f64 / total as f64 } else { 0.0 },
+                    "results": results,
+                })))
+            }
+
             "cognition/calculate-priority" => {
                 let _timer = TimingGuard::new("module", "cognition_calculate_priority");
                 let persona_uuid = p.uuid("persona_id")?;
