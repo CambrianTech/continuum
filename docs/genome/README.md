@@ -4,6 +4,12 @@
 
 **Status:** E2E pipeline proven. PEFT training, Candle inference, adapter discovery, hot-reload all operational.
 
+**North star (read first):** [ANY-ASK-IS-A-CLASS](ANY-ASK-IS-A-CLASS.md) — the synthesis of
+the whole collaborative-learning vision: any ask becomes a class (teacher plans a
+curriculum, students learn it together — with humans on the team — and the cohort distills
+a LoRA), on the measurement spine. `recipe → curriculum → class → LoRA`. Then
+[SELF-EVOLVING-GENOME](SELF-EVOLVING-GENOME.md) for the fitness + decision algorithm.
+
 ---
 
 ## What the Genome Is
