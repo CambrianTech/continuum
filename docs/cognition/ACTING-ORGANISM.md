@@ -179,7 +179,34 @@ That is the difference between an automaton with a run-code loop bolted on, and 
 being who runs her code because she has learned that's what a competent coder
 does — and can keep learning to do it better.
 
-## 6. Build order (proof-gated, outlier-validated)
+## 6. The body is open — new hands, regions, embodiments cost ~nothing
+
+The whole point of `Act` is that it is **body-agnostic**. It does not say "run
+code." It says "the mind wants to act," and carries opaque `calls`. The substrate
+routes any call through the persona's `ToolExecutor`; the *kind* of action is data
+(a command name), never new control flow. So the architecture adapts with **no
+burden per new engineering idea** — the goal cbar hit by being almost 100%
+algorithm code in the C++. Three free extension axes, each a different layer of
+the same organism:
+
+| Axis | What it is | Cost to add a new one |
+|---|---|---|
+| **Hands** (effectors) | code/run, web-search, file-read, **avatar/expression control, robotic actuation** | Register one `AiSafe` command. `Act` already routes it; `authorized_tool_specs` already surfaces it (registry × ACL). **Zero new wiring.** Optionally train an adapter for the disposition (the emoji→expression→Bevy adapter is the proof it works). |
+| **Regions** (faculties) | recall, world-model, affect, volition, **a limbic region, any causal concern** | Implement the `Faculty` trait. The arbiter routes it by ML salience; it bids into the same workspace and its output *affects the others* through the broadcast. **No special-casing** — open/closed (§2.7). A new concern is a new bidder in a flowing brain, not a new `if`. |
+| **Senses** (afferents) | the burst, recalled memory, **action results, avatar/sensor feedback** | Re-enters as an Episodic engram or world-state line. The act→observe circuit (§3.3) is the same for "I ran code, got a traceback" and "I moved my arm, the gripper reports contact." Perception of one's own action is one mechanism. |
+
+This is why robotics, avatar control, and limbic regions are not separate
+projects bolted on later — they are **the same three primitives** (`Act` verb,
+`Faculty` bidder, result-as-perception) the coding loop already uses. A robot
+arm is a hand whose result is a sensor reading; an emotion is a region whose bid
+colors attention; an avatar expression is a hand whose disposition is a trained
+adapter ([[coordination-learning-flywheel]]). The genome grows the wiring
+*between* them (§5); the Rust stays the algorithm and the protocol, never the
+per-idea plumbing. **If adding a new capability requires new control flow in the
+substrate, the design failed — push it down into a command, a faculty, or an
+adapter.**
+
+## 7. Build order (proof-gated, outlier-validated)
 
 1. `Decision::Act` variant + `Contribution::verdict` handles it + ts-rs regen.
    Unit: a faculty can emit `Act`; the arbiter routes it. *(skeleton)*
