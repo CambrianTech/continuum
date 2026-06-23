@@ -294,9 +294,7 @@ async fn silent_peer_request_times_out_with_typed_error() {
                  should bound overshoot"
             );
         }
-        other => panic!(
-            "expected RemoteInferenceError::Timeout for silent peer; got {other:?}"
-        ),
+        other => panic!("expected RemoteInferenceError::Timeout for silent peer; got {other:?}"),
     }
 
     // Wall-clock sanity: deadline (300ms) + generous CI fudge.
@@ -378,6 +376,7 @@ async fn transport_remains_callable_after_peer_timeout() {
         tool_calls: None,
         routing: None,
         error: None,
+        reasoning: None,
     };
 
     let handler = build_handler(Arc::clone(loop_back.peer_a()));

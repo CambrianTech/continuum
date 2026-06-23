@@ -91,7 +91,10 @@ pub enum Decision {
     /// to see the traceback"). It is captured into the observation engram so next
     /// tick she remembers the *reason*, not just the *result*. See
     /// `docs/cognition/ACTING-ORGANISM.md`.
-    Act { calls: Vec<ToolCall>, intent: String },
+    Act {
+        calls: Vec<ToolCall>,
+        intent: String,
+    },
     /// Nothing worth adding this turn (the persona's own judgment, not a gate).
     /// Together with `Speak`/`RaiseUnprompted`, this is how the organism SETTLES:
     /// the absence of an `Act` bid is the mind's judgment that the work is done.
@@ -318,6 +321,30 @@ impl WorkspaceCaptureSink for NoopWorkspaceCaptureSink {
     fn record(&self, _trace: &WorkspaceTrace) {}
 }
 
+/// The persona's body for the act→observe motion: the HANDS that execute an
+/// [`Decision::Act`], the HIPPOCAMPUS that remembers the result, and the
+/// IDENTITY the action is performed as. Held on the [`WorkspaceCycle`] because
+/// the cycle IS the persona's one mind — and per Joel, a persona (like a Claude
+/// tab) is in MANY rooms at once, so the body is deliberately **room-agnostic**:
+/// `room_id` flows per-act (the room *that* tick is about), never baked in here.
+/// `None` on the cycle → a pure-cognition mind with no hands (harnesses, or any
+/// persona whose spawn path built no executor): an `Act` verdict simply can't be
+/// driven, and tools were never offered, so it never arises.
+///
+/// The act→observe driver ([`super::act_observe`]) reads this; `run_in_room`
+/// never touches it (that stays a pure single tick).
+pub struct ActingBody {
+    pub persona_id: Uuid,
+    pub persona_name: String,
+    /// Runs the tool calls an `Act` verdict carries (identity-bearing, so the
+    /// ACL gates what the persona may actually do).
+    pub executor: Arc<dyn crate::cognition::tool_executor::ToolExecutor>,
+    /// The hippocampus the action's RESULT is admitted into as an Episodic
+    /// engram — so the outcome becomes a thing the mind remembers and can be
+    /// reminded of next tick, the same way it carries every other fact.
+    pub admission: Arc<crate::persona::admission_state::AdmissionState>,
+}
+
 /// One service-tick of cognition over a CONSOLIDATED burst (never per-event):
 /// every faculty bids in parallel over the same world-state, the arbiter
 /// integrates the bids into the bounded workspace, the workspace broadcasts.
@@ -332,15 +359,23 @@ pub struct WorkspaceCycle {
     /// (zero hot-path cost); swap in a recording sink to make the mind a
     /// glass box for debugging, tuning, and test benches.
     capture: Arc<dyn WorkspaceCaptureSink>,
+    /// The persona's hands + hippocampus + identity for the act→observe driver.
+    /// `None` → no hands (pure cognition). See [`ActingBody`].
+    acting: Option<Arc<ActingBody>>,
 }
 
 impl WorkspaceCycle {
-    pub fn new(faculties: Vec<Arc<dyn Faculty>>, arbiter: Arc<dyn Arbiter>, capacity: usize) -> Self {
+    pub fn new(
+        faculties: Vec<Arc<dyn Faculty>>,
+        arbiter: Arc<dyn Arbiter>,
+        capacity: usize,
+    ) -> Self {
         Self {
             faculties,
             arbiter,
             capacity: capacity.max(1),
             capture: Arc::new(NoopWorkspaceCaptureSink),
+            acting: None,
         }
     }
 
@@ -348,6 +383,21 @@ impl WorkspaceCycle {
     pub fn with_capture(mut self, capture: Arc<dyn WorkspaceCaptureSink>) -> Self {
         self.capture = capture;
         self
+    }
+
+    /// Give this mind a body — the hands + hippocampus + identity the act→observe
+    /// driver uses to execute an [`Decision::Act`], remember its result, and
+    /// re-perceive. Without it the cycle is pure cognition (no acting). See
+    /// [`ActingBody`].
+    pub fn with_acting(mut self, body: Arc<ActingBody>) -> Self {
+        self.acting = Some(body);
+        self
+    }
+
+    /// The persona's body, if it has hands. The act→observe driver reads this;
+    /// `None` → pure-cognition mind (no tools were offered, so no `Act` arises).
+    pub fn acting(&self) -> Option<&Arc<ActingBody>> {
+        self.acting.as_ref()
     }
 
     /// Run one cognition tick over the consolidated `world_state`, recording the
@@ -375,11 +425,7 @@ impl WorkspaceCycle {
     /// turn acts within). The live persona path uses THIS so the deliberation
     /// faculty stamps tool calls with the real room — `run` is the nil-room
     /// shorthand for tests that aren't room-scoped.
-    pub async fn run_in_room(
-        &self,
-        world_state: impl Into<String>,
-        room_id: Uuid,
-    ) -> Workspace {
+    pub async fn run_in_room(&self, world_state: impl Into<String>, room_id: Uuid) -> Workspace {
         let mut ws = Workspace::in_room(world_state, room_id);
 
         // --- Phase 1: perception. Context faculties react to the raw world-state. ---
@@ -478,10 +524,7 @@ mod tests {
         }
         async fn contribute(&self, ws: &Workspace) -> Option<Contribution> {
             // Look at the assembled context that won attention in phase 1.
-            let recalled = ws
-                .broadcast
-                .iter()
-                .find(|c| c.faculty == FacultyId::Recall);
+            let recalled = ws.broadcast.iter().find(|c| c.faculty == FacultyId::Recall);
             match recalled {
                 Some(mem) => Some(Contribution::verdict(
                     Decision::Speak {
@@ -552,9 +595,11 @@ mod tests {
             calls: vec![call.clone()],
             intent: "run my solution to see what it actually prints".to_string(),
         };
-        let faculties: Vec<Arc<dyn Faculty>> = vec![Arc::new(FixedFaculty(
-            Contribution::verdict(act, 0.95, "the model emitted a tool call"),
-        ))];
+        let faculties: Vec<Arc<dyn Faculty>> = vec![Arc::new(FixedFaculty(Contribution::verdict(
+            act,
+            0.95,
+            "the model emitted a tool call",
+        )))];
         let ws = cycle(faculties, 4).run("peer: does your sum work?").await;
         match ws.decision() {
             Some(Decision::Act { calls, intent }) => {
@@ -568,7 +613,10 @@ mod tests {
         }
         // verdict() surfaces the intent as the contribution content (audited like
         // any bid) while the calls live on the decision.
-        assert_eq!(ws.broadcast[0].content, "run my solution to see what it actually prints");
+        assert_eq!(
+            ws.broadcast[0].content,
+            "run my solution to see what it actually prints"
+        );
     }
 
     // what this catches: EQUAL CITIZENS — a persona-sent message with high
@@ -642,7 +690,11 @@ mod tests {
             ))),
         ];
         let ws = cycle(faculties, 5).run("idle chatter").await;
-        assert_eq!(ws.broadcast.len(), 1, "the abstaining faculty added nothing");
+        assert_eq!(
+            ws.broadcast.len(),
+            1,
+            "the abstaining faculty added nothing"
+        );
         assert_eq!(ws.decision(), Some(&Decision::Pass));
     }
 
@@ -651,15 +703,13 @@ mod tests {
     #[tokio::test]
     async fn runs_once_over_a_consolidated_burst() {
         let consolidated = "msg1\nmsg2\nmsg3\nmsg4 (many events, one unit)";
-        let faculties: Vec<Arc<dyn Faculty>> = vec![Arc::new(FixedFaculty(
-            Contribution::verdict(
-                Decision::Speak {
-                    text: "one reply to the whole thread".into(),
-                },
-                0.8,
-                "caught up on the backlog",
-            ),
-        ))];
+        let faculties: Vec<Arc<dyn Faculty>> = vec![Arc::new(FixedFaculty(Contribution::verdict(
+            Decision::Speak {
+                text: "one reply to the whole thread".into(),
+            },
+            0.8,
+            "caught up on the backlog",
+        )))];
         let ws = cycle(faculties, 5).run(consolidated).await;
         assert!(ws.world_state.contains("many events, one unit"));
         assert!(matches!(ws.decision(), Some(Decision::Speak { .. })));
@@ -711,7 +761,12 @@ mod tests {
             t.bids.iter().any(|b| b.content == "loser bid"),
             "the loser bid + its salience + reasoning are replayable for debugging"
         );
-        assert_eq!(t.decision, Some(Decision::Speak { text: "winner".into() }));
+        assert_eq!(
+            t.decision,
+            Some(Decision::Speak {
+                text: "winner".into()
+            })
+        );
     }
 
     // what this catches: STAGED ASSEMBLY — the deliberation faculty conditions its
@@ -737,7 +792,9 @@ mod tests {
                 text.contains("deploy pipeline is red"),
                 "the decider must condition on recall it saw, got: {text}"
             ),
-            other => panic!("expected an informed Speak, got {other:?} — decider was blind to recall"),
+            other => {
+                panic!("expected an informed Speak, got {other:?} — decider was blind to recall")
+            }
         }
     }
 
@@ -768,8 +825,15 @@ mod tests {
         assert_eq!(t.context_broadcast.len(), 1);
         assert_eq!(t.context_broadcast[0].faculty, FacultyId::Recall);
         // The final broadcast holds the context PLUS the deliberation verdict.
-        assert_eq!(t.broadcast.len(), 2, "assembled context + deliberation output");
-        assert!(t.broadcast.iter().any(|c| c.decision.is_some()), "verdict appended");
+        assert_eq!(
+            t.broadcast.len(),
+            2,
+            "assembled context + deliberation output"
+        );
+        assert!(
+            t.broadcast.iter().any(|c| c.decision.is_some()),
+            "verdict appended"
+        );
         // Both phases' bids are in the full competition record.
         assert_eq!(t.bids.len(), 2);
     }

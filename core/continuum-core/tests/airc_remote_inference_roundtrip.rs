@@ -236,6 +236,7 @@ async fn airc_remote_inference_adapter_round_trips_against_substrate() {
         tool_calls: None,
         routing: None,
         error: None,
+        reasoning: None,
     };
 
     // peer_a = remote substrate. Notify barrier signals when its
@@ -255,11 +256,9 @@ async fn airc_remote_inference_adapter_round_trips_against_substrate() {
     // BEFORE the adapter dispatches, so we don't race with the
     // adapter's own subscribe inside await_reply.
     let sniffer_ready = Arc::new(tokio::sync::Notify::new());
-    let sniffer = spawn_reply_header_sniffer(
-        Arc::clone(loop_back.peer_b()),
-        Arc::clone(&sniffer_ready),
-    )
-    .await;
+    let sniffer =
+        spawn_reply_header_sniffer(Arc::clone(loop_back.peer_b()), Arc::clone(&sniffer_ready))
+            .await;
 
     // Deterministic barrier — both tasks have called subscribe() and
     // are sitting on the broadcast receiver before we dispatch.
@@ -268,10 +267,7 @@ async fn airc_remote_inference_adapter_round_trips_against_substrate() {
 
     // peer_b = the persona's host. Build the adapter wrapped around
     // the live airc transport pointed at peer_a.
-    let transport = AircLiveTransport::new(
-        Arc::clone(loop_back.peer_b()),
-        loop_back.peer_a_id(),
-    );
+    let transport = AircLiveTransport::new(Arc::clone(loop_back.peer_b()), loop_back.peer_a_id());
     let adapter = AircRemoteInferenceAdapter::new(transport);
 
     let request = TextGenerationRequest {

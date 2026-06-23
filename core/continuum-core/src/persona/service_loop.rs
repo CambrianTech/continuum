@@ -233,6 +233,13 @@ pub struct ServeOutcome {
     /// Per [[no-fallbacks-ever]] the loop continues; the count is the
     /// substrate's honest record of what didn't work.
     pub turns_errored: usize,
+    /// Turns where the persona reached for its hands: the mind emitted a
+    /// `Decision::Act`, the act→observe driver ran it ONCE, and the result was
+    /// admitted as an Episodic engram (ACTING-ORGANISM.md §3.3). The turn produced
+    /// no room utterance — the metronome re-perceives with the result in memory and
+    /// she settles into a Speak on a later tick. Distinct from skipped (chose
+    /// silence) and replied (spoke): this is the organism using its hands.
+    pub turns_acted: usize,
     /// Per-replied-turn end-to-end latency: from the moment
     /// `next_message` yielded `Ok(Some(msg))` to the moment
     /// `conversation.say` returned `Ok(())`. Excludes wait time for
@@ -494,8 +501,7 @@ async fn serve_persona_loop_inner(
                 );
             }
 
-            let recalled: Vec<String> =
-                scored.into_iter().map(|(e, _score)| e.content).collect();
+            let recalled: Vec<String> = scored.into_iter().map(|(e, _score)| e.content).collect();
 
             // Admit now. Errors here are non-fatal — the cognition
             // turn can still run; the engram just doesn't form. Per
@@ -602,11 +608,7 @@ async fn serve_persona_loop_inner(
             .flat_map(|d| d.items.iter())
         {
             room_roster.push(item.content.clone());
-            if let Some(name) = item
-                .metadata
-                .get("display_name")
-                .and_then(|v| v.as_str())
-            {
+            if let Some(name) = item.metadata.get("display_name").and_then(|v| v.as_str()) {
                 other_persona_names.push(name.to_string());
             }
         }
@@ -736,30 +738,47 @@ async fn serve_persona_loop_inner(
                         text.clone()
                     }
                     Some(crate::cognition::workspace::Decision::Act { calls, intent }) => {
-                        // The mind reached for its hands. The act→observe driver
-                        // (ACTING-ORGANISM.md §3.3 — execute the calls, admit the
-                        // result as an Episodic engram, re-perceive next tick) lands
-                        // in step 3 of the slice. Until then this is an explicitly
-                        // UNWIRED path — logged loud, never a silent fallback. The
-                        // turn is skipped (a raw call envelope must never reach the
-                        // room anyway; see the invariant below).
-                        tracing::warn!(
-                            lamport = msg.lamport,
-                            calls = calls.len(),
-                            intent = %intent,
-                            "persona emitted an Act decision but the act→observe driver \
-                             is not yet wired (ACTING-ORGANISM step 3) — skipping turn"
-                        );
-                        crate::probe!(
-                            class = "persona.turn.act_unwired",
-                            persona = %ctx.identity.agent_name,
-                            lamport = msg.lamport,
-                            calls = calls.len(),
-                            intent = %intent,
-                            "Act decision emitted, driver not yet wired"
-                        );
-                        outcome.turns_skipped += 1;
-                        continue;
+                        // The mind reached for its hands. Execute ONCE through the
+                        // act→observe driver (ACTING-ORGANISM.md §3.3): run the calls,
+                        // admit the result as an Episodic engram, and STOP — the live
+                        // path has NO synchronous loop and NO act counter. The
+                        // metronome re-perceives next tick with the result folded into
+                        // memory, and she settles into a Speak then (or acts again —
+                        // acting-forever is a fitness gap to train, never a substrate
+                        // cap, §4). This tick produces no room utterance.
+                        match crate::cognition::act_observe::apply_act(
+                            &cycle,
+                            calls,
+                            intent,
+                            ctx.identity.default_room,
+                        )
+                        .await
+                        {
+                            Some(_observation) => {
+                                crate::probe!(
+                                    class = "persona.turn.acted",
+                                    persona = %ctx.identity.agent_name,
+                                    lamport = msg.lamport,
+                                    calls = calls.len(),
+                                    intent = %intent,
+                                    "acted; result admitted as memory, re-perceives next tick"
+                                );
+                                outcome.turns_acted += 1;
+                                continue;
+                            }
+                            None => {
+                                // No hands or the executor errored. Abstain — never a
+                                // fabricated result, never a raw call envelope to the room.
+                                tracing::warn!(
+                                    lamport = msg.lamport,
+                                    calls = calls.len(),
+                                    intent = %intent,
+                                    "persona chose to act but the act could not be carried out — skipping turn"
+                                );
+                                outcome.turns_skipped += 1;
+                                continue;
+                            }
+                        }
                     }
                     Some(crate::cognition::workspace::Decision::Pass) | None => {
                         tracing::info!(
@@ -821,7 +840,10 @@ async fn serve_persona_loop_inner(
         // peers with JSON (observed live). Treat it as silence — the deliberation
         // already executes real calls internally; only prose is a contribution.
         if crate::ai::json_in_prompt_tools::parse_tool_call(&response_text).is_some() {
-            tracing::info!(lamport = msg.lamport, "verdict was a raw tool-call envelope — not broadcasting");
+            tracing::info!(
+                lamport = msg.lamport,
+                "verdict was a raw tool-call envelope — not broadcasting"
+            );
             outcome.turns_skipped += 1;
             continue;
         }
@@ -943,7 +965,11 @@ fn build_workspace_burst(
             .get("peer_id")
             .and_then(|v| v.as_str())
             .unwrap_or("peer");
-        let who = if who_raw == own_peer { agent_name } else { who_raw };
+        let who = if who_raw == own_peer {
+            agent_name
+        } else {
+            who_raw
+        };
         match item.metadata.get("occurred_at_ms").and_then(|v| v.as_u64()) {
             Some(t) => {
                 let _ = writeln!(b, "[t={t}] {who}: {}", item.content);
@@ -1054,6 +1080,30 @@ async fn run_self_cycle(
                 response_len = text.len(),
                 "never-stop heartbeat — persona pursued its own thread (no inbound message)"
             );
+        }
+        Some(crate::cognition::workspace::Decision::Act { calls, intent }) => {
+            // On her OWN thread she reached for her hands (build→run→test a project
+            // no one asked about). Same act→observe motion as the message path: run
+            // ONCE, admit the result as memory, and let the next heartbeat
+            // re-perceive — no synchronous loop, no narration of the intermediate
+            // step into the room. She speaks only when she has something worth the
+            // others' attention (ACTING-ORGANISM.md §4).
+            if let Some(_observation) = crate::cognition::act_observe::apply_act(
+                &cycle,
+                calls,
+                intent,
+                ctx.identity.default_room,
+            )
+            .await
+            {
+                crate::probe!(
+                    class = "persona.selftick.acted",
+                    persona = %ctx.identity.agent_name,
+                    tools = calls.len(),
+                    intent = %intent,
+                    "self-thread act; result admitted as memory, re-perceives next tick"
+                );
+            }
         }
         _ => {} // Pass / None → nothing to do, sleep
     }
@@ -1212,8 +1262,7 @@ mod tests {
         // Caller-primes contract per [[no-fallbacks-ever]] — explicit.
         conversation.prime().await.expect("prime ok");
 
-        let reader: Arc<dyn AircTranscriptReader> =
-            Arc::new(StubAircCitizen::new(Uuid::new_v4()));
+        let reader: Arc<dyn AircTranscriptReader> = Arc::new(StubAircCitizen::new(Uuid::new_v4()));
         let opts = ServeOptions {
             page_recent_limit: 10,
             rag_fetch_limit: 10,
@@ -1303,8 +1352,7 @@ mod tests {
 
         conversation.prime().await.expect("prime ok");
 
-        let reader: Arc<dyn AircTranscriptReader> =
-            Arc::new(StubAircCitizen::new(Uuid::new_v4()));
+        let reader: Arc<dyn AircTranscriptReader> = Arc::new(StubAircCitizen::new(Uuid::new_v4()));
         let opts = ServeOptions {
             page_recent_limit: 10,
             rag_fetch_limit: 10,
@@ -1316,10 +1364,7 @@ mod tests {
             .expect("loop completes");
 
         assert_eq!(outcome.turn_latency.count, 1);
-        let observed_ms = outcome
-            .turn_latency
-            .min_ms
-            .expect("recorded after sample");
+        let observed_ms = outcome.turn_latency.min_ms.expect("recorded after sample");
         assert!(
             observed_ms >= 50,
             "recorded latency ({observed_ms}ms) must reflect the injected 80ms \
@@ -1451,10 +1496,7 @@ mod tests {
             "first-person stability clause missing. Got: {s}"
         );
         // Grid / room context vocabulary.
-        assert!(
-            s.contains("grid"),
-            "'grid' vocabulary missing. Got: {s}"
-        );
+        assert!(s.contains("grid"), "'grid' vocabulary missing. Got: {s}");
         assert!(
             s.contains("Room") || s.contains("room"),
             "'room' vocabulary missing. Got: {s}"
@@ -1483,7 +1525,10 @@ mod tests {
         );
         // Pointer-equality on the underlying str confirms zero-copy.
         assert!(
-            std::ptr::eq(original.as_ref() as *const str, cloned.as_ref() as *const str),
+            std::ptr::eq(
+                original.as_ref() as *const str,
+                cloned.as_ref() as *const str
+            ),
             "cloned Arc must point at the SAME str storage as the original"
         );
     }
@@ -1615,8 +1660,7 @@ mod tests {
             .require_prime_before_next_message();
 
         // INTENTIONALLY do NOT prime — verify the loop doesn't auto-prime.
-        let reader: Arc<dyn AircTranscriptReader> =
-            Arc::new(StubAircCitizen::new(Uuid::new_v4()));
+        let reader: Arc<dyn AircTranscriptReader> = Arc::new(StubAircCitizen::new(Uuid::new_v4()));
         let outcome = serve_persona_loop(
             &hosted,
             &mut conversation,
@@ -1655,8 +1699,7 @@ mod tests {
         ]);
         conversation.prime().await.expect("prime ok");
 
-        let reader: Arc<dyn AircTranscriptReader> =
-            Arc::new(StubAircCitizen::new(Uuid::new_v4()));
+        let reader: Arc<dyn AircTranscriptReader> = Arc::new(StubAircCitizen::new(Uuid::new_v4()));
         let outcome = serve_persona_loop(
             &hosted,
             &mut conversation,
@@ -1707,8 +1750,7 @@ mod tests {
             ]);
         conversation.prime().await.expect("prime ok");
 
-        let reader: Arc<dyn AircTranscriptReader> =
-            Arc::new(StubAircCitizen::new(Uuid::new_v4()));
+        let reader: Arc<dyn AircTranscriptReader> = Arc::new(StubAircCitizen::new(Uuid::new_v4()));
         let outcome = serve_persona_loop(
             &hosted,
             &mut conversation,
@@ -1755,8 +1797,7 @@ mod tests {
         ]);
         conversation.prime().await.expect("prime ok");
 
-        let reader: Arc<dyn AircTranscriptReader> =
-            Arc::new(StubAircCitizen::new(Uuid::new_v4()));
+        let reader: Arc<dyn AircTranscriptReader> = Arc::new(StubAircCitizen::new(Uuid::new_v4()));
         let outcome = serve_persona_loop(
             &hosted,
             &mut conversation,

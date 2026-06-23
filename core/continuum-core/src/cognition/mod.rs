@@ -27,6 +27,7 @@
 //!                                  decision (the verb that produces
 //!                                  `ResponderDecision`)
 
+pub mod act_observe;
 pub mod adaptive_throughput;
 pub mod audit;
 pub mod channel_digest;

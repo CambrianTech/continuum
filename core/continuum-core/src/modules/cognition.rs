@@ -183,7 +183,12 @@ async fn test_grade(answer: &str, lang: &str, test: &str) -> (bool, String) {
     let code = extract_code_block(answer);
     let (ext, cmd) = match lang {
         "python" | "py" => ("py", "python3"),
-        other => return (false, format!("unsupported lang '{other}' (slice 1 = python only)")),
+        other => {
+            return (
+                false,
+                format!("unsupported lang '{other}' (slice 1 = python only)"),
+            )
+        }
     };
     let dir = std::env::temp_dir().join(format!("cu-gym-{}", uuid::Uuid::new_v4()));
     if std::fs::create_dir_all(&dir).is_err() {
@@ -204,7 +209,11 @@ async fn test_grade(answer: &str, lang: &str, test: &str) -> (bool, String) {
             Ok(Ok(out)) if out.status.success() => (true, "tests passed".to_string()),
             Ok(Ok(out)) => (
                 false,
-                String::from_utf8_lossy(&out.stderr).trim().chars().take(180).collect(),
+                String::from_utf8_lossy(&out.stderr)
+                    .trim()
+                    .chars()
+                    .take(180)
+                    .collect(),
             ),
             Ok(Err(e)) => (false, format!("spawn failed: {e}")),
             Err(_) => (false, "timeout (10s)".to_string()),
@@ -322,13 +331,19 @@ impl ServiceModule for CognitionModule {
                     .as_array()
                     .ok_or_else(|| "tasks must be an array of {id,prompt,expect}".to_string())?;
 
-                let Some(cycle) =
-                    crate::cognition::persona_workspace::global().get(&persona_uuid)
+                let Some(cycle) = crate::cognition::persona_workspace::global().get(&persona_uuid)
                 else {
                     return Err(format!(
                         "no live WorkspaceCycle for persona {persona_uuid} — is it spawned?"
                     ));
                 };
+
+                // The grader's stopwatch (ACTING-ORGANISM.md §4): the synthetic eval
+                // room has NO heartbeat to pace re-perception, so the OBSERVER bounds
+                // how many act→observe cycles a single task may take before it counts
+                // as unfinished. This is the only special power the grader holds; it is
+                // NOT a cap that lives in the persona's head (the live path has none).
+                let max_acts = params.get("maxActs").and_then(|v| v.as_u64()).unwrap_or(8) as usize;
 
                 let mut pass = 0usize;
                 let mut results = Vec::new();
@@ -336,16 +351,20 @@ impl ServiceModule for CognitionModule {
                     let prompt = t.get("prompt").and_then(|v| v.as_str()).unwrap_or("");
                     let expect = t.get("expect").and_then(|v| v.as_str()).unwrap_or("");
                     let id = t.get("id").and_then(|v| v.as_str()).unwrap_or("");
-                    // Frame as a room message so her ordinary cognition handles it.
+                    // Frame as a room message so her ordinary cognition handles it,
+                    // then DRIVE her to settlement: she may act (run code, read a file,
+                    // search the web), observe the result as memory, and re-perceive —
+                    // exactly the live act→observe motion, but the grader paces it
+                    // because the eval room has no metronome. The graded answer is what
+                    // she SPEAKS once she's settled (or empty if the budget ran out
+                    // mid-action — honest "did not finish", never a fabricated answer).
                     let burst = format!("[eval]\npeer: {prompt}");
-                    let ws = cycle.run_in_room(burst, room).await;
-                    let answer = match ws.decision() {
-                        Some(crate::cognition::workspace::Decision::Speak { text })
-                        | Some(crate::cognition::workspace::Decision::RaiseUnprompted { text }) => {
-                            text.clone()
-                        }
-                        _ => String::new(),
-                    };
+                    let settled = crate::cognition::act_observe::drive_to_settle(
+                        &cycle, burst, room, max_acts,
+                    )
+                    .await;
+                    let acts = settled.acts;
+                    let answer = settled.spoken.unwrap_or_default();
                     // TEST-GRADED if the task carries a `test` (run her code, pass =
                     // exit 0) — the gym's objective grade; else substring (descriptive
                     // tasks). The test path is P1 of ROADMAP-TO-CODING-ITSELF.
@@ -355,13 +374,20 @@ impl ServiceModule for CognitionModule {
                     } else {
                         let m = !expect.is_empty()
                             && answer.to_lowercase().contains(&expect.to_lowercase());
-                        (m, if m { "substring match".into() } else { "no match".into() })
+                        (
+                            m,
+                            if m {
+                                "substring match".into()
+                            } else {
+                                "no match".into()
+                            },
+                        )
                     };
                     if ok {
                         pass += 1;
                     }
                     results.push(serde_json::json!({
-                        "id": id, "ok": ok, "grade": grade,
+                        "id": id, "ok": ok, "grade": grade, "acts": acts,
                         "answer": answer.chars().take(200).collect::<String>()
                     }));
                 }

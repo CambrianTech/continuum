@@ -22,7 +22,7 @@ use super::llm_deliberation_faculty::LlmDeliberationFaculty;
 use super::rag_source_faculty::{RagSourceFaculty, SaliencePolicy};
 use super::recall_faculty::RecallFaculty;
 use super::working_memory::{WorkingMemory, WorkingMemoryFaculty, DEFAULT_WORKING_MEMORY_CAPACITY};
-use super::workspace::{Faculty, SalienceArbiter, WorkspaceCycle};
+use super::workspace::{ActingBody, Faculty, SalienceArbiter, WorkspaceCycle};
 use crate::ai::adapter::AIProviderAdapter;
 use crate::persona::admission_state::AdmissionState;
 use crate::persona::rag_budget::RagSource;
@@ -116,6 +116,16 @@ impl GroundingSource {
 pub fn build_workspace_cycle(cfg: PersonaBrainConfig) -> WorkspaceCycle {
     let mut faculties: Vec<Arc<dyn Faculty>> = Vec::with_capacity(2 + cfg.grounding_sources.len());
 
+    // Capture the pieces the persona's BODY (the act→observe `ActingBody`) needs
+    // BEFORE they're moved into faculties below: identity, the unified hippocampus
+    // (shared Arc — the action-result engram lands in the SAME store recall reads),
+    // and the executor (the hands). The body lives on the cycle, not the faculty —
+    // executing an `Act` verdict is the organism's job, not the deliberator's.
+    let persona_id = cfg.persona_id;
+    let persona_name_for_body = cfg.persona_name.to_string();
+    let admission_for_body = Arc::clone(&cfg.admission);
+    let tool_executor = cfg.tool_executor; // partial move out of cfg (other fields still used)
+
     // Relevance recall ON by default. The embedder comes from the spawn path
     // (`resolve_recall_embedder`): neural when the embed model serves, lexical
     // otherwise — already wrapped in the process-global content-addressed cache
@@ -123,7 +133,9 @@ pub fn build_workspace_cycle(cfg: PersonaBrainConfig) -> WorkspaceCycle {
     // 14 personas). `None` (harnesses) falls back to the lexical bootstrap, which
     // works on any machine with no model. Relevance > recency either way.
     let embedder = cfg.embedder.unwrap_or_else(|| {
-        Arc::new(CachingEmbeddingProvider::new(Arc::new(LexicalEmbedder::new())))
+        Arc::new(CachingEmbeddingProvider::new(Arc::new(
+            LexicalEmbedder::new(),
+        )))
     });
     faculties.push(Arc::new(
         RecallFaculty::new(cfg.persona_id, cfg.admission).with_embedder(embedder),
@@ -136,7 +148,9 @@ pub fn build_workspace_cycle(cfg: PersonaBrainConfig) -> WorkspaceCycle {
     // distinct from the long-term engram store; self-activates only when thinking is
     // enabled (suppressed turns record nothing). See `working_memory` module.
     let working_memory = Arc::new(WorkingMemory::new(DEFAULT_WORKING_MEMORY_CAPACITY));
-    faculties.push(Arc::new(WorkingMemoryFaculty::new(Arc::clone(&working_memory))));
+    faculties.push(Arc::new(WorkingMemoryFaculty::new(Arc::clone(
+        &working_memory,
+    ))));
 
     // Bridge each grounding source into a perception-tier faculty under its
     // salience policy. Standing-framing (roster, doctrine) bids at a high floor so
@@ -150,10 +164,11 @@ pub fn build_workspace_cycle(cfg: PersonaBrainConfig) -> WorkspaceCycle {
     }
 
     // The reasoner runs in phase 2 over everything the perception tier surfaced.
-    // With a tool executor (the persona's HANDS), it's offered the dynamic AiSafe
-    // tool surface and can ACT, not just speak — every tool call routed through
-    // the persona's identity-bearing executor, so the ACL gates what it may do.
-    // Without one, it's speak-only (the safe default). The tool SURFACE is the
+    // When the persona has HANDS (an executor, attached to the cycle below as the
+    // `ActingBody`), the deliberator is OFFERED the authorized tool surface so the
+    // model can choose to act — but it only SURFACES that choice as a
+    // `Decision::Act`; the organism executes it. Without hands it's speak-only (the
+    // safe default), and offering tools would be a lie. The tool SURFACE is the
     // single source of truth (`command_registry × AiSafe`), never hardcoded.
     let mut deliberation = LlmDeliberationFaculty::new(
         cfg.persona_id,
@@ -162,7 +177,7 @@ pub fn build_workspace_cycle(cfg: PersonaBrainConfig) -> WorkspaceCycle {
         cfg.adapter,
     )
     .with_working_memory(Arc::clone(&working_memory));
-    if let Some(executor) = cfg.tool_executor {
+    if tool_executor.is_some() {
         // Offer EXACTLY what this persona is authorized to run (offer ==
         // authorized) — never a tool the gate would refuse. A local persona is the
         // owner's own in-process agent: `LocalPersona` identity → `Trusted` at the
@@ -171,11 +186,9 @@ pub fn build_workspace_cycle(cfg: PersonaBrainConfig) -> WorkspaceCycle {
         // Owner-gated ops (data/delete, grid/trust). Widening a tier auto-widens
         // this surface (no second list to keep in sync); offer matches the gate so
         // the persona is never shown a tool it can't actually run.
-        deliberation = deliberation
-            .with_tools(super::persona_tools::authorized_tool_specs(
-                crate::modules::grid::node::TrustLevel::Trusted,
-            ))
-            .with_tool_executor(executor);
+        deliberation = deliberation.with_tools(super::persona_tools::authorized_tool_specs(
+            crate::modules::grid::node::TrustLevel::Trusted,
+        ));
     }
 
     // Verbatim prompt capture (best-effort): the EXACT system prompt + message
@@ -203,29 +216,42 @@ pub fn build_workspace_cycle(cfg: PersonaBrainConfig) -> WorkspaceCycle {
         cfg.capacity.unwrap_or(DEFAULT_WORKSPACE_CAPACITY),
     );
 
+    // Give the mind its BODY when it has hands. The act→observe driver reads this
+    // to execute a `Decision::Act`, admit the result into `admission_for_body` (the
+    // unified hippocampus), and re-perceive. Room-agnostic: one persona is in many
+    // rooms at once, so `room_id` flows per-act, never baked in here.
+    let cycle = match tool_executor {
+        Some(executor) => cycle.with_acting(Arc::new(ActingBody {
+            persona_id,
+            persona_name: persona_name_for_body,
+            executor,
+            admission: admission_for_body,
+        })),
+        None => cycle,
+    };
+
     // Make the LIVE brain observable: capture every tick's full competition (all
     // bids incl. losers, the assembled context the decider saw, the decision) to
     // a per-persona JSONL. The always-on recorder watches the legacy respond()
     // path; THIS is what instruments the path that actually runs. Best-effort —
     // if the fixtures dir can't be opened we log and run with Noop capture; a
     // persona's mind never fails to assemble over an observability hiccup.
-    match std::env::var("HOME").map(|h| {
-        std::path::Path::new(&h).join(".continuum/fixtures/workspace-traces")
-    }) {
-        Ok(dir) => match super::workspace_capture::JsonlWorkspaceCaptureSink::open(
-            &dir,
-            cfg.persona_id,
-        ) {
-            Ok(sink) => cycle.with_capture(Arc::new(sink)),
-            Err(e) => {
-                tracing::warn!(
-                    persona_id = %cfg.persona_id,
-                    error = %e,
-                    "workspace trace capture unavailable; running with Noop capture"
-                );
-                cycle
+    match std::env::var("HOME")
+        .map(|h| std::path::Path::new(&h).join(".continuum/fixtures/workspace-traces"))
+    {
+        Ok(dir) => {
+            match super::workspace_capture::JsonlWorkspaceCaptureSink::open(&dir, cfg.persona_id) {
+                Ok(sink) => cycle.with_capture(Arc::new(sink)),
+                Err(e) => {
+                    tracing::warn!(
+                        persona_id = %cfg.persona_id,
+                        error = %e,
+                        "workspace trace capture unavailable; running with Noop capture"
+                    );
+                    cycle
+                }
             }
-        },
+        }
         Err(_) => cycle, // HOME unset — opt-out, no capture (no warning spam)
     }
 }
@@ -398,7 +424,10 @@ mod tests {
             Arc::ptr_eq(&got, &second),
             "respawn must resolve to the FRESH mind"
         );
-        assert!(!Arc::ptr_eq(&got, &first), "the prior lifetime's mind is replaced");
+        assert!(
+            !Arc::ptr_eq(&got, &first),
+            "the prior lifetime's mind is replaced"
+        );
         assert_eq!(registry.len(), 1);
     }
 
@@ -421,8 +450,11 @@ mod tests {
         // context_length MUST be set explicitly (the backend refuses to silently
         // fall back to n_ctx_train — the 2026-04 Metal-KV-blowup guard). new()
         // doesn't set it; production uses for_persona(profile). 8192 fits Metal.
-        let adapter: Arc<dyn AIProviderAdapter> =
-            Arc::new(LlamaCppAdapter::new().with_context_length(8192).with_n_seq_max(1));
+        let adapter: Arc<dyn AIProviderAdapter> = Arc::new(
+            LlamaCppAdapter::new()
+                .with_context_length(8192)
+                .with_n_seq_max(1),
+        );
         eprintln!(
             "[live] adapter={} default_model={}",
             adapter.name(),
@@ -450,8 +482,10 @@ mod tests {
             system_prompt,
             adapter,
         ));
-        let faculties: Vec<Arc<dyn Faculty>> =
-            vec![Arc::new(RecallFaculty::new(persona, admission)), delib.clone()];
+        let faculties: Vec<Arc<dyn Faculty>> = vec![
+            Arc::new(RecallFaculty::new(persona, admission)),
+            delib.clone(),
+        ];
 
         // The EXISTING capture harness: a WorkspaceCaptureSink records every phase
         // of the tick (all bids incl. losers, the assembled context, the decision)
@@ -465,9 +499,12 @@ mod tests {
         }
         let sink = Arc::new(CapturingSink::default());
 
-        let cycle =
-            WorkspaceCycle::new(faculties, Arc::new(SalienceArbiter), DEFAULT_WORKSPACE_CAPACITY)
-                .with_capture(sink.clone());
+        let cycle = WorkspaceCycle::new(
+            faculties,
+            Arc::new(SalienceArbiter),
+            DEFAULT_WORKSPACE_CAPACITY,
+        )
+        .with_capture(sink.clone());
 
         let burst = "general room:\n\
             Joel: morning all\n\
@@ -492,7 +529,11 @@ mod tests {
         }
         eprintln!("\nASSEMBLED CONTEXT the decider saw (context_broadcast = the RAG):");
         for c in &trace.context_broadcast {
-            eprintln!("  [{}] {}", c.faculty.as_str(), c.content.replace('\n', " / "));
+            eprintln!(
+                "  [{}] {}",
+                c.faculty.as_str(),
+                c.content.replace('\n', " / ")
+            );
         }
 
         // ---- EXACTLY what the LLM was fed (reconstruct the pre-deliberation ws) ----
