@@ -15,14 +15,14 @@ static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 pub static malloc_conf: &[u8] = b"dirty_decay_ms:1000,muzzy_decay_ms:2000\0";
 
 use continuum_core::live::transport::bridge_client::LiveKitAgentManager;
-use continuum_core::memory::{ModuleBackedEmbeddingProvider, PersonaMemoryManager};
+use continuum_core::memory::PersonaMemoryManager;
 /// Continuum Core Server - Unified Modular Rust Runtime
 ///
 /// Rust-first architecture for concurrent AI persona system.
 /// Provides via Unix socket IPC:
 /// - VoiceOrchestrator and PersonaInbox
 /// - DataModule (ORM operations via ORMRustClient)
-/// - EmbeddingModule (fastembed vector generation)
+/// - EmbeddingModule (vector similarity / clustering math; generation is adapter-routed)
 /// - SearchModule (BM25, TF-IDF, vector search)
 /// - LoggerModule (structured logging)
 /// - LiveKit WebRTC agent for live audio/video
@@ -245,17 +245,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         livekit_manager.url()
     );
 
-    // Initialize Hippocampus memory subsystem with shared embedding provider.
-    // Uses EmbeddingModule's MODEL_CACHE for ONE fastembed model across entire runtime.
-    // Model loads lazily on first embed call (~100ms), then ~5ms per embed.
-    info!("🧠 Initializing Hippocampus with shared embedding provider...");
-    let embedding_provider: Arc<dyn continuum_core::memory::EmbeddingProvider> =
-        Arc::new(ModuleBackedEmbeddingProvider::default_model());
+    // Initialize Hippocampus memory subsystem (task #40). Embedding is async +
+    // adapter-routed (never an in-process ONNX model). The GLOBAL manager here
+    // bootstraps with the LEXICAL embedder — instant, no network on the boot
+    // critical path. This is non-negotiable per the concurrency guide: NOTHING
+    // may gate the IPC socket bind on a gateway probe (a hanging `/v1/models`
+    // call here previously wedged boot before the socket bound). The LIVE
+    // per-persona recall path resolves its own NEURAL embedder lazily on spawn
+    // (`supervisor` → `cognition::embedding::resolve_recall_embedder`) and logs
+    // gateway availability there — that is where real semantic recall lives.
+    // The lexical embedder is an explicit, logged, non-neural relevance embedder
+    // (allowed; NOT a silent ONNX fallback). Wiring neural embedding for the
+    // global manager (against the dedicated embed server, not the chat gateway)
+    // is a separate addressing follow-up.
     info!(
-        "✅ Hippocampus ready: {} ({}D, shared with EmbeddingModule)",
-        embedding_provider.name(),
-        embedding_provider.dimensions()
+        "🧠 Initializing Hippocampus (lexical bootstrap embedder; per-persona recall \
+         resolves neural on spawn) — no gateway probe on the boot path"
     );
+    let embedding_provider: Arc<dyn continuum_core::memory::EmbeddingProvider> =
+        Arc::new(continuum_core::cognition::embedding::CachingEmbeddingProvider::new(
+            Arc::new(continuum_core::cognition::embedding::LexicalEmbedder::new()),
+        ));
     let memory_manager = Arc::new(PersonaMemoryManager::new(embedding_provider));
 
     // Capture tokio runtime handle for async operations from IPC thread

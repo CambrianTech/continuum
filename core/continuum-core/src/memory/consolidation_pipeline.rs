@@ -136,8 +136,9 @@ fn ms_to_rfc3339(ms: u64) -> String {
 mod tests {
     use super::*;
     use crate::memory::consolidation_adapter::{MemoryType, Thought};
-    use crate::memory::embedding::{EmbeddingError, EmbeddingProvider};
+    use crate::memory::embedding::EmbeddingProvider;
     use crate::memory::raw_adapter::RawMemoryAdapter;
+    use async_trait::async_trait;
     use std::collections::HashMap;
     use std::sync::Arc;
     use uuid::Uuid;
@@ -148,18 +149,16 @@ mod tests {
     /// when a caller explicitly requests semantic recall), so this
     /// stub is enough to satisfy the type constraint.
     struct StubEmbedder;
+    #[async_trait]
     impl EmbeddingProvider for StubEmbedder {
-        fn name(&self) -> &str {
+        fn id(&self) -> &str {
             "stub"
         }
-        fn dimensions(&self) -> usize {
+        fn dim(&self) -> usize {
             8
         }
-        fn embed(&self, _text: &str) -> Result<Vec<f32>, EmbeddingError> {
-            Ok(vec![0.0; 8])
-        }
-        fn embed_batch(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, EmbeddingError> {
-            Ok(texts.iter().map(|_| vec![0.0; 8]).collect())
+        async fn embed(&self, _text: &str) -> Vec<f32> {
+            vec![0.0; 8]
         }
     }
 

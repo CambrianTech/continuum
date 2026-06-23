@@ -7,7 +7,6 @@
 //! CRITICAL: Database paths are ALWAYS passed by the caller (TypeScript handle layer).
 //! NO defaults, NO environment variables, NO fallbacks. The caller owns the paths.
 
-use crate::modules::embedding::generate_embeddings_batch;
 use crate::orm::{
     adapter::{AdapterConfig, StorageAdapter},
     migration::{MigrationConfig, MigrationEngine, MigrationHandle},
@@ -1636,8 +1635,29 @@ impl DataModule {
                 format!("Invalid params: {e}")
             })?;
 
-        let model_name = params.model.as_deref().unwrap_or("AllMiniLML6V2");
         let batch_size = params.batch_size;
+
+        // Embedding is adapter-routed (unsloth /v1/embeddings, task #40) — the
+        // SAME async neural-or-lexical embedder the live recall path uses. Build
+        // it ONCE for the whole backfill. `params.model` is advisory only now;
+        // the served embed model is selected by the gateway. Fail loud if no
+        // embedder can be built (no in-process ONNX fallback).
+        let embedder = crate::modules::embedding::build_adapter_embedder()
+            .await
+            .map_err(|e| format!("vector/backfill: cannot build embedder: {e}"))?;
+
+        // `params.model` is advisory only now — the served embed model is chosen
+        // by the gateway (task #40). Log when a caller requested a specific model
+        // so the divergence from the old fastembed model-name semantics is visible.
+        if let Some(requested) = params.model.as_deref() {
+            log_info!(
+                "data",
+                "vector/backfill",
+                "requested embed model '{}' is advisory; using gateway embedder '{}'",
+                requested,
+                embedder.id()
+            );
+        }
 
         let adapter = self.get_adapter(&params.db_path).await?;
 
@@ -1696,35 +1716,40 @@ impl DataModule {
                 continue;
             }
 
-            // Batch generate embeddings
-            let text_refs: Vec<&str> = texts_to_embed.iter().map(|(_, t)| *t).collect();
-            match generate_embeddings_batch(&text_refs, model_name) {
-                Ok(embeddings) => {
-                    // Update each record with its embedding
-                    for ((idx, _), embedding) in texts_to_embed.iter().zip(embeddings.iter()) {
-                        let record = &chunk[*idx];
-
-                        // Convert f32 to f64 for JSON
-                        let embedding_f64: Vec<f64> = embedding.iter().map(|&v| v as f64).collect();
-
-                        let update_data = json!({
-                            "embedding": embedding_f64
-                        });
-
-                        let update_result = adapter
-                            .update(&params.collection, &record.id, update_data, false)
-                            .await;
-
-                        if update_result.success {
-                            processed += 1;
-                        } else {
-                            failed += 1;
-                        }
-                    }
+            // Embed each text through the adapter-routed embedder (async,
+            // content-addressed cache, neural-or-lexical — task #40). An empty
+            // vector means the embedder produced no signal for that text; skip
+            // it as a failure rather than writing zeros.
+            for (idx, text) in texts_to_embed.iter() {
+                let embedding = embedder.embed(text).await;
+                if embedding.is_empty() {
+                    log_error!(
+                        "data",
+                        "vector/backfill",
+                        "embedder returned no signal for record in {}",
+                        params.collection
+                    );
+                    failed += 1;
+                    continue;
                 }
-                Err(e) => {
-                    log_error!("data", "vector/backfill", "Batch embedding failed: {}", e);
-                    failed += texts_to_embed.len();
+
+                let record = &chunk[*idx];
+
+                // Convert f32 to f64 for JSON
+                let embedding_f64: Vec<f64> = embedding.iter().map(|&v| v as f64).collect();
+
+                let update_data = json!({
+                    "embedding": embedding_f64
+                });
+
+                let update_result = adapter
+                    .update(&params.collection, &record.id, update_data, false)
+                    .await;
+
+                if update_result.success {
+                    processed += 1;
+                } else {
+                    failed += 1;
                 }
             }
         }

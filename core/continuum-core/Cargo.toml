@@ -140,8 +140,11 @@ tracing-appender.workspace = true
 rand.workspace = true  # For test audio generation
 ts-rs.workspace = true  # TypeScript type generation
 
-# Memory/Hippocampus — pure compute engine (data from TS ORM via IPC)
-fastembed.workspace = true      # Inline ONNX embedding (~5ms per embed, no IPC hop)
+# Memory/Hippocampus — pure compute engine (data from TS ORM via IPC).
+# NOTE: embedding is async + adapter-routed (unsloth /v1/embeddings via the
+# AIProviderAdapter, see cognition::embedding) — NOT an in-process ONNX model.
+# The fastembed crate was removed in task #40. `ort` stays for live audio
+# (tts/stt/vad), which is a separate concern (task #41).
 
 # LiveKit WebRTC SFU — AI agents join rooms with native audio/video.
 # Optional: Docker ARM64 builds skip this (webrtc-sys C++ fails on ARM64 Linux).

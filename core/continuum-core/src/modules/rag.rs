@@ -377,7 +377,11 @@ impl RagState {
 
 impl RagState {
     /// Load memory source using multi-layer recall.
-    fn load_memory_source(
+    ///
+    /// Async: `multi_layer_recall` pre-computes the query embedding through the
+    /// adapter-routed [`EmbeddingProvider`] (unsloth `/v1/embeddings`, task #40)
+    /// before its sync Rayon recall layers run.
+    async fn load_memory_source(
         &self,
         persona_id: &str,
         room_id: &str,
@@ -400,7 +404,11 @@ impl RagState {
             layers: params.layers.clone(),
         };
 
-        match self.memory_manager.multi_layer_recall(persona_id, &req) {
+        match self
+            .memory_manager
+            .multi_layer_recall(persona_id, &req)
+            .await
+        {
             Ok(resp) => {
                 let sections: Vec<RagSection> = resp
                     .memories
@@ -667,7 +675,7 @@ impl RagState {
     }
 
     /// Load a single source based on its discriminated type (OOP pattern matching)
-    fn load_source(
+    async fn load_source(
         &self,
         source: &RagSourceRequest,
         persona_id: &str,
@@ -678,7 +686,10 @@ impl RagState {
             RagSourceRequest::Memory {
                 budget_tokens,
                 params,
-            } => self.load_memory_source(persona_id, room_id, query_text, params, *budget_tokens),
+            } => {
+                self.load_memory_source(persona_id, room_id, query_text, params, *budget_tokens)
+                    .await
+            }
             RagSourceRequest::Consciousness {
                 budget_tokens: _,
                 params,
@@ -762,13 +773,19 @@ impl ServiceModule for RagModule {
                 // - Individual source loading is fast (~5ms each)
                 // - Typically only 2-3 sources per compose
                 // - Total time is still <50ms
+                //
+                // Now async: the memory source's query embedding is produced via
+                // the adapter-routed embedder (task #40). Await each source in
+                // order — no Rayon, no thread starvation.
                 // ═══════════════════════════════════════════════════════════
-                let source_results: Vec<RagSourceResult> = sources
-                    .iter()
-                    .map(|source| {
-                        state.load_source(source, &persona_id, &room_id, query_text.as_deref())
-                    })
-                    .collect();
+                let mut source_results: Vec<RagSourceResult> = Vec::with_capacity(sources.len());
+                for source in &sources {
+                    source_results.push(
+                        state
+                            .load_source(source, &persona_id, &room_id, query_text.as_deref())
+                            .await,
+                    );
+                }
 
                 // Aggregate results
                 let total_tokens: usize = source_results.iter().map(|r| r.tokens_used).sum();

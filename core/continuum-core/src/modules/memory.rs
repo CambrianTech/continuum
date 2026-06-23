@@ -104,6 +104,7 @@ impl ServiceModule for MemoryModule {
                     .state
                     .memory_manager
                     .multi_layer_recall(persona_id, &req)
+                    .await
                     .map_err(|e| format!("memory/multi-layer-recall failed: {e}"))?;
 
                 log_info!(

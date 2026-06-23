@@ -171,15 +171,23 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # `[[never-redirect-substrate-stderr]]` doctrine memory for why.
 tracing-appender = "0.2"
 
-# Embedding (fastembed)
-fastembed = "5"
+# Embedding is adapter-routed through the AI provider (unsloth `/v1/embeddings`),
+# not in-process ONNX — the `fastembed` crate was removed in task #40. The async
+# `cognition::embedding::EmbeddingProvider` trait is the single embedding path.
 
 # ONNX Runtime for TTS and embedding inference.
 # download-binaries: downloads prebuilt ORT. load-dynamic: loads as shared lib at runtime.
 # load-dynamic avoids protobuf symbol conflict with livekit/webrtc-sys that crashes
 # cargo test on Linux (SIGABRT in protobuf descriptor registration).
 # Both features together = download the binary AND load dynamically (no static protobuf link).
-ort = { version = "2.0.0-rc.11", default-features = false, features = ["download-binaries", "load-dynamic", "ndarray"] }
+# `tls-rustls` (rustls + ring): REQUIRED by `download-binaries` (ort-sys's
+# downloader needs a TLS provider). Previously this was satisfied transitively
+# because `fastembed` pulled `ort` with its default features (which include a
+# tls-* feature). With fastembed removed (task #40 — embedding is adapter-routed,
+# not in-process ONNX), ort no longer inherits any tls-* feature, so we enable it
+# explicitly here. rustls (vs native-tls) keeps the build self-contained for
+# public/cross-platform users (no system OpenSSL).
+ort = { version = "2.0.0-rc.11", default-features = false, features = ["download-binaries", "load-dynamic", "ndarray", "tls-rustls"] }
 ndarray = "0.17"  # ort 2.0.0-rc.11 requires ndarray 0.17 for OwnedTensorArrayData trait compatibility
 
 # WebSocket

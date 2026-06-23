@@ -44,10 +44,7 @@ pub use consolidation_threshold::{AdaptiveConsolidationThreshold, ConsolidationT
 pub use consolidator::{ConsolidationMetrics, Consolidator, ConsolidatorStats};
 pub use conversation_summary::{ConversationSummary, RecallMode};
 pub use corpus::MemoryCorpus;
-pub use embedding::{
-    cosine_similarity, DeterministicEmbeddingProvider, EmbeddingProvider, FastEmbedProvider,
-    ModuleBackedEmbeddingProvider,
-};
+pub use embedding::{cosine_similarity, DeterministicEmbeddingProvider, EmbeddingProvider};
 pub use raw_adapter::RawMemoryAdapter;
 pub use recall::{MultiLayerRecall, RecallLayer, RecallQuery, ScoredMemory};
 pub use types::*;
@@ -169,24 +166,42 @@ impl PersonaMemoryManager {
 
     /// 6-layer parallel multi-recall — the improved recall algorithm.
     /// Operates on in-memory MemoryCorpus data. Zero SQL.
-    pub fn multi_layer_recall(
+    ///
+    /// Async because the query embedding is produced through the adapter-routed
+    /// [`EmbeddingProvider`] (unsloth `/v1/embeddings`, task #40) BEFORE the
+    /// synchronous Rayon recall layers run. The layers themselves never embed —
+    /// they consume the pre-computed `query.query_embedding`, so the only async
+    /// hop is this one round-trip (cached content-addressed; one embed per unique
+    /// query). An empty vector means "no signal" (embedder down / no model) and
+    /// the semantic/cross-context layers degrade to no-op, never panic.
+    pub async fn multi_layer_recall(
         &self,
         persona_id: &str,
         req: &MultiLayerRecallRequest,
     ) -> Result<MemoryRecallResponse, MemoryError> {
         let corpus_lock = self.get_corpus(persona_id)?;
 
-        // Phase 1: recall with read lock
+        // Pre-compute query embedding (adapter round-trip) OUTSIDE the read lock
+        // and OUTSIDE the sync Rayon recall — never hold a lock across await.
+        let query_embedding = match req.query_text.as_ref() {
+            Some(text) => {
+                let v = self.embedding.embed(text).await;
+                // Empty = "no signal" (down embedder); treat as absent so the
+                // semantic layer degrades rather than scoring against zeros.
+                if v.is_empty() {
+                    None
+                } else {
+                    Some(v)
+                }
+            }
+            None => None,
+        };
+
+        // Phase 1: recall with read lock (pure sync compute on in-memory corpus)
         let response = {
             let corpus = corpus_lock.read().map_err(|e| {
                 MemoryError(format!("Failed to acquire read lock for {persona_id}: {e}"))
             })?;
-
-            // Pre-compute query embedding if text provided
-            let query_embedding = req
-                .query_text
-                .as_ref()
-                .and_then(|text| self.embedding.embed(text).ok());
 
             let query = RecallQuery {
                 query_text: req.query_text.clone(),
@@ -195,12 +210,8 @@ impl PersonaMemoryManager {
                 max_results_per_layer: (req.max_results / 2).max(5),
             };
 
-            self.recall_engine.recall_parallel(
-                &corpus,
-                &query,
-                self.embedding.as_ref(),
-                req.max_results,
-            )
+            self.recall_engine
+                .recall_parallel(&corpus, &query, req.max_results)
         }; // read lock dropped here
 
         // Phase 2: mark accessed with write lock (testing effect — retrieval strengthens memory)
@@ -345,24 +356,22 @@ impl PersonaMemoryManager {
 mod tests {
     use super::*;
 
-    /// Stub embedding provider for tests (avoids loading real model).
+    use async_trait::async_trait;
+
+    /// Stub embedding provider for tests (avoids a real model / network).
+    /// Implements the canonical async [`EmbeddingProvider`].
     struct StubEmbeddingProvider;
 
+    #[async_trait]
     impl EmbeddingProvider for StubEmbeddingProvider {
-        fn name(&self) -> &str {
+        fn id(&self) -> &str {
             "stub"
         }
-        fn dimensions(&self) -> usize {
+        fn dim(&self) -> usize {
             384
         }
-        fn embed(&self, _text: &str) -> Result<Vec<f32>, embedding::EmbeddingError> {
-            Ok(vec![0.1; 384])
-        }
-        fn embed_batch(
-            &self,
-            texts: &[String],
-        ) -> Result<Vec<Vec<f32>>, embedding::EmbeddingError> {
-            Ok(texts.iter().map(|_| vec![0.1; 384]).collect())
+        async fn embed(&self, _text: &str) -> Vec<f32> {
+            vec![0.1; 384]
         }
     }
 
@@ -430,8 +439,8 @@ mod tests {
         assert!(resp.load_time_ms >= 0.0);
     }
 
-    #[test]
-    fn test_multi_layer_recall() {
+    #[tokio::test]
+    async fn test_multi_layer_recall() {
         let manager = test_manager();
 
         let memories = vec![
@@ -449,7 +458,7 @@ mod tests {
             layers: None,
         };
 
-        let resp = manager.multi_layer_recall("p1", &req).unwrap();
+        let resp = manager.multi_layer_recall("p1", &req).await.unwrap();
         assert!(!resp.memories.is_empty());
         assert!(resp.recall_time_ms > 0.0);
         assert!(!resp.layer_timings.is_empty());
@@ -483,8 +492,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_corpus_not_loaded() {
+    #[tokio::test]
+    async fn test_corpus_not_loaded() {
         let manager = test_manager();
         let req = MultiLayerRecallRequest {
             query_text: None,
@@ -492,12 +501,12 @@ mod tests {
             max_results: 10,
             layers: None,
         };
-        let result = manager.multi_layer_recall("nonexistent", &req);
+        let result = manager.multi_layer_recall("nonexistent", &req).await;
         assert!(result.is_err());
     }
 
-    #[test]
-    fn test_load_corpus_replaces_previous() {
+    #[tokio::test]
+    async fn test_load_corpus_replaces_previous() {
         let manager = test_manager();
 
         // Load initial corpus with 1 memory
@@ -523,12 +532,12 @@ mod tests {
             max_results: 10,
             layers: None,
         };
-        let recall_resp = manager.multi_layer_recall("p1", &req).unwrap();
+        let recall_resp = manager.multi_layer_recall("p1", &req).await.unwrap();
         assert!(recall_resp.memories.iter().all(|m| m.id != "m1"));
     }
 
-    #[test]
-    fn test_append_memory() {
+    #[tokio::test]
+    async fn test_append_memory() {
         let manager = test_manager();
 
         // Load initial corpus
@@ -549,7 +558,7 @@ mod tests {
             max_results: 10,
             layers: None,
         };
-        let resp = manager.multi_layer_recall("p1", &req).unwrap();
+        let resp = manager.multi_layer_recall("p1", &req).await.unwrap();
         let ids: Vec<&str> = resp.memories.iter().map(|m| m.id.as_str()).collect();
         assert!(ids.contains(&"m1"), "Original memory should still exist");
         assert!(ids.contains(&"m2"), "Appended memory should exist");
@@ -590,8 +599,8 @@ mod tests {
         assert!(result.is_err(), "Append to nonexistent corpus should fail");
     }
 
-    #[test]
-    fn test_append_preserves_embeddings() {
+    #[tokio::test]
+    async fn test_append_preserves_embeddings() {
         let manager = test_manager();
 
         // Load initial corpus with embedded memory
@@ -615,7 +624,7 @@ mod tests {
             max_results: 10,
             layers: None,
         };
-        let resp = manager.multi_layer_recall("p1", &req).unwrap();
+        let resp = manager.multi_layer_recall("p1", &req).await.unwrap();
         assert!(
             resp.memories.len() >= 2,
             "Both embedded memories should be recalled"

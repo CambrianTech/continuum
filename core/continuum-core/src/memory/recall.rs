@@ -14,7 +14,7 @@
 //! 6. CrossContext — knowledge from other rooms/contexts
 
 use crate::memory::corpus::MemoryCorpus;
-use crate::memory::embedding::{cosine_similarity, EmbeddingProvider};
+use crate::memory::embedding::cosine_similarity;
 use crate::memory::types::*;
 use std::collections::HashMap;
 use std::time::Instant;
@@ -30,12 +30,13 @@ pub trait RecallLayer: Send + Sync {
     fn name(&self) -> &str;
 
     /// Execute this layer's recall strategy against the in-memory corpus.
-    fn recall(
-        &self,
-        corpus: &MemoryCorpus,
-        query: &RecallQuery,
-        embedding_provider: &dyn EmbeddingProvider,
-    ) -> Vec<ScoredMemory>;
+    ///
+    /// Layers are pure sync compute (run via Rayon). The query embedding, if
+    /// needed, is pre-computed by the caller (adapter-routed, async) and passed
+    /// on [`RecallQuery::query_embedding`] — layers never embed inline. An absent
+    /// `query_embedding` means "no semantic signal"; the semantic / cross-context
+    /// layers degrade to no-op rather than embedding on the hot path.
+    fn recall(&self, corpus: &MemoryCorpus, query: &RecallQuery) -> Vec<ScoredMemory>;
 }
 
 // ─── Query Context ───────────────────────────────────────────────────────────
@@ -67,12 +68,7 @@ impl RecallLayer for CoreRecallLayer {
         "core"
     }
 
-    fn recall(
-        &self,
-        corpus: &MemoryCorpus,
-        query: &RecallQuery,
-        _embedding_provider: &dyn EmbeddingProvider,
-    ) -> Vec<ScoredMemory> {
+    fn recall(&self, corpus: &MemoryCorpus, query: &RecallQuery) -> Vec<ScoredMemory> {
         corpus
             .high_importance_memories(0.8, query.max_results_per_layer)
             .into_iter()
@@ -100,22 +96,12 @@ impl RecallLayer for SemanticRecallLayer {
         "semantic"
     }
 
-    fn recall(
-        &self,
-        corpus: &MemoryCorpus,
-        query: &RecallQuery,
-        embedding_provider: &dyn EmbeddingProvider,
-    ) -> Vec<ScoredMemory> {
-        // Need query text or pre-computed embedding
+    fn recall(&self, corpus: &MemoryCorpus, query: &RecallQuery) -> Vec<ScoredMemory> {
+        // The query embedding is pre-computed by the caller (adapter-routed,
+        // async). Absent → no semantic signal → no-op (never embed inline).
         let query_embedding = match &query.query_embedding {
             Some(e) => e.clone(),
-            None => match &query.query_text {
-                Some(text) => match embedding_provider.embed(text) {
-                    Ok(e) => e,
-                    Err(_) => return vec![],
-                },
-                None => return vec![],
-            },
+            None => return vec![],
         };
 
         let memories_with_embeddings = corpus.memories_with_embeddings();
@@ -158,12 +144,7 @@ impl RecallLayer for TemporalRecallLayer {
         "temporal"
     }
 
-    fn recall(
-        &self,
-        corpus: &MemoryCorpus,
-        query: &RecallQuery,
-        _embedding_provider: &dyn EmbeddingProvider,
-    ) -> Vec<ScoredMemory> {
+    fn recall(&self, corpus: &MemoryCorpus, query: &RecallQuery) -> Vec<ScoredMemory> {
         // Look back 2 hours
         let since = chrono::Utc::now()
             .checked_sub_signed(chrono::Duration::hours(2))
@@ -242,12 +223,7 @@ impl RecallLayer for AssociativeRecallLayer {
         "associative"
     }
 
-    fn recall(
-        &self,
-        corpus: &MemoryCorpus,
-        query: &RecallQuery,
-        _embedding_provider: &dyn EmbeddingProvider,
-    ) -> Vec<ScoredMemory> {
+    fn recall(&self, corpus: &MemoryCorpus, query: &RecallQuery) -> Vec<ScoredMemory> {
         let query_text = match &query.query_text {
             Some(t) => t.clone(),
             None => return vec![],
@@ -338,12 +314,7 @@ impl RecallLayer for DecayResurfaceLayer {
         "decay_resurface"
     }
 
-    fn recall(
-        &self,
-        corpus: &MemoryCorpus,
-        query: &RecallQuery,
-        _embedding_provider: &dyn EmbeddingProvider,
-    ) -> Vec<ScoredMemory> {
+    fn recall(&self, corpus: &MemoryCorpus, query: &RecallQuery) -> Vec<ScoredMemory> {
         let decayable = corpus.decayable_memories(0.5, 100);
 
         let mut scored: Vec<ScoredMemory> = decayable
@@ -384,28 +355,25 @@ impl RecallLayer for CrossContextLayer {
         "cross_context"
     }
 
-    fn recall(
-        &self,
-        corpus: &MemoryCorpus,
-        query: &RecallQuery,
-        embedding_provider: &dyn EmbeddingProvider,
-    ) -> Vec<ScoredMemory> {
+    fn recall(&self, corpus: &MemoryCorpus, query: &RecallQuery) -> Vec<ScoredMemory> {
         // Look back 24 hours for cross-context events
         let since = chrono::Utc::now()
             .checked_sub_signed(chrono::Duration::hours(24))
             .map(|t| t.to_rfc3339())
             .unwrap_or_default();
 
-        // If we have query text, do semantic cross-context search
-        if let Some(ref query_text) = query.query_text {
-            if let Ok(query_emb) = embedding_provider.embed(query_text) {
+        // Semantic cross-context search uses the pre-computed query embedding
+        // (adapter-routed, async; supplied by the caller). Absent → fall through
+        // to importance-based cross-context. Never embed inline.
+        if let Some(ref query_emb) = query.query_embedding {
+            {
                 let events_with_emb =
                     corpus.cross_context_events_with_embeddings(&query.room_id, &since, 50);
 
                 let mut scored: Vec<ScoredMemory> = events_with_emb
                     .into_iter()
                     .map(|(event, embedding)| {
-                        let similarity = cosine_similarity(&query_emb, embedding);
+                        let similarity = cosine_similarity(query_emb, embedding);
                         let record = timeline_event_to_memory_record(
                             event,
                             "cross_context",
@@ -510,12 +478,15 @@ impl MultiLayerRecall {
         }
     }
 
-    /// Run all layers in parallel and return merged, deduplicated results.
+    /// Run all layers and return merged, deduplicated results.
+    ///
+    /// Pure sync compute: the query embedding (if any) was pre-computed by the
+    /// caller (adapter-routed, async) and lives on `query.query_embedding`; no
+    /// layer embeds inline.
     pub fn recall_parallel(
         &self,
         corpus: &MemoryCorpus,
         query: &RecallQuery,
-        embedding_provider: &dyn EmbeddingProvider,
         max_results: usize,
     ) -> MemoryRecallResponse {
         let start = Instant::now();
@@ -536,7 +507,7 @@ impl MultiLayerRecall {
             .iter()
             .map(|layer| {
                 let layer_start = Instant::now();
-                let results = layer.recall(corpus, query, embedding_provider);
+                let results = layer.recall(corpus, query);
                 let time_ms = layer_start.elapsed().as_secs_f64() * 1000.0;
                 (layer.name().to_string(), results, time_ms)
             })
