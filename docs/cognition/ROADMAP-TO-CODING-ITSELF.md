@@ -32,6 +32,17 @@ live IN continuum as a stimulus source.
 **Proof / gate:** a reproducible, test-graded **baseline pass-rate** on real coding
 tasks, with variance measured (each task ×N). *Until this number exists, every later
 phase is a hypothesis — build it first.*
+**DONE — slice 1:** `cognition/eval` test-grades a task by RUNNING the model's code
+(`test_grade`, commit 64eadafe5); proven 3/3 on `docs/genome/coder-gym.jsonl`
+(add/reverse/fizzbuzz). **Reuse, don't reinvent (Joel):** load REAL benchmark task
+DATA via HuggingFace `datasets` (5.0.0, installed — the layer unsloth itself uses):
+HumanEval/MBPP/SWE-bench ship `{prompt, test, entry_point}` mapping straight onto our
+gym `{prompt, test}`. Offload dataset management + training (forge→unsloth) + the
+bare-model A/B (the gateway) to those systems; OURS is only the harness that runs the
+*persona* and test-grades it. **Remaining slices:** (a) HumanEval-via-HF-datasets
+loader → gym; (b) variance (×N) + bare-model A/B lane; (c) SANDBOX the code execution
+(container/seccomp) before any untrusted/public task — `test_grade` is temp-dir+timeout
+only today.
 
 ## P2 — The Causal Brain + Reliability (kill the barrier)
 
