@@ -789,6 +789,17 @@ async fn serve_persona_loop_inner(
             }
         };
 
+        // Invariant: a raw tool-call envelope must NEVER reach the room — from ANY
+        // path. The cycle's verdict text is sometimes just `{"tool_call":…}` (an
+        // un-acted call the model emitted as its "answer"); broadcasting it spams
+        // peers with JSON (observed live). Treat it as silence — the deliberation
+        // already executes real calls internally; only prose is a contribution.
+        if crate::ai::json_in_prompt_tools::parse_tool_call(&response_text).is_some() {
+            tracing::info!(lamport = msg.lamport, "verdict was a raw tool-call envelope — not broadcasting");
+            outcome.turns_skipped += 1;
+            continue;
+        }
+
         // Per #195 slice 1: time the airc publish + downstream ack.
         let say_started = std::time::Instant::now();
         let say_result = conversation.say(&response_text).await;
@@ -985,10 +996,28 @@ async fn run_self_cycle(
     else {
         return; // no cycle registered (shouldn't happen) — nothing to run
     };
-    let ws = cycle.run_in_room(burst, ctx.identity.default_room).await;
+    // Unprompted bar: a self-tick means NO ONE addressed the persona. Frame the turn
+    // so the model's OWN judgment raises the bar for posting to the shared room —
+    // reason/act internally, speak only with a genuinely new, useful contribution,
+    // else stay silent (PASS). Grounding context that shapes the judge, NOT a filter
+    // on its output (it stays the LLM's call). Targets the heartbeat narrating every
+    // intermediate step into a room full of real peers. [[organic-substrate-continuous-concern-scheduler]].
+    let framed = format!(
+        "[Unprompted check-in: no one addressed you just now. Reason and act on your \
+         own, but post to the room ONLY if you have a genuinely new, useful \
+         contribution for the others here. If you are mid-task or have nothing worth \
+         their attention, stay silent.]\n{burst}"
+    );
+    let ws = cycle.run_in_room(framed, ctx.identity.default_room).await;
     match ws.decision() {
         Some(crate::cognition::workspace::Decision::Speak { text })
         | Some(crate::cognition::workspace::Decision::RaiseUnprompted { text }) => {
+            // Never broadcast a raw tool-call envelope to the room (same guard the
+            // message path's terminal report has). A decision whose text is just
+            // {"tool_call":…} is an un-acted call, not a contribution — stay silent.
+            if crate::ai::json_in_prompt_tools::parse_tool_call(text).is_some() {
+                return;
+            }
             if let Err(e) = conversation.say(text).await {
                 tracing::warn!(persona = %ctx.identity.agent_name, error = %e, "self-cycle say failed");
                 return;
