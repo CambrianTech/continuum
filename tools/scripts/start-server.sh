@@ -245,7 +245,34 @@ fi
 
 # ── Socket ───────────────────────────────────────────────────────────
 CONTINUUM_SOCKET="${CONTINUUM_SOCKET:-/tmp/continuum-core.sock}"
-rm -f "$CONTINUUM_SOCKET"
+
+# ── Restart: stop any core already serving this socket ───────────────
+# This script is the ONE rebuild+relaunch command ([[validate-via-pure-rust-not-npm-jtag]]):
+# it OWNS the socket, so a prior continuum-core-server holding it must be stopped
+# before we bind a fresh one. Without this, removing the socket out from under a
+# live core orphans it and two processes fight over one socket (line ~59 incident).
+# SIGTERM first (graceful drain), then SIGKILL fallback, then clear the socket.
+# Called AFTER the build (below) so downtime is ~0: the new binary is ready, we
+# stop the old, and exec immediately.
+stop_existing_core() {
+  local pids
+  pids="$(pgrep -f "continuum-core-server" 2>/dev/null | grep -v "^$$\$" || true)"
+  if [ -n "$pids" ]; then
+    echo "▶ stopping existing core (pids: $(echo $pids | tr '\n' ' '))"
+    # shellcheck disable=SC2086
+    kill -TERM $pids 2>/dev/null || true
+    for _ in $(seq 1 15); do
+      pgrep -f "continuum-core-server" >/dev/null 2>&1 || break
+      sleep 1
+    done
+    if pgrep -f "continuum-core-server" >/dev/null 2>&1; then
+      echo "  graceful stop timed out — SIGKILL"
+      pkill -9 -f "continuum-core-server" 2>/dev/null || true
+      sleep 1
+    fi
+  fi
+  rm -f "$CONTINUUM_SOCKET"
+}
 
 # ── Launch ───────────────────────────────────────────────────────────
 PROFILE_FLAG=""
@@ -273,6 +300,15 @@ cargo build --manifest-path "$CORE_MANIFEST" --bin continuum-mcp $PROFILE_FLAG $
 echo "▶ building cu (Rust CLI client)"
 cargo build --manifest-path "$CORE_MANIFEST" --bin cu $PROFILE_FLAG $CONTINUUM_FEATURES \
   || echo "⚠ cu build failed — CLI client unavailable (core still launches)" >&2
+
+# Build the server binary BEFORE stopping the old core, so the running core keeps
+# serving through the (cached, fast) compile and downtime is ~0.
+echo "▶ building continuum-core-server"
+cargo build --manifest-path "$CORE_MANIFEST" --bin continuum-core-server $PROFILE_FLAG $CONTINUUM_FEATURES \
+  || { echo "✗ FATAL: continuum-core-server build failed — leaving the running core untouched" >&2; exit 1; }
+
+# Now the new binary is ready: stop the old core (if any) and take the socket.
+stop_existing_core
 
 echo "▶ continuum-core-server starting"
 echo "  profile:  $PROFILE_LABEL"
