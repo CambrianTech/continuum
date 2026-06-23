@@ -9,6 +9,30 @@
 > [DREAM-CONSOLIDATION](DREAM-CONSOLIDATION.md) (memory), and
 > [ORGANIC-SUBSTRATE](ORGANIC-SUBSTRATE.md) (never-stop) first.
 
+## It is NOT a loop — it is event-driven (read this first)
+
+The name says "loop" but the target is **not** a poll loop, and the heartbeat
+currently shipped (`service_loop.rs`: `select!` + interval) and the deliberation
+agent `while`-loop are **interim, loop-shaped, to be replaced.** The real mind is
+**event-driven stimulus→response**:
+
+- Nothing fires until a **stimulus** arrives. Stimuli = the **feed** (airc),
+  **results of what it just did** (a tool/action result emitted back as RAG → a new
+  stimulus), **memory** events (consolidation), and **the gym** emitting a task.
+- The mind **subscribes and reacts** per stimulus; a reaction may **emit an action**;
+  the action's **result is emitted as a new stimulus** → the next reaction. The
+  *events* thread it — there is no central loop.
+- It "runs forever" because the **stimulus stream is self-sustaining** (her own
+  results feed her next stimuli; the gym + feed never dry up), NOT because something
+  spins. When genuinely nothing is happening she is **idle** — correct and organic,
+  like any being; she is alive to stimulus, not busy-waiting.
+
+Concretely: a tool result must **re-stimulate** cognition (she sees what she did and
+continues), not be consumed inside a `while` re-prompt. The gym is a **stimulus
+source in continuum** that emits a task and consumes the graded result. This is the
+event-substrate (#16) + the [ORGANIC-SUBSTRATE](ORGANIC-SUBSTRATE.md) doctrine made
+literal. Everything below describes the *flow*; build it as event dispatch, not a loop.
+
 ## The one insight
 
 A persona that only re-reacts to external messages goes quiet when no one talks to
