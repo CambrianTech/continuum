@@ -420,12 +420,45 @@ impl ActionCommand for CodeSearch {
         matches.dedup_by(|a, b| a.file_path == b.file_path && a.line_number == b.line_number);
         matches.truncate(max as usize);
 
+        // Grounding for an empty search: a glob that matched ZERO files almost
+        // always means the caller guessed a wrong path prefix (observed live —
+        // globbed "continuum-core/*" when the tree is "core/continuum-core/…",
+        // then confabulated a fake "agent_loop.py" rather than recover). Hand back
+        // the workspace root + its top-level entries so the caller can re-orient
+        // from the real layout instead of inventing one. Pure grounding DATA via
+        // the existing `error` field — not a behavior gate, not the answer; the
+        // map, not the route. (CLAUDE.md AI-QA: make tool failures recoverable.)
+        let error = if files_searched == 0 && p.file_glob.is_some() {
+            let root = engine.workspace_root();
+            let mut tops: Vec<String> = std::fs::read_dir(&root)
+                .map(|rd| {
+                    rd.flatten()
+                        .filter(|e| e.path().is_dir())
+                        .map(|e| e.file_name().to_string_lossy().into_owned())
+                        .filter(|n| !n.starts_with('.') && n != "target" && n != "node_modules")
+                        .collect()
+                })
+                .unwrap_or_default();
+            tops.sort();
+            tops.truncate(24);
+            Some(format!(
+                "No files matched glob {:?}. Workspace root is {} and all paths are \
+                 relative to it; its top-level directories are: [{}]. Re-check the \
+                 glob against this actual layout.",
+                p.file_glob.as_deref().unwrap_or(""),
+                root.display(),
+                tops.join(", "),
+            ))
+        } else {
+            None
+        };
+
         Ok(SearchResult {
             success: true,
             matches,
             total_matches,
             files_searched,
-            error: None,
+            error,
         })
     }
 }
