@@ -57,6 +57,35 @@ produced. This is what "learn to do anything" means, made literal.
    available mind** (the gateway's best) — a weak teacher writes a weak curriculum and an
    invalid rubric.
 
+## The teacher owns the data — single-shot → thousands
+
+The multiplier that makes the class work: **the teacher is responsible for the data**,
+and one example is not one training row. The teacher **downloads** (HF `datasets` /
+web), **creates** (synthesizes), or **augments what it found** — *on the fly* — and
+crucially **augments a single shot into thousands**: vary the inputs, paraphrase the
+framing, scale the difficulty, synthesize analogous problems. So one solved task or one
+ask becomes a curriculum of thousands of similar training pairs. That is how continuous
+learning gets *volume* from sparse examples. The teacher develops the curriculum from
+this (downloaded benchmarks + self-generated + augmented-from-online), fully
+self-determined — and eventually the teacher *itself* is a LoRA-trained specialist.
+
+## Sequencing: established benchmarks FIRST, the academy SECOND (do not conflate)
+
+The academy is the **training engine**; it is NOT the **proof**. You cannot claim "we
+beat Hermes/unsloth" on benchmarks your own teacher invented — that is not
+apples-to-apples. So the order is non-negotiable:
+
+1. **First — the straightforward, established benchmarks** (HumanEval / MBPP /
+   SWE-bench — the test-graded gym, loaded via HF `datasets`). These are what the
+   industry uses to rate models; they give the credible apples-to-apples comparison
+   vs Hermes and unsloth (same tasks, our harness+learning vs their bare model). This
+   is [ROADMAP P1–P4](../cognition/ROADMAP-TO-CODING-ITSELF.md), already being built.
+2. **Then — the academy** (teacher + multi-student, single-shot→thousands curriculum).
+   It is how we *climb* the established benchmarks (and any ask), not how we *measure*
+   against the industry. Built after the standard proof exists.
+
+Standard benchmarks are the rating; the academy is how you rise on them.
+
 ## The teacher teaches from experience — the dream
 
 The teacher's textbook is **the system's own lived experience**, not a vacuum. Its primary

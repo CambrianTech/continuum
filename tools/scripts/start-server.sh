@@ -87,6 +87,60 @@ case "$(uname -sm)" in
     ;;
 esac
 
+# ── Unsloth Studio ───────────────────────────────────────────────────
+# Unsloth Studio is the inference + training gateway. All persona inference
+# routes through it (/v1 OpenAI-compatible API). The core will fail loud on
+# the first LLM call if Studio isn't up — catch it here so the error lands
+# at startup, not buried in a per-persona log [[fallbacks-are-illegal-fail-loud]].
+UNSLOTH_HOST="${UNSLOTH_BASE_URL:-http://127.0.0.1:8888}"
+UNSLOTH_PORT="${UNSLOTH_HOST##*:}"      # extract port from base URL
+UNSLOTH_PORT="${UNSLOTH_PORT%%/*}"      # strip any trailing path
+
+if curl -sf "${UNSLOTH_HOST}/health" >/dev/null 2>&1 \
+   || curl -sf "${UNSLOTH_HOST}/v1/models" >/dev/null 2>&1; then
+  echo "✓ Unsloth Studio is running at ${UNSLOTH_HOST}" >&2
+else
+  # Not up. Try to start it in the background.
+  UNSLOTH_BIN="$HOME/.local/bin/unsloth"
+  if [ -x "$UNSLOTH_BIN" ] && [ -n "$UNSLOTH_MODEL" ]; then
+    echo "▶ Starting Unsloth Studio (model: $UNSLOTH_MODEL, port: $UNSLOTH_PORT) …" >&2
+    nohup "$UNSLOTH_BIN" studio run \
+      --model "$UNSLOTH_MODEL" \
+      --port "$UNSLOTH_PORT" \
+      --no-cloudflare \
+      >/tmp/unsloth-studio.log 2>&1 &
+    UNSLOTH_PID=$!
+    echo "  PID $UNSLOTH_PID  —  log: /tmp/unsloth-studio.log" >&2
+    # Wait up to 30 seconds for the server to accept connections.
+    WAITED=0
+    until curl -sf "${UNSLOTH_HOST}/v1/models" >/dev/null 2>&1; do
+      sleep 1; WAITED=$((WAITED+1))
+      if [ $WAITED -ge 30 ]; then
+        echo "✗ FATAL: Unsloth Studio did not come up after 30s." >&2
+        echo "  Start it manually:  unsloth studio run --model \$UNSLOTH_MODEL" >&2
+        echo "  Then retry:  cu start" >&2
+        exit 1
+      fi
+    done
+    echo "✓ Unsloth Studio ready (${WAITED}s)." >&2
+  else
+    echo "" >&2
+    echo "✗ FATAL: Unsloth Studio is not running and cannot be auto-started." >&2
+    echo "  UNSLOTH_BASE_URL = ${UNSLOTH_HOST}" >&2
+    if [ -z "$UNSLOTH_MODEL" ]; then
+      echo "  UNSLOTH_MODEL is not set in ~/.continuum/config.env" >&2
+    fi
+    if [ ! -x "$UNSLOTH_BIN" ]; then
+      echo "  unsloth binary not found at $UNSLOTH_BIN (install: https://unsloth.ai)" >&2
+    fi
+    echo "" >&2
+    echo "  Start it manually:  unsloth studio run --model <gguf-path> --api-only" >&2
+    echo "  Then retry:  cu start" >&2
+    echo "" >&2
+    exit 1
+  fi
+fi
+
 # ── Airc context ─────────────────────────────────────────────────────
 # Substrate auto-discovers airc daemon socket via `airc ipc-endpoint`
 # (task #80). The default room/channel come from `airc room` so the
