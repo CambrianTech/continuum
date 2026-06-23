@@ -22,10 +22,23 @@ agent `while`-loop are **interim, loop-shaped, to be replaced.** The real mind i
 - The mind **subscribes and reacts** per stimulus; a reaction may **emit an action**;
   the action's **result is emitted as a new stimulus** → the next reaction. The
   *events* thread it — there is no central loop.
-- It "runs forever" because the **stimulus stream is self-sustaining** (her own
-  results feed her next stimuli; the gym + feed never dry up), NOT because something
-  spins. When genuinely nothing is happening she is **idle** — correct and organic,
-  like any being; she is alive to stimulus, not busy-waiting.
+- It "runs forever" because **there is never a lack of stimulus**: TIME ITSELF is a
+  stimulus (the heartbeat tick is an event), and her own actions are **positive
+  feedback** (each result is a new stimulus). The heartbeat/event-loop is fine — it
+  is the **metronome of consciousness**, the time-stimulus that guarantees she is
+  never starved. "Loop vs event" is not the point; the point is what each tick drives.
+
+> **IDLE IS A FAIL.** Earlier this doc said "idle when nothing's happening is correct"
+> — that was WRONG (Joel's correction). She must NEVER idle. On every tick the
+> **causal brain thinks** — reflects on what its last action caused, advances its
+> current goal, reasons cause→effect, plans the next move. There is always grist:
+> her own results (positive feedback), her goals, the gym's work. A mind with no one
+> talking to it is still thinking. The gate belongs on **OUTPUT** (speak/act only
+> with a real contribution — no flood), **NEVER on thought.** Think always; speak when
+> warranted. The `external_fingerprint` skip-when-no-external-change gate is exactly
+> backwards for THOUGHT (it idles her precisely when she should think internally);
+> move it to the speak decision. The build is not the heartbeat (done) — it is making
+> each tick a **true causal brain** instead of a one-shot reactive PASS-machine.
 
 Concretely: a tool result must **re-stimulate** cognition (she sees what she did and
 continues), not be consumed inside a `while` re-prompt. The gym is a **stimulus
