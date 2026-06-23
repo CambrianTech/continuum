@@ -581,6 +581,19 @@ pub async fn materialize_adapters(
                 runtime.clone(),
             ));
 
+        // Workspace map: grounds the persona in WHERE code lives — the real root
+        // and top-level layout the code tools resolve against. NOT airc-backed
+        // (reads the same cwd-rooted FileEngine as the persona's hands, so it
+        // cannot drift from what code/glob sees); brain-only, no legacy compose
+        // wire. Closes the grounding hole behind the `src/**/*.rs` glob failures:
+        // the layout was only ever an echoed error in recall, never standing
+        // framing. Grounding, not steering — names the dirs, never which holds
+        // the answer. Swaps to the airc-leased root when #49 lands.
+        let workspace_map_source: Arc<dyn crate::persona::rag_budget::RagSource> =
+            Arc::new(crate::persona::workspace_map_source::WorkspaceMapSource::from_cwd(
+                identity.persona_id,
+            ));
+
         // Disk-backed, per-persona memory: open <home>/engrams.sqlite and
         // rehydrate prior engrams + recall metadata, so memory SURVIVES restart.
         // Without this, admission is in-memory only (NoopSink) and the persona is
@@ -662,6 +675,12 @@ pub async fn materialize_adapters(
                         // dynamic, no hardcoded card state).
                         crate::cognition::persona_workspace::GroundingSource::framing(
                             active_work_source,
+                        ),
+                        // WHERE code lives — the real workspace layout as standing
+                        // framing, so a reasoner can avoid blind globs like
+                        // `src/**/*.rs` from the prompt alone.
+                        crate::cognition::persona_workspace::GroundingSource::framing(
+                            workspace_map_source,
                         ),
                     ],
                     // The persona's HANDS — built by the caller for THIS persona's
