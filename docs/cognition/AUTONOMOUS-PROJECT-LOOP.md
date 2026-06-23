@@ -76,6 +76,28 @@ human in the grading loop.
    gym, with variance (each task ×N) and a bare-unsloth A/B lane. *Consistency and
    the harness edge become numbers.*
 
+## Benchmark sources + the competitive proof
+
+Two axes, both needed, don't conflate them:
+
+- **Agentic-task gym** (this loop's grade): real tasks, **test-graded** — did her
+  change make the tests pass? Sources: `import_realclasseval` (continuum seam: real
+  classes + pynguin tests) + **standard benchmarks** (HumanEval / SWE-bench-style).
+  The standard ones are load-bearing for the **competitive proof**: to credibly show
+  continuum **outcompetes Hermes, openclaw, and unsloth**, we beat them on the SAME
+  tasks they report on — apples-to-apples, or it's hand-waving. Dual-use: the same
+  test-graded tasks are the proof AND the training corpus.
+- **Model-quality eval** (the training side): perplexity / quality deltas — *does a
+  trained LoRA actually improve the model?* **sentinel-ai already has this**
+  (`~/Development/sentinel-ai`: perplexity, pruning/plasticity, inference-speed
+  benchmarking) — reuse it for the genome's training-side measurement. NOTE:
+  sentinel-ai's benchmarks are model-quality, NOT agentic coding tasks — they are not
+  the coder gym.
+
+**The thesis being proven:** same base model, our **harness + continuous learning**
+beats bare Hermes/openclaw/unsloth on the agentic gym. The edge is the system, not
+the weights.
+
 ## The measurement spine (non-negotiable)
 
 Test-grading is what makes this *not a toy*: a task that runs its own tests can't be
