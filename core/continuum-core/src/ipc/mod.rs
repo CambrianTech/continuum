@@ -1553,6 +1553,11 @@ pub fn start_server(
         let (executor_ready_tx, executor_ready_rx) =
             tokio::sync::oneshot::channel::<Arc<crate::runtime::CommandExecutor>>();
         persona_supervisor_executor_ready_tx = Some(executor_ready_tx);
+        // The serving daemon's published plan is the readiness signal the
+        // persona host reacts to (event-driven spawn — see the reconcile loop
+        // below). Subscribe BEFORE the spawn so no plan edge is missed while
+        // the task waits on the executor-ready oneshot.
+        let mut serving_plan_rx = serving_daemon.subscribe();
         rt_handle.spawn(async move {
             // Wait for the IPC thread to deliver the WIRED executor (this both
             // gates ordering AND hands us the executor the personas' hands ride).
@@ -1584,14 +1589,63 @@ pub fn start_server(
                         return;
                     }
                 };
-            let summary = supervisor
-                .spawn_all(&mut provider, Some(tool_executor))
-                .await;
-            tracing::info!(
-                hosted = summary.hosted,
-                failed = summary.failed(),
-                "🌐 Substrate boot composition complete (slice 13.5)"
-            );
+            // Event-driven spawn: the persona host reacts to the serving
+            // daemon's published plan (its watch channel) instead of probing
+            // the gateway once at boot. The serving daemon ticks every 5s; the
+            // unsloth gateway may still be loading the model when boot first
+            // reaches here, so the adapter factory's live `/v1/models` probe
+            // can fail on the first attempt — the "0 citizens hosted" race.
+            //
+            // Rather than leave the citizen permanently mute (the bug: a
+            // one-shot probe that lost a race), reconcile on each plan edge:
+            // retry `spawn_all` until the persona materializes. When the
+            // gateway finishes warming, the next tick's plan edge drives a
+            // successful spawn — no restart, self-healing like the rest of the
+            // substrate. (Single-persona reality today — P2. Idempotent
+            // multi-slot reconcile + respawn-on-death is the slice-14
+            // follow-on; we break once a citizen is hosted to avoid
+            // re-bootstrapping a live persona's airc identity.)
+            let mut attempt = 0u32;
+            loop {
+                let plan_ready = serving_plan_rx
+                    .borrow()
+                    .as_ref()
+                    .map(|p| p.fits_on_gpu)
+                    .unwrap_or(false);
+                if plan_ready {
+                    attempt += 1;
+                    let summary = supervisor
+                        .spawn_all(&mut provider, Some(tool_executor.clone()))
+                        .await;
+                    if summary.hosted > 0 {
+                        tracing::info!(
+                            hosted = summary.hosted,
+                            failed = summary.failed(),
+                            attempts = attempt,
+                            "🌐 Substrate boot composition complete (slice 13.5) — \
+                             citizen(s) hosted, event-driven on serving-plan readiness"
+                        );
+                        break;
+                    }
+                    tracing::warn!(
+                        failed = summary.failed(),
+                        attempt,
+                        "persona spawn found a fitting serving plan but no citizen \
+                         materialized (gateway likely still loading the model) — \
+                         will retry on the next serving-plan edge"
+                    );
+                }
+                // Park until the serving daemon republishes (every tick, or
+                // sooner on a pressure edge). `changed()` errs only if the
+                // daemon is gone — then there is nothing left to react to.
+                if serving_plan_rx.changed().await.is_err() {
+                    tracing::warn!(
+                        "serving-daemon watch closed before any persona materialized \
+                         — no citizens online this run"
+                    );
+                    break;
+                }
+            }
         });
     } else {
         // A.2: by this point the mode-driven gate above has already
