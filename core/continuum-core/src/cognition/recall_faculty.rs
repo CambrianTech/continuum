@@ -73,6 +73,29 @@ fn blend(salience: f32, rel: f32, weight: f32) -> f32 {
     weight * rel + (1.0 - weight) * salience
 }
 
+/// The query recall conditions on — the CURRENT stimulus, not the whole burst.
+/// Live, `world_state` is the full room transcript; embedding ALL of it dilutes
+/// relevance with unrelated chatter, so a salient memory matching the NOISE beats
+/// the memory matching the actual message (observed live 2026-06-22; pinned by
+/// `relevance_survives_a_noisy_burst_query`). Focus on the most-recent message: the
+/// last non-empty, non-room-header line, with a `[t=...]` timestamp prefix stripped.
+/// A single-line `world_state` (a tidy query) returns unchanged — backward compatible.
+/// Structural extraction (most-recent line), not content interpretation.
+fn focused_query(world_state: &str) -> &str {
+    let line = world_state
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with("[room "))
+        .last()
+        .unwrap_or(world_state.trim());
+    if let Some(rest) = line.strip_prefix("[t=") {
+        if let Some(close) = rest.find("] ") {
+            return rest[close + 2..].trim();
+        }
+    }
+    line
+}
+
 /// Wall-clock seam — injectable so tests are deterministic. Returns ms since
 /// the unix epoch, matching the `now_ms()` convention used across cognition.
 pub type Clock = Arc<dyn Fn() -> u64 + Send + Sync>;
@@ -194,7 +217,7 @@ impl Faculty for RecallFaculty {
                 // makes repeats a sync hit. Pre-embed the query + each candidate in
                 // a loop (can't .await inside a sort comparator), then sort. Blend
                 // at the per-faculty configurable relevance weight (#1656).
-                let query = embedder.embed(&ws.world_state).await;
+                let query = embedder.embed(focused_query(&ws.world_state)).await;
                 let mut s: Vec<(f32, Engram, f32)> = Vec::with_capacity(candidates.len());
                 for (engram, salience) in candidates {
                     let rel = cosine_similarity(&query, &embedder.embed(&engram.content).await);
@@ -519,6 +542,89 @@ mod tests {
             sc.content.contains("feature flag"),
             "relevance recall must surface the auth-flow memory despite lower salience; got: {}",
             sc.content
+        );
+    }
+
+    // what this catches: the LIVE recall failure mode the clean-query tests miss.
+    // `contribute` embeds the WHOLE `world_state` as the query — and live, that is
+    // the full room burst, not a tidy question. So a relevant fact must still
+    // surface when the real question is BURIED in unrelated chatter, against
+    // high-salience distractors that lexically match the NOISE. Observed live
+    // (2026-06-22): taught a deploy codename, then "what's the codename?" surfaced
+    // salient-but-irrelevant old prompts instead — the burst noise diluted the
+    // query. RED here = recall is not robust to a noisy burst (the fix is to embed
+    // a FOCUSED query, the triggering message, not the whole transcript).
+    #[tokio::test]
+    async fn relevance_survives_a_noisy_burst_query() {
+        use crate::cognition::embedding::LexicalEmbedder;
+
+        let now = 1_000_000_000u64;
+        // The LIVE shape: the actual question buried in unrelated room chatter
+        // whose words (lunch, game, coffee) match the high-salience distractors.
+        // The persona reacts to the NEWEST message, so the triggering question is
+        // the last line — preceded by unrelated, more-salient chatter.
+        let noisy_burst = "[room 7f3a]\n\
+             [t=1] alice: morning all, fresh coffee in the kitchen\n\
+             [t=2] bob: did anyone catch the game last night, what a finish\n\
+             [t=3] alice: reminder lunch is at noon, i booked the corner table\n\
+             [t=4] joel: what's the deploy codename for our next release?";
+
+        let seed = || {
+            let recall_meta = Arc::new(RecallMetadataRegistry::new());
+            let state = Arc::new(AdmissionState::new(recall_meta.clone()));
+            let mut mk = |content: &str, salience: f32, age_ms: u64| {
+                let id = Uuid::new_v4();
+                state.push_for_test(Engram {
+                    context_id: None,
+                    id,
+                    kind: EngramKind::Episodic,
+                    content: content.to_string(),
+                    origin: EngramOrigin::Chat(ChatMessageRef {
+                        message_id: Uuid::new_v4(),
+                        room_id: Uuid::new_v4(),
+                        sender_id: Uuid::new_v4(),
+                        posted_at_ms: now - age_ms,
+                        content_hash: "h".to_string(),
+                    }),
+                    recall_keys: Vec::new(),
+                    admitted_at_ms: now - age_ms,
+                    trust_state_at_admission: TrustState::ApprovedPeer,
+                    admission_trace_id: None,
+                });
+                recall_meta.admit(
+                    id,
+                    RecallMetadata {
+                        salience,
+                        access_count: 0,
+                        last_accessed_ms: 0,
+                        protected_until_ms: 0,
+                        last_decayed_ms: now,
+                    },
+                );
+            };
+            // The RELEVANT fact — lower salience (it's not the loudest memory):
+            mk("the deploy codename for our next release is BLUEHERON-7", 0.4, 60_000);
+            // HIGH-salience distractors that match the burst's NOISE, not the question:
+            mk("lunch is at noon, the corner table is booked", 0.9, 0);
+            mk("the game last night was a great finish", 0.9, 0);
+            mk("there is fresh coffee in the kitchen", 0.9, 0);
+            state
+        };
+
+        let persona = Uuid::new_v4();
+        let smart = RecallFaculty::new(persona, seed())
+            .with_limit(1)
+            .with_clock(Arc::new(move || now))
+            .with_embedder(Arc::new(LexicalEmbedder::new()));
+        let c = smart
+            .contribute(&Workspace::new(noisy_burst))
+            .await
+            .expect("recall should surface a memory");
+        assert!(
+            c.content.contains("BLUEHERON"),
+            "recall must surface the codename memory relevant to the BURIED question, \
+             not a salient memory matching the burst's noise; got: {}",
+            c.content
         );
     }
 
