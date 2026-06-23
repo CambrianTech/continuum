@@ -37,6 +37,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use futures_util::future::{join, join_all};
 use uuid::Uuid;
 
 use super::embedding::{cosine_similarity, EmbeddingProvider};
@@ -213,16 +214,25 @@ impl Faculty for RecallFaculty {
         // final_score IS salience (candidates already in that order).
         let mut scored: Vec<(f32, Engram, f32)> = match &self.embedder {
             Some(embedder) => {
-                // Embedding is async (the neural/grid backends do IO); the cache
-                // makes repeats a sync hit. Pre-embed the query + each candidate in
-                // a loop (can't .await inside a sort comparator), then sort. Blend
-                // at the per-faculty configurable relevance weight (#1656).
-                let query = embedder.embed(focused_query(&ws.world_state)).await;
-                let mut s: Vec<(f32, Engram, f32)> = Vec::with_capacity(candidates.len());
-                for (engram, salience) in candidates {
-                    let rel = cosine_similarity(&query, &embedder.embed(&engram.content).await);
-                    s.push((blend(salience, rel, self.relevance_weight), engram, salience));
-                }
+                // Embed the query AND every candidate CONCURRENTLY. Each embed is an
+                // independent IO future on the neural/grid backend; awaiting them in
+                // a serial loop stalled the whole tick on N sequential round-trips —
+                // a starved-FIFO blocker that grew with the over-fetch multiplier.
+                // `join` races the query against the candidate batch as one organic
+                // unit; the cache still collapses repeats to a sync hit. Then blend
+                // at the per-faculty configurable relevance weight (#1656) and sort
+                // (can't .await inside a sort comparator, so relevance is precomputed).
+                let query_fut = embedder.embed(focused_query(&ws.world_state));
+                let cand_futs = join_all(candidates.iter().map(|(e, _)| embedder.embed(&e.content)));
+                let (query, cand_embeds) = join(query_fut, cand_futs).await;
+                let mut s: Vec<(f32, Engram, f32)> = candidates
+                    .into_iter()
+                    .zip(cand_embeds)
+                    .map(|((engram, salience), emb)| {
+                        let rel = cosine_similarity(&query, &emb);
+                        (blend(salience, rel, self.relevance_weight), engram, salience)
+                    })
+                    .collect();
                 s.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
                 s
             }
