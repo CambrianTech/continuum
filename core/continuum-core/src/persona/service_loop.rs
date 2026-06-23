@@ -735,6 +735,32 @@ async fn serve_persona_loop_inner(
                     | Some(crate::cognition::workspace::Decision::RaiseUnprompted { text }) => {
                         text.clone()
                     }
+                    Some(crate::cognition::workspace::Decision::Act { calls, intent }) => {
+                        // The mind reached for its hands. The act→observe driver
+                        // (ACTING-ORGANISM.md §3.3 — execute the calls, admit the
+                        // result as an Episodic engram, re-perceive next tick) lands
+                        // in step 3 of the slice. Until then this is an explicitly
+                        // UNWIRED path — logged loud, never a silent fallback. The
+                        // turn is skipped (a raw call envelope must never reach the
+                        // room anyway; see the invariant below).
+                        tracing::warn!(
+                            lamport = msg.lamport,
+                            calls = calls.len(),
+                            intent = %intent,
+                            "persona emitted an Act decision but the act→observe driver \
+                             is not yet wired (ACTING-ORGANISM step 3) — skipping turn"
+                        );
+                        crate::probe!(
+                            class = "persona.turn.act_unwired",
+                            persona = %ctx.identity.agent_name,
+                            lamport = msg.lamport,
+                            calls = calls.len(),
+                            intent = %intent,
+                            "Act decision emitted, driver not yet wired"
+                        );
+                        outcome.turns_skipped += 1;
+                        continue;
+                    }
                     Some(crate::cognition::workspace::Decision::Pass) | None => {
                         tracing::info!(
                             lamport = msg.lamport,

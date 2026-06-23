@@ -28,6 +28,8 @@ use futures_util::future::join_all;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::ai::types::ToolCall;
+
 /// Identifier for a cognitive faculty — a *structural name* (like a brain
 /// region), NOT a cognition decision. `Custom` keeps the set open so new
 /// faculties (incl. sentinel-ai-forged ones) need no enum edit.
@@ -75,7 +77,24 @@ pub enum Decision {
     Speak { text: String },
     /// Raise something no one asked for — initiative, not reaction.
     RaiseUnprompted { text: String },
+    /// **Act on the world.** The mind reached for its hands — run code, search
+    /// the web, read a file, drive its own avatar. This is a first-class verdict,
+    /// peer to `Speak`: the deliberation faculty emits it when the model emitted
+    /// tool calls. The driver executes the `calls` through the persona's
+    /// identity-bearing `ToolExecutor` (the ACL gate decides what's allowed) and
+    /// — crucially — the RESULT re-enters as an Episodic engram next tick, so the
+    /// mind *perceives* what its hands did. It is NOT a synchronous call whose
+    /// return value a faculty consumes inside one tick (that was the textbook
+    /// inner loop we deleted); it is an action whose effect becomes memory.
+    ///
+    /// `intent` is the mind's own words for WHY it acted ("run the failing test
+    /// to see the traceback"). It is captured into the observation engram so next
+    /// tick she remembers the *reason*, not just the *result*. See
+    /// `docs/cognition/ACTING-ORGANISM.md`.
+    Act { calls: Vec<ToolCall>, intent: String },
     /// Nothing worth adding this turn (the persona's own judgment, not a gate).
+    /// Together with `Speak`/`RaiseUnprompted`, this is how the organism SETTLES:
+    /// the absence of an `Act` bid is the mind's judgment that the work is done.
     Pass,
 }
 
@@ -118,6 +137,9 @@ impl Contribution {
     pub fn verdict(decision: Decision, salience: f32, reasoning: impl Into<String>) -> Self {
         let content = match &decision {
             Decision::Speak { text } | Decision::RaiseUnprompted { text } => text.clone(),
+            // The mind's narration of WHY it's acting — surfaced/audited like any
+            // contribution content; the calls themselves live on the decision.
+            Decision::Act { intent, .. } => intent.clone(),
             Decision::Pass => String::new(),
         };
         Self {
@@ -510,6 +532,43 @@ mod tests {
         assert_eq!(ws.broadcast.len(), 2, "bounded capacity");
         assert_eq!(ws.broadcast[0].content, "high", "highest ML salience wins");
         assert_eq!(ws.broadcast[1].content, "mid");
+    }
+
+    // what this catches: ACTING-ORGANISM step 1 — the mind can express "I want to
+    // act on the world" as a first-class verdict. A deliberation faculty emits
+    // Decision::Act{calls,intent}; the arbiter routes it like any decision, and
+    // decision() returns it carrying the calls + the mind's narrated intent. This
+    // is the vocabulary the genome learns to use (the disposition is trained, never
+    // hardcoded); the executor that runs the calls and re-enters the result as a
+    // memory is steps 3–4. Act is peer to Speak, not a special case.
+    #[tokio::test]
+    async fn deliberation_can_emit_an_act_decision() {
+        let call = ToolCall {
+            id: "toolu_run_1".to_string(),
+            name: "code/run".to_string(),
+            input: serde_json::json!({ "lang": "python", "code": "print(sum(range(5)))" }),
+        };
+        let act = Decision::Act {
+            calls: vec![call.clone()],
+            intent: "run my solution to see what it actually prints".to_string(),
+        };
+        let faculties: Vec<Arc<dyn Faculty>> = vec![Arc::new(FixedFaculty(
+            Contribution::verdict(act, 0.95, "the model emitted a tool call"),
+        ))];
+        let ws = cycle(faculties, 4).run("peer: does your sum work?").await;
+        match ws.decision() {
+            Some(Decision::Act { calls, intent }) => {
+                assert_eq!(calls.as_slice(), std::slice::from_ref(&call));
+                assert!(
+                    intent.contains("run my solution"),
+                    "the mind's narrated intent rides on the Act decision"
+                );
+            }
+            other => panic!("expected an Act verdict to route through the arbiter, got {other:?}"),
+        }
+        // verdict() surfaces the intent as the contribution content (audited like
+        // any bid) while the calls live on the decision.
+        assert_eq!(ws.broadcast[0].content, "run my solution to see what it actually prints");
     }
 
     // what this catches: EQUAL CITIZENS — a persona-sent message with high

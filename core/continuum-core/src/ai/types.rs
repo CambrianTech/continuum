@@ -140,7 +140,7 @@ pub struct ToolInputSchema {
 }
 
 /// Tool call from AI response (when AI wants to use a tool)
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../../protocol/typescript/ai/ToolCall.ts")]
 #[serde(rename_all = "camelCase")]
 pub struct ToolCall {

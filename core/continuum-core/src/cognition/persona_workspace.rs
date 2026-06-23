@@ -510,6 +510,9 @@ mod tests {
         match ws.decision() {
             Some(Decision::Speak { text }) => eprintln!("Ivar SPEAKS:\n{text}"),
             Some(Decision::RaiseUnprompted { text }) => eprintln!("Ivar RAISES:\n{text}"),
+            Some(Decision::Act { calls, intent }) => {
+                eprintln!("Ivar ACTS ({} call(s)) — intent: {intent}", calls.len())
+            }
             Some(Decision::Pass) | None => eprintln!("Ivar chose silence (PASS)."),
         }
         eprintln!("=================================================\n");
