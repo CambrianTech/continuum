@@ -3,6 +3,7 @@
 //!
 //! ```text
 //! cu start            # build + run the headless Rust core (detached), wait until ready
+//! cu reboot           # rebuild + relaunch, replacing any running core (~0 downtime)
 //! cu stop             # stop the running core
 //! cu ping             # dispatch a command to the running core
 //! cu ping '{"message":"hi"}'
@@ -52,6 +53,7 @@ async fn run() -> Result<(), String> {
             Ok(())
         }
         "start" => start().await,
+        "reboot" | "restart" => reboot().await,
         "stop" => stop().await,
         // Anything else is a command name. `--help`/`-h` renders the manual in the
         // CLI's paradigm (bash flags), adapted from the SAME schema the AI gets as
@@ -297,6 +299,63 @@ async fn start() -> Result<(), String> {
         return Ok(());
     }
 
+    launch_core(&[]).await
+}
+
+/// `cu reboot` — rebuild + relaunch the core, replacing any running instance.
+/// Unlike `cu start` this never no-ops on an up core: start-server.sh builds the
+/// fresh binary first (old core keeps serving), then stops the old core and
+/// execs the new one (~0 downtime). This is the canonical operator
+/// rebuild-after-edit verb — one command, no manual kill dance
+/// ([[validate-via-pure-rust-not-npm-jtag]]).
+async fn reboot() -> Result<(), String> {
+    let socket = socket_path();
+    // Snapshot the running core PIDs up front so launch_core can wait for them to
+    // actually exit before trusting the new core's ping (same socket, both answer).
+    let old = running_core_pids();
+    if old.is_empty() {
+        println!("▶ no core running — starting fresh (socket={socket})");
+    } else {
+        println!(
+            "▶ rebooting core (socket={socket}, replacing pid(s) {}) — building fresh binary, then swapping",
+            old.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(",")
+        );
+    }
+    launch_core(&old).await
+}
+
+/// PIDs of every running `continuum-core-server`, via `pgrep` (pure unix, no
+/// Node). Empty on no match or if pgrep is unavailable.
+fn running_core_pids() -> Vec<i32> {
+    std::process::Command::new("pgrep")
+        .args(["-f", "continuum-core-server"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .lines()
+                .filter_map(|l| l.trim().parse::<i32>().ok())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// True if `pid` is still alive (signal 0 is the canonical liveness probe).
+fn pid_alive(pid: i32) -> bool {
+    // SAFETY: kill(pid, 0) sends no signal; it only checks existence/permission.
+    unsafe { libc::kill(pid, 0) == 0 }
+}
+
+/// Spawn the pure-Rust start script detached and wait until the core answers
+/// `ping`. Shared by `cu start` (after an up-check) and `cu reboot` (always).
+///
+/// `wait_for_death` is the set of core PIDs that must EXIT before we trust the
+/// ping. Without it, `cu reboot` would see the OLD core still answering on the
+/// same socket and falsely report "ready" before the swap happened — a fail-loud
+/// violation that would also hide a failed rebuild. `cu start` passes `&[]`.
+async fn launch_core(wait_for_death: &[i32]) -> Result<(), String> {
+    let socket = socket_path();
     let script = locate_start_script()?;
     let logfile = start_logfile();
     let log = std::fs::File::create(&logfile)
@@ -332,11 +391,14 @@ async fn start() -> Result<(), String> {
     let pidfile = pidfile_for(&socket);
     let _ = std::fs::write(&pidfile, child.id().to_string());
 
-    // Wait until the core answers ping. The first build (cargo) can take minutes;
-    // poll generously, then fail loud with the log tail rather than hang forever.
+    // Wait until the core answers ping AND every old core PID has exited. The
+    // first build (cargo) can take minutes; poll generously, then fail loud with
+    // the log tail rather than hang forever. The death-check is what makes a
+    // reboot's success signal honest: the ping must come from the NEW core.
     for i in 0..150 {
         tokio::time::sleep(Duration::from_secs(2)).await;
-        if core_is_up().await {
+        let old_still_alive = wait_for_death.iter().any(|p| pid_alive(*p));
+        if !old_still_alive && core_is_up().await {
             println!("✅ core ready (socket={socket}) after ~{}s", (i + 1) * 2);
             return Ok(());
         }
@@ -521,10 +583,11 @@ mod tests {
 }
 
 fn usage() -> String {
-    "usage: cu <start|stop|command> [json | --key value ...]\n\
+    "usage: cu <start|reboot|stop|command> [json | --key value ...]\n\
      \n\
      Lifecycle:\n  \
        cu start                 build + run the headless Rust core (detached), wait until ready\n  \
+       cu reboot                rebuild + relaunch, replacing any running core (~0 downtime)\n  \
        cu stop                  stop the running core\n\
      \n\
      Commands (dispatch to the running core):\n  \
