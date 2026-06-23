@@ -31,10 +31,14 @@ pub struct GitPushResult {
 
 crate::action_command! {
     /// Push commits to a remote (`git push`). Omit `remote`/`branch` to use git's
-    /// defaults. Outward-facing — publishes your commits to the shared remote.
+    /// defaults. Outward-facing — publishes your commits to the shared remote, so
+    /// it's the one git verb that escapes the workspace sandbox. Declared
+    /// `Privileged` (the same tier as `code/shell`): a local persona (Trusted) or
+    /// the owner runs it; a remote `Provisional` room peer is denied by the grid
+    /// ACL — they can't make your citizen push to a shared remote on their say-so.
     pub struct CodeGitPush { state: Arc<CodeState> }
     name: "code/git/push",
-    access: AiSafe,
+    access: Privileged,
     params: GitPushParams,
     output: GitPushResult,
     run(this, ctx, p) => {
