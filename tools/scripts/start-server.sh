@@ -104,7 +104,21 @@ UNSLOTH_PORT="${UNSLOTH_HOST##*:}"      # extract port from base URL
 UNSLOTH_PORT="${UNSLOTH_PORT%%/*}"      # strip any trailing path
 UNSLOTH_BIN="$HOME/.local/bin/unsloth"
 UNSLOTH_VENV_PY="$HOME/.unsloth/studio/unsloth_studio/bin/python"
-UNSLOTH_MODEL_BASENAME="$(basename "${UNSLOTH_MODEL:-}")"
+UNSLOTH_MODEL_BASENAME="$(basename "${UNSLOTH_MODEL:-}")"   # for display only
+
+# The gateway advertises a model by its REPO id (e.g.
+# continuum-ai/qwen3.5-4b-code-forged-GGUF), NOT by the local GGUF filename we
+# load Studio from (qwen3.5-4b-code-forged-Q4_K_M.gguf). Matching the full
+# basename therefore NEVER succeeds — the gate would loop to its 60s timeout on
+# every start even though the model is loaded and serving (observed 2026-06-23).
+# Reduce the configured model to its STEM — lowercase, drop the .gguf extension
+# and the trailing quant tag (-Q4_K_M / -f16 / -bf16 / -GGUF) — and match that
+# stem against the served ids. (Lowercase up front so we avoid BSD sed's missing
+# `I` flag; macOS ships BSD sed.)
+UNSLOTH_MODEL_STEM="$(basename "${UNSLOTH_MODEL:-}" | tr '[:upper:]' '[:lower:]')"
+UNSLOTH_MODEL_STEM="${UNSLOTH_MODEL_STEM%.gguf}"
+UNSLOTH_MODEL_STEM="$(printf '%s' "$UNSLOTH_MODEL_STEM" \
+  | sed -E 's/[-._](q[0-9]+(_[a-z0-9]+)*|f16|bf16|gguf)$//')"
 
 # curl /v1/models WITH auth (the server 401s without the key — a bare probe
 # never sees success and loops forever). Echoes the JSON body on stdout.
@@ -112,11 +126,11 @@ _unsloth_models() {
   curl -sf -H "Authorization: Bearer ${UNSLOTH_API_KEY}" \
     "${UNSLOTH_HOST}/v1/models" 2>/dev/null
 }
-# True iff /v1/models is reachable AND lists our configured model.
+# True iff /v1/models is reachable AND lists a model matching our stem.
 _unsloth_serves_our_model() {
   local body; body="$(_unsloth_models)" || return 1
-  [ -n "$UNSLOTH_MODEL_BASENAME" ] || return 0   # no model pinned → reachability only
-  printf '%s' "$body" | grep -qF "$UNSLOTH_MODEL_BASENAME"
+  [ -n "$UNSLOTH_MODEL_STEM" ] || return 0   # no model pinned → reachability only
+  printf '%s' "$body" | tr '[:upper:]' '[:lower:]' | grep -qF "$UNSLOTH_MODEL_STEM"
 }
 
 # Opportunistic, throttled, NON-FATAL update — at most once per 24h (stamp file).
