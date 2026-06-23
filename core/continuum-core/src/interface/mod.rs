@@ -125,6 +125,10 @@ pub struct ScreenshotCommand;
 impl crate::sdk_codegen::CommandSpec for ScreenshotCommand {
     const NAME: &'static str = "interface/screenshot";
     const ACCESS_LEVEL: crate::sdk_codegen::AccessLevel = crate::sdk_codegen::AccessLevel::AiSafe;
+    const DESCRIPTION: &'static str =
+        "Capture a screenshot of the UI — your way to SEE the screen (or a specific \
+         element via a CSS selector). Use it to visually verify what a human or a UI is \
+         showing before you act on it.";
     const WIRE: crate::sdk_codegen::WireShape = crate::sdk_codegen::WireShape::Provided;
     type Params = ScreenshotParams;
     type Result = ScreenshotResult;

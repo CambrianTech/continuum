@@ -271,6 +271,10 @@ pub struct OpenCommand;
 impl crate::sdk_codegen::CommandSpec for OpenCommand {
     const NAME: &'static str = COMMAND_OPEN;
     const ACCESS_LEVEL: crate::sdk_codegen::AccessLevel = crate::sdk_codegen::AccessLevel::AiSafe;
+    const DESCRIPTION: &'static str =
+        "Low-level substrate: open a raw inference session handle. You do NOT need this \
+         for normal work — your own replies already run through inference; use code/*, \
+         chat/*, data/*, and work/* for tasks. (Handle-lifecycle plumbing.)";
     const WIRE: crate::sdk_codegen::WireShape = crate::sdk_codegen::WireShape::Enveloped;
     type Params = OpenParams;
     type Result = OpenResult;
@@ -282,6 +286,9 @@ pub struct GenerateCommand;
 impl crate::sdk_codegen::CommandSpec for GenerateCommand {
     const NAME: &'static str = COMMAND_GENERATE;
     const ACCESS_LEVEL: crate::sdk_codegen::AccessLevel = crate::sdk_codegen::AccessLevel::AiSafe;
+    const DESCRIPTION: &'static str =
+        "Low-level substrate: generate text against an open inference handle. NOT a task \
+         tool — to answer, just answer. (Handle-lifecycle plumbing.)";
     const WIRE: crate::sdk_codegen::WireShape = crate::sdk_codegen::WireShape::Enveloped;
     type Params = GenerateParams;
     type Result = GenerateResult;
@@ -293,6 +300,9 @@ pub struct CloseCommand;
 impl crate::sdk_codegen::CommandSpec for CloseCommand {
     const NAME: &'static str = COMMAND_CLOSE;
     const ACCESS_LEVEL: crate::sdk_codegen::AccessLevel = crate::sdk_codegen::AccessLevel::AiSafe;
+    const DESCRIPTION: &'static str =
+        "Low-level substrate: close an open inference handle. Not needed for normal work. \
+         (Handle-lifecycle plumbing.)";
     const WIRE: crate::sdk_codegen::WireShape = crate::sdk_codegen::WireShape::Enveloped;
     type Params = CloseParams;
     type Result = CloseResult;
@@ -304,6 +314,9 @@ pub struct InspectCommand;
 impl crate::sdk_codegen::CommandSpec for InspectCommand {
     const NAME: &'static str = COMMAND_INSPECT;
     const ACCESS_LEVEL: crate::sdk_codegen::AccessLevel = crate::sdk_codegen::AccessLevel::AiSafe;
+    const DESCRIPTION: &'static str =
+        "Low-level substrate: inspect an open inference handle's state. Diagnostic \
+         plumbing, not a task tool.";
     const WIRE: crate::sdk_codegen::WireShape = crate::sdk_codegen::WireShape::Enveloped;
     type Params = InspectParams;
     type Result = InspectResult;
