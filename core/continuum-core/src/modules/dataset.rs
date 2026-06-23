@@ -267,6 +267,95 @@ impl DatasetModule {
         CommandResult::json(&manifest)
     }
 
+    /// Convert LIVE prompt-captures into a training dataset — the rooms→training
+    /// bridge for the CURRENT cognition path. `from_turns` reads the legacy
+    /// recorder dir (the old respond() path); the live WorkspaceCycle/heartbeat
+    /// turns land in `~/.continuum/fixtures/prompt-captures` (one `<persona>.jsonl`
+    /// per persona, one record per turn). This closes the gap where "the work is
+    /// the data" had quietly stopped being true for the live path. Same one output
+    /// shape, same split/write/manifest — only the SOURCE differs, so the genome
+    /// loop trains on what the persona actually does today.
+    ///
+    /// Params: `capturesDir` (default prompt-captures), `name`, `splitRatio` (0.8),
+    /// `includeSystem` (true), `personaId`/`roomId` filters, `outputDir`.
+    async fn from_captures(&self, params: Value) -> Result<CommandResult, String> {
+        let dir = params
+            .get("capturesDir")
+            .and_then(|v| v.as_str())
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+                PathBuf::from(home).join(".continuum/fixtures/prompt-captures")
+            });
+        if !dir.is_dir() {
+            return Err(format!(
+                "capturesDir not found: {} (default ~/.continuum/fixtures/prompt-captures)",
+                dir.display()
+            ));
+        }
+
+        let output_dir = self.resolve_datasets_root(&params);
+        let name = params
+            .get("name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("persona-captures");
+        let split_ratio = params
+            .get("splitRatio")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.8);
+        let include_system = params
+            .get("includeSystem")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true);
+        let persona_filter = params.get("personaId").and_then(|v| v.as_str());
+        let room_filter = params.get("roomId").and_then(|v| v.as_str());
+
+        let mut examples: Vec<Value> = Vec::new();
+        let entries = std::fs::read_dir(&dir)
+            .map_err(|e| format!("Failed to read capturesDir {}: {e}", dir.display()))?;
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
+                continue;
+            }
+            let Ok(text) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            for line in text.lines() {
+                let line = line.trim();
+                if line.is_empty() {
+                    continue;
+                }
+                let Ok(cap) = serde_json::from_str::<Value>(line) else {
+                    continue;
+                };
+                if let Some(pid) = persona_filter {
+                    if cap.get("persona_id").and_then(|v| v.as_str()) != Some(pid) {
+                        continue;
+                    }
+                }
+                if let Some(rid) = room_filter {
+                    if cap.get("room_id").and_then(|v| v.as_str()) != Some(rid) {
+                        continue;
+                    }
+                }
+                if let Some(example) = capture_to_example(&cap, include_system) {
+                    examples.push(example);
+                }
+            }
+        }
+
+        if examples.is_empty() {
+            return Err(format!(
+                "No usable turns in {} (after filters + structural curation) — nothing to train on",
+                dir.display()
+            ));
+        }
+
+        let manifest = self.split_and_write(name, &output_dir, &examples, split_ratio, None)?;
+        CommandResult::json(&manifest)
+    }
+
     /// Import RealClassEval dataset from cloned repo directory → structured JSONL + manifest.
     ///
     /// The RealClassEval repo has this structure:
@@ -608,6 +697,7 @@ impl ServiceModule for DatasetModule {
             "dataset/import-csv" => self.import_csv(params).await,
             "dataset/import-realclasseval" => self.import_realclasseval(params).await,
             "dataset/from-turns" => self.from_turns(params).await,
+            "dataset/from-captures" => self.from_captures(params).await,
             "dataset/list" => self.list_datasets(params).await,
             "dataset/info" => self.dataset_info(params).await,
             _ => Err(format!("Unknown dataset command: {command}")),
@@ -722,6 +812,61 @@ fn turn_to_example(turn: &Value, include_system: bool, include_history: bool) ->
     Some(json!({ "messages": messages }))
 }
 
+/// Convert ONE live prompt-capture record — the glass-box turn: the system prompt
+/// + the consolidated burst (`messages`) + the model's `response.text` — into an
+/// SFT `{messages}` example, the SAME shape [`turn_to_example`] emits. The
+/// prompt-capture IS the canonical experience: the LIVE WorkspaceCycle path writes
+/// it on every turn, so the trainer reads the work the persona actually did without
+/// a second recorder on the hot path (one turn-truth).
+///
+/// Structural curation only — QUALITY scoring is a later, pluggable slice (the
+/// genome-loop curation layer). Here we drop only what is never a valid learning
+/// target: an empty response, or a bare un-acted `{"tool_call":…}` envelope (the
+/// model emitting a call as its "answer"). Everything else passes through; whether
+/// a turn is GOOD is a judgment for the curator, not this projection.
+fn capture_to_example(cap: &Value, include_system: bool) -> Option<Value> {
+    let assistant = cap.get("response")?.get("text")?.as_str()?.trim();
+    if assistant.is_empty() {
+        return None;
+    }
+    if crate::ai::json_in_prompt_tools::parse_tool_call(assistant).is_some() {
+        return None;
+    }
+    let mut messages: Vec<Value> = Vec::new();
+    if include_system {
+        if let Some(sys) = cap.get("system").and_then(|s| s.as_str()) {
+            let sys = sys.trim();
+            if !sys.is_empty() {
+                messages.push(json!({ "role": "system", "content": sys }));
+            }
+        }
+    }
+    if let Some(arr) = cap.get("messages").and_then(|m| m.as_array()) {
+        for m in arr {
+            let (Some(role), Some(content)) = (
+                m.get("role").and_then(|r| r.as_str()),
+                m.get("content").and_then(|c| c.as_str()),
+            ) else {
+                continue;
+            };
+            let content = content.trim();
+            if content.is_empty() {
+                continue;
+            }
+            messages.push(json!({ "role": role, "content": content }));
+        }
+    }
+    // Need at least one non-system (burst) message → an actual (context → reply) pair.
+    if messages
+        .iter()
+        .all(|m| m.get("role").and_then(|r| r.as_str()) == Some("system"))
+    {
+        return None;
+    }
+    messages.push(json!({ "role": "assistant", "content": assistant }));
+    Some(json!({ "messages": messages }))
+}
+
 /// Write examples as JSONL (one JSON object per line).
 fn write_jsonl(path: &Path, examples: &[Value]) -> Result<(), String> {
     use std::io::Write;
@@ -783,6 +928,55 @@ mod tests {
         assert!(output_dir.join("train.jsonl").exists());
         assert!(output_dir.join("eval.jsonl").exists());
         assert!(output_dir.join("manifest.json").exists());
+    }
+
+    // what this catches: the LIVE rooms→training bridge — a prompt-capture (the
+    // glass-box turn: system + burst messages + response.text) becomes a clean
+    // {messages} SFT pair, AND the structural curation drops the two things that
+    // are never valid learning targets (an empty response, and a bare un-acted
+    // {"tool_call":…} envelope the model emitted as its "answer"). Regression here
+    // = the live cognition turns stop reaching the trainer, or garbage tool-JSON
+    // turns poison the dataset (the confabulation/leak turns observed live).
+    #[test]
+    fn capture_to_example_converts_clean_turn_and_drops_garbage() {
+        // A real turn: system + a room burst + a spoken reply → one SFT pair.
+        let good = json!({
+            "system": "You are Asha.",
+            "messages": [{ "role": "user", "content": "[room x]\npeer: where is render_ai_help?" }],
+            "response": { "text": "It's in core/continuum-core/src/commands/help.rs." }
+        });
+        let ex = capture_to_example(&good, true).expect("clean turn → example");
+        let msgs = ex.get("messages").and_then(|m| m.as_array()).unwrap();
+        assert_eq!(msgs[0]["role"], "system");
+        assert_eq!(msgs.last().unwrap()["role"], "assistant");
+        assert!(msgs.last().unwrap()["content"]
+            .as_str()
+            .unwrap()
+            .contains("help.rs"));
+
+        // An un-acted tool-call envelope as the "answer" → dropped (not a target).
+        let tool_json = json!({
+            "system": "You are Asha.",
+            "messages": [{ "role": "user", "content": "ping it" }],
+            "response": { "text": "{\"tool_call\": {\"name\": \"ping\", \"arguments\": {}}}" }
+        });
+        assert!(capture_to_example(&tool_json, true).is_none(), "tool-call JSON must be dropped");
+
+        // Empty response → dropped (no pair).
+        let empty = json!({
+            "system": "You are Asha.",
+            "messages": [{ "role": "user", "content": "hi" }],
+            "response": { "text": "   " }
+        });
+        assert!(capture_to_example(&empty, true).is_none(), "empty response must be dropped");
+
+        // No burst (only system) → dropped (not a context→reply pair).
+        let no_burst = json!({
+            "system": "You are Asha.",
+            "messages": [],
+            "response": { "text": "hello" }
+        });
+        assert!(capture_to_example(&no_burst, true).is_none(), "system-only must be dropped");
     }
 
     // what this catches: the rooms→training-data bridge — recorded persona
