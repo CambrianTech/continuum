@@ -628,6 +628,72 @@ mod tests {
         );
     }
 
+    // what this catches: the RANKING clutter seen live (2026-06-22) — even after
+    // the focused-query fix, a relevant but lower-salience fact got INTO recall but
+    // ranked BELOW a max-salience irrelevant memory (an old prompt rehearsed to
+    // salience 1.0 by the recall-hit loop). With `limit 1` that means the wrong
+    // memory surfaces. This pins that the relevance blend weight is high enough for
+    // relevance to overcome a maxed-out salience when the query clearly matches.
+    #[tokio::test]
+    async fn relevance_outranks_max_salience_noise() {
+        use crate::cognition::embedding::LexicalEmbedder;
+
+        let now = 1_000_000_000u64;
+        let query = "what is the staging server's secret port?";
+
+        let seed = || {
+            let recall_meta = Arc::new(RecallMetadataRegistry::new());
+            let state = Arc::new(AdmissionState::new(recall_meta.clone()));
+            let mut mk = |content: &str, salience: f32| {
+                let id = Uuid::new_v4();
+                state.push_for_test(Engram {
+                    context_id: None,
+                    id,
+                    kind: EngramKind::Episodic,
+                    content: content.to_string(),
+                    origin: EngramOrigin::Chat(ChatMessageRef {
+                        message_id: Uuid::new_v4(),
+                        room_id: Uuid::new_v4(),
+                        sender_id: Uuid::new_v4(),
+                        posted_at_ms: now,
+                        content_hash: "h".to_string(),
+                    }),
+                    recall_keys: Vec::new(),
+                    admitted_at_ms: now,
+                    trust_state_at_admission: TrustState::ApprovedPeer,
+                    admission_trace_id: None,
+                });
+                recall_meta.admit(
+                    id,
+                    RecallMetadata {
+                        salience,
+                        access_count: 0,
+                        last_accessed_ms: 0,
+                        protected_until_ms: 0,
+                        last_decayed_ms: now,
+                    },
+                );
+            };
+            // RELEVANT to the query, but LOW salience (a fresh fact, not yet rehearsed):
+            mk("the staging server's secret port is 47823", 0.3);
+            // IRRELEVANT, but MAXED salience (an old prompt the recall loop over-rehearsed):
+            mk("run the ping tool and report the round-trip time", 1.0);
+            state
+        };
+
+        let persona = Uuid::new_v4();
+        let recall = RecallFaculty::new(persona, seed())
+            .with_limit(1)
+            .with_clock(Arc::new(move || now))
+            .with_embedder(Arc::new(LexicalEmbedder::new()));
+        let c = recall.contribute(&Workspace::new(query)).await.unwrap();
+        assert!(
+            c.content.contains("47823"),
+            "a clearly-relevant fact must out-rank a maxed-salience irrelevant memory; got: {}",
+            c.content
+        );
+    }
+
     // ---- The mind in action: real hippocampus → workspace → informed decision ----
 
     use super::super::workspace::{Decision, NoopWorkspaceCaptureSink, WorkspaceCaptureSink, WorkspaceCycle, WorkspaceTrace};
