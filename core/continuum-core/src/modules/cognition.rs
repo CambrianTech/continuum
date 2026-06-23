@@ -154,6 +154,66 @@ macro_rules! get_or_create_persona {
     };
 }
 
+/// Extract a code block from a model response for test-grading. Prefers the first
+/// ```fenced``` block (stripping the language tag line); falls back to the whole
+/// text. Small models wrap code in fences inconsistently — this is forgiving.
+fn extract_code_block(answer: &str) -> String {
+    if let Some(start) = answer.find("```") {
+        let after = &answer[start + 3..];
+        let body = match after.find('\n') {
+            Some(i) => &after[i + 1..], // skip the ```lang tag line
+            None => after,
+        };
+        if let Some(end) = body.find("```") {
+            return body[..end].trim().to_string();
+        }
+    }
+    answer.trim().to_string()
+}
+
+/// TEST-GRADE a coder task: take the model's code, append the task's test, RUN it,
+/// pass = exit 0. This is the gym's objective grade — not substring-on-prose — the
+/// P1 keystone of ROADMAP-TO-CODING-ITSELF: "did her change make the tests pass?"
+///
+/// SAFETY: runs model-generated code in a temp dir with a 10s timeout. That is the
+/// pragmatic floor for an OWNER's local dev machine (what coding agents do); it is
+/// NOT a sandbox. Before public/untrusted tasks, this MUST run in a real sandbox
+/// (container/seccomp). Slice 1 = prove the grading mechanism; sandbox is a P1 req.
+async fn test_grade(answer: &str, lang: &str, test: &str) -> (bool, String) {
+    let code = extract_code_block(answer);
+    let (ext, cmd) = match lang {
+        "python" | "py" => ("py", "python3"),
+        other => return (false, format!("unsupported lang '{other}' (slice 1 = python only)")),
+    };
+    let dir = std::env::temp_dir().join(format!("cu-gym-{}", uuid::Uuid::new_v4()));
+    if std::fs::create_dir_all(&dir).is_err() {
+        return (false, "temp dir create failed".to_string());
+    }
+    let file = dir.join(format!("sol.{ext}"));
+    let full = format!("{code}\n\n{test}\n");
+    let write_ok = std::fs::write(&file, full).is_ok();
+    let verdict = if !write_ok {
+        (false, "temp write failed".to_string())
+    } else {
+        match tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            tokio::process::Command::new(cmd).arg(&file).output(),
+        )
+        .await
+        {
+            Ok(Ok(out)) if out.status.success() => (true, "tests passed".to_string()),
+            Ok(Ok(out)) => (
+                false,
+                String::from_utf8_lossy(&out.stderr).trim().chars().take(180).collect(),
+            ),
+            Ok(Err(e)) => (false, format!("spawn failed: {e}")),
+            Err(_) => (false, "timeout (10s)".to_string()),
+        }
+    };
+    let _ = std::fs::remove_dir_all(&dir);
+    verdict
+}
+
 #[async_trait]
 impl ServiceModule for CognitionModule {
     fn config(&self) -> ModuleConfig {
@@ -286,13 +346,23 @@ impl ServiceModule for CognitionModule {
                         }
                         _ => String::new(),
                     };
-                    let ok = !expect.is_empty()
-                        && answer.to_lowercase().contains(&expect.to_lowercase());
+                    // TEST-GRADED if the task carries a `test` (run her code, pass =
+                    // exit 0) — the gym's objective grade; else substring (descriptive
+                    // tasks). The test path is P1 of ROADMAP-TO-CODING-ITSELF.
+                    let (ok, grade) = if let Some(test) = t.get("test").and_then(|v| v.as_str()) {
+                        let lang = t.get("lang").and_then(|v| v.as_str()).unwrap_or("python");
+                        test_grade(&answer, lang, test).await
+                    } else {
+                        let m = !expect.is_empty()
+                            && answer.to_lowercase().contains(&expect.to_lowercase());
+                        (m, if m { "substring match".into() } else { "no match".into() })
+                    };
                     if ok {
                         pass += 1;
                     }
                     results.push(serde_json::json!({
-                        "id": id, "ok": ok, "expect": expect, "answer": answer
+                        "id": id, "ok": ok, "grade": grade,
+                        "answer": answer.chars().take(200).collect::<String>()
                     }));
                 }
                 let total = tasks.len();
