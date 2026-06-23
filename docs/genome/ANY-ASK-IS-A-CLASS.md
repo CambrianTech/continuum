@@ -49,13 +49,39 @@ produced. This is what "learn to do anything" means, made literal.
    by that mixed team, which is precisely the deployment setting (principle 2).
 
 4. **The teacher is generative, not just evaluative.** It plans the curriculum for *this*
-   ask, **synthesizes** training data (even one-shot, even foraged from the web), assigns
-   roles — **and authors the software that scores the result.** The class generates its own
-   curriculum **and its own test.** That recursion is why no human must pre-enumerate
-   domains or hand-write evals: the teacher writes the peanut-butter rubric (or a sandwich
-   simulator) the way we hand-wrote `coder-eval.jsonl`, but per-ask and automatically. The
-   teacher wants the **strongest available mind** (the gateway's best) — a weak teacher
-   writes a weak curriculum and an invalid rubric.
+   ask, **synthesizes** training data, assigns roles — **and authors the software that
+   scores the result.** The class generates its own curriculum **and its own test.** That
+   recursion is why no human must pre-enumerate domains or hand-write evals: the teacher
+   writes the peanut-butter rubric (or a sandwich simulator) the way we hand-wrote
+   `coder-eval.jsonl`, but per-ask and automatically. The teacher wants the **strongest
+   available mind** (the gateway's best) — a weak teacher writes a weak curriculum and an
+   invalid rubric.
+
+## The teacher teaches from experience — the dream
+
+The teacher's textbook is **the system's own lived experience**, not a vacuum. Its primary
+source is the data already on disk: the **engrams** (per-persona memory), the **turn
+histories** (prompt-captures + recorder), the rooms' recorded collaboration. It *mines and
+distills* these into curriculum and training pairs — and that distillation **is the dream**:
+offline replay of experience to consolidate it (strengthen what mattered, turn raw episodes
+into durable lessons, drop the noise). The front of this pipe already exists —
+`dataset/from-captures` (live turns → SFT), the engram store, `memory/consolidation_pipeline.rs`.
+
+**Consolidation is double-duty — the load-bearing elegance.** Engrams today are stored as
+*raw incoming messages* ("Asha, run the ping tool…"), so recall surfaces transcript, not
+knowledge (see [recall is semantic-capable but underpowered] in the cognition notes). The
+dream that distills those raw engrams into **facts** ("the codename is BLUEHERON-7") is the
+**same** dream that produces the teacher's **lessons**. Better memory and better teaching
+are not two systems — they are one consolidation pass over the same experience. Fix the
+dream and recall sharpens *and* the teacher gets its curriculum.
+
+Disciplines that keep the dream honest (not a pretty hallucination):
+- **Replay directed by the fitness gap** — consolidate near where the student fails, not a
+  random rerun of the whole history (active learning, not exhaustive replay).
+- **Web foraging fills only what experience can't cover** — secondary to lived data, and
+  provenance-gated (contamination is the cost of the open internet).
+- **The distilled curriculum still has to produce measured lift** — a dream you cannot
+  score is a dream you cannot trust (the measurement spine below).
 
 ## The class loop (the mechanism)
 
