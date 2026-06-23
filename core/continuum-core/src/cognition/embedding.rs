@@ -252,6 +252,16 @@ impl EmbeddingProvider for CachingEmbeddingProvider {
             return v.clone(); // hot path: sync map hit, the async cost is paid once
         }
         let v = self.inner.embed(text).await;
+        // NEVER cache a failed embed. The inner provider degrades a failure to an
+        // empty vector (the "no signal" sentinel); caching that would POISON the
+        // shared content-addressed cache — a transient embedder hiccup would become
+        // a permanent zero-relevance verdict for this content across every persona,
+        // never re-attempted. A real embedding is always dim()-length and non-empty,
+        // so empty unambiguously means "failed this time": skip the cache, let the
+        // next miss retry. (The failure itself is surfaced loud by the inner provider.)
+        if v.is_empty() {
+            return v;
+        }
         // Bound memory: evict one arbitrary entry on overflow before inserting a
         // genuinely new key. Hot/recent content re-populates on its next miss.
         if !self.cache.map.contains_key(&key) && self.cache.map.len() >= EMBEDDING_CACHE_MAX {
@@ -314,12 +324,20 @@ impl EmbeddingProvider for NeuralEmbeddingProvider {
         match self.adapter.create_embedding(request).await {
             Ok(resp) => resp.embeddings.into_iter().next().unwrap_or_default(),
             Err(e) => {
-                // Degrade to "no signal" (empty → cosine 0), never junk vectors;
-                // log loud so a misconfigured embedder is visible, not silent.
-                tracing::warn!(
+                // Degrade to "no signal" (empty → cosine 0 by cosine_similarity's
+                // contract), never junk vectors — but VISIBLY, never silently. A
+                // tracing::warn! does not survive across the substrate's tokio tasks
+                // (it gets filtered/lost — the recurring "swallowed error" trap); a
+                // probe! is the surviving RTOS-style signal that a configured embedder
+                // is actually DOWN, so a half-blind recall is diagnosable instead of
+                // looking identical to a genuinely-irrelevant memory. The caller still
+                // degrades (doesn't panic — faculties degrade, never panic), but the
+                // failure is named and observable, not absorbed.
+                crate::probe!(
+                    class = "embedding.neural.failed",
                     model = %self.model_slug,
                     error = %e,
-                    "neural embed failed; degrading to no-relevance for this item"
+                    "neural embed failed — degrading this item to no-relevance (embedder may be down)"
                 );
                 Vec::new()
             }
@@ -497,6 +515,59 @@ mod tests {
         let _ = cached.embed("first message").await;
         let _ = cached.embed("a different message").await;
         assert_eq!(inner.calls.load(Ordering::SeqCst), 2);
+    }
+
+    /// An embedder that fails the first time (empty = "no signal", the down-embedder
+    /// sentinel) then succeeds — to prove a transient failure is never cached.
+    struct FlakyEmbedder {
+        calls: AtomicUsize,
+    }
+    #[async_trait]
+    impl EmbeddingProvider for FlakyEmbedder {
+        fn id(&self) -> &str {
+            "flaky"
+        }
+        fn dim(&self) -> usize {
+            4
+        }
+        async fn embed(&self, _text: &str) -> Vec<f32> {
+            let n = self.calls.fetch_add(1, Ordering::SeqCst);
+            if n == 0 {
+                Vec::new() // first call: embedder "down" → no-signal sentinel
+            } else {
+                vec![1.0, 2.0, 3.0, 4.0] // recovered
+            }
+        }
+    }
+
+    // what this catches: CACHE POISONING. A failed embed (empty no-signal vector)
+    // must NOT be cached — otherwise a transient embedder hiccup becomes a permanent
+    // zero-relevance verdict for that content across every persona, never retried.
+    // Regression here = one bad embed silently blinding recall to a memory forever.
+    #[tokio::test]
+    async fn failed_embed_is_not_cached_and_retries() {
+        let inner = Arc::new(FlakyEmbedder {
+            calls: AtomicUsize::new(0),
+        });
+        let cache = Arc::new(EmbeddingCache::new());
+        let cached = CachingEmbeddingProvider::with_cache(inner.clone(), cache);
+
+        let first = cached.embed("the embedder is down right now").await;
+        assert!(first.is_empty(), "first embed failed → no-signal sentinel");
+
+        // Same content again: because the failure was NOT cached, the inner embedder
+        // is re-invoked (now recovered) instead of returning the poisoned empty.
+        let second = cached.embed("the embedder is down right now").await;
+        assert_eq!(
+            second,
+            vec![1.0, 2.0, 3.0, 4.0],
+            "retry recomputed a real vector — the failure was not cached"
+        );
+        assert_eq!(
+            inner.calls.load(Ordering::SeqCst),
+            2,
+            "inner embedder was retried, proving the empty was never cached"
+        );
     }
 
     // what this catches: the probe gate — only a non-empty, non-zero, all-finite
