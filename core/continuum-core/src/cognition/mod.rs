@@ -36,6 +36,7 @@ pub mod channel_element;
 pub mod channel_substrate;
 pub mod check_redundancy;
 pub mod embedding;
+pub mod eval;
 pub mod inference_session;
 pub mod generate_recipe;
 pub mod generate_response;
