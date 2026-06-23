@@ -92,18 +92,57 @@ esac
 # routes through it (/v1 OpenAI-compatible API). The core will fail loud on
 # the first LLM call if Studio isn't up — catch it here so the error lands
 # at startup, not buried in a per-persona log [[fallbacks-are-illegal-fail-loud]].
+#
+# The gate verifies THREE things, not just reachability (Joel: "make sure
+# unsloth is reachable, can serve our models etc, in addition to keeping it
+# installed and updated"):
+#   1. reachable      — /v1/models answers 200 (WITH the API key; it 401s without)
+#   2. serves OUR model — the configured UNSLOTH_MODEL appears in the served list
+#   3. installed+fresh — binary present; opportunistic throttled `pip -U` (non-fatal)
 UNSLOTH_HOST="${UNSLOTH_BASE_URL:-http://127.0.0.1:8888}"
 UNSLOTH_PORT="${UNSLOTH_HOST##*:}"      # extract port from base URL
 UNSLOTH_PORT="${UNSLOTH_PORT%%/*}"      # strip any trailing path
+UNSLOTH_BIN="$HOME/.local/bin/unsloth"
+UNSLOTH_VENV_PY="$HOME/.unsloth/studio/unsloth_studio/bin/python"
+UNSLOTH_MODEL_BASENAME="$(basename "${UNSLOTH_MODEL:-}")"
 
-if curl -sf "${UNSLOTH_HOST}/health" >/dev/null 2>&1 \
-   || curl -sf "${UNSLOTH_HOST}/v1/models" >/dev/null 2>&1; then
-  echo "✓ Unsloth Studio is running at ${UNSLOTH_HOST}" >&2
+# curl /v1/models WITH auth (the server 401s without the key — a bare probe
+# never sees success and loops forever). Echoes the JSON body on stdout.
+_unsloth_models() {
+  curl -sf -H "Authorization: Bearer ${UNSLOTH_API_KEY}" \
+    "${UNSLOTH_HOST}/v1/models" 2>/dev/null
+}
+# True iff /v1/models is reachable AND lists our configured model.
+_unsloth_serves_our_model() {
+  local body; body="$(_unsloth_models)" || return 1
+  [ -n "$UNSLOTH_MODEL_BASENAME" ] || return 0   # no model pinned → reachability only
+  printf '%s' "$body" | grep -qF "$UNSLOTH_MODEL_BASENAME"
+}
+
+# Opportunistic, throttled, NON-FATAL update — at most once per 24h (stamp file).
+# Auto-updating on every `cu start` is reckless (could pull a breaking version
+# mid-session); throttling + background + non-fatal is the safe reading of
+# "keep it updated". Skips entirely if AIRC/CU_NO_UNSLOTH_UPDATE is set.
+_unsloth_maybe_update() {
+  [ -n "$CU_NO_UNSLOTH_UPDATE" ] && return 0
+  [ -x "$UNSLOTH_VENV_PY" ] || return 0
+  local stamp="$HOME/.unsloth/.last-update-check"
+  if [ -f "$stamp" ]; then
+    local age=$(( $(date +%s) - $(stat -f %m "$stamp" 2>/dev/null || stat -c %Y "$stamp" 2>/dev/null || echo 0) ))
+    [ "$age" -lt 86400 ] && return 0     # checked within the last day
+  fi
+  echo "↻ Checking for unsloth updates (background, non-fatal) …" >&2
+  ( "$UNSLOTH_VENV_PY" -m pip install -U --quiet unsloth unsloth_zoo \
+      >/tmp/unsloth-update.log 2>&1 && touch "$stamp" ) &
+}
+
+if _unsloth_serves_our_model; then
+  echo "✓ Unsloth Studio is serving ${UNSLOTH_MODEL_BASENAME:-(reachable)} at ${UNSLOTH_HOST}" >&2
+  _unsloth_maybe_update
 else
-  # Not up. Try to start it in the background.
-  UNSLOTH_BIN="$HOME/.local/bin/unsloth"
+  # Either down, or up but NOT serving our model. Both are fail-states here.
   if [ -x "$UNSLOTH_BIN" ] && [ -n "$UNSLOTH_MODEL" ]; then
-    echo "▶ Starting Unsloth Studio (model: $UNSLOTH_MODEL, port: $UNSLOTH_PORT) …" >&2
+    echo "▶ Starting Unsloth Studio (model: $UNSLOTH_MODEL_BASENAME, port: $UNSLOTH_PORT) …" >&2
     nohup "$UNSLOTH_BIN" studio run \
       --model "$UNSLOTH_MODEL" \
       --port "$UNSLOTH_PORT" \
@@ -111,18 +150,26 @@ else
       >/tmp/unsloth-studio.log 2>&1 &
     UNSLOTH_PID=$!
     echo "  PID $UNSLOTH_PID  —  log: /tmp/unsloth-studio.log" >&2
-    # Wait up to 30 seconds for the server to accept connections.
+    # Wait up to 60s for it to come up AND report our model served (model load
+    # is the slow part — a port that accepts before the GGUF is loaded is not
+    # "ready"). The probe carries the API key, so 401 never masquerades as down.
     WAITED=0
-    until curl -sf "${UNSLOTH_HOST}/v1/models" >/dev/null 2>&1; do
-      sleep 1; WAITED=$((WAITED+1))
-      if [ $WAITED -ge 30 ]; then
-        echo "✗ FATAL: Unsloth Studio did not come up after 30s." >&2
-        echo "  Start it manually:  unsloth studio run --model \$UNSLOTH_MODEL" >&2
-        echo "  Then retry:  cu start" >&2
+    until _unsloth_serves_our_model; do
+      if ! kill -0 "$UNSLOTH_PID" 2>/dev/null; then
+        echo "✗ FATAL: Unsloth Studio process died during startup." >&2
+        tail -8 /tmp/unsloth-studio.log >&2
+        exit 1
+      fi
+      sleep 2; WAITED=$((WAITED+2))
+      if [ $WAITED -ge 60 ]; then
+        echo "✗ FATAL: Unsloth Studio did not serve ${UNSLOTH_MODEL_BASENAME} after 60s." >&2
+        echo "  Reachable but wrong model? Check:  curl -H 'Authorization: Bearer \$UNSLOTH_API_KEY' ${UNSLOTH_HOST}/v1/models" >&2
+        echo "  Log: /tmp/unsloth-studio.log" >&2
         exit 1
       fi
     done
-    echo "✓ Unsloth Studio ready (${WAITED}s)." >&2
+    echo "✓ Unsloth Studio ready (${WAITED}s) — serving ${UNSLOTH_MODEL_BASENAME}." >&2
+    _unsloth_maybe_update
   else
     echo "" >&2
     echo "✗ FATAL: Unsloth Studio is not running and cannot be auto-started." >&2
@@ -131,10 +178,11 @@ else
       echo "  UNSLOTH_MODEL is not set in ~/.continuum/config.env" >&2
     fi
     if [ ! -x "$UNSLOTH_BIN" ]; then
-      echo "  unsloth binary not found at $UNSLOTH_BIN (install: https://unsloth.ai)" >&2
+      echo "  unsloth binary not found at $UNSLOTH_BIN" >&2
+      echo "  Install: curl -fsSL https://raw.githubusercontent.com/unslothai/unsloth/main/install.sh | bash" >&2
     fi
     echo "" >&2
-    echo "  Start it manually:  unsloth studio run --model <gguf-path> --api-only" >&2
+    echo "  Start it manually:  unsloth studio run --model \$UNSLOTH_MODEL --no-cloudflare" >&2
     echo "  Then retry:  cu start" >&2
     echo "" >&2
     exit 1
