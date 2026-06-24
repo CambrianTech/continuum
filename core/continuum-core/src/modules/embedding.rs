@@ -26,6 +26,7 @@ use tracing::info;
 
 use crate::utils::params::Params;
 use std::sync::Arc;
+use wide::f32x8;
 
 // ─── Adapter-Routed Embedder Construction ─────────────────────────────────────
 
@@ -85,25 +86,94 @@ async fn build_adapter_embedder_inner(
 
 // ─── Similarity Functions ───────────────────────────────────────────────────
 
+// ─── SIMD Kernels (the ONE place the float math is vectorized) ────────────────
+//
+// Every embedding kind — Qwen3-Embedding, bge, vision, whatever the adapter
+// produces — converges to a flat `&[f32]`. The model of origin is irrelevant
+// once it's a vector, so there is exactly ONE similarity kernel, optimized once
+// and shared by all kinds (the compression principle). Lanes of 8 via
+// `wide::f32x8` (NEON on aarch64, AVX on x86) handle any dimension; a scalar tail
+// mops up the < 8 remainder. `wide` GUARANTEES the SIMD path regardless of
+// opt-level — unlike auto-vectorization, which silently reverts to scalar in
+// debug and is fragile to refactors.
+
+/// Dot product + both squared L2 norms in a single pass. Caller guarantees
+/// `a.len() == b.len()`.
+#[inline]
+fn simd_dot_and_norms(a: &[f32], b: &[f32]) -> (f32, f32, f32) {
+    let mut dot = f32x8::ZERO;
+    let mut na = f32x8::ZERO;
+    let mut nb = f32x8::ZERO;
+    let mut ca = a.chunks_exact(8);
+    let mut cb = b.chunks_exact(8);
+    for (qa, qb) in ca.by_ref().zip(cb.by_ref()) {
+        let va = f32x8::new(qa.try_into().unwrap());
+        let vb = f32x8::new(qb.try_into().unwrap());
+        dot = va.mul_add(vb, dot);
+        na = va.mul_add(va, na);
+        nb = vb.mul_add(vb, nb);
+    }
+    let mut d = dot.reduce_add();
+    let mut sa = na.reduce_add();
+    let mut sb = nb.reduce_add();
+    for (x, y) in ca.remainder().iter().zip(cb.remainder().iter()) {
+        d += x * y;
+        sa += x * x;
+        sb += y * y;
+    }
+    (d, sa, sb)
+}
+
+/// Dot product + the TARGET's squared L2 norm only. The batch caller hoists the
+/// query norm (computed once, reused across all targets — per the reuse
+/// doctrine), so this does 2 FMAs per lane instead of 3. Caller guarantees
+/// `query.len() == target.len()`.
+#[inline]
+fn simd_dot_and_target_norm(query: &[f32], target: &[f32]) -> (f32, f32) {
+    let mut dot = f32x8::ZERO;
+    let mut nt = f32x8::ZERO;
+    let mut cq = query.chunks_exact(8);
+    let mut ct = target.chunks_exact(8);
+    for (qq, qt) in cq.by_ref().zip(ct.by_ref()) {
+        let vq = f32x8::new(qq.try_into().unwrap());
+        let vt = f32x8::new(qt.try_into().unwrap());
+        dot = vq.mul_add(vt, dot);
+        nt = vt.mul_add(vt, nt);
+    }
+    let mut d = dot.reduce_add();
+    let mut st = nt.reduce_add();
+    for (x, y) in cq.remainder().iter().zip(ct.remainder().iter()) {
+        d += x * y;
+        st += y * y;
+    }
+    (d, st)
+}
+
+/// SIMD L2 norm of a single vector.
+#[inline]
+fn simd_l2_norm(v: &[f32]) -> f32 {
+    let mut acc = f32x8::ZERO;
+    let mut c = v.chunks_exact(8);
+    for q in c.by_ref() {
+        let x = f32x8::new(q.try_into().unwrap());
+        acc = x.mul_add(x, acc);
+    }
+    let mut s = acc.reduce_add();
+    for x in c.remainder() {
+        s += x * x;
+    }
+    s.sqrt()
+}
+
 /// Cosine similarity between two embedding vectors.
 /// Returns value in [-1, 1] where 1 = identical, 0 = orthogonal, -1 = opposite.
-/// SIMD-optimized in release mode via rustc auto-vectorization.
+/// SIMD-vectorized via `wide::f32x8` (see kernel note above).
 #[inline]
 pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
     if a.len() != b.len() || a.is_empty() {
         return 0.0;
     }
-
-    let mut dot = 0.0f32;
-    let mut norm_a = 0.0f32;
-    let mut norm_b = 0.0f32;
-
-    for i in 0..a.len() {
-        dot += a[i] * b[i];
-        norm_a += a[i] * a[i];
-        norm_b += b[i] * b[i];
-    }
-
+    let (dot, norm_a, norm_b) = simd_dot_and_norms(a, b);
     let denom = norm_a.sqrt() * norm_b.sqrt();
     if denom == 0.0 {
         0.0
@@ -151,9 +221,30 @@ pub fn pairwise_similarity_matrix(embeddings: &[Vec<f32>]) -> Vec<f32> {
 /// Returns Vec<f32> of similarities (one per target), parallelized with Rayon.
 /// Use case: semantic search - find most similar items to a query.
 pub fn query_similarity_batch(query: &[f32], targets: &[Vec<f32>]) -> Vec<f32> {
+    if query.is_empty() {
+        return vec![0.0; targets.len()];
+    }
+    // Hoist the query norm: compute ONCE, reuse across every target. The old path
+    // recomputed it inside every cosine_similarity call (N redundant passes over
+    // the query). Reuse, per doctrine.
+    let q_norm = simd_l2_norm(query);
+    if q_norm == 0.0 {
+        return vec![0.0; targets.len()];
+    }
     targets
         .par_iter()
-        .map(|target| cosine_similarity(query, target))
+        .map(|target| {
+            if target.len() != query.len() {
+                return 0.0;
+            }
+            let (dot, t_norm_sq) = simd_dot_and_target_norm(query, target);
+            let denom = q_norm * t_norm_sq.sqrt();
+            if denom == 0.0 {
+                0.0
+            } else {
+                dot / denom
+            }
+        })
         .collect()
 }
 
@@ -165,15 +256,30 @@ pub fn top_k_similar(
     k: usize,
     threshold: f32,
 ) -> Vec<(usize, f32)> {
-    let similarities: Vec<(usize, f32)> = targets
+    if query.is_empty() {
+        return vec![];
+    }
+    // Hoist the query norm out of the per-target loop (computed once, reused).
+    let q_norm = simd_l2_norm(query);
+    if q_norm == 0.0 {
+        return vec![];
+    }
+    let mut sorted: Vec<(usize, f32)> = targets
         .par_iter()
         .enumerate()
-        .map(|(i, target)| (i, cosine_similarity(query, target)))
+        .map(|(i, target)| {
+            if target.len() != query.len() {
+                return (i, 0.0);
+            }
+            let (dot, t_norm_sq) = simd_dot_and_target_norm(query, target);
+            let denom = q_norm * t_norm_sq.sqrt();
+            let sim = if denom == 0.0 { 0.0 } else { dot / denom };
+            (i, sim)
+        })
         .filter(|(_, sim)| *sim >= threshold)
         .collect();
 
     // Sort by similarity descending and take top k
-    let mut sorted = similarities;
     sorted.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
     sorted.truncate(k);
     sorted
@@ -561,6 +667,64 @@ mod tests {
     fn cosine_dimension_mismatch_is_zero() {
         // what this catches: mismatched dims must not panic / index OOB.
         assert_eq!(cosine_similarity(&[1.0, 2.0], &[1.0, 2.0, 3.0]), 0.0);
+    }
+
+    #[test]
+    fn simd_matches_scalar_reference_across_dims() {
+        // what this catches: the wide::f32x8 path (chunks of 8 + scalar
+        // remainder) must agree with a naive scalar cosine for ANY dimension —
+        // lengths < 8, exact multiples of 8, and non-multiples. Regression guard
+        // for the SIMD rewrite of cosine_similarity. Epsilon (not exact) because
+        // SIMD reorders the float summation vs a left-to-right scalar loop.
+        fn scalar_cosine(a: &[f32], b: &[f32]) -> f32 {
+            let mut dot = 0.0f32;
+            let mut na = 0.0f32;
+            let mut nb = 0.0f32;
+            for i in 0..a.len() {
+                dot += a[i] * b[i];
+                na += a[i] * a[i];
+                nb += b[i] * b[i];
+            }
+            let denom = na.sqrt() * nb.sqrt();
+            if denom == 0.0 {
+                0.0
+            } else {
+                dot / denom
+            }
+        }
+        for &dim in &[1usize, 3, 7, 8, 9, 15, 16, 17, 768, 769] {
+            // deterministic pseudo-vectors (no rng dep)
+            let a: Vec<f32> = (0..dim).map(|i| ((i % 7) as f32) * 0.13 - 0.4).collect();
+            let b: Vec<f32> = (0..dim).map(|i| ((i % 5) as f32) * 0.21 + 0.05).collect();
+            let simd = cosine_similarity(&a, &b);
+            let scalar = scalar_cosine(&a, &b);
+            assert!(
+                (simd - scalar).abs() < 1e-5,
+                "dim {dim}: simd {simd} vs scalar {scalar}"
+            );
+        }
+    }
+
+    #[test]
+    fn batch_hoisted_norm_matches_per_call_cosine() {
+        // what this catches: query_similarity_batch / top_k_similar hoist the
+        // query norm out of the per-target loop (compute-once reuse); each result
+        // must still equal cosine_similarity(query, target) computed per target.
+        let query = vec![0.2f32, -0.5, 0.9, 0.1, 0.33, -0.7, 0.05, 0.8, 0.42];
+        let targets = vec![
+            vec![0.1f32, 0.4, -0.2, 0.7, 0.0, 0.6, -0.3, 0.2, 0.9],
+            vec![-0.5f32, 0.5, 0.5, -0.5, 0.5, 0.5, 0.5, -0.5, 0.1],
+        ];
+        let batch = query_similarity_batch(&query, &targets);
+        for (i, t) in targets.iter().enumerate() {
+            let direct = cosine_similarity(&query, t);
+            assert!(
+                (batch[i] - direct).abs() < 1e-5,
+                "target {i}: batch {} vs direct {}",
+                batch[i],
+                direct
+            );
+        }
     }
 
     #[test]
