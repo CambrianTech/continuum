@@ -35,54 +35,54 @@ use wide::f32x8;
 /// neural-or-lexical embedder the live recall path uses
 /// ([`crate::cognition::embedding::resolve_recall_embedder`]).
 ///
-/// Connects to the unsloth gateway and resolves the embed model (neural when it
-/// serves, lexical otherwise). This is the ONE place the gateway-adapter build is
-/// expressed for the memory side, so callers don't each re-derive base-url /
-/// model-selection / probe logic.
+/// Reads the served model from Contract A (the serving daemon's snapshot) and
+/// builds the gateway adapter against it. llama-server serves embeddings from the
+/// SAME process it serves chat from (launched with `--embeddings`), so the embed
+/// model IS the served model — there is no separate embed gateway to probe. This
+/// is the ONE place the gateway-adapter build is expressed for the memory side,
+/// so callers don't each re-derive base-url / model-selection.
 ///
-/// Fail-loud (no silent ONNX fallback, task #40): if the gateway is unreachable
-/// or serves no model the error is propagated with its cause named — the caller
-/// decides whether that is fatal (it is for `vector/backfill`).
+/// Fail-loud (no silent ONNX fallback, task #40): no ready served model within the
+/// readiness bound, or a ready snapshot that names no model, is propagated with its
+/// cause named — the caller decides whether that is fatal (it is for
+/// `vector/backfill`). The readiness wait is bounded by Contract A's single
+/// [`DEFAULT_SERVING_WAIT`](crate::inference::llama_server::DEFAULT_SERVING_WAIT);
+/// reading the snapshot never hangs (a `watch` borrow, not an HTTP probe), so there
+/// is no per-module timeout to maintain — the old 5s guard existed only because an
+/// unsloth gateway could hold `/v1/models` open, a hazard the snapshot removes.
 pub async fn build_adapter_embedder(
 ) -> Result<Arc<dyn crate::cognition::embedding::EmbeddingProvider>, String> {
-    // Hard bound on the whole gateway handshake. The gateway can be unreachable
-    // OR responsive-but-hung (e.g. an unsloth gateway that holds `/v1/models`
-    // open). Either way a caller must NEVER block indefinitely — fail loud with
-    // a named cause so the caller (e.g. `vector/backfill`) can decide.
-    tokio::time::timeout(
-        std::time::Duration::from_secs(5),
-        build_adapter_embedder_inner(),
-    )
-    .await
-    .map_err(|_| {
-        "unsloth embed gateway did not respond within 5s while resolving an embed model \
-         (gateway unreachable or hung) — no local ONNX fallback"
-            .to_string()
-    })?
-}
-
-async fn build_adapter_embedder_inner(
-) -> Result<Arc<dyn crate::cognition::embedding::EmbeddingProvider>, String> {
-    let base = crate::inference::unsloth_control::unsloth_base_url();
-    let served = crate::inference::unsloth_control::UnslothHttp::from_config()
-        .list_models()
-        .await
-        .map_err(|e| format!("unsloth gateway unreachable while selecting embed model ({base}): {e}"))?;
-    let model = served.into_iter().next().ok_or_else(|| {
-        format!("unsloth gateway @ {base} serves NO model — load one before embedding (no local ONNX fallback)")
-    })?;
     // `initialize` is an `AIProviderAdapter` trait method — bring the trait into
     // scope so it resolves on the concrete adapter.
     use crate::ai::adapter::AIProviderAdapter as _;
+
+    // Read the served model from the daemon's published snapshot instead of each
+    // embedder re-probing `/v1/models` ("subscribers READ the snapshot, they do
+    // NOT each HTTP-probe" — Contract A). Wait bounded for the daemon's first
+    // ready reconcile (covers a cold GGUF load); no ready model → fail loud.
+    let snap = crate::inference::llama_server::await_ready_serving(
+        crate::inference::llama_server::DEFAULT_SERVING_WAIT,
+    )
+    .await
+    .ok_or_else(|| {
+        "serving daemon brought up NO ready model within the readiness bound — \
+         cannot select an embed model (no local ONNX fallback)"
+            .to_string()
+    })?;
+    let model = snap.active_model.ok_or_else(|| {
+        "serving snapshot is ready but names no active model — cannot embed \
+         (no local ONNX fallback)"
+            .to_string()
+    })?;
     let mut adapter = crate::ai::openai_adapter::OpenAICompatibleAdapter::from_registry(
         crate::inference::llama_server::PROVIDER_ID,
     )
-        .with_runtime_base_url(base)
-        .with_default_model(model);
+    .with_runtime_base_url(snap.base_url)
+    .with_default_model(model);
     adapter
         .initialize()
         .await
-        .map_err(|e| format!("unsloth embed adapter initialize failed: {e}"))?;
+        .map_err(|e| format!("embed adapter initialize failed: {e}"))?;
     Ok(crate::cognition::embedding::resolve_recall_embedder(Arc::new(adapter)).await)
 }
 
