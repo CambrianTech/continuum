@@ -135,13 +135,15 @@ impl PersonaAdapterFactory for ServedModelPersonaAdapterFactory {
             base = %snap.base_url,
             "persona inference bound to the live served model"
         );
-        // The `"unsloth"` catalog key still names the OpenAI-compatible provider
-        // entry (auth + header shape); renaming the provider id to `"llama-server"`
-        // is slice 3 of #53. The runtime base_url + model come from the snapshot,
-        // so the catalog default (which can drift from what's loaded) is overridden.
-        let mut adapter = crate::ai::openai_adapter::OpenAICompatibleAdapter::from_registry("unsloth")
-            .with_runtime_base_url(snap.base_url)
-            .with_default_model(model);
+        // The `llama-server` catalog key names the OpenAI-compatible provider
+        // entry (header shape + capabilities). The runtime base_url + model come
+        // from the snapshot, so the catalog default (which can drift from what's
+        // loaded) is overridden here.
+        let mut adapter = crate::ai::openai_adapter::OpenAICompatibleAdapter::from_registry(
+            crate::inference::llama_server::PROVIDER_ID,
+        )
+        .with_runtime_base_url(snap.base_url)
+        .with_default_model(model);
         adapter
             .initialize()
             .await

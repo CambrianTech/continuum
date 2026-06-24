@@ -327,7 +327,7 @@ impl ActionCommand for InferenceGenerateCommand {
         let mut request = serde_json::json!({
             "messages": [user_msg],
             "model": session.model,
-            "provider": "unsloth",
+            "provider": crate::inference::llama_server::PROVIDER_ID,
         });
         if let Some(sys) = p.system.filter(|s| !s.trim().is_empty()) {
             request["systemPrompt"] = serde_json::Value::String(sys);

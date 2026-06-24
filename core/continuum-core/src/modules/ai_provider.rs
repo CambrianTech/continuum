@@ -364,26 +364,34 @@ impl AIProviderModule {
             }
         }
 
-        // Unsloth — the universal model gateway (local OpenAI-compatible server
-        // at UNSLOTH_BASE_URL). Registered when UNSLOTH_API_KEY is configured;
-        // its live /v1/models catalog decides which models it actually serves
-        // (local llama.cpp + any cloud provider keyed inside unsloth Studio).
-        // Additive priority for now — making the gateway the *preferred* route
-        // is a separate routing-policy change.
-        let mut unsloth_registered = false;
-        if get_secret("UNSLOTH_API_KEY").is_some() {
-            self.log().info("Registering Unsloth gateway adapter");
-            // Base URL comes from the ONE owner of the unsloth endpoint
-            // (`unsloth_control::unsloth_base_url`) — not the catalog literal — so
-            // there is a single source of truth for where unsloth lives.
-            let mut a = OpenAICompatibleAdapter::from_registry("unsloth")
-                .with_runtime_base_url(crate::inference::unsloth_control::unsloth_base_url());
+        // llama-server — the local OpenAI-compatible serving gateway. Registered
+        // when the serving daemon has a READY model (Contract A), NOT on the
+        // presence of an API key: it's a local endpoint with no credential. Its
+        // base_url comes from the daemon's reconciled snapshot (the single source
+        // of truth for where the gateway lives), and its live /v1/models catalog
+        // decides which models it serves. Additive priority for now — making the
+        // gateway the *preferred* route is a separate routing-policy change.
+        // No served model → no registration → the boot-status block below fails
+        // loud (no local fallback), per the no-fallback rule.
+        let mut gateway_registered = false;
+        if let Some(snap) = crate::inference::llama_server::await_ready_serving(
+            crate::inference::llama_server::DEFAULT_SERVING_WAIT,
+        )
+        .await
+        {
+            self.log().info("Registering llama-server gateway adapter");
+            let mut a = OpenAICompatibleAdapter::from_registry(
+                crate::inference::llama_server::PROVIDER_ID,
+            )
+            .with_runtime_base_url(snap.base_url);
             match a.initialize().await {
                 Ok(()) => {
                     registry.register(Arc::new(a), 9);
-                    unsloth_registered = true;
+                    gateway_registered = true;
                 }
-                Err(e) => self.log().warn(&format!("Unsloth initialize failed: {e} — not registered")),
+                Err(e) => self
+                    .log()
+                    .warn(&format!("llama-server initialize failed: {e} — not registered")),
             }
         }
 
@@ -652,12 +660,12 @@ impl AIProviderModule {
             } else {
                 " — sole inference path"
             };
-            if !unsloth_registered {
+            if !gateway_registered {
                 boot_status(
                     "inference",
                     BootStatusKind::Failed,
-                    "inference gateway NOT registered — set UNSLOTH_API_KEY in ~/.continuum/config.env \
-                     (open unsloth Studio to generate one). Inference gateway REQUIRED; no local fallback.",
+                    "inference gateway NOT registered — the serving daemon brought up NO ready model \
+                     within the readiness bound. Inference gateway REQUIRED; no local fallback.",
                 );
             } else {
                 // Read the daemon's reconciled snapshot (bounded wait for its first

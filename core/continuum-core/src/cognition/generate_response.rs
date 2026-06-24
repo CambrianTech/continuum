@@ -65,8 +65,9 @@ const HOUR_GAP_THRESHOLD_MS: u64 = 60 * 60 * 1000;
 // The inference gateway is unsloth (the sole inference path, [[unsloth-universal-model-gateway]]).
 // Was "local" (the in-process llama.cpp adapter) — now gated off, so routing the turn
 // to "local" + a hardcoded model id that the gateway doesn't serve would hard-fail
-// select(). The turn binds to unsloth + the discovered served model via a handle.
-const DEFAULT_GENERATE_PROVIDER: &str = "unsloth";
+// select(). The turn binds to the llama-server gateway + the discovered served model
+// via a handle. One source of truth for the gateway id: `llama_server::PROVIDER_ID`.
+const DEFAULT_GENERATE_PROVIDER: &str = crate::inference::llama_server::PROVIDER_ID;
 
 /// Default model when caller doesn't override.
 const DEFAULT_GENERATE_MODEL: &str = "continuum-ai/qwen3.5-4b-code-forged-GGUF";

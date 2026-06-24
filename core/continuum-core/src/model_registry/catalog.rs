@@ -564,33 +564,30 @@ pub fn providers() -> Vec<Provider> {
             model_prefixes: &[],
             ..Default::default()
         }),
-        // Unsloth — the universal model gateway. A local OpenAI-compatible server
-        // (like DMR) that serves local models (llama.cpp) AND fans out to cloud
-        // providers via the keys the user configures in unsloth Studio. Continuum
-        // holds ONE credential (UNSLOTH_API_KEY) and reaches every model through
-        // it. Dynamic catalog: the live model list comes from /v1/models, so
-        // `model_prefixes` is empty and routing relies on runtime discovery.
-        // `default_model` is required by the adapter trait (it returns &str);
-        // it's a fallback only — the real model is chosen per request.
+        // llama-server — the local OpenAI-compatible serving gateway (llama.cpp's
+        // `/v1` server). Serves the resident GGUF over HTTP; the live model list
+        // comes from `/v1/models`, so `model_prefixes` is empty and routing relies
+        // on runtime discovery. No API key — it's a local endpoint (auth None).
+        // The `base_url` here is the compile-time default; at registration the
+        // adapter is repointed at the serving daemon's snapshot `base_url`
+        // (Contract A — the single source of truth for where the gateway lives).
+        // `default_model` is required by the adapter trait (it returns &str); it's
+        // a fallback only — the real model is chosen per request.
         provider(ProviderSpec {
-            id: "unsloth",
-            name: "Unsloth (universal model gateway)",
-            // THE one constant for the default endpoint. At registration the
-            // adapter is given the runtime value from `unsloth_control::unsloth_base_url()`
-            // (the single accessor), so the endpoint has one owner; this is just
-            // the compile-time default, kept identical via the shared const.
+            id: crate::inference::llama_server::PROVIDER_ID,
+            name: "llama-server (local OpenAI-compatible gateway)",
             base_url: crate::inference::unsloth_control::DEFAULT_HOST,
-            api_key_env: Some("UNSLOTH_API_KEY"),
+            api_key_env: None,
             default_model: Some("continuum-ai/qwen3.5-4b-code-forged-GGUF"),
-            auth: AuthKind::Bearer,
+            auth: AuthKind::None,
             kind: ProviderKind::Local,
             model_prefixes: &[],
             // The local single-slot GGUF gateway: it ignores the OpenAI `tools`
             // param (prompt-based tools), its forged 4B reasoner rambles unless
             // thinking is suppressed, it serves OpenAI-compatible embeddings, and
             // it holds ONE resident model (so the adapter pre-flights activation).
-            // These four flags REPLACE the `provider.id == "unsloth"` branches the
-            // adapter used to carry (#55).
+            // These four flags are what the adapter reads instead of branching on
+            // the provider id (#55).
             capabilities: ProviderCapabilities {
                 tool_protocol: ProviderToolProtocol::JsonInPrompt,
                 suppress_thinking: true,

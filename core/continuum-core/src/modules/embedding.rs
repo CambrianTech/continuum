@@ -74,7 +74,9 @@ async fn build_adapter_embedder_inner(
     // `initialize` is an `AIProviderAdapter` trait method — bring the trait into
     // scope so it resolves on the concrete adapter.
     use crate::ai::adapter::AIProviderAdapter as _;
-    let mut adapter = crate::ai::openai_adapter::OpenAICompatibleAdapter::from_registry("unsloth")
+    let mut adapter = crate::ai::openai_adapter::OpenAICompatibleAdapter::from_registry(
+        crate::inference::llama_server::PROVIDER_ID,
+    )
         .with_runtime_base_url(base)
         .with_default_model(model);
     adapter

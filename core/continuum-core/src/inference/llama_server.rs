@@ -151,6 +151,14 @@ pub fn current_serving() -> ServingSnapshot {
 /// block use [`current_serving`] (no wait) instead.
 pub const DEFAULT_SERVING_WAIT: Duration = Duration::from_secs(30);
 
+/// The registry id of the local OpenAI-compatible serving gateway this seam
+/// fronts — `llama-server` (llama.cpp's `/v1` server, proven live on :58057).
+/// ONE source of truth for the id string: the catalog entry, the registration
+/// path, the default generate route, and every `from_registry(...)` caller all
+/// reference this const so the id is named in exactly one place. (Formerly the
+/// scattered `"unsloth"` string; freed of behavior by #55, renamed here.)
+pub const PROVIDER_ID: &str = "llama-server";
+
 /// Await a READY served model, bounded by `timeout`. Resolves the instant the
 /// daemon's snapshot reports `ready` with an `active_model`. Returns the live
 /// snapshot, or `None` on timeout / before the daemon has installed its state.
