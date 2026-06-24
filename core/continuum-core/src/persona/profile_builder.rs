@@ -107,13 +107,15 @@ pub fn build_profile(
             None
         };
 
-    // Context length: bounded by the model's trained ceiling AND the
-    // tier's safe operating budget. Today: a conservative 2048 fits
-    // both the LCD model (32K trained ceiling) and the Compat tier's
-    // CPU-only inference budget. A future refinement reads
-    // role_template.cognition_defaults.depth_preference and the
-    // tier_descriptor.maxParamsBFits to compute this dynamically.
-    let context_length = compat_context_length(tier_category, model.context_window);
+    // Context length: the model's OWN declared window. No per-tier integer
+    // clamp — guessing a tier cap (the old 2048/4096/8192…) silently
+    // throttled a 32K model to 6% of its window. The adapter
+    // (`LlamaCppBackend::effective_context_length`) is the authority: it caps
+    // this at the GGUF's real `n_ctx_train` AND a budget derived from real
+    // available memory, so passing the model's full ceiling here is safe — it
+    // can only be shrunk to fit, never blindly allocated (that was the
+    // 262144-token Metal OOM, 2026-04). Task #46.
+    let context_length = model.context_window;
 
     // n_ubatch: realistic RAG-built persona prompts cap at 200-500
     // tokens today; 512 covers them. Compat tier uses the same as
@@ -126,7 +128,11 @@ pub fn build_profile(
     // at 1. Shared-base + LoRA paging (#122) then lets one base host N
     // personas across these lanes instead of one backend per persona.
     let n_seq_max = n_seq_max.max(1);
-    let n_batch = context_length;
+    // Prefill chunk size — a sane fixed batch, NOT the full context window
+    // (a 32K n_batch would reserve an enormous prefill graph). The backend's
+    // own `LlamaCppConfig` default governs the real batch; this profile field
+    // is advisory.
+    let n_batch = n_ubatch;
 
     // GPU offload depth: substrate-known per tier. Compat (Intel Mac
     // + AMD discrete) currently routes CPU-only while [[#131]]'s
@@ -161,21 +167,6 @@ pub fn build_profile(
         chat_template,
         stop_sequences,
     })
-}
-
-/// Compute a safe per-tier context budget. Caps at the model's
-/// trained ceiling AND a tier-appropriate ceiling. Conservative
-/// initial values; per-tier refinement happens in slice 7's
-/// optimization pass.
-fn compat_context_length(tier_category: HwTierCategory, model_ceiling: u32) -> u32 {
-    let tier_cap: u32 = match tier_category {
-        HwTierCategory::Compat => 2048,
-        HwTierCategory::MSeries => 4096,
-        HwTierCategory::MSeriesPro => 8192,
-        HwTierCategory::Cuda => 16384,
-        HwTierCategory::Cloud => 32768,
-    };
-    tier_cap.min(model_ceiling)
 }
 
 #[cfg(test)]
@@ -263,7 +254,8 @@ mod tests {
         assert_eq!(profile.persona_name, "Paige");
         assert_eq!(profile.model_id, "continuum-ai/qwen2.5-0.5b-instruct-GGUF");
         assert_eq!(profile.tier_category, HwTierCategory::Compat);
-        assert_eq!(profile.context_length, 2048);
+        // The model's real window, not a per-tier clamp (task #46).
+        assert_eq!(profile.context_length, 32768);
         assert_eq!(profile.n_ubatch, 512);
         assert_eq!(profile.n_seq_max, 1);
         // Compat tier currently routes CPU-only per #131.
@@ -321,54 +313,43 @@ mod tests {
         assert_eq!(pro.n_gpu_layers, -1);
     }
 
-    /// Tier context ceiling caps the profile's context_length so
-    /// weaker hardware never gets a huge KV cache.
+    /// what this catches: the profile advertises the MODEL's real window,
+    /// not a per-tier integer clamp. The old `compat_context_length` returned
+    /// 2048/4096/8192 by tier — throttling a 32K-trained model to 6% on
+    /// Compat. Now every tier gets the model's own ceiling; the adapter
+    /// (`LlamaCppBackend::effective_context_length`) does the real
+    /// memory-bounding at load time, where the loaded GGUF + live RAM exist.
+    /// Task #46.
     #[test]
-    fn context_length_caps_by_tier() {
+    fn context_length_is_model_window_not_tier_clamp() {
         let registry = registry_with_qwen25_05b();
         let model = "continuum-ai/qwen2.5-0.5b-instruct-GGUF";
+        // The fixture model declares a 32K window.
+        let model_window = 32768;
 
-        // Compat: capped at 2048 even though model's 32K-trained.
-        let compat = build_profile(
-            Uuid::nil(),
-            "Paige",
-            "helper",
-            "mac_intel_metal_discrete",
-            HwTierCategory::Compat,
-            model,
-            1,
-            &registry,
-        )
-        .unwrap();
-        assert_eq!(compat.context_length, 2048);
+        let mk = |tier_id, tier_cat| {
+            build_profile(
+                Uuid::nil(),
+                "P",
+                "helper",
+                tier_id,
+                tier_cat,
+                model,
+                1,
+                &registry,
+            )
+            .unwrap()
+            .context_length
+        };
 
-        // MSeries: 4096.
-        let mseries = build_profile(
-            Uuid::nil(),
-            "Maya",
-            "helper",
-            "m1_uma_8gb",
-            HwTierCategory::MSeries,
-            model,
-            1,
-            &registry,
-        )
-        .unwrap();
-        assert_eq!(mseries.context_length, 4096);
+        let compat = mk("mac_intel_metal_discrete", HwTierCategory::Compat);
+        let mseries = mk("m1_uma_8gb", HwTierCategory::MSeries);
+        let pro = mk("m5_uma_pro_max", HwTierCategory::MSeriesPro);
 
-        // MSeriesPro: 8192.
-        let pro = build_profile(
-            Uuid::nil(),
-            "Niko",
-            "coder",
-            "m5_uma_pro_max",
-            HwTierCategory::MSeriesPro,
-            model,
-            1,
-            &registry,
-        )
-        .unwrap();
-        assert_eq!(pro.context_length, 8192);
+        // Every tier advertises the model's full window — no per-tier clamp.
+        assert_eq!(compat, model_window);
+        assert_eq!(mseries, model_window);
+        assert_eq!(pro, model_window);
     }
 
     /// Unknown model_id errors loud per [[no-fallbacks-ever]] with a

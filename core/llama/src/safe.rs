@@ -350,6 +350,27 @@ impl Model {
         }
     }
 
+    /// Number of transformer blocks (layers). KV cache is allocated per
+    /// layer, so this is a multiplier in the per-token KV memory cost.
+    pub fn n_layer(&self) -> u32 {
+        let n = unsafe { sys::llama_model_n_layer(self.ptr.as_ptr()) };
+        n.max(0) as u32
+    }
+
+    /// Number of attention (query) heads.
+    pub fn n_head(&self) -> u32 {
+        let n = unsafe { sys::llama_model_n_head(self.ptr.as_ptr()) };
+        n.max(0) as u32
+    }
+
+    /// Number of key/value heads (GQA: ≤ `n_head`). The KV cache stores one
+    /// K and one V vector per KV head per layer per token, so this — not
+    /// `n_head` — drives KV memory.
+    pub fn n_head_kv(&self) -> u32 {
+        let n = unsafe { sys::llama_model_n_head_kv(self.ptr.as_ptr()) };
+        n.max(0) as u32
+    }
+
     /// Create an inference context.
     pub fn new_context(&self, params: ContextParams) -> Result<Context<'_>, String> {
         let mut ffi = unsafe { sys::llama_context_default_params() };
@@ -551,6 +572,21 @@ pub enum FlashAttn {
 pub enum KvCacheType {
     F16,
     Q8_0,
+}
+
+impl KvCacheType {
+    /// Bytes per cached element, scaled ×100 so block-quantized types keep
+    /// their fractional cost in integer math. F16 = 2.00 bytes/elem.
+    /// Q8_0 packs 32 quants + an f16 scale into a 34-byte block = 1.0625
+    /// bytes/elem. Used to size KV memory from the model's real dimensions
+    /// rather than guessing a context window — the same "derive from the
+    /// real artifact, never hardcode" rule the rest of the loader follows.
+    pub fn bytes_per_elem_x100(self) -> u64 {
+        match self {
+            KvCacheType::F16 => 200,
+            KvCacheType::Q8_0 => 106,
+        }
+    }
 }
 
 /// Context parameters.

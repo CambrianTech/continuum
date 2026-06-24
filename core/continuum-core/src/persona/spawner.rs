@@ -204,7 +204,8 @@ mod tests {
         let helper = plan[0].as_ref().expect("Helper plan").clone();
         assert_eq!(helper.persona_name, "Paige");
         assert_eq!(helper.tier_category, HwTierCategory::Compat);
-        assert_eq!(helper.context_length, 2048);
+        // Model's real window, not a per-tier clamp (task #46).
+        assert_eq!(helper.context_length, 32768);
         assert_eq!(helper.n_gpu_layers, 0);
         let coder = plan[1].as_ref().expect("Coder plan").clone();
         assert_eq!(coder.persona_name, "Pax");
@@ -278,7 +279,8 @@ mod tests {
             let prof = p.as_ref().unwrap();
             assert_eq!(prof.tier_category, HwTierCategory::Compat);
             assert_eq!(prof.n_gpu_layers, 0);
-            assert_eq!(prof.context_length, 2048);
+            // Model's real window, not a per-tier clamp (task #46).
+            assert_eq!(prof.context_length, 32768);
         }
 
         let mseries_plan = derive_spawn_plan(
@@ -291,7 +293,8 @@ mod tests {
             let prof = p.as_ref().unwrap();
             assert_eq!(prof.tier_category, HwTierCategory::MSeries);
             assert_eq!(prof.n_gpu_layers, -1);
-            assert_eq!(prof.context_length, 4096);
+            // Model's real window, not a per-tier clamp (task #46).
+            assert_eq!(prof.context_length, 32768);
         }
     }
 }

@@ -105,6 +105,71 @@ impl Default for LlamaCppConfig {
     }
 }
 
+/// Currently-available system memory in bytes, read live via sysinfo. Used at
+/// model-load / scheduler-spawn time (not the hot path) to size the KV cache
+/// against the REAL machine rather than a guessed per-tier budget. On unified-
+/// memory Macs this is the same pool the GPU allocates from; on discrete-VRAM
+/// boxes it's a conservative proxy (the real fix there is a VRAM probe — see
+/// task #46 follow-up). Returns 0 on read failure, which floors the KV budget
+/// to MIN_CTX rather than over-allocating.
+fn available_memory_bytes() -> u64 {
+    use sysinfo::System;
+    let mut sys = System::new();
+    sys.refresh_memory();
+    sys.available_memory()
+}
+
+/// Rich, model-derived capability facts — read ONCE from the loaded GGUF at
+/// `load()` and carried intact on the backend. Context windows and KV memory
+/// cost (later: image/audio characteristics) are too model-specific to
+/// hardcode — guessing a per-tier integer silently throttles a 32K model to
+/// 6% of its window or OOMs a 262K one — and too expensive to re-derive per
+/// call. So we read the real numbers once and forward the struct. This is the
+/// single source of truth for "what can THIS model actually do," replacing the
+/// per-tier `compat_context_length()` guess that used to live in the profile
+/// builder. See [[no-hardcoded-heuristics-to-steer-cognition]].
+#[derive(Debug, Clone, Copy)]
+pub struct ModelCapabilities {
+    /// The model's OWN trained context ceiling (GGUF `<arch>.context_length`).
+    pub n_ctx_train: u32,
+    /// Transformer blocks — KV is allocated per layer, so a multiplier.
+    pub n_layer: u32,
+    /// Attention (query) heads — divides `n_embd` to get head dim.
+    pub n_head: u32,
+    /// Key/value heads (GQA ≤ `n_head`) — the real KV-memory driver.
+    pub n_head_kv: u32,
+    /// Hidden-state width.
+    pub n_embd: u32,
+}
+
+impl ModelCapabilities {
+    fn from_model(model: &Model) -> Self {
+        Self {
+            n_ctx_train: model.n_ctx_train(),
+            n_layer: model.n_layer(),
+            n_head: model.n_head(),
+            n_head_kv: model.n_head_kv(),
+            n_embd: model.n_embd().max(0) as u32,
+        }
+    }
+
+    /// Bytes of KV cache consumed by one token, for the given K/V element
+    /// types. The KV cache stores one K and one V vector per KV head, per
+    /// layer, per token; each vector is `head_dim * n_head_kv` wide where
+    /// `head_dim = n_embd / n_head`. Derived entirely from the model's real
+    /// dimensions — no hardcoded "typical" cost.
+    pub fn kv_bytes_per_token(&self, type_k: KvCacheType, type_v: KvCacheType) -> u64 {
+        if self.n_head == 0 || self.n_layer == 0 {
+            return 0;
+        }
+        let head_dim = (self.n_embd / self.n_head) as u64;
+        let kv_width = head_dim * self.n_head_kv as u64; // per K, and per V
+        let k_centibytes = kv_width * type_k.bytes_per_elem_x100();
+        let v_centibytes = kv_width * type_v.bytes_per_elem_x100();
+        ((k_centibytes + v_centibytes) * self.n_layer as u64) / 100
+    }
+}
+
 /// The backend: owns a `Model` plus a continuous-batching `Scheduler`.
 ///
 /// Models are Send+Sync (read-only after load). The scheduler owns the
@@ -120,6 +185,9 @@ pub struct LlamaCppBackend {
     model: Arc<Model>,
     config: LlamaCppConfig,
     model_id: String,
+    /// Real model capabilities, read once at load. The authority for the
+    /// context window — never a per-tier guess.
+    caps: ModelCapabilities,
     /// Lazy-spawned scheduler. Lives behind OnceLock because spawning
     /// touches the Model Arc and we want a single instance per backend.
     scheduler: OnceLock<Scheduler>,
@@ -169,21 +237,110 @@ impl LlamaCppBackend {
                 use_mmap: true,
             },
         )?;
+        let caps = ModelCapabilities::from_model(&model);
         log.info(&format!(
-            "Loaded {} in {:.2}s (vocab={})",
+            "Loaded {} in {:.2}s (vocab={}, n_ctx_train={}, n_layer={}, \
+             n_head={}, n_head_kv={}, kv={}B/tok)",
             model_id,
             load_start.elapsed().as_secs_f64(),
-            model.n_vocab()
+            model.n_vocab(),
+            caps.n_ctx_train,
+            caps.n_layer,
+            caps.n_head,
+            caps.n_head_kv,
+            caps.kv_bytes_per_token(config.type_k, config.type_v),
         ));
 
         Ok(Self {
             model: Arc::new(model),
             config,
             model_id,
+            caps,
             scheduler: OnceLock::new(),
             mtmd: Mutex::new(None),
             loras: Mutex::new(HashMap::new()),
         })
+    }
+
+    /// The model's real capability facts (read once at load).
+    pub fn capabilities(&self) -> &ModelCapabilities {
+        &self.caps
+    }
+
+    /// The per-sequence context window to actually allocate, derived from the
+    /// model's REAL ceiling bounded by REAL available memory — never a
+    /// hardcoded per-tier integer, and never a silent fall to the full
+    /// `n_ctx_train` (which OOMed Metal at 262144 → the 12-tok/s bug, 2026-04).
+    ///
+    /// Policy:
+    /// - Ceiling = `caps.n_ctx_train` (the model's own limit).
+    /// - `config.context_length`, when set, is an OPTIONAL further cap — an
+    ///   operator/recipe asking for a smaller window. It can only shrink, never
+    ///   exceed what the model + memory allow.
+    /// - Memory bound = `KV_BUDGET_FRACTION` of currently-available RAM (read
+    ///   live; weights are already resident at this point) divided across
+    ///   `n_seq_max` sequences and the model's real KV-bytes-per-token. This is
+    ///   a headroom RESERVATION that scales with the real machine, NOT a
+    ///   context value — it cannot, by construction, allocate more KV than the
+    ///   budget it was computed from, so it can't reintroduce the OOM.
+    /// - Floored at `MIN_CTX` so a model always has a usable working window.
+    pub fn effective_context_length(&self) -> u32 {
+        /// Fraction of currently-available memory to reserve for the KV cache.
+        /// The rest is left for compute graphs, other backends, and the OS.
+        /// Scales with the real machine — not a fixed token count.
+        const KV_BUDGET_FRACTION: f64 = 0.6;
+        /// A model needs at least this many tokens to hold a RAG-built prompt
+        /// and reply. Below this it can't function; if even this doesn't fit,
+        /// we still allocate it (it eats headroom, not nonexistent memory) and
+        /// log loudly rather than silently degrade.
+        const MIN_CTX: u32 = 1024;
+
+        let log = runtime::logger("llamacpp");
+        let ceiling = if self.caps.n_ctx_train > 0 {
+            self.caps.n_ctx_train
+        } else {
+            // GGUF lacked context_length metadata — unusual. Fall to the floor
+            // and name it, rather than guessing a large window.
+            log.warn(&format!(
+                "{}: GGUF reports n_ctx_train=0 — using MIN_CTX={MIN_CTX}",
+                self.model_id
+            ));
+            MIN_CTX
+        };
+
+        let kv_per_token = self
+            .caps
+            .kv_bytes_per_token(self.config.type_k, self.config.type_v);
+        let n_seq = self.config.n_seq_max.max(1) as u64;
+
+        // Memory-bounded ceiling.
+        let mem_bound = if kv_per_token == 0 {
+            ceiling // can't size KV from dims (shouldn't happen) — trust ceiling
+        } else {
+            let available = available_memory_bytes();
+            let budget = (available as f64 * KV_BUDGET_FRACTION) as u64;
+            let tokens = budget / (n_seq * kv_per_token);
+            (tokens.min(ceiling as u64) as u32).max(MIN_CTX)
+        };
+
+        // Operator/recipe hint can only shrink the window further.
+        let chosen = match self.config.context_length {
+            Some(hint) => hint.min(mem_bound),
+            None => mem_bound,
+        };
+        let chosen = chosen.max(MIN_CTX);
+
+        log.info(&format!(
+            "{}: context={} (ceiling={}, mem_bound={}, hint={:?}, n_seq={}, kv={}B/tok)",
+            self.model_id,
+            chosen,
+            ceiling,
+            mem_bound,
+            self.config.context_length,
+            n_seq,
+            kv_per_token,
+        ));
+        chosen
     }
 
     /// Compute pooled, L2-normalized embeddings for `texts` using a dedicated
@@ -389,23 +546,14 @@ impl LlamaCppBackend {
         // Per-call context — see method-level docstring on why we don't
         // share the scheduler's context.
         //
-        // context_length is REQUIRED here (no silent fallback to model's
-        // n_ctx_train). Falling back to n_ctx_train silently allocated a
-        // 262144-token KV cache for qwen3.5 on every call, which is ~38GB
-        // per sequence — far beyond what Mac Metal can hold without paging
-        // to disk, causing ~12 tok/s slowdown with no visible warning.
-        // Rule-2 violation (fallbacks are illegal) caught 2026-04-23.
-        // If you hit this panic: set `context_length` explicitly in
-        // models.toml for the model you're loading. Pick a value that
-        // fits your target hardware's unified memory / VRAM budget
-        // (typically 4096-16384 for most consumer hardware).
-        let per_seq = self.config.context_length.expect(
-            "ModelConfig.context_length MUST be set explicitly — silent \
-             fallback to n_ctx_train allocates an enormous KV cache that \
-             crushes Mac Metal (caused the 12 tok/s bug, 2026-04). Set \
-             `context_length` in models.toml for this model. Pick a size \
-             that fits the target hardware (4096-16384 typical).",
-        );
+        // The window comes from the model's REAL ceiling bounded by REAL
+        // available memory (`effective_context_length`), NOT a hand-set
+        // models.toml value and NOT a blind fall to n_ctx_train. The old
+        // blind fallback allocated a 262144-token KV cache for qwen3.5
+        // (~38GB/seq) and crushed Metal to 12 tok/s (2026-04); the memory
+        // bound makes that impossible by construction while still honoring
+        // models that genuinely fit a large window. Task #46.
+        let per_seq = self.effective_context_length();
         let mut ctx = self
             .model
             .new_context(llama::ContextParams {
@@ -588,21 +736,13 @@ impl LlamaCppBackend {
     /// owns the shared Context and the OS-thread driver loop.
     fn scheduler(&self) -> &Scheduler {
         self.scheduler.get_or_init(|| {
-            // context_length is REQUIRED (no silent fallback to
-            // n_ctx_train). See the sibling require-sites in this file and
-            // the 12-tok/s-on-Mac bug from 2026-04 for history. Falling
-            // back to n_ctx_train silently allocated 262144-token KV
-            // caches for qwen3.5 models, which Metal can't hold without
-            // paging. Rule-2 (fallbacks are illegal) says fail loud
-            // instead of serving degraded quietly. If you hit this panic,
-            // set `context_length` for the model in models.toml — pick a
-            // size that fits your hardware (typically 4096-16384).
-            let per_seq = self.config.context_length.expect(
-                "ModelConfig.context_length MUST be set explicitly for the \
-                 scheduler — silent fallback to n_ctx_train crushes Metal \
-                 with 262144-token KV allocation (caused 12 tok/s Mac bug, \
-                 2026-04). Set `context_length` in models.toml.",
-            );
+            // Per-sequence window from the model's REAL ceiling bounded by
+            // REAL available memory (task #46), not a hand-set models.toml
+            // value. `effective_context_length` already divides the memory
+            // budget by n_seq_max, so the total below stays within budget —
+            // this is what makes the 2026-04 262144-token Metal OOM
+            // impossible by construction rather than by a panic.
+            let per_seq = self.effective_context_length();
             // n_ctx is the SHARED KV pool across all sequences. Scale by
             // n_seq_max so each seq has `per_seq` tokens of KV headroom
             // even when all slots are occupied with RAG-heavy prompts.
@@ -800,5 +940,98 @@ impl LlamaCppBackend {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // what this catches: the KV-per-token cost is derived from the model's
+    // REAL dimensions (the rule behind task #46), not a hardcoded "typical"
+    // number. A GQA model (n_head_kv << n_head) must cost far less than its
+    // query-head count implies — get the formula wrong and the memory budget
+    // either OOMs or throttles. Worked example: n_embd=2048, n_head=16 →
+    // head_dim=128; n_head_kv=2 → kv_width=256; F16=2B → 256*2 per K and per
+    // V = 1024B/layer/token; ×36 layers = 36864 B/token.
+    #[test]
+    fn kv_bytes_per_token_from_real_dims() {
+        let caps = ModelCapabilities {
+            n_ctx_train: 32768,
+            n_layer: 36,
+            n_head: 16,
+            n_head_kv: 2,
+            n_embd: 2048,
+        };
+        assert_eq!(
+            caps.kv_bytes_per_token(KvCacheType::F16, KvCacheType::F16),
+            36864
+        );
+        // Q8_0 K (1.0625 B/elem) + F16 V (2 B/elem): per layer/token =
+        // 256*1.0625 + 256*2 = 272 + 512 = 784 → ×36 = 28224 B/token.
+        // (Integer centibyte math: 256*106 + 256*200 = 27136+51200 = 78336
+        // centibytes/layer ×36 /100 = 28200 — the .0625 rounds down in the
+        // ×100 fixed point, which is the SAFE direction for a budget.)
+        assert_eq!(
+            caps.kv_bytes_per_token(KvCacheType::Q8_0, KvCacheType::F16),
+            28200
+        );
+        // Degenerate guard: a model that reports zero heads can't be sized;
+        // return 0 (caller falls back to the trained ceiling) rather than
+        // dividing by zero.
+        let bad = ModelCapabilities {
+            n_ctx_train: 0,
+            n_layer: 0,
+            n_head: 0,
+            n_head_kv: 0,
+            n_embd: 0,
+        };
+        assert_eq!(bad.kv_bytes_per_token(KvCacheType::F16, KvCacheType::F16), 0);
+    }
+
+    // what this catches: with NO hand-set context_length, the backend must
+    // derive a usable window from the model's real n_ctx_train bounded by real
+    // memory — never panic (the old `.expect()`), never blindly allocate the
+    // full ceiling (the 262144-token Metal OOM, 2026-04). Proves task #46
+    // end-to-end against a real GGUF. Run:
+    //   cargo test -p continuum-core --features metal,accelerate,test-fixtures \
+    //     --lib inference::backends::llamacpp::tests::effective_context -- --ignored
+    #[test]
+    #[ignore = "requires the dense base GGUF on disk; run explicitly"]
+    fn effective_context_derives_from_real_limits_without_override() {
+        let path = dirs::home_dir()
+            .unwrap()
+            .join(".continuum/models/qwen2.5-coder-3b-instruct-f16.gguf");
+        if !path.exists() {
+            eprintln!("skip: {} not present", path.display());
+            return;
+        }
+        // No context_length override — force the real-limit derivation path.
+        let config = LlamaCppConfig {
+            model_path: path,
+            context_length: None,
+            ..Default::default()
+        };
+        let backend = LlamaCppBackend::load(config).expect("load dense base");
+
+        let caps = backend.capabilities();
+        assert!(caps.n_ctx_train > 0, "GGUF must report a trained ceiling");
+        assert!(caps.n_layer > 0 && caps.n_head_kv > 0, "real dims populated");
+
+        let ctx = backend.effective_context_length();
+        // Derived, not panicked; within the model's real ceiling; usable.
+        assert!(ctx >= 1024, "must give a usable window, got {ctx}");
+        assert!(
+            ctx <= caps.n_ctx_train,
+            "must never exceed the model's real ceiling ({} > {})",
+            ctx,
+            caps.n_ctx_train
+        );
+        eprintln!(
+            "effective_context_length={} (n_ctx_train={}, kv={}B/tok)",
+            ctx,
+            caps.n_ctx_train,
+            caps.kv_bytes_per_token(KvCacheType::F16, KvCacheType::F16),
+        );
     }
 }
