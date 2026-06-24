@@ -247,6 +247,17 @@ debug = "line-tables-only"
 incremental = true
 codegen-units = 256
 
+# Strip debuginfo from DEPENDENCIES in dev builds (keep it for our own crates).
+# The default `dev` profile emits full DWARF for every crate — and for our ML
+# dep tree (candle, llama.cpp FFI bindings, tokenizers, tokio) that debuginfo is
+# the bulk of the debug/ target dir (~180GB of the 280GB observed 2026-06-23).
+# We essentially never source-step into those deps; our own workspace crates are
+# NOT matched by `"*"`, so continuum-core et al keep full debug for backtraces +
+# breakpoints. Panics inside deps still produce symbol-named traces, just without
+# source-line info. Durable fix: every future debug rebuild keeps deps lean.
+[profile.dev.package."*"]
+debug = false
+
 # Override crates.io candle with our fork (Metal memory fix + RoPE NEOX fix).
 #
 # Status (2026-04-15): huggingface/candle PR #3411 — the RoPE NEOX fix
