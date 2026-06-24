@@ -38,7 +38,20 @@ use ts_rs::TS;
 /// Default root the core serves from when nothing overrides it. llama-server's
 /// OpenAI surface lives under `/v1`; `/health` and `/props` are at the root.
 const DEFAULT_HOST: &str = "127.0.0.1";
+/// Preferred local serving port. Deliberately chosen (not random) so a healthy
+/// boot always lands here and operators have a stable default to expect — but
+/// it is a PREFERENCE, not an assumption: [`chosen_port`] scans up from it for
+/// the first free port. "Pick a port, but always scan — never hardcode" (Joel).
 const DEFAULT_PORT: u16 = 58057;
+
+/// How many ports above [`DEFAULT_PORT`] we scan for a free one before giving up
+/// and binding the base (letting the spawn fail loud rather than serving
+/// somewhere unexpected). A small window: if 64 consecutive ports are taken the
+/// machine has a real problem worth surfacing. The idealized single registry of
+/// every port in the system (Joel: "a singular place that keeps track of ports")
+/// is deferred as over-engineering for now; this is the scan-don't-hardcode
+/// floor of it.
+const PORT_SCAN_WINDOW: u16 = 64;
 
 /// How long we wait for a freshly-spawned server to answer `/health` with 200
 /// before declaring the launch degraded. Model load (mmap + Metal warm) can take
@@ -64,12 +77,40 @@ pub fn serving_root() -> String {
         let trimmed = raw.trim().trim_end_matches('/');
         // Accept a configured `.../v1` and normalize back to the root so callers
         // get a single canonical form regardless of how the operator wrote it.
+        // An operator-pinned endpoint is honored VERBATIM — no scan: they chose
+        // a fixed address deliberately (possibly a remote server).
         let root = trimmed.strip_suffix("/v1").unwrap_or(trimmed);
         if !root.is_empty() {
             return root.to_string();
         }
     }
-    format!("http://{DEFAULT_HOST}:{DEFAULT_PORT}")
+    format!("http://{DEFAULT_HOST}:{}", chosen_port())
+}
+
+/// The local serving port chosen for this run: the first bindable port at or
+/// above [`DEFAULT_PORT`], decided ONCE and memoized for the process lifetime so
+/// the launch args, the `/health` probe, and the published snapshot's `base_url`
+/// all agree (they all derive from [`serving_root`]). Scanning — never assuming
+/// the preferred port is free — means a stale holder of the default never wedges
+/// our bind: we move up, and the snapshot carries the real port to every
+/// consumer, which already reads `base_url` from the snapshot rather than a const.
+fn chosen_port() -> u16 {
+    *CHOSEN_PORT.get_or_init(|| first_free_port(DEFAULT_PORT))
+}
+
+/// Scan `[base, base + PORT_SCAN_WINDOW)` for a port we can bind right now. A
+/// successful bind-then-drop proves the port is free; the brief TOCTOU gap until
+/// llama-server claims it is absorbed by the readiness poll (a lost race surfaces
+/// loudly as `NotReady`, never a silent wrong-port serve). If nothing in the
+/// window is free we return `base` and let the spawn fail loud
+/// ([[fallbacks-are-illegal-fail-loud]]).
+fn first_free_port(base: u16) -> u16 {
+    for port in base..base.saturating_add(PORT_SCAN_WINDOW) {
+        if std::net::TcpListener::bind((DEFAULT_HOST, port)).is_ok() {
+            return port;
+        }
+    }
+    base
 }
 
 /// The OpenAI-compatible base url personas' inference adapters point at.
@@ -123,6 +164,11 @@ impl ServingSnapshot {
 /// truth — the daemon's own reconcile — fanned out to every reader, modules
 /// and free functions alike.
 static SERVING_STATE: OnceLock<watch::Receiver<ServingSnapshot>> = OnceLock::new();
+
+/// The local serving port chosen for this run (see [`chosen_port`]). Memoized on
+/// first access; the free-port scan happens exactly once. Process-wide so the
+/// launch, the probe, and every published snapshot agree on one port.
+static CHOSEN_PORT: OnceLock<u16> = OnceLock::new();
 
 /// Install the daemon's serving-state receiver as the process-wide readable
 /// seam. The daemon is a singleton so this is set-once; a second call (e.g. a
@@ -527,6 +573,24 @@ mod tests {
         assert_eq!(normalize("http://h:1/v1"), "http://h:1");
         assert_eq!(normalize("http://h:1/v1/"), "http://h:1");
         assert_eq!(normalize("http://h:1"), "http://h:1");
+    }
+
+    // what this catches: first_free_port must SKIP a port already bound and
+    // return a different, bindable one — the whole point of "scan, never assume
+    // free". A regression to "return base unconditionally" would wedge the bind
+    // whenever the preferred port is taken (the Studio-squats-58057 case).
+    #[test]
+    fn first_free_port_skips_a_taken_port() {
+        // Bind an ephemeral port so we KNOW one is taken, then scan from it.
+        let taken = std::net::TcpListener::bind((DEFAULT_HOST, 0)).expect("bind ephemeral");
+        let taken_port = taken.local_addr().unwrap().port();
+        let chosen = first_free_port(taken_port);
+        assert_ne!(chosen, taken_port, "must not return the held port");
+        // And the returned port must itself be bindable right now.
+        assert!(
+            std::net::TcpListener::bind((DEFAULT_HOST, chosen)).is_ok(),
+            "scanned port {chosen} should be free"
+        );
     }
 
     // what this catches: the readiness gate `await_ready_serving` waits on must
