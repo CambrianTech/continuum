@@ -874,11 +874,24 @@ mod tests {
         }
     }
 
+    /// Idempotent init of the process-global model registry.
+    ///
+    /// what this catches: every test that builds a *successful* HostedPersona
+    /// reaches `model_registry::global()`, which panics if `init_global()` was
+    /// never called. In a full-suite run some other test inits it first, so
+    /// these passed by accident; run in isolation (or single-threaded) they
+    /// panicked on the ordering. Calling this idempotent init at the top of
+    /// each such test removes the cross-test ordering dependency.
+    fn init_test_registry() {
+        let _ = crate::model_registry::init_global();
+    }
+
     /// Happy path: two materialized plans → two hosted personas. Each
     /// adapter's `provider_id` matches the profile's model_id, proving
     /// the factory ran once per persona (not once with shared state).
     #[tokio::test]
     async fn materializes_one_adapter_per_persona_via_factory() {
+        init_test_registry();
         let plans = vec![
             MaterializedPersonaPlan {
                 role: RoleId::Helper,
@@ -921,6 +934,7 @@ mod tests {
     /// called for it (sibling rows still materialize normally).
     #[tokio::test]
     async fn forwards_profile_errors_without_calling_factory() {
+        init_test_registry();
         let bad_profile_err = InferenceProfileError::UnknownModel {
             model_id: "nonexistent/sentinel".to_string(),
             role_id: "coder".to_string(),
@@ -1060,6 +1074,7 @@ mod tests {
     /// per-slot error semantics of `Profile` and `AdapterFactory`.
     #[tokio::test]
     async fn runtime_missing_only_affects_its_own_slot() {
+        init_test_registry();
         let paige = fake_instance("Paige");
         let pax = fake_instance("Pax");
         let pax_persona_id = pax.persona_id;
@@ -1115,6 +1130,7 @@ mod tests {
     /// because the shared counter stays at 0.
     #[tokio::test]
     async fn warmup_called_once_per_materialized_adapter() {
+        init_test_registry();
         let plans = vec![
             MaterializedPersonaPlan {
                 role: RoleId::Helper,
@@ -1187,6 +1203,7 @@ mod tests {
     /// `Profile` / `AdapterFactory` / `RuntimeMissing` already enforce.
     #[tokio::test]
     async fn warmup_failure_does_not_taint_sibling_slots() {
+        init_test_registry();
         let (factory_ok, ok_counts) =
             ScriptedPersonaAdapterFactory::heuristic_with_counters();
         let ok_plan = vec![MaterializedPersonaPlan {
