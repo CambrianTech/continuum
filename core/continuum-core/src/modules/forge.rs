@@ -112,6 +112,14 @@ impl ServiceModule for ForgeModule {
                     .map_err(|e| format!("forge/export: invalid params: {e}"))?;
                 run_export(&UnslothForgeHttp::from_config(), parsed).await
             }
+            "forge/probe" => {
+                // DISCOVER the custodian's current capability — the self-organizing
+                // primitive a forge daemon (and the grid) route demand against.
+                let cap = UnslothForgeHttp::from_config().probe().await;
+                let json = serde_json::to_value(cap)
+                    .map_err(|e| format!("forge/probe: serialize: {e}"))?;
+                Ok(CommandResult::Json(json))
+            }
             "forge/decide" => {
                 let parsed: DecideParams = serde_json::from_value(params)
                     .map_err(|e| format!("forge/decide: invalid params: {e}"))?;
@@ -885,6 +893,52 @@ mod tests {
         };
         let err = run_export(&cust, p).await.expect_err("package failure must error");
         assert!(err.contains("export (lora) failed"), "got: {err}");
+    }
+
+    // ── forge/probe — DISCOVER capability (self-organizing fabric primitive) ──
+
+    /// A custodian that doesn't answer — every call errors. Stands in for an
+    /// unreachable/down endpoint so we can pin that `probe` reports it truthfully.
+    struct DeadCustodian;
+
+    #[async_trait]
+    impl ForgeCustodian for DeadCustodian {
+        async fn train_start(&self, _: &ForgeTrainRequest) -> Result<TrainHandle, UnslothError> {
+            Err(UnslothError::Api("down".into()))
+        }
+        async fn train_status(&self) -> Result<TrainStatus, UnslothError> {
+            Err(UnslothError::Api("down".into()))
+        }
+        async fn package(&self, _: &PackageRequest) -> Result<ExportResult, UnslothError> {
+            Err(UnslothError::Api("down".into()))
+        }
+        async fn list_loras(&self) -> Result<LoraCatalog, UnslothError> {
+            Err(UnslothError::Api("down".into()))
+        }
+    }
+
+    // what this catches: probe DISCOVERS a live custodian's state (reachable, its
+    // run phase) by asking it — capability observed, not declared. This is the
+    // reading a forge daemon routes grid demand against.
+    #[tokio::test]
+    async fn probe_reports_reachable_live_custodian() {
+        let cust = RecordingCustodian::ok();
+        let cap = cust.probe().await;
+        assert!(cap.reachable, "an answering custodian is reachable");
+        assert!(!cap.busy, "default status is not mid-run");
+        assert_eq!(cap.phase, "training");
+        assert_eq!(cap.held_genes, 0, "empty catalog → zero held genes");
+    }
+
+    // what this catches: an unreachable custodian probes to reachable:false — the
+    // honest sensor reading, NOT a panic and NOT a silent pretend-healthy. A daemon
+    // routes elsewhere on this (or fails loud if it's the last custodian).
+    #[tokio::test]
+    async fn probe_reports_unreachable_when_custodian_down() {
+        let cap = DeadCustodian.probe().await;
+        assert!(!cap.reachable, "a down custodian must read unreachable");
+        assert!(!cap.busy);
+        assert_eq!(cap.held_genes, 0);
     }
 
     // ── forge/decide — "assemble best self, or train" (product-thesis decision) ──

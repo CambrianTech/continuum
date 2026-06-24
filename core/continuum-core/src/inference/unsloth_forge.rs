@@ -218,6 +218,28 @@ pub struct LoraCatalog {
     pub outputs_dir: String,
 }
 
+/// What a forge custodian can do RIGHT NOW — DISCOVERED by probing, never
+/// declared by config. A forge daemon routes grid forge demand against this:
+/// don't dispatch a new run to a `busy` custodian; prefer one that already
+/// `held_genes` the base; treat `!reachable` as "route elsewhere or fail loud".
+/// This is the fabric's self-organizing primitive at the forge tier (Joel: "smart
+/// self determination, to the needs of the grid" — the organism figures itself
+/// out, capability observed not picked). See `[[model-endpoint-fabric-adapter-router]]`.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct ForgeCapability {
+    /// The custodian answered the probe (reachable + healthy).
+    pub reachable: bool,
+    /// A run is in flight — a new train would queue/contend for the engine.
+    pub busy: bool,
+    /// The current run's phase (`"idle"`/`"training"`/…) for the fleet snapshot.
+    pub phase: String,
+    /// How many trained LoRA genome layers this custodian already holds (a daemon
+    /// prefers a custodian that already carries the base/related layers).
+    pub held_genes: usize,
+    /// The byte-custody root (proof the bytes live custodian-side).
+    pub outputs_dir: String,
+}
+
 /// The custodian's forge surface the organism delegates to. Behind a trait so
 /// request-building + response-parsing are TDD-tested apart from the HTTP I/O,
 /// matching [`super::unsloth_control::UnslothControl`].
@@ -240,6 +262,30 @@ pub trait ForgeCustodian: Send + Sync {
     async fn package(&self, req: &PackageRequest) -> Result<ExportResult, UnslothError>;
     /// The trained-LoRA catalog the custodian holds (`GET /api/models/loras`).
     async fn list_loras(&self) -> Result<LoraCatalog, UnslothError>;
+
+    /// DISCOVER what this custodian can do RIGHT NOW (the fabric's self-organizing
+    /// probe — capability is OBSERVED, not configured). Default-implemented over
+    /// `train_status` + `list_loras` so EVERY custodian gets it free; a custodian
+    /// with a cheaper health surface overrides. An unreachable custodian yields
+    /// `reachable:false` — that is the honest sensor reading a daemon routes on
+    /// (route elsewhere, or fail loud if it's the last one), NOT a silent
+    /// fallback: `probe` reports state, the daemon decides. Never panics.
+    async fn probe(&self) -> ForgeCapability {
+        let status = self.train_status().await;
+        let catalog = self.list_loras().await;
+        match status {
+            Ok(s) => ForgeCapability {
+                reachable: true,
+                busy: s.is_training_running,
+                phase: s.phase,
+                held_genes: catalog.as_ref().map(|c| c.loras.len()).unwrap_or(0),
+                outputs_dir: catalog.map(|c| c.outputs_dir).unwrap_or_default(),
+            },
+            // Custodian didn't answer — report it unreachable; the daemon owns the
+            // fail-loud-if-last decision, this is just the truthful reading.
+            Err(_) => ForgeCapability::default(),
+        }
+    }
 }
 
 /// Real reqwest impl over the custodian's `/api/{train,export,models}/*` surface.
