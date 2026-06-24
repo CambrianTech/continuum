@@ -31,22 +31,34 @@ Published by `ServingDaemonModule` on a `watch` + `serving.snapshot` bus event.
 probe.** This replaces `unsloth_base_url()`, `UnslothHttp::list_models()`,
 `DEFAULT_HOST`, `ensure_startup_model()`, and `ensure_api_key()`.
 
-### Contract B — the Adapter Capability Surface  (#55)  ⛔ NOT BUILT — the blocker
-The single answer to *"what can this adapter/model do?"* Today the provider-id
-string `"unsloth"` is a **stand-in** for four capabilities, branched on inline:
+### Contract B — the Adapter Capability Surface  (#55)  ✅ BUILT  `aa3e4c26d`
+The single answer to *"what can this adapter/model do?"* The provider-id string
+`"unsloth"` was a **stand-in** for four capabilities, branched on inline. They are
+now DECLARED in the registry (`Provider.capabilities: ProviderCapabilities`) and
+CONSUMED by the adapter — never an `id == "..."` compare:
 
-| Site (`ai/openai_adapter.rs`) | What `id=="unsloth"` decides |
+```
+ProviderCapabilities {              // model_registry/types.rs — Default = cloud case
+  tool_protocol: ProviderToolProtocol,   // Native | JsonInPrompt
+  suppress_thinking: bool,
+  supports_embeddings: bool,
+  supports_image_generation: bool,
+  single_resident_model: bool,      // pre-flight ensure_model_active before generate
+}
+```
+
+| Former site (`ai/openai_adapter.rs`) | Now reads |
 |---|---|
-| `:555` | `tool_protocol` = JsonInPrompt vs Native |
-| `:570` | `ThinkingMode::Suppress` vs Default |
-| `:873` | `supports_embeddings` |
-| `:1249` | per-generation `ensure_model_active` control call |
+| `tool_protocol` id-branch | `provider.capabilities.tool_protocol` |
+| `ThinkingMode` id-branch | `provider.capabilities.suppress_thinking` |
+| `supports_embeddings` / `supports_image_generation` | `self.config.supports_*` |
+| per-generation `ensure_model_active` gate | `self.config.single_resident_model` |
 
-**The provider id cannot be renamed `"unsloth"→"llama-server"` until these become
-explicit capability flags.** Renaming first = a fragile 4-branch string swap (the
-"easy win" we refuse). #55 is therefore a hard prerequisite for slice 3b, not a
-parallel nicety. Carry `lora_hotswap` here too (failover needs it,
-[[seamless-persona-failover-model-and-genome]]).
+The surface GROWS by adding a `#[serde(default)]` field, never an id branch.
+Declared on two outliers only (openai, unsloth); the other 10 providers inherit
+defaults. **The provider id is no longer load-bearing for behavior — slice 3b's
+rename is now a pure string change.** Carry `lora_hotswap` here when failover
+lands ([[seamless-persona-failover-model-and-genome]]).
 
 ## Coupling map — every site, its owner, its contract, its gate
 
@@ -56,9 +68,9 @@ parallel nicety. Carry `lora_hotswap` here too (failover needs it,
 | `persona/supervisor.rs` | `ServedModelPersonaAdapterFactory` | persona upstart bind | A | ✅ `df42bf18e` |
 | `cognition/inference_session.rs` | `resolve_model` (✅) · `"provider":"unsloth"` label `:330` | lease resolve · label | A ✅ · B | ◐ label pending B |
 | `modules/ai_provider.rs` | boot announce (✅) · registration gate `:374` · base_url `:380` | gateway announce · register | A ✅ · A+B | ◐ register pending B |
-| `ai/openai_adapter.rs` | id-keyed behavior `:555/570/873/1249` | **adapter behavior** | **B (#55)** | ⛔ blocks rename |
-| `model_registry/catalog.rs` | `id:"unsloth"` · `DEFAULT_HOST` · `api_key_env` `:559-566` | catalog entry | A (base) + B (id/key) | ⛔ pending B |
-| `cognition/generate_response.rs` | `DEFAULT_GENERATE_PROVIDER="unsloth"` `:69` | default route id | B (id) | ⛔ pending B |
+| `ai/openai_adapter.rs` | id-keyed behavior → `provider.capabilities` | **adapter behavior** | **B (#55)** | ✅ `aa3e4c26d` |
+| `model_registry/catalog.rs` | `capabilities` declared · still `id:"unsloth"`/`api_key_env` | catalog entry | A (base) + B (id/key) | ◐ caps ✅; id rename = slice 3b |
+| `cognition/generate_response.rs` | `DEFAULT_GENERATE_PROVIDER="unsloth"` `:69` | default route id | B (id) | ◐ pending slice 3b |
 | `main.rs` | `ensure_startup_model()` `:377` | startup model load | A (daemon owns) → **DELETE** | slice 4 |
 | `ipc/mod.rs` | `ensure_api_key`/`ApiKeyStatus` `:773` (factory ref ✅) | boot key check | none → **DELETE** | slice 4 |
 | `inference/model_commands.rs` | `unsloth_control` keystone `:42` | model load/unload cmds | forge/serving | #52 |
@@ -75,11 +87,13 @@ Done is done; the re-order is everything below the line.
 1. ✅ Contract A — serving seam (`be1a90003`)
 2. ✅ slice 2 — supervisor + inference_session bind via A (`df42bf18e`)
 3. ✅ slice 3a — ai_provider boot announce reads A, not its own probe (`dd8414bce`)
+4. ✅ #55 — Contract B (adapter capability surface) (`aa3e4c26d`). Behavior is off
+   the id; the rename is now a pure string change.
    ─────────────────────────────────────────────────────────────
-4. **#55 — Contract B (adapter capability surface). NEXT. Unblocks all renames.**
-5. slice 3b *(needs B)* — catalog `id` rename + drop `UNSLOTH_API_KEY` gate +
-   base_url from A + `generate_response` default id + inference_session label.
-   One atomic commit (id rename touches all behavior branches at once).
+5. **slice 3b — NEXT. catalog `id` rename `"unsloth"→"llama-server"` + drop the
+   `UNSLOTH_API_KEY` gate + base_url from A + `generate_response` default id +
+   inference_session label. One atomic commit — the id is referenced as a string
+   in several places and they must all move together.**
 6. slice 4 — delete `main.rs::ensure_startup_model` + `ipc::ensure_api_key`
    (A owns startup readiness; the daemon owns load).
 7. #40 (embeddings → /v1) and #52 (forge → native/mlx) exit `unsloth_control`
