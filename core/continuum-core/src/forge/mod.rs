@@ -9,6 +9,7 @@
 //! entity registry registration plus the `forge/run` IPC.
 
 pub mod artifact;
+pub mod lora_convert;
 pub mod recipe;
 
 pub use artifact::{ForgeArtifact, HardwareProfile};
