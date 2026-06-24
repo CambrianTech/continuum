@@ -204,6 +204,7 @@ mod tests {
             api_key_env: None,
             default_model: None,
             model_prefixes: Vec::new(),
+            capabilities: crate::model_registry::types::ProviderCapabilities::default(),
         };
         let model = Model {
             id: "continuum-ai/qwen2.5-0.5b-instruct-GGUF".to_string(),

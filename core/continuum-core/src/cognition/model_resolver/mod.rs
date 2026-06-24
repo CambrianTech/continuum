@@ -301,6 +301,7 @@ mod tests {
             auth: AuthKind::None,
             model_prefixes: vec![],
             kind,
+            capabilities: crate::model_registry::types::ProviderCapabilities::default(),
         }
     }
 
