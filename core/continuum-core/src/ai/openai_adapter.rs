@@ -393,7 +393,11 @@ impl OpenAICompatibleAdapter {
 
     /// Convert ChatMessage to OpenAI format
     fn format_messages(&self, messages: &[ChatMessage], system_prompt: Option<&str>) -> Vec<Value> {
-        let mut result = Vec::new();
+        // Pre-size: one wire message per input message + the optional system
+        // prompt. The common text path lands exactly; tool-result turns push a
+        // few extra and realloc once. Runs on every inference call — no
+        // grow-from-zero reallocation on the hot path.
+        let mut result = Vec::with_capacity(messages.len() + usize::from(system_prompt.is_some()));
 
         // Add system prompt if provided
         if let Some(sys) = system_prompt {
