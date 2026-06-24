@@ -152,10 +152,71 @@ impl ActionCommand for CognitionPrompt {
     }
 }
 
+// ─────────────────────────── cognition/personas ──────────────────
+
+#[derive(Default)]
+pub struct CognitionPersonas;
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
+pub struct CognitionPersonasParams {}
+
+#[derive(Debug, Clone, Serialize, TS)]
+pub struct PersonaRosterEntry {
+    /// The persona's UUID — pass this to `cognition/eval`, `cognition/trace`, etc.
+    pub persona_id: String,
+    /// The persona's display name (`None` for a pure-cognition mind with no hands).
+    #[ts(optional)]
+    pub name: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, TS)]
+pub struct CognitionPersonasResult {
+    pub count: u32,
+    /// Every persona with a live `WorkspaceCycle` in THIS process — the set you
+    /// can actually drive (eval/trace/prompt). Empty before any persona spawns.
+    pub personas: Vec<PersonaRosterEntry>,
+}
+
+#[async_trait]
+impl ActionCommand for CognitionPersonas {
+    const NAME: &'static str = "cognition/personas";
+    const ACCESS: AccessLevel = AccessLevel::Privileged;
+    const DESCRIPTION: &'static str =
+        "List every persona with a live cognition (a resident WorkspaceCycle) in this process: \
+         their UUID + name. These are the personas you can drive with cognition/eval, \
+         cognition/trace, and cognition/prompt. Use to discover who is spawned before scoring \
+         or inspecting them.";
+    type Params = CognitionPersonasParams;
+    type Output = CognitionPersonasResult;
+
+    async fn run(
+        &self,
+        _ctx: &Ctx,
+        _p: CognitionPersonasParams,
+    ) -> Result<CognitionPersonasResult, CommandError> {
+        let mut personas: Vec<PersonaRosterEntry> = crate::cognition::persona_workspace::global()
+            .roster()
+            .into_iter()
+            .map(|(id, name)| PersonaRosterEntry {
+                persona_id: id.to_string(),
+                name,
+            })
+            .collect();
+        // Stable, name-first ordering so the roster reads the same across calls
+        // (HashMap iteration order is otherwise arbitrary).
+        personas.sort_by(|a, b| a.name.cmp(&b.name).then(a.persona_id.cmp(&b.persona_id)));
+        Ok(CognitionPersonasResult {
+            count: personas.len() as u32,
+            personas,
+        })
+    }
+}
+
 // Stateless → self-register onto the ONE registry (descriptor + runtime object),
 // no host module. Available to any Trusted citizen as a cognition-debugging tool.
 crate::register_stateless_command!(CognitionTrace);
 crate::register_stateless_command!(CognitionPrompt);
+crate::register_stateless_command!(CognitionPersonas);
 
 #[cfg(test)]
 mod tests {

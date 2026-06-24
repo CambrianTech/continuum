@@ -297,6 +297,20 @@ impl PersonaWorkspaceRegistry {
         cycle
     }
 
+    /// Enumerate the resident minds: `(persona_id, persona_name)` for every
+    /// registered cycle. The name is read from the cycle's `ActingBody`
+    /// (`None` for a pure-cognition persona with no hands). The seam the
+    /// `cognition/personas` introspection command lists from — you can't score
+    /// "every persona" without first discovering who has a live `WorkspaceCycle`.
+    pub fn roster(&self) -> Vec<(Uuid, Option<String>)> {
+        self.cycles
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(id, cycle)| (*id, cycle.acting().map(|b| b.persona_name.clone())))
+            .collect()
+    }
+
     /// How many persona minds are resident.
     pub fn len(&self) -> usize {
         self.cycles.lock().unwrap().len()
