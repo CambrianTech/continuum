@@ -1542,4 +1542,103 @@ mod tests {
             Err(err) => panic!("expected Ok with resolved path; got {err:?}"),
         }
     }
+
+    /// what this catches: that the OWNED in-process page-in (`ensure_adapter`
+    /// → scheduler `set_loras` before decode, committed d763da1b7) actually
+    /// LOADS a GGUF-lora produced by our own conversion path
+    /// (`forge::lora_convert::mlx_to_gguf_lora`) against the real dense base
+    /// and CHANGES the generated text vs the bare base. This is the last
+    /// unproven link in the owned genome loop: train (mlx_lm) → transpose
+    /// (Rust) → GGUF-lora (owned) → PAGE-IN (this). Greedy decode (temp 0) on
+    /// both arms so any output difference is the gene, not sampling noise.
+    ///
+    /// `#[ignore]` — loads a ~5.8 GB base + runs two forward passes; needs the
+    /// metal/accelerate build and the on-disk artifacts. Run explicitly:
+    ///   cargo test -p continuum-core --features metal,accelerate \
+    ///     --lib owned_gene_page_in_changes_output -- --ignored --nocapture
+    /// Override paths via CONTINUUM_BASE_GGUF / CONTINUUM_GENE_GGUF.
+    #[tokio::test]
+    #[ignore]
+    async fn owned_gene_page_in_changes_output() {
+        use crate::ai::adapter::AIProviderAdapter;
+        use crate::ai::types::ActiveAdapterRequest;
+
+        let home = std::env::var("HOME").expect("HOME");
+        let env_or = |k: &str, d: String| std::env::var(k).unwrap_or(d);
+        let base = PathBuf::from(env_or(
+            "CONTINUUM_BASE_GGUF",
+            format!("{home}/.continuum/models/qwen2.5-coder-3b-instruct-f16.gguf"),
+        ));
+        let gene = env_or(
+            "CONTINUUM_GENE_GGUF",
+            format!("{home}/.continuum/forge/gguf-lora/coder-3b-dense.gguf"),
+        );
+        assert!(base.exists(), "base GGUF missing at {base:?}");
+        assert!(
+            std::path::Path::new(&gene).exists(),
+            "gene GGUF-lora missing at {gene}"
+        );
+
+        // A code-write prompt from the gym's wheelhouse — the gene was trained
+        // on the coder curriculum, so its influence should surface here.
+        let prompt = "Write a Rust function `fn is_palindrome(s: &str) -> bool` \
+            that ignores case and non-alphanumeric characters. Reply with only the code.";
+        let make_req = |adapters: Option<Vec<ActiveAdapterRequest>>| TextGenerationRequest {
+            messages: vec![ChatMessage {
+                role: "user".to_string(),
+                content: MessageContent::Text(prompt.to_string()),
+                name: None,
+            }],
+            system_prompt: None,
+            model: None,
+            provider: None,
+            temperature: Some(0.0), // greedy — isolate the gene from sampling
+            max_tokens: Some(256),
+            top_p: None,
+            top_k: None,
+            repeat_penalty: None,
+            stop_sequences: None,
+            tools: None,
+            tool_choice: None,
+            response_format: Some(ResponseFormat::Text),
+            active_adapters: adapters,
+            request_id: None,
+            user_id: None,
+            room_id: None,
+            purpose: None,
+            persona_id: Some(uuid::Uuid::nil().to_string()),
+        };
+
+        // context_length MUST be set explicitly — the scheduler refuses the
+        // GGUF's n_ctx_train (262144) fallback (would crush Metal KV alloc).
+        let adapter =
+            LlamaCppAdapter::with_model_id(base.clone(), "qwen2.5-coder-3b-instruct".to_string())
+                .with_context_length(2048);
+
+        let out_base = adapter
+            .generate_text(make_req(None))
+            .await
+            .expect("base generation failed")
+            .text;
+        let out_gene = adapter
+            .generate_text(make_req(Some(vec![ActiveAdapterRequest {
+                name: "coder-3b-dense".to_string(),
+                path: gene.clone(),
+                domain: "code".to_string(),
+                scale: 1.0,
+            }])))
+            .await
+            .expect("gene generation failed")
+            .text;
+
+        println!("=== BASE ===\n{out_base}\n=== GENE ===\n{out_gene}\n=== END ===");
+        assert!(!out_base.trim().is_empty(), "base produced empty output");
+        assert!(!out_gene.trim().is_empty(), "gene produced empty output");
+        // The gene MUST change greedy output — identical text means set_loras
+        // silently no-op'd (the exact failure the owned page-in must not have).
+        assert_ne!(
+            out_base, out_gene,
+            "gene paged in but output is byte-identical to base — set_loras did not apply"
+        );
+    }
 }
