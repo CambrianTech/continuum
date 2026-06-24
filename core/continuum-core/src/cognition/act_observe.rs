@@ -414,7 +414,7 @@ mod tests {
         ToolCall {
             id: "call-1".into(),
             name: "code/run".into(),
-            input: serde_json::json!({ "code": "print(2 + 2)" }),
+            input: serde_json::json!({ "lang": "rust", "code": "fn main() { println!(\"{}\", 2 + 2); }" }),
         }
     }
 

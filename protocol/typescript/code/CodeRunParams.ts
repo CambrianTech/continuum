@@ -5,15 +5,16 @@
  */
 export type CodeRunParams = { 
 /**
- * Language to run. Slice 1 = `python` (alias `py`). Any other value fails loud
- * rather than guessing an interpreter.
+ * Language to run. `rust` (alias `rs`) only — any other value fails loud rather
+ * than guessing a toolchain. This is a Rust organism; its exec hand is `rustc`.
  */
 lang: string, 
 /**
- * The raw source to execute. Passed through verbatim — no markdown-fence
- * stripping, no rewriting: the command runs exactly what it is given. (Cleaning
- * up model formatting is the deliberation layer's job, never the hand's — a hand
- * that second-guesses its input is a heuristic steering cognition.)
+ * A COMPLETE Rust program (with its own `fn main`) to compile and run. Passed
+ * through verbatim — no markdown-fence stripping, no wrapping: the command runs
+ * exactly what it is given. (Cleaning up model formatting is the deliberation
+ * layer's job, never the hand's — a hand that second-guesses its input is a
+ * heuristic steering cognition.)
  */
 code: string, 
 /**

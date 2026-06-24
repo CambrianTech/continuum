@@ -589,7 +589,7 @@ mod tests {
         let call = ToolCall {
             id: "toolu_run_1".to_string(),
             name: "code/run".to_string(),
-            input: serde_json::json!({ "lang": "python", "code": "print(sum(range(5)))" }),
+            input: serde_json::json!({ "lang": "rust", "code": "fn main() { println!(\"{}\", (0..5).sum::<i32>()); }" }),
         };
         let act = Decision::Act {
             calls: vec![call.clone()],
