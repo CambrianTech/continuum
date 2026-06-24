@@ -26,6 +26,10 @@ use crate::cognition::serving_plan::{
     plan_serving, plan_serving_stable, HostBudget, ModelFootprint, ServingPlan,
 };
 use crate::gpu::GpuMemoryManager;
+use crate::inference::llama_server::{
+    ensure_model_serving, serving_v1_url, EnsureOutcome, LlamaServerControl, LlamaServerProcess,
+    ServingSnapshot,
+};
 use crate::persona::hw_tier_descriptor::HwTierCategory;
 use crate::model_registry::types::{Capability, Model};
 use crate::model_registry::Registry;
@@ -34,9 +38,11 @@ use crate::system_resources::SystemResourceMonitor;
 use async_trait::async_trait;
 use serde_json::Value;
 use std::any::Any;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::watch;
+use tokio::task::JoinHandle;
 
 /// Fraction of total VRAM/UMA we treat as ours to serve from — the rest is
 /// OS + non-inference headroom (Bevy avatars, embeddings, the OS itself). A
@@ -65,15 +71,44 @@ pub struct ServingDaemonModule {
     /// the module's only shared state; `send` takes `&self` so `tick()` can
     /// publish without interior-mutability gymnastics.
     plan_tx: watch::Sender<Option<ServingPlan>>,
+    /// The serving-control leaf: owns the supervised `llama-server` child and
+    /// reconciles it to the plan. A trait object so tests inject a fake; in
+    /// production it is a `LlamaServerProcess` (which kills its child on Drop —
+    /// so the daemon owning it means the daemon owns the server's lifetime).
+    server: Arc<dyn LlamaServerControl>,
+    /// The published serving state — which model is live, is it ready, on what
+    /// `/v1` url. Adapters read THIS instead of probing the process; a grid
+    /// allocator reads it to contract `(model, genome)` leases. Node down →
+    /// empties; node up → republished. The grid seam.
+    serving_tx: watch::Sender<ServingSnapshot>,
+    /// Gate so at most one reconcile (which may spawn + wait for model load) is
+    /// in flight. A tick that finds a reconcile already running skips — no
+    /// stacked relaunches thrashing the GPU.
+    reconciling: Arc<AtomicBool>,
 }
 
 impl ServingDaemonModule {
     pub fn new(gpu: Arc<GpuMemoryManager>, system: Arc<SystemResourceMonitor>) -> Self {
+        Self::with_control(gpu, system, Arc::new(LlamaServerProcess::new()))
+    }
+
+    /// Construct with an injected serving control. Production uses
+    /// [`Self::new`] (real `LlamaServerProcess`); tests inject a fake to drive
+    /// the reconcile decision without a live process.
+    pub fn with_control(
+        gpu: Arc<GpuMemoryManager>,
+        system: Arc<SystemResourceMonitor>,
+        server: Arc<dyn LlamaServerControl>,
+    ) -> Self {
         let (plan_tx, _rx) = watch::channel(None);
+        let (serving_tx, _srx) = watch::channel(ServingSnapshot::empty());
         Self {
             gpu,
             system,
             plan_tx,
+            server,
+            serving_tx,
+            reconciling: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -81,6 +116,13 @@ impl ServingDaemonModule {
     /// hold the receiver and react to plan changes — the ebb/flow seam.
     pub fn subscribe(&self) -> watch::Receiver<Option<ServingPlan>> {
         self.plan_tx.subscribe()
+    }
+
+    /// Subscribe to the published serving SNAPSHOT — the live `(active_model,
+    /// ready, base_url)` state. Inference adapters hold this and point at
+    /// `base_url` once `ready`; a grid allocator holds it to contract leases.
+    pub fn subscribe_serving(&self) -> watch::Receiver<ServingSnapshot> {
+        self.serving_tx.subscribe()
     }
 
     /// Honest serving budget for this host, RIGHT NOW — from the live free
@@ -114,6 +156,60 @@ impl ServingDaemonModule {
         let budget = self.host_budget();
         let candidates = candidates_from_registry(crate::model_registry::global());
         self.publish_plan(budget, &candidates);
+    }
+
+    /// Bring the running `llama-server` in line with the published plan. FAST —
+    /// it only decides whether a reconcile is needed and, if so, spawns a
+    /// detached task to do the (possibly multi-second) relaunch + readiness
+    /// wait. The tick must never block on model load, so the slow part runs off
+    /// the tick. Returns the spawned `JoinHandle` (for tests to await
+    /// deterministically) or `None` when no reconcile was started.
+    ///
+    /// No plan → publish the empty snapshot (no servable model = nothing live).
+    /// Already serving the desired model & ready → no-op. A reconcile already
+    /// in flight → skip (the gate). Otherwise spawn the reconcile.
+    fn reconcile_to_plan(&self) -> Option<JoinHandle<()>> {
+        let desired = match self.plan_tx.borrow().as_ref() {
+            Some(plan) => plan.base_model_id.clone(),
+            None => {
+                // Nothing servable on disk → publish "nothing live" so readers
+                // (and a grid allocator) see the gap and route elsewhere.
+                if self.serving_tx.borrow().active_model.is_some() {
+                    let _ = self.serving_tx.send_replace(ServingSnapshot::empty());
+                }
+                return None;
+            }
+        };
+
+        {
+            let live = self.serving_tx.borrow();
+            if live.ready && live.active_model.as_deref() == Some(desired.as_str()) {
+                return None; // already serving the right model — no relaunch
+            }
+        }
+
+        // One reconcile at a time. If the swap finds `true`, another is already
+        // running; skip rather than stack relaunches.
+        if self.reconciling.swap(true, Ordering::AcqRel) {
+            return None;
+        }
+
+        let server = self.server.clone();
+        let serving_tx = self.serving_tx.clone();
+        let reconciling = self.reconciling.clone();
+        Some(tokio::spawn(async move {
+            let outcome = ensure_model_serving(server.as_ref(), &desired).await;
+            let snapshot = snapshot_from_outcome(&outcome, &desired);
+            crate::probe!(
+                class = "serving.reconcile",
+                desired = desired.as_str(),
+                ready = snapshot.ready,
+                active = snapshot.active_model.as_deref().unwrap_or("<none>"),
+                "serving reconcile complete",
+            );
+            let _ = serving_tx.send_replace(snapshot);
+            reconciling.store(false, Ordering::Release);
+        }))
     }
 
     /// Pure publish step: run the classifier on the given inputs, publish the
@@ -272,6 +368,21 @@ pub fn detect_tier(gpu_name: &str) -> (HwCapabilityTier, HwTierCategory, &'stati
     (HwCapabilityTier::CpuOnly, HwTierCategory::Compat, "compat")
 }
 
+/// Map a reconcile [`EnsureOutcome`] to the published [`ServingSnapshot`].
+/// Pure (no IO) so the mapping is unit-tested directly. A live/spawned model is
+/// `ready` with the served base url; a degraded reconcile publishes "nothing
+/// live" — never a half-true "ready but no model" ([[fallbacks-are-illegal-fail-loud]]).
+fn snapshot_from_outcome(outcome: &EnsureOutcome, desired: &str) -> ServingSnapshot {
+    match outcome {
+        EnsureOutcome::AlreadyServing | EnsureOutcome::Spawned { .. } => ServingSnapshot {
+            active_model: Some(desired.to_string()),
+            ready: true,
+            base_url: serving_v1_url(),
+        },
+        EnsureOutcome::Degraded { .. } => ServingSnapshot::empty(),
+    }
+}
+
 #[async_trait]
 impl ServiceModule for ServingDaemonModule {
     fn config(&self) -> ModuleConfig {
@@ -287,13 +398,20 @@ impl ServiceModule for ServingDaemonModule {
     }
 
     async fn initialize(&self, _ctx: &ModuleContext) -> Result<(), String> {
-        // Plan once at boot so the decision is published before the first tick.
+        // Plan once at boot so the decision is published before the first tick,
+        // then kick the first reconcile so the server comes up promptly rather
+        // than waiting a full tick interval. The reconcile runs detached.
         self.recompute();
+        let _ = self.reconcile_to_plan();
         Ok(())
     }
 
     async fn tick(&self) -> Result<(), String> {
+        // Re-decide the plan (fast), then bring the running server in line with
+        // it. The reconcile is fast-to-decide and spawns the slow relaunch off
+        // the tick, so the tick never blocks on model load.
         self.recompute();
+        let _ = self.reconcile_to_plan();
         Ok(())
     }
 
@@ -304,6 +422,12 @@ impl ServiceModule for ServingDaemonModule {
                 // The `rationale` field explains the "why" in plain words.
                 let plan = self.plan_tx.borrow().clone();
                 CommandResult::json(&plan)
+            }
+            "serving/status" => {
+                // The live serving state — which model is actually up, ready,
+                // and on what url. The "did the plan become reality?" view.
+                let snapshot = self.serving_tx.borrow().clone();
+                CommandResult::json(&snapshot)
             }
             other => Err(format!("serving-daemon: unknown command '{other}'")),
         }
@@ -396,5 +520,149 @@ mod tests {
         // No candidates → None published (no silent serve).
         daemon.publish_plan(budget, &[]);
         assert!(rx.borrow().is_none(), "empty candidates → no plan");
+    }
+
+    use crate::inference::llama_server::LlamaServerError;
+    use std::sync::atomic::AtomicUsize;
+
+    /// Fake serving control: counts serve() calls and reports nothing live
+    /// (Unreachable), so reconcile always decides to (re)serve. A daemon-level
+    /// stub for the reconcile WIRING; the reconcile DECISION itself is tested in
+    /// `inference::llama_server` against its own fake.
+    struct FakeServer {
+        serves: Arc<AtomicUsize>,
+        ok: bool,
+    }
+
+    #[async_trait]
+    impl LlamaServerControl for FakeServer {
+        async fn active_model(&self) -> Result<Option<String>, LlamaServerError> {
+            Err(LlamaServerError::Unreachable("test: nothing up".into()))
+        }
+        async fn serve(&self, _model_id: &str) -> Result<(), LlamaServerError> {
+            self.serves.fetch_add(1, Ordering::SeqCst);
+            if self.ok {
+                Ok(())
+            } else {
+                Err(LlamaServerError::Spawn("test boom".into()))
+            }
+        }
+    }
+
+    fn daemon_with(server: Arc<dyn LlamaServerControl>) -> ServingDaemonModule {
+        let gpu = Arc::new(GpuMemoryManager::simulated("Apple M5 Pro", 53 * GB));
+        let system = Arc::new(SystemResourceMonitor::new());
+        ServingDaemonModule::with_control(gpu, system, server)
+    }
+
+    // what this catches: the EnsureOutcome → ServingSnapshot mapping. A live or
+    // spawned model is ready with the served base url; a degraded reconcile
+    // publishes "nothing live", never a half-true ready-with-no-model.
+    #[test]
+    fn snapshot_mapping_is_honest() {
+        let up = snapshot_from_outcome(&EnsureOutcome::Spawned { model: "m".into() }, "coder-14b");
+        assert_eq!(up.active_model.as_deref(), Some("coder-14b"));
+        assert!(up.ready);
+        assert!(up.base_url.ends_with("/v1"));
+
+        let already = snapshot_from_outcome(&EnsureOutcome::AlreadyServing, "coder-14b");
+        assert_eq!(already.active_model.as_deref(), Some("coder-14b"));
+        assert!(already.ready);
+
+        let degraded =
+            snapshot_from_outcome(&EnsureOutcome::Degraded { reason: "x".into() }, "coder-14b");
+        assert_eq!(degraded.active_model, None, "degraded → nothing live");
+        assert!(!degraded.ready);
+    }
+
+    // what this catches: a published plan drives a reconcile that brings the
+    // server up and publishes a ready ServingSnapshot for that model — the
+    // plan→reality wiring. Regression here = the daemon decides but never acts.
+    #[tokio::test]
+    async fn reconcile_brings_planned_model_up() {
+        let serves = Arc::new(AtomicUsize::new(0));
+        let daemon = daemon_with(Arc::new(FakeServer { serves: serves.clone(), ok: true }));
+
+        // Publish a plan (most-capable fitting model = coder-14b).
+        let budget = HostBudget { usable_bytes: 45 * GB, perf_cores: 6 };
+        let candidates = vec![footprint_from_parts("coder-14b", 9 * GB, 8192, true).unwrap()];
+        daemon.publish_plan(budget, &candidates);
+
+        let handle = daemon.reconcile_to_plan().expect("a reconcile should be spawned");
+        handle.await.unwrap();
+
+        let snap = daemon.subscribe_serving().borrow().clone();
+        assert_eq!(snap.active_model.as_deref(), Some("coder-14b"));
+        assert!(snap.ready);
+        assert_eq!(serves.load(Ordering::SeqCst), 1, "served exactly once");
+    }
+
+    // what this catches: once the desired model is ready, a subsequent reconcile
+    // is a NO-OP (no relaunch) — otherwise every tick would thrash the
+    // GPU-warm server.
+    #[tokio::test]
+    async fn reconcile_is_noop_when_already_serving() {
+        let serves = Arc::new(AtomicUsize::new(0));
+        let daemon = daemon_with(Arc::new(FakeServer { serves: serves.clone(), ok: true }));
+
+        // Pretend coder-14b is already up and ready.
+        let _ = daemon.serving_tx.send_replace(ServingSnapshot {
+            active_model: Some("coder-14b".into()),
+            ready: true,
+            base_url: serving_v1_url(),
+        });
+        let budget = HostBudget { usable_bytes: 45 * GB, perf_cores: 6 };
+        let candidates = vec![footprint_from_parts("coder-14b", 9 * GB, 8192, true).unwrap()];
+        daemon.publish_plan(budget, &candidates);
+
+        assert!(daemon.reconcile_to_plan().is_none(), "already serving → no reconcile");
+        assert_eq!(serves.load(Ordering::SeqCst), 0, "no relaunch");
+    }
+
+    // what this catches: no servable plan (empty registry) publishes the empty
+    // snapshot so readers (and a grid allocator) see "nothing live here" and can
+    // route the lease elsewhere — the Intel-Mac/weak-node path.
+    #[tokio::test]
+    async fn no_plan_publishes_empty_snapshot() {
+        let serves = Arc::new(AtomicUsize::new(0));
+        let daemon = daemon_with(Arc::new(FakeServer { serves: serves.clone(), ok: true }));
+
+        // Seed a live snapshot, then publish an empty plan → must clear to empty.
+        let _ = daemon.serving_tx.send_replace(ServingSnapshot {
+            active_model: Some("stale".into()),
+            ready: true,
+            base_url: serving_v1_url(),
+        });
+        let budget = HostBudget { usable_bytes: 45 * GB, perf_cores: 6 };
+        daemon.publish_plan(budget, &[]); // no candidates → plan None
+
+        assert!(daemon.reconcile_to_plan().is_none(), "no plan → no reconcile spawned");
+        let snap = daemon.subscribe_serving().borrow().clone();
+        assert_eq!(snap.active_model, None, "stale snapshot cleared to empty");
+        assert!(!snap.ready);
+        assert_eq!(serves.load(Ordering::SeqCst), 0);
+    }
+
+    // what this catches: a degraded reconcile (serve fails) publishes "nothing
+    // live" and clears the in-flight gate, so the NEXT reconcile can retry
+    // rather than being permanently locked out.
+    #[tokio::test]
+    async fn degraded_reconcile_clears_gate_and_publishes_empty() {
+        let serves = Arc::new(AtomicUsize::new(0));
+        let daemon = daemon_with(Arc::new(FakeServer { serves: serves.clone(), ok: false }));
+
+        let budget = HostBudget { usable_bytes: 45 * GB, perf_cores: 6 };
+        let candidates = vec![footprint_from_parts("coder-14b", 9 * GB, 8192, true).unwrap()];
+        daemon.publish_plan(budget, &candidates);
+
+        daemon.reconcile_to_plan().expect("spawned").await.unwrap();
+        let snap = daemon.subscribe_serving().borrow().clone();
+        assert!(!snap.ready, "degraded → not ready");
+        assert_eq!(snap.active_model, None);
+        assert!(!daemon.reconciling.load(Ordering::SeqCst), "gate cleared for retry");
+
+        // Gate cleared → a retry actually spawns again.
+        daemon.reconcile_to_plan().expect("retry spawned").await.unwrap();
+        assert_eq!(serves.load(Ordering::SeqCst), 2, "retried after degrade");
     }
 }
