@@ -128,11 +128,29 @@ pub struct TrainProgress {
 /// never the organism's call shape.
 #[derive(Debug, Clone, PartialEq)]
 pub enum GenomeFormat {
-    /// The pageable LoRA genome layer (the adapter as-is). `base_model_id` rides
-    /// the genome-market card so the layer knows what base it composes onto.
+    /// The pageable LoRA genome layer (the adapter as-is, PEFT/safetensors).
+    /// `base_model_id` rides the genome-market card so the layer knows what base
+    /// it composes onto.
     Lora { base_model_id: Option<String> },
     /// A fused + quantized standalone GGUF (`quantization` e.g. `"Q4_K_M"`).
     Gguf { quantization: String },
+    /// A GGUF LoRA *adapter* — the pageable gene in the exact format
+    /// `llama-server --lora` loads and the per-request `"lora":[{id,scale}]` dial
+    /// scales (`[[model-endpoint-fabric-adapter-router]]` slice 1). DISTINCT from
+    /// [`Gguf`], which is a fused standalone model: this is the adapter ALONE — the
+    /// thing the genome pages in/out over a shared base. It is the SUPPLY SIDE of
+    /// the page-in loop: the artifact this emits is exactly what `cognition/eval`'s
+    /// `gene` param pages into the live mind to measure lift. The custodian
+    /// converts the trained adapter → GGUF against `base_model_id` (its bundled
+    /// `convert_lora_to_gguf.py` needs the base architecture; continuum must NOT
+    /// run it). `base_model_id` is REQUIRED — a GGUF LoRA with no base is
+    /// meaningless, so the invariant lives in the type, not a runtime check.
+    /// `outtype` is the adapter weight type (`"f16"` default; quantizing a small
+    /// LoRA buys little, but the recipe owns the knob).
+    GgufLora {
+        base_model_id: String,
+        outtype: String,
+    },
 }
 
 /// Package a trained checkpoint into a genome artifact — the ONE export surface.
@@ -188,6 +206,26 @@ struct ExportGgufRequest {
     save_directory: String,
     /// e.g. `"q4_k_m"`, `"q8_0"`, `"f16"`.
     quantization_method: String,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    push_to_hub: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    repo_id: Option<String>,
+}
+
+/// `POST /api/export/export/gguf-lora` body — the custodian converts the trained
+/// adapter into a GGUF LoRA *adapter* against `base_model_id`. The conversion
+/// (MLX/PEFT → GGUF via the custodian's bundled `convert_lora_to_gguf.py`) lives
+/// custodian-side for the same reason the fused GGUF does: it owns the toolchain
+/// that knows the architecture, and it owns the output bytes. This is the page-in
+/// supply contract — the emitted artifact is what the genome pages into a live
+/// persona. (Joel: "black box with an adapter our only visibility".)
+#[derive(Debug, Clone, Serialize)]
+struct ExportGgufLoraRequest {
+    save_directory: String,
+    /// The base the adapter composes onto — the converter needs its architecture.
+    base_model_id: String,
+    /// GGUF weight type for the adapter, e.g. `"f16"` / `"q8_0"`.
+    outtype: String,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     push_to_hub: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -419,6 +457,23 @@ impl ForgeCustodian for UnslothForgeHttp {
                 self.post_json("/api/export/export/gguf", serde_json::to_value(body).unwrap())
                     .await
             }
+            GenomeFormat::GgufLora {
+                base_model_id,
+                outtype,
+            } => {
+                let body = ExportGgufLoraRequest {
+                    save_directory: req.save_directory.clone(),
+                    base_model_id: base_model_id.clone(),
+                    outtype: outtype.clone(),
+                    push_to_hub: req.push_to_hub,
+                    repo_id: req.repo_id.clone(),
+                };
+                self.post_json(
+                    "/api/export/export/gguf-lora",
+                    serde_json::to_value(body).unwrap(),
+                )
+                .await
+            }
         }
     }
     async fn list_loras(&self) -> Result<LoraCatalog, UnslothError> {
@@ -513,6 +568,46 @@ mod tests {
         assert!(v["save_directory"].as_str().unwrap().contains(".unsloth"));
         assert!(v.get("push_to_hub").is_none(), "push_to_hub:false must be omitted");
         assert!(v.get("repo_id").is_none());
+    }
+
+    // what this catches: the GGUF-LoRA export request carries base_model_id (the
+    // converter NEEDS the base architecture) + outtype + save_directory, and omits
+    // push_to_hub when false. This is the genome page-in SUPPLY contract — the body
+    // that tells the custodian to emit the exact `--lora` artifact `cognition/eval`
+    // pages in. A regression here = the gene never gets forged in a loadable format
+    // and every LIFT is unmeasurable.
+    #[test]
+    fn gguf_lora_export_request_shape() {
+        let req = ExportGgufLoraRequest {
+            save_directory: "/Users/x/.unsloth/studio/outputs/run1".into(),
+            base_model_id: "unsloth/Qwen2.5-0.5B-Instruct".into(),
+            outtype: "f16".into(),
+            push_to_hub: false,
+            repo_id: None,
+        };
+        let v = to_body(&req);
+        assert_eq!(v["base_model_id"], "unsloth/Qwen2.5-0.5B-Instruct");
+        assert_eq!(v["outtype"], "f16");
+        assert!(v["save_directory"].as_str().unwrap().contains(".unsloth"));
+        assert!(v.get("push_to_hub").is_none(), "push_to_hub:false must be omitted");
+        assert!(v.get("repo_id").is_none());
+    }
+
+    // what this catches: package() routes each GenomeFormat to its OWN custodian
+    // route — and crucially that GgufLora is DISTINCT from Gguf (adapter-alone vs
+    // fused standalone). If the match ever collapses GgufLora into the fused-gguf
+    // arm, the genome would page in a whole model as if it were a layer. Asserted
+    // on the format discriminant since the route choice is driven by it.
+    #[test]
+    fn genome_formats_are_distinct_targets() {
+        let lora = GenomeFormat::Lora { base_model_id: None };
+        let gguf = GenomeFormat::Gguf { quantization: "q4_k_m".into() };
+        let gguf_lora = GenomeFormat::GgufLora {
+            base_model_id: "b".into(),
+            outtype: "f16".into(),
+        };
+        assert_ne!(gguf, gguf_lora, "a GGUF LoRA adapter is not a fused GGUF model");
+        assert_ne!(lora, gguf_lora, "a GGUF LoRA is not a PEFT LoRA");
     }
 
     // what this catches: the live train-status shape we depend on parses (the

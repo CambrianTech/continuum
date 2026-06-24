@@ -341,12 +341,22 @@ struct ForgeExportParams {
     checkpoint: String,
     /// Where the custodian writes the export (custodian-owned path).
     save_directory: String,
-    /// Export format: "lora" (the pageable genome layer — default) or "gguf".
+    /// Export format: "lora" (PEFT adapter — default), "gguf" (fused standalone
+    /// model), or "gguf-lora" (the pageable gene `llama-server --lora` loads).
     #[serde(default = "default_export_format")]
     format: String,
     /// GGUF quantization (only when `format == "gguf"`): Q4_K_M, Q5_K_M, Q8_0, F16.
     #[serde(default = "default_quantization")]
     quantization: String,
+    /// Base model id the GGUF LoRA composes onto — REQUIRED for `format ==
+    /// "gguf-lora"` (the converter needs the base architecture). The same id the
+    /// gateway serves the base with.
+    #[serde(default)]
+    base_model_id: Option<String>,
+    /// GGUF LoRA adapter weight type (only when `format == "gguf-lora"`): "f16"
+    /// (default) or "q8_0".
+    #[serde(default = "default_lora_outtype")]
+    outtype: String,
     #[serde(default = "default_max_seq_length")]
     max_seq_length: u32,
     #[serde(default = "default_load_in_4bit")]
@@ -359,16 +369,37 @@ fn default_export_format() -> String {
 fn default_quantization() -> String {
     "Q4_K_M".to_string()
 }
+fn default_lora_outtype() -> String {
+    "f16".to_string()
+}
 
 /// Resolve the organism's `format`/`quantization` params into the custodian's
 /// genetic [`GenomeFormat`] outcome. Pure — the format string is the only
 /// organism-side enum; everything below (load/fuse/convert) is the custodian's.
-fn package_format(format: &str, quantization: &str) -> Result<GenomeFormat, String> {
+/// `gguf-lora` REQUIRES `base_model_id`: a GGUF LoRA with no base is meaningless,
+/// so a missing base is a LOUD error here, never a silent default.
+fn package_format(
+    format: &str,
+    quantization: &str,
+    base_model_id: Option<&str>,
+    outtype: &str,
+) -> Result<GenomeFormat, String> {
     match format {
         "lora" => Ok(GenomeFormat::Lora { base_model_id: None }),
         "gguf" => Ok(GenomeFormat::Gguf { quantization: quantization.to_string() }),
+        "gguf-lora" => {
+            let base = base_model_id.ok_or_else(|| {
+                "format 'gguf-lora' requires base_model_id — the converter needs the base \
+                 architecture to produce a loadable adapter"
+                    .to_string()
+            })?;
+            Ok(GenomeFormat::GgufLora {
+                base_model_id: base.to_string(),
+                outtype: outtype.to_string(),
+            })
+        }
         other => Err(format!(
-            "unsupported export format: {other} (lora|gguf) — the custodian packages these"
+            "unsupported export format: {other} (lora|gguf|gguf-lora) — the custodian packages these"
         )),
     }
 }
@@ -380,7 +411,7 @@ async fn run_export(
     custodian: &dyn ForgeCustodian,
     p: ForgeExportParams,
 ) -> Result<CommandResult, String> {
-    let format = package_format(&p.format, &p.quantization)?;
+    let format = package_format(&p.format, &p.quantization, p.base_model_id.as_deref(), &p.outtype)?;
     let result = custodian
         .package(&PackageRequest {
             checkpoint: p.checkpoint.clone(),
@@ -844,6 +875,8 @@ mod tests {
             save_directory: "/out".into(),
             format: "lora".into(),
             quantization: "Q4_K_M".into(),
+            base_model_id: None,
+            outtype: "f16".into(),
             max_seq_length: 2048,
             load_in_4bit: true,
         };
@@ -869,6 +902,8 @@ mod tests {
             save_directory: "/out".into(),
             format: "gguf".into(),
             quantization: "Q5_K_M".into(),
+            base_model_id: None,
+            outtype: "f16".into(),
             max_seq_length: 2048,
             load_in_4bit: true,
         };
@@ -876,6 +911,56 @@ mod tests {
         let pkgs = cust.packages.lock().unwrap();
         assert_eq!(pkgs.len(), 1);
         assert_eq!(pkgs[0].format, GenomeFormat::Gguf { quantization: "Q5_K_M".into() });
+    }
+
+    // what this catches: the gguf-lora path threads base_model_id + outtype into the
+    // GenomeFormat — this is the SUPPLY contract for the genome page-in (the gene
+    // cognition/eval pages in). A regression here = the forged gene is never asked
+    // for in the loadable `--lora` form and every LIFT is unmeasurable.
+    #[tokio::test]
+    async fn forge_export_gguf_lora_threads_base_and_outtype() {
+        let cust = RecordingCustodian::ok();
+        let p = ForgeExportParams {
+            checkpoint: "/ckpt".into(),
+            save_directory: "/out".into(),
+            format: "gguf-lora".into(),
+            quantization: "Q4_K_M".into(),
+            base_model_id: Some("unsloth/Qwen2.5-0.5B-Instruct".into()),
+            outtype: "f16".into(),
+            max_seq_length: 2048,
+            load_in_4bit: true,
+        };
+        run_export(&cust, p).await.unwrap();
+        let pkgs = cust.packages.lock().unwrap();
+        assert_eq!(pkgs.len(), 1);
+        assert_eq!(
+            pkgs[0].format,
+            GenomeFormat::GgufLora {
+                base_model_id: "unsloth/Qwen2.5-0.5B-Instruct".into(),
+                outtype: "f16".into(),
+            }
+        );
+    }
+
+    // what this catches: a gguf-lora export with NO base is rejected LOUDLY at the
+    // organism boundary (the converter cannot make a loadable adapter without the
+    // base architecture) — never silently defaulted. Fail-loud doctrine.
+    #[tokio::test]
+    async fn forge_export_gguf_lora_without_base_fails_loud() {
+        let cust = RecordingCustodian::ok();
+        let p = ForgeExportParams {
+            checkpoint: "/ckpt".into(),
+            save_directory: "/out".into(),
+            format: "gguf-lora".into(),
+            quantization: "Q4_K_M".into(),
+            base_model_id: None,
+            outtype: "f16".into(),
+            max_seq_length: 2048,
+            load_in_4bit: true,
+        };
+        let err = run_export(&cust, p).await.expect_err("missing base must error");
+        assert!(err.contains("base_model_id"), "got: {err}");
+        assert_eq!(cust.packages.lock().unwrap().len(), 0, "custodian never called");
     }
 
     // what this catches: a custodian that fails the package is surfaced LOUDLY (no
@@ -888,6 +973,8 @@ mod tests {
             save_directory: "/out".into(),
             format: "lora".into(),
             quantization: "Q4_K_M".into(),
+            base_model_id: None,
+            outtype: "f16".into(),
             max_seq_length: 2048,
             load_in_4bit: true,
         };
