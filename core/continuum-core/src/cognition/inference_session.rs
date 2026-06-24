@@ -136,23 +136,31 @@ pub fn global_inference_sessions() -> &'static InferenceSessionRegistry {
     G.get_or_init(InferenceSessionRegistry::new)
 }
 
-/// Resolve the model a lease should bind to: the explicit `model` if given, else the
-/// model unsloth ACTUALLY serves (discovered, slice 1). Fail loud if neither — never
-/// a stand-in ([[fallbacks-are-illegal-fail-loud]]).
+/// How long `resolve_model` waits for the serving daemon to bring a model up
+/// before failing loud. Bounded so a wedged/empty serving plan can't hang a
+/// lease open forever; generous enough to cover a cold relaunch of a large
+/// GGUF. Steady state returns instantly (the daemon is already ready).
+const RESOLVE_MODEL_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Resolve the model a lease should bind to: the explicit `model` if given, else
+/// the model the serving daemon ACTUALLY has live. Reads the daemon's published
+/// ServingSnapshot (the bus seam) — no HTTP probe — and waits for readiness so an
+/// upstart that races the boot reconcile binds correctly. Fail loud if neither —
+/// never a stand-in ([[fallbacks-are-illegal-fail-loud]]).
 pub async fn resolve_model(explicit: Option<String>) -> Result<String, CommandError> {
     if let Some(m) = explicit.filter(|s| !s.trim().is_empty()) {
         return Ok(m);
     }
-    let served = crate::inference::unsloth_control::UnslothHttp::from_config()
-        .list_models()
+    crate::inference::llama_server::await_ready_serving(RESOLVE_MODEL_WAIT)
         .await
-        .map_err(|e| CommandError::Internal(format!("unsloth gateway unreachable: {e}")))?;
-    served.into_iter().next().ok_or_else(|| {
-        CommandError::Invalid(
-            "no model to bind: pass `model`, or load one into unsloth (UNSLOTH_MODEL / Studio). No fallback."
-                .to_string(),
-        )
-    })
+        .and_then(|s| s.active_model)
+        .ok_or_else(|| {
+            CommandError::Invalid(
+                "no model to bind: pass `model`, or let the serving daemon bring one up \
+                 (no servable GGUF on disk, or it failed to become ready). No fallback."
+                    .to_string(),
+            )
+        })
 }
 
 // ───────────────────────────── ai/inference/open ─────────────────────────────

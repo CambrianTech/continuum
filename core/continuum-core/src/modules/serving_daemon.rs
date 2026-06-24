@@ -438,6 +438,10 @@ impl ServiceModule for ServingDaemonModule {
         // Capture the bus so snapshot changes fan out to subscribers (the
         // cbar-stage shape). Set-once; ignore a re-init.
         let _ = self.bus.set(ctx.bus.clone());
+        // Install our serving-state watch as the process-wide readable seam so
+        // free functions + adapters read "what's live" as a pointer instead of
+        // each probing /v1/models. Set-once (singleton daemon).
+        let _ = crate::inference::llama_server::install_serving_state(self.subscribe_serving());
         // Plan once at boot so the decision is published before the first tick,
         // then kick the first reconcile so the server comes up promptly rather
         // than waiting a full tick interval. The reconcile runs detached.

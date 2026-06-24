@@ -27,10 +27,12 @@ use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
+use tokio::sync::watch;
 use ts_rs::TS;
 
 /// Default root the core serves from when nothing overrides it. llama-server's
@@ -110,6 +112,62 @@ impl ServingSnapshot {
             ready: false,
             base_url: serving_v1_url(),
         }
+    }
+}
+
+/// Process-wide readable handle to the daemon's serving state. Set ONCE by
+/// [`crate::modules::serving_daemon::ServingDaemonModule`] at init via
+/// [`install_serving_state`]. This is the seam the bus reminder points at:
+/// consumers READ the latest snapshot as a cheap pointer (a `watch` borrow)
+/// instead of each issuing its own HTTP `/v1/models` probe. One source of
+/// truth — the daemon's own reconcile — fanned out to every reader, modules
+/// and free functions alike.
+static SERVING_STATE: OnceLock<watch::Receiver<ServingSnapshot>> = OnceLock::new();
+
+/// Install the daemon's serving-state receiver as the process-wide readable
+/// seam. The daemon is a singleton so this is set-once; a second call (e.g. a
+/// re-init under test) is ignored. Returns `true` iff this call installed it.
+pub fn install_serving_state(rx: watch::Receiver<ServingSnapshot>) -> bool {
+    SERVING_STATE.set(rx).is_ok()
+}
+
+/// The model currently served on this node, per the daemon's last reconcile.
+/// Returns [`ServingSnapshot::empty`] before the daemon installs its state
+/// (boot) or when nothing is live. No HTTP, no probe — a `watch` borrow.
+/// Callers MUST treat `active_model == None` as "nothing served yet" and fail
+/// loud, never substitute a stand-in ([[fallbacks-are-illegal-fail-loud]]).
+pub fn current_serving() -> ServingSnapshot {
+    SERVING_STATE
+        .get()
+        .map(|rx| rx.borrow().clone())
+        .unwrap_or_else(ServingSnapshot::empty)
+}
+
+/// Await a READY served model, bounded by `timeout`. Resolves the instant the
+/// daemon's snapshot reports `ready` with an `active_model`. Returns the live
+/// snapshot, or `None` on timeout / before the daemon has installed its state.
+///
+/// This REPLACES the old "HTTP-probe-with-timeout" boot dance: an upstart path
+/// waits on the daemon's own readiness signal (the same `watch` it publishes),
+/// not a raw port probe that races the reconcile. The sender lives for the
+/// process lifetime (the daemon owns it), so the only non-ready resolution is
+/// the timeout.
+pub async fn await_ready_serving(timeout: Duration) -> Option<ServingSnapshot> {
+    let mut rx = SERVING_STATE.get()?.clone();
+    {
+        // Fast path: already ready, no await.
+        let cur = rx.borrow_and_update();
+        if cur.ready && cur.active_model.is_some() {
+            return Some(cur.clone());
+        }
+    }
+    // Bind the timeout result before matching so its `watch::Ref` temporary
+    // drops before `rx` does (else the borrow outlives `rx` — E0597).
+    let waited =
+        tokio::time::timeout(timeout, rx.wait_for(|s| s.ready && s.active_model.is_some())).await;
+    match waited {
+        Ok(Ok(guard)) => Some(guard.clone()),
+        _ => None,
     }
 }
 
@@ -453,5 +511,40 @@ mod tests {
         assert_eq!(normalize("http://h:1/v1"), "http://h:1");
         assert_eq!(normalize("http://h:1/v1/"), "http://h:1");
         assert_eq!(normalize("http://h:1"), "http://h:1");
+    }
+
+    // what this catches: the readiness gate `await_ready_serving` waits on must
+    // require BOTH `ready` AND an `active_model` — a regression to `ready` alone
+    // (or `ready || ...`) would resolve a lease against a `None` model and bind
+    // a persona to nothing. Exercised on a LOCAL watch so it doesn't mutate the
+    // process-global SERVING_STATE (set-once → would race other tests).
+    #[tokio::test]
+    async fn ready_predicate_requires_ready_and_a_model() {
+        let pred = |s: &ServingSnapshot| s.ready && s.active_model.is_some();
+        let (tx, mut rx) = watch::channel(ServingSnapshot::empty());
+
+        // empty: not ready, no model → unsatisfied.
+        assert!(!pred(&rx.borrow()));
+        // ready but no model → STILL unsatisfied (the bug we guard against).
+        tx.send_replace(ServingSnapshot { active_model: None, ready: true, base_url: "x".into() });
+        assert!(!pred(&rx.borrow()));
+        // not-ready but has a model → unsatisfied.
+        tx.send_replace(ServingSnapshot {
+            active_model: Some("coder".into()),
+            ready: false,
+            base_url: "x".into(),
+        });
+        assert!(!pred(&rx.borrow()));
+        // ready AND a model → satisfied, and wait_for resolves to it at once.
+        tx.send_replace(ServingSnapshot {
+            active_model: Some("coder".into()),
+            ready: true,
+            base_url: "x".into(),
+        });
+        let got = tokio::time::timeout(Duration::from_millis(100), rx.wait_for(pred))
+            .await
+            .expect("should not time out")
+            .expect("sender live");
+        assert_eq!(got.active_model.as_deref(), Some("coder"));
     }
 }
