@@ -808,4 +808,53 @@ mod tests {
         );
         assert_eq!(cache.len(), 1, "one entry: identity is the model, not the transport");
     }
+
+    // what this catches: the in-process neural embedder actually PRODUCES semantic
+    // vectors — runtime proof the resolve_recall_embedder neural path works end to
+    // end (registry lookup → LlamaCppAdapter → backend.embed → cosine), not just
+    // that it compiles. Similar text must rank above unrelated text; a lexical or
+    // broken embedder fails this. Exercises the real production path:
+    // local_embed_adapter() → try_neural_embedder().
+    // #[ignore]: needs the Qwen3-Embedding-0.6B GGUF on disk; CI without it skips.
+    // Run: cargo test -p continuum-core --features metal,accelerate,test-fixtures \
+    //   --lib cognition::embedding::tests::in_process_embedder_ranks_semantic_similarity \
+    //   -- --ignored --nocapture
+    #[tokio::test]
+    #[ignore]
+    async fn in_process_embedder_ranks_semantic_similarity() {
+        // local_embed_adapter() reads the process-wide registry; seed it (idempotent
+        // — ignore "already initialized" when run alongside other tests).
+        let _ = crate::model_registry::init_global();
+
+        let (adapter, model_id) =
+            local_embed_adapter().expect("embed GGUF must be on disk for this real-model test");
+        eprintln!("[embed-test] loaded in-process embed adapter: {model_id}");
+
+        let embedder = try_neural_embedder(adapter, CANONICAL_EMBED_MODEL)
+            .await
+            .expect("neural embedder probe must succeed with a real embed model on disk");
+
+        let anchor = embedder.embed("the deployment failed with a compile error").await;
+        let similar = embedder
+            .embed("the build broke because the code did not compile")
+            .await;
+        let different = embedder.embed("she watered the tomato plants in the garden").await;
+
+        assert!(!anchor.is_empty(), "real embed must return a non-empty vector");
+        eprintln!(
+            "[embed-test] dim={} (canonical={})",
+            anchor.len(),
+            CANONICAL_EMBED_DIM
+        );
+
+        let sim = cosine_similarity(&anchor, &similar);
+        let dif = cosine_similarity(&anchor, &different);
+        eprintln!("[embed-test] cosine(similar)={sim:.4}  cosine(different)={dif:.4}");
+
+        assert!(
+            sim > dif,
+            "semantically similar text must rank above unrelated text: {sim} !> {dif}"
+        );
+        assert!(sim > 0.5, "similar pair should be clearly related: {sim}");
+    }
 }

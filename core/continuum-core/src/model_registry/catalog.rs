@@ -418,6 +418,30 @@ pub fn models() -> Vec<Model> {
             multi_party_strategy: MultiPartyChatStrategy::ProperChatMlSingleParty,
             ..ModelSpec::default()
         }),
+        // The grid's canonical retrieval embedder — Qwen3-Embedding-0.6B
+        // (Q8_0 GGUF, ~610 MiB). Served IN-PROCESS by LlamaCppAdapter (GPU
+        // forward, last-token pooled). `resolve_recall_embedder` finds this
+        // row by (provider=llamacpp-local ∧ Capability::Embedding ∧ gguf on
+        // disk) and prefers it over routing embeddings through the chat
+        // gateway. DELIBERATELY DECOUPLED from the chat model: recall vectors
+        // stay in one stable embedding space regardless of which model the
+        // persona's brain runs ([[embeddings-are-per-content-computed-once-shared]]).
+        model(ModelSpec {
+            id: "continuum-ai/qwen3-embedding-0.6b-GGUF",
+            name: "Qwen3-Embedding-0.6B (in-process retrieval embedder)",
+            provider: "llamacpp-local",
+            arch: Arch::Qwen3,
+            context_window: 32_768,
+            // Embedding model — produces vectors, never generated tokens.
+            max_output_tokens: 0,
+            tokens_per_second: 0.0,
+            capabilities: &[Capability::Embedding],
+            gguf_hint: Some("huggingface.co/Qwen/Qwen3-Embedding-0.6B-GGUF"),
+            gguf_local_path: Some(
+                "~/.continuum/genome/models/qwen3-embedding-0.6b/Qwen3-Embedding-0.6B-Q8_0.gguf",
+            ),
+            ..ModelSpec::default()
+        }),
     ]
 }
 
