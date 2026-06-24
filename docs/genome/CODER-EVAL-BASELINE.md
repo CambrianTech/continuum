@@ -15,21 +15,42 @@ system (real `WorkspaceCycle`, real tools, real model), via the `cognition/eval`
 | Set | File | Measures |
 |---|---|---|
 | Navigation / knowledge | `coder-eval.jsonl` (13) | Can she find & read the real repo and answer accurately? (substring-graded) |
-| Code writing | `coder-write-eval.jsonl` (9) | Can she write a function that **compiles and passes a test**? (`rustc`-graded) |
+| Code writing | `coder-write-eval.jsonl` (30) | Can she write a function that **compiles and passes a test**? (`rustc`-graded) |
 
-The write set spans a deliberate difficulty ladder (arithmetic → strings → recursion →
-vec ops → struct+impl → parsing → predicate → hashmap → generics) so failures localize
-to a *kind* of code. All 9 tasks were validated with reference solutions (9/9 compile+pass
-through the identical `rustc` wrapping) **before** grading Asha — so a failure is hers,
-not the harness's.
+The write set spans a deliberate breadth ladder (arithmetic → strings → recursion →
+vec ops → struct+impl → parsing → predicate → hashmap → generics → encoding → sorting)
+so failures localize to a *kind* of code. All 30 tasks were validated with reference
+solutions (30/30 compile+pass through the identical `rustc` wrapping) **before** grading
+Asha — so a failure is hers, not the harness's. (The set grew 9→30 to make the signal
+robust enough to train against per `[[ask-anything-assemble-best-self-or-train]]`.)
 
 ## Results
 
 | Run | Score | Notes |
 |---|---|---|
 | Navigation | **12/13 (92%)** | one miss: `why_focused_query` — found+read the file (acts=1) but gave the *what*, not the *why* (noise dilutes relevance). Reasoning depth. |
-| Code writing (one-shot) | **7/9 (78%)** | `acts=0` on all 9 — she never self-verified. Misses: `is_palindrome` (dropped the `to_lowercase()` the prompt required → runtime panic), `max_item_generic` (`items.iter().max()` needs `Ord`; bound is `PartialOrd` → E0277). |
-| Iterate experiment (the 2 misses, prompt invites `code/run` verify) | **0/2** | `is_palindrome`: `acts=0` again — *said* "Let me use the `code/run` tool…" then emitted code **without calling it** (narrate-not-act). `max_item`: `acts=2` — the loop **engaged**, she compiled, observed, reasoned the `Ord`→`PartialOrd` fix correctly — but her terminal turn was *"let me fix this and run again"* **prose with no final code**, so the grader compiled the prose. |
+| Code writing — 9-task (one-shot) | **7/9 (78%)** | first cut; superseded by the 30-task run below. |
+| **Code writing — 30-task robust (`max_acts=8`)** | **20/30 (67%)** | The robust baseline. `acts=0` on **29 of 30** despite `max_acts=8` — she one-shots everything and never self-verifies. 67% is what a 4B coder one-shots cold. |
+
+### 30-task failures (the 10 the genome loop must close)
+
+| Task | Class | Root cause |
+|---|---|---|
+| `dedup_sorted` | runtime panic | logic bug — a `code/run` against the example would catch it |
+| `is_palindrome` | runtime panic | dropped the case/alnum normalization again → wrong on `"A man a plan…"` |
+| `rotate_left` | runtime panic | off-by / wrap logic bug — verifiable |
+| `title_case` | runtime panic | word-boundary/capitalization logic bug — verifiable |
+| `max_item_generic` | E0277 | `T: Ord` needed by `.max()`; bound is `PartialOrd` (the recurring Ord trap) |
+| `median` | E0277 | `f64: Ord` — sorting floats needs `partial_cmp`, not `.sort()` |
+| `to_binary` | E0384 | forgot `mut` on the param before reassigning `n` |
+| `count_vowels` | E0277 | `&char: Pattern` — passed `&char` to a `str` method expecting a pattern |
+| `run_length_encode` | E0308 | return/collection type mismatch |
+| `most_common_char` | E0308 | return type mismatch |
+
+Two bands: **4 runtime panics** (logic bugs that one `code/run` self-check would have
+caught) and **6 compile errors** in a tight idiom cluster — ordering trait bounds
+(`Ord` vs `PartialOrd`, float sorting), `mut` params, str-pattern types, return-type
+mismatches.
 
 ## Diagnosis
 
@@ -39,14 +60,22 @@ loop does exactly its job: `code/run` compiled her `max_item` attempts, folded t
 back, she re-perceived and re-reasoned. `code/run` is the right-shaped hand (standalone
 `rustc` snippet, AiSafe persona tool). None of the failures are substrate.
 
-**The wall is model reliability on the act-vs-narrate Decision.** Across all runs the 4B
-model:
-- one-shots instead of verifying (it *can* one-shot 78% of small functions, but won't self-check),
-- narrates intent to act (`Speak` "let me use the tool") instead of emitting `Act`,
-- ends mid-iteration with prose ("let me run again") instead of the final code.
+**The wall is model reliability — two gaps, now measured robustly over 30 tasks.**
 
-Plus a thinner **Rust-idiom gap** (the `PartialOrd`/`Ord` `.max()` trap) — which she
-*did* reason through once she was actually in the loop.
+1. **She does not self-verify.** `acts=0` on **29 of 30** tasks even with `max_acts=8`
+   explicitly inviting iteration. She one-shots, full stop. This is the single highest-
+   leverage gap: 4 of the 10 failures are runtime panics (`dedup_sorted`, `is_palindrome`,
+   `rotate_left`, `title_case`) that *one* `code/run` against the prompt's own example
+   would have surfaced — free wins left on the table because she never runs her own code.
+   The earlier 9-task "iterate experiment" showed the failure shapes when she's pushed to
+   act: narrates intent (`Speak` "let me use the tool") instead of emitting `Act`, or ends
+   mid-iteration with prose ("let me run again") instead of final code.
+2. **A tight Rust-idiom gap** — the 6 compile errors cluster: ordering trait bounds
+   (`Ord` vs `PartialOrd`, sorting `f64`), `mut` params, str-pattern types, return-type
+   mismatches. These are learnable patterns, not reasoning depth.
+
+**67% one-shot is the number to beat.** It's a clean read of what the forged 4B writes
+cold; the headroom is the ~33% that self-verification + idiom fluency would recover.
 
 ## The lever
 
