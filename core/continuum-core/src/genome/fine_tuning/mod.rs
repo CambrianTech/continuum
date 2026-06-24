@@ -89,6 +89,7 @@ pub mod coordinator;
 pub mod job_actor;
 pub mod local_candle_adapter;
 pub mod lora_module;
+pub mod mlx_lora_adapter;
 pub mod openai_adapter;
 pub mod registry;
 #[cfg(any(test, feature = "test-fixtures"))]
@@ -103,6 +104,7 @@ pub use coordinator::{CoordinatorError, FineTuningCoordinator};
 pub use job_actor::{spawn_job, JobActorError, JobController, SpawnJobRequest};
 pub use local_candle_adapter::{LocalCandleFineTuner, SYNTHETIC_BASE_PREFIX};
 pub use lora_module::{LoRAError, LoRAModule};
+pub use mlx_lora_adapter::MlxLoraFineTuner;
 pub use openai_adapter::OpenAIFineTuningAdapter;
 pub use registry::FineTuningRegistry;
 #[cfg(any(test, feature = "test-fixtures"))]
