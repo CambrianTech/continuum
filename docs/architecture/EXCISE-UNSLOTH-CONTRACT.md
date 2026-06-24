@@ -76,7 +76,7 @@ lands ([[seamless-persona-failover-model-and-genome]]).
 | `inference/model_commands.rs` | `unsloth_control` keystone `:42` | model load/unload cmds | forge/serving | #52 |
 | `inference/unsloth_forge.rs` | forge trait | forge | **#52** convergence | #52 |
 | `modules/forge.rs` | `UnslothError` `:710` | forge | **#52** | #52 |
-| `modules/embedding.rs` | base_url + list_models + `from_registry("unsloth")` `:66-77` | embeddings | **#40** + A | #40 |
+| `modules/embedding.rs` | model-selection → `await_ready_serving()` (was base_url + list_models) | embeddings | A | ✅ `2ed3673f2` (ort/fastembed delete is the remaining #40 slice, separate track) |
 | `inference/unsloth_control.rs` | the module | (absorbed by A; forge bits → #52) | — → **DELETE last** | final |
 | `inference/mod.rs` | `pub mod unsloth_control` `:53` | module decl | — → **DELETE last** | final |
 
@@ -105,9 +105,12 @@ Done is done; the re-order is everything below the line.
    ─────────────────────────────────────────────────────────────
    `#53`'s serving-control relocation is COMPLETE. The remaining steps are the
    other tracks' exits + the wholesale module delete:
-8. #40 (embeddings → /v1) and #52 (forge → native/mlx) exit `unsloth_control`
-   on their own tracks — independent convergences, the last consumers of its
-   `UnslothHttp` / `UnslothError` / `unsloth_base_url` surface.
+8. ✅ #40 embed model-selection — `build_adapter_embedder` reads
+   `await_ready_serving()` instead of probing `/v1/models` (`2ed3673f2`);
+   `modules/embedding.rs` has left the caller list. The ort/fastembed deletion is
+   the remaining #40 slice, on its own track. **#52 (forge → native/mlx)** is now
+   the SOLE remaining consumer track — `model_commands.rs` / `unsloth_forge.rs` /
+   `forge.rs` hold the last `UnslothHttp` / `UnslothError` / `InferenceStatus` uses.
 9. final — delete `unsloth_control.rs` + its `mod` decl + the catalog `DEFAULT_HOST`
    default literal, once #40/#52 have removed every caller. The now-dead decision/
    startup/api-key surface (`ensure_model_active`, `EnsureOutcome`,
