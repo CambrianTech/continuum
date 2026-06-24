@@ -266,6 +266,42 @@ stop_sequences = ["<|im_end|>", "<|endoftext|>"]
 # user/assistant alternation it was trained on.
 multi_party_strategy = "proper_chat_ml_single_party"
 
+# ─── Local in-process: Qwen3-Embedding-0.6B (the grid's canonical retrieval
+# embedder) ───
+#
+# The recall hippocampus (RecallFaculty) ranks memories by semantic relevance,
+# which needs a NEURAL embedder — not the lexical word-overlap bootstrap. This
+# row is that embedder, served IN-PROCESS by LlamaCppAdapter (GPU forward via
+# llama.cpp Metal/CUDA, no HTTP hop).
+#
+# DELIBERATELY DECOUPLED FROM THE CHAT MODEL. Asha's brain (chat) can be any
+# model — a local 4B, a remote 70B, a cloud model over the gateway — and recall
+# embeddings stay pinned to THIS model. One stable embedding space grid-wide
+# ([[embeddings-are-per-content-computed-once-shared]]) means stored vectors and
+# query vectors are always comparable; changing the chat model never invalidates
+# the engram vectors. `resolve_recall_embedder` finds this row by
+# (provider=llamacpp-local ∧ capability=embedding ∧ gguf on disk) and prefers it
+# over routing embeddings through the chat gateway (which may not serve
+# /v1/embeddings at all). The embedding-SPACE identity (cache key) is the
+# canonical slug `qwen3-embedding-0.6b`, overridable with UNSLOTH_EMBED_MODEL for
+# a grid that standardizes on a different embed model.
+[[model]]
+id = "continuum-ai/qwen3-embedding-0.6b-GGUF"
+name = "Qwen3-Embedding-0.6B (in-process retrieval embedder)"
+provider = "llamacpp-local"
+arch = "qwen3"
+# Qwen3-Embedding supports a 32k context; recall queries + engram bodies are far
+# shorter, but the model's stated window is 32768.
+context_window = 32768
+# Embedding model — it produces vectors, never generated tokens.
+max_output_tokens = 0
+tokens_per_second = 0.0
+capabilities = ["embedding"]
+cost_input_per_1k = 0.0
+cost_output_per_1k = 0.0
+gguf_hint = "huggingface.co/Qwen/Qwen3-Embedding-0.6B-GGUF"
+gguf_local_path = "~/.continuum/genome/models/qwen3-embedding-0.6b/Qwen3-Embedding-0.6B-Q8_0.gguf"
+
 [[model]]
 id = "continuum-ai/qwen3.5-4b-code-forged-GGUF"
 name = "Qwen3.5 4B Code-Forged (in-process)"

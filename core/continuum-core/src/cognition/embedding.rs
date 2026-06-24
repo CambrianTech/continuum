@@ -365,34 +365,117 @@ fn probe_indicates_usable(probe: &[f32]) -> bool {
     !probe.is_empty() && probe.iter().any(|x| *x != 0.0) && probe.iter().all(|x| x.is_finite())
 }
 
-/// Resolve the embedder for the live recall path. Prefers the **neural** embedder
-/// (semantic relevance through `adapter`) but only when a one-shot probe proves
-/// the embed model actually serves; otherwise falls back to the **lexical**
-/// bootstrap. The choice is PROCESS-STABLE — decided once here, never per-embed —
-/// because a query and the stored vectors must live in the SAME embedding space
-/// (mixing neural and lexical per call makes cosine meaningless). The result is
-/// wrapped in the content-addressed cache so each message is embedded ONCE and
-/// shared across every persona (the latency win; further perf is a later pass).
+/// Build the dedicated **in-process** embedding adapter: a `LlamaCppAdapter`
+/// bound to the registry's `llamacpp-local` embedding model (the canonical
+/// Qwen3-Embedding-0.6B) whose GGUF is already pulled to disk.
+///
+/// This is the PREFERRED recall embedder and the reason recall doesn't flake
+/// when the operator picks a different chat model: embeddings are pinned to this
+/// dedicated embed model regardless of what Asha's brain is. It's a GPU forward
+/// pass with NO HTTP hop — the chat adapter may be a remote gateway that doesn't
+/// serve `/v1/embeddings` at all. `None` when no embedding GGUF is on disk (→ the
+/// caller tries the chat adapter's embeddings, then the lexical floor).
+fn local_embed_adapter() -> Option<(Arc<dyn AIProviderAdapter>, String)> {
+    let reg = crate::model_registry::global();
+    let model = reg
+        .models_for_provider(crate::inference::llamacpp_adapter::LLAMACPP_PROVIDER_ID)
+        .find(|m| {
+            m.capabilities.contains(&crate::model_registry::Capability::Embedding)
+                && m.gguf_local_path.as_ref().is_some_and(|p| p.exists())
+        })?;
+    let path = model.gguf_local_path.clone()?;
+    let adapter = crate::inference::llamacpp_adapter::LlamaCppAdapter::with_model_id(
+        path,
+        model.id.clone(),
+    );
+    Some((Arc::new(adapter), model.id.clone()))
+}
+
+/// Probe a candidate adapter as a neural embedder; return the cache-wrapped
+/// provider only when a one-shot embed proves the model actually serves usable
+/// vectors. `None` → the caller tries the next source. `model` is the
+/// embedding-SPACE identity (cache key) — the canonical slug, NOT the registry
+/// id — so an in-process embed and a grid-gateway embed of the same model share
+/// cache space and stay comparable.
+async fn try_neural_embedder(
+    adapter: Arc<dyn AIProviderAdapter>,
+    model: &str,
+) -> Option<Arc<dyn EmbeddingProvider>> {
+    let neural = NeuralEmbeddingProvider::new(adapter, model.to_string(), CANONICAL_EMBED_DIM);
+    let probe = neural.embed("probe").await;
+    probe_indicates_usable(&probe)
+        .then(|| Arc::new(CachingEmbeddingProvider::new(Arc::new(neural))) as Arc<dyn EmbeddingProvider>)
+}
+
+/// Resolve the embedder for the live recall path. Tries, in order:
+///   1. the dedicated **in-process** embed model (GPU, no HTTP hop) — preferred;
+///   2. the chat `adapter`'s `/v1/embeddings`, for a grid gateway that serves an
+///      embedding lane alongside chat;
+///   3. the **lexical** word-overlap floor (degrade-not-panic).
+///
+/// Each candidate is gated on a one-shot probe that proves the model actually
+/// serves usable vectors. The choice is PROCESS-STABLE — decided once here, never
+/// per-embed — because a query and the stored vectors must live in the SAME
+/// embedding space (mixing neural and lexical per call makes cosine meaningless).
+/// The result is wrapped in the content-addressed cache so each message is
+/// embedded ONCE and shared across every persona.
+///
+/// EXACTLY ONE `recall.embedder.resolved` probe fires per resolution, naming the
+/// resolved `kind` (neural|lexical) and `source`. That is the hardening of the
+/// old silent fallback: a half-blind lexical recall can never again masquerade as
+/// a healthy neural one — the resolved kind is a surviving, greppable signal.
 ///
 /// Always returns a usable embedder — never errors, never panics: a persona on a
 /// box with no embed model still gets real lexical relevance ("solve for public
 /// users" / degrade-not-panic).
 pub async fn resolve_recall_embedder(adapter: Arc<dyn AIProviderAdapter>) -> Arc<dyn EmbeddingProvider> {
-    if adapter.capabilities().supports_embeddings {
-        let model = crate::config_env::read("UNSLOTH_EMBED_MODEL")
-            .filter(|m| !m.trim().is_empty())
-            .unwrap_or_else(|| CANONICAL_EMBED_MODEL.to_string());
-        let neural = NeuralEmbeddingProvider::new(adapter, model.clone(), CANONICAL_EMBED_DIM);
-        let probe = neural.embed("probe").await;
-        if probe_indicates_usable(&probe) {
-            tracing::info!(model = %model, "recall: neural embedder live (probe ok)");
-            return Arc::new(CachingEmbeddingProvider::new(Arc::new(neural)));
+    // The embedding-SPACE identity (cache key). Defaults to the canonical grid
+    // embedder; an operator standardizing on a different embed model overrides it
+    // so in-process and gateway vectors stay in one comparable space.
+    let model = crate::config_env::read("UNSLOTH_EMBED_MODEL")
+        .filter(|m| !m.trim().is_empty())
+        .unwrap_or_else(|| CANONICAL_EMBED_MODEL.to_string());
+
+    // 1. Preferred: the dedicated in-process embed model. Pinned independently of
+    //    the chat model, so changing Asha's brain never disturbs recall.
+    if let Some((embed_adapter, gguf_id)) = local_embed_adapter() {
+        if let Some(provider) = try_neural_embedder(embed_adapter, &model).await {
+            crate::probe!(
+                class = "recall.embedder.resolved",
+                kind = "neural",
+                source = "in-process-llamacpp",
+                model = %model,
+                gguf = %gguf_id,
+                "recall embedder = NEURAL (dedicated in-process Qwen3-Embedding)"
+            );
+            return provider;
         }
-        tracing::warn!(
-            model = %model,
-            "recall: neural embed probe returned no signal — falling back to lexical embedder"
-        );
     }
+
+    // 2. Fallback: the chat adapter's embeddings endpoint, for a gateway that
+    //    serves an embedding lane (e.g. unsloth/llama-server started --embeddings).
+    if adapter.capabilities().supports_embeddings {
+        if let Some(provider) = try_neural_embedder(adapter, &model).await {
+            crate::probe!(
+                class = "recall.embedder.resolved",
+                kind = "neural",
+                source = "chat-adapter-embeddings",
+                model = %model,
+                "recall embedder = NEURAL (chat-adapter /v1/embeddings gateway)"
+            );
+            return provider;
+        }
+    }
+
+    // 3. Floor: lexical word-overlap. Legitimate for a box with no embed model,
+    //    but LOUD — a degraded semantic recall must be diagnosable, not silent.
+    crate::probe!(
+        class = "recall.embedder.resolved",
+        kind = "lexical",
+        source = "fallback",
+        model = %model,
+        "recall embedder = LEXICAL — no neural embed model serving; semantic recall DEGRADED to word-overlap"
+    );
     Arc::new(CachingEmbeddingProvider::new(Arc::new(LexicalEmbedder::new())))
 }
 
