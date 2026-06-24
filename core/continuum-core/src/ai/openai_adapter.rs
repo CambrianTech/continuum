@@ -225,9 +225,10 @@ impl OpenAICompatibleAdapter {
     /// The host root that request URLs append `/v1/...` to — the runtime override
     /// if set, else the configured base. ONE resolution point for all request
     /// sites (was copy-pasted 4×). The value is already canonical (bare host): the
-    /// catalog stores bare hosts, and the unsloth gateway is registered with the
-    /// single [`unsloth_base_url`](crate::inference::unsloth_control::unsloth_base_url)
-    /// accessor — so no per-site normalization is needed or wanted here.
+    /// catalog stores bare hosts, and the local gateway is registered with the
+    /// `base_url` from the serving daemon's snapshot (Contract A
+    /// [`crate::inference::llama_server::current_serving`]) — so no per-site
+    /// normalization is needed or wanted here.
     fn api_base(&self) -> &str {
         self.runtime_base_url
             .as_deref()
@@ -1254,40 +1255,35 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
             );
         }
 
-        // Pre-flight the unsloth gateway's model lifecycle (the boundary this
-        // adapter owns). The gateway serves ONE resident model and IGNORES the
-        // request's `model` field — request M2 while M1 is resident and it
-        // silently answers as M1 (verified) — and it idle-unloads to free VRAM,
-        // so a live persona goes mute mid-life. So before we trust a generation
-        // we GUARANTEE our model is the active one, loading it by its OWN id (the
-        // same string we generate with — dynamic, API-driven, no path/hardcode,
-        // any of N models) if a different model (or none) is resident. We're
-        // inside the held concurrency permit, so for the 1-slot gateway this
-        // adapter can't race its own next request between ensure and generate. If
-        // we can't guarantee it → FAIL LOUD; never generate against an
-        // unguaranteed brain (silently returning the wrong model is the bug that
-        // would haunt us). Cross-persona residency on the shared gateway is the
+        // Pre-flight the single-resident gateway: GUARANTEE our model is the one
+        // actually serving before we trust a generation. The local gateway
+        // (llama-server) serves ONE resident model, fixed at process launch, and
+        // answers EVERY request as that model regardless of the request's `model`
+        // field — so generating while a DIFFERENT model (or none) is live silently
+        // returns the wrong brain (the bug that would haunt us). Crucially,
+        // switching the served model is a *process relaunch* the
+        // ServingDaemonModule owns (Contract A `inference::llama_server`); an
+        // adapter must NEVER drive that load from inside a generate — relaunching
+        // would kill the GPU-warm server out from under every other persona on the
+        // shared gateway. So this guard is READ-ONLY: consult the daemon's
+        // published serving snapshot (a `watch` borrow, no probe) and refuse to
+        // generate unless OUR model is the READY, ACTIVE one. A mismatch is a loud
+        // failure naming the cause, never a silent wrong-model answer
+        // ([[fallbacks-are-illegal-fail-loud]]). Bringing the right model up — and
+        // cross-persona residency arbitration on the shared gateway — is the
         // serving layer's job (#109), not this gate.
         if self.config.single_resident_model {
-            use crate::inference::unsloth_control::{
-                ensure_model_active, EnsureOutcome, UnslothHttp,
-            };
-            let ctrl = UnslothHttp::with_client(self.client.clone());
-            match ensure_model_active(&ctrl, model).await {
-                EnsureOutcome::AlreadyLoaded => {}
-                EnsureOutcome::Loaded { model: loaded } => {
-                    clog_info!(
-                        "unsloth: model '{}' was not active — loaded it before generate",
-                        loaded
-                    );
-                }
-                EnsureOutcome::Degraded { reason } => {
-                    return Err(format!(
-                        "{}: cannot guarantee model '{}' is active on the unsloth gateway \
-                         ({reason}); refusing to generate against an unguaranteed model",
-                        self.config.name, model
-                    ));
-                }
+            let snap = crate::inference::llama_server::current_serving();
+            if !snap.ready || snap.active_model.as_deref() != Some(model) {
+                return Err(format!(
+                    "{}: model '{}' is not the active served model (serving: {}, ready: {}); \
+                     the serving daemon owns which single model is resident — refusing to \
+                     generate against an unguaranteed model",
+                    self.config.name,
+                    model,
+                    snap.active_model.as_deref().unwrap_or("<none>"),
+                    snap.ready
+                ));
             }
         }
 
