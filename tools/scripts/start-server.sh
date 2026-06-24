@@ -87,120 +87,63 @@ case "$(uname -sm)" in
     ;;
 esac
 
-# ── Unsloth Studio ───────────────────────────────────────────────────
-# Unsloth Studio is the inference + training gateway. All persona inference
-# routes through it (/v1 OpenAI-compatible API). The core will fail loud on
-# the first LLM call if Studio isn't up — catch it here so the error lands
-# at startup, not buried in a per-persona log [[fallbacks-are-illegal-fail-loud]].
-#
-# The gate verifies THREE things, not just reachability (Joel: "make sure
-# unsloth is reachable, can serve our models etc, in addition to keeping it
-# installed and updated"):
-#   1. reachable      — /v1/models answers 200 (WITH the API key; it 401s without)
-#   2. serves OUR model — the configured UNSLOTH_MODEL appears in the served list
-#   3. installed+fresh — binary present; opportunistic throttled `pip -U` (non-fatal)
-UNSLOTH_HOST="${UNSLOTH_BASE_URL:-http://127.0.0.1:8888}"
-UNSLOTH_PORT="${UNSLOTH_HOST##*:}"      # extract port from base URL
-UNSLOTH_PORT="${UNSLOTH_PORT%%/*}"      # strip any trailing path
-UNSLOTH_BIN="$HOME/.local/bin/unsloth"
-UNSLOTH_VENV_PY="$HOME/.unsloth/studio/unsloth_studio/bin/python"
-UNSLOTH_MODEL_BASENAME="$(basename "${UNSLOTH_MODEL:-}")"   # for display only
+# ── llama-server (the inference engine the CORE owns) ────────────────
+# llama.cpp's `llama-server` serves ONE model on /v1; the core's
+# ServingDaemonModule OWNS its launch — "switch model" is a process relaunch
+# the daemon performs, with `--alias` so the served id matches the registry id.
+# There is NO Python Studio in the inference path anymore: a second server was a
+# dual-owner race for the GPU (two copies of the same GGUF resident at once).
+# This block's ONLY job is to make the core able to own that launch — it does
+# NOT launch llama-server itself (the daemon does, after the core boots):
+#   1. resolve the binary onto PATH so the daemon's `Command::new("llama-server")`
+#      finds it (the core inherits this PATH as our child)
+#   2. stop the excised Unsloth Studio so it isn't double-loading the GPU
+# Robustness note: the core SCANS for a free serving port (it does not assume
+# one), so a squatter never wedges it — stopping Studio is GPU/excision hygiene,
+# not a correctness prerequisite [[llama-server-serves-v1-direct-python-gateway-optional]].
 
-# The gateway advertises a model by its REPO id (e.g.
-# continuum-ai/qwen3.5-4b-code-forged-GGUF), NOT by the local GGUF filename we
-# load Studio from (qwen3.5-4b-code-forged-Q4_K_M.gguf). Matching the full
-# basename therefore NEVER succeeds — the gate would loop to its 60s timeout on
-# every start even though the model is loaded and serving (observed 2026-06-23).
-# Reduce the configured model to its STEM — lowercase, drop the .gguf extension
-# and the trailing quant tag (-Q4_K_M / -f16 / -bf16 / -GGUF) — and match that
-# stem against the served ids. (Lowercase up front so we avoid BSD sed's missing
-# `I` flag; macOS ships BSD sed.)
-UNSLOTH_MODEL_STEM="$(basename "${UNSLOTH_MODEL:-}" | tr '[:upper:]' '[:lower:]')"
-UNSLOTH_MODEL_STEM="${UNSLOTH_MODEL_STEM%.gguf}"
-UNSLOTH_MODEL_STEM="$(printf '%s' "$UNSLOTH_MODEL_STEM" \
-  | sed -E 's/[-._](q[0-9]+(_[a-z0-9]+)*|f16|bf16|gguf)$//')"
-
-# curl /v1/models WITH auth (the server 401s without the key — a bare probe
-# never sees success and loops forever). Echoes the JSON body on stdout.
-_unsloth_models() {
-  curl -sf -H "Authorization: Bearer ${UNSLOTH_API_KEY}" \
-    "${UNSLOTH_HOST}/v1/models" 2>/dev/null
-}
-# True iff /v1/models is reachable AND lists a model matching our stem.
-_unsloth_serves_our_model() {
-  local body; body="$(_unsloth_models)" || return 1
-  [ -n "$UNSLOTH_MODEL_STEM" ] || return 0   # no model pinned → reachability only
-  printf '%s' "$body" | tr '[:upper:]' '[:lower:]' | grep -qF "$UNSLOTH_MODEL_STEM"
-}
-
-# Opportunistic, throttled, NON-FATAL update — at most once per 24h (stamp file).
-# Auto-updating on every `cu start` is reckless (could pull a breaking version
-# mid-session); throttling + background + non-fatal is the safe reading of
-# "keep it updated". Skips entirely if AIRC/CU_NO_UNSLOTH_UPDATE is set.
-_unsloth_maybe_update() {
-  [ -n "$CU_NO_UNSLOTH_UPDATE" ] && return 0
-  [ -x "$UNSLOTH_VENV_PY" ] || return 0
-  local stamp="$HOME/.unsloth/.last-update-check"
-  if [ -f "$stamp" ]; then
-    local age=$(( $(date +%s) - $(stat -f %m "$stamp" 2>/dev/null || stat -c %Y "$stamp" 2>/dev/null || echo 0) ))
-    [ "$age" -lt 86400 ] && return 0     # checked within the last day
-  fi
-  echo "↻ Checking for unsloth updates (background, non-fatal) …" >&2
-  ( "$UNSLOTH_VENV_PY" -m pip install -U --quiet unsloth unsloth_zoo \
-      >/tmp/unsloth-update.log 2>&1 && touch "$stamp" ) &
-}
-
-if _unsloth_serves_our_model; then
-  echo "✓ Unsloth Studio is serving ${UNSLOTH_MODEL_BASENAME:-(reachable)} at ${UNSLOTH_HOST}" >&2
-  _unsloth_maybe_update
-else
-  # Either down, or up but NOT serving our model. Both are fail-states here.
-  if [ -x "$UNSLOTH_BIN" ] && [ -n "$UNSLOTH_MODEL" ]; then
-    echo "▶ Starting Unsloth Studio (model: $UNSLOTH_MODEL_BASENAME, port: $UNSLOTH_PORT) …" >&2
-    nohup "$UNSLOTH_BIN" studio run \
-      --model "$UNSLOTH_MODEL" \
-      --port "$UNSLOTH_PORT" \
-      --no-cloudflare \
-      >/tmp/unsloth-studio.log 2>&1 &
-    UNSLOTH_PID=$!
-    echo "  PID $UNSLOTH_PID  —  log: /tmp/unsloth-studio.log" >&2
-    # Wait up to 60s for it to come up AND report our model served (model load
-    # is the slow part — a port that accepts before the GGUF is loaded is not
-    # "ready"). The probe carries the API key, so 401 never masquerades as down.
-    WAITED=0
-    until _unsloth_serves_our_model; do
-      if ! kill -0 "$UNSLOTH_PID" 2>/dev/null; then
-        echo "✗ FATAL: Unsloth Studio process died during startup." >&2
-        tail -8 /tmp/unsloth-studio.log >&2
-        exit 1
-      fi
-      sleep 2; WAITED=$((WAITED+2))
-      if [ $WAITED -ge 60 ]; then
-        echo "✗ FATAL: Unsloth Studio did not serve ${UNSLOTH_MODEL_BASENAME} after 60s." >&2
-        echo "  Reachable but wrong model? Check:  curl -H 'Authorization: Bearer \$UNSLOTH_API_KEY' ${UNSLOTH_HOST}/v1/models" >&2
-        echo "  Log: /tmp/unsloth-studio.log" >&2
-        exit 1
-      fi
-    done
-    echo "✓ Unsloth Studio ready (${WAITED}s) — serving ${UNSLOTH_MODEL_BASENAME}." >&2
-    _unsloth_maybe_update
-  else
-    echo "" >&2
-    echo "✗ FATAL: Unsloth Studio is not running and cannot be auto-started." >&2
-    echo "  UNSLOTH_BASE_URL = ${UNSLOTH_HOST}" >&2
-    if [ -z "$UNSLOTH_MODEL" ]; then
-      echo "  UNSLOTH_MODEL is not set in ~/.continuum/config.env" >&2
+# (1) Resolve the binary onto PATH. Prefer an existing PATH entry; else the
+# llama.cpp build dir. Missing → FATAL at the cause; we never fall back to a
+# different engine [[fallbacks-are-illegal-fail-loud]]. (LLAMA_SERVER_BIN in
+# ~/.continuum/config.env still overrides inside the core; this is the PATH
+# convenience for the common case.)
+if ! command -v llama-server >/dev/null 2>&1; then
+  for d in "$HOME/.unsloth/llama.cpp" "$HOME/.unsloth/llama.cpp/build/bin"; do
+    if [ -x "$d/llama-server" ]; then
+      export PATH="$d:$PATH"
+      break
     fi
-    if [ ! -x "$UNSLOTH_BIN" ]; then
-      echo "  unsloth binary not found at $UNSLOTH_BIN" >&2
-      echo "  Install: curl -fsSL https://raw.githubusercontent.com/unslothai/unsloth/main/install.sh | bash" >&2
-    fi
-    echo "" >&2
-    echo "  Start it manually:  unsloth studio run --model \$UNSLOTH_MODEL --no-cloudflare" >&2
-    echo "  Then retry:  cu start" >&2
-    echo "" >&2
-    exit 1
-  fi
+  done
+fi
+if ! command -v llama-server >/dev/null 2>&1; then
+  echo "" >&2
+  echo "✗ FATAL: llama-server binary not found." >&2
+  echo "  The core's serving daemon needs it to bring up the inference engine." >&2
+  echo "  Put it on PATH, set LLAMA_SERVER_BIN in ~/.continuum/config.env, or" >&2
+  echo "  build llama.cpp (expected at ~/.unsloth/llama.cpp/llama-server)." >&2
+  echo "" >&2
+  exit 1
+fi
+echo "✓ llama-server: $(command -v llama-server) — the core owns the launch" >&2
+
+# (2) Clear any FOREIGN inference server so the core starts from a clean slate
+# and gets the preferred port with the GPU to itself. At this point in a reboot
+# the old core is already dead, so any live llama-server is an orphan (its parent
+# gone) and any Unsloth Studio is the excised gateway — both safe to stop.
+#   - the Studio parent would respawn its own backend, so stop it first;
+#   - its llama-server child is orphaned (reparented to init) when the parent
+#     dies and would keep holding the port + GPU, so stop that too.
+# The core's fresh llama-server is launched afterward by the serving daemon, on a
+# port it SCANS for — so this is GPU/excision hygiene, not a correctness gate.
+if pgrep -f 'studio run' >/dev/null 2>&1; then
+  echo "  stopping excised Unsloth Studio (freeing GPU for the core's engine)" >&2
+  pkill -f 'studio run' 2>/dev/null || true
+fi
+if pgrep -f 'llama-server' >/dev/null 2>&1; then
+  echo "  clearing orphaned llama-server backend(s) so the core owns the engine" >&2
+  pkill -f 'llama-server' 2>/dev/null || true
+  # Give the OS a moment to release the listening socket before the core binds.
+  sleep 1
 fi
 
 # ── Airc context ─────────────────────────────────────────────────────
