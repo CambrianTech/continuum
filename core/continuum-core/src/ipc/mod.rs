@@ -1524,11 +1524,12 @@ pub fn start_server(
             crate::persona::spawner_module::PersonaSpawnerModule::new(hw_cap, tier_cat)
                 .with_serving(serving_model, serving_lanes),
             instance_manager.clone(),
-            // Persona reasoning routes through the unsloth gateway: native
-            // function-calling (the persona's HANDS actually fire) for free,
-            // vs the in-process llama.cpp adapter which silently dropped tools.
-            // Joel 2026-06-21; [[unsloth-universal-model-gateway]].
-            std::sync::Arc::new(crate::persona::supervisor::UnslothPersonaAdapterFactory),
+            // Persona reasoning binds to whatever the serving daemon has live,
+            // read off its published ServingSnapshot (not a probe of our own).
+            // The OpenAI-compatible `/v1` transport gives native function-calling
+            // (the persona's HANDS actually fire) for free, vs the in-process
+            // llama.cpp adapter which silently dropped tools. Joel 2026-06-21.
+            std::sync::Arc::new(crate::persona::supervisor::ServedModelPersonaAdapterFactory),
             tier_id,
             crate::model_registry::global(),
             rt_handle.clone(),

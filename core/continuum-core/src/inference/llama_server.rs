@@ -143,6 +143,14 @@ pub fn current_serving() -> ServingSnapshot {
         .unwrap_or_else(ServingSnapshot::empty)
 }
 
+/// Default bound for an upstart path that needs the served model and can wait
+/// for the daemon's first reconcile (persona upstart, embedder build, lease
+/// resolve). One source of truth so every consumer waits the same; generous
+/// enough to cover a cold relaunch of a large GGUF, bounded so an empty/wedged
+/// serving plan fails loud instead of hanging. Hot-path readers that must not
+/// block use [`current_serving`] (no wait) instead.
+pub const DEFAULT_SERVING_WAIT: Duration = Duration::from_secs(30);
+
 /// Await a READY served model, bounded by `timeout`. Resolves the instant the
 /// daemon's snapshot reports `ready` with an `active_model`. Returns the live
 /// snapshot, or `None` on timeout / before the daemon has installed its state.

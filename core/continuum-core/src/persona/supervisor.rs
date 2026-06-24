@@ -86,51 +86,66 @@ impl PersonaAdapterFactory for LlamaCppPersonaAdapterFactory {
     }
 }
 
-/// Routes a persona's reasoning through the **unsloth gateway** (the
-/// OpenAI-compatible `/v1` adapter). Chosen 2026-06-21 (Joel) over teaching the
-/// in-process llama.cpp adapter tool-calling: unsloth does **native function
-/// calling for free** (the OpenAI-compatible adapter already sends `tools` +
-/// parses `tool_calls` → `FinishReason::ToolUse`), so the persona's HANDS
-/// actually fire instead of the model narrating fake tool use. Aligns with
-/// "lean on unsloth, delete redundant code" ([[unsloth-universal-model-gateway]]):
-/// the in-process chat path becomes redundant (a later delete).
+/// Routes a persona's reasoning through whatever model the **serving daemon**
+/// has live, read off its published [`ServingSnapshot`] (the `watch` seam in
+/// [`crate::inference::llama_server`]). The transport underneath is still the
+/// OpenAI-compatible `/v1` adapter — chosen 2026-06-21 (Joel) because it does
+/// **native function calling for free** (sends `tools`, parses `tool_calls` →
+/// `FinishReason::ToolUse`), so the persona's HANDS actually fire instead of the
+/// model narrating fake tool use.
 ///
-/// All personas share the one gateway adapter (it's a meta-provider); the model
-/// served is unsloth's loaded model (`UNSLOTH_MODEL` — point it at the 4b
-/// code-forged GGUF so reasoning isn't downgraded to the 0.5B). Requests carry
-/// `model: None`, so unsloth uses its loaded model.
-pub struct UnslothPersonaAdapterFactory;
+/// The factory does NOT probe `/v1/models` itself: it reads the daemon's snapshot
+/// (one source of truth for "what is served"), so every upstart binds to the same
+/// model the serving plan reconciled — no drift between what this picks and what
+/// the daemon actually loaded. All personas share the one served model
+/// ([[seamless-persona-failover-model-and-genome]]: the lease contracts on
+/// (base_model, genome), re-homable across grid nodes via this same snapshot).
+///
+/// Fail LOUD if the daemon brought up nothing: a persona cannot upstart without a
+/// model, and we never fall back to a stand-in ([[fallbacks-are-illegal-fail-loud]]).
+pub struct ServedModelPersonaAdapterFactory;
 
 #[async_trait]
-impl PersonaAdapterFactory for UnslothPersonaAdapterFactory {
+impl PersonaAdapterFactory for ServedModelPersonaAdapterFactory {
     async fn build_adapter(
         &self,
-        _profile: &PersonaInferenceProfile,
+        profile: &PersonaInferenceProfile,
     ) -> Result<Arc<dyn AIProviderAdapter>, String> {
-        // Model-fit at upstart: the persona runs the model unsloth ACTUALLY serves
-        // (discovered via /v1/models), bound explicitly — not the providers.toml
-        // default (which drifts from what's loaded) nor a hardcoded per-tier id.
-        // Fail LOUD if the gateway serves nothing: a persona cannot upstart without a
-        // model, and we never fall back to a stand-in ([[fallbacks-are-illegal-fail-loud]]).
-        // (slice 2b: when unsloth serves >1, rank by capability/need fit here.)
-        let base = crate::inference::unsloth_control::unsloth_base_url();
-        let served = crate::inference::unsloth_control::UnslothHttp::from_config()
-            .list_models()
-            .await
-            .map_err(|e| format!("unsloth gateway unreachable while selecting model ({base}): {e}"))?;
-        let model = served.into_iter().next().ok_or_else(|| {
-            format!(
-                "unsloth gateway @ {base} serves NO model — load one (UNSLOTH_MODEL / unsloth Studio); \
-                 a persona cannot upstart without a model (no local fallback)"
-            )
+        // Read the serving daemon's own readiness signal — the same `watch` it
+        // publishes — and wait (bounded) for the first reconcile so an upstart
+        // that races boot still binds correctly. No HTTP probe of our own; the
+        // daemon is the single source of truth for "what is served".
+        let snap = crate::inference::llama_server::await_ready_serving(
+            crate::inference::llama_server::DEFAULT_SERVING_WAIT,
+        )
+        .await
+        .ok_or_else(|| {
+            "serving daemon brought up NO ready model — a persona cannot upstart without one \
+             (no servable GGUF on disk, or it failed to become ready; no local fallback)"
+                .to_string()
         })?;
+        let model = snap.active_model.clone().ok_or_else(|| {
+            "serving daemon reports ready but no active model (daemon invariant violated)".to_string()
+        })?;
+        crate::probe!(
+            class = "persona.upstart.bind",
+            persona = %profile.persona_name,
+            persona_id = %profile.persona_id,
+            model = %model,
+            base = %snap.base_url,
+            "persona inference bound to the live served model"
+        );
+        // The `"unsloth"` catalog key still names the OpenAI-compatible provider
+        // entry (auth + header shape); renaming the provider id to `"llama-server"`
+        // is slice 3 of #53. The runtime base_url + model come from the snapshot,
+        // so the catalog default (which can drift from what's loaded) is overridden.
         let mut adapter = crate::ai::openai_adapter::OpenAICompatibleAdapter::from_registry("unsloth")
-            .with_runtime_base_url(base)
+            .with_runtime_base_url(snap.base_url)
             .with_default_model(model);
         adapter
             .initialize()
             .await
-            .map_err(|e| format!("Unsloth persona adapter initialize failed: {e}"))?;
+            .map_err(|e| format!("persona adapter initialize failed: {e}"))?;
         Ok(Arc::new(adapter))
     }
 }
