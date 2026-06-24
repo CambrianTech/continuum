@@ -66,11 +66,11 @@ lands ([[seamless-persona-failover-model-and-genome]]).
 |---|---|---|---|---|
 | `inference/llama_server.rs` | the seam + `DEFAULT_SERVING_WAIT` | **Contract A itself** | — | ✅ `be1a90003` |
 | `persona/supervisor.rs` | `ServedModelPersonaAdapterFactory` | persona upstart bind | A | ✅ `df42bf18e` |
-| `cognition/inference_session.rs` | `resolve_model` (✅) · `"provider":"unsloth"` label `:330` | lease resolve · label | A ✅ · B | ◐ label pending B |
-| `modules/ai_provider.rs` | boot announce (✅) · registration gate `:374` · base_url `:380` | gateway announce · register | A ✅ · A+B | ◐ register pending B |
+| `cognition/inference_session.rs` | `resolve_model` (✅) · label → `PROVIDER_ID` | lease resolve · label | A · const | ✅ `ea070942a` |
+| `modules/ai_provider.rs` | boot announce (✅) · register gated on A · base_url from snapshot | gateway announce · register | A | ✅ `ea070942a` |
 | `ai/openai_adapter.rs` | id-keyed behavior → `provider.capabilities` | **adapter behavior** | **B (#55)** | ✅ `aa3e4c26d` |
-| `model_registry/catalog.rs` | `capabilities` declared · still `id:"unsloth"`/`api_key_env` | catalog entry | A (base) + B (id/key) | ◐ caps ✅; id rename = slice 3b |
-| `cognition/generate_response.rs` | `DEFAULT_GENERATE_PROVIDER="unsloth"` `:69` | default route id | B (id) | ◐ pending slice 3b |
+| `model_registry/catalog.rs` | `capabilities` declared · `id:PROVIDER_ID` · `auth:None` | catalog entry | A (base) + B (caps) | ✅ `ea070942a` |
+| `cognition/generate_response.rs` | `DEFAULT_GENERATE_PROVIDER = PROVIDER_ID` | default route id | const | ✅ `ea070942a` |
 | `main.rs` | `ensure_startup_model()` `:377` | startup model load | A (daemon owns) → **DELETE** | slice 4 |
 | `ipc/mod.rs` | `ensure_api_key`/`ApiKeyStatus` `:773` (factory ref ✅) | boot key check | none → **DELETE** | slice 4 |
 | `inference/model_commands.rs` | `unsloth_control` keystone `:42` | model load/unload cmds | forge/serving | #52 |
@@ -89,13 +89,14 @@ Done is done; the re-order is everything below the line.
 3. ✅ slice 3a — ai_provider boot announce reads A, not its own probe (`dd8414bce`)
 4. ✅ #55 — Contract B (adapter capability surface) (`aa3e4c26d`). Behavior is off
    the id; the rename is now a pure string change.
+5. ✅ slice 3b — id renamed `"unsloth"→"llama-server"` via `llama_server::
+   PROVIDER_ID` (one source of truth); registration gated on Contract A + base_url
+   from the snapshot; `UNSLOTH_API_KEY` gate + bearer auth dropped (local endpoint)
+   (`ea070942a`).
    ─────────────────────────────────────────────────────────────
-5. **slice 3b — NEXT. catalog `id` rename `"unsloth"→"llama-server"` + drop the
-   `UNSLOTH_API_KEY` gate + base_url from A + `generate_response` default id +
-   inference_session label. One atomic commit — the id is referenced as a string
-   in several places and they must all move together.**
-6. slice 4 — delete `main.rs::ensure_startup_model` + `ipc::ensure_api_key`
-   (A owns startup readiness; the daemon owns load).
+6. **slice 4 — NEXT. delete `main.rs::ensure_startup_model` + `ipc::ensure_api_key`
+   / `ApiKeyStatus` (A owns startup readiness; the serving daemon owns load). The
+   key-presence checks are now vestigial — the gateway no longer uses a key.**
 7. #40 (embeddings → /v1) and #52 (forge → native/mlx) exit `unsloth_control`
    on their own tracks — independent convergences, not blockers for 1–6.
 8. final — delete `unsloth_control.rs` + its `mod` decl + catalog cleanup, once

@@ -367,15 +367,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    // Auto-fuel unsloth (#24): "automatic after the key." unsloth Studio boots
-    // EMPTY — nothing serves until a model is loaded — so on startup we ensure
-    // the configured `UNSLOTH_MODEL` is loaded into the engine. Fire-and-forget
-    // and fully degrade-safe (UNSLOTH_MODEL unset → skip+log; engine down/load
-    // fails → degrade+log, the substrate stays up on its fallback path; never
-    // panics). Spawned concurrently so boot isn't gated on the engine.
-    tokio::spawn(async move {
-        continuum_core::inference::unsloth_control::ensure_startup_model().await;
-    });
+    // (Removed the legacy unsloth auto-fuel spawn. Bringing up the served model
+    // is the ServingDaemonModule's job now — the ever-present control loop owns
+    // model load/reconcile and publishes the ready snapshot (Contract A). A
+    // second fire-and-forget loader here was a duplicate owner of that concern;
+    // adapter registration and boot status both read the daemon's snapshot.)
 
     // Initialize TTS/STT in background (non-blocking - happens after startup)
     // Wrapped in catch_unwind because ORT panics (not errors) when libonnxruntime.dylib
