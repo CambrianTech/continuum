@@ -722,7 +722,7 @@ mod tests {
         let r = CommandResult::handle("ai/inference", id, "ai::InferenceSession");
         match r {
             CommandResult::Handle(h) => {
-                assert_eq!(h.id, id);
+                assert_eq!(h.id.as_uuid(), id);
                 assert_eq!(h.owner, "ai/inference");
                 assert_eq!(h.type_tag, "ai::InferenceSession");
             }
@@ -764,6 +764,6 @@ mod tests {
         let echoed = serde_json::to_string(&wire).unwrap();
         let from_wire: HandleRef = serde_json::from_str(&echoed).unwrap();
         assert_eq!(from_wire, original);
-        assert_eq!(from_wire.id, id);
+        assert_eq!(from_wire.id.as_uuid(), id);
     }
 }

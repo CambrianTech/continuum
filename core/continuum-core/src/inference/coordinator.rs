@@ -573,17 +573,17 @@ impl InferenceCoordinator {
         );
 
         // ── Step D: bind lane ────────────────────────────────────
-        let lane = Lane::new(req.persona, req.task, lease, handle.id, class);
+        let lane = Lane::new(req.persona, req.task, lease, handle.id.as_uuid(), class);
         let lease_id_for_event = lane.lease_id().to_string();
         let target_silicon_for_event = lane.lease().target_silicon;
-        self.lanes.insert(handle.id, lane);
+        self.lanes.insert(handle.id.as_uuid(), lane);
 
         self.capture_sink.record(LaneCaptureEvent::LaneOpened {
             captured_at_ms: req.now_ms,
             persona: req.persona,
             task: req.task,
             class,
-            handle_id: handle.id,
+            handle_id: handle.id.as_uuid(),
             lease_id: lease_id_for_event,
             cost_units,
             bytes_accounted: bytes,
@@ -596,12 +596,12 @@ impl InferenceCoordinator {
     /// handle. Idempotent — closing an already-closed handle is OK
     /// (returns Ok(false)).
     pub fn close_lane(&self, handle: &HandleRef) -> Result<bool, CoordinatorError> {
-        let Some((_, lane)) = self.lanes.remove(&handle.id) else {
+        let Some((_, lane)) = self.lanes.remove(&handle.id.as_uuid()) else {
             self.capture_sink.record(LaneCaptureEvent::LaneClosed {
                 captured_at_ms: now_ms_for_capture(),
                 persona: PersonaId::new(Uuid::nil()),
                 task: TaskKind::Chat,
-                handle_id: handle.id,
+                handle_id: handle.id.as_uuid(),
                 lease_id: String::new(),
                 was_present: false,
             });
@@ -616,7 +616,7 @@ impl InferenceCoordinator {
             captured_at_ms: now_ms_for_capture(),
             persona,
             task,
-            handle_id: handle.id,
+            handle_id: handle.id.as_uuid(),
             lease_id,
             was_present: true,
         });
@@ -736,7 +736,7 @@ impl InferenceCoordinator {
             // can't fail unrecoverably; we don't propagate.
             let handle_ref = HandleRef {
                 owner: crate::inference::handle_store::HANDLE_OWNER.to_string(),
-                id: cand.handle_id,
+                id: cand.handle_id.into(),
                 type_tag: crate::inference::handle_store::HANDLE_TYPE_TAG.to_string(),
                 created_at_ms: lane.lease().acquired_at_ms,
             };
@@ -774,7 +774,7 @@ impl InferenceCoordinator {
     /// module's inspect command per
     /// [[observability-is-half-the-architecture]].
     pub fn inspect(&self, handle: &HandleRef) -> Option<LaneInspection> {
-        self.lanes.get(&handle.id).map(|entry| {
+        self.lanes.get(&handle.id.as_uuid()).map(|entry| {
             let lane = entry.value();
             let bytes = (lane.seed_kv_tokens() as u64).saturating_mul(self.config.bytes_per_token);
             LaneInspection {
@@ -796,7 +796,7 @@ impl InferenceCoordinator {
     /// Snapshot of one lane (clone) — used by tests + the handle
     /// module for delegation.
     pub fn lane_for_handle(&self, handle: &HandleRef) -> Option<Lane> {
-        self.lanes.get(&handle.id).map(|e| e.value().clone())
+        self.lanes.get(&handle.id.as_uuid()).map(|e| e.value().clone())
     }
 
     pub fn lane_count(&self) -> usize {
@@ -1020,7 +1020,7 @@ mod tests {
         assert_eq!(lane.persona(), persona(1));
         assert_eq!(lane.task(), TaskKind::Chat);
         assert_eq!(lane.class(), LaneClass::Interactive);
-        assert_eq!(lane.handle_id(), h.id);
+        assert_eq!(lane.handle_id(), h.id.as_uuid());
     }
 
     #[test]
@@ -1153,7 +1153,7 @@ mod tests {
         assert_eq!(inspection.persona, persona(7));
         assert_eq!(inspection.task, TaskKind::Chat);
         assert_eq!(inspection.class, LaneClass::Interactive);
-        assert_eq!(inspection.handle_id, h.id);
+        assert_eq!(inspection.handle_id, h.id.as_uuid());
         assert_eq!(inspection.seed_kv_tokens, 8 * 1024);
         assert_eq!(inspection.max_kv_tokens, 16 * 1024);
         assert_eq!(inspection.bytes_accounted, 8 * 1024); // small config bytes_per_token=1
@@ -1201,7 +1201,7 @@ mod tests {
                 assert_eq!(*p, persona(1));
                 assert_eq!(*task, TaskKind::Chat);
                 assert_eq!(*class, LaneClass::Interactive);
-                assert_eq!(*handle_id, h.id);
+                assert_eq!(*handle_id, h.id.as_uuid());
                 assert_eq!(*cost_units, 8 * 1024);
                 assert_eq!(*target_silicon, TargetSilicon::Cpu);
             }

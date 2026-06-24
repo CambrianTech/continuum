@@ -242,7 +242,7 @@ impl InferenceHandleStore {
             last_used_ms: AtomicU64::new(now),
             generation_count: AtomicU64::new(0),
         });
-        self.sessions.insert(handle.id, session);
+        self.sessions.insert(handle.id.as_uuid(), session);
         handle
     }
 
@@ -330,7 +330,7 @@ impl InferenceHandleStore {
     /// was already gone.
     pub fn close(&self, handle: &HandleRef) -> Result<bool, HandleStoreError> {
         Self::validate_handle_shape(handle)?;
-        Ok(self.sessions.remove(&handle.id).is_some())
+        Ok(self.sessions.remove(&handle.id.as_uuid()).is_some())
     }
 
     /// Inspection snapshot for a handle — answers "what does this
@@ -366,10 +366,10 @@ impl InferenceHandleStore {
     fn lookup(&self, handle: &HandleRef) -> Result<Arc<InferenceSession>, HandleStoreError> {
         Self::validate_handle_shape(handle)?;
         self.sessions
-            .get(&handle.id)
+            .get(&handle.id.as_uuid())
             .map(|s| s.value().clone())
             .ok_or(HandleStoreError::HandleNotFound {
-                handle_id: handle.id,
+                handle_id: handle.id.as_uuid(),
             })
     }
 

@@ -487,7 +487,7 @@ mod tests {
         assert_eq!(req.params.model, "qwen");
         assert_eq!(req.session_id, Some(session_id));
         assert_eq!(req.user_id, Some(user_id));
-        assert_eq!(req.handle.unwrap().id, handle_id);
+        assert_eq!(req.handle.unwrap().id.as_uuid(), handle_id);
     }
 
     #[test]
@@ -657,7 +657,7 @@ mod tests {
         assert_eq!(req.params.max_tokens, 64);
         assert_eq!(req.session_id, Some(session_id));
         assert_eq!(req.user_id, Some(user_id));
-        assert_eq!(req.handle.unwrap().id, handle_id);
+        assert_eq!(req.handle.unwrap().id.as_uuid(), handle_id);
     }
 
     // ── CommandRequest::handle_id_or_legacy ─────────────────────────

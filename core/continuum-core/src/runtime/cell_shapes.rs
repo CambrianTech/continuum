@@ -59,6 +59,7 @@
 //! same whether the producer runs in-process, in a sibling module, or
 //! on a remote peer over grid/airc.
 
+use super::handle::Handle;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 use uuid::Uuid;
@@ -127,7 +128,7 @@ pub struct HandleRef {
     /// chooses). Wire format is the UUID's canonical string serialization
     /// so ts-rs sees it as `string`.
     #[ts(type = "string")]
-    pub id: Uuid,
+    pub id: Handle,
 
     /// Type tag identifying the state shape. Convention:
     /// `"<module>::<TypeName>"`. Lets typed consumers cast safely
@@ -158,7 +159,7 @@ impl HandleRef {
     ) -> Self {
         Self {
             owner: owner.into(),
-            id,
+            id: id.into(),
             type_tag: type_tag.into(),
             created_at_ms: now_ms(),
         }
@@ -235,7 +236,7 @@ impl HandleRef {
                 self.type_tag, expected_type_tag
             ));
         }
-        Ok(self.id)
+        Ok(self.id.as_uuid())
     }
 }
 
@@ -321,7 +322,7 @@ mod tests {
     fn handle_ref_with_id_preserves_uuid() {
         let id = Uuid::new_v4();
         let h = HandleRef::with_id("ai/inference", id, "ai::InferenceSession");
-        assert_eq!(h.id, id, "with_id must preserve the producer-allocated UUID");
+        assert_eq!(h.id.as_uuid(), id, "with_id must preserve the producer-allocated UUID");
         assert_eq!(h.owner, "ai/inference");
         assert_eq!(h.type_tag, "ai::InferenceSession");
         assert!(h.created_at_ms > 0, "constructor must capture a timestamp");
