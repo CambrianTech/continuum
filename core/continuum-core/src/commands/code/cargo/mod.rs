@@ -35,8 +35,10 @@ use crate::modules::code::CodeState;
 use crate::sdk_codegen::{CommandError, DynCommand};
 
 pub mod check;
+pub mod test;
 
 use check::CargoCheck;
+use test::CargoTest;
 
 /// Default wall-clock budget for a cargo run, in seconds. Generous because a cold
 /// build legitimately takes minutes; the persona can override per call.
@@ -169,11 +171,62 @@ pub(crate) fn parse_diagnostics(stdout: &str) -> Vec<CargoDiagnostic> {
     diags
 }
 
+/// Summed pass/fail tally across every libtest binary (and doctest) a `cargo test`
+/// run produced — the objective grade the persona reads after running her tests.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct TestSummary {
+    pub passed: u32,
+    pub failed: u32,
+    pub ignored: u32,
+    /// Fully-qualified names of the tests that FAILED, in report order — what the
+    /// persona drills into next.
+    pub failures: Vec<String>,
+}
+
+/// Parse libtest's human output (which streams through cargo's stdout even under
+/// `--message-format=json`) into a summed pass/fail tally.
+///
+/// cargo runs N test binaries; each prints its own `test result: ...` line and its
+/// own `test <name> ... FAILED` lines, so we ACCUMULATE across the whole stream
+/// rather than reading one line. Counts come from the `test result:` summaries;
+/// failed NAMES come from the per-test `... FAILED` lines (the summary only counts).
+pub(crate) fn parse_test_summary(stdout: &str) -> TestSummary {
+    let mut s = TestSummary::default();
+    for line in stdout.lines() {
+        let line = line.trim();
+        if let Some(rest) = line.strip_prefix("test result:") {
+            // e.g. " ok. 6 passed; 0 failed; 1 ignored; 0 measured; 4792 filtered out; ..."
+            // The "ok." / "FAILED." verdict shares the first clause with the count, so
+            // scan token PAIRS (a number followed by its kind) rather than assuming the
+            // count is the first token. Kinds carry a trailing ';'/'.' to strip.
+            let tokens: Vec<&str> = rest.split_whitespace().collect();
+            for pair in tokens.windows(2) {
+                if let Ok(n) = pair[0].parse::<u32>() {
+                    match pair[1].trim_end_matches([';', '.', ',']) {
+                        "passed" => s.passed += n,
+                        "failed" => s.failed += n,
+                        "ignored" => s.ignored += n,
+                        _ => {}
+                    }
+                }
+            }
+        } else if let Some(name) = line.strip_prefix("test ").and_then(|r| r.strip_suffix(" ... FAILED")) {
+            // A failed test's name line — distinct from the summary; capture it so the
+            // persona is handed WHICH test broke, not just a count.
+            s.failures.push(name.trim().to_string());
+        }
+    }
+    s
+}
+
 /// The dep-holding cargo command objects [`CodeModule`](crate::modules::code::CodeModule)
 /// contributes to the kernel's typed object map, one per verb file, sharing the
 /// caller's `Arc<CodeState>`.
 pub fn command_objects(state: Arc<CodeState>) -> Vec<Arc<dyn DynCommand>> {
-    vec![Arc::new(CargoCheck { state })]
+    vec![
+        Arc::new(CargoCheck { state: state.clone() }),
+        Arc::new(CargoTest { state }),
+    ]
 }
 
 #[cfg(test)]
@@ -209,5 +262,37 @@ mod tests {
             r#"{"reason":"build-finished","success":false}"#,
         );
         assert!(parse_diagnostics(stdout).is_empty());
+    }
+
+    // what this catches: counts are SUMMED across multiple `test result:` lines (each
+    // test binary prints its own), and failed test NAMES are pulled from the per-test
+    // `... FAILED` lines — so the persona gets both the tally and which test broke.
+    #[test]
+    fn sums_counts_and_collects_failed_names_across_binaries() {
+        let stdout = concat!(
+            "running 2 tests\n",
+            "test math::adds ... ok\n",
+            "test math::subtracts ... FAILED\n",
+            "test result: FAILED. 1 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s\n",
+            "running 1 test\n",
+            "test util::trims ... ok\n",
+            "test result: ok. 1 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 0.00s\n",
+        );
+        let s = parse_test_summary(stdout);
+        assert_eq!(s.passed, 2);
+        assert_eq!(s.failed, 1);
+        assert_eq!(s.ignored, 2);
+        assert_eq!(s.failures, vec!["math::subtracts".to_string()]);
+    }
+
+    // what this catches: an all-green run yields zero failures and no failure names,
+    // so `ok` downstream is computed from a clean tally rather than a false positive.
+    #[test]
+    fn all_passing_run_has_no_failures() {
+        let stdout = "test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 4792 filtered out; finished in 0.40s\n";
+        let s = parse_test_summary(stdout);
+        assert_eq!(s.passed, 6);
+        assert_eq!(s.failed, 0);
+        assert!(s.failures.is_empty());
     }
 }
