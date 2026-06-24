@@ -68,11 +68,11 @@ lands ([[seamless-persona-failover-model-and-genome]]).
 | `persona/supervisor.rs` | `ServedModelPersonaAdapterFactory` | persona upstart bind | A | ✅ `df42bf18e` |
 | `cognition/inference_session.rs` | `resolve_model` (✅) · label → `PROVIDER_ID` | lease resolve · label | A · const | ✅ `ea070942a` |
 | `modules/ai_provider.rs` | boot announce (✅) · register gated on A · base_url from snapshot | gateway announce · register | A | ✅ `ea070942a` |
-| `ai/openai_adapter.rs` | id-keyed behavior → `provider.capabilities` | **adapter behavior** | **B (#55)** | ✅ `aa3e4c26d` |
+| `ai/openai_adapter.rs` | id-keyed behavior → `provider.capabilities` (B) · single-resident pre-flight → `current_serving()` (A) | **adapter behavior** | **B (#55)** + A | ✅ `aa3e4c26d` + `cd440d4d4` |
 | `model_registry/catalog.rs` | `capabilities` declared · `id:PROVIDER_ID` · `auth:None` | catalog entry | A (base) + B (caps) | ✅ `ea070942a` |
 | `cognition/generate_response.rs` | `DEFAULT_GENERATE_PROVIDER = PROVIDER_ID` | default route id | const | ✅ `ea070942a` |
-| `main.rs` | `ensure_startup_model()` `:377` | startup model load | A (daemon owns) → **DELETE** | slice 4 |
-| `ipc/mod.rs` | `ensure_api_key`/`ApiKeyStatus` `:773` (factory ref ✅) | boot key check | none → **DELETE** | slice 4 |
+| `main.rs` | `ensure_startup_model()` spawn DELETED | startup model load | A (daemon owns) | ✅ `715da98cf` |
+| `ipc/mod.rs` | `ensure_api_key`/`ApiKeyStatus` boot check DELETED | boot key check | none (no key) | ✅ `715da98cf` |
 | `inference/model_commands.rs` | `unsloth_control` keystone `:42` | model load/unload cmds | forge/serving | #52 |
 | `inference/unsloth_forge.rs` | forge trait | forge | **#52** convergence | #52 |
 | `modules/forge.rs` | `UnslothError` `:710` | forge | **#52** | #52 |
@@ -93,14 +93,27 @@ Done is done; the re-order is everything below the line.
    PROVIDER_ID` (one source of truth); registration gated on Contract A + base_url
    from the snapshot; `UNSLOTH_API_KEY` gate + bearer auth dropped (local endpoint)
    (`ea070942a`).
+6. ✅ slice 4 — deleted the vestigial boot paths: `main.rs::ensure_startup_model`
+   (the daemon owns model load) + `ipc::ensure_api_key`/`ApiKeyStatus` (no key on a
+   local endpoint) (`715da98cf`).
+7. ✅ adapter pre-flight relocation — the `single_resident_model` generate guard
+   reads Contract A's `current_serving()` snapshot and fails loud on mismatch,
+   instead of driving its own HTTP load (`unsloth_control::ensure_model_active`).
+   llama-server switches models by *process relaunch* the daemon owns; an adapter
+   must never relaunch from inside a generate. **This was the last #53-lane caller
+   of `unsloth_control` — every serving-control path now routes onto A** (`cd440d4d4`).
    ─────────────────────────────────────────────────────────────
-6. **slice 4 — NEXT. delete `main.rs::ensure_startup_model` + `ipc::ensure_api_key`
-   / `ApiKeyStatus` (A owns startup readiness; the serving daemon owns load). The
-   key-presence checks are now vestigial — the gateway no longer uses a key.**
-7. #40 (embeddings → /v1) and #52 (forge → native/mlx) exit `unsloth_control`
-   on their own tracks — independent convergences, not blockers for 1–6.
-8. final — delete `unsloth_control.rs` + its `mod` decl + catalog cleanup, once
-   5–7 have removed every caller. The compiler is the completeness check:
+   `#53`'s serving-control relocation is COMPLETE. The remaining steps are the
+   other tracks' exits + the wholesale module delete:
+8. #40 (embeddings → /v1) and #52 (forge → native/mlx) exit `unsloth_control`
+   on their own tracks — independent convergences, the last consumers of its
+   `UnslothHttp` / `UnslothError` / `unsloth_base_url` surface.
+9. final — delete `unsloth_control.rs` + its `mod` decl + the catalog `DEFAULT_HOST`
+   default literal, once #40/#52 have removed every caller. The now-dead decision/
+   startup/api-key surface (`ensure_model_active`, `EnsureOutcome`,
+   `startup_model_action`, `ensure_api_key`, …) goes with it — it is `pub` (no
+   dead-code warning) and its logic is superseded by `llama_server::
+   ensure_model_serving`. The compiler is the completeness check:
    `move-first, let the compiler find the smell` ([[move-first-let-compiler-find-the-smell]]).
 
 ## Invariants (do not violate while excising)
