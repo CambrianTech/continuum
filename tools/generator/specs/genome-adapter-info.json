@@ -67,7 +67,7 @@
     {
       "description": "Inspect a specific adapter",
       "command": "./jtag genome/adapter-info --name=helper-coding-2026-03-01",
-      "expectedResult": "{ name: 'helper-coding-2026-03-01', domain: 'coding', sizeMB: 312, baseModel: 'unsloth/Llama-3.2-3B-Instruct', ... }"
+      "expectedResult": "{ name: 'helper-coding-2026-03-01', domain: 'coding', sizeMB: 312, baseModel: 'meta-llama/Llama-3.2-3B-Instruct', ... }"
     }
   ],
   "accessLevel": "ai-safe"

@@ -661,14 +661,6 @@ else
   esac
 fi
 
-# Autowire the gateway credential with minimal manual steps (env/config →
-# CLI auto-mint → paste-and-validate). Non-blocking + non-fatal: if unsloth
-# isn't running yet (or the user skips), Continuum still runs with another
-# provider and the key can be set later in config.env.
-if [ "${CONTINUUM_NO_UNSLOTH:-0}" != "1" ]; then
-  mod_unsloth_gateway_key "$CONFIG_FILE"
-fi
-
 # ============================================================================
 # Tailscale mesh VPN (multi-tower networking)
 # ============================================================================

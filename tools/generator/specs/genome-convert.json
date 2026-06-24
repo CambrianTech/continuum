@@ -75,12 +75,12 @@
   "examples": [
     {
       "description": "Merge LoRA into full-precision model",
-      "command": "./jtag genome/convert --operation=merge-full --adapterPath=.continuum/genome/adapters/helper-coding-123 --baseModel=unsloth/Llama-3.2-3B-Instruct",
+      "command": "./jtag genome/convert --operation=merge-full --adapterPath=.continuum/genome/adapters/helper-coding-123 --baseModel=meta-llama/Llama-3.2-3B-Instruct",
       "expectedResult": "{ outputPath: '.continuum/genome/converted/...', format: 'safetensors-fp16', sizeMB: 6144 }"
     },
     {
       "description": "Merge LoRA and quantize to 4-bit GGUF",
-      "command": "./jtag genome/convert --operation=merge-and-quantize --adapterPath=.continuum/genome/adapters/helper-coding-123 --baseModel=unsloth/Llama-3.2-3B-Instruct --bits=4",
+      "command": "./jtag genome/convert --operation=merge-and-quantize --adapterPath=.continuum/genome/adapters/helper-coding-123 --baseModel=meta-llama/Llama-3.2-3B-Instruct --bits=4",
       "expectedResult": "{ outputPath: '.continuum/genome/converted/...', format: 'gguf-q4_0', sizeMB: 1800, compressionRatio: 3.4 }"
     }
   ],

@@ -54,7 +54,7 @@
       "description": "Compact a model using trained adapter's gate gradients",
       "params": {
         "adapterPath": "~/.continuum/genome/adapters/helper-ai/coding-expertise",
-        "modelPath": "unsloth/Llama-3.2-3B-Instruct"
+        "modelPath": "meta-llama/Llama-3.2-3B-Instruct"
       }
     }
   ],
