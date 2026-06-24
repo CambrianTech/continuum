@@ -38,6 +38,7 @@ pub mod anthropic_adapter;
 pub mod heuristic_adapter;
 pub mod json_in_prompt_tools;
 pub mod openai_adapter;
+pub mod openai_endpoints;
 pub mod registry_bridge;
 pub mod types;
 

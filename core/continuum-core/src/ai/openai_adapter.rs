@@ -25,6 +25,7 @@ use crate::secrets::get_secret;
 use crate::{clog_info, clog_warn};
 
 use super::adapter::{AIProviderAdapter, AdapterCapabilities, ApiStyle, LoRACapabilities};
+use super::openai_endpoints::OpenAiBase;
 use super::registry_bridge::models_for_provider_via_registry;
 use super::types::{
     ActiveAdapterRequest, ChatMessage, ContentPart, EmbeddingInput, EmbeddingRequest,
@@ -222,27 +223,18 @@ impl OpenAICompatibleAdapter {
         self
     }
 
-    /// The host root that request URLs append `/v1/...` to — the runtime override
-    /// if set, else the configured base. ONE resolution point for all request
-    /// sites (was copy-pasted 4×).
-    ///
-    /// Normalizes to a bare host root by stripping a trailing `/v1` (and any
-    /// trailing slash). Two sources feed in with DIFFERENT shapes and both are
-    /// honored here so no call site has to care:
-    ///   - the catalog stores bare hosts (`https://api.openai.com`)
-    ///   - the local gateway's runtime override is Contract A's snapshot
-    ///     `base_url`, which is the OpenAI `/v1` URL (`…:58057/v1`) — the right
-    ///     user-facing shape for `serving/status`, but a `/v1` too many here.
-    /// Without this strip the gateway path doubled to `/v1/v1/chat/completions`
-    /// → llama-server 404 "File Not Found" → every persona turn abstained. It
-    /// also hardens against the near-universal habit of writing a provider
-    /// base_url WITH the `/v1` segment.
-    fn api_base(&self) -> &str {
+    /// The typed OpenAI-compatible endpoint base — the runtime override if set,
+    /// else the configured base. The ONE place request URLs are built; every
+    /// site calls a typed accessor ([`OpenAiBase::chat_completions`] etc.) rather
+    /// than concatenating `/v1/...` itself, so the protocol's path layout lives in
+    /// exactly one place and the snapshot's `/v1` shape can no longer double to
+    /// `/v1/v1/...` (THE Asha-mute bug). See [`crate::ai::openai_endpoints`].
+    fn endpoints(&self) -> OpenAiBase {
         let raw = self
             .runtime_base_url
             .as_deref()
             .unwrap_or(self.config.base_url.as_str());
-        normalize_api_base(raw)
+        OpenAiBase::new(raw)
     }
 
     /// Fetch the live model list from the provider's /v1/models endpoint.
@@ -252,8 +244,7 @@ impl OpenAICompatibleAdapter {
     /// data is preferred over empty data. Never silently succeeds with an
     /// empty set — returns Err if the endpoint responds with nothing.
     async fn refresh_runtime_models(&self) -> Result<(), String> {
-        let base_url = self.api_base();
-        let url = format!("{}/v1/models", base_url);
+        let url = self.endpoints().models();
 
         let mut req = self.client.get(&url);
         if let Some(ref key) = self.api_key {
@@ -367,7 +358,7 @@ impl OpenAICompatibleAdapter {
     /// support. llama.cpp `llama-server` returns the array of adapters it
     /// loaded at launch, each `{ "id": N, "path": "...", "scale": S }`.
     async fn probe_lora_catalog(&self) -> Result<(), String> {
-        let url = format!("{}/lora-adapters", self.api_base());
+        let url = self.endpoints().lora_adapters();
         let mut req = self.client.get(&url);
         if let Some(ref key) = self.api_key {
             req = req.bearer_auth(key);
@@ -1207,8 +1198,7 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
         }
 
         // Make request - use runtime base URL if set, otherwise config base URL
-        let base_url = self.api_base();
-        let url = format!("{}/v1/chat/completions", base_url);
+        let url = self.endpoints().chat_completions();
 
         let mut request_builder = self
             .client
@@ -1462,8 +1452,7 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
 
         let body = build_embedding_body(&request.input, &model);
 
-        let base_url = self.api_base();
-        let url = format!("{base_url}/v1/embeddings");
+        let url = self.endpoints().embeddings();
 
         let mut request_builder = self
             .client
@@ -1524,8 +1513,7 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
         let start = Instant::now();
 
         // Try to list models as health check
-        let base_url = self.api_base();
-        let url = format!("{}/v1/models", base_url);
+        let url = self.endpoints().models();
 
         let mut request_builder = self
             .client
@@ -1623,14 +1611,6 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
     }
 }
 
-/// Normalize a configured/runtime base URL to the bare host root that request
-/// builders append `/v1/...` to. Strips a trailing slash then a trailing `/v1`.
-/// See [`OpenAICompatibleAdapter::api_base`] for why both shapes reach us.
-fn normalize_api_base(raw: &str) -> &str {
-    let trimmed = raw.trim_end_matches('/');
-    trimmed.strip_suffix("/v1").unwrap_or(trimmed)
-}
-
 // ─── /v1/embeddings helpers (pure — TDD'd apart from the HTTP I/O) ──────────────
 
 /// Build the OpenAI-compatible `/v1/embeddings` request body. A single input is
@@ -1700,23 +1680,6 @@ fn parse_embedding_usage(body: &Value) -> UsageMetrics {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // what this catches: api_base must yield a BARE HOST root regardless of input
-    // shape, so request builders' `{}/v1/...` never doubles to `/v1/v1/...`. THE
-    // Asha-mute bug: Contract A's snapshot base_url is the `…:58057/v1` URL; fed
-    // verbatim it produced `/v1/v1/chat/completions` → llama-server 404 → every
-    // persona turn abstained. Bare catalog hosts must pass through untouched.
-    #[test]
-    fn normalize_api_base_strips_trailing_v1_and_slash() {
-        // the serving-snapshot shape (the bug): trailing /v1 stripped
-        assert_eq!(normalize_api_base("http://127.0.0.1:58057/v1"), "http://127.0.0.1:58057");
-        // with a trailing slash too
-        assert_eq!(normalize_api_base("http://127.0.0.1:58057/v1/"), "http://127.0.0.1:58057");
-        // bare catalog host: untouched
-        assert_eq!(normalize_api_base("https://api.openai.com"), "https://api.openai.com");
-        // bare host with a path segment that is NOT /v1: untouched
-        assert_eq!(normalize_api_base("https://api.groq.com/openai"), "https://api.groq.com/openai");
-    }
 
     // what this catches: a well-formed <think>…</think> (unsloth/llama.cpp today) is
     // SEPARATED — reasoning captured, the answer after </think> is the clean text.

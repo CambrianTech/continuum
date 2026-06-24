@@ -160,7 +160,7 @@ async fn discover_provider(config: &ProviderConfig) -> Vec<DiscoveredModel> {
 
 /// Fetch from OpenAI-compatible /v1/models endpoint
 async fn fetch_openai_compatible(config: &ProviderConfig) -> Result<Vec<DiscoveredModel>, String> {
-    let url = format!("{}/v1/models", config.base_url);
+    let url = crate::ai::openai_endpoints::OpenAiBase::new(&config.base_url).models();
 
     let client = reqwest::Client::new();
     let response = client
