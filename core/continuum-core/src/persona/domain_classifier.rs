@@ -76,7 +76,6 @@ fn builtin_vocabularies() -> Vec<(&'static str, Vec<&'static str>)> {
                 "return",
                 "typescript",
                 "javascript",
-                "python",
                 "rust",
                 "compile",
                 "debug",
