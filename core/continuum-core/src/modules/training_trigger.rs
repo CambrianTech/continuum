@@ -1415,7 +1415,7 @@ mod tests {
     mod stress {
         use super::*;
         use crate::genome::fine_tuning::adapter::{
-            FineTuningAdapter, FineTuningCapabilities, FineTuningError,
+            FineTuningAdapter, FineTuningCapabilities, FineTuningError, TrainerHardware,
         };
         use crate::genome::fine_tuning::types::{
             JobHandle, JobMetrics, TrainingArtifact, TrainingJobRequest, TrainingStatus,
@@ -1462,6 +1462,7 @@ mod tests {
                     supports_validation: false,
                     produces_local_artifact: true,
                     supported_base_model_prefixes: vec!["stress".to_string()],
+                    requires: TrainerHardware::Any,
                 }
             }
 

@@ -50,7 +50,7 @@ use std::sync::Mutex as StdMutex;
 use async_trait::async_trait;
 use uuid::Uuid;
 
-use super::adapter::{FineTuningAdapter, FineTuningCapabilities, FineTuningError};
+use super::adapter::{FineTuningAdapter, FineTuningCapabilities, FineTuningError, TrainerHardware};
 use super::types::{
     JobHandle, JobMetrics, TrainingArtifact, TrainingJobRequest, TrainingStatus,
 };
@@ -137,6 +137,9 @@ impl FineTuningAdapter for RecordingFineTuningAdapter {
             // co-registered cloud adapter in tests.
             produces_local_artifact: true,
             supported_base_model_prefixes: vec![RECORDING_BASE_PREFIX.to_string()],
+            // Test fixture — no real accelerator needed; selectable on
+            // any host.
+            requires: TrainerHardware::Any,
         }
     }
 

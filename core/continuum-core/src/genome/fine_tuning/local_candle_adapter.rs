@@ -47,7 +47,7 @@ use async_trait::async_trait;
 use dashmap::DashMap;
 use uuid::Uuid;
 
-use super::adapter::{FineTuningAdapter, FineTuningCapabilities, FineTuningError};
+use super::adapter::{FineTuningAdapter, FineTuningCapabilities, FineTuningError, TrainerHardware};
 use super::job_actor::{spawn_job, JobActorError, JobController, SpawnJobRequest};
 use super::types::{JobHandle, TrainingJobRequest, TrainingStatus};
 
@@ -142,6 +142,9 @@ impl FineTuningAdapter for LocalCandleFineTuner {
             // loading lands, this list narrows to the cache's actual
             // entries (e.g. `qwen3.5-`, `llama-3-`).
             supported_base_model_prefixes: vec![SYNTHETIC_BASE_PREFIX.to_string()],
+            // Accelerator-agnostic: Candle selects Metal/CUDA/CPU at
+            // device-init time, so this trainer runs on any host.
+            requires: TrainerHardware::Any,
         }
     }
 

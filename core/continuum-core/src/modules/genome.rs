@@ -284,7 +284,9 @@ fn fine_tuning_error_kind(e: &FineTuningError) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::genome::fine_tuning::adapter::{FineTuningAdapter, FineTuningCapabilities};
+    use crate::genome::fine_tuning::adapter::{
+        FineTuningAdapter, FineTuningCapabilities, TrainerHardware,
+    };
     use crate::genome::fine_tuning::types::{
         JobMetrics, TrainingArtifact, TrainingDataset, TrainingSource,
     };
@@ -303,6 +305,7 @@ mod tests {
                 supports_validation: true,
                 produces_local_artifact: false,
                 supported_base_model_prefixes: vec![],
+                requires: TrainerHardware::Any,
             }
         }
         async fn create_job(

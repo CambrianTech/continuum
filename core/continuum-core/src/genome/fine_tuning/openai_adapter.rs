@@ -36,7 +36,7 @@ use uuid::Uuid;
 
 use crate::secrets::get_secret;
 
-use super::adapter::{FineTuningAdapter, FineTuningCapabilities, FineTuningError};
+use super::adapter::{FineTuningAdapter, FineTuningCapabilities, FineTuningError, TrainerHardware};
 use super::types::{
     JobHandle, JobMetrics, TrainingArtifact, TrainingJobRequest, TrainingStatus,
 };
@@ -153,6 +153,9 @@ impl FineTuningAdapter for OpenAIFineTuningAdapter {
             // (plus the o-series; gpt-4o-mini is the cheapest as of
             // late 2025). Prefix-route incoming requests by this.
             supported_base_model_prefixes: vec!["gpt-".into()],
+            // Cloud HTTP trainer — runs from any host regardless of
+            // local accelerator.
+            requires: TrainerHardware::Any,
         }
     }
 

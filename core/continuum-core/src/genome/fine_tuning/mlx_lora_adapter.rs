@@ -51,11 +51,12 @@ use dashmap::DashMap;
 use tokio::sync::watch;
 use uuid::Uuid;
 
-use super::adapter::{FineTuningAdapter, FineTuningCapabilities, FineTuningError};
+use super::adapter::{FineTuningAdapter, FineTuningCapabilities, FineTuningError, TrainerHardware};
 use super::types::{
     JobHandle, JobMetrics, LoRAHyperparams, ScheduleParams, TrainingArtifact, TrainingJobRequest,
     TrainingStatus,
 };
+use crate::inference_capability::probe_hardware_profile;
 use crate::runtime;
 
 /// Stable provider id — matches the model_registry provider convention.
@@ -123,12 +124,14 @@ fn default_mlx_python() -> PathBuf {
     home.join(".unsloth/studio/unsloth_studio/bin/python3")
 }
 
-/// This host can actually run `mlx_lm.lora` only on Apple Silicon —
-/// MLX targets the Apple GPU. Gating here keeps the coordinator from
-/// routing a job to a trainer that would fail; per `no-fallbacks-ever`
-/// we fail loud with the reason rather than silently no-op.
-fn is_apple_silicon() -> bool {
-    cfg!(all(target_os = "macos", target_arch = "aarch64"))
+/// Can this host actually run `mlx_lm.lora`? MLX targets the Apple GPU,
+/// so the gate is the host's probed Metal flag — a deterministic
+/// boolean read off the rich [`HardwareProfile`], never a parse of the
+/// free-form `platform` string. Keeps the coordinator (and a direct
+/// caller) from launching a trainer that would fail; per
+/// `no-fallbacks-ever` we fail loud with the reason rather than no-op.
+fn host_has_metal() -> bool {
+    probe_hardware_profile().has_metal
 }
 
 #[async_trait]
@@ -145,6 +148,9 @@ impl FineTuningAdapter for MlxLoraFineTuner {
             // caller names. The caller owns knowing the base is
             // MLX-loadable; create_job validates it's non-empty.
             supported_base_model_prefixes: vec![],
+            // Apple's MLX path — the coordinator routes here only on a
+            // host whose probed HardwareProfile reports a Metal device.
+            requires: TrainerHardware::Metal,
         }
     }
 
@@ -152,10 +158,10 @@ impl FineTuningAdapter for MlxLoraFineTuner {
         let log = runtime::logger(PROVIDER_ID);
 
         // ── Preconditions (fail loud, name the cause) ──────────────
-        if !is_apple_silicon() {
+        if !host_has_metal() {
             return Err(FineTuningError::InvalidRequest(
-                "mlx-local trains only on Apple Silicon (macos/aarch64); \
-                 route NVIDIA jobs to local-candle or a leased GPU node"
+                "mlx-local needs an Apple Silicon Metal device (host has none); \
+                 route NVIDIA jobs to a CUDA trainer or a leased GPU node"
                     .into(),
             ));
         }
@@ -567,8 +573,8 @@ mod tests {
     #[tokio::test]
     #[ignore = "real mlx_lm.lora training on Apple Silicon; run explicitly"]
     async fn real_mlx_train_produces_safetensors() {
-        if !is_apple_silicon() {
-            eprintln!("skip: not Apple Silicon");
+        if !host_has_metal() {
+            eprintln!("skip: host has no Metal device");
             return;
         }
         let tuner = MlxLoraFineTuner::new();

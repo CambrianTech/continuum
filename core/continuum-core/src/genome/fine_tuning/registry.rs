@@ -74,7 +74,9 @@ impl FineTuningRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::genome::fine_tuning::adapter::{FineTuningCapabilities, FineTuningError};
+    use crate::genome::fine_tuning::adapter::{
+        FineTuningCapabilities, FineTuningError, TrainerHardware,
+    };
     use crate::genome::fine_tuning::types::{JobHandle, TrainingJobRequest, TrainingStatus};
     use async_trait::async_trait;
     use uuid::Uuid;
@@ -90,6 +92,7 @@ mod tests {
                 supports_validation: true,
                 produces_local_artifact: false,
                 supported_base_model_prefixes: vec![],
+                requires: TrainerHardware::Any,
             }
         }
 

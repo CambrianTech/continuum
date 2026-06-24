@@ -98,7 +98,10 @@ pub mod safetensors_io;
 pub mod training_loop;
 pub mod types;
 
-pub use adapter::{ArcFineTuningAdapter, FineTuningAdapter, FineTuningCapabilities, FineTuningError};
+pub use adapter::{
+    ArcFineTuningAdapter, FineTuningAdapter, FineTuningCapabilities, FineTuningError,
+    TrainerHardware,
+};
 pub use byte_tokenizer::{ByteTokenizer, BYTE_PAD_ID, BYTE_VOCAB};
 pub use coordinator::{CoordinatorError, FineTuningCoordinator};
 pub use job_actor::{spawn_job, JobActorError, JobController, SpawnJobRequest};

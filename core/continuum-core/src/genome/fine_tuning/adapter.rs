@@ -9,6 +9,7 @@ use async_trait::async_trait;
 use std::sync::Arc;
 
 use super::types::{JobHandle, TrainingJobRequest, TrainingStatus};
+use crate::inference_capability::HardwareProfile;
 
 // ─── Errors ──────────────────────────────────────────────────────────
 
@@ -64,6 +65,54 @@ pub enum FineTuningError {
     UnknownHandle(JobHandle),
 }
 
+// ─── Hardware requirement ────────────────────────────────────────────
+
+/// The accelerator an adapter REQUIRES to run, matched against the
+/// host's probed [`HardwareProfile`] so the coordinator never routes a
+/// job to a trainer the host can't execute (Apple's `mlx_lm` on a Linux
+/// box, a CUDA trainer on a Mac).
+///
+/// This is an **enum matched against boolean device flags** — never a
+/// parse of `HardwareProfile::platform` (that field is a free-form
+/// human label; routing decisions read `has_metal` / `has_cuda` /
+/// `has_vulkan`, never the string). One rich struct describes the host;
+/// this enum states the adapter's demand. Adding "the same for CUDA or
+/// other varieties" is a new variant + a new adapter — the coordinator
+/// never changes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrainerHardware {
+    /// Runs on any host — cloud HTTP trainers and accelerator-agnostic
+    /// in-process trainers (Candle selects Metal/CUDA/CPU itself).
+    Any,
+    /// Requires an Apple-Silicon Metal device (Apple's `mlx_lm`).
+    Metal,
+    /// Requires an NVIDIA CUDA device.
+    Cuda,
+    /// Requires a Vulkan device (AMD / non-CUDA GPUs).
+    Vulkan,
+}
+
+impl TrainerHardware {
+    /// Can `host` actually run this trainer? Deterministic match on the
+    /// host's device flags — no string parsing.
+    pub fn satisfied_by(&self, host: &HardwareProfile) -> bool {
+        match self {
+            TrainerHardware::Any => true,
+            TrainerHardware::Metal => host.has_metal,
+            TrainerHardware::Cuda => host.has_cuda,
+            TrainerHardware::Vulkan => host.has_vulkan,
+        }
+    }
+
+    /// True when this names a specific host accelerator (not `Any`).
+    /// The coordinator ranks a host-native accelerator trainer above
+    /// the accelerator-agnostic ones, so on a Mac the Metal trainer
+    /// beats the generic Candle trainer.
+    pub fn is_specific_accelerator(&self) -> bool {
+        !matches!(self, TrainerHardware::Any)
+    }
+}
+
 // ─── Capabilities ────────────────────────────────────────────────────
 
 /// Static declaration of what an adapter can do. Lets the dispatcher
@@ -97,6 +146,12 @@ pub struct FineTuningCapabilities {
     /// request's `base_model`. Empty `Vec` = wildcard; the adapter
     /// will validate the actual base on `create_job`.
     pub supported_base_model_prefixes: Vec<String>,
+
+    /// The accelerator this adapter requires. The coordinator matches
+    /// it against the host's probed [`HardwareProfile`] device flags and
+    /// never routes a job to a trainer the host can't run. `Any` for
+    /// cloud HTTP trainers and accelerator-agnostic in-process trainers.
+    pub requires: TrainerHardware,
 }
 
 // ─── The trait ───────────────────────────────────────────────────────
@@ -182,6 +237,7 @@ mod tests {
                 supports_validation: true,
                 produces_local_artifact: true,
                 supported_base_model_prefixes: vec![],
+                requires: TrainerHardware::Any,
             }
         }
 
