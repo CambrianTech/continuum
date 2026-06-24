@@ -24,12 +24,12 @@ use crate::model_registry::{AuthKind, Capability};
 use crate::secrets::get_secret;
 use crate::{clog_info, clog_warn};
 
-use super::adapter::{AIProviderAdapter, AdapterCapabilities, ApiStyle};
+use super::adapter::{AIProviderAdapter, AdapterCapabilities, ApiStyle, LoRACapabilities};
 use super::registry_bridge::models_for_provider_via_registry;
 use super::types::{
-    ChatMessage, ContentPart, EmbeddingInput, EmbeddingRequest, EmbeddingResponse, FinishReason,
-    HealthState, HealthStatus, MessageContent, ModelInfo, TextGenerationRequest,
-    TextGenerationResponse, ToolCall, ToolChoice, UsageMetrics,
+    ActiveAdapterRequest, ChatMessage, ContentPart, EmbeddingInput, EmbeddingRequest,
+    EmbeddingResponse, FinishReason, HealthState, HealthStatus, MessageContent, ModelInfo,
+    TextGenerationRequest, TextGenerationResponse, ToolCall, ToolChoice, UsageMetrics,
 };
 
 /// Runtime-resolved config carried by each `OpenAICompatibleAdapter`
@@ -82,6 +82,28 @@ pub struct OpenAICompatibleConfig {
     pub thinking: ThinkingMode,
 }
 
+/// What the serving backend told us when we asked it `GET /lora-adapters`.
+///
+/// The organism DISCOVERS whether it can page a LoRA in by *asking the
+/// endpoint* — we never hardcode "provider X supports LoRA, provider Y does
+/// not." A llama.cpp `llama-server` answers 200 with the array of adapters it
+/// loaded at launch (each carrying the integer load-index the per-request
+/// `"lora":[{"id":N,"scale":S}]` field references); a cloud API or
+/// `mlx_lm.server` (whose `--adapter-path` no-ops) answers 404. We cache the
+/// 404 as `Unsupported` so we don't re-probe a backend that can't do it every
+/// turn, and cache the 200 as `Supported` so name→id resolution is a local
+/// lookup. A transient connection error is NOT cached — a dead server is not
+/// the same as a server that has no LoRA support.
+#[derive(Debug, Clone)]
+enum LoraSupport {
+    /// Never probed.
+    Unknown,
+    /// Endpoint answered 404/501 — this serving backend can't page LoRA per-request.
+    Unsupported,
+    /// Endpoint answered 200 — `(server load-index, adapter path)` for each loaded adapter.
+    Supported(Vec<(i64, String)>),
+}
+
 /// OpenAI-compatible adapter implementation
 pub struct OpenAICompatibleAdapter {
     config: OpenAICompatibleConfig,
@@ -101,6 +123,12 @@ pub struct OpenAICompatibleAdapter {
     /// `supported_model_prefixes()` which for docker-model-runner returned
     /// `[]` → DMR never won routing → every user silently landed on Candle.
     runtime_models: std::sync::Arc<std::sync::RwLock<Option<std::collections::HashSet<String>>>>,
+    /// Discovered LoRA page-in capability + catalog, populated by probing the
+    /// serving backend's `GET /lora-adapters` (see [`LoraSupport`]). Starts
+    /// `Unknown`; the first generation that carries `active_adapters` triggers
+    /// the probe. This is the self-organizing alternative to a hardcoded
+    /// "which provider supports LoRA" table — the endpoint describes itself.
+    lora_support: std::sync::Arc<std::sync::RwLock<LoraSupport>>,
     /// Throttle for concurrent POSTs to this provider's endpoint.
     /// llama.cpp-backed providers (DMR) are single-slot in practice:
     /// one prompt at a time gets the full GPU. Letting N personas
@@ -157,6 +185,7 @@ impl OpenAICompatibleAdapter {
             client,
             initialized: false,
             runtime_models: std::sync::Arc::new(std::sync::RwLock::new(None)),
+            lora_support: std::sync::Arc::new(std::sync::RwLock::new(LoraSupport::Unknown)),
             concurrency,
         }
     }
@@ -300,6 +329,162 @@ impl OpenAICompatibleAdapter {
                     hay == needle || hay.contains(&needle) || needle.contains(&hay)
                 })
             }
+        }
+    }
+
+    /// Probe the serving backend's `GET /lora-adapters` and record what it
+    /// says into `lora_support`. This is capability DISCOVERY, not a declared
+    /// table: a 200 with an array → `Supported` (with the name→id catalog); a
+    /// 404/501 → `Unsupported` (cached, so we don't re-probe a cloud/mlx
+    /// backend every turn). A connection/transport error is returned as `Err`
+    /// and NOT cached — a momentarily-dead server is not a server without LoRA
+    /// support. llama.cpp `llama-server` returns the array of adapters it
+    /// loaded at launch, each `{ "id": N, "path": "...", "scale": S }`.
+    async fn probe_lora_catalog(&self) -> Result<(), String> {
+        let url = format!("{}/lora-adapters", self.api_base());
+        let mut req = self.client.get(&url);
+        if let Some(ref key) = self.api_key {
+            req = req.bearer_auth(key);
+        }
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| format!("GET {} failed: {}", url, e))?;
+
+        // 404/501 → the backend genuinely has no runtime-LoRA surface. Cache it.
+        if resp.status() == reqwest::StatusCode::NOT_FOUND
+            || resp.status() == reqwest::StatusCode::NOT_IMPLEMENTED
+        {
+            *self.lora_support.write().unwrap() = LoraSupport::Unsupported;
+            return Ok(());
+        }
+        if !resp.status().is_success() {
+            return Err(format!("GET {} returned {}", url, resp.status()));
+        }
+
+        let body: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| format!("Parse {} body: {}", url, e))?;
+        // Accept a top-level array (llama-server) or `{ "data": [...] }`.
+        let arr = body
+            .as_array()
+            .or_else(|| body.get("data").and_then(|v| v.as_array()))
+            .ok_or_else(|| format!("{} returned non-array LoRA catalog", url))?;
+        let catalog: Vec<(i64, String)> = arr
+            .iter()
+            .enumerate()
+            .map(|(idx, entry)| {
+                // The server's own `id` is authoritative; fall back to array
+                // position only if it omits one (older builds).
+                let id = entry
+                    .get("id")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(idx as i64);
+                let path = entry
+                    .get("path")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                (id, path)
+            })
+            .collect();
+        *self.lora_support.write().unwrap() = LoraSupport::Supported(catalog);
+        Ok(())
+    }
+
+    /// Pure matcher: given a discovered catalog of `(server-id, path)`, find the
+    /// server load-index for a requested adapter. Exact path match wins; else a
+    /// trivial substring match on path or name (same forgiving rule as
+    /// `lookup_runtime_model`, for the "short name vs full path" case). No I/O.
+    fn match_lora_index(catalog: &[(i64, String)], name: &str, path: &str) -> Option<i64> {
+        let want_path = path.to_lowercase();
+        let want_name = name.to_lowercase();
+        // 1. exact path
+        if !want_path.is_empty() {
+            if let Some((id, _)) = catalog.iter().find(|(_, p)| p.to_lowercase() == want_path) {
+                return Some(*id);
+            }
+        }
+        // 2. substring on path or name
+        catalog
+            .iter()
+            .find(|(_, p)| {
+                let hay = p.to_lowercase();
+                (!want_path.is_empty() && hay.contains(&want_path))
+                    || (!want_name.is_empty() && hay.contains(&want_name))
+            })
+            .map(|(id, _)| *id)
+    }
+
+    /// Resolve each requested adapter to the `{ "id": N, "scale": S }` entries
+    /// the llama.cpp `lora` request-body field wants. Discovers capability on
+    /// demand (probes if `Unknown`), then:
+    /// - `Unsupported` → **fail loud** (never silently drop the page-in — that
+    ///   was the original no-op behind the LIFT=0 measurement); the caller asked
+    ///   to page a LoRA into a backend that can't, so serve a fused model or
+    ///   route to a llama.cpp backend.
+    /// - `Supported` but the adapter isn't loaded → **fail loud**: the CUSTODIAN
+    ///   hasn't registered it with the serving backend yet. We re-probe once in
+    ///   case it was loaded after our last probe.
+    async fn resolve_lora_entries(
+        &self,
+        reqs: &[ActiveAdapterRequest],
+    ) -> Result<Vec<Value>, String> {
+        if matches!(&*self.lora_support.read().unwrap(), LoraSupport::Unknown) {
+            self.probe_lora_catalog().await?;
+        }
+
+        let mut entries = Vec::with_capacity(reqs.len());
+        for req in reqs {
+            let id = self.lookup_lora_index(&req.name, &req.path);
+            let id = match id {
+                Some(id) => id,
+                None => {
+                    // Miss — re-probe once (it may have just been registered),
+                    // then resolve or fail loud with what IS loaded.
+                    self.probe_lora_catalog().await?;
+                    self.lookup_lora_index(&req.name, &req.path)
+                        .ok_or_else(|| self.lora_miss_error(&req.name, &req.path))?
+                }
+            };
+            entries.push(json!({ "id": id, "scale": req.scale }));
+        }
+        Ok(entries)
+    }
+
+    /// Local lookup against the discovered catalog. `None` when unsupported,
+    /// unprobed, or genuinely absent — callers own the probe/fail decision.
+    fn lookup_lora_index(&self, name: &str, path: &str) -> Option<i64> {
+        match &*self.lora_support.read().unwrap() {
+            LoraSupport::Supported(catalog) => Self::match_lora_index(catalog, name, path),
+            _ => None,
+        }
+    }
+
+    /// The fail-loud message for an unresolved page-in, naming the cause so the
+    /// log makes the boundary obvious (backend can't, vs custodian hasn't).
+    fn lora_miss_error(&self, name: &str, path: &str) -> String {
+        match &*self.lora_support.read().unwrap() {
+            LoraSupport::Unsupported => format!(
+                "LoRA page-in requested (adapter '{}') but provider '{}' exposes no \
+                 /lora-adapters — its serving backend can't apply a LoRA per-request \
+                 (cloud API, or mlx_lm.server whose --adapter-path no-ops). Serve a \
+                 FUSED model or route to a llama.cpp/llama-server backend.",
+                name, self.config.provider_id
+            ),
+            LoraSupport::Supported(catalog) => {
+                let loaded: Vec<&str> = catalog.iter().map(|(_, p)| p.as_str()).collect();
+                format!(
+                    "LoRA adapter '{}' (path '{}') is not loaded on '{}'. Loaded: {:?}. \
+                     The custodian must register it with the serving backend first.",
+                    name, path, self.config.provider_id, loaded
+                )
+            }
+            LoraSupport::Unknown => format!(
+                "LoRA adapter '{}' could not be resolved on '{}' (catalog unprobed)",
+                name, self.config.provider_id
+            ),
         }
     }
 
@@ -725,6 +910,21 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
         ApiStyle::OpenAI
     }
 
+    /// Reports the LoRA capability the endpoint DISCOVERED about itself (via the
+    /// `GET /lora-adapters` probe), never a declared per-provider table. Reads
+    /// the cached probe result: `Supported` only after a 200 catalog response,
+    /// so the fabric's capability-aware selection sees the truth the endpoint
+    /// told us — not a guess. `Unknown`/`Unsupported` → `None`.
+    fn lora_capabilities(&self) -> LoRACapabilities {
+        match &*self.lora_support.read().unwrap() {
+            LoraSupport::Supported(catalog) => LoRACapabilities::MultiLayerPaging {
+                max_loaded: catalog.len(),
+                supports_hot_swap: true,
+            },
+            _ => LoRACapabilities::None,
+        }
+    }
+
     fn default_model(&self) -> &str {
         &self.config.default_model
     }
@@ -871,6 +1071,26 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
             let rp = request.repeat_penalty.unwrap_or(1.1);
             if let Some(obj) = body.as_object_mut() {
                 obj.insert("repeat_penalty".to_string(), json!(rp));
+            }
+        }
+
+        // LoRA page-in: forward the persona's active adapters to the serving
+        // backend as the llama.cpp `lora` request-body extension — the SAME
+        // backend-extension mechanism as `repeat_penalty` above. The integer
+        // `id` is the server-side load-index (discovered via GET /lora-adapters),
+        // which the CUSTODIAN assigns when it loads the adapter; we only RESOLVE
+        // name→id here and reference it. Until this block, `active_adapters`
+        // reached the adapter and was silently dropped at exactly this point —
+        // the LoRA page-in no-op behind the LIFT=0 measurement. Capability is
+        // discovered, not declared: `resolve_lora_entries` probes the endpoint
+        // and FAILS LOUD if the backend can't page LoRA or the adapter isn't
+        // loaded (never a silent drop).
+        if let Some(adapters) = request.active_adapters.as_ref() {
+            if !adapters.is_empty() {
+                let entries = self.resolve_lora_entries(adapters).await?;
+                if let Some(obj) = body.as_object_mut() {
+                    obj.insert("lora".to_string(), json!(entries));
+                }
             }
         }
 
@@ -1576,5 +1796,61 @@ mod tests {
         let usage = parse_embedding_usage(&json!({ "data": [] }));
         assert_eq!(usage.input_tokens, 0);
         assert_eq!(usage.total_tokens, 0);
+    }
+
+    // The LoRA page-in resolver (slice 1 of the Model Endpoint Fabric). These
+    // exercise the PURE name→server-id matcher; the probe/HTTP + fail-loud
+    // paths need a live llama-server and are covered by the organism eval, not
+    // a unit test (the integration path, per RULE 1).
+    mod lora_page_in {
+        use super::*;
+
+        fn catalog() -> Vec<(i64, String)> {
+            vec![
+                (0, "/genome/coder-4b-keystone/adapter.gguf".to_string()),
+                (1, "/genome/asha-selfverify/adapter.gguf".to_string()),
+            ]
+        }
+
+        // what this catches: an exact path match resolves to the server's own
+        // load-index — the field the `"lora":[{id,scale}]` body needs.
+        #[test]
+        fn exact_path_resolves_to_server_index() {
+            let id = OpenAICompatibleAdapter::match_lora_index(
+                &catalog(),
+                "asha-selfverify",
+                "/genome/asha-selfverify/adapter.gguf",
+            );
+            assert_eq!(id, Some(1));
+        }
+
+        // what this catches: the common "persona names the short slug, server
+        // stores the full path" case still resolves via substring on name.
+        #[test]
+        fn short_name_resolves_via_substring() {
+            let id =
+                OpenAICompatibleAdapter::match_lora_index(&catalog(), "coder-4b-keystone", "");
+            assert_eq!(id, Some(0));
+        }
+
+        // what this catches: an adapter the custodian has NOT registered is a
+        // miss (None) — the caller turns this into a fail-loud, never a silent
+        // drop. (Silent drop was the original LIFT=0 no-op.)
+        #[test]
+        fn unregistered_adapter_is_a_miss() {
+            let id =
+                OpenAICompatibleAdapter::match_lora_index(&catalog(), "does-not-exist", "");
+            assert_eq!(id, None);
+        }
+
+        // what this catches: an empty catalog (server loaded no adapters at
+        // launch) never spuriously matches.
+        #[test]
+        fn empty_catalog_never_matches() {
+            assert_eq!(
+                OpenAICompatibleAdapter::match_lora_index(&[], "anything", "/some/path"),
+                None
+            );
+        }
     }
 }
