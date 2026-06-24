@@ -628,67 +628,6 @@ impl DatasetModule {
         CommandResult::json(&manifest)
     }
 
-    /// Regenerate a gym JSONL from a HuggingFace dataset source.
-    ///
-    /// Params:
-    ///   `source`  — "humaneval" (default) | path to a generator script
-    ///   `out`     — output path (default "docs/genome/humaneval-gym.jsonl")
-    ///   `limit`   — max tasks (0 = all, default 0)
-    ///
-    /// Delegates to a standalone Python generator script (separate .py file per
-    /// the no-language-mixing rule) that calls `datasets.load_dataset` and writes
-    /// the JSONL in our {id,prompt,lang,test} shape.
-    async fn gym_load(&self, params: Value) -> Result<CommandResult, String> {
-        let source = params
-            .get("source")
-            .and_then(|v| v.as_str())
-            .unwrap_or("humaneval");
-        let out = params
-            .get("out")
-            .and_then(|v| v.as_str())
-            .unwrap_or("docs/genome/humaneval-gym.jsonl");
-        let limit = params
-            .get("limit")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0);
-
-        let script = match source {
-            "humaneval" | "openai_humaneval" => "scripts/gym_from_humaneval.py",
-            other => other,
-        };
-
-        let mut cmd = tokio::process::Command::new("python3");
-        cmd.arg(script).arg("--out").arg(out);
-        if limit > 0 {
-            cmd.arg("--limit").arg(limit.to_string());
-        }
-
-        let out_path = out.to_string();
-        match tokio::time::timeout(std::time::Duration::from_secs(120), cmd.output()).await {
-            Ok(Ok(output)) => {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                if !output.status.success() {
-                    return Err(format!(
-                        "gym_load script failed (exit {:?}):\n{}",
-                        output.status.code(),
-                        stderr.trim().chars().take(400).collect::<String>()
-                    ));
-                }
-                let count = std::fs::read_to_string(&out_path)
-                    .map(|s| s.lines().filter(|l| !l.trim().is_empty()).count())
-                    .unwrap_or(0);
-                Ok(CommandResult::Json(serde_json::json!({
-                    "source": source,
-                    "out": out_path,
-                    "tasks": count,
-                    "log": stderr.trim().chars().take(200).collect::<String>(),
-                })))
-            }
-            Ok(Err(e)) => Err(format!("Failed to spawn gym_load script: {e}")),
-            Err(_) => Err("gym_load script timed out after 120s".to_string()),
-        }
-    }
-
     /// Split examples into train/eval, write JSONL files and manifest.
     fn split_and_write(
         &self,
@@ -759,7 +698,6 @@ impl ServiceModule for DatasetModule {
             "dataset/import-realclasseval" => self.import_realclasseval(params).await,
             "dataset/from-turns" => self.from_turns(params).await,
             "dataset/from-captures" => self.from_captures(params).await,
-            "dataset/gym-load" => self.gym_load(params).await,
             "dataset/list" => self.list_datasets(params).await,
             "dataset/info" => self.dataset_info(params).await,
             _ => Err(format!("Unknown dataset command: {command}")),
