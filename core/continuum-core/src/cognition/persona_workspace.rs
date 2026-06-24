@@ -172,13 +172,19 @@ pub fn build_workspace_cycle(cfg: PersonaBrainConfig) -> WorkspaceCycle {
     // `Decision::Act`; the organism executes it. Without hands it's speak-only (the
     // safe default), and offering tools would be a lie. The tool SURFACE is the
     // single source of truth (`command_registry × AiSafe`), never hardcoded.
+    // The persona's genome handle — shared between the deliberation faculty (which
+    // reads it on every generation) and the WorkspaceCycle (which pages genes
+    // in/out). One ArcSwap, two holders: a page-in on the cycle is seen by the
+    // faculty's next generation. This is the page-in wire the genome loop measures.
+    let genome = super::llm_deliberation_faculty::empty_genome();
     let mut deliberation = LlmDeliberationFaculty::new(
         cfg.persona_id,
         cfg.persona_name,
         cfg.system_prompt,
         cfg.adapter,
     )
-    .with_working_memory(Arc::clone(&working_memory));
+    .with_working_memory(Arc::clone(&working_memory))
+    .with_genome(Arc::clone(&genome));
     if tool_executor.is_some() {
         // Offer EXACTLY what this persona is authorized to run (offer ==
         // authorized) — never a tool the gate would refuse. A local persona is the
@@ -216,7 +222,8 @@ pub fn build_workspace_cycle(cfg: PersonaBrainConfig) -> WorkspaceCycle {
         faculties,
         Arc::new(SalienceArbiter),
         cfg.capacity.unwrap_or(DEFAULT_WORKSPACE_CAPACITY),
-    );
+    )
+    .with_genome(genome);
 
     // Give the mind its BODY when it has hands. The act→observe driver reads this
     // to execute a `Decision::Act`, admit the result into `admission_for_body` (the

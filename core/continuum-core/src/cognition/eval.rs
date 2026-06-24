@@ -73,11 +73,38 @@ pub struct EvalTask {
     pub lang: Option<String>,
 }
 
+/// A gene to page in for the candidate arm of an A/B. The persona runs the eval
+/// once on the base model (gene paged OUT), then again with this gene paged IN;
+/// the result carries both pass-rates and their `lift`. The gene must already be
+/// REGISTERED with the serving endpoint (the adapter resolves `name`/`path` → the
+/// server's LoRA load-index); continuum holds the handle, the custodian owns the
+/// bytes ([[model-endpoint-fabric-adapter-router]]).
+#[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
+pub struct EvalGene {
+    /// The gene's name — how the serving endpoint catalogs it (`/lora-adapters`).
+    pub name: String,
+    /// The gene's on-disk path (the custodian-owned GGUF/safetensors LoRA). The
+    /// adapter matches this against the registered catalog when `name` doesn't.
+    #[serde(default)]
+    pub path: String,
+    /// Influence dial in [0,1+] — 0 = base, 1 = full gene. The page-in is analog:
+    /// the per-request scale rides into `"lora":[{id,scale}]`. Defaults to 1.0.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional, type = "number")]
+    pub scale: Option<f64>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
 pub struct CognitionEvalParams {
     /// The persona (UUID) to put through the gym. Must be spawned (have a live
     /// `WorkspaceCycle`) — the eval drives her real cognition, not a stand-in.
     pub persona_id: String,
+    /// Optional gene to MEASURE: when set, the eval runs base vs gene as an A/B and
+    /// reports the `lift`. When omitted, a single pass on whatever genome is
+    /// currently paged in (base, by default).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub gene: Option<EvalGene>,
     /// Room context the eval turns are scoped to. Omit for the nil room.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
@@ -122,9 +149,26 @@ pub struct CognitionEvalResult {
     /// Tasks attempted.
     #[ts(type = "number")]
     pub total: u32,
-    /// `score / total` — THE number a change is measured against.
+    /// `score / total` — THE number a change is measured against. In A/B mode
+    /// (a `gene` was given) this is the CANDIDATE (gene-paged-in) pass-rate.
     pub pass_rate: f64,
     pub results: Vec<EvalTaskResult>,
+    /// The gene measured (A/B mode only) — its name, echoed so a run is traceable.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub gene_id: Option<String>,
+    /// The BASELINE pass-rate (base model, gene paged out) — A/B mode only. `score`/
+    /// `pass_rate`/`results` above are the candidate arm; this is what it's measured
+    /// against.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional, type = "number")]
+    pub base_pass_rate: Option<f64>,
+    /// `pass_rate - base_pass_rate` — the LIFT the gene produced (A/B mode only).
+    /// Positive = the gene made her a better coder; the measure→decide gate adopts
+    /// only `lift > 0`. Negative = an overfit/regressing gene, correctly rejected.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional, type = "number")]
+    pub lift: Option<f64>,
 }
 
 /// The gym command. Stateless: it reaches the persona's live cognition through the
@@ -192,46 +236,97 @@ impl ActionCommand for CognitionEval {
         };
 
         let max_acts = p.max_acts.unwrap_or(DEFAULT_MAX_ACTS) as usize;
-        let mut pass = 0u32;
-        let mut results = Vec::with_capacity(tasks.len());
-        for t in &tasks {
-            // Frame as a room message so her ORDINARY cognition handles it, then
-            // DRIVE her to settlement: she may act (run code, read a file, search),
-            // observe the result as memory, and re-perceive — the live act→observe
-            // motion, paced by the grader because the eval room has no metronome.
-            let burst = format!("[eval]\npeer: {}", t.prompt);
-            let settled =
-                crate::cognition::act_observe::drive_to_settle(&cycle, burst, room, max_acts).await;
-            let answer = settled.spoken.unwrap_or_default();
-            let (ok, grade) = if let Some(test) = &t.test {
-                let lang = t.lang.as_deref().unwrap_or("rust");
-                test_grade(&answer, lang, test).await
-            } else {
-                let m = !t.expect.is_empty()
-                    && answer.to_lowercase().contains(&t.expect.to_lowercase());
-                (m, if m { "substring match".into() } else { "no match".into() })
-            };
-            if ok {
-                pass += 1;
-            }
-            results.push(EvalTaskResult {
-                id: t.id.clone(),
-                ok,
-                grade,
-                acts: settled.acts as u32,
-                answer: answer.chars().take(200).collect(),
+        let total = tasks.len() as u32;
+        let rate = |score: u32| if total > 0 { score as f64 / total as f64 } else { 0.0 };
+
+        // A/B mode: a gene was given → measure base vs gene over the SAME tasks
+        // through the SAME live mind, reporting the lift. Page the gene OUT first
+        // (baseline), then page it IN (candidate). Leave her on base afterward, so a
+        // measured persona returns to a clean genome — adopting the gene is a
+        // separate, deliberate decision, never a side effect of measuring it.
+        if let Some(gene) = &p.gene {
+            cycle.page_out();
+            let (base_score, _) = run_pass(&cycle, &tasks, room, max_acts).await;
+
+            cycle.page_in(vec![crate::ai::types::ActiveAdapterRequest {
+                name: gene.name.clone(),
+                path: gene.path.clone(),
+                domain: String::new(),
+                scale: gene.scale.unwrap_or(1.0),
+            }]);
+            let (gene_score, gene_results) = run_pass(&cycle, &tasks, room, max_acts).await;
+            cycle.page_out();
+
+            return Ok(CognitionEvalResult {
+                persona_id: persona_uuid.to_string(),
+                score: gene_score,
+                total,
+                pass_rate: rate(gene_score),
+                results: gene_results,
+                gene_id: Some(gene.name.clone()),
+                base_pass_rate: Some(rate(base_score)),
+                lift: Some(rate(gene_score) - rate(base_score)),
             });
         }
 
-        let total = tasks.len() as u32;
+        // Single pass: measure whatever genome is currently paged in (base by
+        // default) — the plain coder number, no A/B.
+        let (score, results) = run_pass(&cycle, &tasks, room, max_acts).await;
         Ok(CognitionEvalResult {
             persona_id: persona_uuid.to_string(),
-            score: pass,
+            score,
             total,
-            pass_rate: if total > 0 { pass as f64 / total as f64 } else { 0.0 },
+            pass_rate: rate(score),
             results,
+            gene_id: None,
+            base_pass_rate: None,
+            lift: None,
         })
     }
+}
+
+/// Run the full task set once through the persona's LIVE cognition, returning the
+/// pass count and per-task results. Operates over whatever genome is currently
+/// paged into `cycle` — the A/B pages a gene in/out around two calls to this, so
+/// the base and candidate arms run the IDENTICAL motion (the only difference is
+/// the genome). That sameness is what makes the lift a fair measurement.
+async fn run_pass(
+    cycle: &crate::cognition::workspace::WorkspaceCycle,
+    tasks: &[EvalTask],
+    room: Uuid,
+    max_acts: usize,
+) -> (u32, Vec<EvalTaskResult>) {
+    let mut pass = 0u32;
+    let mut results = Vec::with_capacity(tasks.len());
+    for t in tasks {
+        // Frame as a room message so her ORDINARY cognition handles it, then DRIVE
+        // her to settlement: she may act (run code, read a file, search), observe
+        // the result as memory, and re-perceive — the live act→observe motion,
+        // paced by the grader because the eval room has no metronome.
+        let burst = format!("[eval]\npeer: {}", t.prompt);
+        let settled =
+            crate::cognition::act_observe::drive_to_settle(cycle, burst, room, max_acts).await;
+        let answer = settled.spoken.unwrap_or_default();
+        let (ok, grade) = if let Some(test) = &t.test {
+            let lang = t.lang.as_deref().unwrap_or("rust");
+            test_grade(&answer, lang, test).await
+        } else {
+            let m =
+                !t.expect.is_empty() && answer.to_lowercase().contains(&t.expect.to_lowercase());
+            (m, if m { "substring match".into() } else { "no match".into() })
+        };
+        if ok {
+            pass += 1;
+        }
+        results.push(EvalTaskResult {
+            id: t.id.clone(),
+            ok,
+            grade,
+            acts: settled.acts as u32,
+            answer: answer.chars().take(200).collect(),
+        });
+    }
+    (pass, results)
 }
 
 // Stateless → self-register onto the ONE registry (descriptor + runtime object).

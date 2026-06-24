@@ -27,6 +27,7 @@
 
 use std::sync::Arc;
 
+use arc_swap::ArcSwap;
 use async_trait::async_trait;
 use std::fmt::Write as _;
 use uuid::Uuid;
@@ -34,12 +35,26 @@ use uuid::Uuid;
 use super::workspace::{Contribution, Decision, Faculty, FacultyId, Workspace};
 use crate::ai::adapter::AIProviderAdapter;
 use crate::ai::types::{
-    ChatMessage, FinishReason, NativeToolSpec, TextGenerationRequest, TextGenerationResponse,
+    ActiveAdapterRequest, ChatMessage, FinishReason, NativeToolSpec, TextGenerationRequest,
+    TextGenerationResponse,
 };
+
 use crate::persona::prompt_assembly::{
     looks_like_silence_token, SILENCE_AFFORDANCE_BLOCK, SILENCE_TOKEN,
 };
 use crate::persona::text_analysis::clean_response;
+
+/// The persona's paged-in genome: the LoRA layers active for this faculty's next
+/// generation. Shared (the [`WorkspaceCycle`](super::workspace::WorkspaceCycle)
+/// holds the same handle and pages skills in/out); read wait-free on every
+/// generation via [`ArcSwap`] — virtual memory for skill, the page-in wire the
+/// genome loop trains against. Empty (the default) → base model, no gene.
+pub type GenomeHandle = Arc<ArcSwap<Vec<ActiveAdapterRequest>>>;
+
+/// A fresh, empty genome handle (base model, no gene paged in).
+pub fn empty_genome() -> GenomeHandle {
+    Arc::new(ArcSwap::from_pointee(Vec::new()))
+}
 
 /// Default sampling temperature for deliberation — enough warmth for natural
 /// voice, not so much it drifts.
@@ -119,6 +134,13 @@ pub struct LlmDeliberationFaculty {
     /// The live spawn path attaches a per-persona JSONL sink. See
     /// [`prompt_capture`](crate::cognition::prompt_capture).
     prompt_capture: Option<Arc<dyn crate::cognition::prompt_capture::PromptCaptureSink>>,
+    /// The persona's paged-in genome — the LoRA layers this faculty injects into
+    /// every generation request ([`GenomeHandle`]). Shared with the owning
+    /// [`WorkspaceCycle`](super::workspace::WorkspaceCycle), which pages skills
+    /// in/out; read wait-free here on each generation. Empty → base model. This is
+    /// the page-in wire the genome loop measures (`cognition/eval` A/Bs base vs a
+    /// paged-in gene through this exact field).
+    genome: GenomeHandle,
 }
 
 impl LlmDeliberationFaculty {
@@ -138,7 +160,17 @@ impl LlmDeliberationFaculty {
             tools: Vec::new(),
             working_memory: None,
             prompt_capture: None,
+            genome: empty_genome(),
         }
+    }
+
+    /// Share the persona's genome handle — the same [`ArcSwap`] the owning
+    /// [`WorkspaceCycle`](super::workspace::WorkspaceCycle) pages skills in/out of.
+    /// Every generation reads the current genome wait-free; a page-in on the cycle
+    /// takes effect on the faculty's next generation (virtual memory for skill).
+    pub fn with_genome(mut self, genome: GenomeHandle) -> Self {
+        self.genome = genome;
+        self
     }
 
     /// Attach a verbatim prompt/response capture sink — every LLM call this
@@ -205,7 +237,14 @@ impl LlmDeliberationFaculty {
             tools,
             tool_choice: None,
             response_format: None,
-            active_adapters: None,
+            // Page in the persona's current genome (wait-free read). Empty → None,
+            // so the base model runs with no LoRA; a paged-in gene rides into the
+            // request as `active_adapters`, which the adapter injects as
+            // `"lora":[{id,scale}]`. This is the measured page-in seam.
+            active_adapters: {
+                let genome = self.genome.load();
+                (!genome.is_empty()).then(|| genome.as_ref().clone())
+            },
             request_id: None,
             user_id: None,
             room_id: None,
@@ -675,6 +714,47 @@ mod tests {
         }
         // SINGLE SHOT — the faculty never re-generated (no in-faculty loop).
         assert_eq!(adapter.call_count(), 1, "one generation, one verdict");
+    }
+
+    // what this catches: paging a gene into the shared genome handle flows into the
+    // faculty's NEXT generation request as `active_adapters` — the measured page-in
+    // wire the genome loop trains against. Base (empty genome) → the request carries
+    // no adapters; after a page-in → it carries the gene (name + scale). A
+    // regression here is the LIFT=0 no-op: a forged gene that never reaches the
+    // model because the faculty hardcoded `active_adapters: None`.
+    #[tokio::test]
+    async fn paged_in_gene_rides_into_the_generation_request() {
+        let persona = Uuid::new_v4();
+        let genome = empty_genome();
+        let adapter = Arc::new(ScriptedAdapter::new(vec![
+            make_response(FinishReason::Stop, "base answer", None),
+            make_response(FinishReason::Stop, "gene answer", None),
+        ]));
+        let faculty = LlmDeliberationFaculty::new(persona, "Asha", "You are Asha.", adapter.clone())
+            .with_genome(Arc::clone(&genome));
+
+        let ws = Workspace::new("write is_prime");
+        // Pass 1: base — nothing paged in.
+        faculty.contribute(&ws).await.expect("verdict");
+        // Page a gene in, then generate again — the SAME faculty, one handle.
+        genome.store(Arc::new(vec![ActiveAdapterRequest {
+            name: "coder-0p5b".to_string(),
+            path: "/genes/coder.gguf".to_string(),
+            domain: String::new(),
+            scale: 0.8,
+        }]));
+        faculty.contribute(&ws).await.expect("verdict");
+
+        let seen = adapter.seen.lock().unwrap();
+        assert_eq!(seen.len(), 2, "two generations recorded");
+        assert!(seen[0].active_adapters.is_none(), "base pass carries no gene");
+        let paged = seen[1]
+            .active_adapters
+            .as_ref()
+            .expect("gene paged into the candidate request");
+        assert_eq!(paged.len(), 1, "exactly the one paged-in gene");
+        assert_eq!(paged[0].name, "coder-0p5b");
+        assert_eq!(paged[0].scale, 0.8, "the analog influence dial rides along");
     }
 
     // what this catches: a model that ignores the native tool channel and instead

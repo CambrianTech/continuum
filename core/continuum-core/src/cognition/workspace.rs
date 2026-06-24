@@ -28,7 +28,8 @@ use futures_util::future::join_all;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::ai::types::ToolCall;
+use super::llm_deliberation_faculty::{empty_genome, GenomeHandle};
+use crate::ai::types::{ActiveAdapterRequest, ToolCall};
 
 /// Identifier for a cognitive faculty — a *structural name* (like a brain
 /// region), NOT a cognition decision. `Custom` keeps the set open so new
@@ -362,6 +363,12 @@ pub struct WorkspaceCycle {
     /// The persona's hands + hippocampus + identity for the act→observe driver.
     /// `None` → no hands (pure cognition). See [`ActingBody`].
     acting: Option<Arc<ActingBody>>,
+    /// The persona's paged-in genome — the LoRA layers active for generation. The
+    /// deliberation faculty shares this exact handle and reads it wait-free on
+    /// every generation; [`page_in`](Self::page_in)/[`page_out`](Self::page_out)
+    /// swap which gene is active (virtual memory for skill). Empty → base model.
+    /// This is the seam `cognition/eval` A/Bs base vs a candidate gene over.
+    genome: GenomeHandle,
 }
 
 impl WorkspaceCycle {
@@ -376,7 +383,35 @@ impl WorkspaceCycle {
             capacity: capacity.max(1),
             capture: Arc::new(NoopWorkspaceCaptureSink),
             acting: None,
+            genome: empty_genome(),
         }
+    }
+
+    /// Share the genome handle the deliberation faculty reads — call with the SAME
+    /// [`GenomeHandle`] passed to [`LlmDeliberationFaculty::with_genome`] so a
+    /// page-in on the cycle takes effect on the faculty's next generation.
+    pub fn with_genome(mut self, genome: GenomeHandle) -> Self {
+        self.genome = genome;
+        self
+    }
+
+    /// Page a gene (set of LoRA layers) into the persona's genome — the next
+    /// generation runs the base model adapted by these layers. Wait-free swap.
+    /// This is the measured page-in: the genome loop pages in a freshly forged
+    /// gene here and `cognition/eval` measures the lift it produced.
+    pub fn page_in(&self, adapters: Vec<ActiveAdapterRequest>) {
+        self.genome.store(Arc::new(adapters));
+    }
+
+    /// Page out all genes — the persona reverts to the base model (no LoRA). The
+    /// baseline arm of an A/B, and the clean state to leave a persona in.
+    pub fn page_out(&self) {
+        self.genome.store(Arc::new(Vec::new()));
+    }
+
+    /// The persona's currently paged-in genome (a snapshot).
+    pub fn genome(&self) -> Vec<ActiveAdapterRequest> {
+        self.genome.load().as_ref().clone()
     }
 
     /// Install a capture sink (recording / on-disk replay / in-flight inspection).
@@ -544,6 +579,31 @@ mod tests {
 
     fn cycle(faculties: Vec<Arc<dyn Faculty>>, capacity: usize) -> WorkspaceCycle {
         WorkspaceCycle::new(faculties, Arc::new(SalienceArbiter), capacity)
+    }
+
+    // what this catches: the cycle's genome page-in/page-out round-trips through the
+    // shared handle — page_in publishes a gene the next generation reads, page_out
+    // reverts to the clean base. This is the A/B's lever (eval pages a gene in/out
+    // around two passes); if it didn't round-trip, the candidate and base arms
+    // would measure the same genome and every lift would read as zero.
+    #[test]
+    fn genome_page_in_and_out_round_trips() {
+        let c = cycle(vec![], 4);
+        assert!(c.genome().is_empty(), "a fresh cycle starts on the base model");
+
+        c.page_in(vec![ActiveAdapterRequest {
+            name: "coder-0p5b".to_string(),
+            path: "/genes/coder.gguf".to_string(),
+            domain: String::new(),
+            scale: 0.8,
+        }]);
+        let paged = c.genome();
+        assert_eq!(paged.len(), 1, "the gene is now the active genome");
+        assert_eq!(paged[0].name, "coder-0p5b");
+        assert_eq!(paged[0].scale, 0.8);
+
+        c.page_out();
+        assert!(c.genome().is_empty(), "page_out reverts to the clean base");
     }
 
     // what this catches: attention is a competition over ML-derived salience —
