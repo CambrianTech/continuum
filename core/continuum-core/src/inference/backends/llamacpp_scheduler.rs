@@ -31,11 +31,19 @@
 //!   `Done` event sent, `memory_seq_rm` frees the KV slot, seq_id
 //!   returned to free pool.
 //!
-//! Limitations (v1):
-//! - LoRA adapters per request are NOT yet plumbed. The scheduler ignores
-//!   `active_loras` for now — applying per-seq LoRA requires an internal
-//!   command channel to set adapters from the driver thread between
-//!   decodes. Tracked as a follow-up.
+//! LoRA / genome paging:
+//! - Each request carries resolved gene handles (`active_loras`). The driver
+//!   applies them **context-level** via `Context::set_loras` right before
+//!   `decode`. The shared context applies one gene set per decode, so the
+//!   batch builder enforces a **homogeneity gate**: a decode batch adopts the
+//!   gene set of the lowest-seq_id seq with work, and seqs wanting a different
+//!   set are deferred to a later iteration. A seq is therefore only ever
+//!   decoded under its own gene — its entire KV history stays consistent, and
+//!   we never silently decode under the wrong adapter (Rule 2). Same-gene
+//!   seqs still co-batch (the eval, and the single-gene-per-machine common
+//!   case); mixed-gene load serializes by group rather than corrupting.
+//! - True per-seq LoRA mixing within one decode (distinct genes co-batched)
+//!   is a future optimization; correctness here does not depend on it.
 //! - Stop-sequence trimming happens in the caller (we still emit the
 //!   stop sequence's tokens before signaling Done) — same as the prior
 //!   per-call generate.
@@ -44,7 +52,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 
-use llama::{Batch, ContextParams, FlashAttn, KvCacheType, Model, Sampler};
+use llama::{Batch, ContextParams, FlashAttn, KvCacheType, LoraAdapter, Model, Sampler};
 use uuid::Uuid;
 
 use crate::inference::footprint_registry::{self, FootprintKey, ResourceType};
@@ -73,8 +81,12 @@ pub struct GenerationRequest {
     pub max_tokens: usize,
     pub sampling: SamplingConfig,
     pub stop_sequences: Vec<String>,
-    /// Reserved — currently ignored. See module-level Limitations.
-    pub active_loras: Vec<(String, f32)>,
+    /// Genes to apply for this generation: `(id, handle, scale)`. Resolved to
+    /// live adapter handles by the backend before enqueue (the scheduler
+    /// thread can't lock the backend's cache). `id` is kept for the
+    /// homogeneity signature; the `Arc` keeps the adapter alive for this
+    /// seq's lifetime even across a cache eviction. Empty = base model.
+    pub active_loras: Vec<(String, Arc<LoraAdapter>, f32)>,
     /// Tokens stream back through this. Use `tokio::sync::mpsc::unbounded_channel()`.
     pub response_tx: tokio::sync::mpsc::UnboundedSender<TokenEvent>,
     /// Persona that owns this generation — flows down from
@@ -160,6 +172,14 @@ struct ActiveSeq {
     /// path (Piece 2 of this work) to attribute KV bytes per-persona on
     /// alloc/free. None = test rig or ad-hoc probe; reporting skipped.
     persona_id: Option<Uuid>,
+    /// Resolved genes `(handle, scale)` this seq decodes under. Fixed for the
+    /// seq's lifetime, so its KV history is always consistent with the gene
+    /// the driver applies when this seq is in the batch. Empty = base model.
+    active_loras: Vec<(Arc<LoraAdapter>, f32)>,
+    /// Canonical signature of `active_loras` (sorted `id:scale`, comma-joined;
+    /// empty string = base). The homogeneity gate compares these to decide
+    /// which seqs co-batch under one context-level `set_loras`.
+    lora_sig: String,
 }
 
 /// Per-batch-slot bookkeeping so we know which logit index to sample for
@@ -223,6 +243,11 @@ fn driver_loop(
 
     let mut active: HashMap<i32, ActiveSeq> = HashMap::new();
     let mut free_seqs: Vec<i32> = (0..n_seq_max).collect();
+
+    // The gene set currently applied to the shared context (its signature).
+    // Starts base (""). The driver calls `set_loras`/`clear_loras` only when
+    // the batch's chosen group differs from this — the cheap hot-swap.
+    let mut current_ctx_lora_sig = String::new();
 
     // Per-phase timing — answers Joel's "I am not sure I believe your results"
     // about whether the GPU is actually doing work. We accumulate decode (Metal
@@ -320,6 +345,12 @@ fn driver_loop(
         let mut roles: Vec<BatchRole> = Vec::new();
         let mut tokens_in_batch = 0usize;
         let mut to_remove: Vec<i32> = Vec::new();
+        // Homogeneity gate: this decode applies exactly one gene set. The
+        // first seq with work (lowest seq_id) defines the group; seqs wanting
+        // a different gene are deferred to a later iteration so a seq is never
+        // decoded under another seq's adapter.
+        let mut batch_lora_sig: Option<String> = None;
+        let mut batch_lora_rep: Option<i32> = None;
 
         // Iterate sorted by seq_id for determinism in tests/logs.
         let seq_ids: Vec<i32> = {
@@ -334,6 +365,21 @@ fn driver_loop(
                 break;
             }
             let seq = active.get_mut(&seq_id).expect("seq present");
+
+            // Gene-group gate (see batch_lora_sig above). A seq with no work
+            // this iteration is skipped without claiming the group.
+            let has_work = seq.prefill_pos < seq.prompt_tokens.len() || seq.next_token.is_some();
+            if !has_work {
+                continue;
+            }
+            match batch_lora_sig {
+                None => {
+                    batch_lora_sig = Some(seq.lora_sig.clone());
+                    batch_lora_rep = Some(seq_id);
+                }
+                Some(ref sig) if *sig != seq.lora_sig => continue,
+                Some(_) => {}
+            }
 
             if seq.prefill_pos < seq.prompt_tokens.len() {
                 let chunk_end = (seq.prefill_pos + room).min(seq.prompt_tokens.len());
@@ -380,9 +426,44 @@ fn driver_loop(
             continue;
         }
 
-        // ── Phase 3: Decode the batch ──
+        // ── Phase 3: Apply this batch's gene group, then decode ──
+        // Context-level LoRA. The homogeneity gate guarantees every seq in
+        // this batch shares `batch_lora_sig`, and a seq is only ever decoded
+        // under its own gene, so its KV history stays consistent. We only call
+        // set_loras/clear_loras when the desired group differs from what's
+        // already on the context (the cheap hot-swap). A set_loras failure is
+        // routed through the same fan-out as a decode failure — never decode
+        // under the wrong gene (Rule 2).
+        let desired_sig = batch_lora_sig.clone().unwrap_or_default();
+        let lora_apply: Result<(), String> = if desired_sig == current_ctx_lora_sig {
+            Ok(())
+        } else if desired_sig.is_empty() {
+            ctx.clear_loras()
+        } else {
+            let rep =
+                batch_lora_rep.expect("non-empty gene signature must have a representative seq");
+            let refs: Vec<(&LoraAdapter, f32)> = active
+                .get(&rep)
+                .expect("representative seq present")
+                .active_loras
+                .iter()
+                .map(|(a, s)| (a.as_ref(), *s))
+                .collect();
+            ctx.set_loras(&refs)
+        };
+
         let decode_start = Instant::now();
-        if let Err(e) = ctx.decode(&batch) {
+        let decode_result = match lora_apply {
+            Ok(()) => {
+                // Context now reflects this gene group (even if decode later
+                // fails) — record it so the next iteration skips a redundant
+                // re-apply.
+                current_ctx_lora_sig = desired_sig.clone();
+                ctx.decode(&batch)
+            }
+            Err(e) => Err(format!("set_loras failed (gene '{desired_sig}'): {e}")),
+        };
+        if let Err(e) = decode_result {
             log.error(&format!(
                 "Decode error: {e} (batch={} tokens, {} active seqs)",
                 tokens_in_batch,
@@ -619,13 +700,22 @@ fn driver_loop(
     }
 }
 
-fn start_request(model: &Model, _seq_id: i32, req: GenerationRequest) -> Result<ActiveSeq, String> {
-    if !req.active_loras.is_empty() {
-        // v1 limitation — see module-level docs.
-        runtime::logger("llamacpp-scheduler").warn(
-            "active_loras requested but scheduler v1 ignores them; LoRA per-seq is a follow-up",
-        );
+/// Canonical signature of a gene set — sorted `id:scale`, comma-joined.
+/// Empty string = base model. Two seqs co-batch under one context-level
+/// `set_loras` iff their signatures match (the homogeneity gate).
+fn lora_signature(loras: &[(String, Arc<LoraAdapter>, f32)]) -> String {
+    if loras.is_empty() {
+        return String::new();
     }
+    let mut parts: Vec<String> = loras.iter().map(|(id, _, s)| format!("{id}:{s}")).collect();
+    parts.sort_unstable();
+    parts.join(",")
+}
+
+fn start_request(model: &Model, _seq_id: i32, req: GenerationRequest) -> Result<ActiveSeq, String> {
+    let lora_sig = lora_signature(&req.active_loras);
+    let active_loras: Vec<(Arc<LoraAdapter>, f32)> =
+        req.active_loras.into_iter().map(|(_, h, s)| (h, s)).collect();
     // special=true so chat-template boundary markers (<|im_start|>,
     // <|im_end|>) are tokenized as the model's actual special token IDs
     // (151644/151645 for qwen3) rather than character-level text. With
@@ -673,5 +763,7 @@ fn start_request(model: &Model, _seq_id: i32, req: GenerationRequest) -> Result<
         response_tx: req.response_tx,
         started_at: Instant::now(),
         persona_id: req.persona_id,
+        active_loras,
+        lora_sig,
     })
 }

@@ -988,21 +988,47 @@ impl AIProviderAdapter for LlamaCppAdapter {
             .persona_id
             .as_deref()
             .and_then(|s| uuid::Uuid::parse_str(s).ok());
+
+        // Genome paging: the adapter contract carries the genes to apply as
+        // `(name, path, scale)`. We page each in (idempotent) and hand the
+        // resolved `(id, scale)` list to the scheduler, which applies it
+        // context-level before decode. Empty in the common base case.
+        let requested_genes: Vec<(String, std::path::PathBuf, f32)> = request
+            .active_adapters
+            .as_ref()
+            .map(|v| {
+                v.iter()
+                    .map(|a| (a.name.clone(), std::path::PathBuf::from(&a.path), a.scale as f32))
+                    .collect()
+            })
+            .unwrap_or_default();
+
         let result: Result<(String, usize), String> = if collected_media.is_empty() {
             // Pure-text path: scheduler-managed continuous batching.
             // RTOS timing probe: this is the actual LLM forward pass —
             // by far the dominant cost (95%+ on LCD tier per
             // 2026-06-06 baseline). `time_probe!` wraps the JoinHandle
             // future cleanly across the `.await`.
+            let genes_for_closure = requested_genes;
             crate::time_probe!("inference.forward.text", tokio::task::spawn_blocking(move || {
                 let stop_refs: Vec<&str> = stop_for_closure.iter().map(|s| s.as_str()).collect();
+                // Page in each requested gene (idempotent) before generation.
+                // A missing/unreadable adapter file is a hard error — never
+                // silently run the base model in its place (Rule 2).
+                for (id, path, _) in &genes_for_closure {
+                    backend_for_blocking.ensure_adapter(id, path)?;
+                }
+                let active_loras: Vec<(String, f32)> = genes_for_closure
+                    .iter()
+                    .map(|(id, _, scale)| (id.clone(), *scale))
+                    .collect();
                 backend_for_blocking.generate_for_persona(
                     persona_id,
                     &prompt_for_blocking,
                     max_tokens,
                     sampling_for_closure,
                     &stop_refs,
-                    &[],
+                    &active_loras,
                 )
             }))
             .map_err(|e| format!("generate task panicked: {e}"))?
@@ -1014,6 +1040,18 @@ impl AIProviderAdapter for LlamaCppAdapter {
             // (one marker each in order) but our backend signatures take
             // one bytes blob. Hard-error rather than silently dropping
             // extras — clearer signal upstream.
+            // Genes on the multimodal bypass path are not yet supported (the
+            // mtmd single-flight path doesn't route through the scheduler that
+            // applies set_loras). Fail loud rather than silently dropping the
+            // requested adapter (Rule 2).
+            if !requested_genes.is_empty() {
+                let names: Vec<&str> = requested_genes.iter().map(|(id, _, _)| id.as_str()).collect();
+                return Err(format!(
+                    "llamacpp_adapter: LoRA genes {names:?} requested with media — not supported \
+                     on the multimodal bypass path (v1). Genes apply only on the text scheduler \
+                     path; send the gene-bearing request without media."
+                ));
+            }
             if collected_media.len() > 1 {
                 let kinds: Vec<String> = collected_media
                     .iter()

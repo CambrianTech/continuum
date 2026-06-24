@@ -128,11 +128,15 @@ pub struct LlamaCppBackend {
     /// Sits behind a Mutex<Option<...>> so concurrent first-call requests
     /// don't double-load. None until first use OR if `mmproj_path` is unset.
     mtmd: Mutex<Option<Arc<llama::MtmdContext>>>,
-    /// Loaded LoRA adapters. Field order matters: `model` is declared
-    /// BEFORE `loras` and drops AFTER it (Rust drops fields in declaration
-    /// order, top-down; therefore `loras` drops first), upholding the
-    /// "adapter must not outlive model" invariant.
-    loras: Mutex<HashMap<String, LoraAdapter>>,
+    /// Loaded LoRA adapters, behind `Arc` so a resolved handle can ride a
+    /// `GenerationRequest` onto the scheduler thread and outlive a cache
+    /// eviction while an in-flight seq is still decoding under it. Field
+    /// order matters: `model` is declared BEFORE `loras` and drops AFTER it
+    /// (Rust drops fields in declaration order, top-down; therefore `loras`
+    /// drops first), upholding the "adapter must not outlive model"
+    /// invariant — and the scheduler holds its own `Arc<Model>` clone, so
+    /// the model outlives every handed-out adapter handle regardless.
+    loras: Mutex<HashMap<String, Arc<LoraAdapter>>>,
 }
 
 // SAFETY: Model is Send+Sync (llama.cpp models are immutable after load).
@@ -565,7 +569,7 @@ impl LlamaCppBackend {
         if guard.contains_key(id) {
             return Ok(());
         }
-        let adapter = self.model.load_lora(path)?;
+        let adapter = Arc::new(self.model.load_lora(path)?);
         guard.insert(id.to_string(), adapter);
         Ok(())
     }
@@ -628,10 +632,11 @@ impl LlamaCppBackend {
     /// calls share the single Context — weights are read once per decode
     /// step and used to advance every active sequence in parallel.
     ///
-    /// `active_loras` is currently a no-op (scheduler v1 limitation —
-    /// per-seq LoRA activation is a follow-up). Adapters are still
-    /// loaded into the cache via `ensure_adapter` so the API is stable
-    /// for when v2 lands.
+    /// `active_loras` is `(id, scale)` pairs naming genes previously paged
+    /// in via [`ensure_adapter`]. They are resolved to live adapter handles
+    /// and applied context-level by the scheduler before decode (genome
+    /// paging). A requested id that was never `ensure_adapter`'d is a hard
+    /// error — never a silent base-model run (Rule 2: fail loud).
     pub fn generate(
         &self,
         prompt: &str,
@@ -679,6 +684,36 @@ impl LlamaCppBackend {
         // Channel for streaming tokens back from the scheduler.
         let (response_tx, mut response_rx) = tokio::sync::mpsc::unbounded_channel::<TokenEvent>();
 
+        // Resolve requested genes (`id`, scale) to live adapter handles from
+        // the cache BEFORE crossing to the scheduler thread (which can't lock
+        // our cache). A requested id that was never paged in via
+        // `ensure_adapter` is a hard error — never a silent base-model run
+        // (Rule 2: fail loud, name the cause). Empty in the common no-gene
+        // case, so the base path pays nothing.
+        let resolved_loras: Vec<(String, Arc<LoraAdapter>, f32)> = if active_loras.is_empty() {
+            Vec::new()
+        } else {
+            let guard = self
+                .loras
+                .lock()
+                .map_err(|e| format!("LoRA cache lock poisoned: {e}"))?;
+            active_loras
+                .iter()
+                .map(|(id, scale)| {
+                    guard
+                        .get(id)
+                        .map(|h| (id.clone(), Arc::clone(h), *scale))
+                        .ok_or_else(|| {
+                            format!(
+                                "LoRA gene '{id}' requested but not loaded — call \
+                                 ensure_adapter(id, path) before generate (Rule 2: \
+                                 refuse to silently run the base model in its place)"
+                            )
+                        })
+                })
+                .collect::<Result<Vec<_>, String>>()?
+        };
+
         // Caller passes the full SamplingConfig (the value-object pattern
         // — adding fields like `grammar` doesn't require changing this
         // signature). Previously this path silently overwrote the caller's
@@ -688,7 +723,7 @@ impl LlamaCppBackend {
             max_tokens,
             sampling,
             stop_sequences: stop_sequences.iter().map(|s| s.to_string()).collect(),
-            active_loras: active_loras.to_vec(),
+            active_loras: resolved_loras,
             response_tx,
             persona_id,
         };
