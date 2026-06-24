@@ -549,19 +549,32 @@ mod tests {
     //   cargo test -p continuum-core --features metal,accelerate \
     //     forge::lora_convert::tests::produce_keystone_gguf_lora -- --ignored --nocapture
     #[test]
-    #[ignore = "real-artifact producer: needs on-disk keystone adapter + vendored llama.cpp + python"]
+    #[ignore = "real-artifact producer: needs on-disk adapter + vendored llama.cpp + python"]
     fn produce_keystone_gguf_lora() {
         let home = std::env::var("HOME").expect("HOME set");
         let repo = env!("CARGO_MANIFEST_DIR"); // .../core/continuum-core
+        // Path-parameterized via env so the same producer serves any gene; the
+        // defaults target the keystone. The dense-base run sets all three to the
+        // coder-3b-dense paths + the cached HF base config snapshot.
+        let env_or = |k: &str, default: PathBuf| -> PathBuf {
+            std::env::var(k).map(PathBuf::from).unwrap_or(default)
+        };
         let env = ConvertEnv {
             llama_cpp_dir: PathBuf::from(repo).join("../vendor/llama.cpp"),
-            python: PathBuf::from(&home)
-                .join(".unsloth/studio/unsloth_studio/bin/python3"),
-            base_config_dir: PathBuf::from(&home)
-                .join(".continuum/forge/export/coder-4b-keystone/fused"),
+            python: PathBuf::from(&home).join(".unsloth/studio/unsloth_studio/bin/python3"),
+            base_config_dir: env_or(
+                "CONTINUUM_BASE_CONFIG_DIR",
+                PathBuf::from(&home).join(".continuum/forge/export/coder-4b-keystone/fused"),
+            ),
         };
-        let mlx_dir = PathBuf::from(&home).join(".continuum/forge/lora/coder-4b-keystone");
-        let out = PathBuf::from(&home).join(".continuum/forge/gguf-lora/coder-4b-keystone.gguf");
+        let mlx_dir = env_or(
+            "CONTINUUM_MLX_DIR",
+            PathBuf::from(&home).join(".continuum/forge/lora/coder-4b-keystone"),
+        );
+        let out = env_or(
+            "CONTINUUM_OUT_GGUF",
+            PathBuf::from(&home).join(".continuum/forge/gguf-lora/coder-4b-keystone.gguf"),
+        );
 
         let conv = mlx_to_gguf_lora(&mlx_dir, &out, &env).expect("MLX → GGUF-lora");
         assert_eq!(conv.gguf_lora, out);
