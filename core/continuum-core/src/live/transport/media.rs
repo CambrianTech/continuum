@@ -15,7 +15,7 @@
 //! 4. When video arrives: add video track to MediaSession, compositor to MediaRoom
 
 use crate::audio_constants::{AUDIO_FRAME_SIZE, AUDIO_SAMPLE_RATE};
-use crate::live::handle::Handle;
+use crate::runtime::handle::Handle;
 use std::collections::HashMap;
 
 // ============================================================================

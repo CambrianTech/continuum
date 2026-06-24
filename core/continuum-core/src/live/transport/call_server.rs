@@ -8,7 +8,7 @@ use crate::live::audio::capabilities::ModelCapabilityRegistry;
 use crate::live::audio::mixer::{AudioMixer, ParticipantStream};
 use crate::live::audio::router::{AudioRouter, RoutedParticipant};
 use crate::live::audio::stt;
-use crate::live::handle::Handle;
+use crate::runtime::handle::Handle;
 use crate::live::types::FrameKind;
 use crate::live::video::source::{TestPatternSource, VideoSource};
 use crate::utils::audio::{

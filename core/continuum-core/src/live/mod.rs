@@ -18,7 +18,6 @@ pub mod avatar;
 pub mod transport;
 pub mod video;
 // order-independent modules
-pub mod handle;
 pub mod session;
 pub mod types;
 // ort-dependent module LAST (link order critical)

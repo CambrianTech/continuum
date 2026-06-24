@@ -37,6 +37,7 @@ pub mod command_interceptor;
 pub mod control;
 pub mod core_ipc_transport;
 pub mod grid_interceptor;
+pub mod handle;
 pub mod in_process_transport;
 pub mod late_bound;
 pub mod message_bus;
@@ -67,6 +68,7 @@ pub use brain_region::{
     SleepPhase, TickOutcome,
 };
 pub use cell_shapes::{HandleRef, LambdaPlaceholder, StreamPlaceholder};
+pub use handle::Handle;
 pub use command_envelope::{CommandRequest, CommandResponse};
 pub use command_events::{CommandCompletedEvent, COMMAND_COMPLETED_TOPIC};
 pub use command_executor::CommandExecutor;

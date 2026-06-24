@@ -406,7 +406,7 @@ impl ServiceModule for VoiceModule {
                 let call_id = p.str("call_id")?;
                 let user_id = p.str("user_id")?;
 
-                use crate::live::handle::Handle as VoiceHandle;
+                use crate::runtime::handle::Handle as VoiceHandle;
                 let voice_handle: VoiceHandle = handle
                     .parse()
                     .map_err(|e| format!("Invalid handle UUID: {}", e))?;
@@ -456,7 +456,7 @@ impl ServiceModule for VoiceModule {
             "voice/discard-handle" => {
                 let handle = p.str("handle")?;
 
-                use crate::live::handle::Handle as VoiceHandle;
+                use crate::runtime::handle::Handle as VoiceHandle;
                 let voice_handle: VoiceHandle = handle
                     .parse()
                     .map_err(|e| format!("Invalid handle UUID: {}", e))?;

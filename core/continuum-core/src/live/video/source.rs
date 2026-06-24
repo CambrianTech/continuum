@@ -18,7 +18,7 @@
 //! - NanobananSource: AI-generated video frames
 
 use crate::clog_info;
-use crate::live::handle::Handle;
+use crate::runtime::handle::Handle;
 use crate::live::video::generator::TestPatternGenerator;
 use tokio::sync::{broadcast, mpsc};
 
