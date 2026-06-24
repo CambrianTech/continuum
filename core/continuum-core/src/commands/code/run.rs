@@ -111,7 +111,15 @@ impl ActionCommand for CodeRun {
             Ok(()) => {
                 match tokio::time::timeout(
                     timeout,
-                    tokio::process::Command::new(cmd).arg(&file).output(),
+                    // kill_on_drop is load-bearing: when the safety timeout fires,
+                    // tokio::time::timeout drops the output() future. Without this,
+                    // the spawned interpreter is NOT killed — it orphans to init and
+                    // burns a core forever (observed: 6h+ runaway snippet.py at 100%).
+                    // Dropping the Child with kill_on_drop set sends it SIGKILL.
+                    tokio::process::Command::new(cmd)
+                        .arg(&file)
+                        .kill_on_drop(true)
+                        .output(),
                 )
                 .await
                 {
@@ -200,25 +208,56 @@ mod tests {
         assert!(out.stderr.contains("boom"));
     }
 
-    // what this catches: the safety timeout is real — a runaway loop is killed and
-    // reported as timed_out (a result, not an error), so a hung child can't wedge the
-    // owner's machine. NOT a clamp on the model; a bound on a runaway process.
+    // what this catches: the safety timeout ACTUALLY kills the child process — not
+    // just reports timed_out. Regression for the orphan leak: tokio::time::timeout
+    // only drops the output() future; without kill_on_drop the interpreter survives,
+    // orphans to init, and burns a core forever (observed: 6h+ runaway snippet.py at
+    // 100% CPU). The old version of this test asserted only the return value, which
+    // was already true WITH the leak — so it never caught the bug. This version
+    // records the child PID and proves it is gone (or a reaped zombie) after the run.
+    #[cfg(unix)]
     #[tokio::test]
-    async fn safety_timeout_kills_runaway() {
+    async fn safety_timeout_actually_kills_the_child() {
+        let pidfile = std::env::temp_dir().join(format!("cu-coderun-pid-{}", uuid::Uuid::new_v4()));
+        let code = format!(
+            "import os\nwith open(r'{}', 'w') as f:\n    f.write(str(os.getpid()))\nwhile True:\n    pass\n",
+            pidfile.display()
+        );
         let out = CodeRun
             .run(
                 &Ctx::default(),
-                CodeRunParams {
-                    lang: "python".into(),
-                    code: "while True: pass".into(),
-                    timeout_secs: Some(1),
-                },
+                CodeRunParams { lang: "python".into(), code, timeout_secs: Some(1) },
             )
             .await
             .expect("timeout is a result, not an error");
-        assert!(out.timed_out, "runaway was killed by the timeout");
+        assert!(out.timed_out, "runaway was reported as timed out");
         assert!(!out.ok);
         assert_eq!(out.exit_code, None, "killed → no clean exit code");
+
+        // The snippet wrote its PID before looping; the run took >=1s, so it exists.
+        let pid = std::fs::read_to_string(&pidfile)
+            .expect("snippet recorded its pid before the loop")
+            .trim()
+            .to_string();
+        let _ = std::fs::remove_file(&pidfile);
+
+        // Poll for the child to die. A LIVE infinite loop reports state 'R'/'S'; a
+        // killed child is gone (empty) or a not-yet-reaped zombie ('Z'). With the
+        // leak it stays 'R' forever and this loop exhausts its budget → test fails.
+        let mut dead = false;
+        for _ in 0..40 {
+            let state = std::process::Command::new("ps")
+                .args(["-o", "state=", "-p", &pid])
+                .output()
+                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+                .unwrap_or_default();
+            if state.is_empty() || state.starts_with('Z') {
+                dead = true;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        assert!(dead, "child pid {pid} survived the safety timeout — orphan leak regressed");
     }
 
     // what this catches: unknown language fails LOUD (an error naming the cause),
