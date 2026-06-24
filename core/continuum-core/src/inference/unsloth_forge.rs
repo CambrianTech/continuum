@@ -121,43 +121,77 @@ pub struct TrainProgress {
     pub loss: Option<f64>,
 }
 
-/// Inputs for `POST /api/export/load-checkpoint` — the custodian loads a trained
-/// run into its exporter before packaging (the export endpoints operate on the
-/// loaded checkpoint, not a path argument). `checkpoint_path` is custodian-owned
-/// (under `~/.unsloth/studio/outputs`).
-#[derive(Debug, Clone, Serialize)]
-pub struct LoadCheckpointRequest {
-    pub checkpoint_path: String,
+/// What to package a trained checkpoint INTO — the genetic OUTCOME the organism
+/// names. The custodian owns the HOW (unsloth fuses/converts/quantizes
+/// internally); continuum only declares the target form of the genome artifact.
+/// A future custodian that emits a different family of layers extends THIS enum,
+/// never the organism's call shape.
+#[derive(Debug, Clone, PartialEq)]
+pub enum GenomeFormat {
+    /// The pageable LoRA genome layer (the adapter as-is). `base_model_id` rides
+    /// the genome-market card so the layer knows what base it composes onto.
+    Lora { base_model_id: Option<String> },
+    /// A fused + quantized standalone GGUF (`quantization` e.g. `"Q4_K_M"`).
+    Gguf { quantization: String },
+}
+
+/// Package a trained checkpoint into a genome artifact — the ONE export surface.
+/// `checkpoint` and `save_directory` are BOTH custodian-owned handles (paths
+/// under `~/.unsloth`); the organism never touches the bytes. `push_to_hub` /
+/// `repo_id` ride the genome-market publish path. The custodian's internal
+/// load → fuse → convert → quantize sequence is invisible above this struct —
+/// that is the point (Joel: "more of a black box with an adapter our only
+/// visibility").
+#[derive(Debug, Clone)]
+pub struct PackageRequest {
+    pub checkpoint: String,
+    pub save_directory: String,
+    pub format: GenomeFormat,
     pub max_seq_length: u32,
     pub load_in_4bit: bool,
-}
-
-/// Inputs for `POST /api/export/export/lora` — package the trained checkpoint AS
-/// the pageable LoRA layer. `save_directory` is custodian-owned (under
-/// `~/.unsloth`); `push_to_hub`/`repo_id` ride the genome-market path.
-#[derive(Debug, Clone, Serialize)]
-pub struct ExportLoraRequest {
-    pub save_directory: String,
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub push_to_hub: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub repo_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub base_model_id: Option<String>,
 }
 
-/// Inputs for `POST /api/export/export/gguf` — the custodian fuses + converts +
+// ── Internal unsloth wire bodies (BELOW the trait seam) ─────────────────────
+// These map 1:1 to the custodian's `/api/export/*` routes. They are an
+// IMPLEMENTATION DETAIL of `UnslothForgeHttp::package`, not the organism-facing
+// surface — the organism speaks `PackageRequest`/`GenomeFormat` only.
+
+/// `POST /api/export/load-checkpoint` body — unsloth loads a trained run into its
+/// exporter before packaging (its export endpoints operate on the loaded
+/// checkpoint, not a path arg). `package` runs this first, internally.
+#[derive(Debug, Clone, Serialize)]
+struct LoadCheckpointRequest {
+    checkpoint_path: String,
+    max_seq_length: u32,
+    load_in_4bit: bool,
+}
+
+/// `POST /api/export/export/lora` body.
+#[derive(Debug, Clone, Serialize)]
+struct ExportLoraRequest {
+    save_directory: String,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    push_to_hub: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    repo_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    base_model_id: Option<String>,
+}
+
+/// `POST /api/export/export/gguf` body — the custodian fuses + converts +
 /// quantizes (it owns the toolchain that knows the architecture; this is why
 /// continuum must NOT hand-run `convert_lora_to_gguf.py`).
 #[derive(Debug, Clone, Serialize)]
-pub struct ExportGgufRequest {
-    pub save_directory: String,
+struct ExportGgufRequest {
+    save_directory: String,
     /// e.g. `"q4_k_m"`, `"q8_0"`, `"f16"`.
-    pub quantization_method: String,
+    quantization_method: String,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
-    pub push_to_hub: bool,
+    push_to_hub: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub repo_id: Option<String>,
+    repo_id: Option<String>,
 }
 
 /// The custodian's export result envelope (`{success, message, details}`).
@@ -195,15 +229,15 @@ pub trait ForgeCustodian: Send + Sync {
     async fn train_start(&self, req: &ForgeTrainRequest) -> Result<TrainHandle, UnslothError>;
     /// Poll the live run (`GET /api/train/status`).
     async fn train_status(&self) -> Result<TrainStatus, UnslothError>;
-    /// Load a trained run into the custodian's exporter
-    /// (`POST /api/export/load-checkpoint`) — the export endpoints operate on the
-    /// loaded checkpoint, so this precedes `export_lora`/`export_gguf`.
-    async fn load_checkpoint(&self, req: &LoadCheckpointRequest) -> Result<ExportResult, UnslothError>;
-    /// Package a checkpoint as the pageable LoRA (`POST /api/export/export/lora`).
-    async fn export_lora(&self, req: &ExportLoraRequest) -> Result<ExportResult, UnslothError>;
-    /// Fuse + convert + quantize to GGUF (`POST /api/export/export/gguf`) — the
-    /// custodian owns the conversion (dissolves the MLX→GGUF bridge blocker).
-    async fn export_gguf(&self, req: &ExportGgufRequest) -> Result<ExportResult, UnslothError>;
+    /// Package a trained checkpoint into a genome artifact (LoRA or GGUF). The
+    /// custodian owns the HOW — unsloth's load-checkpoint → fuse → convert →
+    /// quantize sequence is an implementation detail BELOW this seam, so a future
+    /// custodian that exports in one shot, or emits a different layer family,
+    /// drops in without touching the organism. (Joel: "more of a black box with
+    /// an adapter our only visibility.") Surfaces a failed package as a LOUD
+    /// [`UnslothError`], never a silent no-op (the bug class #32 was opened to
+    /// kill).
+    async fn package(&self, req: &PackageRequest) -> Result<ExportResult, UnslothError>;
     /// The trained-LoRA catalog the custodian holds (`GET /api/models/loras`).
     async fn list_loras(&self) -> Result<LoraCatalog, UnslothError>;
 }
@@ -231,6 +265,17 @@ impl UnslothForgeHttp {
             api_key: config_env::read("UNSLOTH_API_KEY"),
             client,
         }
+    }
+
+    /// Load a trained run into unsloth's exporter — a private wire step BELOW the
+    /// trait. unsloth's `/api/export/export/*` routes act on the loaded
+    /// checkpoint, so `package` runs this first; the organism never sees it.
+    async fn load_checkpoint(
+        &self,
+        req: &LoadCheckpointRequest,
+    ) -> Result<ExportResult, UnslothError> {
+        self.post_json("/api/export/load-checkpoint", serde_json::to_value(req).unwrap())
+            .await
     }
 
     fn authed(&self, rb: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
@@ -290,17 +335,45 @@ impl ForgeCustodian for UnslothForgeHttp {
     async fn train_status(&self) -> Result<TrainStatus, UnslothError> {
         self.get_json("/api/train/status").await
     }
-    async fn load_checkpoint(&self, req: &LoadCheckpointRequest) -> Result<ExportResult, UnslothError> {
-        self.post_json("/api/export/load-checkpoint", serde_json::to_value(req).unwrap())
-            .await
-    }
-    async fn export_lora(&self, req: &ExportLoraRequest) -> Result<ExportResult, UnslothError> {
-        self.post_json("/api/export/export/lora", serde_json::to_value(req).unwrap())
-            .await
-    }
-    async fn export_gguf(&self, req: &ExportGgufRequest) -> Result<ExportResult, UnslothError> {
-        self.post_json("/api/export/export/gguf", serde_json::to_value(req).unwrap())
-            .await
+    async fn package(&self, req: &PackageRequest) -> Result<ExportResult, UnslothError> {
+        // unsloth's export ops act on a LOADED checkpoint — load it first. This
+        // two-step is an unsloth-ism kept BELOW the trait so it never leaks to the
+        // organism; a one-shot custodian would just skip it.
+        let loaded = self
+            .load_checkpoint(&LoadCheckpointRequest {
+                checkpoint_path: req.checkpoint.clone(),
+                max_seq_length: req.max_seq_length,
+                load_in_4bit: req.load_in_4bit,
+            })
+            .await?;
+        if !loaded.success {
+            return Err(UnslothError::Api(format!(
+                "load-checkpoint failed for {}: {}",
+                req.checkpoint, loaded.message
+            )));
+        }
+        match &req.format {
+            GenomeFormat::Lora { base_model_id } => {
+                let body = ExportLoraRequest {
+                    save_directory: req.save_directory.clone(),
+                    push_to_hub: req.push_to_hub,
+                    repo_id: req.repo_id.clone(),
+                    base_model_id: base_model_id.clone(),
+                };
+                self.post_json("/api/export/export/lora", serde_json::to_value(body).unwrap())
+                    .await
+            }
+            GenomeFormat::Gguf { quantization } => {
+                let body = ExportGgufRequest {
+                    save_directory: req.save_directory.clone(),
+                    quantization_method: quantization.clone(),
+                    push_to_hub: req.push_to_hub,
+                    repo_id: req.repo_id.clone(),
+                };
+                self.post_json("/api/export/export/gguf", serde_json::to_value(body).unwrap())
+                    .await
+            }
+        }
     }
     async fn list_loras(&self) -> Result<LoraCatalog, UnslothError> {
         self.get_json("/api/models/loras").await

@@ -30,8 +30,7 @@
 
 use crate::forge::{ForgeArtifact, ForgeRecipe};
 use crate::inference::unsloth_forge::{
-    to_body, ExportGgufRequest, ExportLoraRequest, ForgeCustodian, ForgeTrainRequest,
-    LoadCheckpointRequest, UnslothForgeHttp,
+    to_body, ForgeCustodian, ForgeTrainRequest, GenomeFormat, PackageRequest, UnslothForgeHttp,
 };
 use crate::runtime::{CommandResult, ModuleConfig, ModuleContext, ModulePriority, ServiceModule};
 use async_trait::async_trait;
@@ -353,57 +352,39 @@ fn default_quantization() -> String {
     "Q4_K_M".to_string()
 }
 
-/// `forge/export` — delegate packaging to the custodian. Loads the checkpoint
-/// into the custodian's exporter, then packages it as a LoRA or a quantized GGUF.
-/// Fail-loud on any custodian error or a non-success envelope.
+/// Resolve the organism's `format`/`quantization` params into the custodian's
+/// genetic [`GenomeFormat`] outcome. Pure — the format string is the only
+/// organism-side enum; everything below (load/fuse/convert) is the custodian's.
+fn package_format(format: &str, quantization: &str) -> Result<GenomeFormat, String> {
+    match format {
+        "lora" => Ok(GenomeFormat::Lora { base_model_id: None }),
+        "gguf" => Ok(GenomeFormat::Gguf { quantization: quantization.to_string() }),
+        other => Err(format!(
+            "unsupported export format: {other} (lora|gguf) — the custodian packages these"
+        )),
+    }
+}
+
+/// `forge/export` — name the genome OUTCOME and hand it to the custodian. ONE
+/// call: the custodian owns the load → fuse → convert → quantize sequence (black
+/// box). Fail-loud on any custodian error or a non-success envelope.
 async fn run_export(
     custodian: &dyn ForgeCustodian,
     p: ForgeExportParams,
 ) -> Result<CommandResult, String> {
-    // The export endpoints operate on the LOADED checkpoint, so load it first.
-    let loaded = custodian
-        .load_checkpoint(&LoadCheckpointRequest {
-            checkpoint_path: p.checkpoint.clone(),
+    let format = package_format(&p.format, &p.quantization)?;
+    let result = custodian
+        .package(&PackageRequest {
+            checkpoint: p.checkpoint.clone(),
+            save_directory: p.save_directory.clone(),
+            format,
             max_seq_length: p.max_seq_length,
             load_in_4bit: p.load_in_4bit,
+            push_to_hub: false,
+            repo_id: None,
         })
         .await
         .map_err(|e| e.to_string())?;
-    if !loaded.success {
-        return Err(format!(
-            "custodian load-checkpoint failed for {}: {}",
-            p.checkpoint, loaded.message
-        ));
-    }
-
-    let result = match p.format.as_str() {
-        "lora" => {
-            custodian
-                .export_lora(&ExportLoraRequest {
-                    save_directory: p.save_directory.clone(),
-                    push_to_hub: false,
-                    repo_id: None,
-                    base_model_id: None,
-                })
-                .await
-        }
-        "gguf" => {
-            custodian
-                .export_gguf(&ExportGgufRequest {
-                    save_directory: p.save_directory.clone(),
-                    quantization_method: p.quantization.clone(),
-                    push_to_hub: false,
-                    repo_id: None,
-                })
-                .await
-        }
-        other => {
-            return Err(format!(
-                "unsupported export format: {other} (lora|gguf) — the custodian packages these"
-            ))
-        }
-    }
-    .map_err(|e| e.to_string())?;
 
     if !result.success {
         return Err(format!("custodian export ({}) failed: {}", p.format, result.message));
@@ -687,22 +668,22 @@ mod tests {
     // load-checkpoint → package. A recording fake stands in for the HTTP
     // custodian (the real wire is unit-tested in inference::unsloth_forge).
 
-    use crate::inference::unsloth_forge::{
-        ExportGgufRequest, ExportLoraRequest, ExportResult, ForgeCustodian, ForgeTrainRequest,
-        LoadCheckpointRequest, LoraCatalog, TrainHandle, TrainStatus,
-    };
     use crate::inference::unsloth_control::UnslothError;
+    use crate::inference::unsloth_forge::{
+        ExportResult, ForgeCustodian, ForgeTrainRequest, GenomeFormat, LoraCatalog, PackageRequest,
+        TrainHandle, TrainStatus,
+    };
     use std::sync::Mutex;
 
     /// Records what the organism asked the custodian to do, and returns scripted
-    /// results — so we assert on the request shape + call ORDER without a network.
+    /// results — so we assert on the request shape without a network. The
+    /// load→fuse→convert sequence is now BELOW the trait (an unsloth-impl detail),
+    /// so the fake only sees the organism-facing `package` call.
     #[derive(Default)]
     struct RecordingCustodian {
         trains: Mutex<Vec<ForgeTrainRequest>>,
-        loads: Mutex<Vec<LoadCheckpointRequest>>,
-        loras: Mutex<Vec<ExportLoraRequest>>,
-        ggufs: Mutex<Vec<ExportGgufRequest>>,
-        /// Custodian's load/export success flag (to exercise the fail-loud path).
+        packages: Mutex<Vec<PackageRequest>>,
+        /// Custodian's package success flag (to exercise the fail-loud path).
         succeed: bool,
     }
 
@@ -724,26 +705,9 @@ mod tests {
         async fn train_status(&self) -> Result<TrainStatus, UnslothError> {
             Ok(TrainStatus { job_id: "job-1".into(), phase: "training".into(), ..Default::default() })
         }
-        async fn load_checkpoint(
-            &self,
-            req: &LoadCheckpointRequest,
-        ) -> Result<ExportResult, UnslothError> {
-            self.loads.lock().unwrap().push(req.clone());
-            Ok(ExportResult { success: self.succeed, message: "loaded".into(), ..Default::default() })
-        }
-        async fn export_lora(
-            &self,
-            req: &ExportLoraRequest,
-        ) -> Result<ExportResult, UnslothError> {
-            self.loras.lock().unwrap().push(req.clone());
-            Ok(ExportResult { success: self.succeed, message: "lora".into(), ..Default::default() })
-        }
-        async fn export_gguf(
-            &self,
-            req: &ExportGgufRequest,
-        ) -> Result<ExportResult, UnslothError> {
-            self.ggufs.lock().unwrap().push(req.clone());
-            Ok(ExportResult { success: self.succeed, message: "gguf".into(), ..Default::default() })
+        async fn package(&self, req: &PackageRequest) -> Result<ExportResult, UnslothError> {
+            self.packages.lock().unwrap().push(req.clone());
+            Ok(ExportResult { success: self.succeed, message: "packaged".into(), ..Default::default() })
         }
         async fn list_loras(&self) -> Result<LoraCatalog, UnslothError> {
             Ok(LoraCatalog::default())
@@ -860,10 +824,12 @@ mod tests {
         assert_eq!(cust.trains.lock().unwrap().len(), 1);
     }
 
-    // what this catches: export LOADS the checkpoint first, THEN packages it as a
-    // LoRA (the custodian's export ops act on the loaded checkpoint, not a path).
+    // what this catches: export names the LoRA OUTCOME and hands the custodian ONE
+    // package call carrying the checkpoint + save-dir handles. The load→export
+    // sequencing now lives BELOW the trait (unsloth-impl detail), so the organism
+    // only asserts it asked for the right genome form.
     #[tokio::test]
-    async fn forge_export_lora_loads_then_packages() {
+    async fn forge_export_lora_packages_as_lora() {
         let cust = RecordingCustodian::ok();
         let p = ForgeExportParams {
             checkpoint: "/ckpt".into(),
@@ -878,15 +844,15 @@ mod tests {
             _ => panic!("json"),
         };
         assert_eq!(v["format"], "lora");
-        assert_eq!(cust.loads.lock().unwrap().len(), 1, "must load checkpoint first");
-        assert_eq!(cust.loads.lock().unwrap()[0].checkpoint_path, "/ckpt");
-        assert_eq!(cust.loras.lock().unwrap().len(), 1, "then export lora");
-        assert_eq!(cust.loras.lock().unwrap()[0].save_directory, "/out");
-        assert!(cust.ggufs.lock().unwrap().is_empty(), "lora path must not call gguf");
+        let pkgs = cust.packages.lock().unwrap();
+        assert_eq!(pkgs.len(), 1, "exactly one package call");
+        assert_eq!(pkgs[0].checkpoint, "/ckpt");
+        assert_eq!(pkgs[0].save_directory, "/out");
+        assert_eq!(pkgs[0].format, GenomeFormat::Lora { base_model_id: None });
     }
 
-    // what this catches: the GGUF path threads the quantization method through to
-    // the custodian (the grid can want a quantized standalone, not just the LoRA).
+    // what this catches: the GGUF path threads the quantization method through into
+    // the GenomeFormat (the grid can want a quantized standalone, not just the LoRA).
     #[tokio::test]
     async fn forge_export_gguf_threads_quantization() {
         let cust = RecordingCustodian::ok();
@@ -899,15 +865,15 @@ mod tests {
             load_in_4bit: true,
         };
         run_export(&cust, p).await.unwrap();
-        assert_eq!(cust.ggufs.lock().unwrap().len(), 1);
-        assert_eq!(cust.ggufs.lock().unwrap()[0].quantization_method, "Q5_K_M");
+        let pkgs = cust.packages.lock().unwrap();
+        assert_eq!(pkgs.len(), 1);
+        assert_eq!(pkgs[0].format, GenomeFormat::Gguf { quantization: "Q5_K_M".into() });
     }
 
-    // what this catches: a custodian that fails the load is surfaced LOUDLY (no
-    // silent no-op export of a checkpoint that didn't load — the bug class #32
-    // was opened to kill).
+    // what this catches: a custodian that fails the package is surfaced LOUDLY (no
+    // silent no-op — the bug class #32 was opened to kill).
     #[tokio::test]
-    async fn forge_export_fails_loud_when_load_fails() {
+    async fn forge_export_fails_loud_when_custodian_fails() {
         let cust = RecordingCustodian::default(); // succeed=false
         let p = ForgeExportParams {
             checkpoint: "/ckpt".into(),
@@ -917,9 +883,8 @@ mod tests {
             max_seq_length: 2048,
             load_in_4bit: true,
         };
-        let err = run_export(&cust, p).await.expect_err("load failure must error");
-        assert!(err.contains("load-checkpoint failed"), "got: {err}");
-        assert!(cust.loras.lock().unwrap().is_empty(), "must not export after a failed load");
+        let err = run_export(&cust, p).await.expect_err("package failure must error");
+        assert!(err.contains("export (lora) failed"), "got: {err}");
     }
 
     // ── forge/decide — "assemble best self, or train" (product-thesis decision) ──
