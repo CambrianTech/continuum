@@ -6,7 +6,8 @@
 
 use super::loader::{Registry, RegistryError};
 use super::types::{
-    Arch, AuthKind, Capability, Model, MultiPartyChatStrategy, Provider, ProviderKind,
+    Arch, AuthKind, Capability, Model, MultiPartyChatStrategy, Provider, ProviderCapabilities,
+    ProviderKind, ProviderToolProtocol,
 };
 use std::collections::BTreeSet;
 use std::path::PathBuf;
@@ -456,6 +457,7 @@ pub fn providers() -> Vec<Provider> {
             auth: AuthKind::ApiKey,
             kind: ProviderKind::Cloud,
             model_prefixes: &["claude"],
+            ..Default::default()
         }),
         provider(ProviderSpec {
             id: "openai",
@@ -466,6 +468,13 @@ pub fn providers() -> Vec<Provider> {
             auth: AuthKind::Bearer,
             kind: ProviderKind::Cloud,
             model_prefixes: &["gpt", "o1", "o3"],
+            // OpenAI exposes `/v1/embeddings` and image generation; everything
+            // else is the cloud default (native tools, keep thinking).
+            capabilities: ProviderCapabilities {
+                supports_embeddings: true,
+                supports_image_generation: true,
+                ..Default::default()
+            },
         }),
         provider(ProviderSpec {
             id: "deepseek",
@@ -476,6 +485,7 @@ pub fn providers() -> Vec<Provider> {
             auth: AuthKind::Bearer,
             kind: ProviderKind::Cloud,
             model_prefixes: &["deepseek"],
+            ..Default::default()
         }),
         provider(ProviderSpec {
             id: "together",
@@ -486,6 +496,7 @@ pub fn providers() -> Vec<Provider> {
             auth: AuthKind::Bearer,
             kind: ProviderKind::Cloud,
             model_prefixes: &["togethercomputer/", "meta-llama/"],
+            ..Default::default()
         }),
         provider(ProviderSpec {
             id: "groq",
@@ -496,6 +507,7 @@ pub fn providers() -> Vec<Provider> {
             auth: AuthKind::Bearer,
             kind: ProviderKind::Cloud,
             model_prefixes: &["llama-3", "mixtral", "gemma2"],
+            ..Default::default()
         }),
         provider(ProviderSpec {
             id: "fireworks",
@@ -506,6 +518,7 @@ pub fn providers() -> Vec<Provider> {
             auth: AuthKind::Bearer,
             kind: ProviderKind::Cloud,
             model_prefixes: &["accounts/fireworks/"],
+            ..Default::default()
         }),
         provider(ProviderSpec {
             id: "xai",
@@ -516,6 +529,7 @@ pub fn providers() -> Vec<Provider> {
             auth: AuthKind::Bearer,
             kind: ProviderKind::Cloud,
             model_prefixes: &["grok"],
+            ..Default::default()
         }),
         provider(ProviderSpec {
             id: "google",
@@ -526,6 +540,7 @@ pub fn providers() -> Vec<Provider> {
             auth: AuthKind::Bearer,
             kind: ProviderKind::Cloud,
             model_prefixes: &["gemini"],
+            ..Default::default()
         }),
         provider(ProviderSpec {
             id: "mistral",
@@ -536,6 +551,7 @@ pub fn providers() -> Vec<Provider> {
             auth: AuthKind::Bearer,
             kind: ProviderKind::Cloud,
             model_prefixes: &["mistral", "mixtral", "codestral", "open-mistral", "open-mixtral"],
+            ..Default::default()
         }),
         provider(ProviderSpec {
             id: "docker-model-runner",
@@ -546,6 +562,7 @@ pub fn providers() -> Vec<Provider> {
             auth: AuthKind::None,
             kind: ProviderKind::Local,
             model_prefixes: &[],
+            ..Default::default()
         }),
         // Unsloth — the universal model gateway. A local OpenAI-compatible server
         // (like DMR) that serves local models (llama.cpp) AND fans out to cloud
@@ -568,6 +585,19 @@ pub fn providers() -> Vec<Provider> {
             auth: AuthKind::Bearer,
             kind: ProviderKind::Local,
             model_prefixes: &[],
+            // The local single-slot GGUF gateway: it ignores the OpenAI `tools`
+            // param (prompt-based tools), its forged 4B reasoner rambles unless
+            // thinking is suppressed, it serves OpenAI-compatible embeddings, and
+            // it holds ONE resident model (so the adapter pre-flights activation).
+            // These four flags REPLACE the `provider.id == "unsloth"` branches the
+            // adapter used to carry (#55).
+            capabilities: ProviderCapabilities {
+                tool_protocol: ProviderToolProtocol::JsonInPrompt,
+                suppress_thinking: true,
+                supports_embeddings: true,
+                single_resident_model: true,
+                ..Default::default()
+            },
         }),
         provider(ProviderSpec {
             id: "llamacpp-local",
@@ -578,6 +608,7 @@ pub fn providers() -> Vec<Provider> {
             auth: AuthKind::None,
             kind: ProviderKind::Local,
             model_prefixes: &[],
+            ..Default::default()
         }),
     ]
 }
@@ -655,6 +686,26 @@ struct ProviderSpec {
     auth: AuthKind,
     kind: ProviderKind,
     model_prefixes: &'static [&'static str],
+    /// Behavioral capabilities (#55). Defaults to the cloud/common case via
+    /// `..Default::default()` in the literal, so only outlier providers
+    /// (local single-slot gateways, embedding endpoints) declare anything.
+    capabilities: ProviderCapabilities,
+}
+
+impl Default for ProviderSpec {
+    fn default() -> Self {
+        Self {
+            id: "",
+            name: "",
+            base_url: "",
+            api_key_env: None,
+            default_model: None,
+            auth: AuthKind::None,
+            kind: ProviderKind::Cloud,
+            model_prefixes: &[],
+            capabilities: ProviderCapabilities::default(),
+        }
+    }
 }
 
 fn provider(spec: ProviderSpec) -> Provider {
@@ -671,6 +722,7 @@ fn provider(spec: ProviderSpec) -> Provider {
             .map(|prefix| prefix.to_string())
             .collect(),
         kind: spec.kind,
+        capabilities: spec.capabilities,
     }
 }
 

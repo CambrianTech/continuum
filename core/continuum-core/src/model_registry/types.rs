@@ -136,6 +136,67 @@ pub enum AuthKind {
     None,
 }
 
+/// Tool-calling shape a provider's HTTP endpoint accepts. Registry-level
+/// vocabulary (mirrors [`AuthKind`]): the adapter maps it onto its own
+/// `ToolProtocol`. Declared per-provider so the adapter never branches on
+/// `provider.id == "..."` to decide how to send tools.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderToolProtocol {
+    /// Native OpenAI function-calling — the endpoint honors the `tools`
+    /// request param and returns structured `tool_calls`. The cloud
+    /// common case, hence the default.
+    #[default]
+    Native,
+    /// Tools described in the prompt; the model emits a JSON tool-call in
+    /// its text output, which the adapter parses. For local GGUF gateways
+    /// that ignore the OpenAI `tools` param (proven 2026-06-21 against the
+    /// forged 4B served over llama-server).
+    JsonInPrompt,
+}
+
+/// Provider-level behavioral capabilities — the growable surface the
+/// adapter consults INSTEAD of branching on `provider.id == "..."`.
+///
+/// Every field defaults to the cloud/common case, so adding a new provider
+/// needs zero capability declaration; only the outliers (a local single-
+/// slot gateway, an embedding endpoint) flip a flag. The surface GROWS by
+/// adding a `#[serde(default)]` field here, NEVER by adding an id branch in
+/// the adapter — that is the whole point of this struct (#55). The adapter
+/// reads these; it does not decide them (same contract as
+/// [`MultiPartyChatStrategy`]). One source of truth for "what does this
+/// endpoint do," lifted out of the four `id == "unsloth"` / `id == "openai"`
+/// branches that used to live in `OpenAICompatibleAdapter`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderCapabilities {
+    /// How the endpoint exchanges tool calls. See [`ProviderToolProtocol`].
+    #[serde(default)]
+    pub tool_protocol: ProviderToolProtocol,
+    /// Suppress the model's chain-of-thought by default. Some local
+    /// reasoning GGUFs ramble/loop in their thinking (latency + the
+    /// runaway-leak failure mode) yet answer correctly without it; cloud
+    /// reasoning models manage their own and leave this `false`. An
+    /// operator can still force thinking back on per-run (the adapter's
+    /// `UNSLOTH_THINKING=on` escape hatch). Default: `false` (keep thinking).
+    #[serde(default)]
+    pub suppress_thinking: bool,
+    /// The endpoint exposes OpenAI-compatible `/v1/embeddings`, so the
+    /// neural recall path can embed through it. Default: `false`.
+    #[serde(default)]
+    pub supports_embeddings: bool,
+    /// The endpoint exposes image generation. Default: `false`.
+    #[serde(default)]
+    pub supports_image_generation: bool,
+    /// The endpoint serves ONE resident model and IGNORES the request's
+    /// `model` field (a single-slot local gateway that idle-unloads to
+    /// free VRAM). The adapter must pre-flight model activation before each
+    /// generation to guarantee the right brain is resident, failing loud if
+    /// it cannot. Multi-model / cloud endpoints route by the request's
+    /// `model` id and leave this `false`. Default: `false`.
+    #[serde(default)]
+    pub single_resident_model: bool,
+}
+
 /// How prompt_assembly should shape multi-party chat history when
 /// rendering a turn for this model. Single source of truth for
 /// model-specific chat-shaping per the OOP-adapter rule (CLAUDE.md
@@ -328,6 +389,12 @@ pub struct Provider {
     /// require touching this field.
     #[serde(default)]
     pub kind: ProviderKind,
+    /// Behavioral capabilities of this provider's endpoint — the growable
+    /// surface the adapter reads instead of branching on `id` (#55). See
+    /// [`ProviderCapabilities`]. Defaults to the cloud/common case, so cloud
+    /// providers declare nothing; local gateways flip the outlier flags.
+    #[serde(default)]
+    pub capabilities: ProviderCapabilities,
 }
 
 impl Provider {

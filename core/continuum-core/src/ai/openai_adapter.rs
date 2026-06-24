@@ -73,13 +73,28 @@ pub struct OpenAICompatibleConfig {
     /// How this provider exchanges tool calls. Native = real OpenAI
     /// function-calling; JsonInPrompt = describe tools in the prompt + parse the
     /// JSON call from the response (for gateways/models that ignore the `tools`
-    /// param, e.g. unsloth+GGUF — proven 2026-06-21). Gateway-level for now;
-    /// per-model refinement (from the gateway's model data) is the follow-up.
+    /// param, e.g. unsloth+GGUF — proven 2026-06-21). Sourced from the registry
+    /// `Provider.capabilities.tool_protocol` (#55) — never an `id == "..."`
+    /// branch. Gateway-level for now; per-model refinement is the follow-up.
     pub tool_protocol: super::json_in_prompt_tools::ToolProtocol,
     /// Whether to suppress the model's chain-of-thought for this gateway (Qwen3
-    /// `/no_think` soft-switch). Gateway-level for now; per-task/per-request
+    /// `/no_think` soft-switch). Sourced from `Provider.capabilities
+    /// .suppress_thinking` (#55). Gateway-level for now; per-task/per-request
     /// refinement is the follow-up.
     pub thinking: ThinkingMode,
+    /// This provider's endpoint exposes OpenAI-compatible `/v1/embeddings`.
+    /// From `Provider.capabilities.supports_embeddings` (#55) — replaces the
+    /// `matches!(id, "openai" | "unsloth")` branch in `capabilities()`.
+    pub supports_embeddings: bool,
+    /// This provider's endpoint exposes image generation. From
+    /// `Provider.capabilities.supports_image_generation` (#55) — replaces the
+    /// `id == "openai"` branch in `capabilities()`.
+    pub supports_image_generation: bool,
+    /// This endpoint serves ONE resident model and ignores the request's
+    /// `model` field, so the adapter must pre-flight model activation before
+    /// each generation. From `Provider.capabilities.single_resident_model`
+    /// (#55) — replaces the `id == "unsloth"` branch in `generate_text`.
+    pub single_resident_model: bool,
 }
 
 /// What the serving backend told us when we asked it `GET /lora-adapters`.
@@ -548,31 +563,37 @@ impl OpenAICompatibleAdapter {
             models,
             model_prefixes: provider.model_prefixes.clone(),
             requires_auth,
-            // unsloth's GGUF path ignores the OpenAI `tools` param (proven), so it
-            // uses prompt-based tools; cloud OpenAI-compatible providers do native
-            // function-calling. Keyed by GATEWAY, not a specific model — refine to
-            // per-model from the gateway's model capabilities later.
-            tool_protocol: if provider.id == "unsloth" {
-                super::json_in_prompt_tools::ToolProtocol::JsonInPrompt
-            } else {
-                super::json_in_prompt_tools::ToolProtocol::Native
+            // Tool-call shape + thinking + embeddings + single-slot residency all
+            // come from the registry's declared `Provider.capabilities` (#55) — the
+            // adapter CONSUMES them, it does not branch on `provider.id`. A local
+            // GGUF gateway declares JsonInPrompt + suppress_thinking; cloud
+            // providers inherit the Native/keep-thinking defaults. One source of
+            // truth (model_registry/catalog.rs), no id stand-ins here.
+            tool_protocol: match provider.capabilities.tool_protocol {
+                crate::model_registry::types::ProviderToolProtocol::JsonInPrompt => {
+                    super::json_in_prompt_tools::ToolProtocol::JsonInPrompt
+                }
+                crate::model_registry::types::ProviderToolProtocol::Native => {
+                    super::json_in_prompt_tools::ToolProtocol::Native
+                }
             },
-            // The local unsloth/GGUF reasoning gateway defaults to SUPPRESS: this
-            // forged 4B's chain-of-thought tends to ramble + loop (latency + the
-            // runaway-leak failure mode), and the model answers correctly without
-            // it (verified live). Operator override: `UNSLOTH_THINKING=on` keeps
-            // thinking (the reasoning-strip still protects the room). Cloud
-            // providers keep their default — their reasoning is theirs to manage.
+            // A gateway that declares `suppress_thinking` (its forged reasoner
+            // rambles/loops yet answers correctly without CoT) defaults to
+            // SUPPRESS. Operator override: `UNSLOTH_THINKING=on` forces thinking
+            // back on per-run (the reasoning-strip still protects the room).
             thinking: {
                 let keep_thinking = std::env::var("UNSLOTH_THINKING")
                     .map(|v| v.trim().eq_ignore_ascii_case("on"))
                     .unwrap_or(false);
-                if provider.id == "unsloth" && !keep_thinking {
+                if provider.capabilities.suppress_thinking && !keep_thinking {
                     ThinkingMode::Suppress
                 } else {
                     ThinkingMode::Default
                 }
             },
+            supports_embeddings: provider.capabilities.supports_embeddings,
+            supports_image_generation: provider.capabilities.supports_image_generation,
+            single_resident_model: provider.capabilities.single_resident_model,
         })
     }
 
@@ -866,13 +887,14 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
             supports_tool_use: supports_tools,
             supports_vision,
             supports_streaming: true,
-            // Embeddings: OpenAI itself, plus unsloth — the universal model
-            // gateway exposes OpenAI-compatible `/v1/embeddings`, so continuum's
-            // neural recall path embeds through it (UNSLOTH-INTEGRATION.md). This
-            // is what lets us delete the local fastembed/ONNX embedder.
-            supports_embeddings: matches!(self.config.provider_id.as_str(), "openai" | "unsloth"),
+            // Embeddings + image generation are declared per-provider in the
+            // registry (#55), not branched on id here. A gateway that exposes
+            // OpenAI-compatible `/v1/embeddings` sets `supports_embeddings`, which
+            // is what lets continuum's neural recall path embed through it and
+            // delete the local fastembed/ONNX embedder.
+            supports_embeddings: self.config.supports_embeddings,
             supports_audio: false,
-            supports_image_generation: self.config.provider_id == "openai",
+            supports_image_generation: self.config.supports_image_generation,
             is_local: false,
             max_context_window: self
                 .config
@@ -1246,7 +1268,7 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
         // unguaranteed brain (silently returning the wrong model is the bug that
         // would haunt us). Cross-persona residency on the shared gateway is the
         // serving layer's job (#109), not this gate.
-        if self.config.provider_id == "unsloth" {
+        if self.config.single_resident_model {
             use crate::inference::unsloth_control::{
                 ensure_model_active, EnsureOutcome, UnslothHttp,
             };
