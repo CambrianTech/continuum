@@ -197,11 +197,29 @@ impl LlamaCppBackend {
         if texts.is_empty() {
             return Ok(Vec::new());
         }
+        // Embedding is single-batch and non-causal: ALL of a text's tokens are
+        // decoded together in one `llama_decode`, so `n_tokens <= n_batch` is a
+        // hard llama.cpp invariant — violating it is `GGML_ASSERT(... <=
+        // cparams.n_batch)` → `ggml_abort` → SIGABRT, which kills the whole
+        // process (C abort, uncatchable by Rust unwinding). A persona admitting
+        // a long engram / doctrine chunk at spawn was exactly long enough to
+        // trip it. Two-part fix: (1) size the embedding context's batch to a
+        // fixed ceiling so it's never the default, and (2) TRUNCATE any input
+        // past that ceiling — retrieval embedders cap their context anyway, so
+        // clamping a pathologically long input is the correct degrade, never a
+        // crash. Ceiling stays modest: this context is rebuilt per call, and
+        // `n_ubatch` drives the compute-buffer size (~quadratic in attention).
+        const EMBED_MAX_TOKENS: usize = 2048;
         let mut ctx = self.model.new_context(llama::ContextParams {
             embeddings: true,
             // Qwen3-Embedding family is last-token pooled. Thread from config
             // when other embedders join the grid.
             pooling_type: llama::PoolingType::Last,
+            // Explicit, not the default: KV + batch + ubatch all sized to the
+            // ceiling so any input up to EMBED_MAX_TOKENS decodes in one batch.
+            n_ctx: EMBED_MAX_TOKENS as u32,
+            n_batch: EMBED_MAX_TOKENS as u32,
+            n_ubatch: EMBED_MAX_TOKENS as u32,
             ..Default::default()
         })?;
         let mut out = Vec::with_capacity(texts.len());
@@ -209,9 +227,15 @@ impl LlamaCppBackend {
             // Independent embedding per text — clear the KV so text N's pooled
             // vector doesn't include text N-1's sequence.
             ctx.memory_clear(true);
-            let tokens = self.model.tokenize(text, true, false)?;
+            let mut tokens = self.model.tokenize(text, true, false)?;
             if tokens.is_empty() {
                 return Err(format!("embed: input tokenized to empty: {text:?}"));
+            }
+            // Clamp to the batch ceiling. Last-token pooling reads the final
+            // kept token, so we keep the head (the standard truncation for an
+            // over-length document) rather than crash on the full sequence.
+            if tokens.len() > EMBED_MAX_TOKENS {
+                tokens.truncate(EMBED_MAX_TOKENS);
             }
             out.push(ctx.embed(&tokens)?);
         }
