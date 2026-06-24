@@ -73,13 +73,15 @@ pub fn mlx_adapters_to_peft(
     let mut derived_rank: Option<usize> = None;
 
     for (name, view) in tensors.tensors() {
-        // MLX keys look like `model.layers.N.<mod>.lora_a|lora_b`.
-        let Some(body) = name.strip_prefix("model.") else {
-            return Err(format!(
-                "unexpected MLX tensor key {name:?} — every key must start with `model.`"
-            ));
-        };
-        let (module_path, suffix) = body
+        // MLX keys are the FULL HF parameter path plus a `.lora_a`/`.lora_b`
+        // suffix — e.g. `model.layers.0.self_attn.q_proj.lora_a` for a plain
+        // text model, or `language_model.model.layers.16.linear_attn.in_proj_a.lora_a`
+        // for a nested multimodal base (Qwen3.5 `*ForConditionalGeneration`,
+        // where the LLM lives under `language_model.model.`). PEFT names a gene
+        // `base_model.model.<full HF path>.lora_{A,B}.weight`, so we keep the
+        // ENTIRE path and never strip a leading `model.` — that assumption
+        // mangled nested keys (and silently dropped the `language_model.` arms).
+        let (module_path, suffix) = name
             .rsplit_once('.')
             .ok_or_else(|| format!("MLX key {name:?} has no `.lora_a`/`.lora_b` suffix"))?;
 
@@ -113,7 +115,7 @@ pub fn mlx_adapters_to_peft(
                 ))
             }
         };
-        let peft_key = format!("base_model.model.model.{module_path}.{peft_suffix}");
+        let peft_key = format!("base_model.model.{module_path}.{peft_suffix}");
 
         // Leaf target module, e.g. `layers.0.self_attn.q_proj` → `q_proj`.
         if let Some(leaf) = module_path.rsplit('.').next() {
@@ -179,6 +181,141 @@ pub fn mlx_adapters_to_peft(
         tensor_count: converted.len(),
         rank,
         target_modules: targets,
+    })
+}
+
+/// Where the vendored llama.cpp tree and a transformers-capable interpreter
+/// live, for the interim PEFT→GGUF-lora step. Explicit (no hidden defaults):
+/// the custodian environment owns these paths, and guessing one would be a
+/// silent fidelity/locality fallback.
+#[derive(Debug, Clone)]
+pub struct ConvertEnv {
+    /// Vendored llama.cpp checkout — must contain `convert_lora_to_gguf.py`
+    /// and the `gguf-py` package.
+    pub llama_cpp_dir: PathBuf,
+    /// Interpreter that can `import transformers` (the unsloth/mlx env on Mac).
+    pub python: PathBuf,
+    /// Dir with the base model's HF `config.json` (only the config is read; the
+    /// weights are not needed). This binds the adapter to the architecture it
+    /// was trained against.
+    pub base_config_dir: PathBuf,
+}
+
+/// What the full MLX → GGUF-lora conversion produced.
+#[derive(Debug, Clone)]
+pub struct GgufLoraConversion {
+    /// The PEFT intermediate (kept for inspection / re-runs).
+    pub peft: PeftConversion,
+    /// The written GGUF-lora adapter — the file `llama.cpp`'s `load_lora`
+    /// (and the genome page-in) consumes directly.
+    pub gguf_lora: PathBuf,
+}
+
+/// Read an MLX `adapter_config.json` (Apple `mlx_lm.lora` output) and return
+/// `(base_model_name, rank, lora_alpha)`. MLX stores `lora_parameters.scale`
+/// (== alpha/rank); PEFT/GGUF want the integer `lora_alpha = rank * scale`.
+/// Every field is required — a missing one fails loud rather than defaulting a
+/// hyperparameter that would silently mis-scale the gene.
+pub fn read_mlx_lora_hparams(mlx_config: &Path) -> Result<(String, usize, u32), String> {
+    let text = std::fs::read_to_string(mlx_config)
+        .map_err(|e| format!("read MLX adapter config {}: {e}", mlx_config.display()))?;
+    let v: serde_json::Value = serde_json::from_str(&text)
+        .map_err(|e| format!("parse MLX adapter config {}: {e}", mlx_config.display()))?;
+    let base = v
+        .get("model")
+        .and_then(|m| m.as_str())
+        .ok_or("MLX adapter config missing string `model` (the base model id)")?
+        .to_string();
+    let lp = v
+        .get("lora_parameters")
+        .ok_or("MLX adapter config missing `lora_parameters`")?;
+    let rank = lp
+        .get("rank")
+        .and_then(|r| r.as_u64())
+        .ok_or("MLX adapter config missing integer `lora_parameters.rank`")? as usize;
+    let scale = lp
+        .get("scale")
+        .and_then(|s| s.as_f64())
+        .ok_or("MLX adapter config missing numeric `lora_parameters.scale`")?;
+    let alpha = (rank as f64 * scale).round() as u32;
+    Ok((base, rank, alpha))
+}
+
+/// Own the full MLX → GGUF-lora conversion: the pure-Rust transpose kernel
+/// ([`mlx_adapters_to_peft`]) followed by the interim vendored
+/// `convert_lora_to_gguf.py` subprocess. This is the supply step of the owned
+/// genome loop — it produces the GGUF-lora that the in-process scheduler pages
+/// in and applies via `set_loras`. The python here is a forge-time subprocess
+/// of a vendored script (allowed per `[[no-python-in-rs-files]]`); the endgame
+/// is a pure-Rust GGUF-lora writer that drops it.
+///
+/// `mlx_adapter_dir` must contain `adapters.safetensors` + `adapter_config.json`
+/// (Apple `mlx_lm.lora` output). Hyperparameters are read from that config, not
+/// passed in — the recipe already recorded them.
+pub fn mlx_to_gguf_lora(
+    mlx_adapter_dir: &Path,
+    out_gguf: &Path,
+    env: &ConvertEnv,
+) -> Result<GgufLoraConversion, String> {
+    let mlx_safetensors = mlx_adapter_dir.join("adapters.safetensors");
+    let mlx_config = mlx_adapter_dir.join("adapter_config.json");
+    let (base_model_name, rank, alpha) = read_mlx_lora_hparams(&mlx_config)?;
+
+    // Step 1 — pure-Rust transpose to PEFT (next to the GGUF output).
+    let peft_dir = out_gguf
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join("peft");
+    let peft = mlx_adapters_to_peft(&mlx_safetensors, &peft_dir, &base_model_name, rank, alpha)?;
+
+    // Step 2 — interim vendored convert script. Fail loud on a missing tool or
+    // a non-zero exit; never emit a partial/absent GGUF and call it success.
+    let script = env.llama_cpp_dir.join("convert_lora_to_gguf.py");
+    if !script.is_file() {
+        return Err(format!(
+            "convert_lora_to_gguf.py not found at {} — vendored llama.cpp tree required",
+            script.display()
+        ));
+    }
+    if !env.python.is_file() {
+        return Err(format!(
+            "python interpreter {} not found (need one that can `import transformers`)",
+            env.python.display()
+        ));
+    }
+    if let Some(parent) = out_gguf.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("create GGUF-lora out dir {}: {e}", parent.display()))?;
+    }
+    let gguf_py = env.llama_cpp_dir.join("gguf-py");
+    let output = std::process::Command::new(&env.python)
+        .arg(&script)
+        .arg("--base")
+        .arg(&env.base_config_dir)
+        .arg("--outfile")
+        .arg(out_gguf)
+        .arg("--outtype")
+        .arg("f16")
+        .arg(&peft_dir)
+        .env("PYTHONPATH", &gguf_py)
+        .output()
+        .map_err(|e| format!("spawn convert_lora_to_gguf.py: {e}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "convert_lora_to_gguf.py failed ({}):\n{}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+    if !out_gguf.is_file() {
+        return Err(format!(
+            "convert_lora_to_gguf.py reported success but {} does not exist",
+            out_gguf.display()
+        ));
+    }
+    Ok(GgufLoraConversion {
+        peft,
+        gguf_lora: out_gguf.to_path_buf(),
     })
 }
 
@@ -335,5 +472,109 @@ mod tests {
         assert!(err.contains("rank mismatch"), "got: {err}");
 
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    // what this catches: the MLX `scale` (== alpha/rank) → integer PEFT
+    // `lora_alpha` (== rank * scale) conversion. Get this wrong and the gene is
+    // applied at the wrong strength — a silent fidelity bug no shape check
+    // catches. Keystone's recipe (rank 8, scale 20) must yield alpha 160.
+    #[test]
+    fn mlx_scale_becomes_peft_alpha() {
+        let tmp = std::env::temp_dir().join(format!("mlx_hparams_{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let cfg = tmp.join("adapter_config.json");
+        std::fs::write(
+            &cfg,
+            r#"{"model":"unsloth/Qwen3.5-4B","lora_parameters":{"rank":8,"scale":20.0}}"#,
+        )
+        .unwrap();
+        let (base, rank, alpha) = read_mlx_lora_hparams(&cfg).unwrap();
+        assert_eq!(base, "unsloth/Qwen3.5-4B");
+        assert_eq!(rank, 8);
+        assert_eq!(alpha, 160, "alpha = rank * scale = 8 * 20");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    // what this catches: a NESTED multimodal base (Qwen3.5
+    // `*ForConditionalGeneration`, LLM under `language_model.model.`) must keep
+    // its full path in the PEFT key — `base_model.model.language_model.model...`
+    // — not have `language_model.` silently dropped by a `model.`-prefix
+    // assumption. The keystone adapter is exactly this shape; the old kernel
+    // failed loud on it, and a naive "strip model." fix would mangle it. Module
+    // names ending in `_a`/`_b` (linear-attn `in_proj_a`) must not collide with
+    // the `.lora_a`/`.lora_b` suffix split either.
+    #[test]
+    fn nested_multimodal_keys_keep_full_path() {
+        let tmp = std::env::temp_dir().join(format!("mlx_nested_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        // r=2: lora_a (in=3, r=2), lora_b (r=2, out=4) on a linear-attn proj.
+        let a_bytes: Vec<u8> = (0..6).flat_map(|x| (x as f32).to_le_bytes()).collect();
+        let b_bytes: Vec<u8> = (0..8).flat_map(|x| (x as f32).to_le_bytes()).collect();
+        let views: std::collections::HashMap<&str, TensorView> = [
+            (
+                "language_model.model.layers.16.linear_attn.in_proj_a.lora_a",
+                TensorView::new(Dtype::F32, vec![3, 2], &a_bytes).unwrap(),
+            ),
+            (
+                "language_model.model.layers.16.linear_attn.in_proj_a.lora_b",
+                TensorView::new(Dtype::F32, vec![2, 4], &b_bytes).unwrap(),
+            ),
+        ]
+        .into_iter()
+        .collect();
+        let mlx = tmp.join("adapters.safetensors");
+        safetensors::tensor::serialize_to_file(views, None, &mlx).unwrap();
+        let out = tmp.join("peft");
+
+        let conv = mlx_adapters_to_peft(&mlx, &out, "unsloth/Qwen3.5-4B", 2, 160).unwrap();
+        assert_eq!(conv.target_modules, vec!["in_proj_a".to_string()]);
+
+        let data = std::fs::read(&conv.adapter_path).unwrap();
+        let st = SafeTensors::deserialize(&data).unwrap();
+        // Full nested path is preserved with the PEFT wrapper prefix.
+        let (a_shape, _) = read_f32_tensor(
+            &st,
+            "base_model.model.language_model.model.layers.16.linear_attn.in_proj_a.lora_A.weight",
+        );
+        assert_eq!(a_shape, vec![2, 3], "lora_A transposed to (r, in)");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    // what this catches: the FULL owned MLX → GGUF-lora supply path against a
+    // REAL trained adapter — produces the GGUF-lora the in-process scheduler
+    // pages in for the genome LIFT. Ignored by default (needs the on-disk
+    // keystone adapter + vendored llama.cpp + a transformers-capable python);
+    // run explicitly to (re)produce the artifact:
+    //   cargo test -p continuum-core --features metal,accelerate \
+    //     forge::lora_convert::tests::produce_keystone_gguf_lora -- --ignored --nocapture
+    #[test]
+    #[ignore = "real-artifact producer: needs on-disk keystone adapter + vendored llama.cpp + python"]
+    fn produce_keystone_gguf_lora() {
+        let home = std::env::var("HOME").expect("HOME set");
+        let repo = env!("CARGO_MANIFEST_DIR"); // .../core/continuum-core
+        let env = ConvertEnv {
+            llama_cpp_dir: PathBuf::from(repo).join("../vendor/llama.cpp"),
+            python: PathBuf::from(&home)
+                .join(".unsloth/studio/unsloth_studio/bin/python3"),
+            base_config_dir: PathBuf::from(&home)
+                .join(".continuum/forge/export/coder-4b-keystone/fused"),
+        };
+        let mlx_dir = PathBuf::from(&home).join(".continuum/forge/lora/coder-4b-keystone");
+        let out = PathBuf::from(&home).join(".continuum/forge/gguf-lora/coder-4b-keystone.gguf");
+
+        let conv = mlx_to_gguf_lora(&mlx_dir, &out, &env).expect("MLX → GGUF-lora");
+        assert_eq!(conv.gguf_lora, out);
+
+        // GGUF magic: "GGUF" little-endian (0x46554747).
+        let bytes = std::fs::read(&out).unwrap();
+        assert!(bytes.len() > 1024, "GGUF-lora suspiciously small");
+        assert_eq!(&bytes[0..4], b"GGUF", "output is not a GGUF file");
+        eprintln!(
+            "produced {} ({} bytes, rank {})",
+            out.display(),
+            bytes.len(),
+            conv.peft.rank
+        );
     }
 }
