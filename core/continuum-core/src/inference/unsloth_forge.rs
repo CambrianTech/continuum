@@ -66,12 +66,22 @@ pub struct ForgeTrainRequest {
     pub max_seq_length: u32,
     /// 4-bit base load (QLoRA) — the custodian's memory/quality knob.
     pub load_in_4bit: bool,
+    /// LoRA path (vs. full fine-tune). The genome layer is a LoRA.
+    pub use_lora: bool,
+    /// The genome knobs. We send rank/alpha EXPLICITLY — never let the recipe's
+    /// values fall silently to the custodian's defaults (the old
+    /// `write_mlx_lora_config` fail-loud-over-silent-substitution rule, now
+    /// enforced on the wire). The API defaults happen to match (16/16) but the
+    /// recipe owns them.
+    pub lora_r: u32,
+    pub lora_alpha: u32,
+    pub lora_dropout: f64,
 }
 
 /// The handle returned by `POST /api/train/start` — the organism keeps the
 /// `job_id` to poll [`ForgeCustodian::train_status`]. The byte custody stays
 /// custodian-side; this is the reference.
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct TrainHandle {
     #[serde(default)]
     pub job_id: String,
@@ -82,7 +92,7 @@ pub struct TrainHandle {
 /// Live training status — the inspectable progress of a run
 /// (`GET /api/train/status`). `phase` is `"idle"`/`"training"`/…; `details`
 /// carries step/loss for the metric stream.
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct TrainStatus {
     #[serde(default)]
     pub job_id: String,
@@ -99,7 +109,7 @@ pub struct TrainStatus {
 }
 
 /// The numeric progress inside a run (`status.details`).
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct TrainProgress {
     #[serde(default)]
     pub epoch: f64,
@@ -109,6 +119,17 @@ pub struct TrainProgress {
     pub total_steps: u64,
     #[serde(default)]
     pub loss: Option<f64>,
+}
+
+/// Inputs for `POST /api/export/load-checkpoint` — the custodian loads a trained
+/// run into its exporter before packaging (the export endpoints operate on the
+/// loaded checkpoint, not a path argument). `checkpoint_path` is custodian-owned
+/// (under `~/.unsloth/studio/outputs`).
+#[derive(Debug, Clone, Serialize)]
+pub struct LoadCheckpointRequest {
+    pub checkpoint_path: String,
+    pub max_seq_length: u32,
+    pub load_in_4bit: bool,
 }
 
 /// Inputs for `POST /api/export/export/lora` — package the trained checkpoint AS
@@ -140,7 +161,7 @@ pub struct ExportGgufRequest {
 }
 
 /// The custodian's export result envelope (`{success, message, details}`).
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ExportResult {
     #[serde(default)]
     pub success: bool,
@@ -174,6 +195,10 @@ pub trait ForgeCustodian: Send + Sync {
     async fn train_start(&self, req: &ForgeTrainRequest) -> Result<TrainHandle, UnslothError>;
     /// Poll the live run (`GET /api/train/status`).
     async fn train_status(&self) -> Result<TrainStatus, UnslothError>;
+    /// Load a trained run into the custodian's exporter
+    /// (`POST /api/export/load-checkpoint`) — the export endpoints operate on the
+    /// loaded checkpoint, so this precedes `export_lora`/`export_gguf`.
+    async fn load_checkpoint(&self, req: &LoadCheckpointRequest) -> Result<ExportResult, UnslothError>;
     /// Package a checkpoint as the pageable LoRA (`POST /api/export/export/lora`).
     async fn export_lora(&self, req: &ExportLoraRequest) -> Result<ExportResult, UnslothError>;
     /// Fuse + convert + quantize to GGUF (`POST /api/export/export/gguf`) — the
@@ -265,6 +290,10 @@ impl ForgeCustodian for UnslothForgeHttp {
     async fn train_status(&self) -> Result<TrainStatus, UnslothError> {
         self.get_json("/api/train/status").await
     }
+    async fn load_checkpoint(&self, req: &LoadCheckpointRequest) -> Result<ExportResult, UnslothError> {
+        self.post_json("/api/export/load-checkpoint", serde_json::to_value(req).unwrap())
+            .await
+    }
     async fn export_lora(&self, req: &ExportLoraRequest) -> Result<ExportResult, UnslothError> {
         self.post_json("/api/export/export/lora", serde_json::to_value(req).unwrap())
             .await
@@ -305,6 +334,10 @@ mod tests {
             gradient_accumulation_steps: 1,
             max_seq_length: 2048,
             load_in_4bit: true,
+            use_lora: true,
+            lora_r: 32,
+            lora_alpha: 64,
+            lora_dropout: 0.0,
         };
         let v = to_body(&req);
         assert_eq!(v["model_name"], "unsloth/Qwen3.5-4B");
@@ -314,6 +347,10 @@ mod tests {
         // learning_rate is a STRING on the wire, not a float.
         assert!(v["learning_rate"].is_string(), "learning_rate must serialize as string");
         assert_eq!(v["learning_rate"], "1e-05");
+        // the genome knobs ride explicitly — never silently the custodian's default.
+        assert_eq!(v["lora_r"], 32);
+        assert_eq!(v["lora_alpha"], 64);
+        assert_eq!(v["use_lora"], true);
     }
 
     // what this catches: an empty dataset list must be OMITTED, not sent as `[]`
@@ -331,6 +368,10 @@ mod tests {
             gradient_accumulation_steps: 1,
             max_seq_length: 1024,
             load_in_4bit: false,
+            use_lora: true,
+            lora_r: 16,
+            lora_alpha: 16,
+            lora_dropout: 0.0,
         };
         let v = to_body(&req);
         assert!(v.get("local_datasets").is_none(), "empty datasets must be omitted");
