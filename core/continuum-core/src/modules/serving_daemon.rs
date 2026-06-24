@@ -33,13 +33,14 @@ use crate::inference::llama_server::{
 use crate::persona::hw_tier_descriptor::HwTierCategory;
 use crate::model_registry::types::{Capability, Model};
 use crate::model_registry::Registry;
+use crate::runtime::message_bus::MessageBus;
 use crate::runtime::{CommandResult, ModuleConfig, ModuleContext, ModulePriority, ServiceModule};
 use crate::system_resources::SystemResourceMonitor;
 use async_trait::async_trait;
 use serde_json::Value;
 use std::any::Any;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
@@ -59,6 +60,16 @@ const TICK: Duration = Duration::from_secs(5);
 /// the model's trained ceiling — lanes share the budget, so each is planned at
 /// a sane working context rather than the full 256k.
 const PLANNED_CTX_TOKENS: u64 = 8192;
+
+/// Bus topic the live [`ServingSnapshot`] is emitted on whenever it changes.
+/// Subscribers (embedding, supervisor, inference_session, ai_provider) declare
+/// this in their `event_subscriptions` and cache the latest in `handle_event`
+/// instead of probing the process — the cbar pipeline-stage shape: one organ
+/// emits its state, everything that needs it subscribes. Because the bus spans
+/// the grid, a remote lease allocator subscribes to the SAME topic. Routed by
+/// name (no body parse in middleware), payload fans out as a shared pointer,
+/// emitted only on a rare state change — never on the token hot path.
+const SERVING_SNAPSHOT_EVENT: &str = "serving.snapshot";
 
 pub struct ServingDaemonModule {
     gpu: Arc<GpuMemoryManager>,
@@ -85,6 +96,12 @@ pub struct ServingDaemonModule {
     /// in flight. A tick that finds a reconcile already running skips — no
     /// stacked relaunches thrashing the GPU.
     reconciling: Arc<AtomicBool>,
+    /// The message bus, captured at `initialize`. Set once; `None` in tests
+    /// constructed via `with_control` without a live runtime, so the emit is a
+    /// silent no-op there. The daemon publishes [`ServingSnapshot`] changes on
+    /// `SERVING_SNAPSHOT_EVENT` so any subscriber (local or grid) gets the live
+    /// serving state pushed — no point-to-point receiver plumbing.
+    bus: OnceLock<Arc<MessageBus>>,
 }
 
 impl ServingDaemonModule {
@@ -109,6 +126,20 @@ impl ServingDaemonModule {
             server,
             serving_tx,
             reconciling: Arc::new(AtomicBool::new(false)),
+            bus: OnceLock::new(),
+        }
+    }
+
+    /// Emit the live snapshot on the bus. Routed by topic name (cheap match, no
+    /// body parse in middleware); the payload fans out as a shared pointer. A
+    /// no-op when the bus isn't set (tests). The watch is the in-process
+    /// materialized view; THIS is the canonical fan-out that reaches every
+    /// subscriber, including a grid allocator on a remote node.
+    fn emit_serving(bus: Option<&Arc<MessageBus>>, snapshot: &ServingSnapshot) {
+        if let Some(bus) = bus {
+            if let Ok(payload) = serde_json::to_value(snapshot) {
+                bus.publish_async_only(SERVING_SNAPSHOT_EVENT, payload);
+            }
         }
     }
 
@@ -175,7 +206,9 @@ impl ServingDaemonModule {
                 // Nothing servable on disk → publish "nothing live" so readers
                 // (and a grid allocator) see the gap and route elsewhere.
                 if self.serving_tx.borrow().active_model.is_some() {
-                    let _ = self.serving_tx.send_replace(ServingSnapshot::empty());
+                    let empty = ServingSnapshot::empty();
+                    Self::emit_serving(self.bus.get(), &empty);
+                    let _ = self.serving_tx.send_replace(empty);
                 }
                 return None;
             }
@@ -197,6 +230,7 @@ impl ServingDaemonModule {
         let server = self.server.clone();
         let serving_tx = self.serving_tx.clone();
         let reconciling = self.reconciling.clone();
+        let bus = self.bus.get().cloned();
         Some(tokio::spawn(async move {
             let outcome = ensure_model_serving(server.as_ref(), &desired).await;
             let snapshot = snapshot_from_outcome(&outcome, &desired);
@@ -207,6 +241,9 @@ impl ServingDaemonModule {
                 active = snapshot.active_model.as_deref().unwrap_or("<none>"),
                 "serving reconcile complete",
             );
+            // Emit on the bus first (fan-out to every subscriber + the grid),
+            // then update the in-process watch view.
+            Self::emit_serving(bus.as_ref(), &snapshot);
             let _ = serving_tx.send_replace(snapshot);
             reconciling.store(false, Ordering::Release);
         }))
@@ -397,7 +434,10 @@ impl ServiceModule for ServingDaemonModule {
         }
     }
 
-    async fn initialize(&self, _ctx: &ModuleContext) -> Result<(), String> {
+    async fn initialize(&self, ctx: &ModuleContext) -> Result<(), String> {
+        // Capture the bus so snapshot changes fan out to subscribers (the
+        // cbar-stage shape). Set-once; ignore a re-init.
+        let _ = self.bus.set(ctx.bus.clone());
         // Plan once at boot so the decision is published before the first tick,
         // then kick the first reconcile so the server comes up promptly rather
         // than waiting a full tick interval. The reconcile runs detached.
@@ -664,5 +704,30 @@ mod tests {
         // Gate cleared → a retry actually spawns again.
         daemon.reconcile_to_plan().expect("retry spawned").await.unwrap();
         assert_eq!(serves.load(Ordering::SeqCst), 2, "retried after degrade");
+    }
+
+    // what this catches: a reconcile emits the live snapshot on the BUS (topic
+    // serving.snapshot), not just the in-process watch — the cbar fan-out that
+    // lets any subscriber (and a remote grid allocator) get serving state pushed
+    // without point-to-point plumbing. Regression = silent watch-only updates
+    // that no subscriber ever sees.
+    #[tokio::test]
+    async fn reconcile_emits_snapshot_on_the_bus() {
+        let serves = Arc::new(AtomicUsize::new(0));
+        let daemon = daemon_with(Arc::new(FakeServer { serves: serves.clone(), ok: true }));
+        let bus = Arc::new(MessageBus::new());
+        let _ = daemon.bus.set(bus.clone());
+
+        let budget = HostBudget { usable_bytes: 45 * GB, perf_cores: 6 };
+        let candidates = vec![footprint_from_parts("coder-14b", 9 * GB, 8192, true).unwrap()];
+        daemon.publish_plan(budget, &candidates);
+        daemon.reconcile_to_plan().expect("spawned").await.unwrap();
+
+        let event = bus
+            .find_recent_event(SERVING_SNAPSHOT_EVENT)
+            .expect("serving.snapshot must be emitted on the bus");
+        let snap: ServingSnapshot = serde_json::from_value(event.payload).unwrap();
+        assert_eq!(snap.active_model.as_deref(), Some("coder-14b"));
+        assert!(snap.ready, "emitted snapshot reflects the live model");
     }
 }
