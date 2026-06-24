@@ -517,6 +517,10 @@ impl ServiceModule for CodeModule {
         objs.extend(crate::commands::code::git::command_objects(
             self.state.clone(),
         ));
+        // The cargo family (`code/cargo/<verb>`) — the persona's Rust hands.
+        objs.extend(crate::commands::code::cargo::command_objects(
+            self.state.clone(),
+        ));
         objs
     }
 

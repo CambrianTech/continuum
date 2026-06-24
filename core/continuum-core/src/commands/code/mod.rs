@@ -8,8 +8,11 @@
 //!
 //! Subtree map:
 //! - [`run`] — `code/run`: execute a snippet, observe stdout/stderr/exit (stateless).
+//! - [`cargo`] — `code/cargo/<verb>`: the persona's Rust hands — `cargo check`/`test`
+//!   over the caller's workspace, returning structured diagnostics (hand + grader).
 //! - [`git`] — `code/git/<verb>`: version control over the caller's own workspace.
 //! - `fs/` — `code/fs/<verb>`: file operations (slice 2; today in `modules::code_commands`).
 
+pub mod cargo;
 pub mod git;
 pub mod run;
