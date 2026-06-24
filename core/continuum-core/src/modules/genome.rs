@@ -33,7 +33,7 @@ use serde_json::{json, Value};
 
 use crate::genome::fine_tuning::{
     coordinator::{CoordinatorError, FineTuningCoordinator},
-    FineTuningError, FineTuningRegistry, JobHandle, TrainingJobRequest, TrainingStatus,
+    FineTuningError, FineTuningRegistry, JobHandle, TrainingJobRequest,
 };
 use crate::runtime::{
     CommandResult, ModuleConfig, ModuleContext, ModulePriority, ServiceModule,
@@ -288,7 +288,7 @@ mod tests {
         FineTuningAdapter, FineTuningCapabilities, TrainerHardware,
     };
     use crate::genome::fine_tuning::types::{
-        JobMetrics, TrainingArtifact, TrainingDataset, TrainingSource,
+        JobMetrics, TrainingArtifact, TrainingDataset, TrainingSource, TrainingStatus,
     };
     use uuid::Uuid;
 

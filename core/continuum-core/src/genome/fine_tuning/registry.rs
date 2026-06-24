@@ -13,11 +13,10 @@
 //! looks up the adapter, dispatches.
 
 use std::collections::HashMap;
-use std::sync::Arc;
 
 use parking_lot::RwLock;
 
-use super::adapter::{ArcFineTuningAdapter, FineTuningAdapter};
+use super::adapter::ArcFineTuningAdapter;
 
 /// Substrate-wide collection of registered fine-tuning adapters.
 ///
@@ -75,11 +74,11 @@ impl FineTuningRegistry {
 mod tests {
     use super::*;
     use crate::genome::fine_tuning::adapter::{
-        FineTuningCapabilities, FineTuningError, TrainerHardware,
+        FineTuningAdapter, FineTuningCapabilities, FineTuningError, TrainerHardware,
     };
     use crate::genome::fine_tuning::types::{JobHandle, TrainingJobRequest, TrainingStatus};
     use async_trait::async_trait;
-    use uuid::Uuid;
+    use std::sync::Arc;
 
     struct NamedStub(&'static str);
 
