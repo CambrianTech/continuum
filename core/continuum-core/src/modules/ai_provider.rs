@@ -636,15 +636,17 @@ impl AIProviderModule {
         }
 
         // Intentional boot assertion: announce the ACTIVE inference path so a silent
-        // fallback can NEVER go unnoticed again ("we didn't even know unsloth wasn't
-        // used"). Registration only means key-present + adapter-configured — it does
-        // NOT mean unsloth is serving. So we PROBE reachability here, making startup
-        // impervious to unsloth being down / uninstalled / not yet started: that is
-        // caught LOUD, never falsely reported ✓. [[fallbacks-are-illegal-fail-loud]]
+        // fallback can NEVER go unnoticed again ("we didn't even know it wasn't
+        // serving"). Registration only means key-present + adapter-configured — it
+        // does NOT mean a model is being SERVED. So we READ the serving daemon's
+        // published ServingSnapshot (the same `watch` seam personas bind on in
+        // supervisor slice 2) rather than issuing our own /v1/models probe:
+        // subscribers READ the snapshot, they do NOT each probe. The daemon owns
+        // serving health; this block owns "is there a served model for the gateway
+        // path". A missing/empty/unready serving plan surfaces LOUD, never falsely
+        // reported ✓. [[fallbacks-are-illegal-fail-loud]]
         {
-            use crate::inference::unsloth_control::UnslothHttp;
             use crate::runtime::boot_status::{boot_status, BootStatusKind};
-            let base = crate::inference::unsloth_control::unsloth_base_url();
             let local_note = if local_llama_opt_in {
                 " (+ CONTINUUM_LOCAL_LLAMA opt-in ALSO active)"
             } else {
@@ -654,24 +656,21 @@ impl AIProviderModule {
                 boot_status(
                     "inference",
                     BootStatusKind::Failed,
-                    "unsloth gateway NOT registered — set UNSLOTH_API_KEY in ~/.continuum/config.env \
+                    "inference gateway NOT registered — set UNSLOTH_API_KEY in ~/.continuum/config.env \
                      (open unsloth Studio to generate one). Inference gateway REQUIRED; no local fallback.",
                 );
             } else {
-                // Probe reachability AND discover the runnable set (slice 1): list the
-                // models unsloth actually serves, named at boot. No static catalog guess.
-                match UnslothHttp::from_config().list_models().await {
-                    Ok(models) if !models.is_empty() => {
-                        let names: Vec<&str> = models
-                            .iter()
-                            .map(|m| m.rsplit('/').next().unwrap_or(m))
-                            .collect();
-                        let shown = names.iter().take(3).cloned().collect::<Vec<_>>().join(", ");
-                        let more = if names.len() > 3 {
-                            format!(" +{}", names.len() - 3)
-                        } else {
-                            String::new()
-                        };
+                // Read the daemon's reconciled snapshot (bounded wait for its first
+                // reconcile so a boot race still resolves). One source of truth for
+                // "what is served" — no redundant HTTP probe of our own.
+                match crate::inference::llama_server::await_ready_serving(
+                    crate::inference::llama_server::DEFAULT_SERVING_WAIT,
+                )
+                .await
+                {
+                    Some(snap) => {
+                        let model = snap.active_model.as_deref().unwrap_or("(unknown)");
+                        let short = model.rsplit('/').next().unwrap_or(model);
                         boot_status(
                             "inference",
                             if local_llama_opt_in {
@@ -680,25 +679,19 @@ impl AIProviderModule {
                                 BootStatusKind::Ok
                             },
                             &format!(
-                                "unsloth gateway @ {base} — reachable, {n} model(s): {shown}{more}{local_note}",
-                                n = models.len()
+                                "inference gateway @ {base} — serving {short}{local_note}",
+                                base = snap.base_url
                             ),
                         );
                     }
-                    Ok(_) => boot_status(
-                        "inference",
-                        BootStatusKind::Degraded,
-                        &format!(
-                            "unsloth gateway @ {base} reachable but NO model loaded — load one \
-                             (UNSLOTH_MODEL / unsloth Studio){local_note}"
-                        ),
-                    ),
-                    Err(e) => boot_status(
+                    None => boot_status(
                         "inference",
                         BootStatusKind::Failed,
                         &format!(
-                            "unsloth gateway @ {base} NOT reachable ({e}) — is unsloth Studio \
-                             running/installed? Inference gateway REQUIRED; no local fallback."
+                            "serving daemon brought up NO ready model within {secs}s — load one \
+                             (UNSLOTH_MODEL / unsloth Studio) or check the serving plan. \
+                             Inference gateway REQUIRED; no local fallback.{local_note}",
+                            secs = crate::inference::llama_server::DEFAULT_SERVING_WAIT.as_secs()
                         ),
                     ),
                 }
