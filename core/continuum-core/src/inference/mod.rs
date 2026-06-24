@@ -50,6 +50,7 @@ pub mod ort_providers;
 pub mod recipe_budget;
 pub mod throughput_expectation;
 pub mod unsloth_control;
+pub mod unsloth_forge;
 pub mod vendored;
 
 // Re-export commonly used types
