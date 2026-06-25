@@ -190,7 +190,6 @@ impl ForgeCustodian for ForgeCustodianHttp {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::forge::protocol::CAPABILITY_GGUF_LORA;
 
     // what this catches: a bare host:port from config is turned into an http URL,
     // and a fully-qualified override is passed through untouched — the gguf-lora
@@ -218,11 +217,10 @@ mod tests {
         #[async_trait]
         impl ForgeCustodian for WrongVersion {
             async fn health(&self) -> Result<HealthResponse, ForgeCustodianError> {
+                // a future custodian one version ahead of this client
                 Ok(HealthResponse {
-                    status: "ok".into(),
-                    kind: "continuum-forge-custodian".into(),
-                    capability: CAPABILITY_GGUF_LORA.into(),
-                    contract_version: CONTRACT_VERSION + 1, // a future custodian
+                    contract_version: CONTRACT_VERSION + 1,
+                    ..HealthResponse::ok_gguf_lora()
                 })
             }
             async fn export_gguf_lora(

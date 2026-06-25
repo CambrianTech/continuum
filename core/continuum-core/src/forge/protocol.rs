@@ -98,8 +98,16 @@ pub struct ExportResult {
     pub details: Value,
 }
 
-/// `GET /health` response — liveness + capability + contract version. A client
-/// reads `contract_version` and refuses a custodian it can't speak to.
+/// `GET /health` response — liveness + capability + contract version + the
+/// readiness/capacity detail a router (the model-endpoint fabric) scores against.
+///
+/// `status`/`kind`/`capability`/`contract_version` are the discovery basics; a
+/// client reads `contract_version` and refuses a custodian it can't speak to.
+/// `ready`/`slots_total`/`slots_available` are the ROUTING inputs (R4): a custodian
+/// that is alive but `ready == false` (its converter tooling is missing) or has
+/// `slots_available == 0` (saturated) should not be handed new work. They are
+/// `#[serde(default)]` so an older custodian that omits them deserializes fine
+/// (the additive, non-breaking shape — no `CONTRACT_VERSION` bump).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HealthResponse {
     /// `"ok"` when serving. Present for human/`curl` legibility.
@@ -110,18 +118,45 @@ pub struct HealthResponse {
     pub capability: String,
     /// The wire-contract version this custodian speaks ([`CONTRACT_VERSION`]).
     pub contract_version: u32,
+    /// Can it actually do work right now — i.e. its conversion tooling resolves?
+    /// A live-but-not-ready custodian must not be routed to. Defaults `true` so an
+    /// older custodian that predates the field reads as ready.
+    #[serde(default = "default_ready")]
+    pub ready: bool,
+    /// Total concurrent conversion slots this custodian advertises (R3 bound).
+    #[serde(default)]
+    pub slots_total: u32,
+    /// Slots free RIGHT NOW. `0` ⇒ saturated; route elsewhere. (`slots_total` with
+    /// a `0` default just means "capacity unknown" for an older custodian.)
+    #[serde(default)]
+    pub slots_available: u32,
+}
+
+/// `ready` defaults to `true` for back-compat with custodians predating the field.
+pub fn default_ready() -> bool {
+    true
 }
 
 impl HealthResponse {
     /// The standard healthy reply for a gguf-lora custodian at this contract
-    /// version. The custodian's `/health` handler returns exactly this.
-    pub fn ok_gguf_lora() -> Self {
+    /// version, ready, with the given capacity. The custodian's `/health` handler
+    /// fills `ready` + slot counts from its live state.
+    pub fn gguf_lora(ready: bool, slots_total: u32, slots_available: u32) -> Self {
         Self {
             status: "ok".to_string(),
             kind: "continuum-forge-custodian".to_string(),
             capability: CAPABILITY_GGUF_LORA.to_string(),
             contract_version: CONTRACT_VERSION,
+            ready,
+            slots_total,
+            slots_available,
         }
+    }
+
+    /// Minimal healthy reply (ready, capacity unspecified) — used by tests and any
+    /// caller that only needs the discovery basics.
+    pub fn ok_gguf_lora() -> Self {
+        Self::gguf_lora(true, 0, 0)
     }
 }
 
