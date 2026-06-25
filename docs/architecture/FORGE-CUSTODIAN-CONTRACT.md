@@ -1,6 +1,6 @@
 # Forge Custodian Contract — Contract C, and how it grid-negotiates
 
-**Status:** in progress. Pass 1 + Pass 2 + Pass 3 + Pass 4 + Pass 5a landed. Pass 1/2 — `forge::protocol`
+**Status:** in progress. Pass 1 + Pass 2 + Pass 3 + Pass 4 + Pass 5a + Pass 5b landed. Pass 1/2 — `forge::protocol`
 single-sources the wire + `/health` contract-version handshake (custodian a real
 `[[bin]]`), and the gguf-lora export speaks Contract C through a clean de-`unsloth`
 `forge::custodian_client` aimed at the custodian's own endpoint. **Pass 3 (commit
@@ -253,10 +253,12 @@ The dispatch gate is one pure predicate, `can_accept_gguf_lora(endpoint,
 client_contract_version, trust_floor)` — routable + contract match + capability +
 trust floor, the two forge-specific gates below expressed as code.
 
-**Discovery is observed, not configured.** **Pass 5b (next)** announces a node's
-`ForgeEndpoint` over the grid bus (`GRID-BUS-ARCHITECTURE.md` —
-`NodeCapability` + `GridTransport::announce`, the existing announce path); the
-fabric aggregates. **Routing** for a forge need
+**Discovery is observed, not configured.** **Pass 5b (landed, `1027b7046`)**
+announces a node's `ForgeEndpoint` over the grid bus as `NodeCapability::Forge`
+through the existing `GridModule` enrichment + `GridTransport::announce` path; a
+node advertises forge ONLY when `ForgeEndpoint::probe_local` finds the custodian
+answering (absence is honest, not a fallback). The `NodeRegistry` aggregates.
+**Routing** for a forge need
 is the fabric's existing scorer with two forge-specific gates:
 1. **Trust gate first** (GridTrustAuthPolicy). A job whose dataset carries
    private data (the medical trial — `[[medical-field-first-trial]]`) must NOT be
@@ -282,7 +284,7 @@ resources. They differ only in what crosses the wire:
 | Contract | A (Serving Seam) + the fabric's `AircRemoteInference` | **C (`forge::protocol`)** |
 | Crosses wire | **text only** (`TurnEmitted`) — brain + tools stay local | request in; **`GeneHandle` out** — bytes stay node-local |
 | Byte custody | weights in the serving node's VRAM | gene bytes under the forge node's `save_directory` |
-| Already in tree | fabric `AircRemoteInference` row; `ThroughputLeaseRegistry` | `ForgeEndpoint` row (Pass 5a); `GeneHandle`/`adapter_manifest` handle |
+| Already in tree | fabric `AircRemoteInference` row; `ThroughputLeaseRegistry` | `ForgeEndpoint` row (5a) + `NodeCapability::Forge` announce (5b); `GeneHandle`/`adapter_manifest` handle |
 
 The endgame is `[[lora-layers-as-p2p-exchanged-genome]]` +
 `[[search-then-ab-dont-start-from-zero]]`: a node that needs a capability first
@@ -367,9 +369,17 @@ Done is done; everything below the line is the plan.
      LOUD (no-fallback at the probe boundary); `can_accept_gguf_lora()` is the one
      pure dispatch gate (routable + contract + capability + trust floor). 4 unit + 3
      export-binding tests green; forge suite 86 passed.
-   - **5b — announce (next).** Surface a node's `ForgeEndpoint` over the grid bus
-     via the existing announce path (`NodeCapability` + `GridTransport::announce`
-     into the live grid module); the fabric aggregates + health-probes + scores.
+   - ✅ **5b — announce over the grid bus.** (`1027b7046`) `NodeCapability::Forge
+     { endpoint }` rides the EXISTING `GridModule` capability-enrichment +
+     `GridTransport::announce` path (no new tokio task / watch channel —
+     CONCURRENCY-STYLE-GUIDE STOP block honored). `ForgeEndpoint::probe_local`
+     (2s-bounded in `initialize()`) observes the local custodian; a node advertises
+     forge ONLY when it answered — `advertise_from_probe` makes Unreachable ⇒ no cap
+     (honest absence, not a fallback Down-row) and a broken `/health` ⇒ declined +
+     logged loud (forge is optional infra, can't block grid bringup). The
+     `NodeRegistry` upsert IS today's endpoint table (the scorer is Pass 6). 2 unit
+     (advertise policy + grid-bus round trip) green; forge::endpoint 8/8, grid::node
+     8/8; ts-rs regenerated `NodeCapability.ts`.
 6. **Pass 6 — grid transport impl.** A `GridForgeCustodian` impl of the
    `ForgeCustodian` trait routes a forge lease to a remote node over
    GRID-ADDRESSING transport, trust-gated, idempotent, healing on `Unreachable`.
