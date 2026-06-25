@@ -56,6 +56,7 @@ pub mod registry;
 #[allow(clippy::module_inception)]
 pub mod runtime;
 pub mod service_module;
+pub mod share_controller;
 pub mod shared_compute;
 pub mod substrate_governor;
 
@@ -95,6 +96,7 @@ pub use runtime::Runtime;
 pub use service_module::{
     CommandResult, CommandSchema, ModuleConfig, ModulePriority, ParamSchema, ServiceModule,
 };
+pub use share_controller::ShareController;
 pub use shared_compute::SharedCompute;
 
 // ============================================================================

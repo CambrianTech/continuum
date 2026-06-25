@@ -129,6 +129,23 @@ impl OrientationShares {
             Orientation::Speciation => self.speciation,
         }
     }
+
+    /// Total tickets across all classes. The conserved pool a controller redistributes —
+    /// reallocate within this, never grow it, so the floors stay meaningful.
+    pub fn total(&self) -> u32 {
+        self.reactive + self.self_directed + self.speciation
+    }
+
+    /// The spine-fixed floor for a class — the hard lower bound a controller must never
+    /// steer below. Single source of the floor truth (the [`new`](Self::new) clamp reads
+    /// the same constants), so a tuning policy can allocate only the *free* pool above it.
+    pub fn floor(o: Orientation) -> u32 {
+        match o {
+            Orientation::Reactive => MIN_REACTIVE_TICKETS,
+            Orientation::SelfDirected => MIN_SELF_DIRECTED_TICKETS,
+            Orientation::Speciation => 0,
+        }
+    }
 }
 
 impl Default for OrientationShares {

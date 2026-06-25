@@ -46,9 +46,19 @@
 //! arbitration (R1) still picks *when* each pair is due; the budget only picks *which
 //! class* spends a contended pass.
 //!
+//! ## Adaptive share control (R4)
+//!
+//! With [`SubstrateGovernor::with_adaptive_shares`] the governor closes the loop: each pass
+//! it reads the active shares from a [`ShareController`], applies them, then feeds the pass's
+//! *measured* per-class deferral back to the controller, which reallocates the free ticket
+//! pool toward the starved classes (within the spine floors) for the next pass. Without the
+//! builder the shares are the static open-loop prior — the policy is swappable at one seam
+//! ([[self-improvement-is-a-control-loop]]). On an uncapped/calm society there's no deferral,
+//! so the controller holds the prior: zero behavior change on a capable host.
+//!
 //! ## Not yet (next slices)
-//! - R4: a share-policy daemon that tunes [`OrientationShares`] + sets `slices_per_pass`
-//!   from live pressure/economy signals off the bus (the first-best-guess is open-loop).
+//! - R4 slice 3: drive `slices_per_pass` from live host pressure (the scarcity knob is still
+//!   set by hand / boot; the share *mix* above it is now measured + adaptive).
 //! - `PersonaCognitionRegion` + the multi-tower inference router (command→handle→event).
 //! - R5: the speciation (sleep-phase consolidation / genome-learning) region.
 
@@ -69,7 +79,7 @@ use crate::persona::PersonaAircRuntimeRegistry;
 use crate::runtime::{
     apportion, orientation_index, BrainRegion, CadenceHint, CadenceTable, CommandResult,
     ModuleConfig, ModuleContext, ModulePriority, Orientation, OrientationCounts, OrientationShares,
-    RegionContext, ServiceModule, ORIENTATIONS,
+    RegionContext, ServiceModule, ShareController, ORIENTATIONS,
 };
 use crate::sdk_codegen::{AccessLevel, ActionCommand, CommandError, Ctx, DynCommand};
 
@@ -125,9 +135,9 @@ pub struct GovernorSnapshot {
     /// metric the orientation-budget economy reads (R2): is the society's time going to
     /// stimulus, to interiority, or to growth? `ticked == by_orientation.total()`.
     pub by_orientation: OrientationCounts,
-    /// The active share policy this pass (R3) — telemetry of *what the budget should be*,
-    /// next to `by_orientation`'s *what it was*. The R4 daemon will tune this; until then
-    /// it's the declared open-loop first-best-guess.
+    /// The share policy ACTUALLY applied this pass — telemetry of *what the budget should
+    /// be*, next to `by_orientation`'s *what it was*. With an adaptive controller (R4) this
+    /// shifts pass-to-pass as it tracks measured deferral; otherwise it's the static prior.
     pub shares: OrientationShares,
 }
 
@@ -142,8 +152,14 @@ pub struct SubstrateGovernor {
     /// is taken briefly and NEVER held across an `.await` (concurrency-style-guide rule).
     cadence: Mutex<CadenceTable>,
     /// The orientation budget policy (R3): how a contended pass is split across classes.
-    /// Immutable for now (the open-loop first-best-guess); the R4 daemon will own tuning.
+    /// The static open-loop prior + the seed for the adaptive controller. When `controller`
+    /// is `None` this IS the active policy every pass; when `Some`, it's just the seed.
     shares: OrientationShares,
+    /// The R4 adaptive share controller, installed by [`Self::with_adaptive_shares`]. `None`
+    /// (default) = static `shares`. When present, the tick reads its current shares, then
+    /// feeds back the measured per-class deferral so it tunes the next pass. Only the single
+    /// tick task touches it; the lock is brief and NEVER held across an `.await`.
+    controller: Option<Mutex<ShareController>>,
     /// Slice budget per pass — the scarcity knob. `None` (default) = admit every due
     /// pair (unconstrained machine; the budget is dormant). `Some(n)` engages the
     /// proportional share when more than `n` pairs are due. Set by R4 from live pressure.
@@ -167,15 +183,26 @@ impl SubstrateGovernor {
             tick_seq: AtomicU64::new(0),
             cadence: Mutex::new(CadenceTable::new()),
             shares: OrientationShares::default(),
+            controller: None,
             slices_per_pass: None,
             snapshot,
         }
     }
 
-    /// Override the orientation share policy (R4 / tests). Floors are enforced by
-    /// [`OrientationShares`] itself, so this can't construct a starving policy.
+    /// Override the static orientation share policy (R4 / tests). Floors are enforced by
+    /// [`OrientationShares`] itself, so this can't construct a starving policy. With an
+    /// adaptive controller installed this sets the controller's *seed* — call it before
+    /// [`Self::with_adaptive_shares`].
     pub fn with_shares(mut self, shares: OrientationShares) -> Self {
         self.shares = shares;
+        self
+    }
+
+    /// Install the R4 adaptive share controller, seeded from the current `shares`. The
+    /// governor then tunes the orientation mix from measured per-class deferral each pass,
+    /// within the spine floors — replacing the static open-loop prior with a closed loop.
+    pub fn with_adaptive_shares(mut self) -> Self {
+        self.controller = Some(Mutex::new(ShareController::new(self.shares)));
         self
     }
 
@@ -257,9 +284,21 @@ impl ServiceModule for SubstrateGovernor {
         }
 
         // ── Phase 2: apportion under the orientation budget, then tick the admitted ──
+        // The active policy is the controller's current shares (R4) if installed, else the
+        // static prior. Brief lock, released before any region tick.
+        let active_shares = match &self.controller {
+            Some(c) => c.lock().unwrap().shares(),
+            None => self.shares,
+        };
         let (admitted, deferred_by_orientation) =
-            admit_pass(&groups, &self.shares, self.slices_per_pass, tick);
+            admit_pass(&groups, &active_shares, self.slices_per_pass, tick);
         let deferred = deferred_by_orientation.total();
+
+        // Close the R4 loop: feed this pass's measured per-class deferral back so the
+        // controller reallocates for the NEXT pass. Brief lock, before any await below.
+        if let Some(c) = &self.controller {
+            c.lock().unwrap().observe(deferred_by_orientation);
+        }
 
         let mut ticked = 0usize;
         let mut published = 0usize;
@@ -321,7 +360,7 @@ impl ServiceModule for SubstrateGovernor {
             deferred,
             deferred_by_orientation,
             by_orientation,
-            shares: self.shares,
+            shares: active_shares,
         };
         // send_replace: always-current, no backlog; readers borrow lock-free.
         let _ = self.snapshot.send_replace(snap);
