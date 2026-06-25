@@ -63,8 +63,9 @@
 //! - R5: the speciation (sleep-phase consolidation / genome-learning) region.
 
 use std::any::Any;
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -76,6 +77,9 @@ use ts_rs::TS;
 use uuid::Uuid;
 
 use crate::persona::PersonaAircRuntimeRegistry;
+use crate::runtime::governor_bus::{publish_persona_scheduled, PersonaScheduled};
+use crate::runtime::message_bus::MessageBus;
+use crate::runtime::registry::ModuleRegistry;
 use crate::runtime::{
     apportion, orientation_index, BrainRegion, CadenceHint, CadenceTable, CommandResult,
     ModuleConfig, ModuleContext, ModulePriority, Orientation, OrientationCounts, OrientationShares,
@@ -139,6 +143,13 @@ pub struct GovernorSnapshot {
     /// be*, next to `by_orientation`'s *what it was*. With an adaptive controller (R4) this
     /// shifts pass-to-pass as it tracks measured deferral; otherwise it's the static prior.
     pub shares: OrientationShares,
+    /// Distinct beings that received a cognitive slice this pass and therefore had a
+    /// `PersonaScheduled` breath emitted (the out-breath count). One per scheduled being,
+    /// deduped across the (region × persona) fan-in. This is what residency / sentinels /
+    /// demand-recall react to — `scheduled_emitted` is the size of that fan-out. `0` only
+    /// when no being was admitted (idle society) or the bus isn't wired (pre-init).
+    #[ts(type = "number")]
+    pub scheduled_emitted: usize,
 }
 
 /// The scheduling daemon. Holds the regions + the live-persona registry; the
@@ -165,6 +176,14 @@ pub struct SubstrateGovernor {
     /// proportional share when more than `n` pairs are due. Set by R4 from live pressure.
     slices_per_pass: Option<usize>,
     snapshot: watch::Sender<GovernorSnapshot>,
+    /// Bus + registry captured at `initialize`, for emitting the per-pass
+    /// `PersonaScheduled` out-breath. `OnceLock`: set exactly once at init, read lock-free
+    /// in the hot tick. Absent (pre-init, or a test that drives `tick()` without a Runtime)
+    /// => the governor still schedules normally; it just doesn't emit — there's no
+    /// subscriber to hear it anyway, so the breath is a no-op, never a failure. The governor
+    /// NEVER calls a reactor directly; emission is its only outward coupling.
+    bus: OnceLock<Arc<MessageBus>>,
+    registry: OnceLock<Arc<ModuleRegistry>>,
 }
 
 impl SubstrateGovernor {
@@ -186,6 +205,8 @@ impl SubstrateGovernor {
             controller: None,
             slices_per_pass: None,
             snapshot,
+            bus: OnceLock::new(),
+            registry: OnceLock::new(),
         }
     }
 
@@ -228,7 +249,11 @@ impl ServiceModule for SubstrateGovernor {
         }
     }
 
-    async fn initialize(&self, _ctx: &ModuleContext) -> Result<(), String> {
+    async fn initialize(&self, ctx: &ModuleContext) -> Result<(), String> {
+        // Capture the bus + registry so `tick()` can emit the per-pass
+        // `PersonaScheduled` out-breath. Set-once; the hot tick reads lock-free.
+        let _ = self.bus.set(ctx.bus.clone());
+        let _ = self.registry.set(ctx.registry.clone());
         Ok(())
     }
 
@@ -294,6 +319,18 @@ impl ServiceModule for SubstrateGovernor {
             admit_pass(&groups, &active_shares, self.slices_per_pass, tick);
         let deferred = deferred_by_orientation.total();
 
+        // The distinct beings admitted this pass — each gets ONE out-breath, regardless of
+        // how many of its regions ran. Collected before the tick loop consumes `admitted`,
+        // preserving first-admitted order (stable, deterministic) while deduping the
+        // (region × persona) fan-in. This is the society's "who is alive right now" set.
+        let scheduled: Vec<Uuid> = {
+            let mut seen = HashSet::new();
+            admitted
+                .iter()
+                .filter_map(|(_, persona, _)| seen.insert(*persona).then_some(*persona))
+                .collect()
+        };
+
         // Close the R4 loop: feed this pass's measured per-class deferral back so the
         // controller reallocates for the NEXT pass. Brief lock, before any await below.
         if let Some(c) = &self.controller {
@@ -349,6 +386,18 @@ impl ServiceModule for SubstrateGovernor {
             self.cadence.lock().unwrap().record(key, tick, hint);
         }
 
+        // ── Out-breath: announce which beings got a cognitive slice ──────────────────
+        // The governor EMITS; it does not call. Genome residency, sentinel-observers, and
+        // demand-recall subscribe to `PersonaScheduled` and react on their own — adding a
+        // reactor needs zero edits here. No cadence lock is held across these awaits (the
+        // loop above took + released its locks per iteration). Absent bus/registry
+        // (pre-init / Runtime-less test) => no subscribers exist, so emission is skipped.
+        if let (Some(bus), Some(registry)) = (self.bus.get(), self.registry.get()) {
+            for &persona in &scheduled {
+                publish_persona_scheduled(bus, registry, &PersonaScheduled { persona, tick }).await;
+            }
+        }
+
         let snap = GovernorSnapshot {
             tick,
             regions: self.regions.iter().map(|r| r.id().0.to_string()).collect(),
@@ -361,6 +410,7 @@ impl ServiceModule for SubstrateGovernor {
             deferred_by_orientation,
             by_orientation,
             shares: active_shares,
+            scheduled_emitted: scheduled.len(),
         };
         // send_replace: always-current, no backlog; readers borrow lock-free.
         let _ = self.snapshot.send_replace(snap);
