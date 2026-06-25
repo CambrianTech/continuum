@@ -196,6 +196,24 @@ impl Workspace {
         }
     }
 
+    /// The assembled perception a phase-2 (deliberation) faculty conditions on:
+    /// every context contribution that won attention this tick, newline-joined.
+    /// This is where the persona reads what its perception faculties surfaced —
+    /// roster/doctrine grounding, recall hits, and (the proprioception channel)
+    /// the `WorkingMemoryFaculty`'s render of its own recent acts. A deliberation
+    /// faculty scans THIS, not the raw `world_state` burst — the burst is the
+    /// stimulus, the broadcast is what the mind actually knows going into the
+    /// decision. (Replaces the deleted eval-only `[you just acted]` world-state
+    /// fold: act-results now reach the mind through working memory, identically
+    /// in the live heartbeat and the eval fork.)
+    pub fn perceived(&self) -> String {
+        self.broadcast
+            .iter()
+            .map(|c| c.content.as_str())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
     /// The participation decision that won attention this tick, if any. It is
     /// the highest-salience contribution that carries a [`Decision`] — i.e. the
     /// deliberation faculty's verdict, if it made it into the bounded workspace.
@@ -346,6 +364,13 @@ pub struct ActingBody {
     /// engram — so the outcome becomes a thing the mind remembers and can be
     /// reminded of next tick, the same way it carries every other fact.
     pub admission: Arc<crate::persona::admission_state::AdmissionState>,
+    /// The volatile working-memory scratchpad the organism records each act into
+    /// (proprioception). Distinct from `admission` (long-term, content-deduped): an
+    /// act must be perceptible NEXT tick even when its result is a dedup no-op in
+    /// long-term memory, so the mind sees its own hands and doesn't re-issue the
+    /// identical act blind. Shared `Arc` with the perception-tier
+    /// [`WorkingMemoryFaculty`] (one buffer, written here, read there).
+    pub working_memory: Arc<crate::cognition::working_memory::WorkingMemory>,
 }
 
 /// One service-tick of cognition over a CONSOLIDATED burst (never per-event):
@@ -481,6 +506,17 @@ impl WorkspaceCycle {
     /// The persona's currently paged-in genome (a snapshot).
     pub fn genome(&self) -> Vec<ActiveAdapterRequest> {
         self.genome.load().as_ref().clone()
+    }
+
+    /// Clear the volatile working-memory scratch (the act/reasoning proprioception
+    /// buffer), if this cycle has hands. Called at the boundary between disjoint
+    /// concerns — e.g. each independent task in a `cognition/eval` pass — so one
+    /// concern's proprioception does not bleed into the next. No-op for a
+    /// pure-cognition cycle. See [`super::working_memory::WorkingMemory::clear`].
+    pub fn reset_working_memory(&self) {
+        if let Some(acting) = &self.acting {
+            acting.working_memory.clear();
+        }
     }
 
     /// Begin a memory-isolated measurement window over this cycle's hippocampus.

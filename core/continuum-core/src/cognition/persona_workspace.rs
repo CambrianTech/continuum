@@ -248,6 +248,11 @@ pub fn build_workspace_cycle(cfg: PersonaBrainConfig) -> WorkspaceCycle {
             persona_name: persona_name_for_body,
             executor,
             admission: admission_for_body,
+            // Same buffer the perception-tier WorkingMemoryFaculty reads — the
+            // organism records each act here so the mind perceives its own hands
+            // next tick (proprioception), even when the result is a dedup no-op in
+            // long-term memory and thinking is suppressed.
+            working_memory: Arc::clone(&working_memory),
         })),
         None => cycle,
     };
@@ -497,10 +502,10 @@ mod tests {
     async fn register_overwrites_on_respawn() {
         let registry = PersonaWorkspaceRegistry::new();
         let persona = Uuid::new_v4();
-        let first = Arc::new(build_workspace_cycle(cfg_for(persona)));
-        registry.register(persona, first.clone());
-        let second = Arc::new(build_workspace_cycle(cfg_for(persona)));
-        registry.register(persona, second.clone());
+        // register_from_cfg IS the production overwrite path (supervisor.rs spawn);
+        // it builds + caches and returns the fresh Arc.
+        let first = registry.register_from_cfg(cfg_for(persona));
+        let second = registry.register_from_cfg(cfg_for(persona));
         let got = registry.get(&persona).expect("registered");
         assert!(
             Arc::ptr_eq(&got, &second),

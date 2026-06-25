@@ -36,6 +36,14 @@ use crate::persona::types::{InboxMessage, SenderType};
 /// survive intact.
 const RESULT_FOLD_MAX_CHARS: usize = 16_000;
 
+/// Max chars of an act-observation recorded into the VOLATILE working-memory
+/// scratchpad (proprioception). Much smaller than `RESULT_FOLD_MAX_CHARS` — working
+/// memory is a rolling "what my hands just did" pointer (the full result lives in
+/// the engram for relevance recall), and the answer to a lookup is almost always in
+/// the head of the result. Keeps the perception bid compact while still carrying
+/// enough for the mind to answer from its own recent action.
+const WM_ACTION_HEAD_CHARS: usize = 800;
+
 /// The result of driving a mind to settlement.
 pub struct SettleOutcome {
     /// The verdict the mind settled on: `Speak`/`RaiseUnprompted`/`Pass` when it
@@ -155,6 +163,20 @@ pub async fn apply_act(
         );
     }
 
+    // Proprioception: record the act + result head into VOLATILE working memory too.
+    // The engram admit above is content-deduped (correct for long-term memory: don't
+    // store the same fact twice), which means a REPEATED identical act is a no-op
+    // there — and with thinking suppressed (gateway default) the reasoning channel is
+    // dark too. Both channels that carry "what just happened" go silent on a repeat,
+    // so perception is byte-identical and greedy decode re-emits the identical Act
+    // forever. Working memory is the recency/proprioception channel that fixes it: it
+    // is append-only and `#n`-stamped, so a repeat still SHIFTS the perception window
+    // next tick and the mind can see its own hands (and that it's repeating itself).
+    // This is the shared live↔eval channel, not the eval-only `[you just acted]` fold.
+    // See [[act-results-need-a-recency-channel-not-semantic-recall]].
+    let head: String = observation.chars().take(WM_ACTION_HEAD_CHARS).collect();
+    body.working_memory.record_action(&head);
+
     crate::probe!(
         class = "persona.act.observed",
         persona = %body.persona_name,
@@ -183,7 +205,7 @@ pub async fn drive_to_settle(
     room_id: Uuid,
     max_acts: usize,
 ) -> SettleOutcome {
-    let mut world = world_state.into();
+    let world = world_state.into();
     let mut acts = 0usize;
 
     loop {
@@ -201,13 +223,20 @@ pub async fn drive_to_settle(
                     };
                 }
                 match apply_act(cycle, &calls, &intent, room_id).await {
-                    Some(observation) => {
+                    Some(_observation) => {
                         acts += 1;
-                        // Fold the observation into the next perception. The eval room
-                        // has no `compose_for_turn` rebuilding a burst, so the driver
-                        // makes the result perceptible directly (admission also stored
-                        // it for relevance recall — belt and suspenders).
-                        world = format!("{world}\n\n[you just acted]\n{observation}");
+                        // The observation re-enters perception through MEMORY ONLY —
+                        // `apply_act` admitted it as an Episodic engram, and the next
+                        // `run_in_room` below re-perceives with the persona's RecallFaculty
+                        // surfacing it from memory. This is BYTE-FOR-BYTE how the live
+                        // heartbeat path works (service_loop.rs:740 — apply_act once, then
+                        // the metronome re-perceives next tick; the burst string is NOT
+                        // mutated with a `[you just acted]` scaffold). `world` is therefore
+                        // held CONSTANT across iterations: memory is the only thing that
+                        // changes, exactly as in life. Folding the result into `world` was
+                        // an eval-only second channel the live persona never has — it made
+                        // the measurement diverge from reality (and leaked the scaffold
+                        // back as her answer). See [[workspacecycle-settlement-no-terminal-report-turn]].
                     }
                     None => {
                         // Could not execute (no hands / exec error). Don't spin — return
@@ -354,9 +383,39 @@ mod tests {
     }
 
     /// Deliberation faculty: reaches for its hands once, then SETTLES into a Speak
-    /// the moment it perceives the folded-in observation — the canonical act→observe
-    /// arc the driver exists to run.
-    struct ActThenSpeak;
+    /// the moment it perceives a NEW act-observation it has not yet answered — the
+    /// canonical act→observe arc the driver exists to run.
+    ///
+    /// It perceives its own hands through the working-memory proprioception channel
+    /// (the `WorkingMemoryFaculty` stamps each act `[action #n]`), NOT the deleted
+    /// world-state fold. It remembers the highest action stamp it has already spoken
+    /// about (`responded_through`) so that across SEPARATE concerns — where the
+    /// volatile buffer still carries the prior concern's action — it re-awakens and
+    /// acts again instead of mistaking old proprioception for "already answered."
+    /// That is the faculty remembering its own last conclusion (legitimate, content-
+    /// driven), not an iteration counter in the agentic sense.
+    struct ActThenSpeak {
+        responded_through: std::sync::atomic::AtomicU64,
+    }
+    impl ActThenSpeak {
+        fn new() -> Self {
+            Self {
+                responded_through: std::sync::atomic::AtomicU64::new(0),
+            }
+        }
+    }
+    /// Highest `[action #N]` stamp present in the assembled perception, 0 if none.
+    fn latest_action_seq(perceived: &str) -> u64 {
+        perceived
+            .split("[action #")
+            .skip(1)
+            .filter_map(|s| {
+                let digits: String = s.chars().take_while(|c| c.is_ascii_digit()).collect();
+                digits.parse::<u64>().ok()
+            })
+            .max()
+            .unwrap_or(0)
+    }
     #[async_trait]
     impl Faculty for ActThenSpeak {
         fn id(&self) -> FacultyId {
@@ -366,13 +425,16 @@ mod tests {
             true
         }
         async fn contribute(&self, ws: &Workspace) -> Option<Contribution> {
-            if ws.world_state.contains("[you just acted]") {
+            use std::sync::atomic::Ordering;
+            let latest = latest_action_seq(&ws.perceived());
+            if latest > self.responded_through.load(Ordering::Relaxed) {
+                self.responded_through.store(latest, Ordering::Relaxed);
                 Some(Contribution::verdict(
                     Decision::Speak {
                         text: "the answer is 4".into(),
                     },
                     0.9,
-                    "settled after observing the result",
+                    "settled after observing a fresh result",
                 ))
             } else {
                 Some(Contribution::verdict(
@@ -422,12 +484,27 @@ mod tests {
         Arc::new(AdmissionState::new(Arc::new(RecallMetadataRegistry::new())))
     }
 
+    use crate::cognition::working_memory::{WorkingMemory, WorkingMemoryFaculty};
+
     fn body(executor: Arc<dyn ToolExecutor>, admission: Arc<AdmissionState>) -> Arc<ActingBody> {
+        body_with_wm(executor, admission, Arc::new(WorkingMemory::new(3)))
+    }
+
+    /// Body that shares a specific working-memory buffer — so a test can wire the
+    /// SAME buffer into a `WorkingMemoryFaculty` on the cycle and watch the
+    /// perception of the persona's own hands flow act→memory→next-tick perception
+    /// (the proprioception channel that replaced the deleted world-state fold).
+    fn body_with_wm(
+        executor: Arc<dyn ToolExecutor>,
+        admission: Arc<AdmissionState>,
+        working_memory: Arc<WorkingMemory>,
+    ) -> Arc<ActingBody> {
         Arc::new(ActingBody {
             persona_id: Uuid::new_v4(),
             persona_name: "Asha".into(),
             executor,
             admission,
+            working_memory,
         })
     }
 
@@ -512,8 +589,18 @@ mod tests {
             result_content: "4".into(),
         });
         let adm = admission();
-        let cycle = WorkspaceCycle::new(vec![Arc::new(ActThenSpeak)], Arc::new(SalienceArbiter), 8)
-            .with_acting(body(exec.clone(), adm.clone()));
+        // Same buffer in the body (writer) and the perception-tier faculty
+        // (reader): act → working memory → next-tick perception.
+        let wm = Arc::new(WorkingMemory::new(3));
+        let cycle = WorkspaceCycle::new(
+            vec![
+                Arc::new(WorkingMemoryFaculty::new(Arc::clone(&wm))) as Arc<dyn Faculty>,
+                Arc::new(ActThenSpeak::new()),
+            ],
+            Arc::new(SalienceArbiter),
+            8,
+        )
+        .with_acting(body_with_wm(exec.clone(), adm.clone(), Arc::clone(&wm)));
 
         let outcome =
             drive_to_settle(&cycle, "[eval]\npeer: what is 2+2?", Uuid::new_v4(), 8).await;
@@ -631,8 +718,13 @@ mod tests {
             true
         }
         async fn contribute(&self, ws: &Workspace) -> Option<Contribution> {
+            // Reads what it has DISCOVERED from assembled perception — the
+            // working-memory render of its own recent acts (proprioception),
+            // where each act-observation head carries the executor's result tokens
+            // (ENTRY=…/CALLS=…). Not the raw burst, not the deleted fold.
+            let perceived = ws.perceived();
             let after = |key: &str| -> Option<String> {
-                ws.world_state
+                perceived
                     .split(key)
                     .nth(1)
                     .and_then(|s| s.split_whitespace().next())
@@ -691,8 +783,16 @@ mod tests {
     async fn the_hands_change_the_mind_across_a_multi_act_investigation() {
         let exec = Arc::new(ScriptedExecutor::new(["ENTRY=main", "CALLS=boot"]));
         let adm = admission();
-        let cycle = WorkspaceCycle::new(vec![Arc::new(Investigator)], Arc::new(SalienceArbiter), 8)
-            .with_acting(body(exec.clone(), adm.clone()));
+        let wm = Arc::new(WorkingMemory::new(3));
+        let cycle = WorkspaceCycle::new(
+            vec![
+                Arc::new(WorkingMemoryFaculty::new(Arc::clone(&wm))) as Arc<dyn Faculty>,
+                Arc::new(Investigator),
+            ],
+            Arc::new(SalienceArbiter),
+            8,
+        )
+        .with_acting(body_with_wm(exec.clone(), adm.clone(), Arc::clone(&wm)));
 
         let outcome = drive_to_settle(
             &cycle,
@@ -739,8 +839,20 @@ mod tests {
         // the continuity-of-self assertion below.
         let exec = Arc::new(ScriptedExecutor::new(["learned about A", "learned about B"]));
         let adm = admission();
-        let cycle = WorkspaceCycle::new(vec![Arc::new(ActThenSpeak)], Arc::new(SalienceArbiter), 8)
-            .with_acting(body(exec.clone(), adm.clone()));
+        // One living mind: the working-memory buffer accumulates ACROSS both
+        // concern-drives (volatile continuity), so `ActThenSpeak` must re-awaken on
+        // concern B by perceiving a NEW act stamp rather than mistaking concern A's
+        // still-buffered proprioception for "already answered".
+        let wm = Arc::new(WorkingMemory::new(3));
+        let cycle = WorkspaceCycle::new(
+            vec![
+                Arc::new(WorkingMemoryFaculty::new(Arc::clone(&wm))) as Arc<dyn Faculty>,
+                Arc::new(ActThenSpeak::new()),
+            ],
+            Arc::new(SalienceArbiter),
+            8,
+        )
+        .with_acting(body_with_wm(exec.clone(), adm.clone(), Arc::clone(&wm)));
         let room = Uuid::new_v4();
 
         // Concern A: act → observe → settle on a Speak.

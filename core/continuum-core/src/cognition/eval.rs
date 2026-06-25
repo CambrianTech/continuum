@@ -410,6 +410,15 @@ async fn run_pass(
     let mut pass = 0u32;
     let mut results = Vec::with_capacity(tasks.len());
     for t in tasks {
+        // Each task is a DISJOINT concern (the grader presents them back-to-back
+        // with no temporal continuity), so reset the volatile working-memory scratch
+        // first — otherwise the prior task's proprioception (`[action #n]` traces)
+        // bleeds into this one's perception, contaminating an independent
+        // measurement. This is task-isolation, the same family as the admission
+        // rewind the `EvalIsolation` guard does between A/B arms; the perception
+        // assembly + decision path stay identical to the live heartbeat (which
+        // never resets — there concerns flow continuously and traces age naturally).
+        cycle.reset_working_memory();
         // Frame as a room message so her ORDINARY cognition handles it, then DRIVE
         // her to settlement: she may act (run code, read a file, search), observe
         // the result as memory, and re-perceive — the live act→observe motion,

@@ -11,9 +11,9 @@
 //! This is deliberately a SEPARATE tier from the long-term engram store
 //! (`AdmissionState` / `engrams.sqlite`):
 //!
-//! - **Working memory (here):** volatile, rolling last-N reasonings, fed forward,
-//!   aged out. The persona's "now I'm thinking about…". Lost on restart — it's
-//!   scratch, not self.
+//! - **Working memory (here):** volatile, rolling last-N reasonings AND actions, fed
+//!   forward, aged out. The persona's "now I'm thinking about… and here's what my
+//!   hands just did". Lost on restart — it's scratch, not self.
 //! - **Long-term memory (engrams):** curated turns/facts, persisted, the durable
 //!   self ([[persona-persistence-self-determination]]).
 //!
@@ -38,6 +38,7 @@
 //! helps, remember what you reasoned." No config flag needed.
 
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -62,6 +63,15 @@ const WORKING_MEMORY_SALIENCE: f32 = 0.5;
 pub struct WorkingMemory {
     capacity: usize,
     entries: Mutex<VecDeque<String>>,
+    /// Monotonic stamp applied to ACTION entries. Two reasons: (1) it makes each
+    /// recorded action a DISTINCT string even when the persona repeats the identical
+    /// tool call — so the working-memory window the perception faculty bids next tick
+    /// CHANGES across a repeat instead of being byte-identical. Under greedy decoding
+    /// a stationary perception re-emits the stationary verdict forever; a sliding
+    /// window of stamped actions is what lets the mind notice "I keep doing this" and
+    /// break out organically. (2) it reads as a recency ordinal in the bid. Not used
+    /// for reasoning entries (chain-of-thought already varies turn to turn).
+    next_action_seq: AtomicU64,
 }
 
 impl WorkingMemory {
@@ -69,6 +79,7 @@ impl WorkingMemory {
         Self {
             capacity: capacity.max(1),
             entries: Mutex::new(VecDeque::new()),
+            next_action_seq: AtomicU64::new(1),
         }
     }
 
@@ -86,9 +97,42 @@ impl WorkingMemory {
         }
     }
 
+    /// Record an ACTION the persona's hands just took (a tool call + its result
+    /// head) — proprioception, NOT chain-of-thought. This fires regardless of the
+    /// thinking toggle: an act HAPPENED whether or not the model emitted `<think>`,
+    /// and the mind must perceive its own hands to avoid re-issuing the identical
+    /// act blind ([[act-results-need-a-recency-channel-not-semantic-recall]]). Each
+    /// entry is stamped with a monotonic `#n` so a repeated identical act still
+    /// changes the perception window (see `next_action_seq`). Oldest ages out past
+    /// capacity, same rolling scratchpad as reasoning.
+    pub fn record_action(&self, action: &str) {
+        let a = action.trim();
+        if a.is_empty() {
+            return;
+        }
+        let seq = self.next_action_seq.fetch_add(1, Ordering::Relaxed);
+        let mut e = self.entries.lock();
+        e.push_back(format!("[action #{seq}] {a}"));
+        while e.len() > self.capacity {
+            e.pop_front();
+        }
+    }
+
     /// Snapshot of recent reasonings, oldest → newest.
     pub fn recent(&self) -> Vec<String> {
         self.entries.lock().iter().cloned().collect()
+    }
+
+    /// Drop all volatile traces — the scratchpad goes dark. Used at the boundary
+    /// between genuinely disjoint concerns (e.g. each independent task in a
+    /// `cognition/eval` pass, presented back-to-back by a grader with no temporal
+    /// continuity): carrying the prior concern's proprioception into the next would
+    /// be contamination, not memory. The monotonic action stamp is NOT reset, so
+    /// stamps never collide across a clear (a stale reference can't alias a fresh
+    /// act). The live heartbeat never calls this — there, concerns flow
+    /// continuously and old traces age out naturally past `capacity`.
+    pub fn clear(&self) {
+        self.entries.lock().clear();
     }
 
     pub fn is_empty(&self) -> bool {
@@ -138,9 +182,9 @@ impl Faculty for WorkingMemoryFaculty {
             .join("\n");
         Some(Contribution::context(
             Self::faculty_id(),
-            format!("Your recent reasoning (working memory):\n{body}"),
+            format!("Your recent thoughts and actions (working memory):\n{body}"),
             WORKING_MEMORY_SALIENCE,
-            format!("working memory: {n} recent reasoning trace(s) carried forward"),
+            format!("working memory: {n} recent trace(s) carried forward"),
         ))
     }
 }
@@ -162,6 +206,51 @@ mod tests {
         // third pushes out the oldest (capacity 2).
         wm.record("third thought");
         assert_eq!(wm.recent(), vec!["second thought", "third thought"]);
+    }
+
+    // what this catches: THE loop-break property. A repeated identical action must
+    // produce DISTINCT working-memory entries (monotonic #n stamp) so the perception
+    // window the faculty bids changes across a repeat — otherwise greedy decode
+    // re-emits the identical Act forever (the deterministic acting loop that the
+    // engram dedup + suppressed-thinking left invisible). Regression for
+    // [[act-results-need-a-recency-channel-not-semantic-recall]].
+    #[test]
+    fn repeated_action_yields_distinct_stamped_entries() {
+        let wm = WorkingMemory::new(3);
+        wm.record_action("I ran code/search(pattern=foo) -> 0 matches");
+        wm.record_action("I ran code/search(pattern=foo) -> 0 matches"); // identical act
+        let recent = wm.recent();
+        assert_eq!(recent.len(), 2);
+        assert_ne!(
+            recent[0], recent[1],
+            "identical repeated act must read DISTINCT in working memory"
+        );
+        assert!(recent[0].starts_with("[action #1] "));
+        assert!(recent[1].starts_with("[action #2] "));
+        // blank action ignored (no fabricated proprioception).
+        wm.record_action("   ");
+        assert_eq!(wm.recent().len(), 2);
+    }
+
+    // what this catches: clear() empties the volatile scratch (disjoint-concern
+    // boundary, e.g. between eval tasks) but does NOT reset the monotonic action
+    // stamp — so a post-clear act can never alias a pre-clear stamp.
+    #[test]
+    fn clear_empties_buffer_but_keeps_stamps_monotonic() {
+        let wm = WorkingMemory::new(3);
+        wm.record_action("ran A");
+        wm.record_action("ran B");
+        assert_eq!(wm.recent().len(), 2);
+        wm.clear();
+        assert!(wm.is_empty(), "clear drops the disjoint concern's traces");
+        wm.record_action("ran C");
+        let recent = wm.recent();
+        assert_eq!(recent.len(), 1);
+        assert!(
+            recent[0].starts_with("[action #3] "),
+            "stamp stays monotonic across clear (no alias with pre-clear #1/#2), got {:?}",
+            recent[0]
+        );
     }
 
     // what this catches: capacity is floored at 1 — a 0 never wedges the buffer into

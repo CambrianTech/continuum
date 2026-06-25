@@ -737,17 +737,36 @@ impl AdmissionState {
             return Vec::new();
         }
         let engrams = self.engrams.lock().unwrap();
-        let mut scored: Vec<(Engram, f32)> = engrams
+        // Enumerate in insertion order: `idx` is a monotonic recency rank
+        // (higher == more recently admitted), used as the tiebreaker below.
+        let mut scored: Vec<(usize, Engram, f32)> = engrams
             .iter()
-            .filter_map(|e| {
+            .enumerate()
+            .filter_map(|(idx, e)| {
                 self.recall_metadata.apply_decay(e.id, now_ms);
-                self.recall_metadata.get(e.id).map(|m| (e.clone(), m.salience))
+                self.recall_metadata
+                    .get(e.id)
+                    .map(|m| (idx, e.clone(), m.salience))
             })
             .collect();
         drop(engrams);
-        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        // Rank by salience, breaking ties by RECENCY (newest wins). Without the
+        // recency tiebreak, recall-hit uplift flattens salience to a ceiling
+        // (every surfaced memory rises toward 1.0), a stable sort then preserves
+        // insertion order (oldest-first), and `truncate` evicts the NEWEST engram
+        // — so a just-admitted act-observation never even reaches the re-ranker,
+        // and the mind loops re-issuing the identical act, blind to its own hands.
+        // Newest-wins-on-ties guarantees the freshest memory survives truncation;
+        // the relevance re-rank (RecallFaculty) then surfaces it because it
+        // literally contains what the burst is asking about.
+        // See [[act-results-need-a-recency-channel-not-semantic-recall]].
+        scored.sort_by(|a, b| {
+            b.2.partial_cmp(&a.2)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then(b.0.cmp(&a.0))
+        });
         scored.truncate(limit);
-        scored
+        scored.into_iter().map(|(_, e, s)| (e, s)).collect()
     }
 
     /// Record recall hits (salience uplift + access_count + persistence observe)
@@ -1189,6 +1208,47 @@ mod tests {
             state.recall_recent(99).len(),
             2,
             "limit > count caps at count"
+        );
+    }
+
+    // What this catches: when many engrams share the same salience (the common
+    // case once recall-hit uplift flattens them to a ceiling), recall_candidates
+    // must keep the NEWEST under truncation, not the oldest. A stable sort on
+    // tied salience used to preserve insertion order (oldest-first), so the
+    // truncate evicted the just-admitted engram — a persona acting and admitting
+    // "I ran X → got Y" could never recall its own fresh result and looped
+    // re-issuing the identical act. Regression for the [you just acted]-fold
+    // removal (2026-06-25); see [[act-results-need-a-recency-channel-not-semantic-recall]].
+    #[test]
+    fn recall_candidates_keeps_newest_when_salience_ties() {
+        let state = AdmissionState::new(Arc::new(
+            crate::persona::recall_metadata::RecallMetadataRegistry::new(),
+        ));
+        // Seven engrams, all at the default salience (a tie). The freshest is ids[6].
+        let ids = admit_n_distinct(
+            &state,
+            &[
+                "first observation worth storing here",
+                "second observation worth storing here",
+                "third observation worth storing here",
+                "fourth observation worth storing here",
+                "fifth observation worth storing here",
+                "sixth observation worth storing here",
+                "I ran code/read(external_fingerprint) and got the function body",
+            ],
+        );
+        let surfaced = state.recall_candidates(10_000, 5);
+        assert_eq!(surfaced.len(), 5, "honors the limit");
+        let surfaced_ids: Vec<Uuid> = surfaced.iter().map(|(e, _)| e.id).collect();
+        // The freshest memory survives truncation and ranks first on the tie.
+        assert_eq!(
+            surfaced_ids[0], ids[6],
+            "newest-wins-on-ties: the just-admitted act-observation is surfaced first"
+        );
+        // The two oldest are the ones evicted by the limit, not the newest.
+        assert!(
+            !surfaced_ids.contains(&ids[0]) && !surfaced_ids.contains(&ids[1]),
+            "the OLDEST tied engrams are evicted, never the newest"
         );
     }
 
