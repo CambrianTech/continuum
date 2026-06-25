@@ -117,7 +117,11 @@ impl ServiceModule for ForgeModule {
                 // Different capabilities live on different daemons — so the format
                 // picks the custodian here, at the one dispatch point.
                 if parsed.format == "gguf-lora" {
-                    run_export_gguf_lora(&ForgeCustodianHttp::from_config(), &parsed).await
+                    // The default manifest path — the same file the serving daemon
+                    // reads at (re)spawn. Resolve loud (a pathological missing HOME
+                    // with no override fails here, not by writing to a surprise loc).
+                    let manifest = crate::forge::adapter_manifest::manifest_path()?;
+                    run_export_gguf_lora(&ForgeCustodianHttp::from_config(), &parsed, &manifest).await
                 } else {
                     run_export(&UnslothForgeHttp::from_config(), parsed).await
                 }
@@ -459,6 +463,7 @@ async fn run_export(
 async fn run_export_gguf_lora(
     custodian: &dyn crate::forge::custodian_client::ForgeCustodian,
     p: &ForgeExportParams,
+    manifest_path: &std::path::Path,
 ) -> Result<CommandResult, String> {
     // A GGUF LoRA with no base is meaningless — the converter needs the base
     // architecture. Reject loudly at the boundary, never silently default.
@@ -475,7 +480,7 @@ async fn run_export_gguf_lora(
     let req = crate::forge::protocol::GgufLoraRequest {
         checkpoint: p.checkpoint.clone(),
         save_directory: p.save_directory.clone(),
-        base_model_id,
+        base_model_id: base_model_id.clone(),
         outtype: p.outtype.clone(),
     };
     let result = custodian
@@ -486,13 +491,58 @@ async fn run_export_gguf_lora(
     if !result.success {
         return Err(format!("custodian export (gguf-lora) failed: {}", result.message));
     }
+
+    // Close the 5th wire: a produced gene that isn't REGISTERED is a silently-lost
+    // gene — the serving daemon reads this manifest at (re)spawn to populate
+    // `llama-server --lora`, so without this the catalog stays empty and every
+    // page-in fails (LIFT structurally unreachable). The producer is the only
+    // place that knows BOTH the on-disk path AND the continuum base_model_id the
+    // serving daemon filters on (forge::adapter_manifest docs). Fail LOUD if the
+    // gene can't be registered — never return success for an unloadable gene.
+    let adapter = trained_adapter_from_export(&result.details, &base_model_id)?;
+    crate::forge::adapter_manifest::register_at(manifest_path, adapter.clone())
+        .map_err(|e| format!("gene exported but manifest registration failed: {e}"))?;
+
     Ok(CommandResult::Json(json!({
         "format": "gguf-lora",
         "checkpoint": p.checkpoint,
         "save_directory": p.save_directory,
         "message": result.message,
         "details": result.details,
+        "registered": { "alias": adapter.alias, "path": adapter.path, "base_model_id": adapter.base_model_id },
     })))
+}
+
+/// Project the custodian's success `details` + the continuum `base_model_id` into a
+/// [`TrainedAdapter`](crate::forge::adapter_manifest::TrainedAdapter) ready to
+/// register. Pure (no IO) so the extraction is unit-testable without a custodian.
+/// Fail LOUD if `details.output` is absent/empty — the custodian ALWAYS reports the
+/// produced path on success (forge_custodian.rs), so a missing one is a contract
+/// breach, not a gene we silently drop. Alias is the gene's file stem (logs only;
+/// the per-request page-in resolver matches on `path`, never the alias).
+fn trained_adapter_from_export(
+    details: &Value,
+    base_model_id: &str,
+) -> Result<crate::forge::adapter_manifest::TrainedAdapter, String> {
+    let output = details
+        .get("output")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| {
+            "custodian export succeeded but `details.output` (the gene path) is \
+             missing — cannot register an unlocatable gene"
+                .to_string()
+        })?;
+    let path = std::path::PathBuf::from(output);
+    let alias = path
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "gene".to_string());
+    Ok(crate::forge::adapter_manifest::TrainedAdapter {
+        alias,
+        path,
+        base_model_id: base_model_id.to_string(),
+    })
 }
 
 /// `forge/health` — surface the local custodian's Contract C
@@ -593,6 +643,13 @@ mod tests {
     use super::*;
     use crate::forge::{AlloyHardware, AlloySource, CorpusRef};
     use uuid::Uuid;
+
+    /// A process+tag-unique manifest path so parallel gguf-lora export tests never
+    /// collide and never touch the real `~/.continuum` manifest (DI mirrors the
+    /// `register` vs `register_at` split — no env globals, no test pollution).
+    fn tmp_manifest(tag: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!("forge_export_manifest_{}_{}.json", tag, std::process::id()))
+    }
 
     fn synthetic_recipe() -> ForgeRecipe {
         ForgeRecipe {
@@ -1017,10 +1074,19 @@ mod tests {
             crate::forge::custodian_client::ForgeCustodianError,
         > {
             self.exports.lock().unwrap().push(req.clone());
+            // Mirror the real custodian's contract: a SUCCESS always reports the
+            // produced gene path in `details.output` (forge_custodian.rs). The fake
+            // derives the same `{save_dir}/{checkpoint_stem}-<job>.gguf` shape so the
+            // producer's manifest registration has a real path to record.
+            let ckpt_stem = std::path::Path::new(&req.checkpoint)
+                .file_name()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "gene".into());
+            let output = format!("{}/{ckpt_stem}-testjob.gguf", req.save_directory);
             Ok(crate::forge::protocol::ExportResult {
                 success: self.succeed,
                 message: "packaged".into(),
-                ..Default::default()
+                details: json!({ "output": output }),
             })
         }
     }
@@ -1044,7 +1110,9 @@ mod tests {
             max_seq_length: 2048,
             load_in_4bit: true,
         };
-        run_export_gguf_lora(&cust, &p).await.unwrap();
+        let path = tmp_manifest("stateless");
+        let _ = std::fs::remove_file(&path);
+        run_export_gguf_lora(&cust, &p, &path).await.unwrap();
         let reqs = cust.exports.lock().unwrap();
         assert_eq!(reqs.len(), 1, "exactly one export call");
         assert_eq!(reqs[0].checkpoint, "/ckpt", "checkpoint named in the body (stateless)");
@@ -1069,7 +1137,9 @@ mod tests {
             max_seq_length: 2048,
             load_in_4bit: true,
         };
-        let err = run_export_gguf_lora(&cust, &p).await.expect_err("missing base must error");
+        let err = run_export_gguf_lora(&cust, &p, &tmp_manifest("nobase"))
+            .await
+            .expect_err("missing base must error");
         assert!(err.contains("base_model_id"), "got: {err}");
         assert_eq!(cust.exports.lock().unwrap().len(), 0, "custodian never called");
     }
@@ -1089,8 +1159,56 @@ mod tests {
             max_seq_length: 2048,
             load_in_4bit: true,
         };
-        let err = run_export_gguf_lora(&cust, &p).await.expect_err("must error");
+        let err = run_export_gguf_lora(&cust, &p, &tmp_manifest("custfail"))
+            .await
+            .expect_err("must error");
         assert!(err.contains("gguf-lora) failed"), "got: {err}");
+    }
+
+    // what this catches: the 5th wire of the genome loop — a SUCCESSFUL gguf-lora
+    // export REGISTERS the produced gene in the manifest (path + continuum
+    // base_model_id) so the serving daemon's reconcile loads it via `--lora`.
+    // Without this the catalog stays empty forever and every page-in fails loud
+    // (LIFT structurally unreachable). Asserts the gene is filterable by its
+    // CONTINUUM id (what `for_base` keys on, not the HF base name).
+    #[tokio::test]
+    async fn forge_export_gguf_lora_registers_gene_in_manifest() {
+        let cust = RecordingForgeCustodian::ok();
+        let p = ForgeExportParams {
+            checkpoint: "/ckpts/asha-code".into(),
+            save_directory: "/genes".into(),
+            format: "gguf-lora".into(),
+            quantization: "Q4_K_M".into(),
+            base_model_id: Some("continuum-ai/qwen3.5-4b-code-forged-GGUF".into()),
+            outtype: "f16".into(),
+            max_seq_length: 2048,
+            load_in_4bit: true,
+        };
+        let path = tmp_manifest("registers");
+        let _ = std::fs::remove_file(&path);
+
+        run_export_gguf_lora(&cust, &p, &path).await.unwrap();
+
+        let all = crate::forge::adapter_manifest::load_from(&path).unwrap();
+        let matched =
+            crate::forge::adapter_manifest::for_base(&all, "continuum-ai/qwen3.5-4b-code-forged-GGUF");
+        assert_eq!(matched.len(), 1, "the produced gene is registered under its continuum id");
+        // The fake mirrors the custodian's `{save_dir}/{ckpt_stem}-<job>.gguf` path.
+        assert_eq!(matched[0].path, std::path::PathBuf::from("/genes/asha-code-testjob.gguf"));
+        assert_eq!(matched[0].alias, "asha-code-testjob", "alias = gene file stem");
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    // what this catches: a custodian SUCCESS with no `details.output` (the gene
+    // path) FAILS LOUD — never returns success for a gene we can't locate, which
+    // would silently register nothing and report a green export. The custodian
+    // contract ALWAYS reports `output` on success, so its absence is a breach.
+    #[test]
+    fn trained_adapter_from_export_fails_loud_without_output() {
+        let err = trained_adapter_from_export(&json!({ "job_id": "x" }), "continuum-ai/base")
+            .expect_err("missing output must error");
+        assert!(err.contains("details.output"), "got: {err}");
     }
 
     // ── forge/health — Contract C handshake as a command (Pass 6 receiving end) ──
