@@ -45,7 +45,9 @@ impl Default for AdapterConfig {
 }
 
 /// Storage adapter capabilities
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize, ts_rs::TS)]
+#[ts(export, export_to = "../../../protocol/typescript/orm/AdapterCapabilities.ts")]
+#[serde(rename_all = "camelCase")]
 pub struct AdapterCapabilities {
     pub supports_transactions: bool,
     pub supports_indexing: bool,

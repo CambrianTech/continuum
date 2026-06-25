@@ -459,7 +459,12 @@ impl ServiceModule for DataModule {
     /// and their `CommandSpec` descriptors flow into `command_registry()` → the
     /// persona tool surface + grid ACL. See [`crate::commands::data`].
     fn commands(&self) -> Vec<Arc<dyn crate::sdk_codegen::DynCommand>> {
-        crate::commands::data::command_objects(self.state.clone())
+        // DataModule owns the adapter pool, so it contributes both the `data/*`
+        // content commands and the `adapter/*` introspection commands — each
+        // family sharing this module's `Arc<DataState>`.
+        let mut objects = crate::commands::data::command_objects(self.state.clone());
+        objects.extend(crate::commands::adapter::command_objects(self.state.clone()));
+        objects
     }
 
     fn as_any(&self) -> &dyn Any {
@@ -505,15 +510,6 @@ struct QueryWithJoinParams {
     joins: Option<Vec<crate::orm::query::JoinSpec>>,
     #[serde(default)]
     select: Option<Vec<String>>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct CountParams {
-    db_path: String,
-    collection: String,
-    #[serde(default)]
-    filter: Option<serde_json::Map<String, Value>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -777,10 +773,6 @@ impl DataState {
                 self.handle_query_with_join(deserialize_params!(command, params)?)
                     .await
             }
-            "data/count" => {
-                self.handle_count(deserialize_params!(command, params)?)
-                    .await
-            }
             "data/batch" => {
                 self.handle_batch(deserialize_params!(command, params)?)
                     .await
@@ -789,10 +781,14 @@ impl DataState {
                 self.handle_ensure_schema(deserialize_params!(command, params)?)
                     .await
             }
-            "data/list-collections" => self.handle_list_collections(params).await,
-            "data/collection-stats" => self.handle_collection_stats(params).await,
             "data/truncate" => self.handle_truncate(params).await,
             "data/clear-all" => self.handle_clear_all(params).await,
+
+            // data/count, data/list-collections, data/collection-stats are now
+            // typed self-routing commands (commands/data/{count,list_collections,
+            // collection_stats}.rs) driving DataState::{count_records,
+            // list_collection_names,collection_statistics}. The typed object map
+            // wins over this match, so their legacy arms are gone.
 
             // Paginated queries - server-side cursor management
             "data/query-open" => {
@@ -808,8 +804,10 @@ impl DataState {
                 self.handle_query_close(req).await
             }
 
-            "adapter/capabilities" => self.handle_capabilities(params).await,
-            "adapter/info" => self.handle_info(params).await,
+            // adapter/info is now a typed self-routing command
+            // (commands/adapter/info.rs) driving DataState::adapter_info; it
+            // subsumes the old adapter/capabilities (capabilities are a field on
+            // the AdapterInfo result now, not a parallel command).
 
             // Vector search (migrated from data-daemon-worker)
             "vector/search" => self.handle_vector_search(params).await,
@@ -1096,13 +1094,21 @@ impl DataState {
         CommandResult::json(&result)
     }
 
-    async fn handle_count(&self, params: CountParams) -> Result<CommandResult, String> {
+    /// Count records in a collection (optionally filtered). Drives the typed
+    /// `data/count` command. Returns the adapter's `StorageResult<usize>` — an
+    /// accurate SQL COUNT, paging-independent.
+    pub(crate) async fn count_records(
+        &self,
+        handle: &str,
+        collection: String,
+        filter: Option<serde_json::Map<String, Value>>,
+    ) -> Result<StorageResult<usize>, String> {
         use std::time::Instant;
         let start = Instant::now();
 
         let query = StorageQuery {
-            collection: params.collection.clone(),
-            filter: params.filter.map(|m| {
+            collection: collection.clone(),
+            filter: filter.map(|m| {
                 m.into_iter()
                     .map(|(k, v)| (k, FieldFilter::Value(v)))
                     .collect()
@@ -1111,7 +1117,7 @@ impl DataState {
         };
 
         let adapter_start = Instant::now();
-        let adapter = self.get_adapter(&params.db_path).await?;
+        let adapter = self.get_adapter(handle).await?;
         let adapter_ms = adapter_start.elapsed().as_millis();
 
         let count_start = Instant::now();
@@ -1124,7 +1130,7 @@ impl DataState {
                 "data",
                 "count",
                 "TIMING: collection={}, total={}ms (adapter={}ms, count={}ms), success={}",
-                params.collection,
+                collection,
                 total_ms,
                 adapter_ms,
                 count_ms,
@@ -1132,7 +1138,7 @@ impl DataState {
             );
         }
 
-        CommandResult::json(&result)
+        Ok(result)
     }
 
     async fn handle_batch(&self, params: BatchParams) -> Result<CommandResult, String> {
@@ -1193,24 +1199,24 @@ impl DataState {
         CommandResult::json(&result)
     }
 
-    async fn handle_list_collections(&self, params: Value) -> Result<CommandResult, String> {
-        let params: DbPathOnly =
-            serde_json::from_value(params).map_err(|e| format!("Invalid params: {e}"))?;
-
-        let adapter = self.get_adapter(&params.db_path).await?;
-        let result = adapter.list_collections().await;
-
-        CommandResult::json(&result)
+    /// List the collection names present in a store. Drives `data/list-collections`.
+    pub(crate) async fn list_collection_names(
+        &self,
+        handle: &str,
+    ) -> Result<StorageResult<Vec<String>>, String> {
+        let adapter = self.get_adapter(handle).await?;
+        Ok(adapter.list_collections().await)
     }
 
-    async fn handle_collection_stats(&self, params: Value) -> Result<CommandResult, String> {
-        let params: CollectionParams =
-            serde_json::from_value(params).map_err(|e| format!("Invalid params: {e}"))?;
-
-        let adapter = self.get_adapter(&params.db_path).await?;
-        let result = adapter.collection_stats(&params.collection).await;
-
-        CommandResult::json(&result)
+    /// Statistics for one collection (record count, size, last-modified, schema,
+    /// indices). Drives `data/collection-stats`.
+    pub(crate) async fn collection_statistics(
+        &self,
+        handle: &str,
+        collection: &str,
+    ) -> Result<StorageResult<crate::orm::types::CollectionStats>, String> {
+        let adapter = self.get_adapter(handle).await?;
+        Ok(adapter.collection_stats(collection).await)
     }
 
     async fn handle_truncate(&self, params: Value) -> Result<CommandResult, String> {
@@ -1233,39 +1239,16 @@ impl DataState {
         CommandResult::json(&result)
     }
 
-    async fn handle_capabilities(&self, params: Value) -> Result<CommandResult, String> {
-        let params: DbPathOnly =
-            serde_json::from_value(params).map_err(|e| format!("Invalid params: {e}"))?;
-
-        let adapter = self.get_adapter(&params.db_path).await?;
-        let caps = adapter.capabilities();
-
-        Ok(CommandResult::Json(json!({
-            "supportsTransactions": caps.supports_transactions,
-            "supportsJoins": caps.supports_joins,
-            "supportsIndexing": caps.supports_indexing,
-            "supportsFullTextSearch": caps.supports_full_text_search,
-            "supportsVectorSearch": caps.supports_vector_search,
-            "supportsBatch": caps.supports_batch,
-            "maxRecordSize": caps.max_record_size,
-        })))
-    }
-
-    async fn handle_info(&self, params: Value) -> Result<CommandResult, String> {
-        let params: DbPathOnly =
-            serde_json::from_value(params).map_err(|e| format!("Invalid params: {e}"))?;
-
-        let adapter = self.get_adapter(&params.db_path).await?;
-        let caps = adapter.capabilities();
-
-        Ok(CommandResult::Json(json!({
-            "adapter": adapter.name(),
-            "path": params.db_path,
-            "capabilities": {
-                "supportsTransactions": caps.supports_transactions,
-                "supportsJoins": caps.supports_joins,
-            }
-        })))
+    /// Adapter identity + full capability surface for a store. Drives the typed
+    /// `adapter/info` command (which subsumes the old `adapter/capabilities` —
+    /// capabilities are now a field on this one result, not a parallel command).
+    pub(crate) async fn adapter_info(&self, handle: &str) -> Result<AdapterInfo, String> {
+        let adapter = self.get_adapter(handle).await?;
+        Ok(AdapterInfo {
+            adapter: adapter.name().to_string(),
+            handle: handle.to_string(),
+            capabilities: adapter.capabilities(),
+        })
     }
 
     // =========================================================================
@@ -3866,4 +3849,19 @@ pub struct DataListResult {
     pub items: Vec<serde_json::Value>,
     /// Total records matching the filter (SQL COUNT — independent of `limit`).
     pub total: u32,
+}
+
+/// Output of `adapter/info` — the storage adapter's identity plus its full
+/// capability surface for a given handle. Subsumes the old `adapter/capabilities`
+/// (capabilities are a field here, not a parallel command).
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../../protocol/typescript/data/AdapterInfo.ts")]
+pub struct AdapterInfo {
+    /// The adapter implementation name (e.g. "sqlite", "postgres").
+    pub adapter: String,
+    /// The storage handle this info describes.
+    pub handle: String,
+    /// What the adapter can do (transactions, joins, indexing, vector search, …).
+    pub capabilities: crate::orm::adapter::AdapterCapabilities,
 }

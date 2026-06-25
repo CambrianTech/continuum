@@ -24,15 +24,21 @@ use std::sync::Arc;
 use crate::modules::data::DataState;
 use crate::sdk_codegen::DynCommand;
 
+pub mod collection_stats;
+pub mod count;
 pub mod create;
 pub mod delete;
 pub mod list;
+pub mod list_collections;
 pub mod read;
 pub mod update;
 
+use collection_stats::DataCollectionStats;
+use count::DataCount;
 use create::DataCreate;
 use delete::DataDelete;
 use list::DataList;
+use list_collections::DataListCollections;
 use read::DataRead;
 use update::DataUpdate;
 
@@ -46,7 +52,10 @@ pub fn command_objects(state: Arc<DataState>) -> Vec<Arc<dyn DynCommand>> {
         Arc::new(DataRead { state: state.clone() }),
         Arc::new(DataCreate { state: state.clone() }),
         Arc::new(DataUpdate { state: state.clone() }),
-        Arc::new(DataDelete { state }),
+        Arc::new(DataDelete { state: state.clone() }),
+        Arc::new(DataCount { state: state.clone() }),
+        Arc::new(DataListCollections { state: state.clone() }),
+        Arc::new(DataCollectionStats { state }),
     ]
 }
 
@@ -66,5 +75,8 @@ mod tests {
         assert_eq!(DataCreate::NAME, "data/create");
         assert_eq!(DataUpdate::NAME, "data/update");
         assert_eq!(DataDelete::NAME, "data/delete");
+        assert_eq!(DataCount::NAME, "data/count");
+        assert_eq!(DataListCollections::NAME, "data/list-collections");
+        assert_eq!(DataCollectionStats::NAME, "data/collection-stats");
     }
 }

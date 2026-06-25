@@ -10,6 +10,7 @@
 //! ceremony. Dep-holding commands stay with the module that owns their state and
 //! are exposed through that module's `commands()`.
 
+pub mod adapter;
 pub mod catalog;
 pub mod code;
 pub mod command;
