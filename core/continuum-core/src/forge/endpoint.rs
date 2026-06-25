@@ -35,7 +35,9 @@
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use super::custodian_client::{ForgeCustodian, ForgeCustodianError};
+use super::custodian_client::{
+    custodian_base_url, ForgeCustodian, ForgeCustodianError, ForgeCustodianHttp,
+};
 use super::protocol::{HealthResponse, CAPABILITY_GGUF_LORA};
 use crate::genome::recall::PeerId;
 use crate::modules::grid::node::TrustLevel;
@@ -163,6 +165,49 @@ impl ForgeEndpoint {
     pub fn is_routable(&self) -> bool {
         matches!(self.health, ForgeHealth::Healthy) && self.capacity > 0
     }
+
+    /// The ADVERTISE policy (Pass 5b): turn a probe result into an optional row to
+    /// announce on the grid bus. A node only claims the forge capability when a
+    /// custodian actually answered:
+    /// - `Ok(health)` ⇒ `Some` — a reachable custodian is advertised at whatever
+    ///   health it reported (the fabric re-probes for the live reading; this is a
+    ///   discovery snapshot, exactly like `NodeCapability::Compute`'s VRAM).
+    /// - `Unreachable` ⇒ `None` — no custodian here means no capability to claim.
+    ///   This is NOT a fallback: the node genuinely lacks the capability, so the
+    ///   honest move is to not advertise it (claiming a `Down` row you can't serve
+    ///   would be the lie).
+    /// - `Api` (reached but `/health` is malformed) ⇒ `None` **and logged LOUD** —
+    ///   a broken custodian is a real fault to SEE, but forge is optional infra and
+    ///   must not block grid bringup, so we name it and decline to advertise.
+    pub fn advertise_from_probe(
+        locator: ForgeLocator,
+        trust_scope: TrustLevel,
+        probe: Result<HealthResponse, ForgeCustodianError>,
+    ) -> Option<Self> {
+        match probe {
+            Ok(h) => Some(Self::from_health(locator, trust_scope, &h)),
+            Err(ForgeCustodianError::Unreachable(_)) => None,
+            Err(ForgeCustodianError::Api(msg)) => {
+                eprintln!(
+                    "[forge] local custodian answered but /health is broken: {msg} \
+                     — not advertising forge capability"
+                );
+                None
+            }
+        }
+    }
+
+    /// Probe THIS machine's forge custodian and, if it answered, produce the row to
+    /// announce. `Owner`-scoped (it's our own node). Returns `None` when no local
+    /// custodian is running — the grid then simply does not advertise forge. The
+    /// thin I/O glue over [`Self::advertise_from_probe`] (the testable policy).
+    pub async fn probe_local() -> Option<Self> {
+        let client = ForgeCustodianHttp::from_config();
+        let locator = ForgeLocator::Local {
+            base_url: custodian_base_url(),
+        };
+        Self::advertise_from_probe(locator, TrustLevel::Owner, client.health().await)
+    }
 }
 
 /// True if `endpoint` may accept the gguf-lora job: routable, speaks a contract
@@ -286,6 +331,36 @@ mod tests {
         assert!(!can_accept_gguf_lora(&ep, CONTRACT_VERSION, TrustLevel::Owner));
         // Wrong capability ⇒ refused.
         assert!(!ep.supports("train"));
+    }
+
+    // what this catches: the advertise policy (5b) is honest about WHEN a node
+    // claims forge — a reachable custodian is advertised; an Unreachable one yields
+    // NO row (no custodian = no capability, not a fallback Down-row lie); a broken
+    // /health yields no row either (declined, not advertised). If Unreachable ever
+    // produced Some(Down), every node would advertise forge it can't serve.
+    #[test]
+    fn advertise_only_when_custodian_answered() {
+        let reachable = ForgeEndpoint::advertise_from_probe(
+            local(),
+            TrustLevel::Owner,
+            Ok(HealthResponse::gguf_lora(true, 2, 1)),
+        );
+        assert!(reachable.is_some(), "a reachable custodian is advertised");
+        assert_eq!(reachable.unwrap().health, ForgeHealth::Healthy);
+
+        let absent = ForgeEndpoint::advertise_from_probe(
+            local(),
+            TrustLevel::Owner,
+            Err(ForgeCustodianError::Unreachable("no listener".into())),
+        );
+        assert!(absent.is_none(), "no custodian ⇒ advertise nothing");
+
+        let broken = ForgeEndpoint::advertise_from_probe(
+            local(),
+            TrustLevel::Owner,
+            Err(ForgeCustodianError::Api("bad json".into())),
+        );
+        assert!(broken.is_none(), "a broken custodian is declined, not advertised");
     }
 
     // what this catches: a ForgeEndpoint round-trips JSON — it crosses the grid bus

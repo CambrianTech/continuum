@@ -122,6 +122,7 @@ impl NodeRegistry {
                         super::node::NodeCapability::Storage { .. } => "storage",
                         super::node::NodeCapability::Inference { .. } => "inference",
                         super::node::NodeCapability::Training { .. } => "training",
+                        super::node::NodeCapability::Forge { .. } => "forge",
                     };
                     name == cap_type
                 })

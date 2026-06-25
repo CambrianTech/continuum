@@ -7,6 +7,8 @@
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
+use crate::forge::endpoint::ForgeEndpoint;
+
 /// Trust level for a remote node.
 /// Determines what commands the node is allowed to execute on us,
 /// and what commands we're willing to send to it.
@@ -148,6 +150,19 @@ pub enum NodeCapability {
         #[ts(type = "number")]
         max_epochs: u32,
     },
+
+    /// Forge custodian capability — turns a trained checkpoint into a GGUF gene
+    /// (FORGE-CUSTODIAN-CONTRACT.md §5, Pass 5b). The endpoint row is DISCOVERED by
+    /// probing the local custodian's `/health`, never declared by config; a node
+    /// only advertises this when a custodian actually answered (see
+    /// [`ForgeEndpoint::probe_local`](crate::forge::endpoint::ForgeEndpoint::probe_local)).
+    #[serde(rename = "forge")]
+    Forge {
+        /// The routable forge endpoint (locator, capabilities, health, capacity,
+        /// trust). The fabric re-probes health for the live reading; this is the
+        /// discovery snapshot, exactly as `Compute` carries a VRAM snapshot.
+        endpoint: ForgeEndpoint,
+    },
 }
 
 /// A known node on the Grid mesh.
@@ -234,5 +249,42 @@ mod tests {
         assert!(TrustLevel::Owner > TrustLevel::Trusted);
         assert!(TrustLevel::Trusted > TrustLevel::Provisional);
         assert!(TrustLevel::Provisional > TrustLevel::Blocked);
+    }
+
+    // what this catches: the Forge capability variant survives the grid-bus round
+    // trip (it IS announced over `GridTransport::announce`, Pass 5b). The endpoint
+    // nests under the internal "type":"forge" tag; a serde shape that failed to
+    // (de)serialize the nested ForgeEndpoint would silently drop forge discovery on
+    // the hop — peers would never learn the node can forge.
+    #[test]
+    fn test_forge_capability_serde() {
+        use crate::forge::endpoint::{ForgeEndpoint, ForgeHealth, ForgeLocator};
+
+        let cap = NodeCapability::Forge {
+            endpoint: ForgeEndpoint {
+                locator: ForgeLocator::Local {
+                    base_url: "http://127.0.0.1:8899".into(),
+                },
+                capabilities: vec!["gguf-lora".into()],
+                contract_version: 1,
+                health: ForgeHealth::Healthy,
+                capacity: 2,
+                trust_scope: TrustLevel::Owner,
+            },
+        };
+
+        let json = serde_json::to_value(&cap).unwrap();
+        assert_eq!(json["type"], "forge");
+        assert_eq!(json["endpoint"]["health"], "healthy");
+        assert_eq!(json["endpoint"]["capacity"], 2);
+
+        let back: NodeCapability = serde_json::from_value(json).unwrap();
+        match back {
+            NodeCapability::Forge { endpoint } => {
+                assert_eq!(endpoint.capacity, 2);
+                assert!(endpoint.supports("gguf-lora"));
+            }
+            other => panic!("expected Forge, got {other:?}"),
+        }
     }
 }

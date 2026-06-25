@@ -225,6 +225,30 @@ impl ServiceModule for GridModule {
             }
         }
 
+        // Enrich with a local forge custodian if one is reachable (Contract C §5,
+        // Pass 5b). Capability is OBSERVED — we probe the custodian's /health and
+        // only advertise forge when it answered. No custodian ⇒ no forge cap (an
+        // honest absence, not a fallback). Bounded so a hung port can't stall grid
+        // bringup; forge is optional infra. The fabric re-probes for live health.
+        match tokio::time::timeout(
+            Duration::from_secs(2),
+            crate::forge::endpoint::ForgeEndpoint::probe_local(),
+        )
+        .await
+        {
+            Ok(Some(endpoint)) => {
+                let mut caps = self.state.local_capabilities.write().await;
+                caps.retain(|c| !matches!(c, NodeCapability::Forge { .. }));
+                eprintln!(
+                    "[grid] Local capabilities: forge custodian reachable ({:?}, {} slots)",
+                    endpoint.health, endpoint.capacity
+                );
+                caps.push(NodeCapability::Forge { endpoint });
+            }
+            Ok(None) => {} // no local custodian — correctly advertise no forge cap
+            Err(_) => eprintln!("[grid] Local forge custodian probe timed out — not advertised"),
+        }
+
         for transport in &self.state.transports {
             match transport.start().await {
                 Ok(()) => {
