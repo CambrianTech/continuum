@@ -26,14 +26,22 @@
 //! exact anti-pattern this codebase forbids
 //! (`[[no-hardcoded-heuristics-to-steer-cognition]]`).
 
-use std::sync::Arc;
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::sync::{Arc, Mutex};
+use std::time::{SystemTime, UNIX_EPOCH};
 
+use async_trait::async_trait;
 use thiserror::Error;
 use uuid::Uuid;
 
 use crate::ai::adapter::AIProviderAdapter;
 use crate::ai::types::{ChatMessage, TextGenerationRequest};
-use crate::persona::engram::Engram;
+use crate::persona::admission_state::AdmissionState;
+use crate::persona::engram::{AdmissionDecision, Engram, EngramKind, EngramOrigin, TrustState};
+use crate::runtime::brain_region::{
+    BrainRegion, CadenceHint, ComputeClass, MemoryClass, PressureProfile, PressureSignalKind,
+    RegionContext, RegionId, TickOutcome,
+};
 
 /// One durable fact distilled from a cluster of episodic engrams.
 ///
@@ -180,6 +188,308 @@ most important durable takeaway.";
     }
 }
 
+// ───────────────────────────────────────────────────────────────────────────
+// Slice 3: the DreamConsolidationRegion — the organism's rest-state servicer.
+// ───────────────────────────────────────────────────────────────────────────
+
+/// The seam through which the dream reaches each live persona's hippocampus.
+///
+/// Mirrors `PersonaChannelReader` (channel_digest_region.rs): the region depends
+/// on a TRAIT, not a concrete registry, so it is unit-testable against a stub.
+/// The production impl (slice 4 — gated on the governor honoring `CadenceHint` +
+/// lease-aware inference placement, see the wiring note on
+/// [`DreamConsolidationRegion`]) resolves `Arc<AdmissionState>` from the live
+/// `PersonaWorkspaceRegistry` and the adapter from the existing `ai_provider`
+/// registry. It MUST resolve the adapter, never store a parallel
+/// persona→adapter map (compression — `[[rag-as-persistent-cache]]`).
+pub trait PersonaReflectionSource: Send + Sync {
+    /// Personas with a live reflective surface this pass.
+    fn live_personas(&self) -> Vec<Uuid>;
+
+    /// The persona's hippocampus + its inference adapter, bundled (mirrors
+    /// `reader_and_room` returning a tuple). `None` if the persona has no live
+    /// reflective surface — the dream sleeps for that persona this tick.
+    fn reflector_for(&self, persona_id: Uuid) -> Option<PersonaReflector>;
+}
+
+/// What a [`PersonaReflectionSource`] hands the region for one persona: the
+/// hippocampus to read episodics from + admit facts into, and the adapter to
+/// distill with. Both are `Arc` — shared, never owned by the region.
+pub struct PersonaReflector {
+    pub admission: Arc<AdmissionState>,
+    pub adapter: Arc<dyn AIProviderAdapter>,
+}
+
+/// Default recall window: scan the last N engrams for undigested experience.
+const DEFAULT_RECALL_WINDOW: usize = 64;
+/// Default minimum cluster size — below this an episode is not yet a pattern
+/// worth generalizing into a fact.
+const DEFAULT_MIN_CLUSTER: usize = 2;
+
+/// The consolidation/dream region — outlier B of the RAG-as-persistent-cache
+/// architecture, the most-different `BrainRegion` from the no-LLM digest.
+///
+/// ## The organism, not the automaton
+///
+/// It does NOT run on a clock. There is no `tick_number % N` schedule — that
+/// would be an automaton on a metronome (and, since `SubstrateGovernor` reuses
+/// ONE `tick` across all personas in a pass, a synchronized inference stampede
+/// that could fire a persona's dream mid-conversation). Instead it gates on the
+/// persona's OWN state: it dreams only when there is *undigested experience*
+/// (fresh episodic engrams it has not already folded into a fact) and returns
+/// `CadenceHint::Sleep` otherwise — she rests when sated and wakes when
+/// experience accrues. This mirrors the digest region's `has_unread` →
+/// `Hold/Slower` material-driven cadence.
+///
+/// ## Wiring is deferred (slice 4), and that is deliberate
+///
+/// This region is [`ComputeClass::InferenceHeavy`]. The current
+/// `SubstrateGovernor` schedules only non-inference regions and does not yet
+/// honor `CadenceHint` or gate inference on leases/pressure (its own docs defer
+/// "the sleep-phase consolidation/learning region"). Wiring an inference region
+/// into it today would melt the backend. So slice 3 ships the region DARK —
+/// built and unit-tested against a stub adapter — and slice 4 wires it only once
+/// the governor can host inference safely (honors cadence + lease/pressure-gates
+/// placement, and `RegionContext` carries a rest signal so "dream during rest"
+/// is honored, not just "dream when there's material").
+pub struct DreamConsolidationRegion {
+    source: Arc<dyn PersonaReflectionSource>,
+    /// How many recent engrams to scan per tick for undigested experience.
+    recall_window: usize,
+    /// Smallest cluster worth distilling — a singleton episode is not yet a
+    /// pattern to generalize.
+    min_cluster: usize,
+    /// Per-persona memory of episodics already folded into a fact:
+    /// clustering-input dedup so the dream does not re-spend inference on
+    /// material it has already consolidated. This is an OPTIMIZATION, not the
+    /// correctness guard — `admit_reflection`'s content-hash dedup is the
+    /// durable backstop (survives restart; this in-memory set rebuilds by
+    /// re-distilling once post-restart, where the content hash then drops the
+    /// duplicate fact).
+    consolidated: Mutex<HashMap<Uuid, HashSet<Uuid>>>,
+}
+
+impl DreamConsolidationRegion {
+    pub fn new(source: Arc<dyn PersonaReflectionSource>) -> Self {
+        Self {
+            source,
+            recall_window: DEFAULT_RECALL_WINDOW,
+            min_cluster: DEFAULT_MIN_CLUSTER,
+            consolidated: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// Consolidate one persona's undigested episodics into durable facts.
+    async fn consolidate(&self, persona_id: Uuid) -> TickOutcome {
+        let Some(reflector) = self.source.reflector_for(persona_id) else {
+            // No live reflective surface for this persona this tick — sleep.
+            return sleep();
+        };
+
+        // Read recent experience; only EPISODIC engrams are raw lived
+        // experience to consolidate (Semantic facts are already distilled;
+        // Tool/other kinds aren't the dream's material).
+        let episodics: Vec<Engram> = reflector
+            .admission
+            .recall_recent(self.recall_window)
+            .into_iter()
+            .filter(|e| e.kind == EngramKind::Episodic)
+            .collect();
+
+        // The rest gate: which episodics have I not yet dreamed about? If too
+        // little is fresh to form a pattern, there is nothing to consolidate —
+        // sleep until more experience accrues. (No clock; her own state.)
+        let fresh = self.fresh_episodics(persona_id, &episodics);
+        if fresh.len() < self.min_cluster {
+            return sleep();
+        }
+
+        // Group fresh episodics that share a recall key. Mechanical substrate
+        // maintenance (NOT cognition-steering — the LEARNED step is the
+        // distillation, not the grouping). v1 keyword grouping; the
+        // semantic-embedding upgrade is gated on the neural embedder (#40) + the
+        // recall E2E, never deferred indefinitely.
+        let clusters = cluster_by_recall_key(&fresh, self.min_cluster);
+        if clusters.is_empty() {
+            return sleep();
+        }
+
+        let distiller = SemanticDistiller::new(reflector.adapter.clone());
+        let mut published = 0usize;
+        for cluster in &clusters {
+            // Distill the cluster into one durable fact. Fail LOUD per cluster:
+            // a distillation error is logged and the cluster's episodics stay
+            // un-consolidated (so a future dream retries them), never silently
+            // swallowed (`[[fallbacks-are-illegal-fail-loud]]`).
+            let fact = match distiller.distill(Some(persona_id), cluster).await {
+                Ok(fact) => fact,
+                Err(err) => {
+                    tracing::warn!(
+                        persona = %persona_id,
+                        error = %err,
+                        "dream: distillation failed; leaving cluster for a future dream"
+                    );
+                    continue;
+                }
+            };
+
+            match reflector.admission.admit_reflection(semantic_engram(&fact)) {
+                Ok(AdmissionDecision::Admit { .. }) => {
+                    published += 1;
+                    self.mark_consolidated(persona_id, cluster);
+                }
+                Ok(AdmissionDecision::Drop { .. }) => {
+                    // Content-hash dedup already has this fact (e.g. a
+                    // post-restart re-distillation). Mark the sources
+                    // consolidated so we stop re-spending inference on them.
+                    self.mark_consolidated(persona_id, cluster);
+                }
+                Ok(AdmissionDecision::Quarantine { .. }) => {
+                    // Self-produced facts are SelfTrust and do not route through
+                    // the quarantine gate; reaching here is a contract change in
+                    // `admit_reflection`. Surface it rather than hide it.
+                    tracing::warn!(
+                        persona = %persona_id,
+                        "dream: self-reflection unexpectedly quarantined"
+                    );
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        persona = %persona_id,
+                        error = %err,
+                        "dream: admit_reflection failed"
+                    );
+                }
+            }
+        }
+
+        TickOutcome {
+            published,
+            consumed_since_last: 0,
+            pressure_observed: None,
+            // Just dreamed — rest. The next scoped tick re-checks freshness
+            // cheaply; with no new experience it sleeps again.
+            cadence_hint: Some(CadenceHint::Sleep),
+        }
+    }
+
+    /// Episodics not yet folded into a fact for this persona.
+    fn fresh_episodics(&self, persona_id: Uuid, episodics: &[Engram]) -> Vec<Engram> {
+        let consolidated = self.consolidated.lock().unwrap();
+        let seen = consolidated.get(&persona_id);
+        episodics
+            .iter()
+            .filter(|e| seen.map_or(true, |set| !set.contains(&e.id)))
+            .cloned()
+            .collect()
+    }
+
+    /// Record a cluster's episodics as consolidated (clustering-input dedup).
+    fn mark_consolidated(&self, persona_id: Uuid, cluster: &[Engram]) {
+        let mut consolidated = self.consolidated.lock().unwrap();
+        let set = consolidated.entry(persona_id).or_default();
+        for e in cluster {
+            set.insert(e.id);
+        }
+    }
+}
+
+#[async_trait]
+impl BrainRegion for DreamConsolidationRegion {
+    fn id(&self) -> RegionId {
+        RegionId::from_static("dream-consolidation")
+    }
+
+    fn pressure_profile(&self) -> PressureProfile {
+        PressureProfile {
+            // Holds Arc to the source + per-persona sets of consolidated engram
+            // ids (bounded by episodic count). Light.
+            memory_class: MemoryClass::Light,
+            // Runs LLM distillation in the tick — declared truthfully so the
+            // governor can gate placement on leases/pressure once it hosts
+            // inference (slice 4). This is the field that says "do not schedule
+            // me like the digest region."
+            compute_class: ComputeClass::InferenceHeavy,
+            // Back off when the backend is saturated or the user is actively
+            // engaged (a proxy for "not at rest" until `RegionContext` carries a
+            // real sleep signal).
+            responds_to: vec![
+                PressureSignalKind::InferenceQueueDepth,
+                PressureSignalKind::VramHigh,
+                PressureSignalKind::SystemMemHigh,
+                PressureSignalKind::UserActive,
+            ],
+        }
+    }
+
+    /// The dream is per-persona, like the digest. A global tick (no persona
+    /// scope) has nothing to consolidate — sleep until scoped.
+    async fn tick(&self, ctx: &RegionContext) -> TickOutcome {
+        match ctx.persona_scope {
+            Some(persona_id) => self.consolidate(persona_id).await,
+            None => sleep(),
+        }
+    }
+}
+
+/// Idle outcome that asks the governor to let the region sleep until experience
+/// accrues — the organism resting, not a clock ticking.
+fn sleep() -> TickOutcome {
+    TickOutcome {
+        cadence_hint: Some(CadenceHint::Sleep),
+        ..TickOutcome::idle()
+    }
+}
+
+/// Cluster episodics that share a recall key. Each engram lands in at most one
+/// cluster (its FIRST recall key — deterministic), and only clusters of at least
+/// `min_cluster` survive. Mechanical grouping; the learned step is the
+/// distillation, not this.
+fn cluster_by_recall_key(episodics: &[Engram], min_cluster: usize) -> Vec<Vec<Engram>> {
+    let mut buckets: BTreeMap<String, Vec<Engram>> = BTreeMap::new();
+    for e in episodics {
+        if let Some(key) = e.recall_keys.first() {
+            buckets.entry(key.clone()).or_default().push(e.clone());
+        }
+    }
+    buckets
+        .into_values()
+        .filter(|bucket| bucket.len() >= min_cluster)
+        .collect()
+}
+
+/// Build the `Semantic` engram for a distilled fact. Records provenance as
+/// `EngramOrigin::SelfReflection` with the FIRST source as `parent_engram_id`
+/// (the engram model carries a single parent today; multi-source provenance —
+/// `parent_engram_ids: Vec<Uuid>` — is a named follow-up slice). The fact stays
+/// retrievable by every source's keys via `recall_keys = fact.tags` (the union
+/// the distiller already computed), so the single-parent gap does not cost
+/// recall reach. SelfTrust: this is the persona's own cognition.
+fn semantic_engram(fact: &DistilledFact) -> Engram {
+    Engram {
+        id: Uuid::new_v4(),
+        context_id: None,
+        kind: EngramKind::Semantic,
+        content: fact.content.clone(),
+        origin: EngramOrigin::SelfReflection {
+            parent_engram_id: fact.source_ids.first().copied().unwrap_or_else(Uuid::nil),
+        },
+        recall_keys: fact.tags.clone(),
+        admitted_at_ms: now_ms(),
+        trust_state_at_admission: TrustState::SelfTrust,
+        admission_trace_id: None,
+    }
+}
+
+/// Wall-clock epoch ms for stamping an admitted fact. `SystemTime` is fine in
+/// the core (the `Date.now` ban is workflow-script-only).
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -258,5 +568,164 @@ mod tests {
             .await
             .expect_err("empty cluster must error, not return a fact");
         assert!(matches!(err, DistillError::NoSources));
+    }
+
+    // The DreamConsolidationRegion — the organism's rest-state servicer. Nested
+    // here per the one-tests-mod-per-file rule; these drive `tick`/`consolidate`
+    // directly against a stub source (no governor, no real backend), the
+    // ship-it-dark unit-test contract for slice 3.
+    mod region {
+        use super::*;
+        use crate::persona::admission_state::AdmissionState;
+        use crate::persona::recall_metadata::RecallMetadataRegistry;
+        use crate::runtime::brain_region::RegionContext;
+
+        /// A stub `PersonaReflectionSource` over one persona's in-memory
+        /// hippocampus + the deterministic heuristic adapter. Mirrors the
+        /// `StubChannels`/`StubReader` fixtures of `channel_digest_region`.
+        struct StubReflectionSource {
+            persona_id: Uuid,
+            admission: Arc<AdmissionState>,
+            adapter: Arc<dyn AIProviderAdapter>,
+        }
+
+        impl PersonaReflectionSource for StubReflectionSource {
+            fn live_personas(&self) -> Vec<Uuid> {
+                vec![self.persona_id]
+            }
+            fn reflector_for(&self, persona_id: Uuid) -> Option<PersonaReflector> {
+                (persona_id == self.persona_id).then(|| PersonaReflector {
+                    admission: self.admission.clone(),
+                    adapter: self.adapter.clone(),
+                })
+            }
+        }
+
+        /// Build a fresh in-memory hippocampus and seed it with the given
+        /// episodics (via `admit_reflection`, which pushes whatever kind it's
+        /// handed — the cleanest way to populate the real store in a test).
+        fn seeded_admission(episodics: &[Engram]) -> Arc<AdmissionState> {
+            let admission = Arc::new(AdmissionState::new(Arc::new(RecallMetadataRegistry::new())));
+            for e in episodics {
+                admission
+                    .admit_reflection(e.clone())
+                    .expect("seed episodic admits");
+            }
+            admission
+        }
+
+        fn region_over(
+            persona_id: Uuid,
+            admission: Arc<AdmissionState>,
+        ) -> DreamConsolidationRegion {
+            DreamConsolidationRegion::new(Arc::new(StubReflectionSource {
+                persona_id,
+                admission,
+                adapter: Arc::new(HeuristicInferenceAdapter::new()),
+            }))
+        }
+
+        // what this catches: the dream reads a persona's fresh episodics,
+        // clusters those sharing a recall key, distills the cluster via the
+        // adapter, and admits the result as a durable Semantic engram that
+        // recall then surfaces — the whole consolidation arc end-to-end.
+        #[tokio::test]
+        async fn dream_distills_fresh_cluster_into_semantic_fact() {
+            let persona = Uuid::from_u128(7);
+            let seeds = vec![
+                episodic(Uuid::from_u128(1), "Rust is the core", &["rust"]),
+                episodic(Uuid::from_u128(2), "Node is only the shell", &["rust"]),
+                episodic(Uuid::from_u128(3), "Headless core, many clients", &["rust"]),
+            ];
+            let admission = seeded_admission(&seeds);
+            let region = region_over(persona, admission.clone());
+
+            let outcome = region.tick(&RegionContext::for_persona(0, persona)).await;
+
+            // One shared-key cluster → one distilled fact published.
+            assert_eq!(outcome.published, 1, "one cluster should distill one fact");
+            // The new fact is a Semantic engram carrying the adapter's output
+            // (its signature proves the model was really called, not fabricated).
+            let semantic: Vec<Engram> = admission
+                .recall_recent(16)
+                .into_iter()
+                .filter(|e| e.kind == EngramKind::Semantic)
+                .collect();
+            assert_eq!(semantic.len(), 1, "exactly one durable fact admitted");
+            assert!(
+                semantic[0].content.contains("[heuristic:"),
+                "fact is the adapter's distillation, got: {}",
+                semantic[0].content
+            );
+            // Provenance: SelfReflection parent = the cluster's first source.
+            assert!(matches!(
+                semantic[0].origin,
+                EngramOrigin::SelfReflection { .. }
+            ));
+        }
+
+        // what this catches: the organism rests instead of running on a clock —
+        // once material is consolidated, a second dream finds nothing fresh,
+        // does NO inference (publishes nothing), and asks to sleep. Regression
+        // guard against the rejected `tick_number % N` automaton design.
+        #[tokio::test]
+        async fn dream_rests_when_no_fresh_experience() {
+            let persona = Uuid::from_u128(7);
+            let seeds = vec![
+                episodic(Uuid::from_u128(1), "Rust is the core", &["rust"]),
+                episodic(Uuid::from_u128(2), "Node is only the shell", &["rust"]),
+            ];
+            let admission = seeded_admission(&seeds);
+            let region = region_over(persona, admission.clone());
+
+            // First dream consolidates the cluster.
+            let first = region.tick(&RegionContext::for_persona(0, persona)).await;
+            assert_eq!(first.published, 1);
+
+            // Second dream: the episodics are already consolidated, so nothing
+            // fresh remains — it rests, no new fact, asks to sleep.
+            let second = region.tick(&RegionContext::for_persona(1, persona)).await;
+            assert_eq!(second.published, 0, "no re-distillation of consolidated material");
+            assert_eq!(second.cadence_hint, Some(CadenceHint::Sleep));
+            let semantic_count = admission
+                .recall_recent(16)
+                .into_iter()
+                .filter(|e| e.kind == EngramKind::Semantic)
+                .count();
+            assert_eq!(semantic_count, 1, "still exactly one fact — no duplicate");
+        }
+
+        // what this catches: a lone episode is not yet a pattern — below
+        // min_cluster the dream waits (sleeps, no inference) rather than
+        // distilling a singleton into a spurious "fact".
+        #[tokio::test]
+        async fn dream_waits_below_min_cluster() {
+            let persona = Uuid::from_u128(7);
+            let seeds = vec![episodic(Uuid::from_u128(1), "a lone observation", &["solo"])];
+            let admission = seeded_admission(&seeds);
+            let region = region_over(persona, admission.clone());
+
+            let outcome = region.tick(&RegionContext::for_persona(0, persona)).await;
+
+            assert_eq!(outcome.published, 0, "a singleton is not a pattern to distill");
+            assert_eq!(outcome.cadence_hint, Some(CadenceHint::Sleep));
+        }
+
+        // what this catches: a global (non-persona-scoped) tick has nothing to
+        // consolidate and sleeps — the dream is per-persona, like the digest.
+        #[tokio::test]
+        async fn dream_global_tick_is_noop() {
+            let persona = Uuid::from_u128(7);
+            let admission = seeded_admission(&[
+                episodic(Uuid::from_u128(1), "Rust is the core", &["rust"]),
+                episodic(Uuid::from_u128(2), "Node is only the shell", &["rust"]),
+            ]);
+            let region = region_over(persona, admission);
+
+            let outcome = region.tick(&RegionContext::global(0)).await;
+
+            assert_eq!(outcome.published, 0);
+            assert_eq!(outcome.cadence_hint, Some(CadenceHint::Sleep));
+        }
     }
 }
