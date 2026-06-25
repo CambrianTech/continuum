@@ -652,59 +652,55 @@ pub async fn materialize_adapters(
         // Additive: makes `ai/should-respond` resolvable for this persona; does
         // NOT change the existing service-loop decision path (heuristics stay
         // live until the coordinated cutover).
-        // REGISTER (overwrite), not get_or_build: a persona can respawn in the
-        // same process (node resilience). get_or_build is idempotent by
-        // persona_id and would DISCARD the fresh admission + adapter, leaving the
-        // mind bound to the prior lifetime's orphaned (rehydrated-then-replaced)
-        // AdmissionState — newly-admitted engrams invisible to recall, the
-        // "severed" failure across a restart. Build + register replaces it.
-        crate::cognition::persona_workspace::global().register(
-            identity.persona_id,
-            std::sync::Arc::new(crate::cognition::persona_workspace::build_workspace_cycle(
-                crate::cognition::persona_workspace::PersonaBrainConfig {
-                    persona_id: identity.persona_id,
-                    persona_name: identity.agent_name.to_string(),
-                    system_prompt: system_prompt.to_string(),
-                    admission: cognition.admission.clone(),
-                    adapter: adapter.clone(),
-                    capacity: None,
-                    // Neural recall when the embed model serves, lexical otherwise
-                    // — decided once here (process-stable; query + stored vectors
-                    // must share one embedding space). Already cached by the
-                    // resolver (embed-once-per-content, shared across personas).
-                    embedder: Some(
-                        crate::cognition::embedding::resolve_recall_embedder(adapter.clone()).await,
+        // register_from_cfg (overwrite + retain a fork-template), not
+        // get_or_build: a persona can respawn in the same process (node
+        // resilience). get_or_build is idempotent by persona_id and would DISCARD
+        // the fresh admission + adapter, leaving the mind bound to the prior
+        // lifetime's orphaned (rehydrated-then-replaced) AdmissionState —
+        // newly-admitted engrams invisible to recall, the "severed" failure across
+        // a restart. Build + register replaces it. The retained cfg template is
+        // what lets `cognition/eval` fork an ephemeral measurement copy without
+        // touching this living mind (PersonaWorkspaceRegistry::fork_eval_cycle).
+        crate::cognition::persona_workspace::global().register_from_cfg(
+            crate::cognition::persona_workspace::PersonaBrainConfig {
+                persona_id: identity.persona_id,
+                persona_name: identity.agent_name.to_string(),
+                system_prompt: system_prompt.to_string(),
+                admission: cognition.admission.clone(),
+                adapter: adapter.clone(),
+                capacity: None,
+                // Neural recall when the embed model serves, lexical otherwise
+                // — decided once here (process-stable; query + stored vectors
+                // must share one embedding space). Already cached by the
+                // resolver (embed-once-per-content, shared across personas).
+                embedder: Some(
+                    crate::cognition::embedding::resolve_recall_embedder(adapter.clone()).await,
+                ),
+                // Roster + doctrine bridged into the brain as STANDING-FRAMING
+                // grounding faculties (high salience floor). Without these the
+                // gating cutover routes decisions through the Workspace and the
+                // #1650/#1651 grounding silently falls out of the live path —
+                // the persona forgets who is present / what the room is for.
+                grounding_sources: vec![
+                    crate::cognition::persona_workspace::GroundingSource::framing(roster_source),
+                    crate::cognition::persona_workspace::GroundingSource::framing(doctrine_source),
+                    // The persona's own live work across rooms — standing framing
+                    // so it always knows what it's working on (cross-activity,
+                    // dynamic, no hardcoded card state).
+                    crate::cognition::persona_workspace::GroundingSource::framing(
+                        active_work_source,
                     ),
-                    // Roster + doctrine bridged into the brain as STANDING-FRAMING
-                    // grounding faculties (high salience floor). Without these the
-                    // gating cutover routes decisions through the Workspace and the
-                    // #1650/#1651 grounding silently falls out of the live path —
-                    // the persona forgets who is present / what the room is for.
-                    grounding_sources: vec![
-                        crate::cognition::persona_workspace::GroundingSource::framing(
-                            roster_source,
-                        ),
-                        crate::cognition::persona_workspace::GroundingSource::framing(
-                            doctrine_source,
-                        ),
-                        // The persona's own live work across rooms — standing framing
-                        // so it always knows what it's working on (cross-activity,
-                        // dynamic, no hardcoded card state).
-                        crate::cognition::persona_workspace::GroundingSource::framing(
-                            active_work_source,
-                        ),
-                        // WHERE code lives — the real workspace layout as standing
-                        // framing, so a reasoner can avoid blind globs like
-                        // `src/**/*.rs` from the prompt alone.
-                        crate::cognition::persona_workspace::GroundingSource::framing(
-                            workspace_map_source,
-                        ),
-                    ],
-                    // The persona's HANDS — built by the caller for THIS persona's
-                    // identity (None → speak-only). What turns "talks" into "acts".
-                    tool_executor: tool_executor_for(identity.persona_id),
-                },
-            )),
+                    // WHERE code lives — the real workspace layout as standing
+                    // framing, so a reasoner can avoid blind globs like
+                    // `src/**/*.rs` from the prompt alone.
+                    crate::cognition::persona_workspace::GroundingSource::framing(
+                        workspace_map_source,
+                    ),
+                ],
+                // The persona's HANDS — built by the caller for THIS persona's
+                // identity (None → speak-only). What turns "talks" into "acts".
+                tool_executor: tool_executor_for(identity.persona_id),
+            },
         );
 
         out.push(Ok(PersonaContext {

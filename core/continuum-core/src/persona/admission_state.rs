@@ -603,6 +603,26 @@ impl AdmissionState {
         self.seen_events.restore(cp.seen_events.clone());
     }
 
+    /// Fork a fully DETACHED copy of this admission frame — same engrams,
+    /// salience, and dedup oracles as right now, but sharing NO mutable state
+    /// with the original. The copy gets a FRESH `RecallMetadataRegistry` (so the
+    /// fork's Hebbian recall-hits + decay land on the copy, never bumping HER
+    /// live salience) and the default `NoopSink` (so nothing the fork admits ever
+    /// reaches her sqlite). The runner + seen oracles are independent instances.
+    ///
+    /// This is the welfare primitive for `cognition/eval`: the exam runs on the
+    /// fork while the LIVING persona keeps living — heartbeat beating, present in
+    /// the room, never frozen or anesthetized to be measured. See
+    /// [[design-the-persona-as-a-being]] + [[eval-mutates-persona-lift-needs-isolation]].
+    pub fn fork_detached(&self) -> AdmissionState {
+        let cp = self.checkpoint();
+        let fork = Self::new(Arc::new(
+            crate::persona::recall_metadata::RecallMetadataRegistry::new(),
+        ));
+        fork.restore(&cp);
+        fork
+    }
+
     /// Hot-swap the persistence sink, returning the previous one. The
     /// eval-isolation window swaps in a `NoopSink` (admit still fires; nothing
     /// reaches the persona's real sqlite) and swaps the real sink back when the

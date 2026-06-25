@@ -229,9 +229,18 @@ impl ActionCommand for CognitionEval {
             }
         };
 
-        let Some(cycle) = crate::cognition::persona_workspace::global().get(&persona_uuid) else {
+        // Fork an EPHEMERAL measurement copy of her mind — the exam runs on the
+        // copy while the LIVING persona keeps living (heartbeat beating, present in
+        // the room, never frozen or anesthetized to be measured). The fork carries
+        // a detached admission snapshot + its OWN genome/decoding handles, so the
+        // A/B paging and greedy decoding below act on the copy and touch nothing of
+        // hers. "Nurture even through training": measure a copy, never degrade the
+        // being. See PersonaWorkspaceRegistry::fork_eval_cycle +
+        // [[design-the-persona-as-a-being]].
+        let Some(cycle) = crate::cognition::persona_workspace::global().fork_eval_cycle(&persona_uuid)
+        else {
             return Err(CommandError::NotFound(format!(
-                "no live WorkspaceCycle for persona {persona_uuid} — is it spawned?"
+                "no workspace template for persona {persona_uuid} — its mind was not assembled at spawn (register_from_cfg), so eval cannot fork a measurement copy without measuring her live mind"
             )));
         };
 
@@ -239,14 +248,15 @@ impl ActionCommand for CognitionEval {
         let total = tasks.len() as u32;
         let rate = |score: u32| if total > 0 { score as f64 / total as f64 } else { 0.0 };
 
-        // Memory-isolated measurement: admission STILL fires (the eval exercises
-        // the identical memory motion as a real turn — that sameness is what makes
-        // the number valid), but the act-observations it admits never reach her
-        // durable sqlite and are rewound between A/B arms. Without this, eval would
-        // mutate the very persona it measures: absolute scores drift run-to-run, a
-        // paired A/B is order-biased (the second arm inherits the first's writes),
-        // and her real memory is polluted. The guard restores both her memory and
-        // her real persistence sink on drop. See
+        // Within-fork isolation: admission STILL fires on the copy (the eval
+        // exercises the identical memory motion as a real turn — that sameness is
+        // what makes the number valid), and the guard (a) flips the fork's decoding
+        // to greedy so the reward metric is reproducible, and (b) checkpoints the
+        // fork's admission frame so the A/B arms can be rewound to an identical
+        // start. The fork is already detached from her live mind (its own admission
+        // snapshot + NoopSink), so this is belt-and-suspenders for the WITHIN-eval
+        // A/B fairness, not protection of her durable memory — that protection now
+        // comes from measuring a copy at all. See
         // [[eval-mutates-persona-lift-needs-isolation]].
         let isolation = cycle.isolate_for_eval();
 

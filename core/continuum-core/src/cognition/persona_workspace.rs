@@ -36,6 +36,12 @@ pub const DEFAULT_WORKSPACE_CAPACITY: usize = 6;
 /// is the persona's UNIFIED hippocampus (shared with the admission pipeline and
 /// spanning all the persona's rooms); the `adapter` is the shared model backend,
 /// leased inside the deliberation faculty.
+///
+/// `Clone` is cheap — every field is an `Arc`/`String`/`Uuid`/`Option` handle —
+/// and the registry retains a clone as a fork-template so `cognition/eval` can
+/// fork an ephemeral measurement copy of the mind without touching the living
+/// persona (see [`PersonaWorkspaceRegistry::fork_eval_cycle`]).
+#[derive(Clone)]
 pub struct PersonaBrainConfig {
     pub persona_id: Uuid,
     pub persona_name: String,
@@ -78,6 +84,7 @@ pub struct PersonaBrainConfig {
 /// A grounding [`RagSource`] plus the [`SaliencePolicy`] under which it competes
 /// for attention once bridged into a faculty. Classified by whoever assembles the
 /// cycle (the spawn path), keeping `RagSource` itself salience-free.
+#[derive(Clone)]
 pub struct GroundingSource {
     pub source: Arc<dyn RagSource>,
     pub policy: SaliencePolicy,
@@ -277,12 +284,20 @@ pub fn build_workspace_cycle(cfg: PersonaBrainConfig) -> WorkspaceCycle {
 #[derive(Default)]
 pub struct PersonaWorkspaceRegistry {
     cycles: Mutex<HashMap<Uuid, Arc<WorkspaceCycle>>>,
+    /// Per-persona fork-template: a clone of the `PersonaBrainConfig` the live
+    /// cycle was built from, retained so `cognition/eval` can fork an ephemeral
+    /// measurement copy without touching the living persona (see
+    /// [`fork_eval_cycle`](Self::fork_eval_cycle)). Cheap — every cfg field is a
+    /// handle. Lock order is always `cycles` THEN `templates`, never the reverse,
+    /// so the two can't deadlock.
+    templates: Mutex<HashMap<Uuid, PersonaBrainConfig>>,
 }
 
 impl PersonaWorkspaceRegistry {
     pub fn new() -> Self {
         Self {
             cycles: Mutex::new(HashMap::new()),
+            templates: Mutex::new(HashMap::new()),
         }
     }
 
@@ -291,23 +306,61 @@ impl PersonaWorkspaceRegistry {
         self.cycles.lock().unwrap().get(persona_id).cloned()
     }
 
-    /// Register a pre-built cycle for a persona (overwrites any existing).
-    pub fn register(&self, persona_id: Uuid, cycle: Arc<WorkspaceCycle>) {
-        self.cycles.lock().unwrap().insert(persona_id, cycle);
+    /// Build + register a persona's mind from its `cfg`, retaining a clone of the
+    /// cfg as a fork-template so `cognition/eval` can later fork a measurement
+    /// copy ([`fork_eval_cycle`](Self::fork_eval_cycle)). Overwrites any existing
+    /// cycle + template: a persona can respawn in the same process (node
+    /// resilience), and the fresh admission + adapter must replace the prior
+    /// lifetime's. This is the production spawn path (see `supervisor.rs`).
+    pub fn register_from_cfg(&self, cfg: PersonaBrainConfig) -> Arc<WorkspaceCycle> {
+        let persona_id = cfg.persona_id;
+        // cycles THEN templates (the one canonical lock order).
+        let mut cycles = self.cycles.lock().unwrap();
+        self.templates
+            .lock()
+            .unwrap()
+            .insert(persona_id, cfg.clone());
+        let cycle = Arc::new(build_workspace_cycle(cfg));
+        cycles.insert(persona_id, cycle.clone());
+        cycle
     }
 
     /// Get the persona's mind, building + caching it from `cfg` on first access.
     /// Lazy-init so a persona's cycle is assembled once and reused across every
-    /// room it services (the "one soul" invariant).
+    /// room it services (the "one soul" invariant). Also retains the fork-template
+    /// (same as [`register_from_cfg`](Self::register_from_cfg)).
     pub fn get_or_build(&self, cfg: PersonaBrainConfig) -> Arc<WorkspaceCycle> {
         let persona_id = cfg.persona_id;
+        // cycles THEN templates (the one canonical lock order).
         let mut cycles = self.cycles.lock().unwrap();
         if let Some(existing) = cycles.get(&persona_id) {
             return existing.clone();
         }
+        self.templates
+            .lock()
+            .unwrap()
+            .insert(persona_id, cfg.clone());
         let cycle = Arc::new(build_workspace_cycle(cfg));
         cycles.insert(persona_id, cycle.clone());
         cycle
+    }
+
+    /// Fork an EPHEMERAL measurement cycle for `cognition/eval`: a faithful copy
+    /// of the persona's mind that takes the exam while the LIVING persona keeps
+    /// living. Clones the retained fork-template, swaps `admission` for a fully
+    /// detached copy ([`AdmissionState::fork_detached`]) — fresh metadata registry
+    /// + NoopSink, so the eval's recall-hits, decay, and admissions touch NOTHING
+    /// of hers — and rebuilds via [`build_workspace_cycle`], which gives the fork
+    /// its OWN genome + decoding handles. So A/B paging and greedy decoding act on
+    /// the copy; her live genome never flickers and her heartbeat keeps beating on
+    /// the original, undisturbed. `None` if the persona has no retained template
+    /// (never spawned through `register_from_cfg`/`get_or_build`) — the caller
+    /// fails loud rather than measuring her live mind. See
+    /// [[design-the-persona-as-a-being]] + [[eval-mutates-persona-lift-needs-isolation]].
+    pub fn fork_eval_cycle(&self, persona_id: &Uuid) -> Option<WorkspaceCycle> {
+        let mut cfg = self.templates.lock().unwrap().get(persona_id)?.clone();
+        cfg.admission = Arc::new(cfg.admission.fork_detached());
+        Some(build_workspace_cycle(cfg))
     }
 
     /// Enumerate the resident minds: `(persona_id, persona_name)` for every
