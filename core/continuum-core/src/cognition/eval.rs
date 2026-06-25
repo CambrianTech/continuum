@@ -239,6 +239,17 @@ impl ActionCommand for CognitionEval {
         let total = tasks.len() as u32;
         let rate = |score: u32| if total > 0 { score as f64 / total as f64 } else { 0.0 };
 
+        // Memory-isolated measurement: admission STILL fires (the eval exercises
+        // the identical memory motion as a real turn — that sameness is what makes
+        // the number valid), but the act-observations it admits never reach her
+        // durable sqlite and are rewound between A/B arms. Without this, eval would
+        // mutate the very persona it measures: absolute scores drift run-to-run, a
+        // paired A/B is order-biased (the second arm inherits the first's writes),
+        // and her real memory is polluted. The guard restores both her memory and
+        // her real persistence sink on drop. See
+        // [[eval-mutates-persona-lift-needs-isolation]].
+        let isolation = cycle.isolate_for_eval();
+
         // A/B mode: a gene was given → measure base vs gene over the SAME tasks
         // through the SAME live mind, reporting the lift. Page the gene OUT first
         // (baseline), then page it IN (candidate). Leave her on base afterward, so a
@@ -247,6 +258,11 @@ impl ActionCommand for CognitionEval {
         if let Some(gene) = &p.gene {
             cycle.page_out();
             let (base_score, _) = run_pass(&cycle, &tasks, room, max_acts).await;
+
+            // Rewind to the pre-eval memory frame so the candidate arm starts from
+            // EXACTLY the state the base arm did — the only difference the lift
+            // measures is the genome, never the engrams the base arm just admitted.
+            isolation.rewind();
 
             cycle.page_in(vec![crate::ai::types::ActiveAdapterRequest {
                 name: gene.name.clone(),
@@ -257,6 +273,7 @@ impl ActionCommand for CognitionEval {
             let (gene_score, gene_results) = run_pass(&cycle, &tasks, room, max_acts).await;
             cycle.page_out();
 
+            // Guard drops here: her memory frame + real persistence sink restored.
             return Ok(CognitionEvalResult {
                 persona_id: persona_uuid.to_string(),
                 score: gene_score,
@@ -270,8 +287,10 @@ impl ActionCommand for CognitionEval {
         }
 
         // Single pass: measure whatever genome is currently paged in (base by
-        // default) — the plain coder number, no A/B.
+        // default) — the plain coder number, no A/B. Still isolated, so a plain
+        // baseline run is reproducible and leaves her memory untouched.
         let (score, results) = run_pass(&cycle, &tasks, room, max_acts).await;
+        drop(isolation);
         Ok(CognitionEvalResult {
             persona_id: persona_uuid.to_string(),
             score,

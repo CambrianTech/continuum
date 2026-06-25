@@ -40,7 +40,7 @@
 //! concurrently from per-persona task tasks. Same shape as `PersonaInbox`.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 
 use uuid::Uuid;
 
@@ -69,6 +69,14 @@ impl InMemorySeenContent {
     fn record(&self, hash: String, engram_id: Uuid) {
         self.0.lock().unwrap().insert(hash, engram_id);
     }
+    /// Snapshot the dedup map for an eval-isolation checkpoint.
+    fn snapshot(&self) -> HashMap<String, Uuid> {
+        self.0.lock().unwrap().clone()
+    }
+    /// Restore the dedup map to a prior snapshot (rewind a measurement window).
+    fn restore(&self, snap: HashMap<String, Uuid>) {
+        *self.0.lock().unwrap() = snap;
+    }
 }
 
 #[derive(Default)]
@@ -84,6 +92,40 @@ impl InMemorySeenEvents {
     fn record(&self, event_id: String, when_ms: u64) {
         self.0.lock().unwrap().insert(event_id, when_ms);
     }
+    /// Snapshot the replay-protection map for an eval-isolation checkpoint.
+    fn snapshot(&self) -> HashMap<String, u64> {
+        self.0.lock().unwrap().clone()
+    }
+    /// Restore the replay-protection map to a prior snapshot.
+    fn restore(&self, snap: HashMap<String, u64>) {
+        *self.0.lock().unwrap() = snap;
+    }
+}
+
+//=============================================================================
+// EVAL-ISOLATION CHECKPOINT
+//=============================================================================
+
+/// An opaque snapshot of a persona's entire in-memory admission state — the
+/// engram store, the recall-metadata sidecar, and both the dedup + replay
+/// oracles. Produced by [`AdmissionState::checkpoint`] and consumed by
+/// [`AdmissionState::restore`].
+///
+/// Why it exists: `cognition/eval` drives the persona's REAL cognition, which
+/// admits act-observation engrams as it measures her. Without a checkpoint
+/// those writes (1) make absolute scores non-reproducible run-to-run, (2)
+/// order-bias a paired A/B (the second arm inherits the first arm's writes),
+/// and (3) pollute her durable memory. The fix is NOT to skip admission (that
+/// would make the measured motion differ from a real turn — see
+/// PERSONA-COGNITION-PIPELINE.md "every turn that skips admit forms no
+/// memory"); it is to admit normally into a frozen frame that gets rewound
+/// between arms and discarded at the end, with persistence muted so nothing
+/// reaches sqlite. See [[eval-mutates-persona-lift-needs-isolation]].
+pub struct AdmissionCheckpoint {
+    engrams: Vec<Engram>,
+    recall_metadata: Vec<(Uuid, crate::persona::recall_metadata::RecallMetadata)>,
+    seen_content: HashMap<String, Uuid>,
+    seen_events: HashMap<String, u64>,
 }
 
 //=============================================================================
@@ -115,7 +157,15 @@ pub struct AdmissionState {
     /// Per [[organization-purity-as-we-migrate]] + adapter-first
     /// methodology: AdmissionState observes, sink impls choose what
     /// to do with the observations.
-    persistence: Arc<dyn crate::persona::admission_persistence::AdmissionPersistenceSink>,
+    ///
+    /// Behind a `RwLock` so a measurement window (`cognition/eval`) can
+    /// hot-swap it to a `NoopSink` and back — admit still fires (memory
+    /// motion stays identical → the measurement is valid) but nothing
+    /// reaches the persona's real sqlite. The lock is taken once per
+    /// admit / once per recall-batch (human-message cadence, never
+    /// per-token), so the cost is nil. See
+    /// [[eval-mutates-persona-lift-needs-isolation]].
+    persistence: RwLock<Arc<dyn crate::persona::admission_persistence::AdmissionPersistenceSink>>,
 }
 
 impl Default for AdmissionState {
@@ -159,7 +209,7 @@ impl AdmissionState {
             seen_events: Arc::new(InMemorySeenEvents::default()),
             engrams: Mutex::new(Vec::new()),
             recall_metadata,
-            persistence,
+            persistence: RwLock::new(persistence),
         }
     }
 
@@ -202,7 +252,7 @@ impl AdmissionState {
             seen_events: Arc::new(InMemorySeenEvents::default()),
             engrams: Mutex::new(loaded_engrams),
             recall_metadata,
-            persistence,
+            persistence: RwLock::new(persistence),
         }
     }
 
@@ -373,7 +423,10 @@ impl AdmissionState {
         self.seen_content.record(hash, engram.id);
         self.recall_metadata.admit_with_defaults(engram.id);
         let metadata = self.recall_metadata.get(engram.id).unwrap_or_default();
-        self.persistence.observe_admission(&engram, metadata);
+        self.persistence
+            .read()
+            .unwrap()
+            .observe_admission(&engram, metadata);
         self.engrams.lock().unwrap().push(engram.clone());
 
         Ok(AdmissionDecision::Admit {
@@ -409,7 +462,10 @@ impl AdmissionState {
                     .recall_metadata
                     .get(engram.id)
                     .unwrap_or_default();
-                self.persistence.observe_admission(engram, metadata);
+                self.persistence
+                    .read()
+                    .unwrap()
+                    .observe_admission(engram, metadata);
             }
             AdmissionDecision::Quarantine { engram, .. } => {
                 // Replay-only recording — see method-doc Quarantine note.
@@ -516,6 +572,51 @@ impl AdmissionState {
     }
 
     //=========================================================================
+    // EVAL ISOLATION (checkpoint / restore / persistence mute)
+    //=========================================================================
+    //
+    // Lets a measurement (`cognition/eval`) run the persona's REAL admission
+    // motion without leaving a trace: snapshot here, rewind between A/B arms,
+    // mute persistence so nothing lands in sqlite. See
+    // [[eval-mutates-persona-lift-needs-isolation]].
+
+    /// Snapshot the full in-memory admission state — engram store, recall
+    /// metadata, and both oracles — for a later [`restore`](Self::restore).
+    pub fn checkpoint(&self) -> AdmissionCheckpoint {
+        AdmissionCheckpoint {
+            engrams: self.engrams.lock().unwrap().clone(),
+            recall_metadata: self.recall_metadata.snapshot(),
+            seen_content: self.seen_content.snapshot(),
+            seen_events: self.seen_events.snapshot(),
+        }
+    }
+
+    /// Restore the in-memory admission state to a prior checkpoint, discarding
+    /// every engram / metadata / dedup-record admitted since it was taken.
+    /// Does NOT touch the persistence sink — mute that separately with
+    /// [`swap_persistence`](Self::swap_persistence) so a restore can't race a
+    /// disk write back in.
+    pub fn restore(&self, cp: &AdmissionCheckpoint) {
+        *self.engrams.lock().unwrap() = cp.engrams.clone();
+        self.recall_metadata.restore(cp.recall_metadata.clone());
+        self.seen_content.restore(cp.seen_content.clone());
+        self.seen_events.restore(cp.seen_events.clone());
+    }
+
+    /// Hot-swap the persistence sink, returning the previous one. The
+    /// eval-isolation window swaps in a `NoopSink` (admit still fires; nothing
+    /// reaches the persona's real sqlite) and swaps the real sink back when the
+    /// measurement ends. The lock is taken once per swap (twice per eval), not
+    /// on any hot path.
+    pub fn swap_persistence(
+        &self,
+        sink: Arc<dyn crate::persona::admission_persistence::AdmissionPersistenceSink>,
+    ) -> Arc<dyn crate::persona::admission_persistence::AdmissionPersistenceSink> {
+        let mut guard = self.persistence.write().unwrap();
+        std::mem::replace(&mut *guard, sink)
+    }
+
+    //=========================================================================
     // RECALL SURFACE (continuum#1121 PR-5)
     //=========================================================================
     //
@@ -592,11 +693,11 @@ impl AdmissionState {
         // persistence sink so the disk row keeps pace. NoopSink
         // (default) does nothing; OrmPersistenceSink upserts the
         // engram_recall_metadata row through tokio::spawn.
+        let sink = self.persistence.read().unwrap().clone();
         for (engram, _) in &scored {
             self.recall_metadata.record_recall_hit(engram.id, now_ms);
             if let Some(updated) = self.recall_metadata.get(engram.id) {
-                self.persistence
-                    .observe_metadata_update(engram.id, updated);
+                sink.observe_metadata_update(engram.id, updated);
             }
         }
 
@@ -633,10 +734,11 @@ impl AdmissionState {
     /// on a specific set of engram ids — the memories a caller actually surfaced.
     /// The write half of the [`recall_candidates`] → re-rank → record loop.
     pub fn record_recall_hits(&self, ids: &[Uuid], now_ms: u64) {
+        let sink = self.persistence.read().unwrap().clone();
         for id in ids {
             self.recall_metadata.record_recall_hit(*id, now_ms);
             if let Some(updated) = self.recall_metadata.get(*id) {
-                self.persistence.observe_metadata_update(*id, updated);
+                sink.observe_metadata_update(*id, updated);
             }
         }
     }
@@ -1455,6 +1557,67 @@ mod tests {
             updates.len(),
             2,
             "each recall hit observes a metadata update"
+        );
+    }
+
+    /// What this catches: eval mutating the persona it measures. The
+    /// isolation seam (checkpoint → mute persistence → admit → restore →
+    /// unmute) must (1) let admit fire normally INTO the frozen frame so the
+    /// measured memory motion is identical to a real turn, (2) keep every muted
+    /// admit off the real sink, (3) rewind engram_count AND the dedup oracle on
+    /// restore — proven by re-admitting the same content after restore and
+    /// seeing it ADMIT (not dedup-drop) — and (4) restore the real sink so it
+    /// observes again afterward. Regresses [[eval-mutates-persona-lift-needs-isolation]].
+    #[test]
+    fn eval_isolation_checkpoint_restore_leaves_no_trace() {
+        use crate::persona::admission_persistence::{NoopSink, RecordingSink};
+        let registry = Arc::new(
+            crate::persona::recall_metadata::RecallMetadataRegistry::new(),
+        );
+        let real_sink = Arc::new(RecordingSink::new());
+        let state = AdmissionState::new_with_persistence(
+            Arc::clone(&registry),
+            Arc::clone(&real_sink)
+                as Arc<dyn crate::persona::admission_persistence::AdmissionPersistenceSink>,
+        );
+
+        // Non-trivial content: the admission gate drops short strings as
+        // NotMemorable, so both arms use durable, distinct observations.
+        let content_a = "the durable baseline observation worth keeping in memory";
+        let content_b = "the eval-window observation that must never reach disk";
+
+        // Baseline: one durable engram, observed by the real sink.
+        state.admit(&synthetic_human_message(content_a), None).expect("admit A");
+        assert_eq!(state.engram_count(), 1, "baseline admit lands");
+        assert_eq!(real_sink.admissions_seen().len(), 1, "real sink saw A");
+
+        // ── Begin isolation: checkpoint the frame, mute persistence. ──
+        let checkpoint = state.checkpoint();
+        let saved_real = state.swap_persistence(NoopSink::arc());
+
+        // Admit INSIDE the window: admit fires (count climbs → identical
+        // motion) but the real sink, now swapped out, sees nothing more.
+        state.admit(&synthetic_human_message(content_b), None).expect("admit B");
+        assert_eq!(state.engram_count(), 2, "muted admit still forms memory");
+        assert_eq!(
+            real_sink.admissions_seen().len(),
+            1,
+            "muted window writes NOTHING to the real sink"
+        );
+
+        // ── End isolation: rewind the frame, restore the real sink. ──
+        state.restore(&checkpoint);
+        state.swap_persistence(saved_real);
+        assert_eq!(state.engram_count(), 1, "restore rewinds memory to baseline");
+
+        // The dedup oracle rewound too: content_b is admissible again (had it
+        // NOT rewound, this would dedup-drop and the count would stay 1).
+        state.admit(&synthetic_human_message(content_b), None).expect("re-admit B");
+        assert_eq!(state.engram_count(), 2, "dedup oracle rewound — B re-admits");
+        assert_eq!(
+            real_sink.admissions_seen().len(),
+            2,
+            "real sink restored — observes the post-window admit"
         );
     }
 

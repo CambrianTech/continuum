@@ -371,6 +371,47 @@ pub struct WorkspaceCycle {
     genome: GenomeHandle,
 }
 
+/// RAII guard for a memory-isolated measurement window over a cycle's
+/// hippocampus — see [`WorkspaceCycle::isolate_for_eval`]. Holds the persona's
+/// `AdmissionState`, the frame to rewind to, and the real persistence sink to
+/// restore. All `Option` so a pure-cognition cycle (no hands) yields a benign
+/// no-op guard. Not `Clone` — the restore must happen exactly once, on drop.
+pub struct EvalIsolation {
+    admission: Option<Arc<crate::persona::admission_state::AdmissionState>>,
+    checkpoint: Option<crate::persona::admission_state::AdmissionCheckpoint>,
+    real_sink:
+        Option<Arc<dyn crate::persona::admission_persistence::AdmissionPersistenceSink>>,
+}
+
+impl EvalIsolation {
+    /// Rewind the persona's in-memory admission frame to the checkpoint taken
+    /// when the guard was created — call BETWEEN A/B arms so the base and
+    /// candidate arms start from identical memory (the only difference the lift
+    /// measures is the genome, never accumulated engrams). No-op for a
+    /// pure-cognition cycle.
+    pub fn rewind(&self) {
+        if let (Some(admission), Some(checkpoint)) = (&self.admission, &self.checkpoint) {
+            admission.restore(checkpoint);
+        }
+    }
+}
+
+impl Drop for EvalIsolation {
+    fn drop(&mut self) {
+        let Some(admission) = &self.admission else { return };
+        // Rewind the memory frame, THEN restore the real sink — order matters:
+        // restoring the sink first could let a racing observe land a write the
+        // rewind was meant to erase. With the sink still muted, the rewind is
+        // the last word on what disk will ever see from this window.
+        if let Some(checkpoint) = &self.checkpoint {
+            admission.restore(checkpoint);
+        }
+        if let Some(sink) = self.real_sink.take() {
+            admission.swap_persistence(sink);
+        }
+    }
+}
+
 impl WorkspaceCycle {
     pub fn new(
         faculties: Vec<Arc<dyn Faculty>>,
@@ -412,6 +453,35 @@ impl WorkspaceCycle {
     /// The persona's currently paged-in genome (a snapshot).
     pub fn genome(&self) -> Vec<ActiveAdapterRequest> {
         self.genome.load().as_ref().clone()
+    }
+
+    /// Begin a memory-isolated measurement window over this cycle's hippocampus.
+    ///
+    /// `cognition/eval` drives the persona's REAL admission as it grades her, so
+    /// the act-observations a run admits would otherwise (1) drift her absolute
+    /// score run-to-run, (2) order-bias a paired A/B (the second arm inherits the
+    /// first arm's writes), and (3) pollute her durable sqlite. While the returned
+    /// guard is alive, admission STILL fires — the measured memory motion is
+    /// identical to a real turn, which is what keeps the measurement valid — but
+    /// the persistence sink is muted (nothing reaches disk) and the in-memory
+    /// admission frame is checkpointed. Call [`EvalIsolation::rewind`] between A/B
+    /// arms so both start from identical memory; dropping the guard restores the
+    /// memory and the real sink. A pure-cognition cycle (no hands → nothing is
+    /// admitted) yields a no-op guard. See
+    /// [[eval-mutates-persona-lift-needs-isolation]].
+    pub fn isolate_for_eval(&self) -> EvalIsolation {
+        let Some(acting) = &self.acting else {
+            return EvalIsolation { admission: None, checkpoint: None, real_sink: None };
+        };
+        let admission = acting.admission.clone();
+        let checkpoint = admission.checkpoint();
+        let real_sink = admission
+            .swap_persistence(crate::persona::admission_persistence::NoopSink::arc());
+        EvalIsolation {
+            admission: Some(admission),
+            checkpoint: Some(checkpoint),
+            real_sink: Some(real_sink),
+        }
     }
 
     /// Install a capture sink (recording / on-disk replay / in-flight inspection).

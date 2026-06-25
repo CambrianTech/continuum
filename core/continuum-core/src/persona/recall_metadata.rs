@@ -462,6 +462,28 @@ impl RecallMetadataRegistry {
     pub fn evict(&self, engram_id: Uuid) -> Option<RecallMetadata> {
         self.inner.remove(&engram_id).map(|(_, m)| m)
     }
+
+    /// Snapshot every tracked `(engram_id, metadata)` pair — for an
+    /// eval-isolation checkpoint (`AdmissionState::checkpoint`). `RecallMetadata`
+    /// is `Copy`, so this is a flat clone of the registry's contents.
+    pub fn snapshot(&self) -> Vec<(Uuid, RecallMetadata)> {
+        self.inner
+            .iter()
+            .map(|entry| (*entry.key(), *entry.value()))
+            .collect()
+    }
+
+    /// Replace the registry's contents with a prior [`snapshot`](Self::snapshot)
+    /// — rewinds the recall sidecar to the checkpointed frame, dropping every
+    /// metadata row admitted since. Other subsystems share this registry via
+    /// `Arc`, so they observe the rewind consistently (the whole point of
+    /// rewinding in place rather than swapping the `AdmissionState`).
+    pub fn restore(&self, snapshot: Vec<(Uuid, RecallMetadata)>) {
+        self.inner.clear();
+        for (id, metadata) in snapshot {
+            self.inner.insert(id, metadata);
+        }
+    }
 }
 
 /// Helper for getting the current wallclock as ms since epoch.
