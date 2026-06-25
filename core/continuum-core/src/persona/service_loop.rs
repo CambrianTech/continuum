@@ -728,59 +728,58 @@ async fn serve_persona_loop_inner(
                 // cognition input is the deeper fix — A.6 / the missing context
                 // axis. Today default_room is the correct available context.)
                 // See IDENTITY-SCOPE-PEER-LIVENESS-MODEL.md A.6 step 3.
-                let ws = cycle
-                    .run_in_room(workspace_burst, ctx.identity.default_room)
-                    .await;
+                // ONE settlement step through the SHARED primitive the eval driver
+                // also uses (`act_observe::settle_step`). The live path takes exactly
+                // ONE step per metronome tick — `may_act = true` (it always permits
+                // its one act), and on `Act` it STOPS (no synchronous loop, no act
+                // counter): the metronome re-perceives next tick with the result in
+                // memory, and she settles into a Speak then (or acts again — acting-
+                // forever is a fitness gap to train, never a substrate cap, §4). The
+                // eval driver wraps this SAME step in a grader-paced loop; live and
+                // eval thus make a turn identically (ACTING-ORGANISM.md §3.3).
+                let step = crate::cognition::act_observe::settle_step(
+                    &cycle,
+                    workspace_burst,
+                    ctx.identity.default_room,
+                    true,
+                )
+                .await;
                 phase_timings.respond_ms = respond_started.elapsed().as_millis() as u64;
-                match ws.decision() {
-                    Some(crate::cognition::workspace::Decision::Speak { text })
-                    | Some(crate::cognition::workspace::Decision::RaiseUnprompted { text }) => {
-                        text.clone()
+                match step {
+                    crate::cognition::act_observe::SettleStep::Spoke(text) => text,
+                    crate::cognition::act_observe::SettleStep::Acted { calls, intent } => {
+                        crate::probe!(
+                            class = "persona.turn.acted",
+                            persona = %ctx.identity.agent_name,
+                            lamport = msg.lamport,
+                            calls = calls.len(),
+                            intent = %intent,
+                            "acted; result admitted as memory, re-perceives next tick"
+                        );
+                        outcome.turns_acted += 1;
+                        continue;
                     }
-                    Some(crate::cognition::workspace::Decision::Act { calls, intent }) => {
-                        // The mind reached for its hands. Execute ONCE through the
-                        // act→observe driver (ACTING-ORGANISM.md §3.3): run the calls,
-                        // admit the result as an Episodic engram, and STOP — the live
-                        // path has NO synchronous loop and NO act counter. The
-                        // metronome re-perceives next tick with the result folded into
-                        // memory, and she settles into a Speak then (or acts again —
-                        // acting-forever is a fitness gap to train, never a substrate
-                        // cap, §4). This tick produces no room utterance.
-                        match crate::cognition::act_observe::apply_act(
-                            &cycle,
-                            calls,
-                            intent,
-                            ctx.identity.default_room,
-                        )
-                        .await
-                        {
-                            Some(_observation) => {
-                                crate::probe!(
-                                    class = "persona.turn.acted",
-                                    persona = %ctx.identity.agent_name,
-                                    lamport = msg.lamport,
-                                    calls = calls.len(),
-                                    intent = %intent,
-                                    "acted; result admitted as memory, re-perceives next tick"
-                                );
-                                outcome.turns_acted += 1;
-                                continue;
-                            }
-                            None => {
-                                // No hands or the executor errored. Abstain — never a
-                                // fabricated result, never a raw call envelope to the room.
-                                tracing::warn!(
-                                    lamport = msg.lamport,
-                                    calls = calls.len(),
-                                    intent = %intent,
-                                    "persona chose to act but the act could not be carried out — skipping turn"
-                                );
-                                outcome.turns_skipped += 1;
-                                continue;
-                            }
-                        }
+                    crate::cognition::act_observe::SettleStep::ActUnfulfilled {
+                        calls,
+                        intent,
+                    } => {
+                        // No hands or the executor errored. Abstain — never a
+                        // fabricated result, never a raw call envelope to the room.
+                        tracing::warn!(
+                            lamport = msg.lamport,
+                            calls = calls.len(),
+                            intent = %intent,
+                            "persona chose to act but the act could not be carried out — skipping turn"
+                        );
+                        outcome.turns_skipped += 1;
+                        continue;
                     }
-                    Some(crate::cognition::workspace::Decision::Pass) | None => {
+                    crate::cognition::act_observe::SettleStep::WouldAct { .. } => {
+                        // Unreachable on the live path: `may_act = true` always, so the
+                        // act is executed (→ Acted/ActUnfulfilled), never deferred.
+                        unreachable!("live settle_step always permits its one act");
+                    }
+                    crate::cognition::act_observe::SettleStep::Passed => {
                         tracing::info!(
                             lamport = msg.lamport,
                             "persona chose silence (workspace) — substrate honors decision"
@@ -1060,17 +1059,28 @@ async fn run_self_cycle(
          contribution for the others here. If you are mid-task or have nothing worth \
          their attention, stay silent.]\n{burst}"
     );
-    let ws = cycle.run_in_room(framed, ctx.identity.default_room).await;
-    match ws.decision() {
-        Some(crate::cognition::workspace::Decision::Speak { text })
-        | Some(crate::cognition::workspace::Decision::RaiseUnprompted { text }) => {
+    // ONE settlement step through the SAME shared primitive as the message path and
+    // the eval driver (`act_observe::settle_step`, `may_act = true`): run ONCE, and
+    // on `Act` admit the result as memory + let the next heartbeat re-perceive — no
+    // synchronous loop, no narration of the intermediate step into the room. She
+    // speaks only when she has something worth the others' attention
+    // (ACTING-ORGANISM.md §4).
+    let step = crate::cognition::act_observe::settle_step(
+        &cycle,
+        framed,
+        ctx.identity.default_room,
+        true,
+    )
+    .await;
+    match step {
+        crate::cognition::act_observe::SettleStep::Spoke(text) => {
             // Never broadcast a raw tool-call envelope to the room (same guard the
-            // message path's terminal report has). A decision whose text is just
-            // {"tool_call":…} is an un-acted call, not a contribution — stay silent.
-            if crate::ai::json_in_prompt_tools::parse_tool_call(text).is_some() {
+            // message path has). A decision whose text is just {"tool_call":…} is an
+            // un-acted call, not a contribution — stay silent.
+            if crate::ai::json_in_prompt_tools::parse_tool_call(&text).is_some() {
                 return;
             }
-            if let Err(e) = conversation.say(text).await {
+            if let Err(e) = conversation.say(&text).await {
                 tracing::warn!(persona = %ctx.identity.agent_name, error = %e, "self-cycle say failed");
                 return;
             }
@@ -1081,31 +1091,18 @@ async fn run_self_cycle(
                 "never-stop heartbeat — persona pursued its own thread (no inbound message)"
             );
         }
-        Some(crate::cognition::workspace::Decision::Act { calls, intent }) => {
-            // On her OWN thread she reached for her hands (build→run→test a project
-            // no one asked about). Same act→observe motion as the message path: run
-            // ONCE, admit the result as memory, and let the next heartbeat
-            // re-perceive — no synchronous loop, no narration of the intermediate
-            // step into the room. She speaks only when she has something worth the
-            // others' attention (ACTING-ORGANISM.md §4).
-            if let Some(_observation) = crate::cognition::act_observe::apply_act(
-                &cycle,
-                calls,
-                intent,
-                ctx.identity.default_room,
-            )
-            .await
-            {
-                crate::probe!(
-                    class = "persona.selftick.acted",
-                    persona = %ctx.identity.agent_name,
-                    tools = calls.len(),
-                    intent = %intent,
-                    "self-thread act; result admitted as memory, re-perceives next tick"
-                );
-            }
+        crate::cognition::act_observe::SettleStep::Acted { calls, intent } => {
+            crate::probe!(
+                class = "persona.selftick.acted",
+                persona = %ctx.identity.agent_name,
+                tools = calls.len(),
+                intent = %intent,
+                "self-thread act; result admitted as memory, re-perceives next tick"
+            );
         }
-        _ => {} // Pass / None → nothing to do, sleep
+        // ActUnfulfilled (no hands / exec error) → nothing to say, sleep. WouldAct is
+        // unreachable (live always permits its one act). Passed → sleep.
+        _ => {}
     }
 }
 

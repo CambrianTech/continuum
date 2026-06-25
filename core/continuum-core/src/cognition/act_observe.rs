@@ -209,48 +209,13 @@ pub async fn drive_to_settle(
     let mut acts = 0usize;
 
     loop {
-        let ws = cycle.run_in_room(world.clone(), room_id).await;
-        match ws.decision().cloned() {
-            Some(Decision::Act { calls, intent }) => {
-                if acts >= max_acts {
-                    // Budget spent — return the un-driven Act. She did not settle in
-                    // the observer's window; grading that as unfinished is honest.
-                    return SettleOutcome {
-                        decision: Decision::Act { calls, intent },
-                        spoken: None,
-                        acts,
-                        world_state: world,
-                    };
-                }
-                match apply_act(cycle, &calls, &intent, room_id).await {
-                    Some(_observation) => {
-                        acts += 1;
-                        // The observation re-enters perception through MEMORY ONLY —
-                        // `apply_act` admitted it as an Episodic engram, and the next
-                        // `run_in_room` below re-perceives with the persona's RecallFaculty
-                        // surfacing it from memory. This is BYTE-FOR-BYTE how the live
-                        // heartbeat path works (service_loop.rs:740 — apply_act once, then
-                        // the metronome re-perceives next tick; the burst string is NOT
-                        // mutated with a `[you just acted]` scaffold). `world` is therefore
-                        // held CONSTANT across iterations: memory is the only thing that
-                        // changes, exactly as in life. Folding the result into `world` was
-                        // an eval-only second channel the live persona never has — it made
-                        // the measurement diverge from reality (and leaked the scaffold
-                        // back as her answer). See [[workspacecycle-settlement-no-terminal-report-turn]].
-                    }
-                    None => {
-                        // Could not execute (no hands / exec error). Don't spin — return
-                        // the Act unsettled rather than fabricate a result.
-                        return SettleOutcome {
-                            decision: Decision::Act { calls, intent },
-                            spoken: None,
-                            acts,
-                            world_state: world,
-                        };
-                    }
-                }
-            }
-            Some(Decision::Speak { text }) | Some(Decision::RaiseUnprompted { text }) => {
+        // ONE settlement step through the SHARED primitive the live heartbeat uses
+        // (`settle_step`). The only thing this driver adds is the LOOP — because the
+        // eval room has no metronome, the grader re-perceives by calling step again.
+        // `may_act = acts < max_acts` gates ACTING (not speaking): past the budget
+        // she may still settle into a Speak, but a fresh Act is returned un-driven.
+        match settle_step(cycle, world.clone(), room_id, acts < max_acts).await {
+            SettleStep::Spoke(text) => {
                 return SettleOutcome {
                     spoken: Some(text.clone()),
                     decision: Decision::Speak { text },
@@ -258,7 +223,31 @@ pub async fn drive_to_settle(
                     world_state: world,
                 };
             }
-            Some(Decision::Pass) | None => {
+            SettleStep::Acted { .. } => {
+                acts += 1;
+                // The observation re-enters perception through MEMORY + the volatile
+                // working-memory recency channel — `apply_act` admitted it and
+                // recorded a stamped proprioception trace, and the next `settle_step`
+                // re-perceives. This is BYTE-FOR-BYTE the live heartbeat motion
+                // (service_loop apply via the SAME `settle_step`, then the metronome
+                // re-perceives next tick). `world` is held CONSTANT across iterations:
+                // memory is the only thing that changes, exactly as in life — no
+                // eval-only `[you just acted]` fold. See
+                // [[act-results-need-a-recency-channel-not-semantic-recall]].
+            }
+            // Budget spent on a fresh Act, OR the act could not be carried out (no
+            // hands / exec error). Either way she did not settle in the observer's
+            // window — return the un-driven Act so the grader scores it as unfinished,
+            // never a fabricated answer.
+            SettleStep::WouldAct { calls, intent } | SettleStep::ActUnfulfilled { calls, intent } => {
+                return SettleOutcome {
+                    decision: Decision::Act { calls, intent },
+                    spoken: None,
+                    acts,
+                    world_state: world,
+                };
+            }
+            SettleStep::Passed => {
                 return SettleOutcome {
                     decision: Decision::Pass,
                     spoken: None,
@@ -267,6 +256,65 @@ pub async fn drive_to_settle(
                 };
             }
         }
+    }
+}
+
+/// The outcome of ONE settlement [`settle_step`].
+#[derive(Debug)]
+pub enum SettleStep {
+    /// She settled on speech (`Speak`/`RaiseUnprompted`) — the prose turn an
+    /// observer (a peer, or the grader) reads.
+    Spoke(String),
+    /// She reached for her hands AND the act was carried out; the result is admitted
+    /// as memory + a stamped proprioception trace. The caller re-perceives next
+    /// (live: next metronome tick; eval: next loop step). The calls+intent ride
+    /// along so a caller that paces acting (the eval budget) can report the final
+    /// Act if its budget runs out on the following step.
+    Acted { calls: Vec<ToolCall>, intent: String },
+    /// She decided to act but the caller's budget said no this step (`may_act =
+    /// false`) — the act was NOT executed. Only the eval driver passes `may_act =
+    /// false`; the live heartbeat always permits its one act, so it never sees this.
+    WouldAct { calls: Vec<ToolCall>, intent: String },
+    /// She chose silence (`Pass`) — honored as a turn that produces no utterance.
+    Passed,
+    /// She reached for an act that could NOT be carried out (no hands / executor
+    /// error). No utterance; the intent rides along for honest logging/grading.
+    ActUnfulfilled { calls: Vec<ToolCall>, intent: String },
+}
+
+/// ONE step of settlement — the single place a `Decision` becomes speech-or-action,
+/// shared by the live heartbeat (`persona::service_loop`, called ONCE per metronome
+/// tick) and the eval driver ([`drive_to_settle`], which loops steps because the
+/// grader replaces the metronome). Live and eval therefore make a turn the
+/// IDENTICAL way — run the cycle over `world`, read the `Decision`, and on `Act`
+/// run it once + admit the result as memory. The ONLY difference between the two is
+/// pacing (metronome vs synchronous loop), never the per-step motion.
+///
+/// `may_act` lets the caller pace ACTING without changing the motion: `true` (live,
+/// always) runs the act; `false` (eval, past its act budget) returns [`SettleStep::
+/// WouldAct`] without executing, so the budget gates acting while still letting a
+/// later step settle into a Speak.
+pub async fn settle_step(
+    cycle: &WorkspaceCycle,
+    world: String,
+    room_id: Uuid,
+    may_act: bool,
+) -> SettleStep {
+    let ws = cycle.run_in_room(world, room_id).await;
+    match ws.decision().cloned() {
+        Some(Decision::Act { calls, intent }) => {
+            if !may_act {
+                return SettleStep::WouldAct { calls, intent };
+            }
+            match apply_act(cycle, &calls, &intent, room_id).await {
+                Some(_observation) => SettleStep::Acted { calls, intent },
+                None => SettleStep::ActUnfulfilled { calls, intent },
+            }
+        }
+        Some(Decision::Speak { text }) | Some(Decision::RaiseUnprompted { text }) => {
+            SettleStep::Spoke(text)
+        }
+        Some(Decision::Pass) | None => SettleStep::Passed,
     }
 }
 
@@ -634,6 +682,40 @@ mod tests {
         assert!(
             matches!(outcome.decision, Decision::Act { .. }),
             "returns the un-driven Act as honest 'did not finish'"
+        );
+    }
+
+    // what this catches: the shared step's acting gate. `may_act = false` (how the
+    // eval driver paces ACTING past its budget) must return the decided Act WITHOUT
+    // executing it — the executor is never touched — so a deferred act can't run a
+    // tool the budget already forbade. `may_act = true` (the live path, always) runs
+    // it. This is the single seam that keeps live (one permitted act per tick) and
+    // eval (budget-gated acting) on the IDENTICAL per-step motion.
+    #[tokio::test]
+    async fn settle_step_defers_the_act_without_executing_when_may_act_is_false() {
+        let exec = Arc::new(RecordingExecutor {
+            seen_context: Mutex::new(None),
+            result_content: "...".into(),
+        });
+        let adm = admission();
+        let cycle = WorkspaceCycle::new(vec![Arc::new(AlwaysAct)], Arc::new(SalienceArbiter), 8)
+            .with_acting(body(exec.clone(), adm.clone()));
+
+        let deferred = settle_step(&cycle, "go".into(), Uuid::new_v4(), false).await;
+        assert!(
+            matches!(deferred, SettleStep::WouldAct { .. }),
+            "may_act=false defers the act"
+        );
+        assert!(
+            exec.seen_context.lock().unwrap().is_none(),
+            "a deferred act NEVER touches the executor"
+        );
+
+        let ran = settle_step(&cycle, "go".into(), Uuid::new_v4(), true).await;
+        assert!(matches!(ran, SettleStep::Acted { .. }), "may_act=true runs it");
+        assert!(
+            exec.seen_context.lock().unwrap().is_some(),
+            "a permitted act DOES reach the executor"
         );
     }
 
