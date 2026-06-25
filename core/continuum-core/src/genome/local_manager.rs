@@ -186,6 +186,14 @@ impl WorkingSetManager for LocalWorkingSetManager {
             }
         }
 
+        // Start the servicing clock AFTER the resident hot-path so a
+        // working-set hit pays nothing for timing it didn't need. From
+        // here down is genuine page-in work (tier walk + transfer +
+        // eviction-if-any) — exactly what `PageFault.elapsed_us` is
+        // meant to report. `Instant` per working_set.rs's "sub-ms
+        // hot-path timing stays in caller-side Instants" doctrine.
+        let started = std::time::Instant::now();
+
         // Walk tier chain top-down. First hit wins. Promote (record
         // residency) into the working set's Fast tier; the caller's
         // composition decides whether to pin.
@@ -219,7 +227,7 @@ impl WorkingSetManager for LocalWorkingSetManager {
                     from_role: Some(from_role),
                     to_role,
                     persona,
-                    elapsed_us: 0,
+                    elapsed_us: started.elapsed().as_micros() as u64,
                     eviction_cost: None,
                 };
                 if let Some(hook) = &self.bus_hook {
@@ -239,7 +247,7 @@ impl WorkingSetManager for LocalWorkingSetManager {
                 .map(|t| t.role())
                 .unwrap_or(TierRole::Fast),
             persona,
-            elapsed_us: 0,
+            elapsed_us: started.elapsed().as_micros() as u64,
             eviction_cost: None,
         };
         if let Some(hook) = &self.bus_hook {
@@ -415,15 +423,31 @@ mod tests {
         /// Call log so tests can assert order of tier access.
         reads: Mutex<Vec<PageRef>>,
         observes: Mutex<Vec<PageRef>>,
+        /// Artificial read latency. Zero for the fast in-memory stubs;
+        /// non-zero to model a slow lower tier (Cold SSD / Frozen) so a
+        /// test can assert `PageFault.elapsed_us` reflects real
+        /// servicing cost rather than a sub-microsecond stub hit.
+        read_delay: std::time::Duration,
     }
 
     impl StubTier {
         fn new(role: TierRole, pages_present: Vec<PageRef>) -> Arc<Self> {
+            Self::with_delay(role, pages_present, std::time::Duration::ZERO)
+        }
+
+        /// Stub tier that sleeps `read_delay` on every `read` — models a
+        /// slow tier so page-in timing is measurable + non-flaky.
+        fn with_delay(
+            role: TierRole,
+            pages_present: Vec<PageRef>,
+            read_delay: std::time::Duration,
+        ) -> Arc<Self> {
             Arc::new(Self {
                 role,
                 pages_present: Mutex::new(pages_present),
                 reads: Mutex::new(Vec::new()),
                 observes: Mutex::new(Vec::new()),
+                read_delay,
             })
         }
     }
@@ -435,6 +459,9 @@ mod tests {
         }
 
         async fn read(&self, page: PageRef) -> Result<PageHandle, TierError> {
+            if !self.read_delay.is_zero() {
+                tokio::time::sleep(self.read_delay).await;
+            }
             self.reads.lock().push(page);
             if self.pages_present.lock().contains(&page) {
                 Ok(PageHandle {
@@ -1027,5 +1054,202 @@ mod tests {
         // is THE signal).
         let result = mgr.audit_access(persona, page);
         assert!(result.is_ok());
+    }
+
+    // ─── Measured page-in cost (the genome-overlay multiplicity proof) ───
+    //
+    // These tests pin the measurement that turns the page-fault system
+    // from typed-but-blind into measured: `PageFault.elapsed_us` is now
+    // the real servicing cost, not the `0` it shipped with. That number
+    // is what proves "persona N = a cheap LoRA page-in, not a model
+    // load" — see [[persona-is-a-genome-overlay-not-an-instance]].
+
+    /// What this catches: a LoRA-overlay page-in records REAL servicing
+    /// time in `PageFault.elapsed_us` — not the hardcoded `0` it shipped
+    /// with. A slow lower tier (3ms read) must surface as elapsed_us in
+    /// the millisecond range. This is the measurement the genome-overlay
+    /// thesis stands on; sentinel/governor compare overlay page-in cost
+    /// across personas from this field on the bus.
+    /// regression for: elapsed_us:0 stub at the page_in fault arms.
+    #[tokio::test]
+    async fn page_in_fault_records_real_elapsed_us() {
+        let page = make_page(90);
+        // Model a slow cold tier so servicing is measurable + non-flaky.
+        // tokio::time::sleep is a floor — jitter only lengthens it.
+        let cold = StubTier::with_delay(
+            TierRole::Cold,
+            vec![page],
+            std::time::Duration::from_millis(3),
+        );
+        let fast = StubTier::new(TierRole::Fast, vec![]);
+        let mgr = LocalWorkingSetManager::new(vec![fast, cold]);
+        let persona = make_persona(91);
+        mgr.register_persona(persona, capacity_uma());
+
+        let fault = mgr.page_in(persona, page).await.unwrap_err();
+        assert_eq!(fault.from_role, Some(TierRole::Cold));
+        assert!(
+            fault.elapsed_us >= 1000,
+            "page-in servicing time must be measured (>=1ms for a 3ms tier read), got {}us",
+            fault.elapsed_us
+        );
+    }
+
+    /// What this catches: even a true cold miss (page in NO tier) records
+    /// the time it spent walking the whole tier chain — the cold-miss arm
+    /// isn't still hardcoded to 0. Two 2ms tiers searched → the elapsed
+    /// covers both reads.
+    #[tokio::test]
+    async fn page_in_cold_miss_records_elapsed_for_full_walk() {
+        let page = make_page(92);
+        let fast = StubTier::with_delay(
+            TierRole::Fast,
+            vec![],
+            std::time::Duration::from_millis(2),
+        );
+        let cold = StubTier::with_delay(
+            TierRole::Cold,
+            vec![],
+            std::time::Duration::from_millis(2),
+        );
+        let mgr = LocalWorkingSetManager::new(vec![fast, cold]);
+        let persona = make_persona(93);
+        mgr.register_persona(persona, capacity_uma());
+
+        let fault = mgr.page_in(persona, page).await.unwrap_err();
+        assert_eq!(fault.from_role, None);
+        assert!(
+            fault.elapsed_us >= 2000,
+            "cold-miss must time the full tier walk (two 2ms tiers), got {}us",
+            fault.elapsed_us
+        );
+    }
+
+    /// What this catches: THE genome-overlay-as-multiplicity thesis. Two
+    /// personas share ONE manager (one base model); each pages in her OWN
+    /// LoRA overlay from the cold tier. Each gets a measured page-in
+    /// fault, and each working set holds ONLY her own overlay — overlays
+    /// don't leak across personas. "Multiple personas" = multiple LoRA
+    /// overlays multiplexed through one pager, O(page-in) each.
+    #[tokio::test]
+    async fn two_personas_page_in_own_overlays_through_one_manager() {
+        let overlay_a = make_page(100); // Asha's LoRA overlay
+        let overlay_b = make_page(101); // second persona's overlay
+        let fast = StubTier::new(TierRole::Fast, vec![]);
+        let cold = StubTier::with_delay(
+            TierRole::Cold,
+            vec![overlay_a, overlay_b],
+            std::time::Duration::from_millis(2),
+        );
+        let mgr = LocalWorkingSetManager::new(vec![fast, cold]);
+
+        let asha = make_persona(100);
+        let nova = make_persona(101);
+        mgr.register_persona(asha, capacity_uma());
+        mgr.register_persona(nova, capacity_uma());
+
+        // Each persona pages in her own overlay through the shared base.
+        let fault_a = mgr.page_in(asha, overlay_a).await.unwrap_err();
+        let fault_b = mgr.page_in(nova, overlay_b).await.unwrap_err();
+        assert!(fault_a.elapsed_us >= 1000 && fault_a.persona == asha);
+        assert!(fault_b.elapsed_us >= 1000 && fault_b.persona == nova);
+
+        // Isolation: each working set holds ONLY its own overlay.
+        let asha_ws = mgr.working_set_snapshot(asha).unwrap();
+        let nova_ws = mgr.working_set_snapshot(nova).unwrap();
+        let key_a = serde_json::to_string(&overlay_a).unwrap();
+        let key_b = serde_json::to_string(&overlay_b).unwrap();
+        assert!(
+            asha_ws.pages.contains_key(&key_a) && !asha_ws.pages.contains_key(&key_b),
+            "Asha's working set holds only her overlay"
+        );
+        assert!(
+            nova_ws.pages.contains_key(&key_b) && !nova_ws.pages.contains_key(&key_a),
+            "Nova's working set holds only her overlay"
+        );
+
+        // Resident-hit is the hot path: re-paging an already-resident
+        // overlay is a cached Ok with NO fault — the page-in cost is
+        // paid once, then it's free. This is why overlay multiplexing
+        // scales: O(page-in) once, O(1) thereafter.
+        let hit = mgr.page_in(asha, overlay_a).await;
+        assert!(hit.is_ok(), "resident overlay re-page is a hot hit, no fault");
+    }
+
+    // ─── Benchmark: science the multiplicity proof ──────────────────────
+    //
+    // Gated behind `stress-tests` per the test doctrine — default
+    // `cargo test` skips it; run it on demand to SEE the numbers:
+    //
+    //   CARGO_TARGET_DIR="$HOME/.continuum/cache/cargo-target" \
+    //   cargo test -p continuum-core --features stress-tests \
+    //     genome::local_manager::tests::stress -- --nocapture
+    //
+    // The headline it benchmarks: per-persona overlay page-in cost stays
+    // FLAT as persona count grows — "add persona N" is O(page-in), the
+    // claim [[persona-is-a-genome-overlay-not-an-instance]] rests on.
+    #[cfg(feature = "stress-tests")]
+    mod stress {
+        use super::*;
+
+        fn percentile(sorted: &[u64], p: f64) -> u64 {
+            if sorted.is_empty() {
+                return 0;
+            }
+            let idx = (((sorted.len() - 1) as f64) * p).round() as usize;
+            sorted[idx]
+        }
+
+        /// What this catches: regression in per-persona page-in scaling.
+        /// Sweeps persona counts through ONE manager (one base model);
+        /// each persona pages in a DISTINCT LoRA overlay resident on a
+        /// zero-delay cold tier (we measure pager overhead, not disk).
+        /// Prints total wall, per-persona mean, p95 servicing-us, and the
+        /// resident-hit cost. Flat per-persona cost across counts ⇒ the
+        /// genome-overlay-as-multiplicity thesis holds by measurement.
+        #[tokio::test]
+        async fn bench_overlay_page_in_scales_per_persona() {
+            eprintln!("\n=== genome overlay multiplicity bench (one base, N overlays) ===");
+            eprintln!(
+                "{:>8} | {:>10} | {:>9} | {:>9} | {:>12}",
+                "personas", "wall_us", "per_us", "p95_us", "resident_ns"
+            );
+            for &count in &[1usize, 8, 32, 64, 128, 256] {
+                let overlays: Vec<_> =
+                    (0..count).map(|i| make_page(1_000 + i as u128)).collect();
+                let cold = StubTier::new(TierRole::Cold, overlays.clone());
+                let fast = StubTier::new(TierRole::Fast, vec![]);
+                let mgr = LocalWorkingSetManager::new(vec![fast, cold]);
+                let personas: Vec<_> =
+                    (0..count).map(|i| make_persona(1_000 + i as u128)).collect();
+                for &p in &personas {
+                    mgr.register_persona(p, capacity_uma());
+                }
+
+                let mut serviced = Vec::with_capacity(count);
+                let wall = std::time::Instant::now();
+                for i in 0..count {
+                    let fault = mgr.page_in(personas[i], overlays[i]).await.unwrap_err();
+                    serviced.push(fault.elapsed_us);
+                }
+                let wall_us = wall.elapsed().as_micros() as u64;
+                serviced.sort_unstable();
+                let per_us = wall_us / count as u64;
+                let p95 = percentile(&serviced, 0.95);
+
+                // Resident-hit: re-page persona 0's now-hot overlay.
+                let hot = std::time::Instant::now();
+                let _ = mgr.page_in(personas[0], overlays[0]).await;
+                let resident_ns = hot.elapsed().as_nanos() as u64;
+
+                eprintln!(
+                    "{:>8} | {:>10} | {:>9} | {:>9} | {:>12}",
+                    count, wall_us, per_us, p95, resident_ns
+                );
+            }
+            eprintln!(
+                "=== flat per_us across counts ⇒ overlay multiplicity is O(page-in)/persona ===\n"
+            );
+        }
     }
 }
