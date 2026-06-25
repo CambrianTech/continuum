@@ -13,7 +13,7 @@ use crate::orm::{
     postgres::PostgresAdapter,
     query::{FieldFilter, SortDirection, SortSpec, StorageQuery},
     sqlite::SqliteAdapter,
-    types::{BatchOperation, DataRecord, RecordMetadata, UUID},
+    types::{BatchOperation, DataRecord, RecordMetadata, StorageResult, UUID},
 };
 use crate::runtime::{
     CommandRequest, CommandResponse, CommandResult, HandleRef, ModuleConfig, ModuleContext,
@@ -467,43 +467,9 @@ impl ServiceModule for DataModule {
     }
 }
 
-// Command param structs - ALL require dbPath
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct CreateParams {
-    db_path: String,
-    collection: String,
-    id: Option<UUID>,
-    data: Value,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ReadParams {
-    db_path: String,
-    collection: String,
-    id: UUID,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct UpdateParams {
-    db_path: String,
-    collection: String,
-    id: UUID,
-    data: Value,
-    #[serde(default)]
-    increment_version: bool,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct DeleteParams {
-    db_path: String,
-    collection: String,
-    id: UUID,
-}
+// Command param structs for the remaining legacy arms (still dbPath-shaped).
+// The migrated CRUD commands (data/create|read|update|delete) carry their own
+// clean `handle`-based params in `commands/data/*.rs`.
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -794,22 +760,10 @@ impl DataState {
             params
         );
         match command {
-            "data/create" => {
-                self.handle_create(deserialize_params!(command, params)?)
-                    .await
-            }
-            "data/read" => {
-                self.handle_read(deserialize_params!(command, params)?)
-                    .await
-            }
-            "data/update" => {
-                self.handle_update(deserialize_params!(command, params)?)
-                    .await
-            }
-            "data/delete" => {
-                self.handle_delete(deserialize_params!(command, params)?)
-                    .await
-            }
+            // data/create, data/read, data/update, data/delete are now typed,
+            // self-routing commands (`commands/data/{create,read,update,delete}.rs`)
+            // driving `DataState::{create,read,update,delete}_record`. The typed
+            // object map wins over this match, so their legacy arms are gone.
             // `data/list` is now the typed, persona-facing command
             // (`commands/data/list.rs`) — routed via the typed object map, which
             // wins over this legacy arm. `data/query` keeps the explicit-`db_path`
@@ -880,107 +834,102 @@ impl DataState {
     /// Phase 1 typed-IPC scaffold: takes already-deserialized `CreateParams`.
     /// Dispatch (handle_command) does the parse; handler body is pure logic.
     /// Follow this shape for QW#3's other hot-handler conversions.
-    async fn handle_create(&self, params: CreateParams) -> Result<CommandResult, String> {
-        use std::time::Instant;
-        let start = Instant::now();
+    /// Create a record (single source for the typed `data/create` command).
+    /// `handle` names the storage; the persona-facing command defaults it to
+    /// "main". A missing `id` is minted. Publishes `<collection>:created` on
+    /// success. The body is unchanged from the legacy `handle_create` arm.
+    pub(crate) async fn create_record(
+        &self,
+        handle: &str,
+        collection: String,
+        id: Option<UUID>,
+        data: Value,
+    ) -> Result<StorageResult<DataRecord>, String> {
+        let start = std::time::Instant::now();
 
-        let id = params
-            .id
-            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-        let collection = params.collection.clone();
-
+        let id = id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
         let record = DataRecord {
             id: id.clone(),
-            collection: params.collection,
-            data: params.data,
+            collection: collection.clone(),
+            data,
             metadata: RecordMetadata::default(),
         };
 
-        let adapter = self.get_adapter(&params.db_path).await?;
+        let adapter = self.get_adapter(handle).await?;
         let result = adapter.create(record).await;
-        let total_ms = start.elapsed().as_millis();
+        self.log_slow_query("create", &collection, start.elapsed().as_millis());
 
-        // Log slow creates to module log file
-        self.log_slow_query("create", &collection, total_ms);
-
-        // Publish event on success
         if result.success {
             self.publish_event(
                 &collection,
                 "created",
-                json!({
-                    "id": id,
-                    "collection": collection
-                }),
+                json!({ "id": id, "collection": collection }),
             );
         }
 
-        CommandResult::json(&result)
+        Ok(result)
     }
 
-    async fn handle_read(&self, params: ReadParams) -> Result<CommandResult, String> {
-        use std::time::Instant;
-        let start = Instant::now();
-
-        let adapter = self.get_adapter(&params.db_path).await?;
-        let result = adapter.read(&params.collection, &params.id).await;
-        let total_ms = start.elapsed().as_millis();
-
-        // Log slow reads to module log file
-        self.log_slow_query("read", &params.collection, total_ms);
-
-        CommandResult::json(&result)
+    /// Read a record by id (single source for the typed `data/read` command).
+    pub(crate) async fn read_record(
+        &self,
+        handle: &str,
+        collection: &str,
+        id: &UUID,
+    ) -> Result<StorageResult<DataRecord>, String> {
+        let start = std::time::Instant::now();
+        let adapter = self.get_adapter(handle).await?;
+        let result = adapter.read(collection, id).await;
+        self.log_slow_query("read", collection, start.elapsed().as_millis());
+        Ok(result)
     }
 
-    async fn handle_update(&self, params: UpdateParams) -> Result<CommandResult, String> {
-        let collection = params.collection.clone();
-        let id = params.id.clone();
-
-        let adapter = self.get_adapter(&params.db_path).await?;
+    /// Update a record by id (single source for the typed `data/update` command).
+    /// Publishes `<collection>:updated` on success.
+    pub(crate) async fn update_record(
+        &self,
+        handle: &str,
+        collection: String,
+        id: UUID,
+        data: Value,
+        increment_version: bool,
+    ) -> Result<StorageResult<DataRecord>, String> {
+        let adapter = self.get_adapter(handle).await?;
         let result = adapter
-            .update(
-                &params.collection,
-                &params.id,
-                params.data,
-                params.increment_version,
-            )
+            .update(&collection, &id, data, increment_version)
             .await;
 
-        // Publish event on success
         if result.success {
             self.publish_event(
                 &collection,
                 "updated",
-                json!({
-                    "id": id,
-                    "collection": collection
-                }),
+                json!({ "id": id, "collection": collection }),
             );
         }
 
-        CommandResult::json(&result)
+        Ok(result)
     }
 
-    async fn handle_delete(&self, params: DeleteParams) -> Result<CommandResult, String> {
-        let collection = params.collection.clone();
-        let id = params.id.clone();
+    /// Delete a record by id (single source for the typed `data/delete` command).
+    /// Publishes `<collection>:deleted` on success.
+    pub(crate) async fn delete_record(
+        &self,
+        handle: &str,
+        collection: String,
+        id: UUID,
+    ) -> Result<StorageResult<bool>, String> {
+        let adapter = self.get_adapter(handle).await?;
+        let result = adapter.delete(&collection, &id).await;
 
-        let adapter = self.get_adapter(&params.db_path).await?;
-        let result = adapter.delete(&params.collection, &params.id).await;
-
-        // Publish event on success
         if result.success {
             self.publish_event(
                 &collection,
                 "deleted",
-                json!({
-                    "id": id,
-                    "collection": collection
-                }),
+                json!({ "id": id, "collection": collection }),
             );
         }
 
-        CommandResult::json(&result)
+        Ok(result)
     }
 
     async fn handle_query(&self, params: QueryParams) -> Result<CommandResult, String> {
@@ -2427,23 +2376,72 @@ mod tests {
         (dir, path)
     }
 
-    #[tokio::test]
-    async fn test_data_module_requires_db_path() {
-        let module = DataModule::new();
-
-        // Should fail without dbPath
+    /// Test seam: drive [`DataState::create_record`] through the SAME params
+    /// deserialization the typed `data/create` command uses, returning the JSON
+    /// envelope the legacy arm produced so the storage-layer tests below keep
+    /// asserting one shape. (The command-object wiring itself is covered by
+    /// `commands/data/mod.rs`'s tests; this exercises the data path.)
+    async fn create_via_state(
+        module: &DataModule,
+        params: serde_json::Value,
+    ) -> Result<CommandResult, String> {
+        let p: crate::commands::data::create::DataCreateParams =
+            serde_json::from_value(params).map_err(|e| e.to_string())?;
+        let handle = p.handle.as_deref().unwrap_or("main");
         let result = module
-            .handle_command(
-                "data/create",
-                json!({
-                    "collection": "test_users",
-                    "data": { "name": "Alice" }
-                }),
-            )
-            .await;
+            .state
+            .create_record(handle, p.collection, p.id, p.data)
+            .await?;
+        Ok(CommandResult::Json(
+            serde_json::to_value(result).map_err(|e| e.to_string())?,
+        ))
+    }
 
-        assert!(result.is_err());
-        assert!(result.unwrap_err().contains("dbPath"));
+    /// Test seam: the read counterpart of [`create_via_state`].
+    async fn read_via_state(
+        module: &DataModule,
+        params: serde_json::Value,
+    ) -> Result<CommandResult, String> {
+        let p: crate::commands::data::read::DataReadParams =
+            serde_json::from_value(params).map_err(|e| e.to_string())?;
+        let handle = p.handle.as_deref().unwrap_or("main");
+        let result = module
+            .state
+            .read_record(handle, &p.collection, &p.id)
+            .await?;
+        Ok(CommandResult::Json(
+            serde_json::to_value(result).map_err(|e| e.to_string())?,
+        ))
+    }
+
+    #[test]
+    fn data_create_params_drop_the_db_path_leak_but_alias_legacy_callers() {
+        // what this catches: the persona-facing `data/create` contract dropped the
+        // required `dbPath` leak — `handle` is optional and resolves to "main"
+        // downstream — while legacy callers passing `dbPath` keep working through
+        // the serde alias. If the alias or the optionality regresses, either the
+        // persona surface re-grows a storage-handle leak or chat/sentinel/self_task
+        // (which still send `dbPath`) silently start writing to the wrong store.
+        let clean: crate::commands::data::create::DataCreateParams =
+            serde_json::from_value(json!({
+                "collection": "test_users",
+                "data": { "name": "Alice" }
+            }))
+            .expect("clean params deserialize");
+        assert!(clean.handle.is_none(), "omitted handle stays None (→ main)");
+
+        let legacy: crate::commands::data::create::DataCreateParams =
+            serde_json::from_value(json!({
+                "dbPath": "some/store.db",
+                "collection": "test_users",
+                "data": { "name": "Alice" }
+            }))
+            .expect("legacy dbPath params deserialize");
+        assert_eq!(
+            legacy.handle.as_deref(),
+            Some("some/store.db"),
+            "legacy dbPath aliases onto handle"
+        );
     }
 
     #[tokio::test]
@@ -2473,9 +2471,8 @@ mod tests {
         let _ = adapter.ensure_schema(schema).await;
 
         // Create with dbPath
-        let create_result = module
-            .handle_command(
-                "data/create",
+        let create_result = create_via_state(
+                &module,
                 json!({
                     "dbPath": &db_path,
                     "collection": "test_users",
@@ -2495,9 +2492,8 @@ mod tests {
             let id = result["data"]["id"].as_str().unwrap();
 
             // Read with dbPath
-            let read_result = module
-                .handle_command(
-                    "data/read",
+            let read_result = read_via_state(
+                    &module,
                     json!({
                         "dbPath": &db_path,
                         "collection": "test_users",
@@ -2552,9 +2548,8 @@ mod tests {
         let _ = adapter.ensure_schema(schema).await;
 
         // Create a record
-        let create_result = module
-            .handle_command(
-                "data/create",
+        let create_result = create_via_state(
+                &module,
                 json!({
                     "dbPath": &db_path,
                     "collection": "test_vectors",
@@ -2659,9 +2654,8 @@ mod tests {
         ];
 
         for (idx, emb) in embeddings.iter().enumerate() {
-            let _ = module
-                .handle_command(
-                    "data/create",
+            let _ = create_via_state(
+                    &module,
                     json!({
                         "dbPath": &db_path,
                         "collection": "test_search",
@@ -2731,9 +2725,8 @@ mod tests {
         let _ = adapter.ensure_schema(schema).await;
 
         // Create a record with embedding
-        let _ = module
-            .handle_command(
-                "data/create",
+        let _ = create_via_state(
+                &module,
                 json!({
                     "dbPath": &db_path,
                     "collection": "test_cache",
@@ -2834,9 +2827,8 @@ mod tests {
 
         // Create 25 records
         for i in 0..25 {
-            let _ = module
-                .handle_command(
-                    "data/create",
+            let _ = create_via_state(
+                    &module,
                     json!({
                         "dbPath": db_path,
                         "collection": "test_paginated",
@@ -2954,9 +2946,8 @@ mod tests {
         let _ = adapter.ensure_schema(schema).await;
 
         for i in 0..7 {
-            let _ = module
-                .handle_command(
-                    "data/create",
+            let _ = create_via_state(
+                    &module,
                     json!({
                         "dbPath": db_path,
                         "collection": "test_count_exact",
@@ -3031,9 +3022,8 @@ mod tests {
 
         // Create records without embeddings
         for i in 0..5 {
-            let _ = module
-                .handle_command(
-                    "data/create",
+            let _ = create_via_state(
+                    &module,
                     json!({
                         "dbPath": &db_path,
                         "collection": "test_backfill",
@@ -3167,9 +3157,8 @@ mod tests {
         let _ = adapter.ensure_schema(schema).await;
 
         for i in 0..rows {
-            let _ = module
-                .handle_command(
-                    "data/create",
+            let _ = create_via_state(
+                    &module,
                     json!({
                         "dbPath": &db_path,
                         "collection": "test_handle_cursor",
@@ -3536,9 +3525,8 @@ mod tests {
         let adapter = module.state.get_adapter(&db_path).await.unwrap();
         let _ = adapter.ensure_schema(schema).await;
         for i in 0..rows {
-            let _ = module
-                .handle_command(
-                    "data/create",
+            let _ = create_via_state(
+                    &module,
                     json!({
                         "dbPath": &db_path,
                         "collection": "test_handle_cursor",

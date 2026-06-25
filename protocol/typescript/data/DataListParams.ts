@@ -2,19 +2,36 @@
 import type { OrderByClause } from "./OrderByClause";
 
 /**
- * Params for `data/list` — list records in a collection, optionally ordered and
- * filtered.
+ * Params for `data/list` — read records from a collection.
+ *
+ * Persona/UI-facing contract: name the `collection` and (optionally) an
+ * intuitive plain-JSON `filter`, ordering, and paging. There is deliberately
+ * no database handle to reason about — the shared "main" store is the default.
  */
 export type DataListParams = { 
 /**
- * The collection to list.
+ * The collection to read (e.g. "rooms", "users", "messages").
  */
 collection: string, 
 /**
+ * Optional field filter as plain JSON: `{"roomId": "general"}` for an
+ * equality match, `{"age": {"$gt": 18}}` for an operator match.
+ */
+filter?: Record<string, unknown>, 
+/**
  * Optional ordering clauses, applied in order.
  */
-orderBy?: Array<OrderByClause>, 
+sort?: Array<OrderByClause>, 
 /**
- * Optional field filter (a partial match over record fields).
+ * Max records to return. Omit for all matching (bounded by the store).
  */
-filter?: Record<string, unknown>, };
+limit?: number, 
+/**
+ * Records to skip before returning (paging alongside `limit`).
+ */
+offset?: number, 
+/**
+ * Storage handle. Defaults to "main" (the shared DB). Power callers may pass
+ * "@persona:<slug>" or "@metrics" to target a specific store.
+ */
+handle?: string, };

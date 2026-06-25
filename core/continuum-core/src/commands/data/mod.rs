@@ -24,16 +24,30 @@ use std::sync::Arc;
 use crate::modules::data::DataState;
 use crate::sdk_codegen::DynCommand;
 
+pub mod create;
+pub mod delete;
 pub mod list;
+pub mod read;
+pub mod update;
 
+use create::DataCreate;
+use delete::DataDelete;
 use list::DataList;
+use read::DataRead;
+use update::DataUpdate;
 
 /// The dep-holding `data/*` command objects [`DataModule`](crate::modules::data::DataModule)
 /// contributes to the kernel's typed object map, each sharing the module's
 /// `Arc<DataState>`. The executor routes each name straight here, winning over the
 /// legacy `data/` prefix arm (which shrinks toward deletion as arms migrate).
 pub fn command_objects(state: Arc<DataState>) -> Vec<Arc<dyn DynCommand>> {
-    vec![Arc::new(DataList { state })]
+    vec![
+        Arc::new(DataList { state: state.clone() }),
+        Arc::new(DataRead { state: state.clone() }),
+        Arc::new(DataCreate { state: state.clone() }),
+        Arc::new(DataUpdate { state: state.clone() }),
+        Arc::new(DataDelete { state }),
+    ]
 }
 
 #[cfg(test)]
@@ -48,5 +62,9 @@ mod tests {
     #[test]
     fn data_command_names_mirror_their_path() {
         assert_eq!(DataList::NAME, "data/list");
+        assert_eq!(DataRead::NAME, "data/read");
+        assert_eq!(DataCreate::NAME, "data/create");
+        assert_eq!(DataUpdate::NAME, "data/update");
+        assert_eq!(DataDelete::NAME, "data/delete");
     }
 }
