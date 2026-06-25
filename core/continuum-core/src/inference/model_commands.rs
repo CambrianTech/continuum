@@ -39,9 +39,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use crate::inference::unsloth_control::{
-    InferenceStatus, LocalModel, UnslothControl, UnslothError, UnslothHttp,
-};
+use crate::inference::unsloth_control::{InferenceStatus, LocalModel, UnslothError, UnslothHttp};
 use crate::sdk_codegen::{AccessLevel, ActionCommand, CommandError, Ctx};
 
 /// Map a gateway failure to a LOUD command error naming the op — never a silent
