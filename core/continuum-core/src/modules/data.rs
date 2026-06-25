@@ -87,7 +87,11 @@ struct PaginatedQueryState {
     created_at: std::time::Instant,
 }
 
-/// DataModule manages storage operations. Database path comes from each request.
+/// DataState holds the storage substrate shared between the [`DataModule`]
+/// (its `ServiceModule` shell) and the typed `data/*` commands in
+/// `commands/data/*`. Both capture the same `Arc<DataState>` — the
+/// CodeState/CodeModule convention — so a migrated command drives the exact
+/// state the module owns. Database path comes from each request.
 ///
 /// Adapter-agnostic: connection string determines which adapter is used.
 /// - File paths or `:memory:` → SqliteAdapter (worker thread with mpsc)
@@ -95,7 +99,7 @@ struct PaginatedQueryState {
 ///
 /// NOTE: SqliteAdapter is internally thread-safe via mpsc channels.
 /// PostgresAdapter is internally thread-safe via deadpool connection pool.
-pub struct DataModule {
+pub struct DataState {
     /// Adapter cache: connection_string -> initialized adapter (polymorphic)
     /// Lazy initialization per unique connection string
     adapters: DashMap<String, Arc<dyn StorageAdapter>>,
@@ -134,7 +138,22 @@ pub struct DataModule {
     query_semaphore: Semaphore,
 }
 
+/// `ServiceModule` shell over the shared [`DataState`]. The kernel registers
+/// this; the typed `data/*` commands capture `self.state.clone()` via
+/// [`DataModule::commands`]. All storage logic lives on `DataState`.
+pub struct DataModule {
+    pub(crate) state: Arc<DataState>,
+}
+
 impl DataModule {
+    pub fn new() -> Self {
+        Self {
+            state: Arc::new(DataState::new()),
+        }
+    }
+}
+
+impl DataState {
     pub fn new() -> Self {
         Self {
             adapters: DashMap::new(),
@@ -414,122 +433,23 @@ impl ServiceModule for DataModule {
             ctx.compute.clone(),
             ctx.runtime.clone(),
         ));
-        *self.context.write().unwrap_or_else(|e| e.into_inner()) = Some(ctx_arc);
+        *self.state.context.write().unwrap_or_else(|e| e.into_inner()) = Some(ctx_arc);
         log_info!("data", "init", "DataModule initialized with event bus");
         Ok(())
     }
 
     async fn handle_command(&self, command: &str, params: Value) -> Result<CommandResult, String> {
-        log_info!(
-            "data",
-            "handle_command",
-            "Received: {} params: {}",
-            command,
-            params
-        );
-        // ── Phase 1 typed-IPC dispatch ─────────────────────────────────
-        // Hot-path handlers (CRUD + count + batch + cursor trio + query
-        // join) take typed params. Dispatch deserializes once via the
-        // `deserialize_params!` macro defined above; handler bodies are
-        // pure logic, no `from_value(params.clone())` hop and no .clone().
-        //
-        // Per docs/architecture/ORM-IDEALISM-PLAN.md QW#3: removes 10 of
-        // the 26 clone+parse callsites the survey identified, plus
-        // standardizes parse-error logging at the dispatch level. Cold
-        // handlers (vector/*, migration/*, ensure-schema, list-collections,
-        // adapter/*) keep the in-handler parse for now — Phase 2 step 3
-        // will fold ensure-schema into the entity_schemas typed loader.
-        //
-        // Keeping the dispatch log above — it runs BEFORE deserialize, so
-        // parse errors are diagnosable by scrolling up to see the raw params.
-        match command {
-            "data/create" => {
-                self.handle_create(deserialize_params!(command, params)?)
-                    .await
-            }
-            "data/read" => {
-                self.handle_read(deserialize_params!(command, params)?)
-                    .await
-            }
-            "data/update" => {
-                self.handle_update(deserialize_params!(command, params)?)
-                    .await
-            }
-            "data/delete" => {
-                self.handle_delete(deserialize_params!(command, params)?)
-                    .await
-            }
-            "data/query" | "data/list" => {
-                self.handle_query(deserialize_params!(command, params)?)
-                    .await
-            }
-            "data/queryWithJoin" => {
-                self.handle_query_with_join(deserialize_params!(command, params)?)
-                    .await
-            }
-            "data/count" => {
-                self.handle_count(deserialize_params!(command, params)?)
-                    .await
-            }
-            "data/batch" => {
-                self.handle_batch(deserialize_params!(command, params)?)
-                    .await
-            }
-            "data/ensure-schema" => {
-                self.handle_ensure_schema(deserialize_params!(command, params)?)
-                    .await
-            }
-            "data/list-collections" => self.handle_list_collections(params).await,
-            "data/collection-stats" => self.handle_collection_stats(params).await,
-            "data/truncate" => self.handle_truncate(params).await,
-            "data/clear-all" => self.handle_clear_all(params).await,
-
-            // Paginated queries - server-side cursor management
-            "data/query-open" => {
-                self.handle_query_open(deserialize_params!(command, params)?)
-                    .await
-            }
-            // query-next/close take the cursor via `CommandRequest` so
-            // the typed envelope's `handle` field is reachable. The
-            // body deserializes into `QueryNextParams`/`QueryCloseParams`
-            // which preserve the legacy flat `queryId` shape; the
-            // handler picks whichever shape the caller used.
-            "data/query-next" => {
-                let req = CommandRequest::<QueryNextParams>::from_value(params)?;
-                self.handle_query_next(req).await
-            }
-            "data/query-close" => {
-                let req = CommandRequest::<QueryCloseParams>::from_value(params)?;
-                self.handle_query_close(req).await
-            }
-
-            "adapter/capabilities" => self.handle_capabilities(params).await,
-            "adapter/info" => self.handle_info(params).await,
-
-            // Vector search (migrated from data-daemon-worker)
-            "vector/search" => self.handle_vector_search(params).await,
-            "vector/index" => self.handle_index_vector(params).await,
-            "vector/stats" => self.handle_vector_stats(params).await,
-            "vector/invalidate-cache" => self.handle_invalidate_vector_cache(params).await,
-            "vector/backfill" => self.handle_backfill_vectors(params).await,
-
-            // Migration between adapters
-            "migration/start" => self.handle_migration_start(params).await,
-            "migration/status" => self.handle_migration_status(params).await,
-            "migration/pause" => self.handle_migration_pause(params).await,
-            "migration/resume" => self.handle_migration_resume(params).await,
-            "migration/verify" => self.handle_migration_verify(params).await,
-            "migration/cutover" => self.handle_migration_cutover(params).await,
-            "migration/rollback" => self.handle_migration_rollback(params).await,
-
-            _ => Err(format!("Unknown data command: {command}")),
-        }
+        // Legacy Registry-A entry point — delegates to the shared state's
+        // in-process dispatch. As `data/*` arms migrate to typed commands in
+        // `commands/data/*`, the executor's `route_object` path wins first and
+        // this string match shrinks toward deletion (Wave Z).
+        self.state.dispatch(command, params).await
     }
 
     async fn shutdown(&self) -> Result<(), String> {
         // Close all adapters - clear the DashMap
         // Adapters will clean up when their Arc refcount drops to zero
-        self.adapters.clear();
+        self.state.adapters.clear();
         Ok(())
     }
 
@@ -849,7 +769,100 @@ struct MigrationRollbackParams {
     current: String,
 }
 
-impl DataModule {
+impl DataState {
+    /// In-process command dispatch — the legacy `match` over `data/*`,
+    /// `adapter/*`, `vector/*`, `migration/*`. The [`DataModule`] shell's
+    /// `handle_command` delegates here so dispatch logic lives with the state it
+    /// touches. Each typed `data/*` command in `commands/data/*` calls the
+    /// corresponding `handle_*` directly, bypassing this string match — this
+    /// stays only until every arm is migrated and Registry A is retired.
+    async fn dispatch(&self, command: &str, params: Value) -> Result<CommandResult, String> {
+        log_info!(
+            "data",
+            "handle_command",
+            "Received: {} params: {}",
+            command,
+            params
+        );
+        match command {
+            "data/create" => {
+                self.handle_create(deserialize_params!(command, params)?)
+                    .await
+            }
+            "data/read" => {
+                self.handle_read(deserialize_params!(command, params)?)
+                    .await
+            }
+            "data/update" => {
+                self.handle_update(deserialize_params!(command, params)?)
+                    .await
+            }
+            "data/delete" => {
+                self.handle_delete(deserialize_params!(command, params)?)
+                    .await
+            }
+            "data/query" | "data/list" => {
+                self.handle_query(deserialize_params!(command, params)?)
+                    .await
+            }
+            "data/queryWithJoin" => {
+                self.handle_query_with_join(deserialize_params!(command, params)?)
+                    .await
+            }
+            "data/count" => {
+                self.handle_count(deserialize_params!(command, params)?)
+                    .await
+            }
+            "data/batch" => {
+                self.handle_batch(deserialize_params!(command, params)?)
+                    .await
+            }
+            "data/ensure-schema" => {
+                self.handle_ensure_schema(deserialize_params!(command, params)?)
+                    .await
+            }
+            "data/list-collections" => self.handle_list_collections(params).await,
+            "data/collection-stats" => self.handle_collection_stats(params).await,
+            "data/truncate" => self.handle_truncate(params).await,
+            "data/clear-all" => self.handle_clear_all(params).await,
+
+            // Paginated queries - server-side cursor management
+            "data/query-open" => {
+                self.handle_query_open(deserialize_params!(command, params)?)
+                    .await
+            }
+            "data/query-next" => {
+                let req = CommandRequest::<QueryNextParams>::from_value(params)?;
+                self.handle_query_next(req).await
+            }
+            "data/query-close" => {
+                let req = CommandRequest::<QueryCloseParams>::from_value(params)?;
+                self.handle_query_close(req).await
+            }
+
+            "adapter/capabilities" => self.handle_capabilities(params).await,
+            "adapter/info" => self.handle_info(params).await,
+
+            // Vector search (migrated from data-daemon-worker)
+            "vector/search" => self.handle_vector_search(params).await,
+            "vector/index" => self.handle_index_vector(params).await,
+            "vector/stats" => self.handle_vector_stats(params).await,
+            "vector/invalidate-cache" => self.handle_invalidate_vector_cache(params).await,
+            "vector/backfill" => self.handle_backfill_vectors(params).await,
+
+            // Migration between adapters
+            "migration/start" => self.handle_migration_start(params).await,
+            "migration/status" => self.handle_migration_status(params).await,
+            "migration/pause" => self.handle_migration_pause(params).await,
+            "migration/resume" => self.handle_migration_resume(params).await,
+            "migration/verify" => self.handle_migration_verify(params).await,
+            "migration/cutover" => self.handle_migration_cutover(params).await,
+            "migration/rollback" => self.handle_migration_rollback(params).await,
+
+            _ => Err(format!("Unknown data command: {command}")),
+        }
+    }
+
     /// Phase 1 typed-IPC scaffold: takes already-deserialized `CreateParams`.
     /// Dispatch (handle_command) does the parse; handler body is pure logic.
     /// Follow this shape for QW#3's other hot-handler conversions.
@@ -2348,7 +2361,7 @@ mod tests {
         // Tests bypass the IPC surface (which now requires a REGISTERED
         // entity collection per Phase 2 Step 3) — call the adapter directly
         // with a synthetic test CollectionSchema.
-        let adapter = module.get_adapter(&db_path).await.unwrap();
+        let adapter = module.state.get_adapter(&db_path).await.unwrap();
         let _ = adapter.ensure_schema(schema).await;
 
         // Create with dbPath
@@ -2427,7 +2440,7 @@ mod tests {
         // Tests bypass the IPC surface (which now requires a REGISTERED
         // entity collection per Phase 2 Step 3) — call the adapter directly
         // with a synthetic test CollectionSchema.
-        let adapter = module.get_adapter(&db_path).await.unwrap();
+        let adapter = module.state.get_adapter(&db_path).await.unwrap();
         let _ = adapter.ensure_schema(schema).await;
 
         // Create a record
@@ -2527,7 +2540,7 @@ mod tests {
         // Tests bypass the IPC surface (which now requires a REGISTERED
         // entity collection per Phase 2 Step 3) — call the adapter directly
         // with a synthetic test CollectionSchema.
-        let adapter = module.get_adapter(&db_path).await.unwrap();
+        let adapter = module.state.get_adapter(&db_path).await.unwrap();
         let _ = adapter.ensure_schema(schema).await;
 
         // Create records with embeddings
@@ -2606,7 +2619,7 @@ mod tests {
         // Tests bypass the IPC surface (which now requires a REGISTERED
         // entity collection per Phase 2 Step 3) — call the adapter directly
         // with a synthetic test CollectionSchema.
-        let adapter = module.get_adapter(&db_path).await.unwrap();
+        let adapter = module.state.get_adapter(&db_path).await.unwrap();
         let _ = adapter.ensure_schema(schema).await;
 
         // Create a record with embedding
@@ -2708,7 +2721,7 @@ mod tests {
         };
 
         // Tests bypass the IPC surface (registered-entity-only post-Step 3).
-        let adapter = module.get_adapter(&db_path).await.unwrap();
+        let adapter = module.state.get_adapter(&db_path).await.unwrap();
         let _ = adapter.ensure_schema(schema).await;
 
         // Create 25 records
@@ -2829,7 +2842,7 @@ mod tests {
             indexes: vec![],
         };
         // Tests bypass the IPC surface (registered-entity-only post-Step 3).
-        let adapter = module.get_adapter(&db_path).await.unwrap();
+        let adapter = module.state.get_adapter(&db_path).await.unwrap();
         let _ = adapter.ensure_schema(schema).await;
 
         for i in 0..7 {
@@ -2905,7 +2918,7 @@ mod tests {
         // Tests bypass the IPC surface (which now requires a REGISTERED
         // entity collection per Phase 2 Step 3) — call the adapter directly
         // with a synthetic test CollectionSchema.
-        let adapter = module.get_adapter(&db_path).await.unwrap();
+        let adapter = module.state.get_adapter(&db_path).await.unwrap();
         let _ = adapter.ensure_schema(schema).await;
 
         // Create records without embeddings
@@ -3042,7 +3055,7 @@ mod tests {
             }],
             indexes: vec![],
         };
-        let adapter = module.get_adapter(&db_path).await.unwrap();
+        let adapter = module.state.get_adapter(&db_path).await.unwrap();
         let _ = adapter.ensure_schema(schema).await;
 
         for i in 0..rows {
@@ -3412,7 +3425,7 @@ mod tests {
             }],
             indexes: vec![],
         };
-        let adapter = module.get_adapter(&db_path).await.unwrap();
+        let adapter = module.state.get_adapter(&db_path).await.unwrap();
         let _ = adapter.ensure_schema(schema).await;
         for i in 0..rows {
             let _ = module
