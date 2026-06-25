@@ -154,6 +154,14 @@ pub struct PersonaSpawnerModule {
     /// actually spawns — single source of truth, not a hardcode.
     serving_base_model: Option<String>,
     serving_lanes: u32,
+    /// How many citizens of the tier's (homogeneous) role template to host.
+    /// Default 1. Driven by `CONTINUUM_PERSONA_FLOOR` at boot — the SAME
+    /// config that floors the identity provider's mint count, so plan-slots
+    /// and minted identities stay 1:1. Replicating the same role is what
+    /// makes a ≥2 population SAFE today: the boot-2 position-pairing hazard
+    /// that defers heterogeneous multi-role plans (#133 slice 14) cannot
+    /// mis-pair identical roles. Two-solver cooperation needs ≥2.
+    population: usize,
 }
 
 impl PersonaSpawnerModule {
@@ -182,7 +190,16 @@ impl PersonaSpawnerModule {
             tier_category,
             serving_base_model: None,
             serving_lanes: 1,
+            population: 1,
         }
+    }
+
+    /// Set how many citizens of the tier's role template to host. Clamped to
+    /// ≥1. Wired from `CONTINUUM_PERSONA_FLOOR` at boot. See the `population`
+    /// field doc for why replicating a homogeneous role is boot-2-safe.
+    pub fn with_population(mut self, population: usize) -> Self {
+        self.population = population.max(1);
+        self
     }
 
     /// Apply the serving daemon's [`ServingPlan`](crate::cognition::serving_plan::ServingPlan):
@@ -199,12 +216,22 @@ impl PersonaSpawnerModule {
     /// Currently-planned desired roster. Pure over the module's configured
     /// tier + the serving overrides; no async, no lock — safe anywhere.
     pub fn plan(&self) -> Vec<DesiredRole> {
-        let mut roster = plan_for_tier(self.hw_capability, self.tier_category);
-        for role in &mut roster {
+        let mut template = plan_for_tier(self.hw_capability, self.tier_category);
+        for role in &mut template {
             if let Some(ref base) = self.serving_base_model {
                 role.model_id = base.clone();
             }
             role.lanes = self.serving_lanes;
+        }
+        // Replicate the (homogeneous) tier template to the configured
+        // population. The role template stays single-source in `plan_for_tier`;
+        // `population` only scales the COUNT of citizens, never introduces a
+        // second DIFFERENT role — so the boot-2 position-pairing hazard (which
+        // only bites heterogeneous rosters, #133 slice 14) stays sidestepped.
+        // population==1 returns the template unchanged (the prior behavior).
+        let mut roster = Vec::with_capacity(template.len() * self.population);
+        for _ in 0..self.population {
+            roster.extend(template.iter().cloned());
         }
         roster
     }

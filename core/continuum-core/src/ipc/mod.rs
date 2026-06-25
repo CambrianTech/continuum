@@ -1497,9 +1497,23 @@ pub fn start_server(
                 (None, 1)
             }
         };
+        // Persona floor — how many citizens to host. Single source: this one
+        // config value drives BOTH the spawner's plan-slot count (via
+        // with_population) AND the identity provider's mint floor below, so
+        // plan-slots and minted identities stay 1:1. Default 1. Raise it to host
+        // a collaborating POPULATION — the two-solver cooperation loop needs ≥2
+        // distinct citizens in a room so their coordinated turns become training
+        // signal (rooms → recorder → dataset → genome). Config-owned
+        // ([[config-env-single-owner]]); once minted, citizens persist + resume
+        // even if the floor is later lowered.
+        let persona_floor = crate::config_env::read("CONTINUUM_PERSONA_FLOOR")
+            .and_then(|v| v.trim().parse::<usize>().ok())
+            .filter(|&n| n >= 1)
+            .unwrap_or(1);
         let supervisor = crate::persona::host::PersonaSpawnSupervisor::new(
             crate::persona::spawner_module::PersonaSpawnerModule::new(hw_cap, tier_cat)
-                .with_serving(serving_model, serving_lanes),
+                .with_serving(serving_model, serving_lanes)
+                .with_population(persona_floor),
             instance_manager.clone(),
             // Persona reasoning binds to whatever the serving daemon has live,
             // read off its published ServingSnapshot (not a probe of our own).
@@ -1554,8 +1568,11 @@ pub fn start_server(
                 }
             };
             use crate::persona::resume_or_mint_provider::ResumeOrMintProvider;
+            // `persona_floor` (read once above) floors the provider's mint count
+            // to the SAME value that sized the spawner's plan via with_population
+            // — so plan-slots and minted identities stay 1:1.
             let mut provider =
-                match ResumeOrMintProvider::new(&continuum_root_for_boot, 1).await {
+                match ResumeOrMintProvider::new(&continuum_root_for_boot, persona_floor).await {
                     Ok(p) => p,
                     Err(e) => {
                         tracing::warn!(
