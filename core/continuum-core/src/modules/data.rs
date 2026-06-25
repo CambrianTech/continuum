@@ -417,7 +417,9 @@ impl ServiceModule for DataModule {
         ModuleConfig {
             name: "data",
             priority: ModulePriority::Normal,
-            command_prefixes: &["data/", "adapter/", "vector/", "migration/"],
+            // `vector/*` fully migrated to typed self-routing commands
+            // (commands/vector/*.rs) — no legacy arm remains, so the prefix is gone.
+            command_prefixes: &["data/", "adapter/", "migration/"],
             event_subscriptions: &[],
             needs_dedicated_thread: false,
             max_concurrency: 0,
@@ -459,10 +461,12 @@ impl ServiceModule for DataModule {
     /// and their `CommandSpec` descriptors flow into `command_registry()` → the
     /// persona tool surface + grid ACL. See [`crate::commands::data`].
     fn commands(&self) -> Vec<Arc<dyn crate::sdk_codegen::DynCommand>> {
-        // DataModule owns the adapter pool, so it contributes both the `data/*`
-        // content commands and the `adapter/*` introspection commands — each
-        // family sharing this module's `Arc<DataState>`.
+        // DataModule owns the adapter pool, so it contributes the `data/*`
+        // content commands, the `vector/*` embedding-search commands, and the
+        // `adapter/*` introspection commands — each family sharing this module's
+        // `Arc<DataState>`.
         let mut objects = crate::commands::data::command_objects(self.state.clone());
+        objects.extend(crate::commands::vector::command_objects(self.state.clone()));
         objects.extend(crate::commands::adapter::command_objects(self.state.clone()));
         objects
     }
@@ -512,70 +516,10 @@ struct QueryWithJoinParams {
     select: Option<Vec<String>>,
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct CollectionParams {
-    db_path: String,
-    collection: String,
-}
-
-/// Vector search params (matches data-daemon API)
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct VectorSearchParams {
-    db_path: String,
-    collection: String,
-    query_vector: Vec<f64>,
-    #[serde(default = "default_k")]
-    k: usize,
-    #[serde(default)]
-    threshold: f64,
-    #[serde(default = "default_true")]
-    include_data: bool,
-}
-
-fn default_k() -> usize {
-    10
-}
-fn default_true() -> bool {
-    true
-}
-fn default_batch_size() -> usize {
-    100
-}
-
-/// Index vector params - store embedding for a record
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct IndexVectorParams {
-    db_path: String,
-    collection: String,
-    id: String,
-    embedding: Vec<f64>,
-}
-
-/// Backfill vectors params - generate embeddings for existing records
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct BackfillVectorsParams {
-    db_path: String,
-    collection: String,
-    text_field: String,
-    #[serde(default = "default_batch_size")]
-    batch_size: usize,
-    #[serde(default)]
-    model: Option<String>,
-    #[serde(default)]
-    filter: Option<std::collections::HashMap<String, FieldFilter>>,
-}
-
-/// Vector stats params
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct VectorStatsParams {
-    db_path: String,
-    collection: String,
-}
+// Vector command params (collection/search/index/backfill/stats) moved to their
+// typed command files under `commands/vector/*.rs`; the DataState methods they
+// call take plain args (handle, collection, …). The `default_k`/`default_true`/
+// `default_batch_size` serde helpers moved with them.
 
 // ============================================================================
 // Paginated Query Params
@@ -774,12 +718,11 @@ impl DataState {
             // subsumes the old adapter/capabilities (capabilities are a field on
             // the AdapterInfo result now, not a parallel command).
 
-            // Vector search (migrated from data-daemon-worker)
-            "vector/search" => self.handle_vector_search(params).await,
-            "vector/index" => self.handle_index_vector(params).await,
-            "vector/stats" => self.handle_vector_stats(params).await,
-            "vector/invalidate-cache" => self.handle_invalidate_vector_cache(params).await,
-            "vector/backfill" => self.handle_backfill_vectors(params).await,
+            // vector/* are now typed self-routing commands (commands/vector/*.rs)
+            // driving DataState::{vector_search,index_vector,vector_stats,
+            // invalidate_vector_cache,backfill_vectors}. Each carries a real result
+            // struct (VectorSearchResults / VectorStats / …) instead of an ad-hoc
+            // json! blob, so the persona surface, codegen, and cu see the shape.
 
             // Migration between adapters
             "migration/start" => self.handle_migration_start(params).await,
@@ -1236,22 +1179,22 @@ impl DataState {
     /// 1. Check cache (RwLock read - concurrent, no blocking)
     /// 2. If miss, load from SQLite (serialized, but only once per collection)
     /// 3. Parallel rayon search against cached vectors
-    async fn handle_vector_search(&self, params: Value) -> Result<CommandResult, String> {
+    /// Cosine-similarity nearest-neighbour search over a collection's embeddings.
+    /// Loads (and caches) the collection's vectors, scores them against the query
+    /// vector in parallel, and returns the top-`k` hits above `threshold`.
+    pub(crate) async fn vector_search(
+        &self,
+        handle: &str,
+        collection: &str,
+        query_vector: Vec<f64>,
+        k: usize,
+        threshold: f64,
+        include_data: bool,
+    ) -> Result<VectorSearchResults, String> {
         use std::time::Instant;
         let search_start = Instant::now();
 
-        let params: VectorSearchParams = serde_json::from_value(params.clone()).map_err(|e| {
-            log_error!(
-                "data",
-                "vector/search",
-                "Parse error: {}, params: {}",
-                e,
-                params
-            );
-            format!("Invalid params: {e}")
-        })?;
-
-        let cache_key = (params.db_path.clone(), params.collection.clone());
+        let cache_key = (handle.to_string(), collection.to_string());
 
         // Step 1: Try to get vectors from cache (RwLock read - concurrent)
         let cached_vectors: Option<Arc<Vec<CachedVector>>> = {
@@ -1264,7 +1207,7 @@ impl DataState {
                 "data",
                 "vector/search",
                 "Cache HIT for {} ({} vectors)",
-                params.collection,
+                collection,
                 vectors.len()
             );
             vectors
@@ -1274,16 +1217,16 @@ impl DataState {
                 "data",
                 "vector/search",
                 "Cache MISS for {} - loading from SQLite",
-                params.collection
+                collection
             );
             let load_start = Instant::now();
 
             // Get adapter and load vectors
-            let adapter = self.get_adapter(&params.db_path).await?;
+            let adapter = self.get_adapter(handle).await?;
 
             // Query all records with embeddings
             let query = StorageQuery {
-                collection: params.collection.clone(),
+                collection: collection.to_string(),
                 ..Default::default()
             };
 
@@ -1325,25 +1268,24 @@ impl DataState {
                 "vector/search",
                 "Cached {} vectors for {} in {:?}",
                 count,
-                params.collection,
+                collection,
                 load_start.elapsed()
             );
             vectors_arc
         };
 
         if corpus.is_empty() {
-            return Ok(CommandResult::Json(json!({
-                "results": [],
-                "count": 0,
-                "corpusSize": 0
-            })));
+            return Ok(VectorSearchResults {
+                results: Vec::new(),
+                count: 0,
+                corpus_size: 0,
+            });
         }
 
         let corpus_size = corpus.len();
 
         // Step 2: Parallel cosine similarity with rayon
-        let query_vec = &params.query_vector;
-        let threshold = params.threshold;
+        let query_vec = &query_vector;
 
         let mut scored: Vec<(String, f64)> = corpus
             .par_iter()
@@ -1360,25 +1302,25 @@ impl DataState {
         // Sort by score descending
         scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
-        let top_k: Vec<(String, f64)> = scored.into_iter().take(params.k).collect();
+        let top_k: Vec<(String, f64)> = scored.into_iter().take(k).collect();
         let count = top_k.len();
 
         // Build results
-        let results: Vec<Value> = if params.include_data {
+        let results: Vec<VectorHit> = if include_data {
             // Fetch full records for top-k (need another query)
-            let adapter = self.get_adapter(&params.db_path).await?;
+            let adapter = self.get_adapter(handle).await?;
             let mut full_results = Vec::new();
 
             for (id, score) in &top_k {
-                let result = adapter.read(&params.collection, id).await;
+                let result = adapter.read(collection, id).await;
                 if result.success {
                     if let Some(record) = result.data {
-                        full_results.push(json!({
-                            "id": id,
-                            "score": score,
-                            "distance": 1.0 - score,
-                            "data": record.data
-                        }));
+                        full_results.push(VectorHit {
+                            id: id.clone(),
+                            score: *score,
+                            distance: 1.0 - score,
+                            data: Some(record.data),
+                        });
                     }
                 }
             }
@@ -1386,12 +1328,11 @@ impl DataState {
         } else {
             top_k
                 .into_iter()
-                .map(|(id, score)| {
-                    json!({
-                        "id": id,
-                        "score": score,
-                        "distance": 1.0 - score
-                    })
+                .map(|(id, score)| VectorHit {
+                    id,
+                    score,
+                    distance: 1.0 - score,
+                    data: None,
                 })
                 .collect()
         };
@@ -1405,11 +1346,11 @@ impl DataState {
             search_start.elapsed()
         );
 
-        Ok(CommandResult::Json(json!({
-            "results": results,
-            "count": count,
-            "corpusSize": corpus_size
-        })))
+        Ok(VectorSearchResults {
+            results,
+            count,
+            corpus_size,
+        })
     }
 
     /// Parse embedding from record data (supports BLOB and JSON array)
@@ -1474,35 +1415,30 @@ impl DataState {
 
     /// Index a vector - store embedding for a record
     /// Updates the record's 'embedding' field with the provided vector
-    async fn handle_index_vector(&self, params: Value) -> Result<CommandResult, String> {
+    /// Store an embedding on a record (the record's `embedding` field) and drop
+    /// the collection's cached vector set so the next search reloads it.
+    pub(crate) async fn index_vector(
+        &self,
+        handle: &str,
+        collection: &str,
+        id: String,
+        embedding: Vec<f64>,
+    ) -> Result<StorageResult<DataRecord>, String> {
         use std::time::Instant;
         let start = Instant::now();
 
-        let params: IndexVectorParams = serde_json::from_value(params.clone()).map_err(|e| {
-            log_error!(
-                "data",
-                "vector/index",
-                "Parse error: {}, params: {}",
-                e,
-                params
-            );
-            format!("Invalid params: {e}")
-        })?;
-
-        let adapter = self.get_adapter(&params.db_path).await?;
+        let adapter = self.get_adapter(handle).await?;
 
         // Update the record's embedding field
-        let update_data = json!({
-            "embedding": params.embedding
-        });
+        let update_data = json!({ "embedding": embedding });
 
         let result = adapter
-            .update(&params.collection, &params.id, update_data, false)
+            .update(collection, &id, update_data, false)
             .await;
 
         // Invalidate vector cache for this collection since we modified an embedding
         {
-            let cache_key = (params.db_path.clone(), params.collection.clone());
+            let cache_key = (handle.to_string(), collection.to_string());
             let mut cache = self.vector_cache.write().unwrap_or_else(|e| e.into_inner());
             cache.remove(&cache_key);
         }
@@ -1512,35 +1448,28 @@ impl DataState {
             "data",
             "vector/index",
             "Indexed vector for {} in {}ms, success={}",
-            params.id,
+            id,
             total_ms,
             result.success
         );
 
-        CommandResult::json(&result)
+        Ok(result)
     }
 
-    /// Get vector index statistics for a collection
-    async fn handle_vector_stats(&self, params: Value) -> Result<CommandResult, String> {
+    /// Get vector index statistics for a collection.
+    pub(crate) async fn vector_stats(
+        &self,
+        handle: &str,
+        collection: &str,
+    ) -> Result<VectorStats, String> {
         use std::time::Instant;
         let start = Instant::now();
 
-        let params: VectorStatsParams = serde_json::from_value(params.clone()).map_err(|e| {
-            log_error!(
-                "data",
-                "vector/stats",
-                "Parse error: {}, params: {}",
-                e,
-                params
-            );
-            format!("Invalid params: {e}")
-        })?;
-
-        let adapter = self.get_adapter(&params.db_path).await?;
+        let adapter = self.get_adapter(handle).await?;
 
         // Get total record count
         let total_query = StorageQuery {
-            collection: params.collection.clone(),
+            collection: collection.to_string(),
             ..Default::default()
         };
         let total_result = adapter.count(total_query).await;
@@ -1549,7 +1478,7 @@ impl DataState {
         // Query to count records WITH embeddings
         // We need to query and check which have embedding field
         let query = StorageQuery {
-            collection: params.collection.clone(),
+            collection: collection.to_string(),
             limit: Some(10000), // Reasonable limit
             ..Default::default()
         };
@@ -1573,7 +1502,7 @@ impl DataState {
         }
 
         // Check cache status
-        let cache_key = (params.db_path.clone(), params.collection.clone());
+        let cache_key = (handle.to_string(), collection.to_string());
         let cached_count = {
             let cache = self.vector_cache.read().unwrap_or_else(|e| e.into_inner());
             cache.get(&cache_key).map(|c| c.vectors.len()).unwrap_or(0)
@@ -1584,42 +1513,31 @@ impl DataState {
             "data",
             "vector/stats",
             "Stats for {} in {}ms: total={}, with_vectors={}, dims={}",
-            params.collection,
+            collection,
             total_ms,
             total_records,
             records_with_vectors,
             vector_dimensions
         );
 
-        // Wrap in StorageResult-style response for TypeScript compatibility
-        Ok(CommandResult::Json(json!({
-            "success": true,
-            "data": {
-                "collection": params.collection,
-                "totalRecords": total_records,
-                "recordsWithVectors": records_with_vectors,
-                "vectorDimensions": vector_dimensions,
-                "cachedVectors": cached_count,
-                "lastUpdated": chrono::Utc::now().to_rfc3339()
-            }
-        })))
+        Ok(VectorStats {
+            collection: collection.to_string(),
+            total_records,
+            records_with_vectors,
+            vector_dimensions,
+            cached_vectors: cached_count,
+            last_updated: chrono::Utc::now().to_rfc3339(),
+        })
     }
 
     /// Invalidate vector cache for a collection
     /// Called when records are modified outside of vector/index
-    async fn handle_invalidate_vector_cache(&self, params: Value) -> Result<CommandResult, String> {
-        let params: CollectionParams = serde_json::from_value(params.clone()).map_err(|e| {
-            log_error!(
-                "data",
-                "vector/invalidate-cache",
-                "Parse error: {}, params: {}",
-                e,
-                params
-            );
-            format!("Invalid params: {e}")
-        })?;
-
-        let cache_key = (params.db_path.clone(), params.collection.clone());
+    pub(crate) async fn invalidate_vector_cache(
+        &self,
+        handle: &str,
+        collection: &str,
+    ) -> Result<VectorCacheInvalidation, String> {
+        let cache_key = (handle.to_string(), collection.to_string());
         let removed = {
             let mut cache = self.vector_cache.write().unwrap_or_else(|e| e.into_inner());
             cache.remove(&cache_key).is_some()
@@ -1629,38 +1547,35 @@ impl DataState {
             "data",
             "vector/invalidate-cache",
             "Invalidated cache for {}: removed={}",
-            params.collection,
+            collection,
             removed
         );
 
-        Ok(CommandResult::Json(json!({
-            "success": true,
-            "collection": params.collection,
-            "cacheInvalidated": removed
-        })))
+        Ok(VectorCacheInvalidation {
+            collection: collection.to_string(),
+            cache_invalidated: removed,
+        })
     }
 
     /// Backfill vectors - generate embeddings for records missing them
     ///
     /// Uses batch embedding generation for efficiency (10x faster than single).
     /// Processes in configurable batch sizes to manage memory.
-    async fn handle_backfill_vectors(&self, params: Value) -> Result<CommandResult, String> {
+    /// Generate embeddings for records in a collection that lack one, in batches.
+    /// `text_field` names the field to embed; `filter` narrows the records;
+    /// `model` is advisory (the gateway selects the served embed model).
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn backfill_vectors(
+        &self,
+        handle: &str,
+        collection: &str,
+        text_field: &str,
+        batch_size: usize,
+        model: Option<String>,
+        filter: Option<std::collections::HashMap<String, FieldFilter>>,
+    ) -> Result<VectorBackfillStats, String> {
         use std::time::Instant;
         let start = Instant::now();
-
-        let params: BackfillVectorsParams =
-            serde_json::from_value(params.clone()).map_err(|e| {
-                log_error!(
-                    "data",
-                    "vector/backfill",
-                    "Parse error: {}, params: {}",
-                    e,
-                    params
-                );
-                format!("Invalid params: {e}")
-            })?;
-
-        let batch_size = params.batch_size;
 
         // Embedding is adapter-routed (unsloth /v1/embeddings, task #40) — the
         // SAME async neural-or-lexical embedder the live recall path uses. Build
@@ -1671,10 +1586,10 @@ impl DataState {
             .await
             .map_err(|e| format!("vector/backfill: cannot build embedder: {e}"))?;
 
-        // `params.model` is advisory only now — the served embed model is chosen
+        // `model` is advisory only now — the served embed model is chosen
         // by the gateway (task #40). Log when a caller requested a specific model
         // so the divergence from the old fastembed model-name semantics is visible.
-        if let Some(requested) = params.model.as_deref() {
+        if let Some(requested) = model.as_deref() {
             log_info!(
                 "data",
                 "vector/backfill",
@@ -1684,12 +1599,12 @@ impl DataState {
             );
         }
 
-        let adapter = self.get_adapter(&params.db_path).await?;
+        let adapter = self.get_adapter(handle).await?;
 
         // Query all records from collection
         let query = StorageQuery {
-            collection: params.collection.clone(),
-            filter: params.filter.clone(),
+            collection: collection.to_string(),
+            filter: filter.clone(),
             ..Default::default()
         };
         let query_result = adapter.query(query).await;
@@ -1710,7 +1625,7 @@ impl DataState {
             "vector/backfill",
             "Starting backfill for {} records in {}",
             total,
-            params.collection
+            collection
         );
 
         // Process in batches for memory efficiency
@@ -1728,7 +1643,7 @@ impl DataState {
                 }
 
                 // Extract text from specified field
-                if let Some(text) = record.data.get(&params.text_field) {
+                if let Some(text) = record.data.get(text_field) {
                     if let Some(text_str) = text.as_str() {
                         if !text_str.is_empty() {
                             texts_to_embed.push((i, text_str));
@@ -1752,7 +1667,7 @@ impl DataState {
                         "data",
                         "vector/backfill",
                         "embedder returned no signal for record in {}",
-                        params.collection
+                        collection
                     );
                     failed += 1;
                     continue;
@@ -1768,7 +1683,7 @@ impl DataState {
                 });
 
                 let update_result = adapter
-                    .update(&params.collection, &record.id, update_data, false)
+                    .update(collection, &record.id, update_data, false)
                     .await;
 
                 if update_result.success {
@@ -1781,7 +1696,7 @@ impl DataState {
 
         // Invalidate vector cache since we modified embeddings
         {
-            let cache_key = (params.db_path.clone(), params.collection.clone());
+            let cache_key = (handle.to_string(), collection.to_string());
             let mut cache = self.vector_cache.write().unwrap_or_else(|e| e.into_inner());
             cache.remove(&cache_key);
         }
@@ -1791,7 +1706,7 @@ impl DataState {
             "data",
             "vector/backfill",
             "Backfill complete for {}: total={}, processed={}, skipped={}, failed={} in {}ms",
-            params.collection,
+            collection,
             total,
             processed,
             skipped,
@@ -1799,17 +1714,14 @@ impl DataState {
             total_ms
         );
 
-        Ok(CommandResult::Json(json!({
-            "success": true,
-            "data": {
-                "collection": params.collection,
-                "total": total,
-                "processed": processed,
-                "skipped": skipped,
-                "failed": failed,
-                "elapsedMs": total_ms
-            }
-        })))
+        Ok(VectorBackfillStats {
+            collection: collection.to_string(),
+            total,
+            processed,
+            skipped,
+            failed,
+            elapsed_ms: total_ms as u64,
+        })
     }
 
     // =========================================================================
@@ -2369,6 +2281,116 @@ mod tests {
         ))
     }
 
+    /// Test seam: drive [`DataState::index_vector`] through the same
+    /// [`VectorIndexParams`](crate::commands::vector::index::VectorIndexParams)
+    /// deserialization the typed `vector/index` command uses. Returns the typed
+    /// `StorageResult<DataRecord>` as JSON.
+    async fn index_via_state(
+        module: &DataModule,
+        params: serde_json::Value,
+    ) -> Result<CommandResult, String> {
+        let p: crate::commands::vector::index::VectorIndexParams =
+            serde_json::from_value(params).map_err(|e| e.to_string())?;
+        let handle = p.handle.as_deref().unwrap_or("main");
+        let result = module
+            .state
+            .index_vector(handle, &p.collection, p.id, p.embedding)
+            .await?;
+        Ok(CommandResult::Json(
+            serde_json::to_value(result).map_err(|e| e.to_string())?,
+        ))
+    }
+
+    /// Test seam for the typed `vector/stats` command. Returns [`VectorStats`] as
+    /// top-level JSON (the new contract — no `data` envelope).
+    async fn stats_via_state(
+        module: &DataModule,
+        params: serde_json::Value,
+    ) -> Result<CommandResult, String> {
+        let p: crate::commands::vector::stats::VectorStatsParams =
+            serde_json::from_value(params).map_err(|e| e.to_string())?;
+        let handle = p.handle.as_deref().unwrap_or("main");
+        let result = module.state.vector_stats(handle, &p.collection).await?;
+        Ok(CommandResult::Json(
+            serde_json::to_value(result).map_err(|e| e.to_string())?,
+        ))
+    }
+
+    /// Test seam for the typed `vector/search` command. Returns
+    /// [`VectorSearchResults`] as top-level JSON.
+    async fn search_via_state(
+        module: &DataModule,
+        params: serde_json::Value,
+    ) -> Result<CommandResult, String> {
+        let p: crate::commands::vector::search::VectorSearchParams =
+            serde_json::from_value(params).map_err(|e| e.to_string())?;
+        let handle = p.handle.as_deref().unwrap_or("main");
+        let result = module
+            .state
+            .vector_search(
+                handle,
+                &p.collection,
+                p.query_vector,
+                p.k,
+                p.threshold,
+                p.include_data,
+            )
+            .await?;
+        Ok(CommandResult::Json(
+            serde_json::to_value(result).map_err(|e| e.to_string())?,
+        ))
+    }
+
+    /// Test seam for the typed `vector/invalidate-cache` command. Returns
+    /// [`VectorCacheInvalidation`] as top-level JSON.
+    async fn invalidate_via_state(
+        module: &DataModule,
+        params: serde_json::Value,
+    ) -> Result<CommandResult, String> {
+        let p: crate::commands::vector::invalidate_cache::VectorInvalidateCacheParams =
+            serde_json::from_value(params).map_err(|e| e.to_string())?;
+        let handle = p.handle.as_deref().unwrap_or("main");
+        let result = module
+            .state
+            .invalidate_vector_cache(handle, &p.collection)
+            .await?;
+        Ok(CommandResult::Json(
+            serde_json::to_value(result).map_err(|e| e.to_string())?,
+        ))
+    }
+
+    /// Test seam for the typed `vector/backfill` command. Mirrors the command's
+    /// filter parse and returns [`VectorBackfillStats`] as top-level JSON.
+    async fn backfill_via_state(
+        module: &DataModule,
+        params: serde_json::Value,
+    ) -> Result<CommandResult, String> {
+        let p: crate::commands::vector::backfill::VectorBackfillParams =
+            serde_json::from_value(params).map_err(|e| e.to_string())?;
+        let handle = p.handle.as_deref().unwrap_or("main");
+        let filter: Option<std::collections::HashMap<String, FieldFilter>> = match p.filter {
+            Some(map) => Some(
+                serde_json::from_value(serde_json::Value::Object(map))
+                    .map_err(|e| format!("invalid filter: {e}"))?,
+            ),
+            None => None,
+        };
+        let result = module
+            .state
+            .backfill_vectors(
+                handle,
+                &p.collection,
+                &p.text_field,
+                p.batch_size,
+                p.model,
+                filter,
+            )
+            .await?;
+        Ok(CommandResult::Json(
+            serde_json::to_value(result).map_err(|e| e.to_string())?,
+        ))
+    }
+
     #[test]
     fn data_create_params_drop_the_db_path_leak_but_alias_legacy_callers() {
         // what this catches: the persona-facing `data/create` contract dropped the
@@ -2526,37 +2548,35 @@ mod tests {
 
         // Index a vector for this record
         let test_embedding: Vec<f64> = (0..384).map(|i| (i as f64) * 0.001).collect();
-        let index_result = module
-            .handle_command(
-                "vector/index",
-                json!({
-                    "dbPath": &db_path,
-                    "collection": "test_vectors",
-                    "id": record_id,
-                    "embedding": test_embedding
-                }),
-            )
-            .await;
+        let index_result = index_via_state(
+            &module,
+            json!({
+                "dbPath": &db_path,
+                "collection": "test_vectors",
+                "id": record_id,
+                "embedding": test_embedding
+            }),
+        )
+        .await;
 
         assert!(index_result.is_ok());
         if let Ok(CommandResult::Json(result)) = &index_result {
             assert!(result["success"].as_bool().unwrap_or(false));
         }
 
-        // Get vector stats
-        let stats_result = module
-            .handle_command(
-                "vector/stats",
-                json!({
-                    "dbPath": &db_path,
-                    "collection": "test_vectors"
-                }),
-            )
-            .await;
+        // Get vector stats — the typed VectorStats serializes at top level (no
+        // `data` envelope), the new contract the `vector/stats` command returns.
+        let stats_result = stats_via_state(
+            &module,
+            json!({
+                "dbPath": &db_path,
+                "collection": "test_vectors"
+            }),
+        )
+        .await;
 
         assert!(stats_result.is_ok());
-        if let Ok(CommandResult::Json(result)) = stats_result {
-            let stats = &result["data"];
+        if let Ok(CommandResult::Json(stats)) = stats_result {
             assert_eq!(stats["collection"], "test_vectors");
             assert_eq!(stats["totalRecords"], 1);
             assert_eq!(stats["recordsWithVectors"], 1);
@@ -2625,19 +2645,18 @@ mod tests {
 
         // Search for similar vectors
         let query_vector: Vec<f64> = (0..384).map(|i| (i as f64) * 0.001).collect();
-        let search_result = module
-            .handle_command(
-                "vector/search",
-                json!({
-                    "dbPath": &db_path,
-                    "collection": "test_search",
-                    "queryVector": query_vector,
-                    "k": 3,
-                    "threshold": 0.0,
-                    "includeData": true
-                }),
-            )
-            .await;
+        let search_result = search_via_state(
+            &module,
+            json!({
+                "dbPath": &db_path,
+                "collection": "test_search",
+                "queryVector": query_vector,
+                "k": 3,
+                "threshold": 0.0,
+                "includeData": true
+            }),
+        )
+        .await;
 
         assert!(search_result.is_ok());
         if let Ok(CommandResult::Json(result)) = search_result {
@@ -2694,64 +2713,58 @@ mod tests {
 
         // First search populates cache
         let query: Vec<f64> = vec![1.0; 384];
-        let _ = module
-            .handle_command(
-                "vector/search",
-                json!({
-                    "dbPath": &db_path,
-                    "collection": "test_cache",
-                    "queryVector": query,
-                    "k": 1
-                }),
-            )
-            .await;
+        let _ = search_via_state(
+            &module,
+            json!({
+                "dbPath": &db_path,
+                "collection": "test_cache",
+                "queryVector": query,
+                "k": 1
+            }),
+        )
+        .await;
 
-        // Verify cache has vectors via stats
-        let stats_result = module
-            .handle_command(
-                "vector/stats",
-                json!({
-                    "dbPath": &db_path,
-                    "collection": "test_cache"
-                }),
-            )
-            .await;
+        // Verify cache has vectors via stats (top-level VectorStats, new contract)
+        let stats_result = stats_via_state(
+            &module,
+            json!({
+                "dbPath": &db_path,
+                "collection": "test_cache"
+            }),
+        )
+        .await;
 
-        if let Ok(CommandResult::Json(result)) = &stats_result {
-            let stats = &result["data"];
+        if let Ok(CommandResult::Json(stats)) = &stats_result {
             assert!(stats["cachedVectors"].as_u64().unwrap() > 0);
         }
 
-        // Invalidate cache
-        let invalidate_result = module
-            .handle_command(
-                "vector/invalidate-cache",
-                json!({
-                    "dbPath": &db_path,
-                    "collection": "test_cache"
-                }),
-            )
-            .await;
+        // Invalidate cache — VectorCacheInvalidation carries `cacheInvalidated`
+        // (and the collection), the typed contract `vector/invalidate-cache` returns.
+        let invalidate_result = invalidate_via_state(
+            &module,
+            json!({
+                "dbPath": &db_path,
+                "collection": "test_cache"
+            }),
+        )
+        .await;
 
         assert!(invalidate_result.is_ok());
         if let Ok(CommandResult::Json(result)) = invalidate_result {
-            assert!(result["success"].as_bool().unwrap_or(false));
             assert!(result["cacheInvalidated"].as_bool().unwrap_or(false));
         }
 
         // Verify cache is empty
-        let stats_after = module
-            .handle_command(
-                "vector/stats",
-                json!({
-                    "dbPath": &db_path,
-                    "collection": "test_cache"
-                }),
-            )
-            .await;
+        let stats_after = stats_via_state(
+            &module,
+            json!({
+                "dbPath": &db_path,
+                "collection": "test_cache"
+            }),
+        )
+        .await;
 
-        if let Ok(CommandResult::Json(result)) = stats_after {
-            let stats = &result["data"];
+        if let Ok(CommandResult::Json(stats)) = stats_after {
             assert_eq!(stats["cachedVectors"].as_u64().unwrap(), 0);
         }
     }
@@ -2988,43 +3001,39 @@ mod tests {
                 .await;
         }
 
-        // Run backfill
-        let backfill_result = module
-            .handle_command(
-                "vector/backfill",
-                json!({
-                    "dbPath": &db_path,
-                    "collection": "test_backfill",
-                    "textField": "content",
-                    "batchSize": 10
-                }),
-            )
-            .await;
+        // Run backfill — VectorBackfillStats serializes at top level (the new
+        // contract); counts live directly on the object, not under a `data` envelope.
+        let backfill_result = backfill_via_state(
+            &module,
+            json!({
+                "dbPath": &db_path,
+                "collection": "test_backfill",
+                "textField": "content",
+                "batchSize": 10
+            }),
+        )
+        .await;
 
         assert!(backfill_result.is_ok(), "Backfill should succeed");
 
-        if let Ok(CommandResult::Json(result)) = backfill_result {
-            assert!(result["success"].as_bool().unwrap_or(false));
-            let data = &result["data"];
-            assert_eq!(data["total"].as_u64().unwrap(), 5);
-            assert_eq!(data["processed"].as_u64().unwrap(), 5);
-            assert_eq!(data["failed"].as_u64().unwrap(), 0);
+        if let Ok(CommandResult::Json(stats)) = backfill_result {
+            assert_eq!(stats["total"].as_u64().unwrap(), 5);
+            assert_eq!(stats["processed"].as_u64().unwrap(), 5);
+            assert_eq!(stats["failed"].as_u64().unwrap(), 0);
         }
 
         // Verify embeddings were added
-        let stats_result = module
-            .handle_command(
-                "vector/stats",
-                json!({
-                    "dbPath": &db_path,
-                    "collection": "test_backfill"
-                }),
-            )
-            .await;
+        let stats_result = stats_via_state(
+            &module,
+            json!({
+                "dbPath": &db_path,
+                "collection": "test_backfill"
+            }),
+        )
+        .await;
 
         assert!(stats_result.is_ok());
-        if let Ok(CommandResult::Json(result)) = stats_result {
-            let stats = &result["data"];
+        if let Ok(CommandResult::Json(stats)) = stats_result {
             assert_eq!(stats["recordsWithVectors"].as_u64().unwrap(), 5);
             assert!(stats["vectorDimensions"].as_u64().unwrap() > 0);
         }
@@ -3836,4 +3845,93 @@ pub struct AdapterInfo {
     pub handle: String,
     /// What the adapter can do (transactions, joins, indexing, vector search, …).
     pub capabilities: crate::orm::adapter::AdapterCapabilities,
+}
+
+// ============================================================================
+// vector/* typed outputs
+//
+// The vector handlers once returned ad-hoc `json!` blobs. As typed commands
+// they carry real result structs — so the persona surface, codegen, and `cu`
+// all see the shape, and a caller can deserialize without guessing field names.
+// ============================================================================
+
+/// A single hit from `vector/search` — a record id with its cosine `score`
+/// and the `distance` (`1 - score`). `data` is the full record, populated only
+/// when the caller passed `includeData`.
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../../protocol/typescript/vector/VectorHit.ts")]
+pub struct VectorHit {
+    pub id: String,
+    pub score: f64,
+    pub distance: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional, type = "Record<string, unknown>")]
+    pub data: Option<serde_json::Value>,
+}
+
+/// Output of `vector/search` — the top-k nearest records by cosine similarity,
+/// plus the `corpus_size` the search ran against (the recall context: a small
+/// corpus means low confidence in the ranking).
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../../protocol/typescript/vector/VectorSearchResults.ts")]
+pub struct VectorSearchResults {
+    /// The ranked hits (highest score first), at most `k`.
+    pub results: Vec<VectorHit>,
+    /// Number of hits returned (`results.len()`).
+    pub count: usize,
+    /// Number of vectors the search scored against.
+    pub corpus_size: usize,
+}
+
+/// Output of `vector/stats` — how many records in a collection carry an
+/// embedding, the vector dimensionality, and the in-memory cache occupancy.
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../../protocol/typescript/vector/VectorStats.ts")]
+pub struct VectorStats {
+    pub collection: String,
+    /// Total records in the collection.
+    pub total_records: usize,
+    /// Records that carry a non-empty embedding.
+    pub records_with_vectors: usize,
+    /// Dimensionality of the embeddings (0 if none indexed).
+    pub vector_dimensions: usize,
+    /// Vectors currently held in the in-memory similarity cache.
+    pub cached_vectors: usize,
+    /// RFC-3339 timestamp this snapshot was computed.
+    pub last_updated: String,
+}
+
+/// Output of `vector/invalidate-cache` — whether a cached vector set for the
+/// collection existed and was dropped.
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../../protocol/typescript/vector/VectorCacheInvalidation.ts")]
+pub struct VectorCacheInvalidation {
+    pub collection: String,
+    /// True if a cache entry existed and was removed.
+    pub cache_invalidated: bool,
+}
+
+/// Output of `vector/backfill` — the per-collection tally of an embedding
+/// backfill pass: how many records were embedded, already had a vector, or
+/// failed.
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../../protocol/typescript/vector/VectorBackfillStats.ts")]
+pub struct VectorBackfillStats {
+    pub collection: String,
+    /// Records examined.
+    pub total: usize,
+    /// Records freshly embedded this pass.
+    pub processed: usize,
+    /// Records skipped because they already had an embedding.
+    pub skipped: usize,
+    /// Records the embedder produced no signal for, or whose write failed.
+    pub failed: usize,
+    /// Wall-clock duration of the pass, in milliseconds.
+    #[ts(type = "number")]
+    pub elapsed_ms: u64,
 }

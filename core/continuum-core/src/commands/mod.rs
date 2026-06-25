@@ -19,3 +19,4 @@ pub mod help;
 pub mod memory;
 pub mod rag;
 pub mod system;
+pub mod vector;
