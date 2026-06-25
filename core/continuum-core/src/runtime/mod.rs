@@ -43,6 +43,7 @@ pub mod in_process_transport;
 pub mod late_bound;
 pub mod message_bus;
 pub mod module_context;
+pub mod orientation_shares;
 /// Per-module TDD harness — boots a single module in isolation. Test-only.
 #[cfg(any(test, feature = "test-fixtures"))]
 pub mod module_harness;
@@ -81,6 +82,9 @@ pub use in_process_transport::InProcessTransport;
 pub use late_bound::LateBound;
 pub use message_bus::MessageBus;
 pub use module_context::ModuleContext;
+pub use orientation_shares::{
+    apportion, orientation_index, OrientationCounts, OrientationShares, ORIENTATIONS,
+};
 pub use module_logger::ModuleLogger;
 pub use module_metrics::{CommandTiming, ModuleMetrics, ModuleStats};
 pub use per_key_gate::{Lease, PerKeyGate};

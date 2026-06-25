@@ -32,10 +32,25 @@
 //! comatose (BEING-SOCIETY-GOVERNOR.md, rail R1). This is the within-class causal
 //! arbitration the orientation budget (R2+) sits on top of.
 //!
+//! ## Orientation telemetry + budget (R2/R3)
+//!
+//! Each region declares an [`Orientation`] class (R2). Every pass tallies what time
+//! was *spent* per class ([`OrientationCounts`] in the snapshot). On top of that, R3
+//! adds the *policy*: when the pass can't afford every due pair, an
+//! [`OrientationShares`] vector decides which classes get the scarce slices, drawn by
+//! deterministic stride scheduling ([`apportion`]) with spine-fixed floors so a flood
+//! of reactive work can never starve interiority or growth — and a quiet society can
+//! never starve responsiveness. The scarcity is expressed as `slices_per_pass`: `None`
+//! (the unconstrained-machine default) admits every due pair and the budget lies
+//! dormant; `Some(budget)` engages the proportional share. The within-class causal
+//! arbitration (R1) still picks *when* each pair is due; the budget only picks *which
+//! class* spends a contended pass.
+//!
 //! ## Not yet (next slices)
-//! - Orientation metadata on regions + proportional-share across classes (R2/R3).
+//! - R4: a share-policy daemon that tunes [`OrientationShares`] + sets `slices_per_pass`
+//!   from live pressure/economy signals off the bus (the first-best-guess is open-loop).
 //! - `PersonaCognitionRegion` + the multi-tower inference router (command→handle→event).
-//! - The sleep-phase consolidation/learning region.
+//! - R5: the speciation (sleep-phase consolidation / genome-learning) region.
 
 use std::any::Any;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -48,11 +63,13 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
 use ts_rs::TS;
+use uuid::Uuid;
 
 use crate::persona::PersonaAircRuntimeRegistry;
 use crate::runtime::{
-    BrainRegion, CadenceHint, CadenceTable, CommandResult, ModuleConfig, ModuleContext,
-    ModulePriority, Orientation, RegionContext, ServiceModule,
+    apportion, orientation_index, BrainRegion, CadenceHint, CadenceTable, CommandResult,
+    ModuleConfig, ModuleContext, ModulePriority, Orientation, OrientationCounts, OrientationShares,
+    RegionContext, ServiceModule, ORIENTATIONS,
 };
 use crate::sdk_codegen::{AccessLevel, ActionCommand, CommandError, Ctx, DynCommand};
 
@@ -92,41 +109,20 @@ pub struct GovernorSnapshot {
     /// well-paced society, not a stalled one.
     #[ts(type = "number")]
     pub skipped: usize,
+    /// (region × persona) pairs that WERE due but lost the contended pass to the
+    /// orientation budget (R3). `0` whenever `slices_per_pass` is `None` or the budget
+    /// covered every due pair; positive only under real scarcity. A deferred pair stays
+    /// eligible next pass (it isn't re-scheduled), so the budget bumps it, never drops it.
+    #[ts(type = "number")]
+    pub deferred: usize,
     /// Ticks that actually ran last pass, split by orientation class. The local-first
     /// metric the orientation-budget economy reads (R2): is the society's time going to
     /// stimulus, to interiority, or to growth? `ticked == by_orientation.total()`.
-    pub by_orientation: OrientationTally,
-}
-
-/// Ticks run last pass, grouped by [`Orientation`] — telemetry only (what time was
-/// *spent* on), distinct from the share *policy* (what it should be) that lands in R3.
-#[derive(Debug, Clone, Default, Serialize, TS)]
-pub struct OrientationTally {
-    /// Outward-facing work: perception, recall, responding.
-    #[ts(type = "number")]
-    pub reactive: usize,
-    /// The being's own interiority: curiosity, projects, dream/consolidation.
-    #[ts(type = "number")]
-    pub self_directed: usize,
-    /// Growing the self: speciation / LoRA-genome learning.
-    #[ts(type = "number")]
-    pub speciation: usize,
-}
-
-impl OrientationTally {
-    /// Record one tick against its region's declared orientation class.
-    fn record(&mut self, orientation: Orientation) {
-        match orientation {
-            Orientation::Reactive => self.reactive += 1,
-            Orientation::SelfDirected => self.self_directed += 1,
-            Orientation::Speciation => self.speciation += 1,
-        }
-    }
-
-    /// Total ticks tallied — equals the snapshot's `ticked` (invariant the tests pin).
-    pub fn total(&self) -> usize {
-        self.reactive + self.self_directed + self.speciation
-    }
+    pub by_orientation: OrientationCounts,
+    /// The active share policy this pass (R3) — telemetry of *what the budget should be*,
+    /// next to `by_orientation`'s *what it was*. The R4 daemon will tune this; until then
+    /// it's the declared open-loop first-best-guess.
+    pub shares: OrientationShares,
 }
 
 /// The scheduling daemon. Holds the regions + the live-persona registry; the
@@ -139,13 +135,21 @@ pub struct SubstrateGovernor {
     /// (BEING-SOCIETY-GOVERNOR.md R1). Only the single tick task touches it; the lock
     /// is taken briefly and NEVER held across an `.await` (concurrency-style-guide rule).
     cadence: Mutex<CadenceTable>,
+    /// The orientation budget policy (R3): how a contended pass is split across classes.
+    /// Immutable for now (the open-loop first-best-guess); the R4 daemon will own tuning.
+    shares: OrientationShares,
+    /// Slice budget per pass — the scarcity knob. `None` (default) = admit every due
+    /// pair (unconstrained machine; the budget is dormant). `Some(n)` engages the
+    /// proportional share when more than `n` pairs are due. Set by R4 from live pressure.
+    slices_per_pass: Option<usize>,
     snapshot: watch::Sender<GovernorSnapshot>,
 }
 
 impl SubstrateGovernor {
     /// Build with the regions to schedule + the live-persona registry. Regions are
     /// injected (not discovered) so the boot path owns what runs — add a region by
-    /// passing it here; the governor needs no edit.
+    /// passing it here; the governor needs no edit. Defaults to the open-loop share
+    /// policy and an uncapped budget (every due pair runs); tune via the builders.
     pub fn new(
         regions: Vec<Arc<dyn BrainRegion>>,
         personas: PersonaAircRuntimeRegistry,
@@ -156,8 +160,24 @@ impl SubstrateGovernor {
             personas,
             tick_seq: AtomicU64::new(0),
             cadence: Mutex::new(CadenceTable::new()),
+            shares: OrientationShares::default(),
+            slices_per_pass: None,
             snapshot,
         }
+    }
+
+    /// Override the orientation share policy (R4 / tests). Floors are enforced by
+    /// [`OrientationShares`] itself, so this can't construct a starving policy.
+    pub fn with_shares(mut self, shares: OrientationShares) -> Self {
+        self.shares = shares;
+        self
+    }
+
+    /// Set the per-pass slice budget — the scarcity knob (R4 / tests). `Some(n)` engages
+    /// the proportional share once more than `n` pairs are due in a pass.
+    pub fn with_slices_per_pass(mut self, budget: Option<usize>) -> Self {
+        self.slices_per_pass = budget;
+        self
     }
 }
 
@@ -189,10 +209,17 @@ impl ServiceModule for SubstrateGovernor {
         Err(format!("substrate-governor: '{command}' is a typed command object"))
     }
 
-    /// One scheduling pass: tick every region once per live persona. Each region
-    /// tick is `catch_unwind` + timeout isolated, so a fault in one (region,persona)
-    /// never aborts the pass or kills the governor. Publishes a snapshot for
-    /// lock-free observation + the `governor/status` command.
+    /// One scheduling pass, in two phases:
+    ///
+    /// 1. **Collect due pairs**, grouped by orientation class — a single brief lock on
+    ///    the [`CadenceTable`] decides eligibility for every `(region, persona)`.
+    /// 2. **Apportion the pass under the orientation budget** ([`admit_pass`]), then tick
+    ///    the admitted pairs. Each region tick is `catch_unwind` + timeout isolated, so a
+    ///    fault in one pair never aborts the pass or kills the governor.
+    ///
+    /// Pairs that were due but lost the contended pass are *deferred* (counted, not
+    /// re-scheduled) so they're first in line next pass — the budget bumps, never drops.
+    /// Publishes a snapshot for lock-free observation + the `governor/status` command.
     async fn tick(&self) -> Result<(), String> {
         let tick = self.tick_seq.fetch_add(1, Ordering::Relaxed);
         let personas = self.personas.live_personas();
@@ -202,65 +229,77 @@ impl ServiceModule for SubstrateGovernor {
         // across an await (concurrency-style-guide rule).
         self.cadence.lock().unwrap().retain_personas(&personas);
 
+        // ── Phase 1: collect due pairs, grouped by orientation class ──────────────
+        // One lock spanning a purely synchronous loop (no await inside) → released
+        // before any region tick. `groups[i]` holds the due pairs for `ORIENTATIONS[i]`.
+        let mut groups: [Vec<(usize, Uuid, Orientation)>; 3] =
+            [Vec::new(), Vec::new(), Vec::new()];
+        let mut skipped = 0usize;
+        {
+            let cadence = self.cadence.lock().unwrap();
+            for (region_idx, region) in self.regions.iter().enumerate() {
+                let orientation = region.orientation(); // static class, read once per region
+                let oi = orientation_index(orientation);
+                for &persona_id in &personas {
+                    if cadence.eligible((region_idx, persona_id), tick) {
+                        groups[oi].push((region_idx, persona_id, orientation));
+                    } else {
+                        skipped += 1;
+                    }
+                }
+            }
+        }
+
+        // ── Phase 2: apportion under the orientation budget, then tick the admitted ──
+        let (admitted, deferred) = admit_pass(&groups, &self.shares, self.slices_per_pass, tick);
+
         let mut ticked = 0usize;
         let mut published = 0usize;
         let mut faults = 0usize;
-        let mut skipped = 0usize;
-        let mut by_orientation = OrientationTally::default();
+        let mut by_orientation = OrientationCounts::default();
 
-        for (region_idx, region) in self.regions.iter().enumerate() {
-            // Static class — read once per region, not per persona.
-            let orientation = region.orientation();
-            for &persona_id in &personas {
-                let key = (region_idx, persona_id);
-
-                // Is this pair due? Lock briefly, decide, release BEFORE the await.
-                let eligible = self.cadence.lock().unwrap().eligible(key, tick);
-                if !eligible {
-                    skipped += 1;
-                    continue;
+        for (region_idx, persona_id, orientation) in admitted {
+            let region = &self.regions[region_idx];
+            let key = (region_idx, persona_id);
+            let ctx = RegionContext::for_persona(tick, persona_id);
+            // Isolate the region tick: timeout (never hang the scheduler) +
+            // catch_unwind (a panicking region is quarantined to this call,
+            // not propagated to kill the governor's own tick).
+            let fut = std::panic::AssertUnwindSafe(region.tick(&ctx)).catch_unwind();
+            let hint = match tokio::time::timeout(REGION_TICK_TIMEOUT, fut).await {
+                Ok(Ok(outcome)) => {
+                    ticked += 1;
+                    by_orientation.record(orientation);
+                    published += outcome.published;
+                    // The region's own next-cadence wish (None == Hold).
+                    outcome.cadence_hint
                 }
+                Ok(Err(_panic)) => {
+                    faults += 1;
+                    tracing::warn!(
+                        region = %region.id().0,
+                        persona_id = %persona_id,
+                        "substrate-governor: region tick PANICKED — caught, governor stays up"
+                    );
+                    // Back a crash-looping pair off (but never remove it) so a fault
+                    // can't hammer the scheduler every pass.
+                    Some(CadenceHint::Slower)
+                }
+                Err(_elapsed) => {
+                    faults += 1;
+                    tracing::warn!(
+                        region = %region.id().0,
+                        persona_id = %persona_id,
+                        timeout_ms = REGION_TICK_TIMEOUT.as_millis() as u64,
+                        "substrate-governor: region tick TIMED OUT — skipped this pass"
+                    );
+                    Some(CadenceHint::Slower)
+                }
+            };
 
-                let ctx = RegionContext::for_persona(tick, persona_id);
-                // Isolate the region tick: timeout (never hang the scheduler) +
-                // catch_unwind (a panicking region is quarantined to this call,
-                // not propagated to kill the governor's own tick).
-                let fut = std::panic::AssertUnwindSafe(region.tick(&ctx)).catch_unwind();
-                let hint = match tokio::time::timeout(REGION_TICK_TIMEOUT, fut).await {
-                    Ok(Ok(outcome)) => {
-                        ticked += 1;
-                        by_orientation.record(orientation);
-                        published += outcome.published;
-                        // The region's own next-cadence wish (None == Hold).
-                        outcome.cadence_hint
-                    }
-                    Ok(Err(_panic)) => {
-                        faults += 1;
-                        tracing::warn!(
-                            region = %region.id().0,
-                            persona_id = %persona_id,
-                            "substrate-governor: region tick PANICKED — caught, governor stays up"
-                        );
-                        // Back a crash-looping pair off (but never remove it) so a fault
-                        // can't hammer the scheduler every pass.
-                        Some(CadenceHint::Slower)
-                    }
-                    Err(_elapsed) => {
-                        faults += 1;
-                        tracing::warn!(
-                            region = %region.id().0,
-                            persona_id = %persona_id,
-                            timeout_ms = REGION_TICK_TIMEOUT.as_millis() as u64,
-                            "substrate-governor: region tick TIMED OUT — skipped this pass"
-                        );
-                        Some(CadenceHint::Slower)
-                    }
-                };
-
-                // Record the hint → schedule next eligibility. Lock taken + released
-                // here, AFTER the await; never held across it.
-                self.cadence.lock().unwrap().record(key, tick, hint);
-            }
+            // Record the hint → schedule next eligibility. Lock taken + released here,
+            // AFTER the await; never held across it.
+            self.cadence.lock().unwrap().record(key, tick, hint);
         }
 
         let snap = GovernorSnapshot {
@@ -271,7 +310,9 @@ impl ServiceModule for SubstrateGovernor {
             published,
             faults,
             skipped,
+            deferred,
             by_orientation,
+            shares: self.shares,
         };
         // send_replace: always-current, no backlog; readers borrow lock-free.
         let _ = self.snapshot.send_replace(snap);
@@ -289,6 +330,54 @@ impl ServiceModule for SubstrateGovernor {
     fn as_any(&self) -> &dyn Any {
         self
     }
+}
+
+/// Decide which due pairs to tick this pass under the orientation budget (R3).
+/// `groups[i]` holds the eligible pairs for `ORIENTATIONS[i]`. Returns the flat admit
+/// list and the deferred count.
+///
+/// - `slices_per_pass == None` (or a budget ≥ the number of due pairs): admit everything
+///   — the unconstrained-machine path, budget dormant, `deferred == 0`.
+/// - `Some(budget)` under contention: [`apportion`] splits the budget across classes by
+///   stride (floors guaranteed), then each class contributes its share, **rotated by the
+///   tick number** so the same pairs aren't always the ones served across passes.
+///
+/// Pure (no I/O, no locks, RNG-free), so the whole budget-enforcement decision is
+/// testable without standing up live personas, and reproducible under replay.
+fn admit_pass(
+    groups: &[Vec<(usize, Uuid, Orientation)>; 3],
+    shares: &OrientationShares,
+    slices_per_pass: Option<usize>,
+    tick: u64,
+) -> (Vec<(usize, Uuid, Orientation)>, usize) {
+    let eligible = OrientationCounts {
+        reactive: groups[0].len(),
+        self_directed: groups[1].len(),
+        speciation: groups[2].len(),
+    };
+    let total_eligible = eligible.total();
+
+    let admit = match slices_per_pass {
+        Some(budget) if total_eligible > budget => apportion(shares, eligible, budget),
+        _ => eligible, // uncapped, or budget already covers everyone
+    };
+
+    let mut out = Vec::with_capacity(admit.total());
+    for (oi, group) in groups.iter().enumerate() {
+        if group.is_empty() {
+            continue;
+        }
+        let take = admit.get(ORIENTATIONS[oi]).min(group.len());
+        // Rotate the starting point by the tick so a capped class doesn't always serve
+        // its first members (cross-pass fairness within the class).
+        let start = (tick as usize) % group.len();
+        for k in 0..take {
+            out.push(group[(start + k) % group.len()]);
+        }
+    }
+
+    let deferred = total_eligible - out.len();
+    (out, deferred)
 }
 
 // ─────────────────────────── governor/status ─────────────────────
@@ -324,22 +413,105 @@ crate::register_command!(GovernorStatusCommand);
 mod tests {
     use super::*;
 
-    // what this catches: the tally maps each Orientation to its own bucket and total()
-    // equals the sum — the invariant the snapshot relies on (ticked == by_orientation
-    // .total()), so orientation telemetry can never silently miscount the society's time.
-    #[test]
-    fn orientation_tally_records_each_class_and_totals() {
-        let mut t = OrientationTally::default();
-        t.record(Orientation::Reactive);
-        t.record(Orientation::Reactive);
-        t.record(Orientation::SelfDirected);
-        t.record(Orientation::Speciation);
-        t.record(Orientation::Speciation);
-        t.record(Orientation::Speciation);
+    /// Build a class group of `n` synthetic pairs for `orientation`, region index `ri`.
+    fn group(ri: usize, orientation: Orientation, n: usize) -> Vec<(usize, Uuid, Orientation)> {
+        (0..n)
+            .map(|k| (ri, Uuid::from_u128(k as u128 + 1), orientation))
+            .collect()
+    }
 
-        assert_eq!(t.reactive, 2);
-        assert_eq!(t.self_directed, 1);
-        assert_eq!(t.speciation, 3);
-        assert_eq!(t.total(), 6, "total must equal the sum of all classes");
+    // what this catches: the unconstrained-machine path. With no slice budget every due
+    // pair is admitted and nothing is deferred — the orientation budget stays dormant
+    // until scarcity is declared (a being on a capable host is never throttled for free).
+    #[test]
+    fn admit_pass_admits_all_when_uncapped() {
+        let groups = [
+            group(0, Orientation::Reactive, 3),
+            group(1, Orientation::SelfDirected, 2),
+            group(2, Orientation::Speciation, 1),
+        ];
+        let (admitted, deferred) =
+            admit_pass(&groups, &OrientationShares::first_best_guess(), None, 0);
+        assert_eq!(admitted.len(), 6);
+        assert_eq!(deferred, 0);
+    }
+
+    // what this catches: a budget that covers every due pair behaves exactly like the
+    // uncapped path — no spurious deferral at the boundary.
+    #[test]
+    fn admit_pass_admits_all_when_budget_covers() {
+        let groups = [
+            group(0, Orientation::Reactive, 2),
+            group(1, Orientation::SelfDirected, 2),
+            group(2, Orientation::Speciation, 2),
+        ];
+        let (admitted, deferred) =
+            admit_pass(&groups, &OrientationShares::first_best_guess(), Some(6), 0);
+        assert_eq!(admitted.len(), 6);
+        assert_eq!(deferred, 0);
+    }
+
+    // what this catches: real contention. A budget below the due count admits exactly the
+    // budget and defers the rest; the split honors the share policy (reactive 7 outweighs
+    // self_directed 2 outweighs speciation 1). This is the budget actually biting.
+    #[test]
+    fn admit_pass_defers_under_contention_and_follows_shares() {
+        let groups = [
+            group(0, Orientation::Reactive, 100),
+            group(1, Orientation::SelfDirected, 100),
+            group(2, Orientation::Speciation, 100),
+        ];
+        let (admitted, deferred) =
+            admit_pass(&groups, &OrientationShares::first_best_guess(), Some(10), 0);
+        assert_eq!(admitted.len(), 10);
+        assert_eq!(deferred, 290);
+
+        let mut by = OrientationCounts::default();
+        for (_, _, o) in &admitted {
+            by.record(*o);
+        }
+        assert_eq!(by.total(), 10);
+        assert!(by.reactive > by.self_directed, "reactive (7) gets the largest share");
+        assert!(by.self_directed >= by.speciation, "self_directed (2) ≥ speciation (1)");
+    }
+
+    // what this catches: cross-pass fairness. When a class is capped, the rotation by tick
+    // means a later pass serves *different* members of that class — no pair is permanently
+    // starved behind the budget while others always win.
+    #[test]
+    fn admit_pass_rotates_capped_class_across_ticks() {
+        // One class, 4 due pairs, budget admits only 2 → which 2 must rotate with tick.
+        let groups = [
+            group(0, Orientation::Reactive, 4),
+            Vec::new(),
+            Vec::new(),
+        ];
+        let shares = OrientationShares::new(1, 1, 0);
+        let (pass0, _) = admit_pass(&groups, &shares, Some(2), 0);
+        let (pass1, _) = admit_pass(&groups, &shares, Some(2), 1);
+        let ids = |v: &[(usize, Uuid, Orientation)]| v.iter().map(|p| p.1).collect::<Vec<_>>();
+        assert_eq!(pass0.len(), 2);
+        assert_eq!(pass1.len(), 2);
+        assert_ne!(ids(&pass0), ids(&pass1), "rotation serves different members each pass");
+    }
+
+    // what this catches: a constrained node with speciation OFF (0 tickets) never schedules
+    // growth work even when it's due — the deferral is declared (counted), not a silent
+    // mix-in, and the surviving budget goes to the floored classes.
+    #[test]
+    fn admit_pass_never_schedules_zero_share_class() {
+        let groups = [
+            group(0, Orientation::Reactive, 5),
+            group(1, Orientation::SelfDirected, 5),
+            group(2, Orientation::Speciation, 5),
+        ];
+        let shares = OrientationShares::new(1, 1, 0); // speciation off
+        let (admitted, deferred) = admit_pass(&groups, &shares, Some(4), 0);
+        assert_eq!(admitted.len(), 4);
+        assert_eq!(deferred, 11);
+        assert!(
+            admitted.iter().all(|(_, _, o)| *o != Orientation::Speciation),
+            "0-ticket class is never admitted"
+        );
     }
 }
