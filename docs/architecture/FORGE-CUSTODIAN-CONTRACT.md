@@ -1,12 +1,19 @@
 # Forge Custodian Contract — Contract C, and how it grid-negotiates
 
-**Status:** in progress. Pass 1 + Pass 2 landed — `forge::protocol` single-sources
-the wire + `/health` contract-version handshake (custodian a real `[[bin]]`), and
-the gguf-lora export now speaks Contract C through a clean de-`unsloth`
-`forge::custodian_client` aimed at the custodian's own endpoint. Pass 3 (harden the
-binary: bounds, readiness detail, graceful shutdown, idempotency) is next.
-This doc is the single source of truth for the **forge custodian seam** and the
-plan to make it grid-negotiable.
+**Status:** in progress. Pass 1 + Pass 2 + Pass 3 landed. Pass 1/2 — `forge::protocol`
+single-sources the wire + `/health` contract-version handshake (custodian a real
+`[[bin]]`), and the gguf-lora export speaks Contract C through a clean de-`unsloth`
+`forge::custodian_client` aimed at the custodian's own endpoint. **Pass 3 (commit
+`20d60e3b3`)** hardened the binary: R3 bounds (conversion-slot semaphore →
+fast-loud `503` when saturated; per-conversion wall-clock deadline that KILLS a
+wedged subprocess), R4 honest `/health` (additive `ready`/`slots_total`/
+`slots_available`, no version bump), R5 graceful shutdown (SIGINT/SIGTERM drains
+in-flight via `with_graceful_shutdown`), R6 content-addressed idempotency
+(`job_id = sha256(weights ⊕ base ⊕ outtype)` in the output filename → identical
+re-POST short-circuits). Proven by a daemon-boot integration test (real binary +
+real client over loopback). **Pass 4 (node-aware handle) is next.** This doc is the
+single source of truth for the **forge custodian seam** and the plan to make it
+grid-negotiable.
 
 > Joel, 2026-06-25: *"Inference and lora training can be grid negotiated if your
 > daemons are any good. So we get the sum of all the parts. Will take real
@@ -251,10 +258,32 @@ Done is done; everything below the line is the plan.
    route to unsloth until #52; `package_format` now rejects gguf-lora loudly as a
    guard against the old wrong path. 4 client + 3 rewritten export tests green. The
    unsloth-only `train_*`/`lora`/`gguf` arms stay until the broader #52 excision.
-3. **Pass 3 — harden the custodian binary.** Bounds (timeout + concurrency
-   semaphore + subprocess deadline, R3), `/health` readiness+capacity detail (R4),
-   graceful shutdown + `probe!` reusing `ServiceModule`/`watch`/`PressureBroker`
-   (R5), content-addressed idempotency (R6). Integration test boots the daemon.
+3. ✅ **Pass 3 — harden the custodian binary.** (`20d60e3b3`) **R3 bounds:** a
+   `tokio::sync::Semaphore` of `FORGE_MAX_CONCURRENT` conversion slots — a saturated
+   custodian `try_acquire`-fails to `503` (fast + loud, router re-routes) instead of
+   queueing unbounded; each conversion runs through `run_with_deadline`
+   (`FORGE_CONVERT_TIMEOUT_SECS`, default 1800) which drains stdout/stderr in helper
+   threads and KILLS a child that outlives the deadline (a wedged python converter
+   never holds a slot forever). **R4 honest `/health`:** `HealthResponse` gained
+   additive `#[serde(default)]` `ready`/`slots_total`/`slots_available` (no
+   `CONTRACT_VERSION` bump — older custodians deserialize fine); the handler reports
+   whether the converter tooling resolves + the live free-slot count, so a router
+   scores the node before dispatch. **R5 graceful shutdown:** `axum::serve(...)
+   .with_graceful_shutdown(shutdown_signal())` stops accepting on SIGINT/SIGTERM and
+   drains in-flight conversions before exit (no orphaned half-written gene). **R6
+   content-addressed idempotency:** `job_id = sha256(weights-meta ⊕ adapter_config ⊕
+   base ⊕ outtype)[..16]` is embedded in the output filename (`{name}-{job}.gguf`),
+   so an identical re-POST (at-least-once grid delivery) short-circuits to the
+   existing artifact and a differing request can never silently clobber another's
+   gene. (Note: this is a standalone `[[bin]]`, not an in-core `ServiceModule`, so
+   R5 uses axum's own graceful-shutdown future rather than the `ServiceModule`/
+   `watch`/`PressureBroker` substrate primitives — those bind a router/fabric in Pass
+   5/6.) Proven by 6 binary unit tests (job-id content-addressing, deadline-kill,
+   fast-child happy path, param parsing) **plus** a daemon-boot integration test
+   (`tests/forge_custodian_daemon.rs`) that runs the REAL binary under a temp `$HOME`
+   and drives it with the REAL `ForgeCustodianHttp` client: honest `/health`
+   (slots=3, ready, matching contract version), the client handshake passes over the
+   wire, and SIGTERM exits 0 gracefully.
 4. **Pass 4 — node-aware handle.** Extend `adapter_manifest::TrainedAdapter` →
    `GeneHandle` (locator `HandleRef`, `node`, `provenance`, `trust_scope`, §4).
 5. **Pass 5 — routable endpoint.** Generalize `ForgeCapability` → `ForgeEndpoint`
