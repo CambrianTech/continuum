@@ -464,31 +464,22 @@ async fn serve_persona_loop_inner(
             source_modality: None,
             voice_session_id: None,
         };
-        let recalled_engrams: Vec<String> = {
+        // Rank engrams for the L2→prompt introspection seam, then admit this turn's
+        // incoming message as an engram. The recall that actually REACHES the prompt
+        // is done inside the WorkspaceCycle's RecallFaculty — this read stays for the
+        // Hebbian salience side-effect (Algorithm 4 #165) and the per-engram
+        // introspection log ([[observability-is-half-the-architecture]] + Joel's
+        // 2026-06-03 "introspect all rag" directive). The ranked Vec is no longer
+        // threaded into a per-turn RespondInput (that path is gone); only the side-
+        // effects and the admit remain.
+        {
             let cognition = ctx.cognition.lock().await;
-            // recall BEFORE admit so this turn's recalled_engrams is
-            // "what I knew going in" — the current message isn't
-            // recall; it's the trigger.
-            //
-            // Algorithm 4 scoring (#165): salience × recency-decay
-            // ranks engrams; record_recall_hit on the returned set
-            // bumps their salience (Hebbian rehearsal — use-it-
-            // keeps-it). Memory that gets used compounds; memory
-            // that doesn't drains toward SALIENCE_FLOOR but doesn't
-            // disappear. PR #91 (RecallMetadata sidecar) + #92
-            // (decay tick) provide the scoring infrastructure;
-            // recall_scored composes them on the read path.
+            // recall BEFORE admit so the ranking is "what I knew going in" — the
+            // current message is the trigger, not recall.
             // Per #195 slice 1: time the L2 retrieval pass.
             let recall_started = std::time::Instant::now();
             let scored = cognition.admission.recall_scored(now_ms, 8);
             phase_timings.recall_ms = recall_started.elapsed().as_millis() as u64;
-
-            // Per-engram introspection: the L2 → prompt seam is
-            // observable, not opaque, per
-            // [[observability-is-half-the-architecture]] + Joel's
-            // 2026-06-03 "introspect all rag" directive. Each line
-            // shows what scored what, so optimization can target
-            // actual scoring behavior, not guesses.
             for (rank, (engram, salience)) in scored.iter().enumerate() {
                 let preview: String = engram.content.chars().take(80).collect();
                 tracing::info!(
@@ -497,16 +488,13 @@ async fn serve_persona_loop_inner(
                     engram_id = %&engram.id.to_string()[..8],
                     salience = format!("{:.3}", salience),
                     content = %preview,
-                    "recall_scored — engram delivered to RespondInput"
+                    "recall_scored — engram ranked (introspection; RecallFaculty feeds the prompt)"
                 );
             }
 
-            let recalled: Vec<String> = scored.into_iter().map(|(e, _score)| e.content).collect();
-
-            // Admit now. Errors here are non-fatal — the cognition
-            // turn can still run; the engram just doesn't form. Per
-            // [[no-fallbacks-ever]] we surface the failure visibly,
-            // not silently.
+            // Admit now. Errors here are non-fatal — the cognition turn can still
+            // run; the engram just doesn't form. Per [[no-fallbacks-ever]] we surface
+            // the failure visibly, not silently.
             // Per #195 slice 1: time the L2 admission write.
             let admit_started = std::time::Instant::now();
             let admit_result = cognition.admission.admit(&inbox_msg, None);
@@ -520,13 +508,11 @@ async fn serve_persona_loop_inner(
             } else {
                 tracing::info!(
                     lamport = msg.lamport,
-                    recalled_count = recalled.len(),
                     engram_count = cognition.admission.engram_count(),
                     "admitted incoming → L2 store"
                 );
             }
-            recalled
-        };
+        }
 
         // 2. Lease the brain again for compose_for_turn — the budget
         //    + multi-source RAG composition via the
@@ -540,30 +526,6 @@ async fn serve_persona_loop_inner(
             cognition.compose_for_turn(&ctx.profile, now_ms).await
         };
         phase_timings.compose_ms = compose_started.elapsed().as_millis() as u64;
-
-        // 2. Project the brain's composed deliveries into the
-        //    canonical `RespondInput`. AIRC delivery → recent_history;
-        //    engram delivery → recalled_engrams; everything else
-        //    threaded from PersonaContext.
-        let recent_history: Vec<crate::cognition::shared_analysis::RecentMessage> = composed
-            .deliveries
-            .iter()
-            .filter(|d| d.source_id == "airc")
-            .flat_map(|d| d.items.iter())
-            .map(|item| {
-                let peer_label = item
-                    .metadata
-                    .get("peer_id")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("peer")
-                    .to_string();
-                crate::cognition::shared_analysis::RecentMessage {
-                    id: Uuid::new_v4(),
-                    sender_name: peer_label,
-                    text: item.content.clone(),
-                }
-            })
-            .collect();
 
         // The consolidated burst the WorkspaceCycle reasons over — a stream of
         // inbox items WITH their metadata (WHO + WHEN + WHAT), not bare text. A
@@ -613,71 +575,10 @@ async fn serve_persona_loop_inner(
             }
         }
 
-        // Project the room-doctrine delivery → RespondInput.room_doctrine.
-        // Routed by source_id into system-prompt grounding (a [Room
-        // operating doctrine] block), so the persona calibrates
-        // participation to the room's nature. One current contract per
-        // room → first item's content. See slice 2.
-        let room_doctrine: Option<String> = composed
-            .deliveries
-            .iter()
-            .filter(|d| d.source_id == "room-doctrine")
-            .flat_map(|d| d.items.iter())
-            .map(|item| item.content.clone())
-            .next();
-
-        // recalled_engrams is populated above from
-        // admission.recall_recent(8) — substrate-managed memory,
-        // not the airc transcript window. The engram delivery from
-        // compose_for_turn ALSO flows from the same admission store
-        // via engram_source — Algorithm 4 scoring will arbitrate
-        // overlap in a future slice.
-
-        let turn_context = crate::persona::turn_context::TurnContext::arc(
-            ctx.identity.default_room,
-            recent_history,
-            Vec::new(),
-        );
-
-        let respond_input = crate::persona::response::RespondInput {
-            persona: crate::cognition::PersonaSlot {
-                persona_id: ctx.identity.persona_id,
-                // #195 slice 3: drop the per-turn
-                // `format!("{:?}", ctx.role).to_lowercase()` —
-                // RoleId already exposes the canonical specialty
-                // string via `as_str() -> &'static str` (pinned in
-                // role_template.rs). The only per-turn cost is
-                // one `String::from` of a static str. No cache
-                // needed; the source IS the cache. A behavior-
-                // preservation test in `mod tests` pins
-                // `role.as_str() == format!("{:?}", role).to_lowercase()`
-                // for every RoleId variant so this swap is
-                // provably safe and stays safe.
-                specialty: ctx.role.as_str().to_string(),
-                display_name: ctx.identity.agent_name.clone(),
-            },
-            turn_context,
-            message_id: Uuid::new_v4(),
-            message_text: msg.text.clone(),
-            other_persona_names,
-            // #195 slice 2: cached per-session prompt. The
-            // PersonaContext baked this once at construction via
-            // `build_persona_system_prompt`; here we just lease
-            // the Arc and copy the bytes once for the RespondInput
-            // boundary. The variadic format!() call this replaces
-            // was the canonical reinit-on-hot-path waste per
-            // [[init-once-handle-then-lease-zero-copy-refs]].
-            // Task #149 will lift this further by passing the
-            // pre-tokenized form across the boundary too.
-            system_prompt: ctx.system_prompt.as_ref().to_string(),
-            model: ctx.profile.model_id.clone(),
-            is_voice: false,
-            message_media: Vec::new(),
-            capabilities: std::collections::HashSet::new(),
-            recalled_engrams,
-            room_roster,
-            room_doctrine,
-        };
+        // Room-doctrine grounding (the [Room operating doctrine] block) now reaches
+        // the prompt via the WorkspaceCycle's RagSourceFaculty bridge (task #12), as
+        // does the room roster — not threaded through a per-turn RespondInput. The
+        // brain owns its own grounding. ([[rag-source-faculty-convergence]])
 
         // 3. Run the cognition cycle. The persona may speak or stay
         //    silent — both are first-class outcomes per the
@@ -690,7 +591,7 @@ async fn serve_persona_loop_inner(
         // dedicated `class = "timing", seam = "persona.respond"` event
         // to the JsonlProbeFileSink. Operators tailing the JSONL get
         // per-turn latency on the canonical timing channel — pair with
-        // the per-stage `persona.response.*` probes inside respond()
+        // the per-stage `persona.response.*` probes inside the cycle
         // for a full breakdown by seam. Doctrine
         // `[[jtag-probes-are-rtos-debugger]]`: every meaningful seam
         // should emit timing on the same wire so multi-persona
@@ -701,8 +602,8 @@ async fn serve_persona_loop_inner(
         // per-persona cycle (registered at spawn), run it over the consolidated
         // burst, and take its `Decision` as the turn. The model judges whether to
         // speak; Rust no longer gates cognition ([[no-rust-gates-around-cognition]]).
-        // respond() remains a defensive fallback ONLY when no cycle is registered
-        // (should not happen) so no persona goes mute during the transition.
+        // No cycle registered ⇒ a spawn wiring bug ⇒ fail loud, no legacy respond()
+        // fallback ([[fallbacks-are-illegal-fail-loud]]).
         //
         // The burst INCLUDES the persona's OWN prior posts, ATTRIBUTED by name — a
         // mind must see what IT said to follow context and avoid repeating itself.
@@ -797,39 +698,30 @@ async fn serve_persona_loop_inner(
                 }
             }
             None => {
-                // Defensive fallback: no WorkspaceCycle registered (should not
-                // happen — the supervisor registers one at spawn). Use the legacy
-                // respond() path so the persona isn't mute.
-                let response_result = crate::time_probe!(
-                    "persona.respond",
-                    crate::persona::response::respond(respond_input)
-                );
+                // No WorkspaceCycle for a persona actively servicing turns means the
+                // supervisor's spawn-time `register_from_cfg` never ran or was evicted
+                // — a wiring bug, not a transient. Fail loud and drop the turn; the
+                // legacy `respond()` fallback is deleted
+                // ([[fallbacks-are-illegal-fail-loud]]: a fallback fires 100% on the
+                // failure it hides — here it would silently mask a dead brain by
+                // routing cognition down a parallel path that no longer exists for the
+                // living persona).
                 phase_timings.respond_ms = respond_started.elapsed().as_millis() as u64;
-                match response_result {
-                    Ok(crate::persona::response::PersonaResponse::Spoke { text, .. }) => text,
-                    Ok(crate::persona::response::PersonaResponse::Silent { reason, .. }) => {
-                        tracing::info!(
-                            lamport = msg.lamport,
-                            reason = %reason,
-                            "persona chose silence (legacy fallback)"
-                        );
-                        outcome.turns_skipped += 1;
-                        continue;
-                    }
-                    Err(e) => {
-                        tracing::warn!(lamport = msg.lamport, error = %e, "respond cycle failed");
-                        crate::probe!(
-                            class = "persona.turn.error",
-                            persona = %ctx.identity.agent_name,
-                            lamport = msg.lamport,
-                            stage = "respond",
-                            error = %e,
-                            "respond cycle failed"
-                        );
-                        outcome.turns_errored += 1;
-                        continue;
-                    }
-                }
+                tracing::error!(
+                    persona = %ctx.identity.agent_name,
+                    persona_id = %ctx.identity.persona_id,
+                    lamport = msg.lamport,
+                    "no WorkspaceCycle registered — spawn wiring bug; dropping turn (no respond() fallback)"
+                );
+                crate::probe!(
+                    class = "persona.turn.error",
+                    persona = %ctx.identity.agent_name,
+                    lamport = msg.lamport,
+                    stage = "no-cycle",
+                    "no WorkspaceCycle registered; failing loud (no respond() fallback)"
+                );
+                outcome.turns_errored += 1;
+                continue;
             }
         };
 
