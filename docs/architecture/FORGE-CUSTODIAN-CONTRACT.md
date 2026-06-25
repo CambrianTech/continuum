@@ -1,6 +1,6 @@
 # Forge Custodian Contract — Contract C, and how it grid-negotiates
 
-**Status:** in progress. Pass 1 + Pass 2 + Pass 3 landed. Pass 1/2 — `forge::protocol`
+**Status:** in progress. Pass 1 + Pass 2 + Pass 3 + Pass 4 landed. Pass 1/2 — `forge::protocol`
 single-sources the wire + `/health` contract-version handshake (custodian a real
 `[[bin]]`), and the gguf-lora export speaks Contract C through a clean de-`unsloth`
 `forge::custodian_client` aimed at the custodian's own endpoint. **Pass 3 (commit
@@ -11,9 +11,12 @@ wedged subprocess), R4 honest `/health` (additive `ready`/`slots_total`/
 in-flight via `with_graceful_shutdown`), R6 content-addressed idempotency
 (`job_id = sha256(weights ⊕ base ⊕ outtype)` in the output filename → identical
 re-POST short-circuits). Proven by a daemon-boot integration test (real binary +
-real client over loopback). **Pass 4 (node-aware handle) is next.** This doc is the
-single source of truth for the **forge custodian seam** and the plan to make it
-grid-negotiable.
+real client over loopback). **Pass 4 (commit `d06f41d71`)** made the gene handle
+node-aware: `forge::gene_handle::GeneHandle` (structured `GeneLocator`, `AlloyHash`
+provenance, `TrustLevel` scope) is the grid extension of the local `TrainedAdapter`
+record — the `#17` two-handle reconciliation, resolved in the forge context (§4).
+**Pass 5 (routable `ForgeEndpoint`) is next.** This doc is the single source of
+truth for the **forge custodian seam** and the plan to make it grid-negotiable.
 
 > Joel, 2026-06-25: *"Inference and lora training can be grid negotiated if your
 > daemons are any good. So we get the sum of all the parts. Will take real
@@ -153,17 +156,48 @@ string-matches the served continuum registry id (the id-mismatch problem).
 
 The handle already exists: `forge::adapter_manifest::TrainedAdapter { alias,
 path, base_model_id }` — the honest gene→served-model record, written atomically
-by the producer. Contract C's grid extension is to make the handle **node-aware**:
+by the producer. Contract C's grid extension makes the handle **node-aware**.
+**Landed in Pass 4 as `forge::gene_handle::GeneHandle`** (commit `d06f41d71`):
 
 ```
-TrainedAdapter (today, local)          GeneHandle (grid extension)
+TrainedAdapter (today, local)          GeneHandle (grid extension, AS BUILT)
   alias                                  alias
-  path            (local fs path)   →    locator: HandleRef     // GRID-ADDRESSING-AND-ROUTING URI
+  path            (local fs path)   →    locator: GeneLocator          // byte custody, structured
   base_model_id                          base_model_id
-                                         node: PeerId           // which custodian holds the bytes
-                                         provenance: AlloyHash  // FORGE-ALLOY-SPEC — what it is, how made
-                                         trust_scope: TrustTier // GridTrustAuthPolicy boundary it may cross
+                                         provenance: Option<AlloyHash> // FORGE-ALLOY-SPEC — what/how, None until attested
+                                         trust_scope: TrustLevel        // GridTrustAuthPolicy boundary it may cross
+
+GeneLocator = Local { path }                 // bytes on THIS node (degenerate local case)
+            | Node  { node: PeerId, path }    // bytes held by a remote forge node
 ```
+
+**The type choices reconcile the §4 sketch against what actually exists in
+tree** — this IS the `#17` two-handle reconciliation, resolved in the forge
+context:
+- **locator is a structured `GeneLocator`, not a `HandleRef` and not a
+  `CommandUri`.** `HandleRef` (`runtime/cell_shapes.rs`) is a *state-correlation
+  envelope* (owner/id/type_tag) for live stateful sequences — wrong semantics for
+  a gene at rest. `CommandUri` (`routing/command_uri.rs`) addresses a *command*
+  (its `path` is a command path like `data/list`), not bytes on a filesystem.
+  Byte custody is its own honest concept: `{which node, what path}`. The holding
+  peer folds into the `Node` variant (+ a `GeneHandle::node()` accessor), so no
+  top-level `node` field has to lie (point at self) for a local gene. `Node`'s
+  peer maps onto GRID-ADDRESSING-AND-ROUTING when Pass 6 wires transport; the
+  structured form stays the source of truth (structured > stringly-typed).
+- **provenance is an `AlloyHash` newtype** over the `sha256:…` string the
+  forge-alloy spec already carries as a bare `String` on `ForgeArtifact` — wrapped
+  so it can't be confused with any other id (mirrors `PeerId(Uuid)`). `Option`,
+  `None` until the gene is alloy-attested (a locally-forged gene predates its
+  alloy).
+- **trust_scope reuses `grid::node::TrustLevel`** (the GridTrustAuthPolicy
+  boundary enum — Blocked/Provisional/Trusted/Owner); there is no separate
+  `TrustTier` type to invent.
+
+`TrainedAdapter::as_gene_handle()` is the honest local projection
+(`Local`-located, `Owner`-scoped, un-attested). The type round-trips the wire
+(ts-rs bindings generated) because it must — it crosses back to a requester while
+the bytes stay node-local. Pass 5 (the endpoint table) and Pass 6 (grid
+transport) consume it.
 
 On the grid: the gene bytes stay on the forge node under its `save_directory`;
 what crosses back to the requester is a `GeneHandle`. To actually *page it in*,
@@ -284,8 +318,18 @@ Done is done; everything below the line is the plan.
    and drives it with the REAL `ForgeCustodianHttp` client: honest `/health`
    (slots=3, ready, matching contract version), the client handshake passes over the
    wire, and SIGTERM exits 0 gracefully.
-4. **Pass 4 — node-aware handle.** Extend `adapter_manifest::TrainedAdapter` →
-   `GeneHandle` (locator `HandleRef`, `node`, `provenance`, `trust_scope`, §4).
+4. ✅ **Pass 4 — node-aware handle.** (`d06f41d71`) Extended
+   `adapter_manifest::TrainedAdapter` → `forge::gene_handle::GeneHandle` (§4),
+   reconciling the sketched field types against what exists in tree (the `#17`
+   two-handle reconciliation, in the forge context): **locator** is a structured
+   `GeneLocator { Local{path} | Node{node:PeerId,path} }` — NOT `HandleRef` (a
+   state-correlation envelope, wrong semantics) and NOT `CommandUri` (addresses a
+   command path, not bytes); the holding peer folds into the `Node` variant + a
+   `node()` accessor so no top-level field lies for a local gene. **provenance** is
+   an `AlloyHash` newtype (Option, None until attested). **trust_scope** reuses
+   `grid::node::TrustLevel`. `TrainedAdapter::as_gene_handle()` is the honest local
+   projection (Local/Owner/un-attested); ts-rs bindings generated; 3 unit + 3
+   export-binding tests green, full forge suite 79 passed.
 5. **Pass 5 — routable endpoint.** Generalize `ForgeCapability` → `ForgeEndpoint`
    (§5); announce over the grid bus; the fabric discovers + health-probes + scores.
 6. **Pass 6 — grid transport impl.** A `GridForgeCustodian` impl of the
