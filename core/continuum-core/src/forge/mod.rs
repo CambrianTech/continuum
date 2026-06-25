@@ -10,6 +10,7 @@
 
 pub mod adapter_manifest;
 pub mod artifact;
+pub mod custodian_client;
 pub mod lora_convert;
 pub mod protocol;
 pub mod recipe;

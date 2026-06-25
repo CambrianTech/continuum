@@ -42,7 +42,8 @@ use continuum_core::forge::lora_convert::mlx_adapters_to_peft;
 // the SERVER half; it imports the SAME request/response/health types a client
 // imports.
 use continuum_core::forge::protocol::{
-    ExportResult, GgufLoraRequest, HealthResponse, ROUTE_GGUF_LORA, ROUTE_HEALTH,
+    ExportResult, GgufLoraRequest, HealthResponse, DEFAULT_CUSTODIAN_ADDR, ROUTE_GGUF_LORA,
+    ROUTE_HEALTH,
 };
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
@@ -50,8 +51,10 @@ use std::process::Command;
 
 #[tokio::main]
 async fn main() {
-    let addr =
-        config_env::read("FORGE_CUSTODIAN_ADDR").unwrap_or_else(|| "127.0.0.1:8899".to_string());
+    // The default lives in the contract (DEFAULT_CUSTODIAN_ADDR) so the client
+    // connects to exactly where this binary binds.
+    let addr = config_env::read("FORGE_CUSTODIAN_ADDR")
+        .unwrap_or_else(|| DEFAULT_CUSTODIAN_ADDR.to_string());
 
     let app = Router::new()
         .route(ROUTE_HEALTH, get(health))

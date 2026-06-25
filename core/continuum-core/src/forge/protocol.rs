@@ -45,6 +45,11 @@ pub const ROUTE_HEALTH: &str = "/health";
 /// One capability today; a custodian that grows formats appends, never renames.
 pub const CAPABILITY_GGUF_LORA: &str = "gguf-lora";
 
+/// Default bind/connect address for the forge custodian. The custodian binary
+/// BINDS here (overridable via `FORGE_CUSTODIAN_ADDR`); the client CONNECTS here.
+/// ONE source so the two halves can't disagree on where the custodian lives.
+pub const DEFAULT_CUSTODIAN_ADDR: &str = "127.0.0.1:8899";
+
 /// `POST /api/export/export/gguf-lora` body — the ONE shared definition.
 ///
 /// Stateless: `checkpoint` names the trained MLX run directly (holds

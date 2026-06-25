@@ -28,6 +28,7 @@
 //! shape end-to-end without claiming to forge anything. Phase 5
 //! replaces the stub with the real executor.
 
+use crate::forge::custodian_client::ForgeCustodianHttp;
 use crate::forge::{ForgeArtifact, ForgeRecipe};
 use crate::inference::unsloth_forge::{
     to_body, ForgeCustodian, ForgeTrainRequest, GenomeFormat, PackageRequest, UnslothForgeHttp,
@@ -110,7 +111,16 @@ impl ServiceModule for ForgeModule {
             "forge/export" => {
                 let parsed: ForgeExportParams = serde_json::from_value(params)
                     .map_err(|e| format!("forge/export: invalid params: {e}"))?;
-                run_export(&UnslothForgeHttp::from_config(), parsed).await
+                // gguf-lora is served by the continuum forge CUSTODIAN (Contract C),
+                // the only thing that can turn a trained MLX adapter into a pageable
+                // GGUF LoRA. lora/gguf still route to unsloth until #52 completes.
+                // Different capabilities live on different daemons — so the format
+                // picks the custodian here, at the one dispatch point.
+                if parsed.format == "gguf-lora" {
+                    run_export_gguf_lora(&ForgeCustodianHttp::from_config(), &parsed).await
+                } else {
+                    run_export(&UnslothForgeHttp::from_config(), parsed).await
+                }
             }
             "forge/probe" => {
                 // DISCOVER the custodian's current capability — the self-organizing
@@ -373,33 +383,23 @@ fn default_lora_outtype() -> String {
     "f16".to_string()
 }
 
-/// Resolve the organism's `format`/`quantization` params into the custodian's
-/// genetic [`GenomeFormat`] outcome. Pure — the format string is the only
-/// organism-side enum; everything below (load/fuse/convert) is the custodian's.
-/// `gguf-lora` REQUIRES `base_model_id`: a GGUF LoRA with no base is meaningless,
-/// so a missing base is a LOUD error here, never a silent default.
-fn package_format(
-    format: &str,
-    quantization: &str,
-    base_model_id: Option<&str>,
-    outtype: &str,
-) -> Result<GenomeFormat, String> {
+/// Resolve the organism's `format`/`quantization` params into the unsloth
+/// custodian's genetic [`GenomeFormat`] outcome. Pure. Handles ONLY the
+/// unsloth-served formats (`lora`, `gguf`); `gguf-lora` is served by the
+/// continuum forge custodian over Contract C ([`run_export_gguf_lora`]) and is
+/// dispatched away before reaching here — so this rejects it loudly as a guard
+/// against a future caller routing it down the wrong (unsloth) path.
+fn package_format(format: &str, quantization: &str) -> Result<GenomeFormat, String> {
     match format {
         "lora" => Ok(GenomeFormat::Lora { base_model_id: None }),
         "gguf" => Ok(GenomeFormat::Gguf { quantization: quantization.to_string() }),
-        "gguf-lora" => {
-            let base = base_model_id.ok_or_else(|| {
-                "format 'gguf-lora' requires base_model_id — the converter needs the base \
-                 architecture to produce a loadable adapter"
-                    .to_string()
-            })?;
-            Ok(GenomeFormat::GgufLora {
-                base_model_id: base.to_string(),
-                outtype: outtype.to_string(),
-            })
-        }
+        "gguf-lora" => Err(
+            "format 'gguf-lora' is served by the forge custodian (Contract C), not this path \
+             — route via run_export_gguf_lora"
+                .to_string(),
+        ),
         other => Err(format!(
-            "unsupported export format: {other} (lora|gguf|gguf-lora) — the custodian packages these"
+            "unsupported export format: {other} (lora|gguf via unsloth; gguf-lora via custodian)"
         )),
     }
 }
@@ -411,7 +411,7 @@ async fn run_export(
     custodian: &dyn ForgeCustodian,
     p: ForgeExportParams,
 ) -> Result<CommandResult, String> {
-    let format = package_format(&p.format, &p.quantization, p.base_model_id.as_deref(), &p.outtype)?;
+    let format = package_format(&p.format, &p.quantization)?;
     let result = custodian
         .package(&PackageRequest {
             checkpoint: p.checkpoint.clone(),
@@ -430,6 +430,56 @@ async fn run_export(
     }
     Ok(CommandResult::Json(json!({
         "format": p.format,
+        "checkpoint": p.checkpoint,
+        "save_directory": p.save_directory,
+        "message": result.message,
+        "details": result.details,
+    })))
+}
+
+/// `forge/export` for the `gguf-lora` outcome — served by the continuum forge
+/// CUSTODIAN over Contract C ([`crate::forge::protocol`]), NOT unsloth (which
+/// cannot produce a GGUF LoRA — the whole reason the custodian binary exists).
+///
+/// This is the corrected supply path for the genome page-in: it serializes the
+/// STATELESS [`GgufLoraRequest`](crate::forge::protocol::GgufLoraRequest)
+/// (checkpoint-in-body, no prior load-checkpoint, no hub fields), verifies the
+/// custodian speaks our contract version at the `/health` handshake, and fails
+/// LOUD on a missing base, an unreachable custodian, or a non-success envelope.
+/// The emitted gene is exactly what `cognition/eval` pages into a live persona to
+/// measure LIFT.
+async fn run_export_gguf_lora(
+    custodian: &dyn crate::forge::custodian_client::ForgeCustodian,
+    p: &ForgeExportParams,
+) -> Result<CommandResult, String> {
+    // A GGUF LoRA with no base is meaningless — the converter needs the base
+    // architecture. Reject loudly at the boundary, never silently default.
+    let base_model_id = p.base_model_id.clone().ok_or_else(|| {
+        "format 'gguf-lora' requires base_model_id — the converter needs the base \
+         architecture to produce a loadable adapter"
+            .to_string()
+    })?;
+
+    // Catch contract drift at the handshake, not as a malformed body deep in a
+    // conversion (Contract C, R1/R2).
+    custodian.ensure_contract().await.map_err(|e| e.to_string())?;
+
+    let req = crate::forge::protocol::GgufLoraRequest {
+        checkpoint: p.checkpoint.clone(),
+        save_directory: p.save_directory.clone(),
+        base_model_id,
+        outtype: p.outtype.clone(),
+    };
+    let result = custodian
+        .export_gguf_lora(&req)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if !result.success {
+        return Err(format!("custodian export (gguf-lora) failed: {}", result.message));
+    }
+    Ok(CommandResult::Json(json!({
+        "format": "gguf-lora",
         "checkpoint": p.checkpoint,
         "save_directory": p.save_directory,
         "message": result.message,
@@ -913,13 +963,56 @@ mod tests {
         assert_eq!(pkgs[0].format, GenomeFormat::Gguf { quantization: "Q5_K_M".into() });
     }
 
-    // what this catches: the gguf-lora path threads base_model_id + outtype into the
-    // GenomeFormat — this is the SUPPLY contract for the genome page-in (the gene
-    // cognition/eval pages in). A regression here = the forged gene is never asked
-    // for in the loadable `--lora` form and every LIFT is unmeasurable.
+    /// Records the Contract C ([`crate::forge::protocol`]) gguf-lora requests the
+    /// organism sends to the forge CUSTODIAN — so we assert the stateless wire
+    /// shape (checkpoint-in-body, base, outtype) without a network. Distinct from
+    /// `RecordingCustodian` (the unsloth trait) because gguf-lora is a different
+    /// daemon on a different contract.
+    #[derive(Default)]
+    struct RecordingForgeCustodian {
+        exports: Mutex<Vec<crate::forge::protocol::GgufLoraRequest>>,
+        succeed: bool,
+    }
+    impl RecordingForgeCustodian {
+        fn ok() -> Self {
+            Self { succeed: true, ..Default::default() }
+        }
+    }
+    #[async_trait]
+    impl crate::forge::custodian_client::ForgeCustodian for RecordingForgeCustodian {
+        async fn health(
+            &self,
+        ) -> Result<
+            crate::forge::protocol::HealthResponse,
+            crate::forge::custodian_client::ForgeCustodianError,
+        > {
+            Ok(crate::forge::protocol::HealthResponse::ok_gguf_lora())
+        }
+        async fn export_gguf_lora(
+            &self,
+            req: &crate::forge::protocol::GgufLoraRequest,
+        ) -> Result<
+            crate::forge::protocol::ExportResult,
+            crate::forge::custodian_client::ForgeCustodianError,
+        > {
+            self.exports.lock().unwrap().push(req.clone());
+            Ok(crate::forge::protocol::ExportResult {
+                success: self.succeed,
+                message: "packaged".into(),
+                ..Default::default()
+            })
+        }
+    }
+
+    // what this catches: the gguf-lora path sends the STATELESS Contract C request
+    // (checkpoint named in body, base + outtype threaded) to the forge custodian —
+    // this is the SUPPLY contract for the genome page-in (the gene cognition/eval
+    // pages in). The pre-Pass-2 bug POSTed a checkpoint-less body to the WRONG
+    // (unsloth) endpoint; a regression here = the gene is never produced loadably
+    // and every LIFT is unmeasurable.
     #[tokio::test]
-    async fn forge_export_gguf_lora_threads_base_and_outtype() {
-        let cust = RecordingCustodian::ok();
+    async fn forge_export_gguf_lora_sends_stateless_contract_c_request() {
+        let cust = RecordingForgeCustodian::ok();
         let p = ForgeExportParams {
             checkpoint: "/ckpt".into(),
             save_directory: "/out".into(),
@@ -930,24 +1023,21 @@ mod tests {
             max_seq_length: 2048,
             load_in_4bit: true,
         };
-        run_export(&cust, p).await.unwrap();
-        let pkgs = cust.packages.lock().unwrap();
-        assert_eq!(pkgs.len(), 1);
-        assert_eq!(
-            pkgs[0].format,
-            GenomeFormat::GgufLora {
-                base_model_id: "unsloth/Qwen2.5-0.5B-Instruct".into(),
-                outtype: "f16".into(),
-            }
-        );
+        run_export_gguf_lora(&cust, &p).await.unwrap();
+        let reqs = cust.exports.lock().unwrap();
+        assert_eq!(reqs.len(), 1, "exactly one export call");
+        assert_eq!(reqs[0].checkpoint, "/ckpt", "checkpoint named in the body (stateless)");
+        assert_eq!(reqs[0].save_directory, "/out");
+        assert_eq!(reqs[0].base_model_id, "unsloth/Qwen2.5-0.5B-Instruct");
+        assert_eq!(reqs[0].outtype, "f16");
     }
 
     // what this catches: a gguf-lora export with NO base is rejected LOUDLY at the
-    // organism boundary (the converter cannot make a loadable adapter without the
-    // base architecture) — never silently defaulted. Fail-loud doctrine.
+    // organism boundary BEFORE the custodian is touched (the converter cannot make
+    // a loadable adapter without the base architecture) — never silently defaulted.
     #[tokio::test]
     async fn forge_export_gguf_lora_without_base_fails_loud() {
-        let cust = RecordingCustodian::ok();
+        let cust = RecordingForgeCustodian::ok();
         let p = ForgeExportParams {
             checkpoint: "/ckpt".into(),
             save_directory: "/out".into(),
@@ -958,9 +1048,28 @@ mod tests {
             max_seq_length: 2048,
             load_in_4bit: true,
         };
-        let err = run_export(&cust, p).await.expect_err("missing base must error");
+        let err = run_export_gguf_lora(&cust, &p).await.expect_err("missing base must error");
         assert!(err.contains("base_model_id"), "got: {err}");
-        assert_eq!(cust.packages.lock().unwrap().len(), 0, "custodian never called");
+        assert_eq!(cust.exports.lock().unwrap().len(), 0, "custodian never called");
+    }
+
+    // what this catches: a custodian whose gguf-lora export fails is surfaced
+    // LOUDLY (no silent no-op) — the same fail-loud contract as the unsloth path.
+    #[tokio::test]
+    async fn forge_export_gguf_lora_fails_loud_when_custodian_fails() {
+        let cust = RecordingForgeCustodian::default(); // succeed=false
+        let p = ForgeExportParams {
+            checkpoint: "/ckpt".into(),
+            save_directory: "/out".into(),
+            format: "gguf-lora".into(),
+            quantization: "Q4_K_M".into(),
+            base_model_id: Some("b".into()),
+            outtype: "f16".into(),
+            max_seq_length: 2048,
+            load_in_4bit: true,
+        };
+        let err = run_export_gguf_lora(&cust, &p).await.expect_err("must error");
+        assert!(err.contains("gguf-lora) failed"), "got: {err}");
     }
 
     // what this catches: a custodian that fails the package is surfaced LOUDLY (no
