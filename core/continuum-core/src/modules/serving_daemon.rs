@@ -27,8 +27,8 @@ use crate::cognition::serving_plan::{
 };
 use crate::gpu::GpuMemoryManager;
 use crate::inference::llama_server::{
-    ensure_model_serving, serving_v1_url, EnsureOutcome, LlamaServerControl, LlamaServerProcess,
-    ServingSnapshot, ServingTarget,
+    ensure_model_serving, serving_v1_url, AdapterEntry, EnsureOutcome, LlamaServerControl,
+    LlamaServerProcess, ServingSnapshot, ServingTarget,
 };
 use crate::persona::hw_tier_descriptor::HwTierCategory;
 use crate::model_registry::types::{Capability, Model};
@@ -237,10 +237,48 @@ impl ServingDaemonModule {
             }
         };
 
+        // The trained genome layers registered for this base model — which genes
+        // are loadable into the serving catalog (the `--lora` set). Read from the
+        // producer-written manifest, keyed by the CONTINUUM base id (the HF base
+        // in each gene's PEFT config never matches the served id, so a directory
+        // scan can't make this association — see forge::adapter_manifest). An
+        // unreadable/corrupt manifest degrades to base-only HERE (logged loud) so
+        // the reconcile tick never panics; a MISSING gene file still fails loud at
+        // spawn (AdapterNotFound). Empty = base model only, the legitimate state.
+        let desired_adapters: Vec<AdapterEntry> = match crate::forge::adapter_manifest::load() {
+            Ok(all) => crate::forge::adapter_manifest::for_base(&all, &desired)
+                .into_iter()
+                .map(|a| AdapterEntry {
+                    alias: a.alias,
+                    path: a.path,
+                })
+                .collect(),
+            Err(e) => {
+                crate::probe!(
+                    class = "serving.adapters",
+                    desired = desired.as_str(),
+                    error = e.as_str(),
+                    "adapter manifest unreadable — serving base model only this tick",
+                );
+                Vec::new()
+            }
+        };
+        let mut desired_adapter_paths: Vec<String> = desired_adapters
+            .iter()
+            .map(|a| a.path.to_string_lossy().into_owned())
+            .collect();
+        desired_adapter_paths.sort();
+
         {
             let live = self.serving_tx.borrow();
-            if live.ready && live.active_model.as_deref() == Some(desired.as_str()) {
-                return None; // already serving the right model — no relaunch
+            // Already serving the right model AND the right genome set → no
+            // relaunch. The genome comparison is what makes a freshly-trained gene
+            // take effect: same model id + new gene = set change = relaunch.
+            if live.ready
+                && live.active_model.as_deref() == Some(desired.as_str())
+                && live.adapters == desired_adapter_paths
+            {
+                return None;
             }
         }
 
@@ -264,6 +302,7 @@ impl ServingDaemonModule {
         let target = ServingTarget {
             model,
             context_window: served_ctx,
+            adapters: desired_adapters,
         };
 
         // One reconcile at a time. If the swap finds `true`, another is already
@@ -278,7 +317,7 @@ impl ServingDaemonModule {
         let bus = self.bus.get().cloned();
         Some(tokio::spawn(async move {
             let outcome = ensure_model_serving(server.as_ref(), &target).await;
-            let snapshot = snapshot_from_outcome(&outcome, &desired);
+            let snapshot = snapshot_from_outcome(&outcome, &desired, &desired_adapter_paths);
             crate::probe!(
                 class = "serving.reconcile",
                 desired = desired.as_str(),
@@ -458,12 +497,19 @@ pub fn detect_tier(gpu_name: &str) -> (HwCapabilityTier, HwTierCategory, &'stati
 /// Pure (no IO) so the mapping is unit-tested directly. A live/spawned model is
 /// `ready` with the served base url; a degraded reconcile publishes "nothing
 /// live" — never a half-true "ready but no model" ([[fallbacks-are-illegal-fail-loud]]).
-fn snapshot_from_outcome(outcome: &EnsureOutcome, desired: &str) -> ServingSnapshot {
+fn snapshot_from_outcome(
+    outcome: &EnsureOutcome,
+    desired: &str,
+    adapters: &[String],
+) -> ServingSnapshot {
     match outcome {
         EnsureOutcome::AlreadyServing | EnsureOutcome::Spawned { .. } => ServingSnapshot {
             active_model: Some(desired.to_string()),
             ready: true,
             base_url: serving_v1_url(),
+            // The genome set now live — feeds the next reconcile's relaunch guard
+            // and gives readers the active genome without probing the process.
+            adapters: adapters.to_vec(),
         },
         EnsureOutcome::Degraded { .. } => ServingSnapshot::empty(),
     }
@@ -633,6 +679,9 @@ mod tests {
         async fn active_model(&self) -> Result<Option<String>, LlamaServerError> {
             Err(LlamaServerError::Unreachable("test: nothing up".into()))
         }
+        async fn active_adapters(&self) -> Result<Vec<String>, LlamaServerError> {
+            Ok(Vec::new())
+        }
         async fn serve(&self, _target: &ServingTarget) -> Result<(), LlamaServerError> {
             self.serves.fetch_add(1, Ordering::SeqCst);
             if self.ok {
@@ -683,19 +732,29 @@ mod tests {
     // publishes "nothing live", never a half-true ready-with-no-model.
     #[test]
     fn snapshot_mapping_is_honest() {
-        let up = snapshot_from_outcome(&EnsureOutcome::Spawned { model: "m".into() }, "coder-14b");
+        let genes = vec!["/genes/a.gguf".to_string()];
+        let up = snapshot_from_outcome(
+            &EnsureOutcome::Spawned { model: "m".into() },
+            "coder-14b",
+            &genes,
+        );
         assert_eq!(up.active_model.as_deref(), Some("coder-14b"));
         assert!(up.ready);
         assert!(up.base_url.ends_with("/v1"));
+        assert_eq!(up.adapters, genes, "live snapshot carries the loaded genome set");
 
-        let already = snapshot_from_outcome(&EnsureOutcome::AlreadyServing, "coder-14b");
+        let already = snapshot_from_outcome(&EnsureOutcome::AlreadyServing, "coder-14b", &genes);
         assert_eq!(already.active_model.as_deref(), Some("coder-14b"));
         assert!(already.ready);
 
-        let degraded =
-            snapshot_from_outcome(&EnsureOutcome::Degraded { reason: "x".into() }, "coder-14b");
+        let degraded = snapshot_from_outcome(
+            &EnsureOutcome::Degraded { reason: "x".into() },
+            "coder-14b",
+            &genes,
+        );
         assert_eq!(degraded.active_model, None, "degraded → nothing live");
         assert!(!degraded.ready);
+        assert!(degraded.adapters.is_empty(), "degraded → no genome claimed");
     }
 
     // what this catches: a published plan drives a reconcile that brings the
@@ -733,6 +792,7 @@ mod tests {
             active_model: Some("coder-14b".into()),
             ready: true,
             base_url: serving_v1_url(),
+            adapters: Vec::new(),
         });
         let budget = HostBudget { usable_bytes: 45 * GB, perf_cores: 6 };
         let candidates = vec![footprint_from_parts("coder-14b", 9 * GB, 8192, true).unwrap()];
@@ -755,6 +815,7 @@ mod tests {
             active_model: Some("stale".into()),
             ready: true,
             base_url: serving_v1_url(),
+            adapters: Vec::new(),
         });
         let budget = HostBudget { usable_bytes: 45 * GB, perf_cores: 6 };
         daemon.publish_plan(budget, &[]); // no candidates → plan None

@@ -8,6 +8,7 @@
 //! `IntegrityAttestation` (currently `serde_json::Value` blobs). Phase 3:
 //! entity registry registration plus the `forge/run` IPC.
 
+pub mod adapter_manifest;
 pub mod artifact;
 pub mod lora_convert;
 pub mod recipe;

@@ -18,4 +18,11 @@ ready: boolean,
 /**
  * The `/v1` base url personas point their inference adapter at.
  */
-base_url: string, };
+base_url: string, 
+/**
+ * The LoRA genome layers loaded into the serving catalog (sorted paths).
+ * Empty = base model only. Lets a reader (and the reconcile guard) see WHICH
+ * genome is live without probing the process. `serde(default)` keeps older
+ * persisted snapshots readable.
+ */
+adapters: Array<string>, };

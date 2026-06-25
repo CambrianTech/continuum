@@ -83,6 +83,25 @@ pub struct ServingTarget {
     /// model's own trained ceiling. The deliberation faculty keeps its prompt
     /// inside this so llama-server never 500s ("Context size has been exceeded").
     pub context_window: u32,
+    /// The trained LoRA genome layers to load into the serving catalog at spawn
+    /// (`llama-server --lora <path>` per entry). This is the SET — which genes
+    /// are *loadable*; the per-request `"lora":[{id,scale}]` body field decides
+    /// which page IN for a given turn. llama.cpp has no hot-load API, so a change
+    /// to this set is a relaunch (rare — genes are produced post-training);
+    /// page-in/out within a loaded set never relaunches. Empty = base model only
+    /// (the legitimate no-genes-trained state, NOT a fallback).
+    pub adapters: Vec<AdapterEntry>,
+}
+
+/// One LoRA genome layer to load into the serving catalog at spawn. The `path`
+/// is llama.cpp's load identity (what `--lora` takes and what the per-request
+/// resolver matches against); the `alias` is ours, for logs and the snapshot.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AdapterEntry {
+    /// Human label for logs/observability (the gene's name).
+    pub alias: String,
+    /// Absolute path to the GGUF-lora the server loads via `--lora`.
+    pub path: PathBuf,
 }
 
 impl ServingTarget {
@@ -90,6 +109,20 @@ impl ServingTarget {
     /// relaunch is needed.
     pub fn model_id(&self) -> &str {
         &self.model.id
+    }
+
+    /// The adapter SET as a sorted list of path strings — the identity llama.cpp
+    /// loads by and the key [`ensure_model_serving`] compares to decide whether a
+    /// genome change requires a relaunch. Sorted so order can't spuriously trip
+    /// the diff.
+    pub fn adapter_paths(&self) -> Vec<String> {
+        let mut paths: Vec<String> = self
+            .adapters
+            .iter()
+            .map(|a| a.path.to_string_lossy().into_owned())
+            .collect();
+        paths.sort();
+        paths
     }
 }
 
@@ -169,6 +202,12 @@ pub struct ServingSnapshot {
     pub ready: bool,
     /// The `/v1` base url personas point their inference adapter at.
     pub base_url: String,
+    /// The LoRA genome layers loaded into the serving catalog (sorted paths).
+    /// Empty = base model only. Lets a reader (and the reconcile guard) see WHICH
+    /// genome is live without probing the process. `serde(default)` keeps older
+    /// persisted snapshots readable.
+    #[serde(default)]
+    pub adapters: Vec<String>,
 }
 
 impl ServingSnapshot {
@@ -178,6 +217,7 @@ impl ServingSnapshot {
             active_model: None,
             ready: false,
             base_url: serving_v1_url(),
+            adapters: Vec::new(),
         }
     }
 }
@@ -276,6 +316,12 @@ pub enum LlamaServerError {
     /// The server spawned but never became ready within the timeout.
     #[error("llama-server not ready after {0:?}: {1}")]
     NotReady(Duration, String),
+    /// A target named a LoRA genome whose GGUF is not on disk. Loud — we never
+    /// silently skip a missing `--lora` (that would serve a different genome than
+    /// the plan asked for, the wrong kind of degrade)
+    /// ([[fallbacks-are-illegal-fail-loud]]).
+    #[error("LoRA adapter file not found: {0}")]
+    AdapterNotFound(String),
 }
 
 /// Outcome of one reconcile pass. The daemon logs/publishes against this; it is
@@ -297,6 +343,14 @@ pub trait LlamaServerControl: Send + Sync {
     /// The model id the running server reports serving, or `None` if nothing is
     /// up. `Unreachable` = no server answering (a normal pre-spawn state).
     async fn active_model(&self) -> Result<Option<String>, LlamaServerError>;
+
+    /// The LoRA genome layers the running server has loaded (sorted paths — the
+    /// load identity, matching [`ServingTarget::adapter_paths`]). Empty when
+    /// nothing is up or no genes are loaded. [`ensure_model_serving`] compares
+    /// this against the desired set to detect a genome change (a new gene
+    /// trained, or one retired) that requires a relaunch — page-in/out *within* a
+    /// loaded set is per-request scale and never reaches here.
+    async fn active_adapters(&self) -> Result<Vec<String>, LlamaServerError>;
 
     /// (Re)spawn llama-server to serve `target` and block until it is ready.
     /// Switching models is a relaunch — there is no load-by-name API. The
@@ -324,7 +378,16 @@ pub async fn ensure_model_serving<C: LlamaServerControl + ?Sized>(
     };
 
     if active.as_deref() == Some(target.model_id()) {
-        return EnsureOutcome::AlreadyServing;
+        // Same base model live. Now check the loaded genome SET: a new gene (or a
+        // retired one) is a set change that llama.cpp can only honor by relaunch
+        // (no hot-load API). An unreadable adapter probe is treated as "unknown
+        // set" → relaunch to be safe, never a silent serve of a stale genome.
+        let desired = target.adapter_paths();
+        let active_adapters = ctrl.active_adapters().await.unwrap_or_default();
+        if active_adapters == desired {
+            return EnsureOutcome::AlreadyServing;
+        }
+        // else: genome set differs → fall through to relaunch.
     }
 
     match ctrl.serve(target).await {
@@ -349,6 +412,14 @@ pub struct LlamaServerProcess {
     /// The live child, if one is running. `std::sync::Mutex` (not tokio) because
     /// it is held only for the brief swap/kill, never across an await.
     child: Arc<StdMutex<Option<tokio::process::Child>>>,
+    /// The LoRA genome set (sorted paths) the CURRENT child was launched with —
+    /// the truthful record of what `/lora-adapters` holds, since llama.cpp has no
+    /// API to query it. `ensure_model_serving` compares this against the desired
+    /// set to decide a relaunch. Reset on each `serve()`. After a core restart
+    /// with a persisting server this reads empty → one safe extra relaunch
+    /// re-establishes the genome (core owns the lifecycle, so this is truthful in
+    /// the steady state).
+    served_adapters: Arc<StdMutex<Vec<String>>>,
 }
 
 impl LlamaServerProcess {
@@ -363,6 +434,7 @@ impl LlamaServerProcess {
             bin: server_bin(),
             client,
             child: Arc::new(StdMutex::new(None)),
+            served_adapters: Arc::new(StdMutex::new(Vec::new())),
         }
     }
 
@@ -442,6 +514,12 @@ impl LlamaServerControl for LlamaServerProcess {
         Ok(id)
     }
 
+    async fn active_adapters(&self) -> Result<Vec<String>, LlamaServerError> {
+        // The set we launched the current child with. llama.cpp exposes no query
+        // for `/lora-adapters` contents, so the truthful answer is what WE loaded.
+        Ok(self.served_adapters.lock().unwrap().clone())
+    }
+
     async fn serve(&self, target: &ServingTarget) -> Result<(), LlamaServerError> {
         // Resolve the GGUF from the model struct already in hand — no re-fetch by
         // id. No file → fail loud; we never serve a substitute model
@@ -449,13 +527,26 @@ impl LlamaServerControl for LlamaServerProcess {
         let gguf: PathBuf = crate::model_registry::artifacts::resolve_gguf_for_model(&target.model)
             .ok_or_else(|| LlamaServerError::ModelNotFound(target.model.id.clone()))?;
 
+        // Validate every gene file BEFORE killing the live server — a missing
+        // `--lora` is a loud failure, and we must not tear down a healthy server
+        // to launch one that will reject its own args. Fail loud, named cause.
+        for adapter in &target.adapters {
+            if !adapter.path.is_file() {
+                return Err(LlamaServerError::AdapterNotFound(format!(
+                    "{} ({})",
+                    adapter.path.display(),
+                    adapter.alias
+                )));
+            }
+        }
+
         let (host, port) = split_host_port(&self.root);
 
         // One server at a time: kill the old child before binding the port.
         self.kill_child();
 
-        let child = tokio::process::Command::new(&self.bin)
-            .arg("-m")
+        let mut cmd = tokio::process::Command::new(&self.bin);
+        cmd.arg("-m")
             .arg(&gguf)
             .arg("--alias")
             .arg(&target.model.id)
@@ -468,13 +559,22 @@ impl LlamaServerControl for LlamaServerProcess {
             .arg(target.context_window.to_string())
             // Serve embeddings from the same process so the embedder doesn't
             // need a second server. Personas' embedding adapter points here too.
-            .arg("--embeddings")
+            .arg("--embeddings");
+        // Load each trained genome layer into the `/lora-adapters` catalog at
+        // index order; the per-request `"lora":[{id,scale}]` field pages them in.
+        for adapter in &target.adapters {
+            cmd.arg("--lora").arg(&adapter.path);
+        }
+        let child = cmd
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()
             .map_err(|e| LlamaServerError::Spawn(format!("{}: {e}", self.bin)))?;
 
         *self.child.lock().unwrap() = Some(child);
+        // Remember the genome set this child was launched with — the truthful
+        // catalog record for the relaunch decision (llama.cpp can't report it).
+        *self.served_adapters.lock().unwrap() = target.adapter_paths();
 
         self.wait_ready().await
     }
@@ -506,16 +606,28 @@ mod tests {
     /// pure reconcile decision is tested without a live process.
     struct FakeControl {
         probe: Result<Option<String>, &'static str>,
+        /// The genome set the fake reports as currently loaded (sorted paths).
+        active_adapters: Vec<String>,
         serve_ok: bool,
         serves: AtomicUsize,
     }
 
     impl FakeControl {
         fn probe(probe: Result<Option<String>, &'static str>) -> Self {
-            Self { probe, serve_ok: true, serves: AtomicUsize::new(0) }
+            Self {
+                probe,
+                active_adapters: Vec::new(),
+                serve_ok: true,
+                serves: AtomicUsize::new(0),
+            }
         }
         fn serve_fails(mut self) -> Self {
             self.serve_ok = false;
+            self
+        }
+        /// Report a genome set as already loaded (the live server's catalog).
+        fn with_active_adapters(mut self, adapters: Vec<String>) -> Self {
+            self.active_adapters = adapters;
             self
         }
     }
@@ -527,6 +639,9 @@ mod tests {
                 Ok(v) => Ok(v.clone()),
                 Err(m) => Err(LlamaServerError::Unreachable(m.to_string())),
             }
+        }
+        async fn active_adapters(&self) -> Result<Vec<String>, LlamaServerError> {
+            Ok(self.active_adapters.clone())
         }
         async fn serve(&self, _target: &ServingTarget) -> Result<(), LlamaServerError> {
             self.serves.fetch_add(1, Ordering::SeqCst);
@@ -564,7 +679,22 @@ mod tests {
                 mmproj_local_path: None,
             },
             context_window: 32768,
+            adapters: Vec::new(),
         }
+    }
+
+    /// Same as [`target`] but with a genome set loaded — for the relaunch-on-
+    /// genome-change tests. Paths are the load identity the reconcile compares.
+    fn target_with_adapters(id: &str, paths: &[&str]) -> ServingTarget {
+        let mut t = target(id);
+        t.adapters = paths
+            .iter()
+            .map(|p| AdapterEntry {
+                alias: format!("gene-{p}"),
+                path: PathBuf::from(p),
+            })
+            .collect();
+        t
     }
 
     // what this catches: the desired model already being served is a NO-OP — we
@@ -585,6 +715,36 @@ mod tests {
         let outcome = ensure_model_serving(&ctrl, &target("coder-14b")).await;
         assert_eq!(outcome, EnsureOutcome::Spawned { model: "coder-14b".into() });
         assert_eq!(ctrl.serves.load(Ordering::SeqCst), 1);
+    }
+
+    // what this catches: SAME model + SAME genome set live → no relaunch. The
+    // adapter-set comparison must not spuriously relaunch a correctly-genomed
+    // server (which would kill the GPU-warm catalog every tick).
+    #[tokio::test]
+    async fn same_model_same_genome_does_not_relaunch() {
+        let ctrl = FakeControl::probe(Ok(Some("coder-14b".into())))
+            .with_active_adapters(vec!["/genes/a.gguf".into(), "/genes/b.gguf".into()]);
+        // Desired set equal but given out of order — adapter_paths() sorts, so it matches.
+        let outcome =
+            ensure_model_serving(&ctrl, &target_with_adapters("coder-14b", &["/genes/b.gguf", "/genes/a.gguf"]))
+                .await;
+        assert_eq!(outcome, EnsureOutcome::AlreadyServing);
+        assert_eq!(ctrl.serves.load(Ordering::SeqCst), 0, "no relaunch when genome set matches");
+    }
+
+    // what this catches: SAME model but a NEW gene trained (set grew) → relaunch.
+    // This is the wire that closes the genome learning loop — without the adapter
+    // comparison a freshly-trained gene with an unchanged model id would return
+    // AlreadyServing and never load into the catalog.
+    #[tokio::test]
+    async fn new_gene_triggers_relaunch_on_same_model() {
+        let ctrl = FakeControl::probe(Ok(Some("coder-14b".into())))
+            .with_active_adapters(vec!["/genes/a.gguf".into()]);
+        let outcome =
+            ensure_model_serving(&ctrl, &target_with_adapters("coder-14b", &["/genes/a.gguf", "/genes/b.gguf"]))
+                .await;
+        assert_eq!(outcome, EnsureOutcome::Spawned { model: "coder-14b".into() });
+        assert_eq!(ctrl.serves.load(Ordering::SeqCst), 1, "new gene must relaunch to repopulate the catalog");
     }
 
     // what this catches: nothing running (Unreachable) is NOT an error — it's
@@ -665,13 +825,19 @@ mod tests {
         // empty: not ready, no model → unsatisfied.
         assert!(!pred(&rx.borrow()));
         // ready but no model → STILL unsatisfied (the bug we guard against).
-        tx.send_replace(ServingSnapshot { active_model: None, ready: true, base_url: "x".into() });
+        tx.send_replace(ServingSnapshot {
+            active_model: None,
+            ready: true,
+            base_url: "x".into(),
+            adapters: Vec::new(),
+        });
         assert!(!pred(&rx.borrow()));
         // not-ready but has a model → unsatisfied.
         tx.send_replace(ServingSnapshot {
             active_model: Some("coder".into()),
             ready: false,
             base_url: "x".into(),
+            adapters: Vec::new(),
         });
         assert!(!pred(&rx.borrow()));
         // ready AND a model → satisfied, and wait_for resolves to it at once.
@@ -679,6 +845,7 @@ mod tests {
             active_model: Some("coder".into()),
             ready: true,
             base_url: "x".into(),
+            adapters: Vec::new(),
         });
         let got = tokio::time::timeout(Duration::from_millis(100), rx.wait_for(pred))
             .await
