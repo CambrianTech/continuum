@@ -114,12 +114,23 @@ client and lets `modules/forge.rs` / `inference/model_commands.rs` route onto
 Contract C. **Pass 3** = R3–R6 on the custodian binary (bounds, health detail,
 shutdown, probes, idempotency).
 
-**The standing trespass to repair (from the fabric doc, §2):** `modules/forge.rs`
-currently custodies bytes under `~/.continuum/forge/*` and shells `mlx_lm.fuse`
-itself — custodian work living in the organism. Pass 2/3 relocate those byte-ops
-behind Contract C calls so the organism holds handles and the custodian owns
-bytes. `forge/decide` (when to train, adopt-or-reject) stays in the organism —
-it's policy, a cognition decision, not a byte-op.
+**Byte custody is already correctly placed (the fabric doc's §2 trespass is
+stale for the gguf-lora path).** As of this writing `modules/forge.rs` does NOT
+shell trainers/converters or write bytes itself — it delegates over the trait
+(`forge.rs:190-195`), and the byte-op (`convert_gguf_lora` →
+`forge::lora_convert::mlx_adapters_to_peft` → `convert_lora_to_gguf.py`) runs
+ONLY inside `bin/forge_custodian.rs`. The organism holds handles; the custodian
+binary owns bytes. So Pass 2 is **not** a byte-relocation — it is purely a CLIENT
+protocol-drift repair (below). `forge/decide` (when to train, adopt-or-reject)
+stays in the organism — it's policy, a cognition decision, not a byte-op.
+
+The remaining open question (NOT this contract's scope) is **training**: on Apple
+Silicon, LoRA training already runs in-core via `genome/fine_tuning/`
+(`mlx_lora_adapter.rs` → `mlx_lm.lora` in a `spawn_blocking` job actor), while the
+trait's `train_start`/`train_status` point at unsloth's stateful `/api/train/*`
+(the NVIDIA path). Whether training becomes a Contract-C custodian capability or
+stays an in-core faculty is a #32/#52 design fork, tracked there — Contract C
+today covers only the **gguf-lora export** the custodian binary actually serves.
 
 ---
 
@@ -220,12 +231,18 @@ Done is done; everything below the line is the plan.
    route constants + `CONTRACT_VERSION`; `/health` carries the version; custodian
    declared as an explicit `[[bin]]`. Round-trip + version-handshake tests green.
    (`009f16e70`)
-2. **Pass 2 — resilient core client + #52 convergence.** `ForgeCustodianHttp`
-   implements a transport-agnostic `ForgeCustodian` trait against `forge::protocol`
-   with typed `Unreachable|Api` errors (R1, R2). Route `modules/forge.rs` /
-   `inference/model_commands.rs` onto it; delete the stateful
-   `unsloth_forge.rs` client. Relocate the `modules/forge.rs` byte-ops behind
-   Contract C (repair the standing trespass).
+2. **Pass 2 — make the gguf-lora client speak Contract C (the drift repair).**
+   The live bug: `package()`'s `GgufLora` arm does a stateful `load_checkpoint()`
+   then POSTs a body WITHOUT `checkpoint` and WITH `push_to_hub`/`repo_id` — the
+   continuum custodian (stateless `forge::protocol::GgufLoraRequest`) rejects it.
+   Fix: the gguf-lora export path serializes `forge::protocol::GgufLoraRequest`
+   (checkpoint-in-body, no load-checkpoint, no hub fields), keeps typed
+   `Unreachable|Api` (R1, R2), and verifies `CONTRACT_VERSION` via `/health`
+   before dispatch. `modules/forge.rs` already delegates, so no consumer rewrite —
+   only the path below the trait changes. The unsloth-only `train_*`/`lora`/`gguf`
+   arms are out of scope here (they belong to the broader #52 excision / the
+   training fork above); de-`unsloth`-renaming the client is a pure string change
+   once the gguf-lora path is on Contract C.
 3. **Pass 3 — harden the custodian binary.** Bounds (timeout + concurrency
    semaphore + subprocess deadline, R3), `/health` readiness+capacity detail (R4),
    graceful shutdown + `probe!` reusing `ServiceModule`/`watch`/`PressureBroker`
