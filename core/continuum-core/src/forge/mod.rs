@@ -11,6 +11,7 @@
 pub mod adapter_manifest;
 pub mod artifact;
 pub mod lora_convert;
+pub mod protocol;
 pub mod recipe;
 
 pub use artifact::{ForgeArtifact, HardwareProfile};

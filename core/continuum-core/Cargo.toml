@@ -33,6 +33,15 @@ path = "src/bin/vrm_inspect.rs"
 name = "cargo-continuum-vdd"
 path = "src/bin/cargo-continuum-vdd.rs"
 
+# The forge custodian sidecar — the continuum-owned daemon that converts a
+# trained MLX LoRA into a pageable GGUF gene (the one capability unsloth-studio
+# lacked). Declared explicitly (not just autobins-discovered) so it's an
+# intentional, contract-bearing artifact: it serves the `forge::protocol` wire
+# contract a forge daemon will grid-negotiate against.
+[[bin]]
+name = "forge-custodian"
+path = "src/bin/forge_custodian.rs"
+
 [dependencies]
 tokio.workspace = true
 serde.workspace = true
