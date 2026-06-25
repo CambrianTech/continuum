@@ -56,6 +56,26 @@ pub fn empty_genome() -> GenomeHandle {
     Arc::new(ArcSwap::from_pointee(Vec::new()))
 }
 
+/// A shared, wait-free override of the deliberation sampling temperature. `None`
+/// (the default) → the faculty samples at its own configured warmth (the persona's
+/// lived voice). `Some(t)` → every generation in the owning cycle is forced to
+/// temperature `t`, read wait-free here on each generation.
+///
+/// The ONLY setter is the eval window: [`isolate_for_eval`] flips this to
+/// `Some(0.0)` (greedy) so the reward metric is reproducible — identical frozen
+/// memory + identical genome + greedy decoding ⇒ the same answer every run, so a
+/// measured A/B lift is the gene's, not the sampler's. The persona's live cognition
+/// never touches it (stays `None`), so grading her does not change how she speaks
+/// when not under exam. Restored to `None` on the guard's drop. Mirrors the
+/// [`GenomeHandle`] sharing: one [`ArcSwap`], two holders (cycle + faculty).
+pub type DecodingHandle = Arc<ArcSwap<Option<f32>>>;
+
+/// A fresh decoding handle in the relaxed (no-override) state — the faculty uses
+/// its own configured temperature.
+pub fn relaxed_decoding() -> DecodingHandle {
+    Arc::new(ArcSwap::from_pointee(None))
+}
+
 /// Default sampling temperature for deliberation — enough warmth for natural
 /// voice, not so much it drifts.
 const DEFAULT_TEMPERATURE: f32 = 0.7;
@@ -141,6 +161,12 @@ pub struct LlmDeliberationFaculty {
     /// the page-in wire the genome loop measures (`cognition/eval` A/Bs base vs a
     /// paged-in gene through this exact field).
     genome: GenomeHandle,
+    /// Shared sampling-temperature override ([`DecodingHandle`]). `None` → sample at
+    /// `self.temperature` (her lived warmth); `Some(t)` → forced to `t`. The eval
+    /// window flips this to greedy (`Some(0.0)`) so the reward metric is
+    /// reproducible; her live cognition leaves it `None`. Read wait-free per
+    /// generation, exactly like `genome`.
+    decoding: DecodingHandle,
 }
 
 impl LlmDeliberationFaculty {
@@ -161,7 +187,17 @@ impl LlmDeliberationFaculty {
             working_memory: None,
             prompt_capture: None,
             genome: empty_genome(),
+            decoding: relaxed_decoding(),
         }
+    }
+
+    /// Share the persona's decoding handle — the same [`ArcSwap`] the owning
+    /// [`WorkspaceCycle`](super::workspace::WorkspaceCycle) flips to greedy for the
+    /// eval window. Every generation reads it wait-free; when the eval guard sets
+    /// `Some(0.0)` the next generation samples greedily, restored on guard drop.
+    pub fn with_decoding(mut self, decoding: DecodingHandle) -> Self {
+        self.decoding = decoding;
+        self
     }
 
     /// Share the persona's genome handle — the same [`ArcSwap`] the owning
@@ -224,7 +260,10 @@ impl LlmDeliberationFaculty {
             system_prompt: Some(system_prompt),
             model: self.model.clone(),
             provider: None,
-            temperature: Some(self.temperature),
+            // Greedy override (the eval window) wins over her lived warmth so the
+            // reward metric is reproducible; `None` (live cognition) → her own
+            // configured temperature. Wait-free read, like `genome` below.
+            temperature: Some((**self.decoding.load()).unwrap_or(self.temperature)),
             // The MODEL owns its generation length (the adapter forwards no ceiling
             // when None → unsloth/llama.cpp run to the model's own stop token). A
             // deliberation turn ends when the model stops, NOT at a const we picked:

@@ -177,6 +177,10 @@ pub fn build_workspace_cycle(cfg: PersonaBrainConfig) -> WorkspaceCycle {
     // in/out). One ArcSwap, two holders: a page-in on the cycle is seen by the
     // faculty's next generation. This is the page-in wire the genome loop measures.
     let genome = super::llm_deliberation_faculty::empty_genome();
+    // The persona's decoding handle — shared (one ArcSwap, two holders) so the eval
+    // window's greedy flip on the cycle is seen by the faculty's next generation,
+    // exactly like the genome handle. `None` in live cognition (her lived warmth).
+    let decoding = super::llm_deliberation_faculty::relaxed_decoding();
     let mut deliberation = LlmDeliberationFaculty::new(
         cfg.persona_id,
         cfg.persona_name,
@@ -184,7 +188,8 @@ pub fn build_workspace_cycle(cfg: PersonaBrainConfig) -> WorkspaceCycle {
         cfg.adapter,
     )
     .with_working_memory(Arc::clone(&working_memory))
-    .with_genome(Arc::clone(&genome));
+    .with_genome(Arc::clone(&genome))
+    .with_decoding(Arc::clone(&decoding));
     if tool_executor.is_some() {
         // Offer EXACTLY what this persona is authorized to run (offer ==
         // authorized) — never a tool the gate would refuse. A local persona is the
@@ -223,7 +228,8 @@ pub fn build_workspace_cycle(cfg: PersonaBrainConfig) -> WorkspaceCycle {
         Arc::new(SalienceArbiter),
         cfg.capacity.unwrap_or(DEFAULT_WORKSPACE_CAPACITY),
     )
-    .with_genome(genome);
+    .with_genome(genome)
+    .with_decoding(decoding);
 
     // Give the mind its BODY when it has hands. The act→observe driver reads this
     // to execute a `Decision::Act`, admit the result into `admission_for_body` (the

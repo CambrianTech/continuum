@@ -28,7 +28,9 @@ use futures_util::future::join_all;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use super::llm_deliberation_faculty::{empty_genome, GenomeHandle};
+use super::llm_deliberation_faculty::{
+    empty_genome, relaxed_decoding, DecodingHandle, GenomeHandle,
+};
 use crate::ai::types::{ActiveAdapterRequest, ToolCall};
 
 /// Identifier for a cognitive faculty — a *structural name* (like a brain
@@ -369,6 +371,13 @@ pub struct WorkspaceCycle {
     /// swap which gene is active (virtual memory for skill). Empty → base model.
     /// This is the seam `cognition/eval` A/Bs base vs a candidate gene over.
     genome: GenomeHandle,
+    /// Shared decoding-temperature override ([`DecodingHandle`]) — the same
+    /// `ArcSwap` the deliberation faculty reads wait-free on every generation.
+    /// `None` (live cognition) → her configured warmth; the eval window
+    /// ([`isolate_for_eval`]) flips it to `Some(0.0)` (greedy) so the reward metric
+    /// is reproducible, and restores it on the guard's drop. Mirrors `genome`: one
+    /// handle, two holders (cycle + faculty).
+    decoding: DecodingHandle,
 }
 
 /// RAII guard for a memory-isolated measurement window over a cycle's
@@ -381,6 +390,11 @@ pub struct EvalIsolation {
     checkpoint: Option<crate::persona::admission_state::AdmissionCheckpoint>,
     real_sink:
         Option<Arc<dyn crate::persona::admission_persistence::AdmissionPersistenceSink>>,
+    /// The shared decoding handle the guard forced to greedy on creation — restored
+    /// to relaxed (`None`) on drop. Carried even for a no-hands (pure-cognition)
+    /// cycle, because a reproducible metric needs deterministic generation whether
+    /// or not she acts.
+    decoding: Option<DecodingHandle>,
 }
 
 impl EvalIsolation {
@@ -398,6 +412,11 @@ impl EvalIsolation {
 
 impl Drop for EvalIsolation {
     fn drop(&mut self) {
+        // Restore relaxed decoding (her lived warmth) first — independent of hands,
+        // so even a pure-cognition eval leaves her sampling normally afterward.
+        if let Some(decoding) = &self.decoding {
+            decoding.store(Arc::new(None));
+        }
         let Some(admission) = &self.admission else { return };
         // Rewind the memory frame, THEN restore the real sink — order matters:
         // restoring the sink first could let a racing observe land a write the
@@ -425,7 +444,16 @@ impl WorkspaceCycle {
             capture: Arc::new(NoopWorkspaceCaptureSink),
             acting: None,
             genome: empty_genome(),
+            decoding: relaxed_decoding(),
         }
+    }
+
+    /// Share the persona's decoding handle — call with the SAME [`DecodingHandle`]
+    /// passed to [`LlmDeliberationFaculty::with_decoding`] so the eval window's
+    /// greedy flip takes effect on the faculty's next generation.
+    pub fn with_decoding(mut self, decoding: DecodingHandle) -> Self {
+        self.decoding = decoding;
+        self
     }
 
     /// Share the genome handle the deliberation faculty reads — call with the SAME
@@ -470,8 +498,19 @@ impl WorkspaceCycle {
     /// admitted) yields a no-op guard. See
     /// [[eval-mutates-persona-lift-needs-isolation]].
     pub fn isolate_for_eval(&self) -> EvalIsolation {
+        // Force greedy decoding for the WHOLE eval window — before the no-hands
+        // early return, because a reproducible metric needs deterministic
+        // generation even for a pure-speak (no-tools) eval. Restored on drop.
+        self.decoding.store(Arc::new(Some(0.0)));
+        let decoding = Some(Arc::clone(&self.decoding));
+
         let Some(acting) = &self.acting else {
-            return EvalIsolation { admission: None, checkpoint: None, real_sink: None };
+            return EvalIsolation {
+                admission: None,
+                checkpoint: None,
+                real_sink: None,
+                decoding,
+            };
         };
         let admission = acting.admission.clone();
         let checkpoint = admission.checkpoint();
@@ -481,6 +520,7 @@ impl WorkspaceCycle {
             admission: Some(admission),
             checkpoint: Some(checkpoint),
             real_sink: Some(real_sink),
+            decoding,
         }
     }
 
