@@ -12,5 +12,6 @@
 
 pub mod catalog;
 pub mod code;
+pub mod command;
 pub mod help;
 pub mod system;
