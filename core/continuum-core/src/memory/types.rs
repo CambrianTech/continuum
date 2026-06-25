@@ -3,6 +3,7 @@
 //! These types are the lingua franca of the Hippocampus IPC protocol.
 //! Rust is a pure compute engine — data comes from the TS ORM via IPC.
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
@@ -10,7 +11,7 @@ use ts_rs::TS;
 
 /// A single memory record — comes from the TS ORM, not SQL.
 /// Used as both input (corpus loading) and output (recall results).
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
 #[ts(export)]
 pub struct MemoryRecord {
     pub id: String,
@@ -35,7 +36,7 @@ pub struct MemoryRecord {
 // ─── Corpus Loading (ORM → Rust) ─────────────────────────────────────────────
 
 /// A memory with its optional embedding vector — sent from TS ORM to Rust.
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
 #[ts(export)]
 pub struct CorpusMemory {
     pub record: MemoryRecord,
@@ -43,7 +44,7 @@ pub struct CorpusMemory {
 }
 
 /// A timeline event with its optional embedding vector — sent from TS ORM to Rust.
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
 #[ts(export)]
 pub struct CorpusTimelineEvent {
     pub event: TimelineEvent,
@@ -130,7 +131,7 @@ pub struct TemporalInfo {
 // ─── Timeline Events ─────────────────────────────────────────────────────────
 
 /// A timeline event — records cross-context activity for consciousness.
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
 #[ts(export)]
 pub struct TimelineEvent {
     pub id: String,

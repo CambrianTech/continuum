@@ -1,19 +1,17 @@
-//! MemoryModule — wraps PersonaMemoryManager for memory/recall operations.
+//! MemoryModule — owns the per-persona `Arc<MemoryState>` for memory/recall.
 //!
-//! Handles: memory/load-corpus, memory/multi-layer-recall, memory/consciousness-context,
-//!          memory/append-memory, memory/append-event
+//! The `memory/*` commands (load-corpus, multi-layer-recall, consciousness-context,
+//! append-memory, append-event) are TYPED [`ActionCommand`](crate::sdk_codegen::ActionCommand)s
+//! on the ONE registry, living in [`crate::commands::memory`] and exposed here via
+//! [`commands()`](MemoryModule::commands) — so a persona is OFFERED recall as a tool.
+//! This module no longer dispatches them through `handle_command` (the legacy arm is
+//! retired; the executor routes the typed objects first).
 //!
 //! All memory operations are pure compute on in-memory corpus data.
-//! Data comes from TypeScript ORM via IPC. Zero SQL access.
+//! Data comes from the ORM via IPC. Zero SQL access.
 
-use crate::logging::TimingGuard;
-use crate::memory::{
-    ConsciousnessContextRequest, CorpusMemory, CorpusTimelineEvent, MultiLayerRecallRequest,
-    PersonaMemoryManager,
-};
+use crate::memory::PersonaMemoryManager;
 use crate::runtime::{CommandResult, ModuleConfig, ModuleContext, ModulePriority, ServiceModule};
-use crate::utils::params::Params;
-use crate::{log_debug, log_info};
 use async_trait::async_trait;
 use serde_json::Value;
 use std::any::Any;
@@ -59,136 +57,24 @@ impl ServiceModule for MemoryModule {
         Ok(())
     }
 
-    async fn handle_command(&self, command: &str, params: Value) -> Result<CommandResult, String> {
-        let p = Params::new(&params);
+    /// The `memory/*` commands are migrated to the typed registry — see
+    /// [`commands()`](Self::commands) and [`crate::commands::memory`]. The executor
+    /// routes those names through the O(1) typed object map (`route_object`) BEFORE
+    /// this legacy prefix path, so they never reach here. Any name that DOES fall
+    /// through is unregistered — fail loud naming it rather than silently matching.
+    async fn handle_command(&self, command: &str, _params: Value) -> Result<CommandResult, String> {
+        Err(format!(
+            "'{command}' is not a registered memory command — the memory/* family is on \
+             the typed registry (crate::commands::memory); legacy handle_command is retired"
+        ))
+    }
 
-        match command {
-            "memory/load-corpus" => {
-                let _timer = TimingGuard::new("module", "memory_load_corpus");
-                let persona_id = p.str("persona_id")?;
-                let memories: Vec<CorpusMemory> = p.json_or("memories");
-                let events: Vec<CorpusTimelineEvent> = p.json_or("events");
-
-                let resp = self
-                    .state
-                    .memory_manager
-                    .load_corpus(persona_id, memories, events);
-
-                log_info!(
-                    "module", "memory_load_corpus",
-                    "Loaded corpus for {}: {} memories ({} embedded), {} events ({} embedded), {:.1}ms",
-                    persona_id, resp.memory_count, resp.embedded_memory_count,
-                    resp.timeline_event_count, resp.embedded_event_count, resp.load_time_ms
-                );
-                Ok(CommandResult::Json(
-                    serde_json::to_value(&resp).unwrap_or_default(),
-                ))
-            }
-
-            "memory/multi-layer-recall" => {
-                let _timer = TimingGuard::new("module", "memory_multi_layer_recall");
-                let persona_id = p.str("persona_id")?;
-                let query_text = p.str_opt("query_text").map(String::from);
-                let room_id = p.str("room_id")?.to_string();
-                let max_results = p.u64_or("max_results", 10) as usize;
-                let layers: Option<Vec<String>> = p.json_opt("layers");
-
-                let req = MultiLayerRecallRequest {
-                    query_text,
-                    room_id,
-                    max_results,
-                    layers,
-                };
-
-                let resp = self
-                    .state
-                    .memory_manager
-                    .multi_layer_recall(persona_id, &req)
-                    .await
-                    .map_err(|e| format!("memory/multi-layer-recall failed: {e}"))?;
-
-                log_info!(
-                    "module", "memory_multi_layer_recall",
-                    "Multi-layer recall for {}: {} memories in {:.1}ms ({} candidates from {} layers)",
-                    persona_id, resp.memories.len(), resp.recall_time_ms,
-                    resp.total_candidates, resp.layer_timings.len()
-                );
-                Ok(CommandResult::Json(
-                    serde_json::to_value(&resp).unwrap_or_default(),
-                ))
-            }
-
-            "memory/consciousness-context" => {
-                let _timer = TimingGuard::new("module", "memory_consciousness_context");
-                let persona_id = p.str("persona_id")?;
-                let room_id = p.str("room_id")?.to_string();
-                let current_message = p.str_opt("current_message").map(String::from);
-                let skip_semantic_search = p.bool_or("skip_semantic_search", false);
-
-                let req = ConsciousnessContextRequest {
-                    room_id,
-                    current_message,
-                    skip_semantic_search,
-                };
-
-                let resp = self
-                    .state
-                    .memory_manager
-                    .consciousness_context(persona_id, &req)
-                    .map_err(|e| format!("memory/consciousness-context failed: {e}"))?;
-
-                log_info!(
-                    "module",
-                    "memory_consciousness_context",
-                    "Consciousness context for {}: {:.1}ms, {} cross-context events, {} intentions",
-                    persona_id,
-                    resp.build_time_ms,
-                    resp.cross_context_event_count,
-                    resp.active_intention_count
-                );
-                Ok(CommandResult::Json(
-                    serde_json::to_value(&resp).unwrap_or_default(),
-                ))
-            }
-
-            "memory/append-memory" => {
-                let _timer = TimingGuard::new("module", "memory_append_memory");
-                let persona_id = p.str("persona_id")?;
-                let memory: CorpusMemory = p.json("memory")?;
-
-                self.state
-                    .memory_manager
-                    .append_memory(persona_id, memory)
-                    .map_err(|e| format!("memory/append-memory failed: {e}"))?;
-                log_debug!(
-                    "module",
-                    "memory_append_memory",
-                    "Appended memory to corpus for {}",
-                    persona_id
-                );
-                Ok(CommandResult::Json(serde_json::json!({ "appended": true })))
-            }
-
-            "memory/append-event" => {
-                let _timer = TimingGuard::new("module", "memory_append_event");
-                let persona_id = p.str("persona_id")?;
-                let event: CorpusTimelineEvent = p.json("event")?;
-
-                self.state
-                    .memory_manager
-                    .append_event(persona_id, event)
-                    .map_err(|e| format!("memory/append-event failed: {e}"))?;
-                log_debug!(
-                    "module",
-                    "memory_append_event",
-                    "Appended event to corpus for {}",
-                    persona_id
-                );
-                Ok(CommandResult::Json(serde_json::json!({ "appended": true })))
-            }
-
-            _ => Err(format!("Unknown memory command: {command}")),
-        }
+    /// The migrated memory commands as typed self-routing objects on the ONE registry,
+    /// each sharing this module's `Arc<MemoryState>`. Their descriptors flow into
+    /// `command_registry()` → the persona tool surface + grid ACL; the executor routes
+    /// their names straight here. See [`crate::commands::memory`].
+    fn commands(&self) -> Vec<Arc<dyn crate::sdk_codegen::DynCommand>> {
+        crate::commands::memory::command_objects(self.state.clone())
     }
 
     fn as_any(&self) -> &dyn Any {
