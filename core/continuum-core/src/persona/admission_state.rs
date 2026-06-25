@@ -45,8 +45,10 @@ use std::sync::{Arc, Mutex};
 use uuid::Uuid;
 
 use super::admission::{HeuristicIsMemorable, SeenContentLookup, SeenEventLookup};
-use super::engram::{AdmissionDecision, AdmissionError, Engram, EngramOrigin};
-use super::inbox_admission::InboxAdmissionRunner;
+use super::engram::{
+    AdmissionDecision, AdmissionDropReason, AdmissionError, Engram, EngramOrigin,
+};
+use super::inbox_admission::{content_hash_sha256, InboxAdmissionRunner};
 use super::trace::CognitionTrace;
 use super::types::InboxMessage;
 
@@ -328,6 +330,57 @@ impl AdmissionState {
         )?;
         self.record_side_effects(&decision);
         Ok(decision)
+    }
+
+    /// Admit a SELF-PRODUCED engram — a memory the persona generated ABOUT
+    /// ITSELF (dream-consolidated `Semantic` facts, `SelfReflection`
+    /// meta-cognition), NOT a message that arrived off the wire.
+    ///
+    /// This is the `SelfTrust` counterpart to [`admit`](Self::admit). It runs
+    /// the same store side-effects — dedup record, recall-metadata seed,
+    /// fire-and-forget persistence, in-memory push — but deliberately SKIPS the
+    /// external admission gate (`runner.admit`'s envelope verification,
+    /// trust-boundary check, and wire-replay protection). That gate exists to
+    /// decide whether to trust DATA FROM ANOTHER PARTY; a fact the persona
+    /// distilled from its own already-admitted episodic memories has no external
+    /// envelope to verify and is, by construction, `SelfTrust`. Skipping the
+    /// gate here is a DISTINCT legitimate ingestion path, not a bypass of a
+    /// safety check — the path is named, not hidden
+    /// (`[[fallbacks-are-illegal-fail-loud]]`).
+    ///
+    /// Idempotent: identical fact content (same `content_hash_sha256`) is
+    /// dropped as `Duplicate`, so a dream that re-distills the same cluster on a
+    /// later tick does not accumulate duplicate facts. The caller MUST set the
+    /// engram's `kind`/`origin`/`trust_state_at_admission` to the self-produced
+    /// shape (e.g. `Semantic` + `SelfReflection` + `SelfTrust`); this method
+    /// records, it does not synthesize them.
+    pub fn admit_reflection(
+        &self,
+        engram: Engram,
+    ) -> Result<AdmissionDecision, AdmissionError> {
+        let hash = content_hash_sha256(&engram.content);
+        if let Some(existing_engram_id) = self.seen_content.find_by_content_hash(&hash) {
+            // Idempotent dream: this exact fact is already engrammed.
+            return Ok(AdmissionDecision::Drop {
+                reason: AdmissionDropReason::Duplicate { existing_engram_id },
+            });
+        }
+
+        // Record the dedup pointer + recall metadata BEFORE the store push, so
+        // a concurrent re-admit of identical content loses the race cleanly
+        // (the dedup map points at this engram). Mirrors `record_admitted` +
+        // `record_side_effects` for the external path.
+        self.seen_content.record(hash, engram.id);
+        self.recall_metadata.admit_with_defaults(engram.id);
+        let metadata = self.recall_metadata.get(engram.id).unwrap_or_default();
+        self.persistence.observe_admission(&engram, metadata);
+        self.engrams.lock().unwrap().push(engram.clone());
+
+        Ok(AdmissionDecision::Admit {
+            engram,
+            why: "self-produced reflection admitted (SelfTrust, no external envelope)"
+                .to_string(),
+        })
     }
 
     /// Apply the decision's side-effects to the stores. Pulled out so the
@@ -1015,6 +1068,70 @@ mod tests {
             2,
             "limit > count caps at count"
         );
+    }
+
+    fn semantic_reflection(content: &str, parent: Uuid) -> Engram {
+        Engram {
+            context_id: None,
+            id: Uuid::new_v4(),
+            kind: EngramKind::Semantic,
+            content: content.to_string(),
+            origin: EngramOrigin::SelfReflection {
+                parent_engram_id: parent,
+            },
+            recall_keys: vec!["distilled".to_string()],
+            admitted_at_ms: 2_000_000,
+            trust_state_at_admission: TrustState::SelfTrust,
+            admission_trace_id: None,
+        }
+    }
+
+    /// What this catches: a self-produced (dream-distilled) Semantic engram is
+    /// ingested through `admit_reflection` WITHOUT an external envelope, lands
+    /// in the store, and is recall-visible — proving the dream's output reaches
+    /// the same persistence recall reads, not a side buffer.
+    #[test]
+    fn admit_reflection_stores_self_produced_fact() {
+        let state = AdmissionState::new(Arc::new(
+            crate::persona::recall_metadata::RecallMetadataRegistry::new(),
+        ));
+        let fact = semantic_reflection("Rust is the core; Node is the shell", Uuid::new_v4());
+
+        let decision = state
+            .admit_reflection(fact.clone())
+            .expect("self-admission does not error");
+        assert!(matches!(decision, AdmissionDecision::Admit { .. }));
+        assert_eq!(state.engram_count(), 1);
+        let recent = state.recall_recent(5);
+        assert_eq!(recent.len(), 1);
+        assert_eq!(recent[0].content, fact.content);
+        assert_eq!(recent[0].kind, EngramKind::Semantic);
+    }
+
+    /// What this catches: re-distilling the same cluster on a later dream tick
+    /// is idempotent — identical fact content is Dropped as Duplicate, never
+    /// accumulated. Without this guard the store would fill with duplicate facts
+    /// every idle tick.
+    #[test]
+    fn admit_reflection_dedups_identical_facts() {
+        let state = AdmissionState::new(Arc::new(
+            crate::persona::recall_metadata::RecallMetadataRegistry::new(),
+        ));
+        let parent = Uuid::new_v4();
+        let first = semantic_reflection("Headless core, many equal clients", parent);
+        let second = semantic_reflection("Headless core, many equal clients", parent);
+
+        let d1 = state.admit_reflection(first.clone()).expect("first admits");
+        assert!(matches!(d1, AdmissionDecision::Admit { .. }));
+
+        let d2 = state.admit_reflection(second).expect("second resolves");
+        match d2 {
+            AdmissionDecision::Drop {
+                reason: AdmissionDropReason::Duplicate { existing_engram_id },
+            } => assert_eq!(existing_engram_id, first.id),
+            other => panic!("expected Duplicate drop, got {other:?}"),
+        }
+        assert_eq!(state.engram_count(), 1, "duplicate fact not stored twice");
     }
 
     /// What this catches: recall_scored ranks engrams by salience desc.
