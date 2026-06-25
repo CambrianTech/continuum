@@ -67,6 +67,7 @@ pub mod local_manager;
 pub mod manager;
 pub mod recall;
 pub mod recall_trait;
+pub mod residency;
 pub mod store;
 pub mod tier;
 pub mod working_set;
@@ -84,6 +85,7 @@ pub use recall::{
     AcquireSource, FreshnessTarget, PeerId, RecallError, RecallScope, RecallScore, ResidencyHint,
     TaskKind, TrustClass,
 };
+pub use residency::GenomeResidencyModule;
 pub use recall_trait::{
     ArtifactRef, CapabilityQuery, CompositionHint, CompositionRef, DemandAlignedRecall, DomainHint,
     EngramRef, LoRALayerRef, MoEExpertRef, OutcomeWindow, RankedPool, RecallBudget, RecallContext,
