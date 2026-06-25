@@ -46,6 +46,13 @@ const DEFAULT_MAX_ACTS: u32 = 8;
 /// Wall-clock for executing model-generated code under test, in seconds.
 const TEST_GRADE_TIMEOUT_SECS: u64 = 10;
 
+/// Fixed "exam epoch" stamped on every task's burst (`[t=<ms>] peer: …`). The
+/// live burst carries each message's real `occurred_at_ms`; the eval pins it to
+/// a constant so the perceived prompt — and therefore the greedy reward metric —
+/// is byte-reproducible across runs. Value is an arbitrary plausible ms epoch;
+/// only its constancy matters.
+const EVAL_EPOCH_MS: u64 = 1_700_000_000_000;
+
 /// One eval task. Both the JSONL rows and inline `tasks` deserialize into this;
 /// every field is optional so an authoring typo degrades to a benign empty rather
 /// than failing the whole run. A task is TEST-GRADED when it carries `test`, else
@@ -419,11 +426,41 @@ async fn run_pass(
         // assembly + decision path stay identical to the live heartbeat (which
         // never resets — there concerns flow continuously and traces age naturally).
         cycle.reset_working_memory();
-        // Frame as a room message so her ORDINARY cognition handles it, then DRIVE
-        // her to settlement: she may act (run code, read a file, search), observe
-        // the result as memory, and re-perceive — the live act→observe motion,
-        // paced by the grader because the eval room has no metronome.
-        let burst = format!("[eval]\npeer: {}", t.prompt);
+        // Frame the task through the SAME burst formatter the live heartbeat uses
+        // (service_loop::build_workspace_burst), as a single airc room message
+        // from a peer — so her deliberation perceives an examiner's question with
+        // the byte-identical envelope (`[room <id>]\n[t=<ms>] peer: <prompt>`) a
+        // real peer post produces, instead of an eval-only `[eval]\npeer:` shape.
+        // The grounding tier (recall/roster/doctrine) is already supplied by the
+        // fork's faculties; we compose only the message delivery here. Routing
+        // through the full compose_for_turn would DOUBLE-inject that grounding
+        // (the open #8 broadcast==RAG-context convergence) and read the LIVE
+        // (non-forked) memory — so it stays out until #8 lands. Then DRIVE her to
+        // settlement: she may act (run code, read a file, search), observe the
+        // result as memory, and re-perceive — the live act→observe motion, paced
+        // by the grader because the eval room has no metronome.
+        let task_delivery = crate::persona::rag_budget::RagDelivery {
+            source_id: "airc".to_string(),
+            items: vec![crate::persona::rag_budget::RagItem {
+                content: t.prompt.clone(),
+                tokens: 0,
+                metadata: serde_json::json!({
+                    "peer_id": "peer",
+                    "occurred_at_ms": EVAL_EPOCH_MS,
+                }),
+            }],
+            tokens_used: 0,
+            continuation: None,
+            resolution_used: crate::persona::rag_budget::ResolutionPreference::Raw,
+        };
+        // own_peer/agent_name attribute the persona's OWN past posts; a single-task
+        // exam has none, so they're inert here (the item's peer_id "peer" ≠ "").
+        let burst = crate::persona::service_loop::build_workspace_burst(
+            std::slice::from_ref(&task_delivery),
+            room,
+            "",
+            "",
+        );
         let settled =
             crate::cognition::act_observe::drive_to_settle(cycle, burst, room, max_acts).await;
         let answer = settled.spoken.unwrap_or_default();

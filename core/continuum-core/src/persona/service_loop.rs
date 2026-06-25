@@ -577,7 +577,7 @@ async fn serve_persona_loop_inner(
         // turn — the `msg.peer_id == own` filter above — only inform context.)
         // Shared burst truth — the same projection the never-stop self-tick uses.
         let workspace_burst: String = build_workspace_burst(
-            &composed,
+            &composed.deliveries,
             ctx.identity.default_room,
             &ctx.identity.peer_id.to_string(),
             &ctx.identity.agent_name,
@@ -944,8 +944,18 @@ enum Wake {
 /// attributed, room as the WHERE) the `WorkspaceCycle` reasons over. A pure
 /// projection of the airc deliveries — extracted so the message turn and the
 /// never-stop self-tick share ONE burst truth ([[compression-principle]]).
-fn build_workspace_burst(
-    composed: &crate::persona::unified::ComposedTurn,
+/// Assemble the perception envelope a persona's deliberation sees: the room
+/// header + each airc delivery item rendered as `[t=ms] who: content`, with the
+/// persona's OWN past posts attributed to `agent_name` (so she recognizes her
+/// own voice) and everyone else by peer_id. This is the ONE place the burst
+/// string format lives — the live heartbeat (both the message path and the
+/// self-thread) AND the eval fork call it, so a measured turn perceives its
+/// world byte-identically to a lived one. Takes `&[RagDelivery]` (not the whole
+/// `ComposedTurn`) because the format only depends on the deliveries; eval can
+/// hand-build a single synthetic airc delivery for a task without composing a
+/// full turn.
+pub(crate) fn build_workspace_burst(
+    deliveries: &[crate::persona::rag_budget::RagDelivery],
     room: Uuid,
     own_peer: &str,
     agent_name: &str,
@@ -953,8 +963,7 @@ fn build_workspace_burst(
     use std::fmt::Write as _;
     let mut b = String::new();
     let _ = writeln!(b, "[room {room}]");
-    for item in composed
-        .deliveries
+    for item in deliveries
         .iter()
         .filter(|d| d.source_id == "airc")
         .flat_map(|d| d.items.iter())
@@ -1038,7 +1047,7 @@ async fn run_self_cycle(
     }
     *last_burst_fp = fp;
     let burst = build_workspace_burst(
-        &composed,
+        &composed.deliveries,
         ctx.identity.default_room,
         &ctx.identity.peer_id.to_string(),
         &ctx.identity.agent_name,
