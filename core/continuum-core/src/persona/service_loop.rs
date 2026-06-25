@@ -948,17 +948,50 @@ async fn run_self_cycle(
     else {
         return; // no cycle registered (shouldn't happen) — nothing to run
     };
-    // Unprompted bar: a self-tick means NO ONE addressed the persona. Frame the turn
-    // so the model's OWN judgment raises the bar for posting to the shared room —
-    // reason/act internally, speak only with a genuinely new, useful contribution,
-    // else stay silent (PASS). Grounding context that shapes the judge, NOT a filter
-    // on its output (it stays the LLM's call). Targets the heartbeat narrating every
-    // intermediate step into a room full of real peers. [[organic-substrate-continuous-concern-scheduler]].
+    // Addressing PERCEPTION, not a silence directive. The old framing asserted "no one
+    // addressed you just now" unconditionally and told her to "stay silent (PASS)" —
+    // but a self-tick fires on ANY external change, which may BE a message that named
+    // her, so the blanket claim was sometimes a lie, and the "stay silent" clause
+    // puppeted the outcome ([[no-hardcoded-heuristics-to-steer-cognition]],
+    // [[design-the-persona-as-a-being]]). Instead we DERIVE whether she was addressed
+    // from the actual external content — `PersonaIdentity::mentions` (word-boundary,
+    // identity-aware, so short names like "ai"/"bo" don't false-match) over the airc
+    // items authored by OTHERS — and feed it as a fact. The mind decides what to do
+    // with the fact; the substrate only perceives.
+    let identity = crate::persona::persona_identity::PersonaIdentity::new(
+        ctx.identity.persona_id,
+        &ctx.identity.agent_name,
+    );
+    let own_peer = ctx.identity.peer_id.to_string();
+    let addressed = composed
+        .deliveries
+        .iter()
+        .filter(|d| d.source_id == "airc")
+        .flat_map(|d| d.items.iter())
+        .filter(|item| {
+            // External authors only — her own posts naming herself aren't an address.
+            item.metadata
+                .get("peer_id")
+                .and_then(|v| v.as_str())
+                .map(|p| p != own_peer)
+                .unwrap_or(true)
+        })
+        .any(|item| identity.mentions(&item.content));
+    crate::probe!(
+        class = "persona.selftick.perceive",
+        persona = %ctx.identity.agent_name,
+        addressed,
+        "self-tick addressing perception — input-derived fact, not a force-respond gate"
+    );
+    let addressing = if addressed {
+        "Someone addressed you directly in what follows."
+    } else {
+        "No one addressed you directly just now."
+    };
     let framed = format!(
-        "[Unprompted check-in: no one addressed you just now. Reason and act on your \
-         own, but post to the room ONLY if you have a genuinely new, useful \
-         contribution for the others here. If you are mid-task or have nothing worth \
-         their attention, stay silent.]\n{burst}"
+        "[Self-initiated moment. {addressing} This is your own time — pursue your own \
+         thread, reason, and act as you see fit. The room is shared with real peers; \
+         contribute to it what genuinely serves them.]\n{burst}"
     );
     // ONE settlement step through the SAME shared primitive as the message path and
     // the eval driver (`act_observe::settle_step`, `may_act = true`): run ONCE, and
