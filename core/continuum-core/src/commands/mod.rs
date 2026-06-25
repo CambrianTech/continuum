@@ -17,6 +17,7 @@ pub mod command;
 pub mod data;
 pub mod help;
 pub mod memory;
+pub mod migration;
 pub mod rag;
 pub mod system;
 pub mod vector;

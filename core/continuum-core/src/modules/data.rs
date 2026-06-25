@@ -9,7 +9,9 @@
 
 use crate::orm::{
     adapter::{AdapterConfig, StorageAdapter},
-    migration::{MigrationConfig, MigrationEngine, MigrationHandle},
+    migration::{
+        MigrationConfig, MigrationEngine, MigrationHandle, MigrationProgress, MigrationVerification,
+    },
     postgres::PostgresAdapter,
     query::{FieldFilter, SortDirection, SortSpec, StorageQuery},
     sqlite::SqliteAdapter,
@@ -419,7 +421,7 @@ impl ServiceModule for DataModule {
             priority: ModulePriority::Normal,
             // `vector/*` fully migrated to typed self-routing commands
             // (commands/vector/*.rs) — no legacy arm remains, so the prefix is gone.
-            command_prefixes: &["data/", "adapter/", "migration/"],
+            command_prefixes: &["data/", "adapter/"],
             event_subscriptions: &[],
             needs_dedicated_thread: false,
             max_concurrency: 0,
@@ -462,12 +464,13 @@ impl ServiceModule for DataModule {
     /// persona tool surface + grid ACL. See [`crate::commands::data`].
     fn commands(&self) -> Vec<Arc<dyn crate::sdk_codegen::DynCommand>> {
         // DataModule owns the adapter pool, so it contributes the `data/*`
-        // content commands, the `vector/*` embedding-search commands, and the
-        // `adapter/*` introspection commands — each family sharing this module's
-        // `Arc<DataState>`.
+        // content commands, the `vector/*` embedding-search commands, the
+        // `adapter/*` introspection commands, and the `migration/*` operator
+        // commands — each family sharing this module's `Arc<DataState>`.
         let mut objects = crate::commands::data::command_objects(self.state.clone());
         objects.extend(crate::commands::vector::command_objects(self.state.clone()));
         objects.extend(crate::commands::adapter::command_objects(self.state.clone()));
+        objects.extend(crate::commands::migration::command_objects(self.state.clone()));
         objects
     }
 
@@ -617,48 +620,10 @@ struct QueryOpenInner {
     has_more: bool,
 }
 
-// ============================================================================
-// Migration Params
-// ============================================================================
-
-/// Start migration params
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct MigrationStartParams {
-    source: String,
-    target: String,
-    #[serde(default = "default_migration_batch")]
-    batch_size: usize,
-    #[serde(default = "default_migration_throttle")]
-    throttle_ms: u64,
-    #[serde(default)]
-    collections: Option<Vec<String>>,
-}
-
-fn default_migration_batch() -> usize {
-    500
-}
-fn default_migration_throttle() -> u64 {
-    10
-}
-
-/// Cutover params - switch active connection
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct MigrationCutoverParams {
-    /// The db_path currently in use to swap out
-    current: String,
-    /// The new connection string to swap in
-    target: String,
-}
-
-/// Rollback params
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct MigrationRollbackParams {
-    /// The db_path that was swapped in (to remove)
-    current: String,
-}
+// Migration command params now live with their typed ActionCommands in
+// commands/migration/*. The `migration/*` output structs (MigrationProgress,
+// MigrationVerification on the engine; MigrationCutover, MigrationRollback below)
+// are the wire contracts.
 
 impl DataState {
     /// In-process command dispatch — the legacy `match` over `data/*`,
@@ -724,15 +689,8 @@ impl DataState {
             // struct (VectorSearchResults / VectorStats / …) instead of an ad-hoc
             // json! blob, so the persona surface, codegen, and cu see the shape.
 
-            // Migration between adapters
-            "migration/start" => self.handle_migration_start(params).await,
-            "migration/status" => self.handle_migration_status(params).await,
-            "migration/pause" => self.handle_migration_pause(params).await,
-            "migration/resume" => self.handle_migration_resume(params).await,
-            "migration/verify" => self.handle_migration_verify(params).await,
-            "migration/cutover" => self.handle_migration_cutover(params).await,
-            "migration/rollback" => self.handle_migration_rollback(params).await,
-
+            // migration/* fully migrated to typed ActionCommands (commands/migration/*,
+            // contributed via DataModule::commands()); no legacy arm remains.
             _ => Err(format!("Unknown data command: {command}")),
         }
     }
@@ -2037,36 +1995,32 @@ impl DataState {
     // =========================================================================
 
     /// Start a streaming migration between two adapters (async — returns immediately)
-    async fn handle_migration_start(&self, params: Value) -> Result<CommandResult, String> {
-        let params: MigrationStartParams = serde_json::from_value(params.clone()).map_err(|e| {
-            log_error!(
-                "data",
-                "migration/start",
-                "Parse error: {}, params: {}",
-                e,
-                params
-            );
-            format!("Invalid params: {e}")
-        })?;
-
+    /// Start a streaming migration between two adapter connection strings as a
+    /// background task; returns the initial progress snapshot immediately. Single
+    /// source for the typed `migration/start` command.
+    pub(crate) async fn migration_start(
+        &self,
+        source: String,
+        target: String,
+        batch_size: usize,
+        throttle_ms: u64,
+        collections: Option<Vec<String>>,
+    ) -> Result<MigrationProgress, String> {
         // Get or create adapters for source and target
-        let source = self.get_adapter(&params.source).await?;
-        let target = self.get_adapter(&params.target).await?;
+        let source_adapter = self.get_adapter(&source).await?;
+        let target_adapter = self.get_adapter(&target).await?;
 
         let config = MigrationConfig {
-            batch_size: params.batch_size,
-            throttle_ms: params.throttle_ms,
-            collections: params.collections,
+            batch_size,
+            throttle_ms,
+            collections,
         };
 
-        let mut engine = MigrationEngine::new(source, target, config);
+        let mut engine = MigrationEngine::new(source_adapter, target_adapter, config);
         let handle = engine.handle();
 
         // Store handle for status/pause/resume/verify (before spawning)
         *self.active_migration.lock().await = Some(handle.clone());
-
-        let src = params.source.clone();
-        let tgt = params.target.clone();
 
         // Spawn migration as background task — returns immediately
         tokio::spawn(async move {
@@ -2074,8 +2028,8 @@ impl DataState {
                 "data",
                 "migration/start",
                 "Background migration started: {} -> {}",
-                src,
-                tgt
+                source,
+                target
             );
             match engine.run().await {
                 Ok(status) => {
@@ -2087,132 +2041,120 @@ impl DataState {
             }
         });
 
-        // Return handle status immediately
-        Ok(CommandResult::Json(handle.status_json()))
+        Ok(handle.status())
     }
 
-    /// Get migration progress (lock-free — reads atomic counters)
-    async fn handle_migration_status(&self, _params: Value) -> Result<CommandResult, String> {
+    /// Get migration progress (lock-free — reads atomic counters). Single source
+    /// for the typed `migration/status` command.
+    pub(crate) async fn migration_status(&self) -> Result<MigrationProgress, String> {
         let guard = self.active_migration.lock().await;
         match guard.as_ref() {
-            Some(handle) => Ok(CommandResult::Json(handle.status_json())),
+            Some(handle) => Ok(handle.status()),
             None => Err("No active migration".into()),
         }
     }
 
-    /// Pause active migration (atomic flag — returns immediately)
-    async fn handle_migration_pause(&self, _params: Value) -> Result<CommandResult, String> {
+    /// Pause the active migration (atomic flag). Single source for `migration/pause`.
+    pub(crate) async fn migration_pause(&self) -> Result<MigrationProgress, String> {
         let guard = self.active_migration.lock().await;
         match guard.as_ref() {
             Some(handle) => {
                 handle.pause();
                 log_info!("data", "migration/pause", "Migration paused");
-                Ok(CommandResult::Json(handle.status_json()))
+                Ok(handle.status())
             }
             None => Err("No active migration".into()),
         }
     }
 
-    /// Resume paused migration (clears pause flag, migration loop re-checks)
-    async fn handle_migration_resume(&self, _params: Value) -> Result<CommandResult, String> {
+    /// Resume a paused migration (clears the pause flag). Single source for
+    /// `migration/resume`.
+    pub(crate) async fn migration_resume(&self) -> Result<MigrationProgress, String> {
         let guard = self.active_migration.lock().await;
         match guard.as_ref() {
             Some(handle) => {
                 handle.resume();
                 log_info!("data", "migration/resume", "Migration resumed");
-                Ok(CommandResult::Json(handle.status_json()))
+                Ok(handle.status())
             }
             None => Err("No active migration".into()),
         }
     }
 
-    /// Verify migration integrity (compare counts between source and target)
-    async fn handle_migration_verify(&self, _params: Value) -> Result<CommandResult, String> {
+    /// Verify migration integrity (compare counts between source and target).
+    /// Single source for the typed `migration/verify` command.
+    pub(crate) async fn migration_verify(&self) -> Result<MigrationVerification, String> {
         let guard = self.active_migration.lock().await;
         match guard.as_ref() {
-            Some(handle) => {
-                let verify = handle.verify().await?;
-                Ok(CommandResult::Json(verify))
-            }
+            Some(handle) => handle.verify().await,
             None => Err("No active migration".into()),
         }
     }
 
-    /// Cutover: swap the active adapter for a connection string
-    /// After migration, this redirects all operations to the new backend
-    async fn handle_migration_cutover(&self, params: Value) -> Result<CommandResult, String> {
-        let params: MigrationCutoverParams =
-            serde_json::from_value(params.clone()).map_err(|e| {
-                log_error!(
-                    "data",
-                    "migration/cutover",
-                    "Parse error: {}, params: {}",
-                    e,
-                    params
-                );
-                format!("Invalid params: {e}")
-            })?;
-
+    /// Cutover: swap the active adapter for a new connection string, redirecting
+    /// all subsequent operations to the new backend. Single source for
+    /// `migration/cutover`.
+    pub(crate) async fn migration_cutover(
+        &self,
+        current: String,
+        target: String,
+    ) -> Result<MigrationCutover, String> {
         // Store current for rollback
-        *self.previous_connection.lock().await = Some(params.current.clone());
+        *self.previous_connection.lock().await = Some(current.clone());
 
         // Remove old adapter from cache (forces re-creation on next access)
-        self.adapters.remove(&params.current);
+        self.adapters.remove(&current);
 
         // Pre-warm the target adapter
-        let _target = self.get_adapter(&params.target).await?;
+        let target_adapter = self.get_adapter(&target).await?;
 
         log_info!(
             "data",
             "migration/cutover",
             "Cutover: {} -> {}",
-            params.current,
-            params.target
+            current,
+            target
         );
 
-        Ok(CommandResult::Json(json!({
-            "previous": params.current,
-            "active": params.target,
-            "adapter": _target.name()
-        })))
+        Ok(MigrationCutover {
+            previous: current,
+            active: target,
+            adapter: target_adapter.name().to_string(),
+        })
     }
 
-    /// Rollback: revert to the previous connection string
-    async fn handle_migration_rollback(&self, params: Value) -> Result<CommandResult, String> {
-        let params: MigrationRollbackParams =
-            serde_json::from_value(params.clone()).map_err(|e| {
-                log_error!(
-                    "data",
-                    "migration/rollback",
-                    "Parse error: {}, params: {}",
-                    e,
-                    params
-                );
-                format!("Invalid params: {e}")
-            })?;
-
-        let previous = self.previous_connection.lock().await;
-        match previous.as_ref() {
+    /// Rollback: revert to the previously-active connection string recorded by the
+    /// last cutover. Single source for the typed `migration/rollback` command.
+    pub(crate) async fn migration_rollback(
+        &self,
+        current: String,
+    ) -> Result<MigrationRollback, String> {
+        // Snapshot the previous connection and release the lock before awaiting.
+        let prev = {
+            let guard = self.previous_connection.lock().await;
+            guard.as_ref().cloned()
+        };
+        match prev {
             Some(prev) => {
                 // Remove current adapter
-                self.adapters.remove(&params.current);
+                self.adapters.remove(&current);
 
                 // Pre-warm previous adapter
-                let _adapter = self.get_adapter(prev).await?;
+                let adapter = self.get_adapter(&prev).await?;
 
                 log_info!(
                     "data",
                     "migration/rollback",
                     "Rolled back: {} -> {}",
-                    params.current,
+                    current,
                     prev
                 );
 
-                Ok(CommandResult::Json(json!({
-                    "rolledBackFrom": params.current,
-                    "rolledBackTo": prev,
-                    "adapter": _adapter.name()
-                })))
+                Ok(MigrationRollback {
+                    rolled_back_from: current,
+                    rolled_back_to: prev,
+                    adapter: adapter.name().to_string(),
+                })
             }
             None => Err("No previous connection to rollback to".into()),
         }
@@ -3934,4 +3876,32 @@ pub struct VectorBackfillStats {
     /// Wall-clock duration of the pass, in milliseconds.
     #[ts(type = "number")]
     pub elapsed_ms: u64,
+}
+
+/// Output of `migration/cutover` — the connection swap that redirected the active
+/// backend to `active`, recording `previous` for a later rollback.
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../../protocol/typescript/migration/MigrationCutover.ts")]
+pub struct MigrationCutover {
+    /// The connection string that was swapped out (stored for rollback).
+    pub previous: String,
+    /// The connection string now active.
+    pub active: String,
+    /// The adapter backing the newly-active connection.
+    pub adapter: String,
+}
+
+/// Output of `migration/rollback` — the reversion from `rolledBackFrom` to the
+/// previously-active `rolledBackTo` connection.
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../../protocol/typescript/migration/MigrationRollback.ts")]
+pub struct MigrationRollback {
+    /// The connection string that was swapped out by the rollback.
+    pub rolled_back_from: String,
+    /// The connection string restored to active.
+    pub rolled_back_to: String,
+    /// The adapter backing the restored connection.
+    pub adapter: String,
 }

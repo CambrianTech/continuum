@@ -87,16 +87,70 @@ impl CollectionMigrationState {
         }
     }
 
-    fn to_json(&self) -> Value {
-        json!({
-            "collection": self.collection,
-            "status": format!("{:?}", *self.status.read().unwrap()).to_lowercase(),
-            "total": self.total.load(Ordering::Relaxed),
-            "migrated": self.migrated.load(Ordering::Relaxed),
-            "failed": self.failed.load(Ordering::Relaxed),
-            "error": *self.error.read().unwrap(),
-        })
+    fn to_progress(&self) -> CollectionProgress {
+        CollectionProgress {
+            collection: self.collection.clone(),
+            status: format!("{:?}", *self.status.read().unwrap()).to_lowercase(),
+            total: self.total.load(Ordering::Relaxed),
+            migrated: self.migrated.load(Ordering::Relaxed),
+            failed: self.failed.load(Ordering::Relaxed),
+            error: self.error.read().unwrap().clone(),
+        }
     }
+}
+
+/// Per-collection migration progress snapshot — the typed wire row behind
+/// `migration/{start,status,pause,resume}`.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../../protocol/typescript/orm/CollectionProgress.ts")]
+pub struct CollectionProgress {
+    pub collection: String,
+    /// Lowercased status: `pending` | `inprogress` | `completed` | `failed` | `paused`.
+    pub status: String,
+    pub total: usize,
+    pub migrated: usize,
+    pub failed: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub error: Option<String>,
+}
+
+/// Whole-migration progress snapshot across every collection — the typed result
+/// of `migration/{start,status,pause,resume}` (replaces the old ad-hoc JSON blob).
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../../protocol/typescript/orm/MigrationProgress.ts")]
+pub struct MigrationProgress {
+    pub total: usize,
+    pub migrated: usize,
+    pub failed: usize,
+    pub paused: bool,
+    pub running: bool,
+    pub collections: Vec<CollectionProgress>,
+}
+
+/// Per-collection source/target count comparison from `migration/verify`.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../../protocol/typescript/orm/CollectionVerification.ts")]
+pub struct CollectionVerification {
+    pub collection: String,
+    pub source_count: usize,
+    pub target_count: usize,
+    pub migrated: usize,
+    pub failed: usize,
+    pub matches: bool,
+}
+
+/// Result of `migration/verify` — whether every migrated collection's target
+/// record count matches its source.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../../protocol/typescript/orm/MigrationVerification.ts")]
+pub struct MigrationVerification {
+    pub verified: bool,
+    pub collections: Vec<CollectionVerification>,
 }
 
 /// Shared migration state — safe to read/pause while engine is running.
@@ -111,10 +165,11 @@ pub struct MigrationHandle {
 }
 
 impl MigrationHandle {
-    /// Get current migration status as JSON (lock-free atomics)
-    pub fn status_json(&self) -> Value {
+    /// Get current migration progress (lock-free atomics) as a typed snapshot.
+    pub fn status(&self) -> MigrationProgress {
         let states = self.states.read().unwrap();
-        let collections: Vec<Value> = states.values().map(|s| s.to_json()).collect();
+        let collections: Vec<CollectionProgress> =
+            states.values().map(|s| s.to_progress()).collect();
         let total: usize = states
             .values()
             .map(|s| s.total.load(Ordering::Relaxed))
@@ -128,14 +183,20 @@ impl MigrationHandle {
             .map(|s| s.failed.load(Ordering::Relaxed))
             .sum();
 
-        json!({
-            "total": total,
-            "migrated": migrated,
-            "failed": failed,
-            "paused": self.paused.load(Ordering::Relaxed),
-            "running": self.running.load(Ordering::Relaxed),
-            "collections": collections,
-        })
+        MigrationProgress {
+            total,
+            migrated,
+            failed,
+            paused: self.paused.load(Ordering::Relaxed),
+            running: self.running.load(Ordering::Relaxed),
+            collections,
+        }
+    }
+
+    /// Get current migration status as JSON — thin projection of [`status`](Self::status)
+    /// for the `run()` return and other Value-shaped callers.
+    pub fn status_json(&self) -> Value {
+        serde_json::to_value(self.status()).unwrap_or_else(|_| json!({}))
     }
 
     /// Pause the migration (atomic flag — no lock needed)
@@ -153,8 +214,8 @@ impl MigrationHandle {
         self.running.load(Ordering::Relaxed)
     }
 
-    /// Verify migration by comparing record counts
-    pub async fn verify(&self) -> Result<Value, String> {
+    /// Verify migration by comparing record counts between source and target.
+    pub async fn verify(&self) -> Result<MigrationVerification, String> {
         let mut results = Vec::new();
         let mut all_match = true;
 
@@ -182,20 +243,20 @@ impl MigrationHandle {
                 all_match = false;
             }
 
-            results.push(json!({
-                "collection": collection,
-                "sourceCount": src,
-                "targetCount": tgt,
-                "migrated": state.migrated.load(Ordering::Relaxed),
-                "failed": state.failed.load(Ordering::Relaxed),
-                "matches": matches,
-            }));
+            results.push(CollectionVerification {
+                collection: collection.clone(),
+                source_count: src,
+                target_count: tgt,
+                migrated: state.migrated.load(Ordering::Relaxed),
+                failed: state.failed.load(Ordering::Relaxed),
+                matches,
+            });
         }
 
-        Ok(json!({
-            "verified": all_match,
-            "collections": results,
-        }))
+        Ok(MigrationVerification {
+            verified: all_match,
+            collections: results,
+        })
     }
 }
 
@@ -404,7 +465,7 @@ impl MigrationEngine {
     }
 
     /// Convenience: verify
-    pub async fn verify(&self) -> Result<Value, String> {
+    pub async fn verify(&self) -> Result<MigrationVerification, String> {
         self.handle().verify().await
     }
 }
@@ -483,7 +544,7 @@ mod tests {
 
         // Verify
         let verify = engine.verify().await.unwrap();
-        assert!(verify["verified"].as_bool().unwrap());
+        assert!(verify.verified);
 
         // Check target has data
         let target_count = target
@@ -627,10 +688,9 @@ mod tests {
         engine.run().await.unwrap();
 
         let verify = engine.verify().await.unwrap();
-        assert!(verify["verified"].as_bool().unwrap());
-        let cols = verify["collections"].as_array().unwrap();
-        assert_eq!(cols[0]["sourceCount"], 5);
-        assert_eq!(cols[0]["targetCount"], 5);
-        assert!(cols[0]["matches"].as_bool().unwrap());
+        assert!(verify.verified);
+        assert_eq!(verify.collections[0].source_count, 5);
+        assert_eq!(verify.collections[0].target_count, 5);
+        assert!(verify.collections[0].matches);
     }
 }
