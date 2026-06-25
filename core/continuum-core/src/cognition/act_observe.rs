@@ -549,4 +549,217 @@ mod tests {
             "returns the un-driven Act as honest 'did not finish'"
         );
     }
+
+    /// A `ToolExecutor` that returns a DIFFERENT canned result for each
+    /// successive call — so a multi-act investigation accumulates DISTINCT
+    /// observations in memory (act 1 brings back one fact, act 2 another).
+    /// Models hands that probe the world and learn something new each reach.
+    struct ScriptedExecutor {
+        results: Mutex<std::collections::VecDeque<String>>,
+    }
+    impl ScriptedExecutor {
+        fn new(results: impl IntoIterator<Item = &'static str>) -> Self {
+            Self {
+                results: Mutex::new(results.into_iter().map(String::from).collect()),
+            }
+        }
+    }
+    #[async_trait]
+    impl ToolExecutor for ScriptedExecutor {
+        async fn execute_native_batch(
+            &self,
+            calls: &[ToolCall],
+            _context: &ToolExecutionContext,
+            _max_result_chars: usize,
+        ) -> Result<NativeBatchOutcome, ToolError> {
+            let content = self
+                .results
+                .lock()
+                .unwrap()
+                .pop_front()
+                .unwrap_or_else(|| "no more results".into());
+            let results = calls
+                .iter()
+                .map(|c| crate::ai::types::ToolResult {
+                    tool_use_id: c.id.clone(),
+                    content: content.clone(),
+                    is_error: None,
+                })
+                .collect();
+            Ok(NativeBatchOutcome {
+                results,
+                media: Vec::new(),
+                stored_ids: Vec::new(),
+            })
+        }
+        async fn parse_response(
+            &self,
+            _t: &str,
+            _f: Option<&str>,
+        ) -> Result<ParsedToolBatch, ToolError> {
+            Ok(ParsedToolBatch {
+                tool_calls: Vec::new(),
+                cleaned_text: String::new(),
+                parse_time_us: 0,
+            })
+        }
+        async fn store_outcome(
+            &self,
+            _o: &ToolOutcome,
+            _c: &ToolExecutionContext,
+        ) -> Result<Uuid, ToolError> {
+            Ok(Uuid::nil())
+        }
+    }
+
+    /// A deliberation faculty that is a small *investigator*: its next move is a
+    /// pure function of what it has DISCOVERED so far (the observations folded
+    /// into perception), never a counter and never a magic flag. It needs two
+    /// facts to answer — where the program starts and what that entry calls —
+    /// so it acts to learn the first, acts again to learn the second, then
+    /// (seeing both in memory) synthesizes and speaks. The branch reads
+    /// accumulated MEMORY CONTENT, which is the whole point: the hands change
+    /// the mind. (A test stand-in for the model, exactly like `ActThenSpeak`;
+    /// it proves the cycle's cross-tick plumbing, not production cognition.)
+    struct Investigator;
+    #[async_trait]
+    impl Faculty for Investigator {
+        fn id(&self) -> FacultyId {
+            FacultyId::Deliberation
+        }
+        fn reacts_to_broadcast(&self) -> bool {
+            true
+        }
+        async fn contribute(&self, ws: &Workspace) -> Option<Contribution> {
+            let after = |key: &str| -> Option<String> {
+                ws.world_state
+                    .split(key)
+                    .nth(1)
+                    .and_then(|s| s.split_whitespace().next())
+                    .map(String::from)
+            };
+            match (after("ENTRY="), after("CALLS=")) {
+                (None, _) => Some(Contribution::verdict(
+                    Decision::Act {
+                        calls: vec![probe("find where the program starts")],
+                        intent: "find where the program starts".into(),
+                    },
+                    0.9,
+                    "I don't know the entry point yet — reach for it",
+                )),
+                (Some(_), None) => Some(Contribution::verdict(
+                    Decision::Act {
+                        calls: vec![probe("see what the entry calls")],
+                        intent: "find what the entry calls".into(),
+                    },
+                    0.9,
+                    "I know the entry; now I need what it calls",
+                )),
+                (Some(entry), Some(calls)) => Some(Contribution::verdict(
+                    Decision::Speak {
+                        text: format!("the program starts in {entry} and calls {calls}"),
+                    },
+                    0.95,
+                    "synthesized both discoveries from memory — settling",
+                )),
+            }
+        }
+    }
+
+    /// A probe tool call whose INPUT carries no `ENTRY=`/`CALLS=` token (only the
+    /// executor's *result* does), so the investigator never false-triggers on
+    /// its own intent.
+    fn probe(what: &'static str) -> ToolCall {
+        ToolCall {
+            id: "probe-1".into(),
+            name: "code/search".into(),
+            input: serde_json::json!({ "query": what }),
+        }
+    }
+
+    // what this catches: THE HANDS CHANGE THE MIND. A multi-act investigation
+    // converges through MEMORY CONTENT — each act discovers a distinct fact, the
+    // result re-enters as an Episodic engram, and the NEXT decision is a function
+    // of what the persona now KNOWS (not an act counter, not a `[you just acted]`
+    // flag). She acts to find the entry point, observes it, acts to find what it
+    // calls, observes that, then — seeing BOTH discoveries in her assembled
+    // perception — synthesizes and speaks. This is the organic loop
+    // cognition→action→perception→cognition converging by judgment, the novel
+    // architecture that distinguishes the organism from a textbook agentic
+    // counter loop ([[persona-codes-blind-no-hands-no-organic-loop]]).
+    #[tokio::test]
+    async fn the_hands_change_the_mind_across_a_multi_act_investigation() {
+        let exec = Arc::new(ScriptedExecutor::new(["ENTRY=main", "CALLS=boot"]));
+        let adm = admission();
+        let cycle = WorkspaceCycle::new(vec![Arc::new(Investigator)], Arc::new(SalienceArbiter), 8)
+            .with_acting(body(exec.clone(), adm.clone()));
+
+        let outcome = drive_to_settle(
+            &cycle,
+            "[eval]\npeer: where does the program start and what does it call?",
+            Uuid::new_v4(),
+            8,
+        )
+        .await;
+
+        assert_eq!(
+            outcome.acts, 2,
+            "two DISCOVERIES were needed to converge — multi-act, not one-shot"
+        );
+        let spoken = outcome
+            .spoken
+            .expect("the mind settled into a spoken synthesis, not an un-driven act");
+        assert!(
+            spoken.contains("main"),
+            "the answer carries the FIRST discovery (entry point) — proof act 1 entered memory"
+        );
+        assert!(
+            spoken.contains("boot"),
+            "the answer carries the SECOND discovery (what it calls) — proof act 2 entered memory"
+        );
+        assert_eq!(
+            adm.engram_count(),
+            2,
+            "each discovery became a durable memory the mind perceived next tick"
+        );
+    }
+
+    // what this catches: SETTLE IS A REST, NOT A HALT — the metronome does not
+    // crank to a halt after one answer. The SAME mind (same cycle, same body,
+    // same accumulating memory) settles concern A, then RE-AWAKENS on a fresh
+    // concern B and runs the act→observe→speak arc again. Her concern-A memory
+    // persists across the two drives (continuity of self), and she still engages
+    // B. Proves the organism keeps breathing across concerns: a settle is the
+    // judgment "the work is done for now," never a terminus.
+    #[tokio::test]
+    async fn it_settles_then_re_awakens_without_cranking_to_a_halt() {
+        // Distinct per-concern observations: identical content would be a
+        // content-addressed dedup no-op in memory (correct substrate behavior,
+        // [[embeddings-are-per-content-computed-once-shared]]), which would mask
+        // the continuity-of-self assertion below.
+        let exec = Arc::new(ScriptedExecutor::new(["learned about A", "learned about B"]));
+        let adm = admission();
+        let cycle = WorkspaceCycle::new(vec![Arc::new(ActThenSpeak)], Arc::new(SalienceArbiter), 8)
+            .with_acting(body(exec.clone(), adm.clone()));
+        let room = Uuid::new_v4();
+
+        // Concern A: act → observe → settle on a Speak.
+        let a = drive_to_settle(&cycle, "[eval]\npeer: concern A?", room, 8).await;
+        assert_eq!(a.acts, 1, "settled concern A after one act→observe");
+        assert!(a.spoken.is_some(), "concern A got a spoken answer");
+        assert_eq!(adm.engram_count(), 1, "concern A left exactly one memory");
+
+        // Concern B on the SAME living mind — it must wake again, not stay halted.
+        let b = drive_to_settle(&cycle, "[eval]\npeer: a totally different concern B?", room, 8).await;
+        assert_eq!(
+            b.acts, 1,
+            "the mind RE-AWAKENED and acted on the new concern — not stuck post-settle"
+        );
+        assert!(b.spoken.is_some(), "and settled concern B too");
+        assert_eq!(
+            adm.engram_count(),
+            2,
+            "continuity of self: concern-A memory persisted, concern B added its own"
+        );
+    }
 }
