@@ -122,6 +122,14 @@ impl ServiceModule for ForgeModule {
                     run_export(&UnslothForgeHttp::from_config(), parsed).await
                 }
             }
+            "forge/health" => {
+                // Contract C `/health` handshake as a COMMAND — so a remote node
+                // can read this custodian's contract version + readiness + spare
+                // slots over the grid transport (the receiving end of Pass 6's
+                // `GridForgeCustodian::health`). Serves the LOCAL custodian's honest
+                // health (R4); params are ignored.
+                run_health(&ForgeCustodianHttp::from_config()).await
+            }
             "forge/probe" => {
                 // DISCOVER the custodian's current capability — the self-organizing
                 // primitive a forge daemon (and the grid) route demand against.
@@ -485,6 +493,19 @@ async fn run_export_gguf_lora(
         "message": result.message,
         "details": result.details,
     })))
+}
+
+/// `forge/health` — surface the local custodian's Contract C
+/// [`HealthResponse`](crate::forge::protocol::HealthResponse) as a command result.
+/// Taken over the trait (not the concrete HTTP client) so it is unit-testable with
+/// a fake custodian. Fail-loud: an unreachable custodian surfaces as an error, not
+/// a fabricated "healthy" — the honest reading is the whole point of the probe (R4).
+async fn run_health(
+    custodian: &dyn crate::forge::custodian_client::ForgeCustodian,
+) -> Result<CommandResult, String> {
+    let health = custodian.health().await.map_err(|e| e.to_string())?;
+    let json = serde_json::to_value(health).map_err(|e| format!("forge/health: serialize: {e}"))?;
+    Ok(CommandResult::Json(json))
 }
 
 //=============================================================================
@@ -1070,6 +1091,60 @@ mod tests {
         };
         let err = run_export_gguf_lora(&cust, &p).await.expect_err("must error");
         assert!(err.contains("gguf-lora) failed"), "got: {err}");
+    }
+
+    // ── forge/health — Contract C handshake as a command (Pass 6 receiving end) ──
+
+    /// A Contract C custodian that is down — `health()` errors. Stands in for an
+    /// unreachable local custodian so `run_health` is pinned to fail loud rather
+    /// than fabricate a healthy reading.
+    struct DownForgeCustodian;
+    #[async_trait]
+    impl crate::forge::custodian_client::ForgeCustodian for DownForgeCustodian {
+        async fn health(
+            &self,
+        ) -> Result<
+            crate::forge::protocol::HealthResponse,
+            crate::forge::custodian_client::ForgeCustodianError,
+        > {
+            Err(crate::forge::custodian_client::ForgeCustodianError::Unreachable(
+                "connection refused".into(),
+            ))
+        }
+        async fn export_gguf_lora(
+            &self,
+            _: &crate::forge::protocol::GgufLoraRequest,
+        ) -> Result<
+            crate::forge::protocol::ExportResult,
+            crate::forge::custodian_client::ForgeCustodianError,
+        > {
+            Err(crate::forge::custodian_client::ForgeCustodianError::Unreachable("down".into()))
+        }
+    }
+
+    // what this catches: forge/health surfaces the LOCAL custodian's Contract C
+    // HealthResponse as JSON — the reading a remote node reads over the grid to
+    // confirm contract version + readiness before leasing a forge here (Pass 6
+    // receiving end). A serialization regression would blind remote contract checks.
+    #[tokio::test]
+    async fn forge_health_surfaces_contract_c_health() {
+        let cust = RecordingForgeCustodian::ok();
+        let v = match run_health(&cust).await.unwrap() {
+            CommandResult::Json(v) => v,
+            other => panic!("expected Json, got {other:?}"),
+        };
+        assert_eq!(v["contract_version"], crate::forge::protocol::CONTRACT_VERSION);
+        assert_eq!(v["capability"], crate::forge::protocol::CAPABILITY_GGUF_LORA);
+        assert_eq!(v["ready"], true);
+    }
+
+    // what this catches: an unreachable custodian makes forge/health FAIL LOUD with
+    // the named cause — never a fabricated "healthy" envelope. A remote node must
+    // see the truth (route elsewhere), not be told a down custodian is up.
+    #[tokio::test]
+    async fn forge_health_fails_loud_when_custodian_down() {
+        let err = run_health(&DownForgeCustodian).await.expect_err("down custodian must error");
+        assert!(err.contains("connection refused"), "got: {err}");
     }
 
     // what this catches: a custodian that fails the package is surfaced LOUDLY (no

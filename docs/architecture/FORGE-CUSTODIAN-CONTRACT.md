@@ -1,6 +1,6 @@
 # Forge Custodian Contract — Contract C, and how it grid-negotiates
 
-**Status:** in progress. Pass 1 + Pass 2 + Pass 3 + Pass 4 + Pass 5a + Pass 5b landed. Pass 1/2 — `forge::protocol`
+**Status:** in progress. Pass 1 + Pass 2 + Pass 3 + Pass 4 + Pass 5a + Pass 5b + Pass 6 (client seam) landed; Pass 6b (real `GridStateDispatch`) gated on TwoAircLoopback #187. Pass 1/2 — `forge::protocol`
 single-sources the wire + `/health` contract-version handshake (custodian a real
 `[[bin]]`), and the gguf-lora export speaks Contract C through a clean de-`unsloth`
 `forge::custodian_client` aimed at the custodian's own endpoint. **Pass 3 (commit
@@ -380,11 +380,28 @@ Done is done; everything below the line is the plan.
      `NodeRegistry` upsert IS today's endpoint table (the scorer is Pass 6). 2 unit
      (advertise policy + grid-bus round trip) green; forge::endpoint 8/8, grid::node
      8/8; ts-rs regenerated `NodeCapability.ts`.
-6. **Pass 6 — grid transport impl.** A `GridForgeCustodian` impl of the
-   `ForgeCustodian` trait routes a forge lease to a remote node over
-   GRID-ADDRESSING transport, trust-gated, idempotent, healing on `Unreachable`.
-   This is where inference + forge grid-negotiation both light up through the
-   fabric.
+6. **Pass 6 — grid transport impl (client seam landed).** `GridForgeCustodian<D>`
+   (`forge/grid_custodian.rs`) impls the `ForgeCustodian` trait by routing over a
+   thin `GridDispatch` seam: `health()` → `forge/health`, `export_gguf_lora()` →
+   `forge/export` (`format:"gguf-lora"`), trust-gated via `can_accept_gguf_lora`
+   before any checkpoint crosses, idempotent, healing on `Unreachable` — the R2
+   distinction preserved across the hop (`GridDispatchError::Unreachable` → heal-able
+   `ForgeCustodianError::Unreachable`; `Remote` → don't-heal `Api`). This is "outlier
+   B" for the trait (`ForgeCustodianHttp` = local outlier A), proving the consumer in
+   `modules/forge.rs` is grid-ready unchanged. Receiving end added: `forge/health`
+   command surfaces the local custodian's Contract C `HealthResponse` (the existing
+   `forge/export` gguf-lora dispatch is the lease's other half). 7 grid_custodian +
+   2 forge/health unit tests green.
+   - **Pass 6b (gated) — real `GridStateDispatch`.** The production `GridDispatch`
+     wrapping `Arc<GridState>` + the resolved `GridNode` over `dispatch_to_node` is
+     deferred to the two-node integration fixture (TwoAircLoopback, #187). It is also
+     where the kernel-error-typing decision lands: `dispatch_to_node` currently
+     flattens to `Result<_, String>`, so recovering the typed `Unreachable`/`Remote`
+     split for R2 healing means either parsing its message classes (the
+     stringly-typed anti-pattern) or threading a typed error up through
+     `try_route_remote` + `GridInterceptor` (churns the live kernel). The seam keeps
+     that decision out of this slice; the fake-dispatch unit proof validates the
+     routing shape without a live second node.
 7. **Pass 7 — market exchange.** Trust-scoped `GeneHandle` search + A/B-then-adopt
    (§6); forge-lease a fresh train only when the market comes up short.
 
