@@ -115,6 +115,12 @@ pub struct GovernorSnapshot {
     /// eligible next pass (it isn't re-scheduled), so the budget bumps it, never drops it.
     #[ts(type = "number")]
     pub deferred: usize,
+    /// The deferred pairs split by orientation class — WHERE the contention bites (R4
+    /// slice 1). This is the measured signal the share controller will close its loop on:
+    /// a class with sustained per-class deferral has unmet demand and wants more tickets;
+    /// a class that never defers is well-served. `deferred_by_orientation.total() ==
+    /// deferred`, mirroring `ticked == by_orientation.total()`.
+    pub deferred_by_orientation: OrientationCounts,
     /// Ticks that actually ran last pass, split by orientation class. The local-first
     /// metric the orientation-budget economy reads (R2): is the society's time going to
     /// stimulus, to interiority, or to growth? `ticked == by_orientation.total()`.
@@ -251,7 +257,9 @@ impl ServiceModule for SubstrateGovernor {
         }
 
         // ── Phase 2: apportion under the orientation budget, then tick the admitted ──
-        let (admitted, deferred) = admit_pass(&groups, &self.shares, self.slices_per_pass, tick);
+        let (admitted, deferred_by_orientation) =
+            admit_pass(&groups, &self.shares, self.slices_per_pass, tick);
+        let deferred = deferred_by_orientation.total();
 
         let mut ticked = 0usize;
         let mut published = 0usize;
@@ -311,6 +319,7 @@ impl ServiceModule for SubstrateGovernor {
             faults,
             skipped,
             deferred,
+            deferred_by_orientation,
             by_orientation,
             shares: self.shares,
         };
@@ -332,15 +341,19 @@ impl ServiceModule for SubstrateGovernor {
     }
 }
 
-/// Decide which due pairs to tick this pass under the orientation budget (R3).
-/// `groups[i]` holds the eligible pairs for `ORIENTATIONS[i]`. Returns the flat admit
-/// list and the deferred count.
+/// Decide which due pairs to tick this pass under the orientation budget (R3), and
+/// measure where the contention bit (R4 slice 1). `groups[i]` holds the eligible pairs
+/// for `ORIENTATIONS[i]`. Returns the flat admit list and the **per-class** deferred
+/// count (eligible minus admitted, by class).
 ///
 /// - `slices_per_pass == None` (or a budget ≥ the number of due pairs): admit everything
-///   — the unconstrained-machine path, budget dormant, `deferred == 0`.
+///   — the unconstrained-machine path, budget dormant, deferral zero across the board.
 /// - `Some(budget)` under contention: [`apportion`] splits the budget across classes by
 ///   stride (floors guaranteed), then each class contributes its share, **rotated by the
 ///   tick number** so the same pairs aren't always the ones served across passes.
+///
+/// The per-class deferral is the measured demand signal R4's controller closes its loop
+/// on — not a scalar, because the whole point is to see *which* class is starved.
 ///
 /// Pure (no I/O, no locks, RNG-free), so the whole budget-enforcement decision is
 /// testable without standing up live personas, and reproducible under replay.
@@ -349,7 +362,7 @@ fn admit_pass(
     shares: &OrientationShares,
     slices_per_pass: Option<usize>,
     tick: u64,
-) -> (Vec<(usize, Uuid, Orientation)>, usize) {
+) -> (Vec<(usize, Uuid, Orientation)>, OrientationCounts) {
     let eligible = OrientationCounts {
         reactive: groups[0].len(),
         self_directed: groups[1].len(),
@@ -363,20 +376,25 @@ fn admit_pass(
     };
 
     let mut out = Vec::with_capacity(admit.total());
+    let mut deferred = OrientationCounts::default();
     for (oi, group) in groups.iter().enumerate() {
+        let orientation = ORIENTATIONS[oi];
         if group.is_empty() {
             continue;
         }
-        let take = admit.get(ORIENTATIONS[oi]).min(group.len());
+        let take = admit.get(orientation).min(group.len());
         // Rotate the starting point by the tick so a capped class doesn't always serve
         // its first members (cross-pass fairness within the class).
         let start = (tick as usize) % group.len();
         for k in 0..take {
             out.push(group[(start + k) % group.len()]);
         }
+        // Whatever this class couldn't fit this pass is its measured unmet demand.
+        for _ in 0..(group.len() - take) {
+            deferred.record(orientation);
+        }
     }
 
-    let deferred = total_eligible - out.len();
     (out, deferred)
 }
 
@@ -433,7 +451,7 @@ mod tests {
         let (admitted, deferred) =
             admit_pass(&groups, &OrientationShares::first_best_guess(), None, 0);
         assert_eq!(admitted.len(), 6);
-        assert_eq!(deferred, 0);
+        assert_eq!(deferred.total(), 0);
     }
 
     // what this catches: a budget that covers every due pair behaves exactly like the
@@ -448,7 +466,7 @@ mod tests {
         let (admitted, deferred) =
             admit_pass(&groups, &OrientationShares::first_best_guess(), Some(6), 0);
         assert_eq!(admitted.len(), 6);
-        assert_eq!(deferred, 0);
+        assert_eq!(deferred.total(), 0);
     }
 
     // what this catches: real contention. A budget below the due count admits exactly the
@@ -464,7 +482,7 @@ mod tests {
         let (admitted, deferred) =
             admit_pass(&groups, &OrientationShares::first_best_guess(), Some(10), 0);
         assert_eq!(admitted.len(), 10);
-        assert_eq!(deferred, 290);
+        assert_eq!(deferred.total(), 290);
 
         let mut by = OrientationCounts::default();
         for (_, _, o) in &admitted {
@@ -508,10 +526,45 @@ mod tests {
         let shares = OrientationShares::new(1, 1, 0); // speciation off
         let (admitted, deferred) = admit_pass(&groups, &shares, Some(4), 0);
         assert_eq!(admitted.len(), 4);
-        assert_eq!(deferred, 11);
+        assert_eq!(deferred.total(), 11);
+        // The measured signal must show ALL 5 speciation pairs deferred — a 0-ticket
+        // class registers as pure unmet demand, exactly what a controller would read to
+        // decide whether growth is being starved by policy vs. simply not due.
+        assert_eq!(deferred.get(Orientation::Speciation), 5, "all growth demand deferred");
         assert!(
             admitted.iter().all(|(_, _, o)| *o != Orientation::Speciation),
             "0-ticket class is never admitted"
         );
+    }
+
+    // what this catches: R4 slice 1 — the per-class deferral measurement is correct, the
+    // signal a controller steers on. Under contention the breakdown must equal
+    // eligible-minus-admitted for EACH class (not just sum right), and total back to the
+    // scalar. A wrong split here = the controller reallocates toward the wrong class.
+    #[test]
+    fn admit_pass_reports_per_class_deferral() {
+        let groups = [
+            group(0, Orientation::Reactive, 10),
+            group(1, Orientation::SelfDirected, 10),
+            group(2, Orientation::Speciation, 10),
+        ];
+        // first_best_guess = 7/2/1; budget 10 of 30 due → 7 reactive, 2 self_directed,
+        // 1 speciation admitted, so deferral is the complement per class.
+        let (admitted, deferred) =
+            admit_pass(&groups, &OrientationShares::first_best_guess(), Some(10), 0);
+
+        let mut admitted_by = OrientationCounts::default();
+        for (_, _, o) in &admitted {
+            admitted_by.record(*o);
+        }
+        for o in ORIENTATIONS {
+            assert_eq!(
+                deferred.get(o),
+                10 - admitted_by.get(o),
+                "per-class deferral = eligible - admitted for {o:?}"
+            );
+        }
+        assert_eq!(deferred.total(), 20, "20 of 30 deferred");
+        assert_eq!(deferred.total(), 30 - admitted.len());
     }
 }
