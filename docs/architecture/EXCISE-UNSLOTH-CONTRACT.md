@@ -16,6 +16,12 @@ dependency (#55) before it was mapped. Read this before touching any
 Every scattered coupling below resolves to exactly one of these. If a change
 doesn't route onto A or B, it is not part of the excision — it is scope creep.
 
+> **The forge rows are the exception, and they have their own home.** The
+> `#52`-tagged rows below (`inference/unsloth_forge.rs`, `modules/forge.rs`,
+> `inference/model_commands.rs`) route onto **Contract C — the Forge Custodian
+> Seam**, documented in **[FORGE-CUSTODIAN-CONTRACT.md](FORGE-CUSTODIAN-CONTRACT.md)**
+> (`forge::protocol`, Pass 1 landed). #52 *is* the migration onto Contract C.
+
 ### Contract A — the Serving Seam  `inference::llama_server`  ✅ BUILT
 The single answer to *"what model is served, and where?"*
 
