@@ -52,7 +52,7 @@ use ts_rs::TS;
 use crate::persona::PersonaAircRuntimeRegistry;
 use crate::runtime::{
     BrainRegion, CadenceHint, CadenceTable, CommandResult, ModuleConfig, ModuleContext,
-    ModulePriority, RegionContext, ServiceModule,
+    ModulePriority, Orientation, RegionContext, ServiceModule,
 };
 use crate::sdk_codegen::{AccessLevel, ActionCommand, CommandError, Ctx, DynCommand};
 
@@ -92,6 +92,41 @@ pub struct GovernorSnapshot {
     /// well-paced society, not a stalled one.
     #[ts(type = "number")]
     pub skipped: usize,
+    /// Ticks that actually ran last pass, split by orientation class. The local-first
+    /// metric the orientation-budget economy reads (R2): is the society's time going to
+    /// stimulus, to interiority, or to growth? `ticked == by_orientation.total()`.
+    pub by_orientation: OrientationTally,
+}
+
+/// Ticks run last pass, grouped by [`Orientation`] — telemetry only (what time was
+/// *spent* on), distinct from the share *policy* (what it should be) that lands in R3.
+#[derive(Debug, Clone, Default, Serialize, TS)]
+pub struct OrientationTally {
+    /// Outward-facing work: perception, recall, responding.
+    #[ts(type = "number")]
+    pub reactive: usize,
+    /// The being's own interiority: curiosity, projects, dream/consolidation.
+    #[ts(type = "number")]
+    pub self_directed: usize,
+    /// Growing the self: speciation / LoRA-genome learning.
+    #[ts(type = "number")]
+    pub speciation: usize,
+}
+
+impl OrientationTally {
+    /// Record one tick against its region's declared orientation class.
+    fn record(&mut self, orientation: Orientation) {
+        match orientation {
+            Orientation::Reactive => self.reactive += 1,
+            Orientation::SelfDirected => self.self_directed += 1,
+            Orientation::Speciation => self.speciation += 1,
+        }
+    }
+
+    /// Total ticks tallied — equals the snapshot's `ticked` (invariant the tests pin).
+    pub fn total(&self) -> usize {
+        self.reactive + self.self_directed + self.speciation
+    }
 }
 
 /// The scheduling daemon. Holds the regions + the live-persona registry; the
@@ -171,8 +206,11 @@ impl ServiceModule for SubstrateGovernor {
         let mut published = 0usize;
         let mut faults = 0usize;
         let mut skipped = 0usize;
+        let mut by_orientation = OrientationTally::default();
 
         for (region_idx, region) in self.regions.iter().enumerate() {
+            // Static class — read once per region, not per persona.
+            let orientation = region.orientation();
             for &persona_id in &personas {
                 let key = (region_idx, persona_id);
 
@@ -191,6 +229,7 @@ impl ServiceModule for SubstrateGovernor {
                 let hint = match tokio::time::timeout(REGION_TICK_TIMEOUT, fut).await {
                     Ok(Ok(outcome)) => {
                         ticked += 1;
+                        by_orientation.record(orientation);
                         published += outcome.published;
                         // The region's own next-cadence wish (None == Hold).
                         outcome.cadence_hint
@@ -232,6 +271,7 @@ impl ServiceModule for SubstrateGovernor {
             published,
             faults,
             skipped,
+            by_orientation,
         };
         // send_replace: always-current, no backlog; readers borrow lock-free.
         let _ = self.snapshot.send_replace(snap);
@@ -279,3 +319,27 @@ impl ActionCommand for GovernorStatusCommand {
 }
 
 crate::register_command!(GovernorStatusCommand);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // what this catches: the tally maps each Orientation to its own bucket and total()
+    // equals the sum — the invariant the snapshot relies on (ticked == by_orientation
+    // .total()), so orientation telemetry can never silently miscount the society's time.
+    #[test]
+    fn orientation_tally_records_each_class_and_totals() {
+        let mut t = OrientationTally::default();
+        t.record(Orientation::Reactive);
+        t.record(Orientation::Reactive);
+        t.record(Orientation::SelfDirected);
+        t.record(Orientation::Speciation);
+        t.record(Orientation::Speciation);
+        t.record(Orientation::Speciation);
+
+        assert_eq!(t.reactive, 2);
+        assert_eq!(t.self_directed, 1);
+        assert_eq!(t.speciation, 3);
+        assert_eq!(t.total(), 6, "total must equal the sum of all classes");
+    }
+}

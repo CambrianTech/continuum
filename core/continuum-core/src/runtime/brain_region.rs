@@ -116,6 +116,31 @@ pub enum ComputeClass {
     InferenceHeavy,
 }
 
+/// What a region's work is ORIENTED toward — the static class the orientation
+/// budget groups regions by (docs/architecture/BEING-SOCIETY-GOVERNOR.md, rail R2).
+///
+/// Like [`ComputeClass`], this is **declared metadata**, NOT a runtime read of the
+/// region's output: it tells the governor which budget class a tick draws time from,
+/// never what the region should think. Grouping by it is mechanical (the no-heuristics
+/// line stays uncrossed — the governor allocates *time*, the region stays causal).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
+#[serde(rename_all = "kebab-case")]
+#[ts(export, export_to = "../../../protocol/typescript/runtime/Orientation.ts")]
+pub enum Orientation {
+    /// Serving external stimulus — perception, recall-for-a-turn, responding. The
+    /// outward-facing work; floors above zero so a being is never deaf.
+    Reactive,
+    /// The being's own interiority — curiosity, projects, writing, play,
+    /// dream/consolidation. A reserved budget the being spends by its own choice;
+    /// floors above zero so the inner life never starves (sleep ≠ coma at the budget
+    /// level: deprivation degrades a mind, it doesn't pause it).
+    SelfDirected,
+    /// Growing the self — speciation, i.e. LoRA-genome learning. Economics-elastic:
+    /// MAY be 0 on a constrained node, but that is declared + fail-loud, never a
+    /// silent drop.
+    Speciation,
+}
+
 /// Which kinds of pressure signals a region wants to receive via
 /// `on_signal`. The governor filters and routes signals based on this.
 ///
@@ -365,6 +390,15 @@ pub trait BrainRegion: Send + Sync + 'static {
     /// and re-queried by the governor when pressure shifts.
     fn pressure_profile(&self) -> PressureProfile;
 
+    /// Which orientation-budget class this region's work draws from. Defaults to
+    /// [`Orientation::Reactive`] — a region serves stimulus unless it declares an
+    /// inner-life ([`Orientation::SelfDirected`]) or learning
+    /// ([`Orientation::Speciation`]) purpose. Static metadata: the governor groups +
+    /// budgets by it, it never steers the region's output (R2).
+    fn orientation(&self) -> Orientation {
+        Orientation::Reactive
+    }
+
     /// Run one tick. The substrate calls this on the region's own task
     /// at the cadence governed by SubstrateGovernor.
     ///
@@ -445,6 +479,17 @@ mod tests {
     fn test_region_id_static_construction() {
         const ID: RegionId = RegionId::from_static("hippocampus");
         assert_eq!(ID.as_str(), "hippocampus");
+    }
+
+    // what this catches: the orientation default. A region that doesn't opt into an
+    // inner-life or learning purpose draws from the Reactive budget — so adding a new
+    // region can never silently steal SelfDirected/Speciation budget by omission.
+    #[tokio::test]
+    async fn test_default_orientation_is_reactive() {
+        let region = TestRegion {
+            id: RegionId::from_static("test"),
+        };
+        assert_eq!(region.orientation(), Orientation::Reactive);
     }
 
     #[test]

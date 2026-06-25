@@ -65,9 +65,9 @@ pub use substrate_governor::{GovernorSnapshot, SubstrateGovernor};
 pub use artifact_handle::{ArtifactKey, ArtifactSelector, Cadence};
 pub use cadence_table::{CadenceKey, CadenceTable};
 pub use brain_region::{
-    BrainRegion, CadenceHint, ComputeClass, MemoryClass, PersonaLifecycle, PressureLevel,
-    PressureProfile, PressureSignalKind, RegionContext, RegionError, RegionId, RegionSignal,
-    SleepPhase, TickOutcome,
+    BrainRegion, CadenceHint, ComputeClass, MemoryClass, Orientation, PersonaLifecycle,
+    PressureLevel, PressureProfile, PressureSignalKind, RegionContext, RegionError, RegionId,
+    RegionSignal, SleepPhase, TickOutcome,
 };
 pub use cell_shapes::{HandleRef, LambdaPlaceholder, StreamPlaceholder};
 pub use handle::Handle;
