@@ -11,11 +11,13 @@
 pub mod adapter_manifest;
 pub mod artifact;
 pub mod custodian_client;
+pub mod gene_handle;
 pub mod lora_convert;
 pub mod protocol;
 pub mod recipe;
 
 pub use artifact::{ForgeArtifact, HardwareProfile};
+pub use gene_handle::{AlloyHash, GeneHandle, GeneLocator};
 pub use recipe::{
     AlloyHardware, AlloySource, BenchmarkDef, CorpusRef, ForgeRecipe, PriorBaseline, QuantTier,
 };
