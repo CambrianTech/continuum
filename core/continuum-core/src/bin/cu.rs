@@ -175,7 +175,8 @@ fn socket_path() -> String {
 
 /// Dispatch a single command to the running core through the uniform Connection.
 async fn dispatch(command: &str, args: Vec<String>) -> Result<(), String> {
-    let params = params_from_args(&args)?;
+    let canonical = canonical_param_names(command).await;
+    let params = params_from_args(&args, &canonical)?;
     let result = connection()
         .commands()
         .execute_value(command, params)
@@ -204,10 +205,20 @@ async fn dispatch(command: &str, args: Vec<String>) -> Result<(), String> {
 ///      and the typed command still receives a number;
 ///    - a bare `--flag` (no following value) is `true`.
 ///
-/// Schema-AWARE coercion/validation (knowing each field's exact type) lands when
-/// the registry exposes param JSON schemas via `commands/list`; until then this
-/// generic coercion covers the common cases without any per-command code.
-fn params_from_args(args: &[String]) -> Result<Value, String> {
+/// `canonical` is the command's exact param field names (from its `commands/list`
+/// schema). A user flag is matched against them separator/case-insensitively, so
+/// `--persona_id`, `--persona-id`, `--personaId` all map to the schema's real
+/// `persona_id`. This is what makes snake_case Rust-native commands invokable by
+/// flag (regression: cu used to blanket-camelCase every key, turning `--persona_id`
+/// into `personaId`, which the server rejected as `missing field persona_id`).
+/// Flags NOT in the schema — base `CommandParams` like userId, or commands that
+/// expose no schema (`canonical` empty) — fall back to the generic camelCase
+/// normalization, which is correct for the camelCase wire fields and is the
+/// pre-schema behavior, so nothing regresses.
+///
+/// Schema-AWARE coercion/validation (knowing each field's exact type) is the next
+/// step on the same `commands/list` schema; this canonicalizes the KEY today.
+fn params_from_args(args: &[String], canonical: &[String]) -> Result<Value, String> {
     if args.is_empty() {
         return Ok(Value::Object(Default::default()));
     }
@@ -218,6 +229,18 @@ fn params_from_args(args: &[String]) -> Result<Value, String> {
                 .map_err(|e| format!("invalid JSON params: {e}\n(got: {})", args[0]));
         }
     }
+
+    // {normalized form → exact schema field}. One generic rule for ALL commands.
+    let canon_by_norm: std::collections::HashMap<String, &str> = canonical
+        .iter()
+        .map(|c| (normalize_key(c), c.as_str()))
+        .collect();
+    let field = |raw: &str| -> String {
+        canon_by_norm
+            .get(&normalize_key(raw))
+            .map(|c| (*c).to_string())
+            .unwrap_or_else(|| to_camel_case(raw))
+    };
 
     let mut map = serde_json::Map::new();
     let mut i = 0;
@@ -232,21 +255,59 @@ fn params_from_args(args: &[String]) -> Result<Value, String> {
         // Splitting on the first `=` means `--filter=data/` parses to
         // {filter: "data/"} instead of a junk `{"filter=data/": true}` key.
         if let Some((k, v)) = raw_key.split_once('=') {
-            map.insert(to_camel_case(k), coerce(v));
+            map.insert(field(k), coerce(v));
             i += 1;
             continue;
         }
         // A value follows unless the next arg is another flag (or there is none).
         let has_value = args.get(i + 1).is_some_and(|n| !n.starts_with("--"));
         if has_value {
-            map.insert(to_camel_case(raw_key), coerce(&args[i + 1]));
+            map.insert(field(raw_key), coerce(&args[i + 1]));
             i += 2;
         } else {
-            map.insert(to_camel_case(raw_key), Value::Bool(true));
+            map.insert(field(raw_key), Value::Bool(true));
             i += 1;
         }
     }
     Ok(Value::Object(map))
+}
+
+/// Normalize a flag key for schema matching: lowercase, separators removed. So
+/// `persona_id`, `personaId`, `persona-id`, `PERSONA_ID` share one normal form.
+fn normalize_key(s: &str) -> String {
+    s.chars()
+        .filter(|c| *c != '-' && *c != '_')
+        .flat_map(|c| c.to_lowercase())
+        .collect()
+}
+
+/// Best-effort fetch of a command's canonical param field names from the live
+/// registry (`commands/list` filtered to this one command — cheap, not the full
+/// catalog). Returns the exact serde field names (`persona_id`, `roomId`, …) so the
+/// arg adapter can canonicalize a user flag to the schema's real name regardless of
+/// separator/case. Empty on ANY failure: the adapter then uses its generic
+/// camelCase normalization, which is the pre-schema behavior — a command that needs
+/// no canonicalization (camelCase fields) still works without the registry.
+async fn canonical_param_names(command: &str) -> Vec<String> {
+    let list = match connection()
+        .commands()
+        .execute_value("commands/list", serde_json::json!({ "filter": command }))
+        .await
+    {
+        Ok(v) => v,
+        Err(_) => return Vec::new(),
+    };
+    list.get("commands")
+        .and_then(|c| c.as_array())
+        .and_then(|cmds| {
+            cmds.iter()
+                .find(|c| c.get("name").and_then(|n| n.as_str()) == Some(command))
+        })
+        .and_then(|info| info.get("paramsSchema"))
+        .and_then(|s| s.get("properties"))
+        .and_then(|p| p.as_object())
+        .map(|props| props.keys().cloned().collect())
+        .unwrap_or_default()
 }
 
 /// Coerce a CLI string value: try JSON first (`5`→number, `true`→bool, `{…}`→
@@ -496,25 +557,31 @@ mod tests {
     // in the middle at every interface" (Joel 2026-06-21).
     #[test]
     fn params_adapt_procedurally_from_args() {
+        // No schema available → generic camelCase normalization (pre-schema behavior).
+        let no_schema: &[String] = &[];
+
         // 1. nothing → empty object
-        assert_eq!(params_from_args(&[]).unwrap(), json!({}));
+        assert_eq!(params_from_args(&[], no_schema).unwrap(), json!({}));
 
         // 2. positional JSON verbatim (the AI / tool-call path)
         assert_eq!(
-            params_from_args(&[r#"{"message":"hi"}"#.to_string()]).unwrap(),
+            params_from_args(&[r#"{"message":"hi"}"#.to_string()], no_schema).unwrap(),
             json!({ "message": "hi" })
         );
 
         // 3. --key value with coercion: string stays string, number→number,
         //    bool→bool; keys camelCased from kebab/snake.
-        let p = params_from_args(&[
-            "--message".into(),
-            "hi".into(),
-            "--round-trip-ms".into(),
-            "5".into(),
-            "--enabled".into(),
-            "true".into(),
-        ])
+        let p = params_from_args(
+            &[
+                "--message".into(),
+                "hi".into(),
+                "--round-trip-ms".into(),
+                "5".into(),
+                "--enabled".into(),
+                "true".into(),
+            ],
+            no_schema,
+        )
         .unwrap();
         assert_eq!(
             p,
@@ -524,24 +591,58 @@ mod tests {
 
         // bare flag (no value) → true
         assert_eq!(
-            params_from_args(&["--verbose".into()]).unwrap(),
+            params_from_args(&["--verbose".into()], no_schema).unwrap(),
             json!({ "verbose": true })
         );
 
         // `--key=value` form (muscle memory) — split on first `=`, NOT a junk key.
         assert_eq!(
-            params_from_args(&["--filter=data/".into()]).unwrap(),
+            params_from_args(&["--filter=data/".into()], no_schema).unwrap(),
             json!({ "filter": "data/" }),
             "--key=value splits correctly (regression: was {{\"filter=data/\": true}})"
         );
         assert_eq!(
-            params_from_args(&["--round-trip-ms=5".into()]).unwrap(),
+            params_from_args(&["--round-trip-ms=5".into()], no_schema).unwrap(),
             json!({ "roundTripMs": 5 }),
             "--key=value coerces + camelCases"
         );
 
         // a non-flag, non-JSON arg is a clear error (not silently swallowed)
-        assert!(params_from_args(&["oops".into()]).is_err());
+        assert!(params_from_args(&["oops".into()], no_schema).is_err());
+    }
+
+    // what this catches: snake_case Rust-native command fields (e.g. cognition/eval's
+    // `persona_id`) must be invokable by flag. cu used to blanket-camelCase every key,
+    // so `--persona_id` became `personaId` and the server rejected it with
+    // `missing field persona_id`. With the command's schema known, any spelling of a
+    // schema field canonicalizes to the exact field name; flags NOT in the schema
+    // (base fields, schemaless commands) keep the legacy camelCase normalization.
+    // regression for the 2026-06-25 cu flag bug.
+    #[test]
+    fn flags_canonicalize_to_schema_field_names() {
+        let canonical = vec!["persona_id".to_string(), "eval_set".to_string()];
+        // every separator/case spelling of a schema field → the exact field name
+        for spelling in ["--persona_id", "--persona-id", "--personaId", "--PERSONA_ID"] {
+            let p = params_from_args(&[spelling.into(), "abc".into()], &canonical).unwrap();
+            assert_eq!(p, json!({ "persona_id": "abc" }), "{spelling} → persona_id");
+        }
+        // `--key=value` form canonicalizes too
+        assert_eq!(
+            params_from_args(&["--eval-set=x.jsonl".into()], &canonical).unwrap(),
+            json!({ "eval_set": "x.jsonl" })
+        );
+        // a flag NOT in the schema falls back to camelCase (base fields — no regression)
+        assert_eq!(
+            params_from_args(&["--room-id".into(), "r1".into()], &canonical).unwrap(),
+            json!({ "roomId": "r1" }),
+            "non-schema flag → legacy camelCase"
+        );
+        // with no schema at all, everything is legacy camelCase
+        assert_eq!(
+            params_from_args(&["--persona-id".into(), "abc".into()], &[]).unwrap(),
+            json!({ "personaId": "abc" }),
+            "no schema → legacy camelCase (pre-schema behavior preserved)"
+        );
     }
 
     #[test]
