@@ -254,7 +254,7 @@ pub struct CollectionStats {
 }
 
 /// Batch operation type
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[ts(
     export,
     export_to = "../../../protocol/typescript/orm/BatchOperationType.ts"
@@ -268,7 +268,7 @@ pub enum BatchOperationType {
 }
 
 /// Batch storage operation
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[ts(export, export_to = "../../../protocol/typescript/orm/BatchOperation.ts")]
 #[serde(rename_all = "camelCase")]
 pub struct BatchOperation {
@@ -276,6 +276,7 @@ pub struct BatchOperation {
     pub collection: String,
     pub id: Option<UUID>,
     #[ts(type = "Record<string, unknown> | undefined")]
+    #[schemars(with = "Option<serde_json::Value>")]
     pub data: Option<Value>,
 }
 

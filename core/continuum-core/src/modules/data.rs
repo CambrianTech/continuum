@@ -514,33 +514,9 @@ struct QueryWithJoinParams {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct BatchParams {
-    db_path: String,
-    operations: Vec<BatchOperation>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct EnsureSchemaParams {
-    db_path: String,
-    /// Phase 2: callers pass a collection NAME, not an inline CollectionSchema.
-    /// Rust resolves the schema from entity_schemas.json (decorator-sourced
-    /// at build time via generate-entity-schemas.ts). The language level
-    /// never constructs SQL / fields / indexes on the wire.
-    collection: String,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
 struct CollectionParams {
     db_path: String,
     collection: String,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct DbPathOnly {
-    db_path: String,
 }
 
 /// Vector search params (matches data-daemon API)
@@ -773,22 +749,11 @@ impl DataState {
                 self.handle_query_with_join(deserialize_params!(command, params)?)
                     .await
             }
-            "data/batch" => {
-                self.handle_batch(deserialize_params!(command, params)?)
-                    .await
-            }
-            "data/ensure-schema" => {
-                self.handle_ensure_schema(deserialize_params!(command, params)?)
-                    .await
-            }
-            "data/truncate" => self.handle_truncate(params).await,
-            "data/clear-all" => self.handle_clear_all(params).await,
-
-            // data/count, data/list-collections, data/collection-stats are now
-            // typed self-routing commands (commands/data/{count,list_collections,
-            // collection_stats}.rs) driving DataState::{count_records,
-            // list_collection_names,collection_statistics}. The typed object map
-            // wins over this match, so their legacy arms are gone.
+            // data/count, data/list-collections, data/collection-stats, data/batch,
+            // data/ensure-schema, data/truncate, data/clear-all are now typed
+            // self-routing commands (commands/data/*.rs) driving the corresponding
+            // DataState methods. The typed object map wins over this match, so their
+            // legacy arms are gone.
 
             // Paginated queries - server-side cursor management
             "data/query-open" => {
@@ -1141,11 +1106,17 @@ impl DataState {
         Ok(result)
     }
 
-    async fn handle_batch(&self, params: BatchParams) -> Result<CommandResult, String> {
-        let op_count = params.operations.len();
+    /// Apply a batch of create/update/delete operations atomically. Drives
+    /// `data/batch`.
+    pub(crate) async fn batch_operations(
+        &self,
+        handle: &str,
+        operations: Vec<BatchOperation>,
+    ) -> Result<StorageResult<Vec<Value>>, String> {
+        let op_count = operations.len();
 
-        let adapter = self.get_adapter(&params.db_path).await?;
-        let result = adapter.batch(params.operations).await;
+        let adapter = self.get_adapter(handle).await?;
+        let result = adapter.batch(operations).await;
 
         // Publish batch event on success
         if result.success {
@@ -1159,7 +1130,7 @@ impl DataState {
             );
         }
 
-        CommandResult::json(&result)
+        Ok(result)
     }
 
     /// Phase 2 Step 3: ensure_schema pivot through resolve().
@@ -1167,10 +1138,14 @@ impl DataState {
     /// Schema content sourced from entity_schemas.json (build-time codegen
     /// from TS decorators), resolved per collection by the entity_schemas
     /// module. Unknown collection → hard fail with rebuild hint.
-    async fn handle_ensure_schema(
+    /// Ensure a collection's schema exists, resolving the schema by collection
+    /// NAME (the wire never carries inline SQL/fields/indexes). Drives
+    /// `data/ensure-schema`.
+    pub(crate) async fn ensure_collection_schema(
         &self,
-        params: EnsureSchemaParams,
-    ) -> Result<CommandResult, String> {
+        handle: &str,
+        collection: &str,
+    ) -> Result<StorageResult<bool>, String> {
         // Resolution order per [[orm-everything-not-hand-edited-files]]:
         //   1. Rust-native registry (substrate entities authored Rust-first:
         //      hw_tiers, role_templates, identity pools, universes).
@@ -1178,25 +1153,22 @@ impl DataState {
         //      cognition, timeline — the existing pipeline).
         //   3. Error — collection unknown to either path.
         let collection_schema = if let Some(rust_schema) =
-            crate::orm::OrmEntityRegistry::global().resolve(&params.collection)
+            crate::orm::OrmEntityRegistry::global().resolve(collection)
         {
             rust_schema
-        } else if let Some(entity) = crate::modules::entity_schemas::resolve(&params.collection) {
+        } else if let Some(entity) = crate::modules::entity_schemas::resolve(collection) {
             crate::modules::entity_schemas::to_collection_schema(entity)
         } else {
             return Err(format!(
-                "Unknown collection '{}' — not in the Rust ORM registry and not in \
+                "Unknown collection '{collection}' — not in the Rust ORM registry and not in \
                  entity_schemas.json. If this is a newly added TS-decorated entity, \
                  rebuild TS: `npm run build:ts`. If it's a Rust-native substrate entity, \
                  confirm OrmEntityRegistry::global().register::<YourEntity>() is called \
-                 at boot.",
-                params.collection
+                 at boot."
             ));
         };
-        let adapter = self.get_adapter(&params.db_path).await?;
-        let result = adapter.ensure_schema(collection_schema).await;
-
-        CommandResult::json(&result)
+        let adapter = self.get_adapter(handle).await?;
+        Ok(adapter.ensure_schema(collection_schema).await)
     }
 
     /// List the collection names present in a store. Drives `data/list-collections`.
@@ -1219,24 +1191,24 @@ impl DataState {
         Ok(adapter.collection_stats(collection).await)
     }
 
-    async fn handle_truncate(&self, params: Value) -> Result<CommandResult, String> {
-        let params: CollectionParams =
-            serde_json::from_value(params).map_err(|e| format!("Invalid params: {e}"))?;
-
-        let adapter = self.get_adapter(&params.db_path).await?;
-        let result = adapter.truncate(&params.collection).await;
-
-        CommandResult::json(&result)
+    /// Delete every record in one collection (keeps the schema). Drives
+    /// `data/truncate`.
+    pub(crate) async fn truncate_collection(
+        &self,
+        handle: &str,
+        collection: &str,
+    ) -> Result<StorageResult<bool>, String> {
+        let adapter = self.get_adapter(handle).await?;
+        Ok(adapter.truncate(collection).await)
     }
 
-    async fn handle_clear_all(&self, params: Value) -> Result<CommandResult, String> {
-        let params: DbPathOnly =
-            serde_json::from_value(params).map_err(|e| format!("Invalid params: {e}"))?;
-
-        let adapter = self.get_adapter(&params.db_path).await?;
-        let result = adapter.clear_all().await;
-
-        CommandResult::json(&result)
+    /// Wipe every collection in a store. Drives `data/clear-all`.
+    pub(crate) async fn clear_all_collections(
+        &self,
+        handle: &str,
+    ) -> Result<StorageResult<crate::orm::adapter::ClearAllResult>, String> {
+        let adapter = self.get_adapter(handle).await?;
+        Ok(adapter.clear_all().await)
     }
 
     /// Adapter identity + full capability surface for a store. Drives the typed

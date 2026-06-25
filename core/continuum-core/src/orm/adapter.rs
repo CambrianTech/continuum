@@ -135,10 +135,12 @@ pub trait StorageAdapter: Send + Sync {
 }
 
 /// Result of clear_all operation
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../../protocol/typescript/orm/ClearAllResult.ts")]
 pub struct ClearAllResult {
     pub tables_cleared: Vec<String>,
+    #[ts(type = "number")]
     pub records_deleted: usize,
 }
 

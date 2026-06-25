@@ -24,22 +24,30 @@ use std::sync::Arc;
 use crate::modules::data::DataState;
 use crate::sdk_codegen::DynCommand;
 
+pub mod batch;
+pub mod clear_all;
 pub mod collection_stats;
 pub mod count;
 pub mod create;
 pub mod delete;
+pub mod ensure_schema;
 pub mod list;
 pub mod list_collections;
 pub mod read;
+pub mod truncate;
 pub mod update;
 
+use batch::DataBatch;
+use clear_all::DataClearAll;
 use collection_stats::DataCollectionStats;
 use count::DataCount;
 use create::DataCreate;
 use delete::DataDelete;
+use ensure_schema::DataEnsureSchema;
 use list::DataList;
 use list_collections::DataListCollections;
 use read::DataRead;
+use truncate::DataTruncate;
 use update::DataUpdate;
 
 /// The dep-holding `data/*` command objects [`DataModule`](crate::modules::data::DataModule)
@@ -55,7 +63,11 @@ pub fn command_objects(state: Arc<DataState>) -> Vec<Arc<dyn DynCommand>> {
         Arc::new(DataDelete { state: state.clone() }),
         Arc::new(DataCount { state: state.clone() }),
         Arc::new(DataListCollections { state: state.clone() }),
-        Arc::new(DataCollectionStats { state }),
+        Arc::new(DataCollectionStats { state: state.clone() }),
+        Arc::new(DataBatch { state: state.clone() }),
+        Arc::new(DataEnsureSchema { state: state.clone() }),
+        Arc::new(DataTruncate { state: state.clone() }),
+        Arc::new(DataClearAll { state }),
     ]
 }
 
@@ -78,5 +90,9 @@ mod tests {
         assert_eq!(DataCount::NAME, "data/count");
         assert_eq!(DataListCollections::NAME, "data/list-collections");
         assert_eq!(DataCollectionStats::NAME, "data/collection-stats");
+        assert_eq!(DataBatch::NAME, "data/batch");
+        assert_eq!(DataEnsureSchema::NAME, "data/ensure-schema");
+        assert_eq!(DataTruncate::NAME, "data/truncate");
+        assert_eq!(DataClearAll::NAME, "data/clear-all");
     }
 }
