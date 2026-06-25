@@ -1,7 +1,10 @@
 # Forge Custodian Contract — Contract C, and how it grid-negotiates
 
-**Status:** in progress. Pass 1 landed (`forge::protocol`, single-sourced wire +
-`/health` contract-version handshake, custodian declared as a real `[[bin]]`).
+**Status:** in progress. Pass 1 + Pass 2 landed — `forge::protocol` single-sources
+the wire + `/health` contract-version handshake (custodian a real `[[bin]]`), and
+the gguf-lora export now speaks Contract C through a clean de-`unsloth`
+`forge::custodian_client` aimed at the custodian's own endpoint. Pass 3 (harden the
+binary: bounds, readiness detail, graceful shutdown, idempotency) is next.
 This doc is the single source of truth for the **forge custodian seam** and the
 plan to make it grid-negotiable.
 
@@ -231,18 +234,23 @@ Done is done; everything below the line is the plan.
    route constants + `CONTRACT_VERSION`; `/health` carries the version; custodian
    declared as an explicit `[[bin]]`. Round-trip + version-handshake tests green.
    (`009f16e70`)
-2. **Pass 2 — make the gguf-lora client speak Contract C (the drift repair).**
-   The live bug: `package()`'s `GgufLora` arm does a stateful `load_checkpoint()`
-   then POSTs a body WITHOUT `checkpoint` and WITH `push_to_hub`/`repo_id` — the
-   continuum custodian (stateless `forge::protocol::GgufLoraRequest`) rejects it.
-   Fix: the gguf-lora export path serializes `forge::protocol::GgufLoraRequest`
-   (checkpoint-in-body, no load-checkpoint, no hub fields), keeps typed
-   `Unreachable|Api` (R1, R2), and verifies `CONTRACT_VERSION` via `/health`
-   before dispatch. `modules/forge.rs` already delegates, so no consumer rewrite —
-   only the path below the trait changes. The unsloth-only `train_*`/`lora`/`gguf`
-   arms are out of scope here (they belong to the broader #52 excision / the
-   training fork above); de-`unsloth`-renaming the client is a pure string change
-   once the gguf-lora path is on Contract C.
+2. ✅ **Pass 2 — make the gguf-lora client speak Contract C (the drift repair).**
+   (`6f9797cda`) Two bugs were live, not one: (a) **wrong endpoint** — `package()`'s
+   `GgufLora` arm POSTed to `unsloth_base_url()`, the unsloth host, which *cannot*
+   produce a GGUF LoRA (the whole reason the custodian exists); (b) **wrong wire
+   shape** — it did a stateful `load_checkpoint()` then sent a body WITHOUT
+   `checkpoint` and WITH `push_to_hub`/`repo_id` the stateless
+   `forge::protocol::GgufLoraRequest` rejects. Fix: a clean de-`unsloth`
+   `forge::custodian_client::{ForgeCustodian, ForgeCustodianHttp}` over
+   `forge::protocol` — stateless `export_gguf_lora` (checkpoint-in-body, no
+   load-checkpoint, no hub fields), typed `Unreachable|Api` (R2), `ensure_contract()`
+   verifies `CONTRACT_VERSION` at `/health` before dispatch (R1), and it targets the
+   CUSTODIAN's own address (`DEFAULT_CUSTODIAN_ADDR`/`FORGE_CUSTODIAN_ADDR`, single-
+   sourced so the bin and client can't disagree). `modules/forge.rs::forge/export`
+   dispatches gguf-lora to `run_export_gguf_lora` (Contract C); `lora`/`gguf` still
+   route to unsloth until #52; `package_format` now rejects gguf-lora loudly as a
+   guard against the old wrong path. 4 client + 3 rewritten export tests green. The
+   unsloth-only `train_*`/`lora`/`gguf` arms stay until the broader #52 excision.
 3. **Pass 3 — harden the custodian binary.** Bounds (timeout + concurrency
    semaphore + subprocess deadline, R3), `/health` readiness+capacity detail (R4),
    graceful shutdown + `probe!` reusing `ServiceModule`/`watch`/`PressureBroker`
