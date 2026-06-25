@@ -15,4 +15,5 @@ pub mod code;
 pub mod command;
 pub mod help;
 pub mod memory;
+pub mod rag;
 pub mod system;

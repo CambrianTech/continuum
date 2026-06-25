@@ -1,6 +1,10 @@
-//! RagModule — Batched RAG context composition with parallel source loading.
+//! RagModule — owns the per-persona `Arc<RagState>` for batched RAG context composition.
 //!
-//! Handles: rag/compose
+//! The `rag/compose` command is a TYPED [`ActionCommand`](crate::sdk_codegen::ActionCommand)
+//! on the ONE registry, living in [`crate::commands::rag`] and exposed here via
+//! [`commands()`](RagModule::commands) — so it carries a descriptor and routes through the
+//! O(1) typed path. This module no longer dispatches it through `handle_command` (the legacy
+//! arm is retired). The source loaders stay here on `RagState`; the command drives them.
 //!
 //! Key optimization: Instead of TypeScript making N IPC calls (one per source),
 //! this module receives ALL source requests in ONE call and runs them in parallel
@@ -14,11 +18,10 @@
 //! This allows video games to pass scene/move context, VR apps to pass spatial
 //! data, chat to pass conversation history - all in the same batched call.
 
-use crate::log_info;
-use crate::logging::TimingGuard;
 use crate::memory::PersonaMemoryManager;
 use crate::runtime::{CommandResult, ModuleConfig, ModuleContext, ModulePriority, ServiceModule};
 use async_trait::async_trait;
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::any::Any;
@@ -33,7 +36,7 @@ use ts_rs::TS;
 // ─── Source-Specific Params (Strongly Typed) ─────────────────────────────────
 
 /// Memory source params — for semantic memory recall
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
 #[ts(
     export,
     export_to = "../../../protocol/typescript/rag/MemorySourceParams.ts"
@@ -48,7 +51,7 @@ pub struct MemorySourceParams {
 }
 
 /// Consciousness source params — temporal + cross-context awareness
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
 #[ts(
     export,
     export_to = "../../../protocol/typescript/rag/ConsciousnessSourceParams.ts"
@@ -63,7 +66,7 @@ pub struct ConsciousnessSourceParams {
 }
 
 /// Scene source params — for video games, VR, 3D apps
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
 #[ts(
     export,
     export_to = "../../../protocol/typescript/rag/SceneSourceParams.ts"
@@ -82,7 +85,7 @@ pub struct SceneSourceParams {
 }
 
 /// Project source params — for code/workspace context
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
 #[ts(
     export,
     export_to = "../../../protocol/typescript/rag/ProjectSourceParams.ts"
@@ -99,7 +102,7 @@ pub struct ProjectSourceParams {
 }
 
 /// Custom section for passthrough content
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
 #[ts(export, export_to = "../../../protocol/typescript/rag/CustomSection.ts")]
 pub struct CustomSection {
     /// Section type label
@@ -115,7 +118,7 @@ pub struct CustomSection {
 }
 
 /// Custom source params — passthrough for extensions (only place with flexibility)
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
 #[ts(
     export,
     export_to = "../../../protocol/typescript/rag/CustomSourceParams.ts"
@@ -128,7 +131,7 @@ pub struct CustomSourceParams {
 // ─── Tagged Union: RagSourceRequest ──────────────────────────────────────────
 
 /// RAG source request — discriminated union by source_type
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
 #[serde(tag = "source_type")]
 #[ts(
     export,
@@ -307,7 +310,7 @@ pub struct RagSection {
 }
 
 /// Full RAG compose request.
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
 #[ts(
     export,
     export_to = "../../../protocol/typescript/rag/RagComposeRequest.ts"
@@ -675,7 +678,10 @@ impl RagState {
     }
 
     /// Load a single source based on its discriminated type (OOP pattern matching)
-    async fn load_source(
+    /// Load one RAG source, dispatching on its `source_type`. `pub(crate)` so the
+    /// typed [`rag/compose`](crate::commands::rag::compose) command can drive the
+    /// per-source loop from the `commands::rag` family while the loaders stay private.
+    pub(crate) async fn load_source(
         &self,
         source: &RagSourceRequest,
         persona_id: &str,
@@ -742,84 +748,24 @@ impl ServiceModule for RagModule {
         Ok(())
     }
 
-    async fn handle_command(&self, command: &str, params: Value) -> Result<CommandResult, String> {
-        match command {
-            "rag/compose" => {
-                let _timer = TimingGuard::new("module", "rag_compose");
-                let start = Instant::now();
+    /// `rag/compose` is migrated to the typed registry — see [`commands()`](Self::commands)
+    /// and [`crate::commands::rag`]. The executor routes that name through the O(1) typed
+    /// object map (`route_object`) BEFORE this legacy prefix path, so it never reaches
+    /// here. Any `rag/*` name that DOES fall through is unregistered — fail loud naming
+    /// it rather than silently matching.
+    async fn handle_command(&self, command: &str, _params: Value) -> Result<CommandResult, String> {
+        Err(format!(
+            "'{command}' is not a registered rag command — the rag/* family is on the \
+             typed registry (crate::commands::rag); legacy handle_command is retired"
+        ))
+    }
 
-                // Parse request
-                let req: RagComposeRequest = serde_json::from_value(params)
-                    .map_err(|e| format!("Invalid rag/compose request: {e}"))?;
-
-                let persona_id = req.persona_id.clone();
-                let room_id = req.room_id.clone();
-                let query_text = req.query_text.clone();
-                let sources = req.sources.clone();
-
-                // Clone state for sequential access
-                let state = Arc::clone(&self.state);
-
-                // ═══════════════════════════════════════════════════════════
-                // SEQUENTIAL SOURCE LOADING (CRITICAL FIX)
-                //
-                // Previously used par_iter() but this caused Rayon thread starvation:
-                // - IPC dispatch uses rayon::spawn() for each request
-                // - Rayon threads block on rx.recv_timeout(30s) waiting for tokio
-                // - Tokio calls handle_command which used par_iter()
-                // - par_iter() needs Rayon threads - but they're all blocked!
-                //
-                // Sequential iteration is fine because:
-                // - Individual source loading is fast (~5ms each)
-                // - Typically only 2-3 sources per compose
-                // - Total time is still <50ms
-                //
-                // Now async: the memory source's query embedding is produced via
-                // the adapter-routed embedder (task #40). Await each source in
-                // order — no Rayon, no thread starvation.
-                // ═══════════════════════════════════════════════════════════
-                let mut source_results: Vec<RagSourceResult> = Vec::with_capacity(sources.len());
-                for source in &sources {
-                    source_results.push(
-                        state
-                            .load_source(source, &persona_id, &room_id, query_text.as_deref())
-                            .await,
-                    );
-                }
-
-                // Aggregate results
-                let total_tokens: usize = source_results.iter().map(|r| r.tokens_used).sum();
-                let sources_succeeded = source_results.iter().filter(|r| r.success).count();
-                let sources_failed = source_results.len() - sources_succeeded;
-                let compose_time_ms = start.elapsed().as_secs_f64() * 1000.0;
-
-                log_info!(
-                    "module",
-                    "rag_compose",
-                    "RAG compose for {}: {} sources ({} ok, {} failed), {} tokens in {:.1}ms",
-                    persona_id,
-                    sources.len(),
-                    sources_succeeded,
-                    sources_failed,
-                    total_tokens,
-                    compose_time_ms
-                );
-
-                let result = RagComposeResult {
-                    source_results,
-                    total_tokens,
-                    compose_time_ms,
-                    sources_succeeded,
-                    sources_failed,
-                };
-
-                Ok(CommandResult::Json(
-                    serde_json::to_value(&result).unwrap_or_default(),
-                ))
-            }
-
-            _ => Err(format!("Unknown rag command: {command}")),
-        }
+    /// The migrated `rag/*` commands as typed self-routing objects on the ONE registry,
+    /// each sharing this module's `Arc<RagState>`. Their descriptors flow into
+    /// `command_registry()` → the persona tool surface + grid ACL; the executor routes
+    /// their names straight here. See [`crate::commands::rag`].
+    fn commands(&self) -> Vec<Arc<dyn crate::sdk_codegen::DynCommand>> {
+        crate::commands::rag::command_objects(self.state.clone())
     }
 
     fn as_any(&self) -> &dyn Any {
