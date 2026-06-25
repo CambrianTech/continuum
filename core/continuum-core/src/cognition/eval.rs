@@ -122,6 +122,13 @@ pub struct CognitionEvalParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional, type = "number")]
     pub max_acts: Option<u32>,
+    /// Free-text label for THIS run, written to the progress ledger so a trend
+    /// line is readable: "baseline", "taught show-output", "genome v2", etc.
+    /// The ledger is how you "mark improvement as you go" — every eval leaves a
+    /// dated, labelled, test-anchored mark at `~/.continuum/progress/<id>.jsonl`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub note: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, TS)]
@@ -152,6 +159,13 @@ pub struct CognitionEvalResult {
     /// `score / total` — THE number a change is measured against. In A/B mode
     /// (a `gene` was given) this is the CANDIDATE (gene-paged-in) pass-rate.
     pub pass_rate: f64,
+    /// Fraction of tasks where she ACTED at least once (ran code / read / searched)
+    /// before settling — i.e. she verified instead of asserting. Memory flags
+    /// `acts=0` (answers from the model's head, never runs it) as the #1 trainable
+    /// lever; this is that lever as a tracked number, climbing toward 1.0 as the
+    /// verify reflex takes hold. Reality-anchored alongside `pass_rate`: a high
+    /// pass_rate with a low self_verify_rate means she's guessing right, not knowing.
+    pub self_verify_rate: f64,
     pub results: Vec<EvalTaskResult>,
     /// The gene measured (A/B mode only) — its name, echoed so a run is traceable.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -197,6 +211,17 @@ impl ActionCommand for CognitionEval {
             Some(s) => Uuid::parse_str(s)
                 .map_err(|_| CommandError::Invalid(format!("room_id '{s}' is not a valid UUID")))?,
             None => Uuid::nil(),
+        };
+
+        // Which set was graded — recorded in the ledger so trend rows are
+        // comparable only against the same battery (inline vs a JSONL path vs the
+        // committed default). Computed before `p.tasks` is moved below.
+        let eval_set_label = if p.tasks.is_some() {
+            "inline".to_string()
+        } else {
+            p.eval_set
+                .clone()
+                .unwrap_or_else(|| DEFAULT_EVAL_SET.to_string())
         };
 
         // Task source: inline → eval_set JSONL → committed default. A missing file
@@ -284,16 +309,19 @@ impl ActionCommand for CognitionEval {
             cycle.page_out();
 
             // Guard drops here: her memory frame + real persistence sink restored.
-            return Ok(CognitionEvalResult {
+            let result = CognitionEvalResult {
                 persona_id: persona_uuid.to_string(),
                 score: gene_score,
                 total,
                 pass_rate: rate(gene_score),
+                self_verify_rate: self_verify_rate(&gene_results),
                 results: gene_results,
                 gene_id: Some(gene.name.clone()),
                 base_pass_rate: Some(rate(base_score)),
                 lift: Some(rate(gene_score) - rate(base_score)),
-            });
+            };
+            append_progress_ledger(&result, p.note.as_deref(), &eval_set_label);
+            return Ok(result);
         }
 
         // Single pass: measure whatever genome is currently paged in (base by
@@ -301,16 +329,70 @@ impl ActionCommand for CognitionEval {
         // baseline run is reproducible and leaves her memory untouched.
         let (score, results) = run_pass(&cycle, &tasks, room, max_acts).await;
         drop(isolation);
-        Ok(CognitionEvalResult {
+        let result = CognitionEvalResult {
             persona_id: persona_uuid.to_string(),
             score,
             total,
             pass_rate: rate(score),
+            self_verify_rate: self_verify_rate(&results),
             results,
             gene_id: None,
             base_pass_rate: None,
             lift: None,
-        })
+        };
+        append_progress_ledger(&result, p.note.as_deref(), &eval_set_label);
+        Ok(result)
+    }
+}
+
+/// Fraction of tasks where she ACTED at least once before settling — the
+/// verify-don't-assert reflex as a number. `acts=0` everywhere = she answered
+/// from the model's head and never ran her own code (the #1 trainable lever per
+/// [[asha-coder-baseline-and-spawn-race]]).
+fn self_verify_rate(results: &[EvalTaskResult]) -> f64 {
+    if results.is_empty() {
+        return 0.0;
+    }
+    let acted = results.iter().filter(|r| r.acts > 0).count();
+    acted as f64 / results.len() as f64
+}
+
+/// Append one row to the per-persona progress ledger so a trend line accrues
+/// across runs — the scoreboard for "mark improvement as you go". Best-effort
+/// like the recorder ([[cognition-half-the-work-is-harnesses]]): a ledger
+/// failure must NEVER fail an eval. Every row is reality-anchored — `passRate`
+/// is test-graded, `selfVerifyRate` is whether she actually ran her own code —
+/// so the trend can't be gamed by prose. One JSONL line per run at
+/// `~/.continuum/progress/<persona_id>.jsonl`, labelled by `note`.
+fn append_progress_ledger(result: &CognitionEvalResult, note: Option<&str>, eval_set: &str) {
+    let Some(home) = std::env::var("HOME").ok() else {
+        return;
+    };
+    let dir = std::path::PathBuf::from(home).join(".continuum/progress");
+    if std::fs::create_dir_all(&dir).is_err() {
+        return;
+    }
+    let path = dir.join(format!("{}.jsonl", result.persona_id));
+    let row = serde_json::json!({
+        "capturedAtMs": crate::persona::trace::now_ms(),
+        "personaId": result.persona_id,
+        "evalSet": eval_set,
+        "score": result.score,
+        "total": result.total,
+        "passRate": result.pass_rate,
+        "selfVerifyRate": result.self_verify_rate,
+        "geneId": result.gene_id,
+        "basePassRate": result.base_pass_rate,
+        "lift": result.lift,
+        "note": note,
+    });
+    use std::io::Write;
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    {
+        let _ = writeln!(f, "{row}");
     }
 }
 
