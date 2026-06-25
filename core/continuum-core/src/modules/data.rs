@@ -11,7 +11,7 @@ use crate::orm::{
     adapter::{AdapterConfig, StorageAdapter},
     migration::{MigrationConfig, MigrationEngine, MigrationHandle},
     postgres::PostgresAdapter,
-    query::{FieldFilter, StorageQuery},
+    query::{FieldFilter, SortDirection, SortSpec, StorageQuery},
     sqlite::SqliteAdapter,
     types::{BatchOperation, DataRecord, RecordMetadata, UUID},
 };
@@ -453,6 +453,15 @@ impl ServiceModule for DataModule {
         Ok(())
     }
 
+    /// The migrated `data/*` commands as typed self-routing objects on the ONE
+    /// registry. Each shares this module's `Arc<DataState>`; the executor routes
+    /// their names straight here (winning over the legacy `data/` prefix arm),
+    /// and their `CommandSpec` descriptors flow into `command_registry()` → the
+    /// persona tool surface + grid ACL. See [`crate::commands::data`].
+    fn commands(&self) -> Vec<Arc<dyn crate::sdk_codegen::DynCommand>> {
+        crate::commands::data::command_objects(self.state.clone())
+    }
+
     fn as_any(&self) -> &dyn Any {
         self
     }
@@ -801,7 +810,12 @@ impl DataState {
                 self.handle_delete(deserialize_params!(command, params)?)
                     .await
             }
-            "data/query" | "data/list" => {
+            // `data/list` is now the typed, persona-facing command
+            // (`commands/data/list.rs`) — routed via the typed object map, which
+            // wins over this legacy arm. `data/query` keeps the explicit-`db_path`
+            // `QueryParams` shape its internal Rust callers (chat, channel,
+            // self-task) depend on.
+            "data/query" => {
                 self.handle_query(deserialize_params!(command, params)?)
                     .await
             }
@@ -1010,6 +1024,100 @@ impl DataState {
         self.log_slow_query("query", &params.collection, total_ms);
 
         CommandResult::json(&result)
+    }
+
+    /// Persona/UI-facing list: read a collection by an intuitive plain-JSON
+    /// filter + optional ordering/paging, returning the matching records and an
+    /// accurate `total` (SQL COUNT, not `items.len()`). The storage handle
+    /// defaults to "main" (the shared DB) — callers never name a `db_path`;
+    /// power callers may target a per-persona store via `handle`.
+    ///
+    /// This is the typed `data/list` command's body (`commands/data/list.rs`).
+    /// The legacy `data/query` arm keeps the explicit-`db_path` `QueryParams`
+    /// shape its internal Rust callers (chat, channel, self-task) still use.
+    pub(crate) async fn list(&self, params: DataListParams) -> Result<DataListResult, String> {
+        // Bound peak heap when many personas list concurrently (same gate as
+        // handle_query). Excess callers wait — bounded, not dropped.
+        let _permit = self
+            .query_semaphore
+            .acquire()
+            .await
+            .map_err(|_| "query semaphore closed")?;
+
+        let handle = params.handle.as_deref().unwrap_or("main");
+
+        // Plain-JSON filter → typed FieldFilter map. FieldFilter is untagged, so
+        // `{"roomId": "general"}` becomes an equality match and
+        // `{"age": {"$gt": 18}}` an operator match — natural JSON, no special
+        // syntax for the persona to learn. Bad filter shape fails loud.
+        let filter = match params.filter {
+            Some(v) => Some(
+                serde_json::from_value::<HashMap<String, FieldFilter>>(v)
+                    .map_err(|e| format!("data/list: invalid filter — {e}"))?,
+            ),
+            None => None,
+        };
+
+        let sort = params.sort.map(|clauses| {
+            clauses
+                .into_iter()
+                .map(|c| SortSpec {
+                    field: c.field,
+                    direction: match c.direction {
+                        SortDir::Asc => SortDirection::Asc,
+                        SortDir::Desc => SortDirection::Desc,
+                    },
+                })
+                .collect::<Vec<_>>()
+        });
+
+        let adapter = self.get_adapter(handle).await?;
+
+        // Accurate total: SQL COUNT over the same filter, independent of paging.
+        let count_res = adapter
+            .count(StorageQuery {
+                collection: params.collection.clone(),
+                filter: filter.clone(),
+                ..Default::default()
+            })
+            .await;
+        if !count_res.success {
+            return Err(format!(
+                "data/list: count failed for '{}' — {}",
+                params.collection,
+                count_res.error.unwrap_or_else(|| "unknown error".into())
+            ));
+        }
+        let total = count_res.data.unwrap_or(0) as u32;
+
+        let res = adapter
+            .query(StorageQuery {
+                collection: params.collection.clone(),
+                filter,
+                sort,
+                limit: params.limit.map(|n| n as usize),
+                offset: params.offset.map(|n| n as usize),
+                ..Default::default()
+            })
+            .await;
+        if !res.success {
+            return Err(format!(
+                "data/list: query failed for '{}' — {}",
+                params.collection,
+                res.error.unwrap_or_else(|| "unknown error".into())
+            ));
+        }
+
+        let records = res.data.unwrap_or_default();
+        let mut items = Vec::with_capacity(records.len());
+        for r in records {
+            items.push(
+                serde_json::to_value(r)
+                    .map_err(|e| format!("data/list: serialize record — {e}"))?,
+            );
+        }
+
+        Ok(DataListResult { items, total })
     }
 
     async fn handle_query_with_join(
@@ -2982,7 +3090,7 @@ mod tests {
         // Test identical vectors
         let a = vec![1.0, 0.0, 0.0];
         let b = vec![1.0, 0.0, 0.0];
-        let sim = DataModule::cosine_similarity(&a, &b);
+        let sim = DataState::cosine_similarity(&a, &b);
         assert!(
             (sim - 1.0).abs() < 0.001,
             "Identical vectors should have similarity 1.0"
@@ -2991,7 +3099,7 @@ mod tests {
         // Test orthogonal vectors
         let a = vec![1.0, 0.0, 0.0];
         let b = vec![0.0, 1.0, 0.0];
-        let sim = DataModule::cosine_similarity(&a, &b);
+        let sim = DataState::cosine_similarity(&a, &b);
         assert!(
             sim.abs() < 0.001,
             "Orthogonal vectors should have similarity 0.0"
@@ -3000,7 +3108,7 @@ mod tests {
         // Test opposite vectors
         let a = vec![1.0, 0.0, 0.0];
         let b = vec![-1.0, 0.0, 0.0];
-        let sim = DataModule::cosine_similarity(&a, &b);
+        let sim = DataState::cosine_similarity(&a, &b);
         assert!(
             (sim + 1.0).abs() < 0.001,
             "Opposite vectors should have similarity -1.0"
@@ -3009,7 +3117,7 @@ mod tests {
         // Test with 384-dimension vectors (typical embedding size)
         let a: Vec<f64> = (0..384).map(|i| (i as f64) * 0.01).collect();
         let b: Vec<f64> = (0..384).map(|i| (i as f64) * 0.01).collect();
-        let sim = DataModule::cosine_similarity(&a, &b);
+        let sim = DataState::cosine_similarity(&a, &b);
         assert!(
             (sim - 1.0).abs() < 0.001,
             "Identical 384-dim vectors should have similarity 1.0"
@@ -3698,16 +3806,19 @@ mod tests {
 
 // ── SDK contract: data/list (sdk_codegen) ──────────────────────────
 //
-// The Rust-rooted contract for `data/list`. Per the single-source principle the
-// TYPE leads and the handler conforms: `data/list` is, by contract, "collection
-// (+ optional ordering/filter) → items + total". Declared Bare (the data handler
-// returns its result directly, no envelope). These ts-rs types are the canonical
-// wire shape every SDK generates from; aligning the StorageQuery-based handler to
-// emit exactly this shape is the follow-up (tracked) — the contract is the source
-// of truth, not the current handler internals.
+// The Rust-rooted contract for `data/list` — the persona/UI-facing collection
+// read. Per the single-source principle the TYPE leads and the handler conforms:
+// `data/list` is, by contract, "collection (+ optional filter/ordering/paging)
+// → items + accurate total". The typed command in `commands/data/list.rs` drives
+// [`DataState::list`], which honors exactly this shape. There is deliberately NO
+// `db_path` here: a persona reading rooms or messages must never reason about a
+// database handle — the shared "main" store is the default, and power callers
+// target a specific store via the optional `handle`.
 
 /// Sort direction for a `data/list` ordering clause.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS, schemars::JsonSchema,
+)]
 #[serde(rename_all = "lowercase")]
 #[ts(export, export_to = "../../../protocol/typescript/data/SortDir.ts")]
 pub enum SortDir {
@@ -3716,52 +3827,55 @@ pub enum SortDir {
 }
 
 /// One ordering clause: a field + a direction.
-#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS, schemars::JsonSchema)]
 #[ts(export, export_to = "../../../protocol/typescript/data/OrderByClause.ts")]
 pub struct OrderByClause {
     pub field: String,
     pub direction: SortDir,
 }
 
-/// Params for `data/list` — list records in a collection, optionally ordered and
-/// filtered.
-#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
+/// Params for `data/list` — read records from a collection.
+///
+/// Persona/UI-facing contract: name the `collection` and (optionally) an
+/// intuitive plain-JSON `filter`, ordering, and paging. There is deliberately
+/// no database handle to reason about — the shared "main" store is the default.
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 #[ts(export, export_to = "../../../protocol/typescript/data/DataListParams.ts")]
 pub struct DataListParams {
-    /// The collection to list.
+    /// The collection to read (e.g. "rooms", "users", "messages").
     pub collection: String,
-    /// Optional ordering clauses, applied in order.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub order_by: Option<Vec<OrderByClause>>,
-    /// Optional field filter (a partial match over record fields).
+    /// Optional field filter as plain JSON: `{"roomId": "general"}` for an
+    /// equality match, `{"age": {"$gt": 18}}` for an operator match.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional, type = "Record<string, unknown>")]
     pub filter: Option<serde_json::Value>,
+    /// Optional ordering clauses, applied in order.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub sort: Option<Vec<OrderByClause>>,
+    /// Max records to return. Omit for all matching (bounded by the store).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub limit: Option<u32>,
+    /// Records to skip before returning (paging alongside `limit`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub offset: Option<u32>,
+    /// Storage handle. Defaults to "main" (the shared DB). Power callers may pass
+    /// "@persona:<slug>" or "@metrics" to target a specific store.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub handle: Option<String>,
 }
 
-/// Result of `data/list` — the matching records + a total count.
-#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
+/// Result of `data/list` — the matching records + an accurate total.
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS, schemars::JsonSchema)]
 #[ts(export, export_to = "../../../protocol/typescript/data/DataListResult.ts")]
 pub struct DataListResult {
-    /// The matching records (shape is collection-specific).
+    /// The matching records (each carries id, collection, data, metadata).
     #[ts(type = "Array<unknown>")]
     pub items: Vec<serde_json::Value>,
-    /// Total matching records (may exceed `items.len()` when paginated).
+    /// Total records matching the filter (SQL COUNT — independent of `limit`).
     pub total: u32,
 }
-
-/// `data/list` — Bare: bare `DataListParams` in, bare `DataListResult` out.
-pub struct DataListCommand;
-impl crate::sdk_codegen::CommandSpec for DataListCommand {
-    const NAME: &'static str = "data/list";
-    const ACCESS_LEVEL: crate::sdk_codegen::AccessLevel = crate::sdk_codegen::AccessLevel::AiSafe;
-    const DESCRIPTION: &'static str =
-        "List entities from a data collection (rooms, users, messages, …). Params \
-         carry the collection name and optional ordering/filtering.";
-    const WIRE: crate::sdk_codegen::WireShape = crate::sdk_codegen::WireShape::Bare;
-    type Params = DataListParams;
-    type Result = DataListResult;
-}
-crate::register_command!(DataListCommand);

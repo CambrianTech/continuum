@@ -13,6 +13,7 @@
 pub mod catalog;
 pub mod code;
 pub mod command;
+pub mod data;
 pub mod help;
 pub mod memory;
 pub mod rag;
