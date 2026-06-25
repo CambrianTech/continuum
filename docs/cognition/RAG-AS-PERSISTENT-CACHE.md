@@ -1,13 +1,16 @@
 # RAG as a Persistent Cache — the hot loop reads, servicers write
 
-> Status: design + first slice (2026-06-24). The connective architecture under
-> [ORGANIC-SUBSTRATE](./ORGANIC-SUBSTRATE.md) (the shape of the mind),
-> [DREAM-CONSOLIDATION](./DREAM-CONSOLIDATION.md) (one servicer), and the
-> ChannelDigest machinery (`cognition/channel_digest.rs`, another servicer).
-> Precedence on the Rust mechanics: [CBAR-SUBSTRATE-ARCHITECTURE](../architecture/CBAR-SUBSTRATE-ARCHITECTURE.md)
-> + [CONCURRENCY-STYLE-GUIDE](../architecture/CONCURRENCY-STYLE-GUIDE.md). This doc
-> defines *what the cache is and who writes it*; those define *how a concurrent
-> concern is built*.
+> Status: design, with the keystone slice ALREADY LIVE (2026-06-24, corrected after
+> finding the substrate already implements the pattern). The connective architecture
+> under [ORGANIC-SUBSTRATE](./ORGANIC-SUBSTRATE.md) (the shape of the mind),
+> [DREAM-CONSOLIDATION](./DREAM-CONSOLIDATION.md) (one servicer, unbuilt), and the
+> ChannelDigest machinery (`cognition/channel_digest.rs` + `channel_digest_region.rs`,
+> a servicer that is BUILT AND RUNNING). Precedence on the Rust mechanics:
+> [CBAR-SUBSTRATE-ARCHITECTURE](../architecture/CBAR-SUBSTRATE-ARCHITECTURE.md),
+> [CONCURRENCY-STYLE-GUIDE](../architecture/CONCURRENCY-STYLE-GUIDE.md), and
+> **[BRAIN-REGIONS-SUBSTRATE](../architecture/BRAIN-REGIONS-SUBSTRATE.md)** — the last
+> defines the exact primitives this pattern is built from. This doc defines *what the
+> cache is and who writes it*; those define *how a concurrent concern is built*.
 
 ## The principle (one sentence)
 
@@ -34,139 +37,141 @@ The substrate (CBAR in C++, its Rust port here: concurrent tasks, an event bus,
 addressable endpoints, pointer/`Arc` envelopes, routers, middleware) is the hard part,
 and it already exists. Given it, a causal organism is cheap: stimulus arrives as an
 event, processes react, the assembled context updates, the next tick reads it. The
-servicers in this doc are not new machinery — they are concurrent processes on the bus
-that already carries airc.
+servicers in this doc are not new machinery — they are `BrainRegion`s on the bus that
+already carries airc.
 
-## What's wrong today: recompute-on-read
+## The primitive ALREADY EXISTS — `ReadyBuffer` + `BrainRegion`
 
-The live hot loop (`cognition/workspace.rs::WorkspaceCycle::run_in_room`) **recomputes
-RAG every tick** (~3 s, `SELF_TICK_MS`). Each tick the faculties query their stores
-fresh: `RecallFaculty` re-runs an embedding similarity search, `WorkingMemoryFaculty`
-reads a volatile 3-slot buffer, the roster source re-queries airc. A faculty that finds
-nothing *this tick* contributes nothing — even though the right value existed a moment
-before. That is the **starvation** we observed live: across 603 captured turns
-`[working-memory]` rendered on only 496 and `[room-roster]` on 489; on some ticks the
-prompt collapsed to `[recall]` + `[workspace-map]` alone.
+> **Do not build a new "RagSlice" type.** The substrate already has the read/write-split
+> primitive, in production use. A first draft of this doc proposed a parallel
+> `RagSlice<T>` over raw `watch`; it was retracted on contact with the code — it
+> duplicated `ReadyBuffer`, the exact parallel-allocator anti-pattern CLAUDE.md and the
+> concurrency guide forbid. The lesson is the compression principle: *one logical
+> decision, one place.* The slice primitive is `ReadyBuffer`.
 
-Three concrete gaps, all the same root (no persistence between ticks):
+The pattern is the **brain-region ready-buffer** (`runtime/ready_buffer.rs`,
+BRAIN-REGIONS-SUBSTRATE.md):
 
-1. **Working memory starves.** It's a `VecDeque<String>` of capacity 3
-   (`cognition/working_memory.rs`) holding the persona's own prior *reasoning*, volatile,
-   abstaining whenever empty (first turns, suppressed thinking, post-reboot).
-2. **Ingress can be lost.** Admitted messages persist as engrams
-   (`persona/admission_persistence.rs` → `engrams.sqlite`), but gate-*dropped* messages
-   go nowhere — no raw lossless "everything I saw" distinct from the filtered store.
-3. **No self-refinement.** `persona/decay_tick.rs` modulates salience but never distills;
-   the model never consolidates its own engrams into facts (that's
-   [DREAM-CONSOLIDATION](./DREAM-CONSOLIDATION.md), unbuilt).
+- A **slice** is a `ReadyBuffer` entry: `peek(key) -> Option<V>` (the hot-path read —
+  MUST NOT block, MUST NOT await, microseconds), `publish(key, value)` (the servicer
+  write — atomically replaces, freshest wins), `evict_stale(max_age)` (TTL). The
+  doctrine is verbatim our principle: *"Empty buffer is a signal, not a block… slightly-
+  stale context > stalled persona."* The default `DashMapReadyBuffer<K,V>` is keyed
+  (e.g. `(persona_id, room_id)`), sharded, wait-free reads.
+- A **servicer** is a `BrainRegion`: its own governor-scheduled task,
+  `catch_unwind`+timeout isolated, builds a value and `publish`es it into a buffer. It
+  obeys the full concurrent-concern checklist (interval not sleep-loop, quarantine on
+  failure, probes at every seam) for free.
+- The **hot loop reads** by `peek`. It does cheap selection over staged values, never
+  expensive production.
 
-## The inversion: read/write split
+This is the same shape as `inference::llama_server`'s `serving.snapshot` (a single
+`watch`-published value for serving state) — `ReadyBuffer` is its keyed,
+many-entry sibling for per-(persona,room) cognition slices.
+
+## State of the art: the recent-window slice is LIVE
+
+The read/write split Joel named is **already implemented end-to-end** for the
+recent-window slice — this is the keystone proof (the "outlier A" of the methodical
+process), and it is *done*, not to-build:
 
 ```
-            STIMULUS (airc event)                IDLE TICK (metronome)
-                  │                                      │
-                  ▼                                      ▼
-        ┌───────────────────┐                ┌───────────────────────┐
-        │  digest servicer  │                │ consolidation servicer│
-        │  (event-driven)   │                │  (intermittent, LLM)  │
-        └─────────┬─────────┘                └───────────┬───────────┘
-                  │ publish                              │ publish
-                  ▼                                       ▼
-   ╔════════════════════════════════════════════════════════════════╗
-   ║              THE RAG CACHE — persisted slices                   ║
-   ║  recent-window │ recall-set │ facts │ salience │ roster │ …      ║
-   ║  each slice = watch::Sender<Arc<Snapshot>>  (last-good, durable) ║
-   ╚════════════════════════════════════════════════════════════════╝
-                  ▲ borrow (lock-free, O(1), never starves)
-                  │
-        ┌─────────┴──────────┐
-        │   HOT INFERENCE    │   reads current slice snapshots, assembles
-        │   LOOP (per tick)  │   the prompt, runs the model. WRITES nothing.
-        └────────────────────┘
+  airc room event ─▶ ChannelDigestRegion (servicer, BrainRegion)
+                       ipc/mod.rs:1320 schedules it on the governor
+                       builds each live persona's ChannelDigest (one batch,
+                       shared Arc<ChannelElement>, lazy embeddings = flood-safe)
+                          │ publish((persona,room), Arc<ChannelDigest>)
+                          ▼
+                     global_channel_digest_buffer()   ← the persisted slice
+                       channel_substrate.rs (DashMapReadyBuffer)
+                          ▲ peek((persona,room))  (hot path, no work)
+                          │
+                     AircRagSource::deliver  (airc_source.rs:201)
+                       serves the pre-staged digest; builds inline ONLY as fallback
 ```
 
-- **The hot loop only READS.** It borrows the current snapshot of each slice and
-  assembles the prompt. Reads are lock-free and O(1); a slice **never starves** because
-  it holds its last good value until a servicer replaces it. This kills Gap 1 directly,
-  and is durable by construction (Gap 2 — a slice can be backed by ORM, not just memory).
-- **Servicers WRITE, off-loop, on their own cadence.** Each refinement concern owns one
-  slice and publishes into it. Most run intermittently — exactly what the serviced-concern
-  model is good at. This is where Gap 3 lives: consolidation is just another servicer.
+So a persona's recent-room context is a serviced, persisted slice today: a tick with no
+new airc event still serves the last good digest from the buffer — **starvation already
+removed for this slice**.
 
-This is **not a new hierarchy.** It is the substrate's existing
-`watch::Sender<Snapshot>` pattern (CONCURRENCY-STYLE-GUIDE §"State distribution") applied
-to RAG, and it is the same shape as `inference::llama_server`'s `serving.snapshot`:
-producers own the write side and publish; the hot path subscribes and reads. We already
-enforce *"subscribers READ the snapshot, they do not each issue their own probe"* — this
-applies that doctrine to context assembly.
+## What's actually left: the OTHER slices need their own regions
 
-## The slice / servicer contract
+The remaining gaps are not a missing primitive — they are slices that don't yet have a
+`BrainRegion` publishing them, so they're still recomputed on the hot path (or absent):
 
-A **slice** is a typed, watch-published RAG fragment: `RagSlice<T>` over
-`tokio::sync::watch`, with `latest()` (borrow the current `Arc<T>` — last-good) and
-`publish(value)` (replace it). Thin by design — it names the semantics (persisted,
-last-good, read-only for the hot loop) the way `OpenAiBase` names a normalized base URL.
-A faculty that reads a slice **cannot return empty after first write**, which is the
-whole point.
+1. **Working memory starves.** `cognition/working_memory.rs` is a volatile capacity-3
+   `VecDeque<String>` of the persona's own prior reasoning; abstains when empty (first
+   turns, suppressed thinking, post-reboot). → needs a working-memory region that
+   persists it into a buffer the workspace peeks (durable, last-good).
+2. **No self-refinement (engrams→facts).** `persona/decay_tick.rs` modulates salience
+   but never distills. → the **consolidation/dream region** (the real **outlier B**):
+   idle-tick LLM distillation writing a `facts` slice ([DREAM-CONSOLIDATION](./DREAM-CONSOLIDATION.md)).
+3. **Recall recomputes inline.** `cognition/recall_faculty.rs` embeds the query and
+   searches every tick on the hot path. → a recall region maintains the candidate pool
+   (gather + embed + decay-weight) as a slice; the hot loop keeps only the cheap final
+   top-k cosine (see the subtlety below).
 
-A **servicer** is the writer. Per CONCURRENCY-STYLE-GUIDE it is a `ServiceModule` (it has
-a command/event surface) or a `BrainRegion` (cognitive tick) — never a bespoke
-`XManager`. It owns its slice's `watch::Sender`, runs on a cadence or an event
-subscription, and publishes. It obeys the full concurrent-concern checklist: own task,
-`catch_unwind`, `interval` not `sleep`-loop, quarantine on repeated failure, probes at
-every seam.
-
-| Cache slice | Servicer (writer) | Trigger | Resolves |
+| Cache slice | Servicer (`BrainRegion`) | Trigger | Status |
 |---|---|---|---|
-| `recent-window` | ChannelDigest servicer (built core, `channel_digest.rs`) | airc room event | lossless ingress (Gap 2) |
-| `recall-set` | recall servicer — maintains candidate pool | new-engram / interval | starvation + hot-path re-embed (Gap 1) |
-| `facts` | **consolidation servicer (the dream)** | idle tick | engrams→facts, self-refine (Gap 3) |
-| `salience` | decay servicer (`decay_tick.rs`, exists) | slow interval | already mechanical |
-| `roster` | roster servicer — airc subscription | roster event | stop per-tick re-query |
+| `recent-window` | `ChannelDigestRegion` | airc room event | **LIVE** (ipc/mod.rs:1320) |
+| `facts` | consolidation / dream region | idle tick (LLM) | **outlier B — build next** |
+| `working-memory` | working-memory region | post-turn | to build |
+| `recall-set` | recall pre-stage region | new-engram / interval | to build (recall is inline today) |
+| `salience` | decay region (`decay_tick.rs`) | slow interval | exists, not yet buffer-published |
+| `roster` | roster region — airc subscription | roster event | grounding lifted; region TBD |
 
-The "unified source registry" that #13 reached for **is this slice registry**: every
-`RagSource` becomes a slice with a servicer, auto-lifted into the assembled prompt.
+#13's "unified source registry" **is** this: every grounding source becomes a slice with
+a region, auto-lifted into the assembled prompt.
 
 ## The one subtlety: persistence ≠ staleness
 
 Recall is relevance-to-the-just-arrived-message. If `recall-set` were a fully-frozen
 slice it could go stale against a brand-new question. The clean split:
 
-- **Expensive, cached, serviced:** the candidate pool — gathering engrams, computing
-  embeddings, decay-weighting. This is what the servicer maintains.
+- **Expensive, cached, serviced (the region):** the candidate pool — gathering engrams,
+  computing embeddings, decay-weighting.
 - **Cheap, on-read, hot loop:** the final top-k cosine of the cached pool against the
-  current focused query. Cosine over a cached pool is microseconds.
+  current focused query (`recall_faculty::focused_query`). Cosine over a cached pool is
+  microseconds.
 
-So persistence buys "never starve + never re-embed on the hot path" without buying
-staleness. **Hold this line:** the hot loop may do cheap *selection* over a slice; it may
-never do expensive *production*.
+Persistence buys "never starve + never re-embed on the hot path" without buying
+staleness. **Hold this line:** the hot loop may do cheap *selection* over a slice; it
+may never do expensive *production*.
 
 ## The no-heuristics line (non-negotiable)
 
-The mechanical servicers (digest, decay, roster, embedding) are substrate maintenance —
-fine. The **consolidation** servicer refines by asking the **LLM** to distill, never by a
+The mechanical regions (digest, decay, roster, embedding) are substrate maintenance —
+fine. The **consolidation** region refines by asking the **LLM** to distill, never by a
 hand-written filter that reads the persona's output and puppets it
 ([[no-hardcoded-heuristics-to-steer-cognition]]). Refinement is learned cognition. A
-servicer that pattern-matched the model's text to "fix" it would be the exact
-anti-pattern this codebase forbids.
+region that pattern-matched the model's text to "fix" it would be the exact anti-pattern
+this codebase forbids.
 
-## Build order (validate by outliers, then fill in)
+## Fractal: this is grid failover, one scale down
 
-Per the methodical process (CLAUDE.md): define the `RagSlice` interface, prove it with
-the two *most different* servicers; if both fit without forcing, the rest slot in.
+The read/write split here is the same one that makes the grid resilient
+([[seamless-persona-failover-model-and-genome]]): a bus decouples producers from
+consumers, so a vanished producer is just an absence the survivors observe and react to —
+which is why automotive (CAN) and avionics/rockets (MIL-STD-1553) are bus-based, and why
+the grid can keep maintaining personas *and answering network/human/persona asks* when a
+node drops. servicer→slice→hot-loop (cognition) ≡ node→`serving.snapshot`→persona-lane
+(grid). One substrate, two scales ([[grid-distributed-cognition]]).
 
-1. **`RagSlice<T>` primitive** — the watch-backed, last-good, persisted slice + unit
-   tests proving never-starve-after-first-write. *(this commit)*
-2. **Outlier A — digest servicer (event-driven, no LLM).** Wire the built
-   `ChannelDigestBuilder` as the `recent-window` slice producer; a faculty reads the
-   slice so the recent window is always present (kills Gap 1's starvation, delivers
-   lossless ingress). VDD gate: a tick with no new airc event still renders a non-empty
-   recent-window from the last good value.
-3. **Outlier B — consolidation servicer (intermittent, LLM, idle-triggered).** The dream
-   ([DREAM-CONSOLIDATION](./DREAM-CONSOLIDATION.md)) writes the `facts` slice. VDD gate:
-   recall prefers a distilled fact over the raw transcript engram it came from.
-4. **Fill in** — recall-set, roster, salience servicers adopt the same contract. #13's
-   unified registry becomes the slice registry; the per-tick re-query paths are deleted.
+## Build order (the primitive and A are done; fill in B, then the rest)
+
+Per the methodical process (CLAUDE.md): the `ReadyBuffer`/`BrainRegion` interface is
+proven by the *most different* servicers. Outlier A (digest — event-driven, no LLM) is
+LIVE. If outlier B (consolidation — intermittent, LLM) fits the same interface without
+forcing, the rest slot in.
+
+1. ~~`RagSlice<T>` primitive~~ — **retracted**; the primitive is `ReadyBuffer`.
+2. ~~Outlier A — digest servicer~~ — **already LIVE** (ChannelDigestRegion).
+3. **Outlier B — consolidation/dream region.** Idle-tick LLM distillation writes a
+   `facts` slice. VDD gate: recall prefers a distilled fact over the raw transcript
+   engram it came from.
+4. **Fill in** — working-memory region, recall pre-stage region, roster region, decay
+   buffer-publish. Each is a `BrainRegion`→`ReadyBuffer`→workspace-peek. The per-tick
+   re-query paths get deleted as their regions land.
 
 The VDD gates are the proof each slice removes its gap; nothing merges on assertion alone
 ([[cognition-half-the-work-is-harnesses]] — the glass box is
@@ -174,9 +179,11 @@ The VDD gates are the proof each slice removes its gap; nothing merges on assert
 
 ## Provenance
 
-Written 2026-06-24 after observing (via the prompt-capture glass box) that the live RAG
-sections starve on a fraction of ticks because the hot loop recomputes context instead of
-reading a persisted cache. Joel named the fix: persist every level as a RAG slice; have
-async out-of-loop servicers maintain them on the same event substrate that already
-carries airc. The causal organism is cheap *because* the parallel substrate is already
-there — that's what the airc investment bought.
+Written 2026-06-24. The first draft proposed building a new `RagSlice<T>` primitive;
+inspecting the code revealed the substrate already implements exactly this pattern
+(`ReadyBuffer` + `BrainRegion`), with the recent-window slice fully live
+(`ChannelDigestRegion` → `global_channel_digest_buffer` → `AircRagSource::deliver` peek).
+The doc was corrected to build on the existing primitive and to re-aim the remaining work
+at the slices that still lack a region. The lesson — search for the existing primitive
+before writing one — is the compression principle the codebase is built on. Joel named
+the architecture; the substrate had already grown the first organ of it.
