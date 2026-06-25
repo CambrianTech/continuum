@@ -29,6 +29,7 @@ pub mod artifact_handle;
 pub mod boot_mode;
 pub mod boot_status;
 pub mod brain_region;
+pub mod cadence_table;
 pub mod cell_shapes;
 pub mod command_envelope;
 pub mod command_events;
@@ -62,6 +63,7 @@ pub use boot_mode::{extract_boot_mode, BootMode, BootModeParseError};
 pub use airc_interceptor::AircInterceptor;
 pub use substrate_governor::{GovernorSnapshot, SubstrateGovernor};
 pub use artifact_handle::{ArtifactKey, ArtifactSelector, Cadence};
+pub use cadence_table::{CadenceKey, CadenceTable};
 pub use brain_region::{
     BrainRegion, CadenceHint, ComputeClass, MemoryClass, PersonaLifecycle, PressureLevel,
     PressureProfile, PressureSignalKind, RegionContext, RegionError, RegionId, RegionSignal,

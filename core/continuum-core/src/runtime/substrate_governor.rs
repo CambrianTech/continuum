@@ -23,15 +23,23 @@
 //! supply-side router + leases gate *placement* — the governor still never
 //! silences a persona ([[persona-demand-system-supply-never-coma]]).
 //!
+//! ## Adaptive cadence (R1)
+//!
+//! Each pass, the governor consults a [`CadenceTable`] before ticking a
+//! `(region, persona)` pair: a pair that asked to slow down (or to `Sleep`) is
+//! *skipped* until it's due again, and the hint it returns tunes its next spacing.
+//! `Sleep` is a low-cadence re-check **floor**, never removal — the mind never goes
+//! comatose (BEING-SOCIETY-GOVERNOR.md, rail R1). This is the within-class causal
+//! arbitration the orientation budget (R2+) sits on top of.
+//!
 //! ## Not yet (next slices)
-//! - Per-(region,persona) adaptive cadence from [`CadenceHint`] (slice records the
-//!   hint; honoring it = the yield-learning loop).
+//! - Orientation metadata on regions + proportional-share across classes (R2/R3).
 //! - `PersonaCognitionRegion` + the multi-tower inference router (command→handle→event).
 //! - The sleep-phase consolidation/learning region.
 
 use std::any::Any;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -43,8 +51,8 @@ use ts_rs::TS;
 
 use crate::persona::PersonaAircRuntimeRegistry;
 use crate::runtime::{
-    BrainRegion, CommandResult, ModuleConfig, ModuleContext, ModulePriority, RegionContext,
-    ServiceModule,
+    BrainRegion, CadenceHint, CadenceTable, CommandResult, ModuleConfig, ModuleContext,
+    ModulePriority, RegionContext, ServiceModule,
 };
 use crate::sdk_codegen::{AccessLevel, ActionCommand, CommandError, Ctx, DynCommand};
 
@@ -79,6 +87,11 @@ pub struct GovernorSnapshot {
     /// Region ticks that timed out or panicked last pass (caught, not fatal).
     #[ts(type = "number")]
     pub faults: usize,
+    /// (region × persona) pairs not yet eligible this pass — resting on their adaptive
+    /// cadence (incl. Sleep's re-check floor). High `skipped` vs `ticked` = a calm,
+    /// well-paced society, not a stalled one.
+    #[ts(type = "number")]
+    pub skipped: usize,
 }
 
 /// The scheduling daemon. Holds the regions + the live-persona registry; the
@@ -87,6 +100,10 @@ pub struct SubstrateGovernor {
     regions: Vec<Arc<dyn BrainRegion>>,
     personas: PersonaAircRuntimeRegistry,
     tick_seq: AtomicU64,
+    /// Per-(region, persona) adaptive cadence — the within-class causal arbitration
+    /// (BEING-SOCIETY-GOVERNOR.md R1). Only the single tick task touches it; the lock
+    /// is taken briefly and NEVER held across an `.await` (concurrency-style-guide rule).
+    cadence: Mutex<CadenceTable>,
     snapshot: watch::Sender<GovernorSnapshot>,
 }
 
@@ -103,6 +120,7 @@ impl SubstrateGovernor {
             regions,
             personas,
             tick_seq: AtomicU64::new(0),
+            cadence: Mutex::new(CadenceTable::new()),
             snapshot,
         }
     }
@@ -144,23 +162,38 @@ impl ServiceModule for SubstrateGovernor {
         let tick = self.tick_seq.fetch_add(1, Ordering::Relaxed);
         let personas = self.personas.live_personas();
 
+        // Prune cadence entries for personas that left, so the table can't grow
+        // unbounded over a long-lived process. Lock taken + released here; never held
+        // across an await (concurrency-style-guide rule).
+        self.cadence.lock().unwrap().retain_personas(&personas);
+
         let mut ticked = 0usize;
         let mut published = 0usize;
         let mut faults = 0usize;
+        let mut skipped = 0usize;
 
-        for region in &self.regions {
+        for (region_idx, region) in self.regions.iter().enumerate() {
             for &persona_id in &personas {
+                let key = (region_idx, persona_id);
+
+                // Is this pair due? Lock briefly, decide, release BEFORE the await.
+                let eligible = self.cadence.lock().unwrap().eligible(key, tick);
+                if !eligible {
+                    skipped += 1;
+                    continue;
+                }
+
                 let ctx = RegionContext::for_persona(tick, persona_id);
                 // Isolate the region tick: timeout (never hang the scheduler) +
                 // catch_unwind (a panicking region is quarantined to this call,
                 // not propagated to kill the governor's own tick).
                 let fut = std::panic::AssertUnwindSafe(region.tick(&ctx)).catch_unwind();
-                match tokio::time::timeout(REGION_TICK_TIMEOUT, fut).await {
+                let hint = match tokio::time::timeout(REGION_TICK_TIMEOUT, fut).await {
                     Ok(Ok(outcome)) => {
                         ticked += 1;
                         published += outcome.published;
-                        // CadenceHint recorded implicitly via outcome; adaptive
-                        // per-(region,persona) scheduling is the next slice.
+                        // The region's own next-cadence wish (None == Hold).
+                        outcome.cadence_hint
                     }
                     Ok(Err(_panic)) => {
                         faults += 1;
@@ -169,6 +202,9 @@ impl ServiceModule for SubstrateGovernor {
                             persona_id = %persona_id,
                             "substrate-governor: region tick PANICKED — caught, governor stays up"
                         );
+                        // Back a crash-looping pair off (but never remove it) so a fault
+                        // can't hammer the scheduler every pass.
+                        Some(CadenceHint::Slower)
                     }
                     Err(_elapsed) => {
                         faults += 1;
@@ -178,8 +214,13 @@ impl ServiceModule for SubstrateGovernor {
                             timeout_ms = REGION_TICK_TIMEOUT.as_millis() as u64,
                             "substrate-governor: region tick TIMED OUT — skipped this pass"
                         );
+                        Some(CadenceHint::Slower)
                     }
-                }
+                };
+
+                // Record the hint → schedule next eligibility. Lock taken + released
+                // here, AFTER the await; never held across it.
+                self.cadence.lock().unwrap().record(key, tick, hint);
             }
         }
 
@@ -190,6 +231,7 @@ impl ServiceModule for SubstrateGovernor {
             ticked,
             published,
             faults,
+            skipped,
         };
         // send_replace: always-current, no backlog; readers borrow lock-free.
         let _ = self.snapshot.send_replace(snap);
