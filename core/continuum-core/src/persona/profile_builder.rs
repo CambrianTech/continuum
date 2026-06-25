@@ -56,6 +56,26 @@ use crate::persona::inference_profile::{
 use std::sync::Arc;
 use uuid::Uuid;
 
+/// Serving-plan-derived knobs for ONE persona's backend, projected from the
+/// serving daemon's [`ServingPlan`](crate::cognition::serving_plan::ServingPlan).
+///
+/// Grouped per [[pass-the-model-struct-no-param-hell]]: a new serving knob is a
+/// new field here, NOT a new positional param threaded through the whole
+/// `DesiredRole → RosterEntry → build_profile` spawn chain. Both values are
+/// COMPUTED ONCE by the planner from (model ∩ host budget) — never a constant
+/// clamp re-sprinkled at call sites.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ServingParams {
+    /// Continuous-batching lanes (`n_seq_max`) for this persona's backend.
+    /// Floored at 1 in `build_profile`.
+    pub lanes: u32,
+    /// Host-fit served context window (tokens): `fit(model.context_window ∩
+    /// host budget / lanes / kv)`, the SAME window the gateway llama-server was
+    /// launched with (`-c`). The RAG composer budgets to THIS, not the model's
+    /// trained ceiling. Not a constant — the planner's single source of truth.
+    pub served_context_window: u32,
+}
+
 /// Compose a [`PersonaInferenceProfile`] from declared intent.
 ///
 /// See the module docstring for the contract this function honors and
@@ -67,7 +87,7 @@ pub fn build_profile(
     tier_id: &str,
     tier_category: HwTierCategory,
     model_id: &str,
-    n_seq_max: u32,
+    serving: ServingParams,
     registry: &crate::model_registry::Registry,
 ) -> Result<PersonaInferenceProfile, InferenceProfileError> {
     let _ = role_id; // see module docstring; reserved for cognition_defaults wiring
@@ -115,7 +135,20 @@ pub fn build_profile(
     // available memory, so passing the model's full ceiling here is safe — it
     // can only be shrunk to fit, never blindly allocated (that was the
     // 262144-token Metal OOM, 2026-04). Task #46.
-    let context_length = model.context_window;
+    //
+    // BUT (task #50): a LOCAL persona is served through the llama-server gateway
+    // launched with `-c <served window>`. That HTTP adapter does NOT shrink an
+    // over-large prompt — it forwards what the RAG composer built and
+    // llama-server 500s ("Context size has been exceeded") when the composed
+    // burst exceeds the served window. So for gateway-served personas the
+    // composer MUST budget to the planner's served window (`serving
+    // .served_context_window`), computed ONCE from (model ∩ host) — NOT a
+    // constant clamp, NOT the model's 262144 ceiling. Cloud-routed personas
+    // keep their model's full window (the cloud adapter owns its own context).
+    let context_length = match provider_kind {
+        crate::model_registry::types::ProviderKind::Local => serving.served_context_window,
+        _ => model.context_window,
+    };
 
     // n_ubatch: realistic RAG-built persona prompts cap at 200-500
     // tokens today; 512 covers them. Compat tier uses the same as
@@ -124,10 +157,11 @@ pub fn build_profile(
 
     // n_seq_max: continuous-batching lanes for this persona's backend,
     // decided by the serving daemon's ServingPlan (honest host budget +
-    // model footprint) and threaded in via DesiredRole → RosterEntry. Floored
-    // at 1. Shared-base + LoRA paging (#122) then lets one base host N
-    // personas across these lanes instead of one backend per persona.
-    let n_seq_max = n_seq_max.max(1);
+    // model footprint) and threaded in via DesiredRole → RosterEntry → the
+    // grouped `ServingParams`. Floored at 1. Shared-base + LoRA paging (#122)
+    // then lets one base host N personas across these lanes instead of one
+    // backend per persona.
+    let n_seq_max = serving.lanes.max(1);
     // Prefill chunk size — a sane fixed batch, NOT the full context window
     // (a 32K n_batch would reserve an enormous prefill graph). The backend's
     // own `LlamaCppConfig` default governs the real batch; this profile field
@@ -178,6 +212,11 @@ mod tests {
     use crate::model_registry::{Model, Registry};
     use std::collections::BTreeSet;
     use std::path::PathBuf;
+
+    /// Stand-in for whatever served window the ServingPlan computed for the
+    /// host. The point under test is that `build_profile` passes THIS through
+    /// for local models — not that it equals any particular constant.
+    const TEST_SERVE_WINDOW: u32 = 8192;
 
     /// Create a tempfile to stand in for the GGUF on disk. Registry's
     /// `resolve_model_artifacts` only honors `gguf_local_path` when the
@@ -248,15 +287,20 @@ mod tests {
             "mac_intel_metal_discrete",
             HwTierCategory::Compat,
             "continuum-ai/qwen2.5-0.5b-instruct-GGUF",
-            1,
+            ServingParams {
+                lanes: 1,
+                served_context_window: TEST_SERVE_WINDOW,
+            },
             &registry,
         )
         .expect("build profile");
         assert_eq!(profile.persona_name, "Paige");
         assert_eq!(profile.model_id, "continuum-ai/qwen2.5-0.5b-instruct-GGUF");
         assert_eq!(profile.tier_category, HwTierCategory::Compat);
-        // The model's real window, not a per-tier clamp (task #46).
-        assert_eq!(profile.context_length, 32768);
+        // Local-served (gguf path) → exactly the planner's served window
+        // (task #50). Not the model's 32K ceiling, and not a per-tier clamp
+        // (task #46): the value is whatever the ServingPlan computed.
+        assert_eq!(profile.context_length, TEST_SERVE_WINDOW);
         assert_eq!(profile.n_ubatch, 512);
         assert_eq!(profile.n_seq_max, 1);
         // Compat tier currently routes CPU-only per #131.
@@ -281,7 +325,10 @@ mod tests {
             "mac_intel_metal_discrete",
             HwTierCategory::Compat,
             model,
-            1,
+            ServingParams {
+                lanes: 1,
+                served_context_window: TEST_SERVE_WINDOW,
+            },
             &registry,
         )
         .unwrap();
@@ -294,7 +341,10 @@ mod tests {
             "m1_uma_8gb",
             HwTierCategory::MSeries,
             model,
-            1,
+            ServingParams {
+                lanes: 1,
+                served_context_window: TEST_SERVE_WINDOW,
+            },
             &registry,
         )
         .unwrap();
@@ -307,26 +357,30 @@ mod tests {
             "m5_uma_pro_max",
             HwTierCategory::MSeriesPro,
             model,
-            1,
+            ServingParams {
+                lanes: 1,
+                served_context_window: TEST_SERVE_WINDOW,
+            },
             &registry,
         )
         .unwrap();
         assert_eq!(pro.n_gpu_layers, -1);
     }
 
-    /// what this catches: the profile advertises the MODEL's real window,
-    /// not a per-tier integer clamp. The old `compat_context_length` returned
-    /// 2048/4096/8192 by tier — throttling a 32K-trained model to 6% on
-    /// Compat. Now every tier gets the model's own ceiling; the adapter
-    /// (`LlamaCppBackend::effective_context_length`) does the real
-    /// memory-bounding at load time, where the loaded GGUF + live RAM exist.
-    /// Task #46.
+    /// what this catches: NOT a per-tier integer clamp. The old
+    /// `compat_context_length` returned 2048/4096/8192 BY HARDWARE TIER —
+    /// throttling a 32K-trained model to 6% on Compat (task #46). Every tier
+    /// must get the SAME context window. For a LOCAL (gateway-served) model
+    /// that window is the planner's served window (`ServingParams
+    /// .served_context_window`, task #50) — the composer must budget to what
+    /// llama-server's `-c` will accept or it 500s — but crucially it is ONE
+    /// value across all tiers, never a hardware-tier guess.
     #[test]
-    fn context_length_is_model_window_not_tier_clamp() {
+    fn context_length_is_serving_window_not_tier_clamp() {
         let registry = registry_with_qwen25_05b();
         let model = "continuum-ai/qwen2.5-0.5b-instruct-GGUF";
-        // The fixture model declares a 32K window.
-        let model_window = 32768;
+        // The planner's served window flows straight through for local models.
+        let expected = TEST_SERVE_WINDOW;
 
         let mk = |tier_id, tier_cat| {
             build_profile(
@@ -336,7 +390,10 @@ mod tests {
                 tier_id,
                 tier_cat,
                 model,
-                1,
+                ServingParams {
+                    lanes: 1,
+                    served_context_window: TEST_SERVE_WINDOW,
+                },
                 &registry,
             )
             .unwrap()
@@ -347,10 +404,10 @@ mod tests {
         let mseries = mk("m1_uma_8gb", HwTierCategory::MSeries);
         let pro = mk("m5_uma_pro_max", HwTierCategory::MSeriesPro);
 
-        // Every tier advertises the model's full window — no per-tier clamp.
-        assert_eq!(compat, model_window);
-        assert_eq!(mseries, model_window);
-        assert_eq!(pro, model_window);
+        // Every tier gets the SAME serving window — no per-tier clamp.
+        assert_eq!(compat, expected);
+        assert_eq!(mseries, expected);
+        assert_eq!(pro, expected);
     }
 
     /// Unknown model_id errors loud per [[no-fallbacks-ever]] with a
@@ -365,7 +422,10 @@ mod tests {
             "mac_intel_metal_discrete",
             HwTierCategory::Compat,
             "nonexistent/model-id",
-            1,
+            ServingParams {
+                lanes: 1,
+                served_context_window: TEST_SERVE_WINDOW,
+            },
             &registry,
         )
         .expect_err("unknown model must error");

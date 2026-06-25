@@ -79,6 +79,14 @@ pub struct PersonaBrainConfig {
     ///
     /// [`authorized_tool_specs`]: super::persona_tools::authorized_tool_specs
     pub tool_executor: Option<Arc<dyn crate::cognition::tool_executor::ToolExecutor>>,
+    /// The effective served context window in tokens — `profile.context_length`
+    /// (task #50: single-sourced; for a Local persona that is the planner's
+    /// `ServingPlan.served_context_window`).
+    /// Threaded into the deliberation faculty so it keeps its prompt within the
+    /// window the gateway actually serves — the prompt is built here, so this is
+    /// where the window invariant is enforced. Without it the faculty's prompt
+    /// overflows `-c` and llama-server 500s ("Context size has been exceeded").
+    pub context_window: u32,
 }
 
 /// A grounding [`RagSource`] plus the [`SaliencePolicy`] under which it competes
@@ -196,7 +204,8 @@ pub fn build_workspace_cycle(cfg: PersonaBrainConfig) -> WorkspaceCycle {
     )
     .with_working_memory(Arc::clone(&working_memory))
     .with_genome(Arc::clone(&genome))
-    .with_decoding(Arc::clone(&decoding));
+    .with_decoding(Arc::clone(&decoding))
+    .with_context_window(cfg.context_window);
     if tool_executor.is_some() {
         // Offer EXACTLY what this persona is authorized to run (offer ==
         // authorized) — never a tool the gate would refuse. A local persona is the
@@ -458,6 +467,7 @@ mod tests {
             grounding_sources: Vec::new(),
             embedder: None,
             tool_executor: None,
+            context_window: crate::cognition::serving_plan::MIN_SERVE_CTX,
         }
     }
 

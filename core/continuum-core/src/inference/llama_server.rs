@@ -23,6 +23,7 @@
 //! contracts inference leases against these snapshots. That layer is deferred
 //! (single-machine first), but the snapshot is the rail it slots onto.
 
+use crate::model_registry::Model;
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::Arc;
@@ -62,10 +63,35 @@ const READY_TIMEOUT: Duration = Duration::from_secs(90);
 /// Poll cadence while waiting for `/health`. 503 → still loading, keep waiting.
 const READY_POLL: Duration = Duration::from_millis(500);
 
-/// Per-server working context. A serving cap, not the model's trained ceiling —
-/// the daemon's plan sizes lanes against the budget; this is the `-c` we launch
-/// with so KV stays bounded. Matches `serving_daemon::PLANNED_CTX_TOKENS`.
-const SERVE_CTX_TOKENS: u32 = 8192;
+/// Everything the launcher needs to bring a model up, GROUPED so adding a new
+/// serving knob is a field here — never a new param threaded down the call chain
+/// ([[pass-the-model-struct-no-param-hell]]). The [`Model`] carries its own id,
+/// gguf path, chat template, and trained `context_window` (resolved ONCE at
+/// registry load — never re-fetched downstream). `context_window` here is the
+/// HOST-FIT served window the serving daemon derived for THIS host from
+/// `(model.context_window ∩ budget/lanes/kv)` — a computed property of the
+/// serving plan, NOT a hardcoded constant cap. It is the single source of truth
+/// for the effective serving window (task #50): it becomes llama-server's `-c`,
+/// the persona's `context_length`, and the deliberation prompt budget.
+#[derive(Debug, Clone)]
+pub struct ServingTarget {
+    /// The chosen base model — the grouped model info, resolved once.
+    pub model: Model,
+    /// The host-fit served window the planner computed for this host. Sized to
+    /// fit the working set (tool schemas + framing + room burst + recalled
+    /// memory + completion reserve) within the budget, capped only by the
+    /// model's own trained ceiling. The deliberation faculty keeps its prompt
+    /// inside this so llama-server never 500s ("Context size has been exceeded").
+    pub context_window: u32,
+}
+
+impl ServingTarget {
+    /// The model id the running server should report — used to decide whether a
+    /// relaunch is needed.
+    pub fn model_id(&self) -> &str {
+        &self.model.id
+    }
+}
 
 /// Resolve the serving root (`http://host:port`). Deployment shape (which host /
 /// port llama-server listens on) is legitimately env-configurable per the
@@ -272,9 +298,11 @@ pub trait LlamaServerControl: Send + Sync {
     /// up. `Unreachable` = no server answering (a normal pre-spawn state).
     async fn active_model(&self) -> Result<Option<String>, LlamaServerError>;
 
-    /// (Re)spawn llama-server to serve `model_id` and block until it is ready.
-    /// Switching models is a relaunch — there is no load-by-name API.
-    async fn serve(&self, model_id: &str) -> Result<(), LlamaServerError>;
+    /// (Re)spawn llama-server to serve `target` and block until it is ready.
+    /// Switching models is a relaunch — there is no load-by-name API. The
+    /// target carries the resolved model AND the host-fit served window, so the
+    /// launcher never re-resolves or re-clamps anything.
+    async fn serve(&self, target: &ServingTarget) -> Result<(), LlamaServerError>;
 }
 
 /// Pure reconcile decision: bring the running server in line with `desired`.
@@ -283,7 +311,7 @@ pub trait LlamaServerControl: Send + Sync {
 /// probe error degrades rather than blindly relaunching over a sick server.
 pub async fn ensure_model_serving<C: LlamaServerControl + ?Sized>(
     ctrl: &C,
-    desired: &str,
+    target: &ServingTarget,
 ) -> EnsureOutcome {
     let active = match ctrl.active_model().await {
         Ok(active) => active,
@@ -295,13 +323,13 @@ pub async fn ensure_model_serving<C: LlamaServerControl + ?Sized>(
         }
     };
 
-    if active.as_deref() == Some(desired) {
+    if active.as_deref() == Some(target.model_id()) {
         return EnsureOutcome::AlreadyServing;
     }
 
-    match ctrl.serve(desired).await {
+    match ctrl.serve(target).await {
         Ok(()) => EnsureOutcome::Spawned {
-            model: desired.to_string(),
+            model: target.model_id().to_string(),
         },
         Err(reason) => EnsureOutcome::Degraded {
             reason: reason.to_string(),
@@ -414,11 +442,12 @@ impl LlamaServerControl for LlamaServerProcess {
         Ok(id)
     }
 
-    async fn serve(&self, model_id: &str) -> Result<(), LlamaServerError> {
-        // Resolve the id to an on-disk GGUF. No file → fail loud; we never serve
-        // a substitute model ([[fallbacks-are-illegal-fail-loud]]).
-        let gguf: PathBuf = crate::model_registry::artifacts::resolve_gguf_for_model_id(model_id)
-            .ok_or_else(|| LlamaServerError::ModelNotFound(model_id.to_string()))?;
+    async fn serve(&self, target: &ServingTarget) -> Result<(), LlamaServerError> {
+        // Resolve the GGUF from the model struct already in hand — no re-fetch by
+        // id. No file → fail loud; we never serve a substitute model
+        // ([[fallbacks-are-illegal-fail-loud]]).
+        let gguf: PathBuf = crate::model_registry::artifacts::resolve_gguf_for_model(&target.model)
+            .ok_or_else(|| LlamaServerError::ModelNotFound(target.model.id.clone()))?;
 
         let (host, port) = split_host_port(&self.root);
 
@@ -429,13 +458,14 @@ impl LlamaServerControl for LlamaServerProcess {
             .arg("-m")
             .arg(&gguf)
             .arg("--alias")
-            .arg(model_id)
+            .arg(&target.model.id)
             .arg("--host")
             .arg(host)
             .arg("--port")
             .arg(port.to_string())
+            // The host-fit served window from the plan — never a constant.
             .arg("-c")
-            .arg(SERVE_CTX_TOKENS.to_string())
+            .arg(target.context_window.to_string())
             // Serve embeddings from the same process so the embedder doesn't
             // need a second server. Personas' embedding adapter points here too.
             .arg("--embeddings")
@@ -498,7 +528,7 @@ mod tests {
                 Err(m) => Err(LlamaServerError::Unreachable(m.to_string())),
             }
         }
-        async fn serve(&self, _model_id: &str) -> Result<(), LlamaServerError> {
+        async fn serve(&self, _target: &ServingTarget) -> Result<(), LlamaServerError> {
             self.serves.fetch_add(1, Ordering::SeqCst);
             if self.serve_ok {
                 Ok(())
@@ -508,13 +538,42 @@ mod tests {
         }
     }
 
+    /// Minimal serving target for the reconcile-logic tests: only `model.id` is
+    /// load-bearing here (it drives the relaunch decision); the rest is filler so
+    /// the grouped `Model` constructs. The real launcher path is covered by the
+    /// live serving daemon, not these pure-decision tests.
+    fn target(id: &str) -> ServingTarget {
+        use crate::model_registry::types::{Arch, MultiPartyChatStrategy};
+        ServingTarget {
+            model: Model {
+                id: id.to_string(),
+                name: None,
+                provider: "llamacpp-local".to_string(),
+                arch: Arch::Qwen2,
+                context_window: 32768,
+                max_output_tokens: 4096,
+                tokens_per_second: 0.0,
+                capabilities: std::collections::BTreeSet::new(),
+                cost_input_per_1k: 0.0,
+                cost_output_per_1k: 0.0,
+                gguf_hint: None,
+                gguf_local_path: None,
+                chat_template: None,
+                stop_sequences: Vec::new(),
+                multi_party_strategy: MultiPartyChatStrategy::ProperChatMlSingleParty,
+                mmproj_local_path: None,
+            },
+            context_window: 32768,
+        }
+    }
+
     // what this catches: the desired model already being served is a NO-OP — we
     // must not relaunch (which would kill the GPU-warm server). Regression here
     // would thrash the served model every tick.
     #[tokio::test]
     async fn already_serving_does_not_relaunch() {
         let ctrl = FakeControl::probe(Ok(Some("coder-14b".into())));
-        let outcome = ensure_model_serving(&ctrl, "coder-14b").await;
+        let outcome = ensure_model_serving(&ctrl, &target("coder-14b")).await;
         assert_eq!(outcome, EnsureOutcome::AlreadyServing);
         assert_eq!(ctrl.serves.load(Ordering::SeqCst), 0, "no relaunch when already serving");
     }
@@ -523,7 +582,7 @@ mod tests {
     #[tokio::test]
     async fn wrong_model_triggers_relaunch() {
         let ctrl = FakeControl::probe(Ok(Some("general-4b".into())));
-        let outcome = ensure_model_serving(&ctrl, "coder-14b").await;
+        let outcome = ensure_model_serving(&ctrl, &target("coder-14b")).await;
         assert_eq!(outcome, EnsureOutcome::Spawned { model: "coder-14b".into() });
         assert_eq!(ctrl.serves.load(Ordering::SeqCst), 1);
     }
@@ -533,7 +592,7 @@ mod tests {
     #[tokio::test]
     async fn unreachable_means_spawn_not_degrade() {
         let ctrl = FakeControl::probe(Err("connection refused"));
-        let outcome = ensure_model_serving(&ctrl, "coder-14b").await;
+        let outcome = ensure_model_serving(&ctrl, &target("coder-14b")).await;
         assert_eq!(outcome, EnsureOutcome::Spawned { model: "coder-14b".into() });
         assert_eq!(ctrl.serves.load(Ordering::SeqCst), 1);
     }
@@ -543,7 +602,7 @@ mod tests {
     #[tokio::test]
     async fn serve_failure_degrades_with_reason() {
         let ctrl = FakeControl::probe(Ok(None)).serve_fails();
-        let outcome = ensure_model_serving(&ctrl, "coder-14b").await;
+        let outcome = ensure_model_serving(&ctrl, &target("coder-14b")).await;
         match outcome {
             EnsureOutcome::Degraded { reason } => assert!(reason.contains("boom"), "reason: {reason}"),
             other => panic!("expected Degraded, got {other:?}"),

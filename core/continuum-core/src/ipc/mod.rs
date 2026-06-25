@@ -1478,25 +1478,29 @@ pub fn start_server(
         // on-disk footprints with GPU-residency. The spawner obeys the plan —
         // no hardcoded tier/model/lanes. (Supersedes the #1645 tier-clamp fix.)
         let (hw_cap, tier_cat, tier_id) = serving_daemon.detected_tier();
-        let (serving_model, serving_lanes) = match serving_daemon.compute_plan() {
+        // The plan is the single grouped source of truth (model + lanes +
+        // host-fit served window). Pass it by reference to the spawner per
+        // [[pass-the-model-struct-no-param-hell]] — no destructured loose
+        // params, no constant clamps re-derived downstream.
+        let serving_plan = serving_daemon.compute_plan();
+        match &serving_plan {
             Some(p) if p.fits_on_gpu => {
                 tracing::info!(
                     base_model = %p.base_model_id,
                     lanes = p.lanes,
+                    served_context_window = p.served_context_window,
                     resident = p.resident_models,
                     tier_id,
-                    "serving daemon drives persona spawn (model + lanes from ServingPlan)"
+                    "serving daemon drives persona spawn (model + lanes + served window from ServingPlan)"
                 );
-                (Some(p.base_model_id), p.lanes)
             }
             other => {
                 tracing::warn!(
                     plan = ?other,
-                    "no GPU-fitting serving plan — spawner falls back to the tier default model, 1 lane"
+                    "no GPU-fitting serving plan — spawner falls back to the tier default model, 1 lane, floor window"
                 );
-                (None, 1)
             }
-        };
+        }
         // Persona floor — how many citizens to host. Single source: this one
         // config value drives BOTH the spawner's plan-slot count (via
         // with_population) AND the identity provider's mint floor below, so
@@ -1512,7 +1516,7 @@ pub fn start_server(
             .unwrap_or(1);
         let supervisor = crate::persona::host::PersonaSpawnSupervisor::new(
             crate::persona::spawner_module::PersonaSpawnerModule::new(hw_cap, tier_cat)
-                .with_serving(serving_model, serving_lanes)
+                .with_serving(serving_plan.as_ref())
                 .with_population(persona_floor),
             instance_manager.clone(),
             // Persona reasoning binds to whatever the serving daemon has live,

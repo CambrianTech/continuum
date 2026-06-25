@@ -323,6 +323,35 @@ test-fixtures = []
 #     grep -rln 'cfg(feature = "stress-tests")' src/
 stress-tests = []
 
+# Integration tests that link a `test-fixtures`-gated lib symbol (the
+# HeuristicInferenceAdapter stand-in, or the ChatQueueItem `compute_calls`
+# instrumentation counter). Inside continuum-core's own `#[cfg(test)] mod`s the
+# gate is free via `cfg(test)`, but an integration test in `tests/` is a SEPARATE
+# crate — the lib is built as a plain dependency with `cfg(test)` OFF, so the
+# gated items don't exist unless `test-fixtures` is on. Without these
+# `required-features` lines a bare `cargo test` tries to compile these targets,
+# hits the missing symbols, and fails the whole `tests/` build. Declaring the
+# requirement makes cargo SKIP them cleanly when the feature is off and build
+# them when it's on (`cargo test --features test-fixtures`) — compile-time
+# gating, the same doctrine as `test-fixtures`/`stress-tests` above, not
+# `#[ignore]`. Add a target here the moment a `tests/*.rs` reaches for a gated
+# lib symbol; do NOT gate one that only mentions the symbol in a comment.
+[[test]]
+name = "airc_remote_inference_end_to_end"
+required-features = ["test-fixtures"]
+
+[[test]]
+name = "architecture_demand_pull_cognition"
+required-features = ["test-fixtures"]
+
+[[test]]
+name = "architecture_killer_loop_burst_cognition"
+required-features = ["test-fixtures"]
+
+[[test]]
+name = "persona_command_inbound_pump"
+required-features = ["test-fixtures"]
+
 [lints.rust]
 # objc 0.2's msg_send! macro uses the deprecated cargo-clippy cfg check.
 # Allow until we migrate to objc2.

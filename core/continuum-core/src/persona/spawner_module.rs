@@ -40,6 +40,7 @@ use crate::modules::persona_instance_manager::{PersonaInstanceInfo, PersonaInsta
 use crate::persona::hw_tier_descriptor::HwTierCategory;
 use crate::persona::identity_provider::PersonaIdentityIntent;
 use crate::persona::inference_profile::{InferenceProfileError, PersonaInferenceProfile};
+use crate::persona::profile_builder::ServingParams;
 use crate::persona::role_template::RoleId;
 use crate::persona::spawner::{derive_spawn_plan, RosterEntry};
 use crate::runtime::service_module::{
@@ -76,6 +77,11 @@ pub struct DesiredRole {
     /// the serving daemon's ServingPlan. Defaults to 1 from `plan_for_tier`;
     /// `PersonaSpawnerModule::with_serving` overrides it from the live plan.
     pub lanes: u32,
+    /// Host-fit served context window (tokens) the gateway llama-server was
+    /// launched with — the planner's single source of truth, NOT a constant.
+    /// Defaults to `MIN_SERVE_CTX` from `plan_for_tier` (runnable floor when no
+    /// plan is published); `with_serving` overrides it from the live plan.
+    pub served_context_window: u32,
 }
 
 /// Compose the desired roster for a given hardware tier. Today this
@@ -118,6 +124,8 @@ pub fn plan_for_tier(
         model_id: "continuum-ai/qwen2.5-0.5b-instruct-GGUF".to_string(),
         // Default single lane; with_serving overrides from the live plan.
         lanes: 1,
+        // Runnable floor until the serving daemon publishes a host-fit window.
+        served_context_window: crate::cognition::serving_plan::MIN_SERVE_CTX,
     }];
     // P2 invariant tripwire (PR #1511 review advisory): if a future
     // refactor adds a second role here without atomically updating
@@ -154,6 +162,9 @@ pub struct PersonaSpawnerModule {
     /// actually spawns — single source of truth, not a hardcode.
     serving_base_model: Option<String>,
     serving_lanes: u32,
+    /// Host-fit served context window from the live ServingPlan. Defaults to
+    /// `MIN_SERVE_CTX` (runnable floor); `with_serving` sets the real value.
+    serving_context_window: u32,
     /// How many citizens of the tier's (homogeneous) role template to host.
     /// Default 1. Driven by `CONTINUUM_PERSONA_FLOOR` at boot — the SAME
     /// config that floors the identity provider's mint count, so plan-slots
@@ -190,6 +201,7 @@ impl PersonaSpawnerModule {
             tier_category,
             serving_base_model: None,
             serving_lanes: 1,
+            serving_context_window: crate::cognition::serving_plan::MIN_SERVE_CTX,
             population: 1,
         }
     }
@@ -203,13 +215,24 @@ impl PersonaSpawnerModule {
     }
 
     /// Apply the serving daemon's [`ServingPlan`](crate::cognition::serving_plan::ServingPlan):
-    /// every desired role runs the plan's base model at the plan's lane count.
-    /// The daemon makes the honest per-host decision (budget + footprints,
-    /// GPU-residency); the spawner obeys it. `base_model = None` keeps the
-    /// tier's `plan_for_tier` pick (e.g. when no plan is published yet).
-    pub fn with_serving(mut self, base_model: Option<String>, lanes: u32) -> Self {
-        self.serving_base_model = base_model;
-        self.serving_lanes = lanes.max(1);
+    /// every desired role runs the plan's base model, lane count, and host-fit
+    /// served context window. The daemon makes the honest per-host decision
+    /// (budget + footprints, GPU-residency, served window); the spawner obeys
+    /// it. Passing the whole plan by reference (per [[pass-the-model-struct-no-param-hell]])
+    /// keeps adding a new serving knob a one-field change, not a signature
+    /// re-engineer. `None` (or a plan that doesn't fit GPU) keeps the tier's
+    /// `plan_for_tier` defaults.
+    pub fn with_serving(
+        mut self,
+        plan: Option<&crate::cognition::serving_plan::ServingPlan>,
+    ) -> Self {
+        if let Some(p) = plan.filter(|p| p.fits_on_gpu) {
+            self.serving_base_model = Some(p.base_model_id.clone());
+            self.serving_lanes = p.lanes.max(1);
+            self.serving_context_window = p
+                .served_context_window
+                .max(crate::cognition::serving_plan::MIN_SERVE_CTX);
+        }
         self
     }
 
@@ -222,6 +245,7 @@ impl PersonaSpawnerModule {
                 role.model_id = base.clone();
             }
             role.lanes = self.serving_lanes;
+            role.served_context_window = self.serving_context_window;
         }
         // Replicate the (homogeneous) tier template to the configured
         // population. The role template stays single-source in `plan_for_tier`;
@@ -392,7 +416,7 @@ pub async fn bootstrap_planned(
 ) -> Result<Vec<MaterializedPersonaPlan>, BootstrapPlannedError> {
     let plan = module.plan();
     let required = plan.len();
-    let mut bootstrapped: Vec<(RoleId, PersonaInstanceInfo, String, u32)> =
+    let mut bootstrapped: Vec<(RoleId, PersonaInstanceInfo, String, ServingParams)> =
         Vec::with_capacity(required);
 
     for (slot_index, desired) in plan.iter().enumerate() {
@@ -420,17 +444,25 @@ pub async fn bootstrap_planned(
                 source,
             })?;
 
-        bootstrapped.push((desired.role, info, desired.model_id.clone(), desired.lanes));
+        bootstrapped.push((
+            desired.role,
+            info,
+            desired.model_id.clone(),
+            ServingParams {
+                lanes: desired.lanes,
+                served_context_window: desired.served_context_window,
+            },
+        ));
     }
 
     let roster: Vec<RosterEntry> = bootstrapped
         .iter()
-        .map(|(role, info, model_id, lanes)| RosterEntry {
+        .map(|(role, info, model_id, serving)| RosterEntry {
             role: *role,
             persona_id: info.persona_id,
             persona_name: info.agent_name.clone(),
             model_id: model_id.clone(),
-            lanes: *lanes,
+            serving: *serving,
         })
         .collect();
 
@@ -439,7 +471,7 @@ pub async fn bootstrap_planned(
     Ok(bootstrapped
         .into_iter()
         .zip(profiles)
-        .map(|((role, instance, _model_id, _lanes), profile)| MaterializedPersonaPlan {
+        .map(|((role, instance, _model_id, _serving), profile)| MaterializedPersonaPlan {
             role,
             instance,
             profile,
@@ -620,12 +652,14 @@ mod tests {
             role: RoleId::Helper,
             model_id: "continuum-ai/qwen2.5-0.5b-instruct-GGUF".to_string(),
             lanes: 1,
+            served_context_window: 8192,
         };
         let json = serde_json::to_string(&role).expect("serialize");
         // RoleId already serializes as snake_case ("helper"); model_id
         // becomes modelId per the camelCase rename_all on this struct.
         assert!(json.contains("\"role\":\"helper\""));
         assert!(json.contains("\"modelId\":\"continuum-ai/qwen2.5-0.5b-instruct-GGUF\""));
+        assert!(json.contains("\"servedContextWindow\":8192"));
         let back: DesiredRole = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(back, role);
     }

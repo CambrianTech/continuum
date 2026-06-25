@@ -8,7 +8,7 @@
 #   contract — see #1262 + tests/no_cpu_fallback_contract.rs). The guard is
 #   correct, but it makes the obvious developer command fail:
 #
-#     cd workers/continuum-core && cargo test tick_db_handle --lib
+#     cd core/continuum-core && cargo test tick_db_handle --lib
 #       → fails in the llama crate before the test runs
 #
 #   Fresh installs and agents repeatedly hit this. The fix is a wrapper that
@@ -16,11 +16,15 @@
 #   scripts and the precommit hook already source, so `cargo test` Just
 #   Works on every platform.
 #
-# Usage (from src/ — i.e. wherever scripts/ lives):
+# Usage (runs from anywhere — paths resolve off this script's location):
 #
-#   ./scripts/cargo-test.sh tick_db_handle --lib
-#   ./scripts/cargo-test.sh --test no_cpu_fallback_contract
-#   ./scripts/cargo-test.sh --lib -- --test-threads=1
+#   ./tools/scripts/cargo-test.sh tick_db_handle --lib
+#   ./tools/scripts/cargo-test.sh --test no_cpu_fallback_contract
+#   ./tools/scripts/cargo-test.sh --lib -- --test-threads=1
+#
+# Integration tests that link a `test-fixtures`-gated symbol are declared with
+# `required-features = ["test-fixtures"]` in Cargo.toml, so a bare run SKIPS
+# them cleanly; add `--features test-fixtures` to include them.
 #
 # All arguments after the script name pass through to `cargo test`. The
 # wrapper appends the platform feature flags via $CARGO_GPU_FEATURES.
@@ -36,7 +40,9 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SRC_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+# Repo root: tools/scripts → tools → repo root. (Post-reorg the Rust crates
+# live under <repo>/core/, not the old <repo>/src/workers/ layout.)
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 # Source the platform GPU feature detector. This is the single source of
 # truth for "what features does this platform need?" — same file that
@@ -46,7 +52,7 @@ SRC_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 source "$SCRIPT_DIR/shared/cargo-features.sh"
 
 PACKAGE="${CARGO_TEST_RUST_PACKAGE:-continuum-core}"
-RUST_DIR="$SRC_DIR/workers/$PACKAGE"
+RUST_DIR="$REPO_ROOT/core/$PACKAGE"
 
 if [ ! -d "$RUST_DIR" ]; then
   echo "ERROR: package directory not found: $RUST_DIR" >&2

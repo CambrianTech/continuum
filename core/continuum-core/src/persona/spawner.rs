@@ -42,7 +42,7 @@
 
 use crate::persona::hw_tier_descriptor::HwTierCategory;
 use crate::persona::inference_profile::{InferenceProfileError, PersonaInferenceProfile};
-use crate::persona::profile_builder::build_profile;
+use crate::persona::profile_builder::{build_profile, ServingParams};
 use crate::persona::role_template::RoleId;
 use std::sync::Arc;
 use uuid::Uuid;
@@ -68,10 +68,11 @@ pub struct RosterEntry {
     /// `model_per_tier` table; future refinements via #123 ORM data
     /// substitute this without changing the planner contract.
     pub model_id: String,
-    /// Continuous-batching lanes (`n_seq_max`) for this persona's backend,
-    /// from the serving daemon's ServingPlan (honest host budget + footprint).
-    /// Threaded through to `build_profile`; floored at 1 there.
-    pub lanes: u32,
+    /// Serving-plan-derived backend knobs (lanes + host-fit served context
+    /// window) for this persona, from the serving daemon's ServingPlan (honest
+    /// host budget + footprint). Grouped per [[pass-the-model-struct-no-param-hell]]
+    /// and threaded as one unit into `build_profile`.
+    pub serving: ServingParams,
 }
 
 /// Materialize a spawn plan from a roster + tier descriptor.
@@ -99,7 +100,7 @@ pub fn derive_spawn_plan(
                 tier_id,
                 tier_category,
                 &entry.model_id,
-                entry.lanes,
+                entry.serving,
                 registry,
             )
         })
@@ -168,13 +169,21 @@ mod tests {
         )
     }
 
+    /// Stand-in served window the ServingPlan would compute for the host.
+    /// The planner is unit-tested in `serving_plan.rs`; here we only assert
+    /// the value threads through unchanged for local models.
+    const TEST_SERVE_WINDOW: u32 = 8192;
+
     fn helper_paige() -> RosterEntry {
         RosterEntry {
             role: RoleId::Helper,
             persona_id: Uuid::nil(),
             persona_name: "Paige".to_string(),
             model_id: "continuum-ai/qwen2.5-0.5b-instruct-GGUF".to_string(),
-            lanes: 1,
+            serving: ServingParams {
+                lanes: 1,
+                served_context_window: TEST_SERVE_WINDOW,
+            },
         }
     }
 
@@ -184,7 +193,10 @@ mod tests {
             persona_id: Uuid::nil(),
             persona_name: "Pax".to_string(),
             model_id: "continuum-ai/qwen2.5-0.5b-instruct-GGUF".to_string(),
-            lanes: 1,
+            serving: ServingParams {
+                lanes: 1,
+                served_context_window: TEST_SERVE_WINDOW,
+            },
         }
     }
 
@@ -205,8 +217,9 @@ mod tests {
         let helper = plan[0].as_ref().expect("Helper plan").clone();
         assert_eq!(helper.persona_name, "Paige");
         assert_eq!(helper.tier_category, HwTierCategory::Compat);
-        // Model's real window, not a per-tier clamp (task #46).
-        assert_eq!(helper.context_length, 32768);
+        // Local-served → exactly the planner's served window (task #50),
+        // threaded through unchanged (not a per-tier clamp, task #46).
+        assert_eq!(helper.context_length, TEST_SERVE_WINDOW);
         assert_eq!(helper.n_gpu_layers, 0);
         let coder = plan[1].as_ref().expect("Coder plan").clone();
         assert_eq!(coder.persona_name, "Pax");
@@ -280,8 +293,8 @@ mod tests {
             let prof = p.as_ref().unwrap();
             assert_eq!(prof.tier_category, HwTierCategory::Compat);
             assert_eq!(prof.n_gpu_layers, 0);
-            // Model's real window, not a per-tier clamp (task #46).
-            assert_eq!(prof.context_length, 32768);
+            // Local-served → the planner's served window, threaded through (task #50).
+            assert_eq!(prof.context_length, TEST_SERVE_WINDOW);
         }
 
         let mseries_plan = derive_spawn_plan(
@@ -294,8 +307,8 @@ mod tests {
             let prof = p.as_ref().unwrap();
             assert_eq!(prof.tier_category, HwTierCategory::MSeries);
             assert_eq!(prof.n_gpu_layers, -1);
-            // Model's real window, not a per-tier clamp (task #46).
-            assert_eq!(prof.context_length, 32768);
+            // Local-served → the served window the roster carried (task #50).
+            assert_eq!(prof.context_length, TEST_SERVE_WINDOW);
         }
     }
 }

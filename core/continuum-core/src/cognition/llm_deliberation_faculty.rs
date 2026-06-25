@@ -142,6 +142,12 @@ pub struct LlmDeliberationFaculty {
     /// act→observe driver, [`super::act_observe`]). The faculty is single-shot:
     /// one generation → one verdict (`Act` xor `Speak` xor `Pass`) per tick.
     tools: Vec<NativeToolSpec>,
+    /// Cached token cost of `tools` once the chat template injects them into the
+    /// prompt — computed ONCE when the tool set is assigned ([`Self::with_tools`]),
+    /// NOT per tick. Serializing ~47 schemas on every deliberation just to size a
+    /// budget is exactly the hot-path CPU we refuse to pay; `prompt_view` reads
+    /// this field by value instead. 0 when `tools` is empty (pure-chat persona).
+    tools_tokens: usize,
     /// Where this faculty records its chain-of-thought after a verdict, so the
     /// persona can resume its train of thought next turn (the
     /// [`WorkingMemory`](crate::cognition::working_memory::WorkingMemory)
@@ -167,6 +173,17 @@ pub struct LlmDeliberationFaculty {
     /// reproducible; her live cognition leaves it `None`. Read wait-free per
     /// generation, exactly like `genome`.
     decoding: DecodingHandle,
+    /// The effective served context window in tokens (task #50: single-sourced
+    /// from `profile.context_length`, which for a Local persona IS the planner's
+    /// `ServingPlan.served_context_window`).
+    /// The deliberation prompt (system + burst) plus a completion reserve MUST
+    /// fit this or the gateway 500s ("Context size has been exceeded"). This
+    /// faculty is the ONE place the deliberation prompt is assembled, so it is
+    /// where the window invariant is enforced — drop-WHOLE in salience order, the
+    /// same philosophy as `FlexboxRagBudgetAdapter`. Task #8 converges both onto
+    /// that one allocator; until then this is THE allocator for the deliberation
+    /// path (the missing one — there was no budget before), not a parallel one.
+    context_window: u32,
 }
 
 impl LlmDeliberationFaculty {
@@ -184,10 +201,12 @@ impl LlmDeliberationFaculty {
             model: None,
             temperature: DEFAULT_TEMPERATURE,
             tools: Vec::new(),
+            tools_tokens: 0,
             working_memory: None,
             prompt_capture: None,
             genome: empty_genome(),
             decoding: relaxed_decoding(),
+            context_window: crate::cognition::serving_plan::MIN_SERVE_CTX,
         }
     }
 
@@ -243,7 +262,24 @@ impl LlmDeliberationFaculty {
     /// is offered these tools; an emitted tool_call becomes a [`Decision::Act`]
     /// verdict the act→observe driver runs (the faculty itself never executes).
     pub fn with_tools(mut self, tools: Vec<NativeToolSpec>) -> Self {
+        // Size the injected-token cost ONCE, here, by reference, while we hold the
+        // set — never again on the hot path. The schemas don't change after this,
+        // so `prompt_view` reads the cached count each tick instead of paying the
+        // serialization. (The serialization itself stays by-reference: it borrows
+        // the slice, it does not clone the specs.)
+        self.tools_tokens = Self::estimate_tool_tokens(&tools);
         self.tools = tools;
+        self
+    }
+
+    /// Set the effective served context window (tokens) this faculty must keep its
+    /// prompt within. The live spawn path passes `profile.context_length`
+    /// (task #50 — for a Local persona that is the planner's
+    /// `ServingPlan.served_context_window`). Default: the runnable floor
+    /// [`MIN_SERVE_CTX`](crate::cognition::serving_plan::MIN_SERVE_CTX) for a
+    /// faculty constructed outside the spawn path (tests, non-served).
+    pub fn with_context_window(mut self, context_window: u32) -> Self {
+        self.context_window = context_window;
         self
     }
 
@@ -339,22 +375,49 @@ impl LlmDeliberationFaculty {
     /// into a system-prompt block, so the reasoner conditions on what recall /
     /// world-model / affect surfaced. Only *context* contributions are included
     /// (the verdict isn't in the broadcast yet at phase 2).
-    fn render_assembled_context(&self, ws: &Workspace) -> String {
+    ///
+    /// Bounded to `budget_tokens`: context is enrichment, so under window pressure
+    /// it yields FIRST (after the essential framing + the burst she is responding
+    /// to). Contributions are taken highest-salience-first and dropped WHOLE — a
+    /// half-truncated engram is noise, so a lower-salience item that still fits is
+    /// preferred over a mangled high-salience one. Same drop-whole-in-priority
+    /// philosophy as `FlexboxRagBudgetAdapter`.
+    fn render_assembled_context_within(&self, ws: &Workspace, budget_tokens: usize) -> String {
+        if budget_tokens == 0 {
+            return String::new();
+        }
+        let mut ctx: Vec<_> = ws.broadcast.iter().filter(|c| c.decision.is_none()).collect();
+        ctx.sort_by(|a, b| {
+            b.salience
+                .partial_cmp(&a.salience)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         let mut block = String::new();
-        for c in ws.broadcast.iter().filter(|c| c.decision.is_none()) {
+        let mut used = 0usize;
+        for c in ctx {
+            // "\n[faculty]\n<content>\n" — count the framing chars too (~2 tokens).
+            let piece = est_tokens(c.faculty.as_str()) + est_tokens(&c.content) + 2;
+            if used + piece > budget_tokens {
+                // Drop this whole item; a smaller lower-salience one may still fit.
+                continue;
+            }
             block.push_str("\n[");
             block.push_str(c.faculty.as_str());
             block.push_str("]\n");
             block.push_str(&c.content);
             block.push('\n');
+            used += piece;
         }
         block
     }
 
-    fn build_system_prompt(&self, ws: &Workspace) -> String {
-        let mut s = String::with_capacity(self.system_prompt.len() + 768);
+    /// Compose the full system prompt around an ALREADY-BUDGETED context block.
+    /// Splitting the assembly this way lets `prompt_view` size the context to the
+    /// served window before it is embedded (the framing wrapper is essential and
+    /// small; the context is the variable part that must fit the remainder).
+    fn compose_system(&self, context: &str) -> String {
+        let mut s = String::with_capacity(self.system_prompt.len() + context.len() + 768);
         s.push_str(&self.system_prompt);
-        let context = self.render_assembled_context(ws);
         if !context.is_empty() {
             s.push_str(
                 "\n\n[What you are working with right now]\n\
@@ -363,7 +426,7 @@ impl LlmDeliberationFaculty {
                  the situation. Ground your contribution in it; you need not cite \
                  every line:\n",
             );
-            s.push_str(&context);
+            s.push_str(context);
         }
         // Tell the reasoner it is taking a TURN in this activity, not analyzing a
         // transcript — otherwise small models outline the situation instead of
@@ -414,11 +477,110 @@ impl LlmDeliberationFaculty {
     /// affordance) and the user burst. Exposed so what the LLM sees is trivially
     /// introspectable at every turn (tests, replay, operator tooling). The RAG is
     /// the load-bearing input; it must never be opaque.
+    ///
+    /// Enforces the served window HERE — the one place the deliberation prompt is
+    /// assembled (task #50). The gateway tokenizes the whole prompt and 500s if it
+    /// reaches `n_ctx`, so `system + user` must fit `context_window` minus a
+    /// completion reserve. Priority of what survives under pressure:
+    ///   1. the framing wrapper (who she is + how to take her turn) — essential,
+    ///      small, always kept;
+    ///   2. the burst (the recent activity she is responding to) — kept, trimmed
+    ///      from the HEAD (oldest first) so the latest messages always survive;
+    ///   3. the assembled context (recall + grounding) — enrichment, gets the
+    ///      remainder, dropped WHOLE in salience order.
     pub fn prompt_view(&self, ws: &Workspace) -> DeliberationPromptView {
-        DeliberationPromptView {
-            system: self.build_system_prompt(ws),
-            user: ws.world_state.clone(),
+        let completion_reserve = (self.context_window / 4).clamp(256, 2048) as usize;
+
+        // Tool schemas ride the served window too: when tools are offered the
+        // gateway injects each one (name + description + JSON parameter schema)
+        // into the prompt via the chat template. They are NOT part of
+        // `system`/`user`, so without counting them here the budget silently
+        // overshoots `n_ctx` and llama-server 500s ("Context size has been
+        // exceeded") — the mute bug (task #50). Tools are non-negotiable (the
+        // model can't call a tool whose schema was dropped), so they come off
+        // the top before framing/burst/enrichment compete for the remainder.
+        // Read the count cached at `with_tools` time — no per-tick serialization.
+        let budget = (self.context_window as usize)
+            .saturating_sub(completion_reserve)
+            .saturating_sub(self.tools_tokens);
+
+        // The framing wrapper alone (no assembled context) — essential + small.
+        let framing_tokens = est_tokens(&self.compose_system(""));
+
+        // The burst — keep the most-recent tail when it would overflow.
+        let mut user = ws.world_state.clone();
+        let user_budget = budget.saturating_sub(framing_tokens);
+        if est_tokens(&user) > user_budget {
+            user = tail_to_tokens(&user, user_budget);
         }
+
+        // Whatever remains after framing + burst goes to enrichment context.
+        let ctx_budget = budget
+            .saturating_sub(framing_tokens)
+            .saturating_sub(est_tokens(&user));
+        let context = self.render_assembled_context_within(ws, ctx_budget);
+
+        DeliberationPromptView {
+            system: self.compose_system(&context),
+            user,
+        }
+    }
+
+    /// Conservative token estimate of the tool schemas the gateway injects into
+    /// the prompt via the chat template. Each [`NativeToolSpec`] serializes to
+    /// roughly its function-spec JSON (name + description + input_schema); we
+    /// count that JSON with the same conservative guard ratio used for the rest
+    /// of the prompt, plus a small per-tool template framing margin. Over-
+    /// counting only shrinks enrichment; under-counting risks the 500, so we
+    /// round UP. Returns 0 when no tools are offered (pure-chat turn).
+    ///
+    /// Pure + by-reference (borrows the slice, clones nothing) and called ONCE per
+    /// tool-set assignment, never on the per-tick deliberation path — the result
+    /// is cached in `tools_tokens`.
+    fn estimate_tool_tokens(tools: &[NativeToolSpec]) -> usize {
+        if tools.is_empty() {
+            return 0;
+        }
+        // Per-tool template scaffolding (delimiters, role markers, the "you have
+        // these tools" preamble the chat template wraps around each entry). A
+        // conservative flat margin per tool on top of the serialized schema.
+        const PER_TOOL_TEMPLATE_MARGIN_TOKENS: usize = 8;
+        let serialized = serde_json::to_string(tools).unwrap_or_default();
+        est_tokens(&serialized) + tools.len() * PER_TOOL_TEMPLATE_MARGIN_TOKENS
+    }
+}
+
+/// Chars-per-token assumed by the window guard. Deliberately CONSERVATIVE (3,
+/// not the substrate-wide ~4 used for RAG sizing): here a wrong estimate is not
+/// a slightly-off budget but a hard llama-server 500 ("Context size has been
+/// exceeded") that mutes the persona for the whole tick. The deliberation prompt
+/// carries UUID-dense rosters, structured engram observations, and code, which
+/// tokenize far denser than English — so we OVER-count tokens to stay safely
+/// under `n_ctx`. The completion reserve absorbs the remaining slack.
+const GUARD_CHARS_PER_TOKEN: usize = 3;
+
+/// Conservative token estimate for the window guard (see [`GUARD_CHARS_PER_TOKEN`]).
+fn est_tokens(s: &str) -> usize {
+    s.len() / GUARD_CHARS_PER_TOKEN
+}
+
+/// Keep the last `budget_tokens` worth of a burst (the most-recent activity),
+/// trimming from the FRONT, and advance to the next line boundary so the kept
+/// tail starts clean. Used when the room burst alone would overflow the served
+/// window — the latest messages are what the turn is about, so the OLDEST yield.
+fn tail_to_tokens(s: &str, budget_tokens: usize) -> String {
+    let budget_chars = budget_tokens.saturating_mul(GUARD_CHARS_PER_TOKEN);
+    if s.len() <= budget_chars {
+        return s.to_string();
+    }
+    let mut start = s.len().saturating_sub(budget_chars);
+    while start < s.len() && !s.is_char_boundary(start) {
+        start += 1;
+    }
+    let slice = &s[start..];
+    match slice.find('\n') {
+        Some(nl) => slice[nl + 1..].to_string(),
+        None => slice.to_string(),
     }
 }
 
@@ -623,6 +785,151 @@ mod tests {
         );
         // The heuristic adapter acks (never emits PASS), so this is a Speak.
         assert!(matches!(c.decision, Some(Decision::Speak { .. })));
+    }
+
+    // what this catches: the live-airc bug where a grown room burst + many full
+    // engrams made the deliberation prompt exceed the served window, so
+    // llama-server 500'd ("Context size has been exceeded") on EVERY tick and the
+    // persona went mute (logged as "chose silence"). prompt_view must keep
+    // system+user within `context_window` minus the completion reserve — context
+    // is enrichment and yields first, the burst trims from the head (newest kept),
+    // the essential framing always survives. Regression for the 8192-overflow.
+    #[test]
+    fn prompt_view_stays_within_the_served_window() {
+        let persona = Uuid::new_v4();
+        let adapter: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
+        // A deliberately small window so the test is cheap but exercises the same
+        // arithmetic the live 8192 path uses.
+        let window: u32 = 1024;
+        let faculty = LlmDeliberationFaculty::new(
+            persona,
+            "Ivar",
+            "You are Ivar, a thoughtful engineer on the grid.",
+            adapter,
+        )
+        .with_context_window(window);
+
+        // A burst far bigger than the whole window (a grown room history), with a
+        // recognizable LAST line that must survive the head-trim.
+        let mut burst = "old chatter line\n".repeat(2000);
+        burst.push_str("LATEST: did the deploy fix land?");
+        let mut ws = Workspace::new(&burst);
+        // Several oversized context bids — recall engrams that alone blow the budget.
+        ws.broadcast.push(Contribution::context(
+            FacultyId::Recall,
+            &"deploy pipeline observation; ".repeat(2000),
+            0.9,
+            "recalled",
+        ));
+        ws.broadcast.push(Contribution::context(
+            FacultyId::Recall,
+            "small high-value note: fix merged 4pm",
+            0.5,
+            "recalled",
+        ));
+
+        let view = faculty.prompt_view(&ws);
+        let total = est_tokens(&view.system) + est_tokens(&view.user);
+        assert!(
+            total <= window as usize,
+            "prompt must fit the served window: {total} tokens > {window}"
+        );
+        // The newest burst line survives the head-trim — the turn is about it.
+        assert!(
+            view.user.contains("LATEST: did the deploy fix land?"),
+            "head-trim must keep the most recent burst content"
+        );
+        // The framing is essential and always present even under extreme pressure.
+        assert!(
+            view.system.contains("Taking your turn"),
+            "the how-to-participate framing must never be dropped"
+        );
+    }
+
+    // what this catches: the SECOND half of the mute bug — tool schemas ride the
+    // served window too (the gateway injects ~47 of them via the chat template),
+    // but they are NOT part of system/user, so prompt_view must reserve their
+    // token cost off the top or the *combined* prompt overshoots n_ctx and
+    // llama-server 500s even though system+user alone looked safe. Invariant:
+    // system + user + the cached tool-token cost all fit `window - reserve`.
+    // A regression here means a tools-equipped persona goes mute under burst
+    // pressure while a speak-only one survives — exactly task #50's failure. We
+    // also assert the cached count is non-zero (the by-reference estimate ran at
+    // `with_tools` time, not per tick) so the budget actually shrank.
+    #[test]
+    fn prompt_view_reserves_tool_tokens_against_the_served_window() {
+        let persona = Uuid::new_v4();
+        let adapter: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
+        // Large enough that the tool reservation still leaves a positive budget —
+        // the live 8192 window held ~47 tools; here 8 fat schemas (~870 tokens)
+        // against 4096 mirrors the same "tools take a real bite, prompt fits the
+        // rest" arithmetic without over-subscribing the window.
+        let window: u32 = 4096;
+
+        // A chunky tool set — several schemas with prose descriptions, the shape
+        // that ate ~8k tokens live. Built once; counted once at `with_tools`.
+        let tools: Vec<NativeToolSpec> = (0..8)
+            .map(|i| NativeToolSpec {
+                name: format!("code/tool_{i}"),
+                description:
+                    "A capability the persona may invoke with a structured argument payload."
+                        .to_string(),
+                input_schema: ToolInputSchema {
+                    schema_type: "object".to_string(),
+                    properties: json!({
+                        "path": { "type": "string", "description": "workspace-relative path" },
+                        "mode": { "type": "string", "enum": ["read", "write", "append"] }
+                    }),
+                    required: Some(vec!["path".to_string()]),
+                },
+            })
+            .collect();
+
+        let faculty = LlmDeliberationFaculty::new(
+            persona,
+            "Asha",
+            "You are Asha, a thoughtful engineer on the grid.",
+            adapter,
+        )
+        .with_context_window(window)
+        .with_tools(tools);
+
+        // The cached cost ran at with_tools time (by reference), not per tick.
+        assert!(
+            faculty.tools_tokens > 0,
+            "tool-token cost must be cached at with_tools time"
+        );
+
+        // Same overflow pressure as the speak-only test: a burst far bigger than
+        // the window plus oversized recall bids.
+        let mut burst = "old chatter line\n".repeat(2000);
+        burst.push_str("LATEST: did the deploy fix land?");
+        let mut ws = Workspace::new(&burst);
+        ws.broadcast.push(Contribution::context(
+            FacultyId::Recall,
+            &"deploy pipeline observation; ".repeat(2000),
+            0.9,
+            "recalled",
+        ));
+
+        let view = faculty.prompt_view(&ws);
+        let completion_reserve = (window / 4).clamp(256, 2048) as usize;
+        let prompt = est_tokens(&view.system) + est_tokens(&view.user);
+        // The injected tools (counted once at with_tools) PLUS the rendered
+        // prompt PLUS the held-back completion reserve must all fit the served
+        // window — that is the exact condition llama-server checks before it 500s.
+        // Without the reservation this sum overshot n_ctx and the persona went
+        // mute; with it, enrichment yields so the combined load fits.
+        assert!(
+            prompt + faculty.tools_tokens + completion_reserve <= window as usize,
+            "prompt ({prompt}) + tools ({}) + reserve ({completion_reserve}) must fit {window}",
+            faculty.tools_tokens
+        );
+        // Tools steal from enrichment, never from the essential framing.
+        assert!(
+            view.system.contains("Taking your turn"),
+            "framing survives even after tool reservation"
+        );
     }
 
     // ─── Acting path (single-shot) ──────────────────────────────────────────

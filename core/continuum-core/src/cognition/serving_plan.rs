@@ -41,6 +41,14 @@
 /// batch cost stop paying off before the grid should share the load.
 pub const MAX_LANES: u32 = 4;
 
+/// Bare-minimum served window for a model to be runnable at ALL — a hardware
+/// reality floor, NOT a serving target or a cheapening cap. The served window is
+/// sized UP from here to the largest that fits the host budget, capped only by
+/// the model's own trained `context_window`. A model whose weights + KV at even
+/// this floor won't fit the GPU budget is simply not a serving option on this
+/// host (→ `fits_on_gpu = false`, honest degrade — never a silent shrink).
+pub const MIN_SERVE_CTX: u32 = 2048;
+
 /// Hysteresis margin for switching UP to a more capable model: it must fit
 /// within `(1 - SWITCH_UP_HEADROOM)` of the budget — i.e. with headroom to
 /// spare — before we abandon the incumbent for it. Stops transient budget
@@ -62,18 +70,35 @@ pub struct HostBudget {
 }
 
 /// One candidate model's memory cost — footprint-aware so a coding sentinel
-/// and a small chat model are sized differently.
+/// and a small chat model are sized differently. Carries the per-token KV RATE
+/// and the model's trained `context_window` (its ceiling), NOT a pre-collapsed
+/// per-lane KV at some assumed window: the served window is DERIVED in
+/// [`plan_serving`] from `(context_window ∩ host budget / lanes / kv_per_token)`,
+/// never a hardcoded constant ([[pass-the-model-struct-no-param-hell]]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModelFootprint {
     pub model_id: String,
     /// On-device weight bytes (the GGUF quant resident on GPU/UMA).
     pub weights_bytes: u64,
-    /// KV-cache bytes for ONE sequence (lane) at the planned context length.
-    pub per_lane_kv_bytes: u64,
+    /// KV-cache bytes per token for ONE sequence (lane) — the rate. Per-lane KV
+    /// at a given window = `kv_per_token × window`, computed where the window is
+    /// decided, so no assumed-window constant leaks into the footprint.
+    pub kv_per_token: u64,
+    /// The model's trained context ceiling (`Model.context_window`) — the cap the
+    /// served window can never exceed. The model's stated capability, carried so
+    /// the planner caps to it without re-fetching the model.
+    pub context_window: u32,
     /// Higher = more capable. The planner prefers the most capable model that
     /// still fits at least one lane — "give them the most powerful persona we
     /// can," never tiering down for its own sake.
     pub capability_rank: u8,
+}
+
+impl ModelFootprint {
+    /// KV-cache bytes for ONE lane at `ctx` tokens.
+    pub fn kv_at(&self, ctx: u32) -> u64 {
+        self.kv_per_token.saturating_mul(ctx as u64)
+    }
 }
 
 /// The serving decision for this host.
@@ -82,6 +107,13 @@ pub struct ModelFootprint {
 pub struct ServingPlan {
     /// The base model to serve (shared across lanes).
     pub base_model_id: String,
+    /// The host-fit served window for the chosen model: the largest context that
+    /// fits `(budget − weights) / lanes` worth of KV, capped at the model's own
+    /// trained `context_window`, floored at [`MIN_SERVE_CTX`]. THE single source
+    /// of truth for the effective serving window (task #50) — flows to
+    /// llama-server's `-c`, the persona's `context_length`, and the deliberation
+    /// prompt budget. Never a hardcoded constant.
+    pub served_context_window: u32,
     /// Continuous-batching lanes (`n_seq_max`). ≥ 1.
     pub lanes: u32,
     /// How many distinct models to keep resident (warm), including the base.
@@ -108,7 +140,7 @@ pub fn plan_serving(host: HostBudget, candidates: &[ModelFootprint]) -> Option<S
     // "At least one lane" is the floor: a model we can't run even single-laned
     // on the GPU is not a serving option on this host.
     let fits_one_lane = |m: &ModelFootprint| {
-        m.weights_bytes.saturating_add(m.per_lane_kv_bytes) <= host.usable_bytes
+        m.weights_bytes.saturating_add(m.kv_at(MIN_SERVE_CTX)) <= host.usable_bytes
     };
 
     // Prefer the MOST CAPABLE model that fits a lane. Ties broken toward the
@@ -139,6 +171,7 @@ pub fn plan_serving(host: HostBudget, candidates: &[ModelFootprint]) -> Option<S
             .expect("candidates non-empty checked above");
         return Some(ServingPlan {
             base_model_id: smallest.model_id.clone(),
+            served_context_window: MIN_SERVE_CTX,
             lanes: 1,
             resident_models: 1,
             fits_on_gpu: false,
@@ -152,22 +185,36 @@ pub fn plan_serving(host: HostBudget, candidates: &[ModelFootprint]) -> Option<S
         });
     };
 
-    // Lanes: how many sequences' KV fit in the budget left after weights,
-    // capped by perf cores and the MAX_LANES ceiling, floored at 1.
-    let remaining = host.usable_bytes.saturating_sub(model.weights_bytes);
-    let kv_lanes = if model.per_lane_kv_bytes == 0 {
-        MAX_LANES
-    } else {
-        (remaining / model.per_lane_kv_bytes) as u32
-    };
+    // Lanes: how many MINIMUM-window lanes' KV fit the budget left after
+    // weights, capped by perf cores and the MAX_LANES ceiling, floored at 1. A
+    // fatter per-token KV cache → fewer lanes on the same budget. The window is
+    // sized UP per lane below; this only decides HOW MANY sequences run.
+    let after_weights = host.usable_bytes.saturating_sub(model.weights_bytes);
+    let kv_floor = model.kv_at(MIN_SERVE_CTX).max(1);
+    let kv_lanes = (after_weights / kv_floor) as u32;
     let lanes = kv_lanes.min(host.perf_cores.max(1)).min(MAX_LANES).max(1);
 
-    // Resident models: pack the smallest other candidates into whatever is
-    // left after the chosen base + its lanes' KV. "Keep as many models alive,
-    // practically" — without overcommitting the budget.
-    let chosen_cost = model
-        .weights_bytes
-        .saturating_add(model.per_lane_kv_bytes.saturating_mul(lanes as u64));
+    // Served window: expand each lane to the LARGEST context its share of the
+    // post-weights budget affords, capped at the model's own trained ceiling and
+    // floored at MIN_SERVE_CTX. Derived from (model ∩ host), never a constant —
+    // this is the serving window everyone downstream reads (task #50).
+    let per_lane_budget = after_weights / lanes as u64;
+    let fit_ctx = if model.kv_per_token == 0 {
+        model.context_window
+    } else {
+        (per_lane_budget / model.kv_per_token).min(u32::MAX as u64) as u32
+    };
+    let served_context_window = fit_ctx.min(model.context_window).max(MIN_SERVE_CTX);
+
+    // Resident models: pack the smallest other candidates (each at its minimum
+    // runnable footprint) into whatever is left after the chosen base + its
+    // lanes' KV at the served window. "Keep as many models alive, practically" —
+    // without overcommitting the budget.
+    let chosen_cost = model.weights_bytes.saturating_add(
+        model
+            .kv_at(served_context_window)
+            .saturating_mul(lanes as u64),
+    );
     let mut left = host.usable_bytes.saturating_sub(chosen_cost);
     let mut resident = 1u32;
     let mut others: Vec<&ModelFootprint> = candidates
@@ -180,7 +227,7 @@ pub fn plan_serving(host: HostBudget, candidates: &[ModelFootprint]) -> Option<S
             .then(a.model_id.cmp(&b.model_id))
     });
     for m in others {
-        let cost = m.weights_bytes.saturating_add(m.per_lane_kv_bytes);
+        let cost = m.weights_bytes.saturating_add(m.kv_at(MIN_SERVE_CTX));
         if cost <= left {
             left = left.saturating_sub(cost);
             resident += 1;
@@ -189,17 +236,19 @@ pub fn plan_serving(host: HostBudget, candidates: &[ModelFootprint]) -> Option<S
 
     Some(ServingPlan {
         base_model_id: model.model_id.clone(),
+        served_context_window,
         lanes,
         resident_models: resident,
         fits_on_gpu: true,
         rationale: format!(
             "most-capable model fitting {:.1}GB GPU budget: {} ({:.1}GB weights, rank {}), \
-             {} lane(s), {} model(s) warm",
+             {} lane(s) @ {} ctx, {} model(s) warm",
             bytes_gb(host.usable_bytes),
             model.model_id,
             bytes_gb(model.weights_bytes),
             model.capability_rank,
             lanes,
+            served_context_window,
             resident,
         ),
     })
@@ -229,7 +278,7 @@ pub fn plan_serving_stable(
     // Is the incumbent still present AND still fits at least one lane?
     let inc = candidates.iter().find(|m| {
         m.model_id == inc_id
-            && m.weights_bytes.saturating_add(m.per_lane_kv_bytes) <= host.usable_bytes
+            && m.weights_bytes.saturating_add(m.kv_at(MIN_SERVE_CTX)) <= host.usable_bytes
     });
     let Some(inc) = inc else {
         // Incumbent gone or no longer fits → forced switch to `fresh`.
@@ -243,7 +292,7 @@ pub fn plan_serving_stable(
         .find(|c| c.model_id == fresh.base_model_id)
         .is_some_and(|f| {
             f.capability_rank > inc.capability_rank
-                && f.weights_bytes.saturating_add(f.per_lane_kv_bytes) <= headroom_budget
+                && f.weights_bytes.saturating_add(f.kv_at(MIN_SERVE_CTX)) <= headroom_budget
         });
     if upgrade_worth_it {
         return Some(fresh);
@@ -268,20 +317,23 @@ mod tests {
 
     const GB: u64 = 1_000_000_000;
 
-    fn fp(id: &str, weights_gb: u64, kv_mb: u64, rank: u8) -> ModelFootprint {
+    // kv_per_token in BYTES; ctx is the model's trained ceiling. The served
+    // window is DERIVED from (footprint ∩ host) by the planner, never passed in.
+    fn fp(id: &str, weights_gb: u64, kv_per_token: u64, ctx: u32, rank: u8) -> ModelFootprint {
         ModelFootprint {
             model_id: id.to_string(),
             weights_bytes: weights_gb * GB,
-            per_lane_kv_bytes: kv_mb * 1_000_000,
+            kv_per_token,
+            context_window: ctx,
             capability_rank: rank,
         }
     }
 
     fn candidates() -> Vec<ModelFootprint> {
         vec![
-            fp("qwen2.5-0.5b", 1, 60, 1),  // tiny chat
-            fp("qwen3.5-4b", 3, 300, 2),   // good general (47 tok/s on M5)
-            fp("coder-sentinel-14b", 9, 700, 3), // rich coding model — more RAM each
+            fp("qwen2.5-0.5b", 1, 4_000, 32_768, 1), // tiny chat
+            fp("qwen3.5-4b", 3, 30_000, 262_144, 2), // good general (47 tok/s on M5)
+            fp("coder-sentinel-14b", 9, 90_000, 262_144, 3), // rich coding model — more RAM each
         ]
     }
 
@@ -299,16 +351,28 @@ mod tests {
     }
 
     // what this catches: the M5 Pro must use its headroom — pick the most
-    // capable model (the 14B coding sentinel) AND run multiple lanes AND keep
-    // more than one model warm. The "stop dumbing down / use the machine" case.
+    // capable model (the 14B coding sentinel), run multiple lanes, AND size the
+    // served window UP from the budget instead of clamping it to a constant.
+    // The "stop dumbing down / use the machine / don't cheapen the window" case.
     #[test]
-    fn big_box_picks_most_capable_runs_lanes_keeps_warm() {
+    fn big_box_picks_most_capable_runs_lanes_sizes_window_up() {
         // ~45GB usable on a 64GB M5 Pro after headroom.
         let host = HostBudget { usable_bytes: 45 * GB, perf_cores: 6 };
         let plan = plan_serving(host, &candidates()).unwrap();
         assert_eq!(plan.base_model_id, "coder-sentinel-14b", "most capable, fits easily");
         assert!(plan.lanes >= 2, "M5 Pro has the budget for multiple lanes, got {}", plan.lanes);
-        assert!(plan.resident_models >= 2, "should keep more than one model warm");
+        // The window is derived from the per-lane budget, not a constant — on a
+        // 45GB box that's far above any 8k/32k clamp we used to cheapen it with.
+        assert!(
+            plan.served_context_window > 32_768,
+            "served window must scale with the budget, got {}",
+            plan.served_context_window,
+        );
+        assert!(
+            plan.served_context_window <= 262_144,
+            "but never exceed the model's trained ceiling, got {}",
+            plan.served_context_window,
+        );
     }
 
     // what this catches: the MAX_LANES ceiling holds even with absurd budget —
@@ -320,16 +384,17 @@ mod tests {
         assert_eq!(plan.lanes, MAX_LANES);
     }
 
-    // what this catches: footprint-awareness — a model with a fatter per-lane
-    // KV cache yields fewer lanes on the same budget than a lean one.
+    // what this catches: footprint-awareness — a model with a fatter per-token
+    // KV cache yields fewer lanes on the same budget than a lean one (lanes are
+    // sized at the MIN window; a fatter floor lane fits fewer times).
     #[test]
     fn fatter_kv_means_fewer_lanes() {
         // Budget chosen so KV (not the MAX_LANES cap or perf cores) is the
         // binding constraint: 3GB total, 2GB weights → 1GB left for KV.
-        // lean 300MB/lane → 3 lanes; fat 900MB/lane → 1 lane.
+        // lean ~300MB/floor-lane → 3 lanes; fat ~920MB/floor-lane → 1 lane.
         let host = HostBudget { usable_bytes: 3 * GB, perf_cores: 8 };
-        let lean = plan_serving(host, &[fp("lean", 2, 300, 5)]).unwrap();
-        let fat = plan_serving(host, &[fp("fat", 2, 900, 5)]).unwrap();
+        let lean = plan_serving(host, &[fp("lean", 2, 150_000, 32_768, 5)]).unwrap();
+        let fat = plan_serving(host, &[fp("fat", 2, 450_000, 32_768, 5)]).unwrap();
         assert!(lean.lanes > fat.lanes, "lean {} should beat fat {}", lean.lanes, fat.lanes);
     }
 
@@ -357,7 +422,10 @@ mod tests {
     // small chat (rank 1, ~1GB) vs big coder (rank 3, ~9.7GB) — the pair that
     // exercises switch-up/down decisions.
     fn pair() -> Vec<ModelFootprint> {
-        vec![fp("small", 1, 60, 1), fp("big", 9, 700, 3)]
+        vec![
+            fp("small", 1, 4_000, 32_768, 1),
+            fp("big", 9, 90_000, 262_144, 3),
+        ]
     }
 
     // what this catches: no incumbent → identical to plain plan_serving (boot).

@@ -160,6 +160,7 @@ mod tests {
             grounding_sources: Vec::new(),
             embedder: None,
             tool_executor: None,
+            context_window: crate::cognition::serving_plan::MIN_SERVE_CTX,
         });
         registry
     }

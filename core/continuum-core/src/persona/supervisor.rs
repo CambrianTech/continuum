@@ -700,6 +700,11 @@ pub async fn materialize_adapters(
                 // The persona's HANDS — built by the caller for THIS persona's
                 // identity (None → speak-only). What turns "talks" into "acts".
                 tool_executor: tool_executor_for(identity.persona_id),
+                // The window the gateway actually serves this persona (task #50:
+                // single-sourced; Local → ServingPlan.served_context_window). The
+                // deliberation faculty keeps its prompt inside it so llama-server
+                // never 500s ("Context size has been exceeded").
+                context_window: profile.context_length,
             },
         );
 

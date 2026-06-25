@@ -23,12 +23,12 @@
 
 use crate::cognition::model_resolver::types::HwCapabilityTier;
 use crate::cognition::serving_plan::{
-    plan_serving, plan_serving_stable, HostBudget, ModelFootprint, ServingPlan,
+    plan_serving, plan_serving_stable, HostBudget, ModelFootprint, ServingPlan, MIN_SERVE_CTX,
 };
 use crate::gpu::GpuMemoryManager;
 use crate::inference::llama_server::{
     ensure_model_serving, serving_v1_url, EnsureOutcome, LlamaServerControl, LlamaServerProcess,
-    ServingSnapshot,
+    ServingSnapshot, ServingTarget,
 };
 use crate::persona::hw_tier_descriptor::HwTierCategory;
 use crate::model_registry::types::{Capability, Model};
@@ -56,11 +56,6 @@ const SERVING_BUDGET_FRACTION: f64 = 0.80;
 /// reacts faster than the cadence under sudden pressure.
 const TICK: Duration = Duration::from_secs(5);
 
-/// Per-lane context tokens we size the KV estimate against. A serving cap, not
-/// the model's trained ceiling — lanes share the budget, so each is planned at
-/// a sane working context rather than the full 256k.
-const PLANNED_CTX_TOKENS: u64 = 8192;
-
 /// Bus topic the live [`ServingSnapshot`] is emitted on whenever it changes.
 /// Subscribers (embedding, supervisor, inference_session, ai_provider) declare
 /// this in their `event_subscriptions` and cache the latest in `handle_event`
@@ -70,6 +65,13 @@ const PLANNED_CTX_TOKENS: u64 = 8192;
 /// name (no body parse in middleware), payload fans out as a shared pointer,
 /// emitted only on a rare state change — never on the token hot path.
 const SERVING_SNAPSHOT_EVENT: &str = "serving.snapshot";
+
+/// Resolves a base-model id (as named in a [`ServingPlan`]) back to its full
+/// [`Model`] struct. Production resolves through the global registry; tests
+/// inject a fake so the reconcile WIRING can be exercised without a populated
+/// registry. The resolved `Model` is carried straight onto the [`ServingTarget`]
+/// — resolve once, pass the struct, never re-fetch ([[pass-the-model-struct-no-param-hell]]).
+type ModelResolver = Arc<dyn Fn(&str) -> Option<Model> + Send + Sync>;
 
 pub struct ServingDaemonModule {
     gpu: Arc<GpuMemoryManager>,
@@ -102,6 +104,10 @@ pub struct ServingDaemonModule {
     /// `SERVING_SNAPSHOT_EVENT` so any subscriber (local or grid) gets the live
     /// serving state pushed — no point-to-point receiver plumbing.
     bus: OnceLock<Arc<MessageBus>>,
+    /// Maps a planned base-model id → its full [`Model`] for the reconcile to
+    /// carry onto the [`ServingTarget`]. Defaults to the global registry; tests
+    /// override it ([`Self::set_model_resolver`]).
+    model_resolver: ModelResolver,
 }
 
 impl ServingDaemonModule {
@@ -127,7 +133,20 @@ impl ServingDaemonModule {
             serving_tx,
             reconciling: Arc::new(AtomicBool::new(false)),
             bus: OnceLock::new(),
+            // Production resolver: the global registry. `try_global` (not the
+            // panicking `global`) so a not-yet-initialized registry resolves to
+            // None → honest empty snapshot, never a panic in the reconcile path.
+            model_resolver: Arc::new(|id: &str| {
+                crate::model_registry::try_global().and_then(|r| r.model(id).cloned())
+            }),
         }
+    }
+
+    /// Test seam: override how planned model ids resolve to [`Model`] structs,
+    /// so the reconcile wiring runs without a populated global registry.
+    #[cfg(test)]
+    fn set_model_resolver(&mut self, resolver: ModelResolver) {
+        self.model_resolver = resolver;
     }
 
     /// Emit the live snapshot on the bus. Routed by topic name (cheap match, no
@@ -200,8 +219,12 @@ impl ServingDaemonModule {
     /// Already serving the desired model & ready → no-op. A reconcile already
     /// in flight → skip (the gate). Otherwise spawn the reconcile.
     fn reconcile_to_plan(&self) -> Option<JoinHandle<()>> {
-        let desired = match self.plan_tx.borrow().as_ref() {
-            Some(plan) => plan.base_model_id.clone(),
+        // Pull the desired model id AND the host-fit served window out of the
+        // plan in one borrow — the window is the planner's single source of
+        // truth (task #50); we carry it on the ServingTarget so llama-server's
+        // `-c` matches exactly what was planned.
+        let (desired, served_ctx) = match self.plan_tx.borrow().as_ref() {
+            Some(plan) => (plan.base_model_id.clone(), plan.served_context_window),
             None => {
                 // Nothing servable on disk → publish "nothing live" so readers
                 // (and a grid allocator) see the gap and route elsewhere.
@@ -221,6 +244,28 @@ impl ServingDaemonModule {
             }
         }
 
+        // Resolve the full Model struct ONCE, here, and carry it on the target —
+        // no re-fetch downstream ([[pass-the-model-struct-no-param-hell]]). If
+        // the registry can't produce the model the plan named, fail loud (empty
+        // snapshot) rather than serving something else.
+        let Some(model) = (self.model_resolver)(&desired) else {
+            crate::probe!(
+                class = "serving.reconcile",
+                desired = desired.as_str(),
+                "plan named a model the registry can't resolve — publishing empty snapshot",
+            );
+            if self.serving_tx.borrow().active_model.is_some() {
+                let empty = ServingSnapshot::empty();
+                Self::emit_serving(self.bus.get(), &empty);
+                let _ = self.serving_tx.send_replace(empty);
+            }
+            return None;
+        };
+        let target = ServingTarget {
+            model,
+            context_window: served_ctx,
+        };
+
         // One reconcile at a time. If the swap finds `true`, another is already
         // running; skip rather than stack relaunches.
         if self.reconciling.swap(true, Ordering::AcqRel) {
@@ -232,7 +277,7 @@ impl ServingDaemonModule {
         let reconciling = self.reconciling.clone();
         let bus = self.bus.get().cloned();
         Some(tokio::spawn(async move {
-            let outcome = ensure_model_serving(server.as_ref(), &desired).await;
+            let outcome = ensure_model_serving(server.as_ref(), &target).await;
             let snapshot = snapshot_from_outcome(&outcome, &desired);
             crate::probe!(
                 class = "serving.reconcile",
@@ -344,12 +389,12 @@ fn footprint_from_parts(
     if weights_bytes == 0 {
         return None;
     }
-    // Coarse per-lane KV: scale per-token KV with model size (more weights ≈
-    // more layers ≈ more KV/token), times the planned per-lane context (capped
-    // at the model's trained window). ~weights/20k bytes per token, floored.
+    // Coarse per-token KV RATE: scale with model size (more weights ≈ more
+    // layers ≈ more KV/token). ~weights/20k bytes per token, floored. The
+    // planner multiplies this by the window IT derives from the host budget —
+    // we do NOT pre-collapse it against an assumed serving window here (no
+    // PLANNED_CTX clamp; the served window is the planner's call, task #50).
     let kv_per_token = (weights_bytes / 20_000).max(20_000);
-    let ctx = PLANNED_CTX_TOKENS.min((context_window as u64).max(2048));
-    let per_lane_kv_bytes = kv_per_token.saturating_mul(ctx);
 
     // Coarse capability rank: GB of weights (bigger ≈ more capable within a
     // family), +bonus for tool/code capability. Saturates into u8.
@@ -360,7 +405,11 @@ fn footprint_from_parts(
     Some(ModelFootprint {
         model_id: id.to_string(),
         weights_bytes,
-        per_lane_kv_bytes,
+        kv_per_token,
+        // The model's trained ceiling, carried straight through — the planner
+        // caps the served window to it. Floored at MIN_SERVE_CTX so a registry
+        // entry with a bogus 0 window can't degrade below runnable.
+        context_window: context_window.max(MIN_SERVE_CTX),
         capability_rank,
     })
 }
@@ -518,7 +567,8 @@ mod tests {
         let fp = footprint_from_parts("present", 3 * GB, 8192, true).unwrap();
         assert_eq!(fp.model_id, "present");
         assert_eq!(fp.weights_bytes, 3 * GB);
-        assert!(fp.per_lane_kv_bytes > 0);
+        assert!(fp.kv_per_token > 0);
+        assert_eq!(fp.context_window, 8192, "carries the model's trained ceiling, no clamp");
         assert!(fp.capability_rank >= 5, "3GB + tool bonus, got {}", fp.capability_rank);
 
         // A leaner non-tool model ranks below the bigger tool-capable one.
@@ -583,7 +633,7 @@ mod tests {
         async fn active_model(&self) -> Result<Option<String>, LlamaServerError> {
             Err(LlamaServerError::Unreachable("test: nothing up".into()))
         }
-        async fn serve(&self, _model_id: &str) -> Result<(), LlamaServerError> {
+        async fn serve(&self, _target: &ServingTarget) -> Result<(), LlamaServerError> {
             self.serves.fetch_add(1, Ordering::SeqCst);
             if self.ok {
                 Ok(())
@@ -593,10 +643,39 @@ mod tests {
         }
     }
 
+    /// A minimal [`Model`] for reconcile-wiring tests — only `id` is load-bearing
+    /// (the FakeServer ignores the rest); the planned served window rides on the
+    /// `ServingTarget`, not here.
+    fn fake_model(id: &str) -> Model {
+        use crate::model_registry::types::{Arch, MultiPartyChatStrategy};
+        Model {
+            id: id.to_string(),
+            name: None,
+            provider: "llamacpp-local".to_string(),
+            arch: Arch::Qwen2,
+            context_window: 262_144,
+            max_output_tokens: 4096,
+            tokens_per_second: 0.0,
+            capabilities: std::collections::BTreeSet::new(),
+            cost_input_per_1k: 0.0,
+            cost_output_per_1k: 0.0,
+            gguf_hint: None,
+            gguf_local_path: None,
+            chat_template: None,
+            stop_sequences: Vec::new(),
+            multi_party_strategy: MultiPartyChatStrategy::ProperChatMlSingleParty,
+            mmproj_local_path: None,
+        }
+    }
+
     fn daemon_with(server: Arc<dyn LlamaServerControl>) -> ServingDaemonModule {
         let gpu = Arc::new(GpuMemoryManager::simulated("Apple M5 Pro", 53 * GB));
         let system = Arc::new(SystemResourceMonitor::new());
-        ServingDaemonModule::with_control(gpu, system, server)
+        let mut daemon = ServingDaemonModule::with_control(gpu, system, server);
+        // Resolve any planned id to a fake Model so reconcile can build a
+        // ServingTarget without a populated global registry.
+        daemon.set_model_resolver(Arc::new(|id: &str| Some(fake_model(id))));
+        daemon
     }
 
     // what this catches: the EnsureOutcome → ServingSnapshot mapping. A live or
