@@ -958,10 +958,7 @@ async fn run_self_cycle(
     // identity-aware, so short names like "ai"/"bo" don't false-match) over the airc
     // items authored by OTHERS — and feed it as a fact. The mind decides what to do
     // with the fact; the substrate only perceives.
-    let identity = crate::persona::persona_identity::PersonaIdentity::new(
-        ctx.identity.persona_id,
-        &ctx.identity.agent_name,
-    );
+    let identity = ctx.identity.persona_identity();
     let own_peer = ctx.identity.peer_id.to_string();
     let addressed = composed
         .deliveries

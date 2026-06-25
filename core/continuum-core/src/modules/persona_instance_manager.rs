@@ -127,6 +127,19 @@ impl PersonaInstanceInfo {
             source: runtime.source(),
         }
     }
+
+    /// The persona's typed runtime identity — the `(id, name)` pair that
+    /// owns the word-boundary `mentions()` dispatch rule.
+    ///
+    /// Hands callers the TYPE instead of the loose `(persona_id,
+    /// agent_name)` primitives, so dispatch sites consume an object and
+    /// can't reintroduce substring matching by reconstructing the
+    /// identity by hand ([[strong-typing-across-boundaries]]).
+    /// `PersonaIdentity` is cheap to clone, so returning an owned value
+    /// is fine on the per-tick service loop.
+    pub fn persona_identity(&self) -> crate::persona::persona_identity::PersonaIdentity {
+        crate::persona::persona_identity::PersonaIdentity::new(self.persona_id, &self.agent_name)
+    }
 }
 
 /// The controller module.
