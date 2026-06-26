@@ -102,29 +102,35 @@ esac
 # one), so a squatter never wedges it — stopping Studio is GPU/excision hygiene,
 # not a correctness prerequisite [[llama-server-serves-v1-direct-python-gateway-optional]].
 
-# (1) Resolve the binary onto PATH. Prefer an existing PATH entry; else the
-# llama.cpp build dir. Missing → FATAL at the cause; we never fall back to a
-# different engine [[fallbacks-are-illegal-fail-loud]]. (LLAMA_SERVER_BIN in
-# ~/.continuum/config.env still overrides inside the core; this is the PATH
-# convenience for the common case.)
-if ! command -v llama-server >/dev/null 2>&1; then
-  for d in "$HOME/.unsloth/llama.cpp" "$HOME/.unsloth/llama.cpp/build/bin"; do
-    if [ -x "$d/llama-server" ]; then
-      export PATH="$d:$PATH"
-      break
-    fi
-  done
+# (1) Resolve the binary WE OWN. The engine is ours now (unsloth is excised):
+# we build llama-server from the llama.cpp submodule we vendor
+# (core/vendor/llama.cpp — our fork) into ~/.continuum/bin via
+# install-llama-server.sh. Resolution mirrors the core's own resolver
+# (llama_server.rs::server_bin): LLAMA_SERVER_BIN override → our owned install →
+# PATH. If our binary is absent (fresh clone / first run), BUILD it — that's
+# ownership, not a fallback to someone else's build. Missing toolchain → the
+# installer FAILs LOUD at the cause [[fallbacks-are-illegal-fail-loud]].
+OWNED_BIN="${CONTINUUM_HOME:-$HOME/.continuum}/bin/llama-server"
+if [ -n "${LLAMA_SERVER_BIN:-}" ] && [ -x "${LLAMA_SERVER_BIN}" ]; then
+  export PATH="$(dirname "${LLAMA_SERVER_BIN}"):$PATH"
+elif [ -x "$OWNED_BIN" ]; then
+  export PATH="$(dirname "$OWNED_BIN"):$PATH"
+elif ! command -v llama-server >/dev/null 2>&1; then
+  echo "→ llama-server not installed; building it from our vendored llama.cpp …" >&2
+  if "$SCRIPT_DIR/install-llama-server.sh" >&2 && [ -x "$OWNED_BIN" ]; then
+    export PATH="$(dirname "$OWNED_BIN"):$PATH"
+  fi
 fi
 if ! command -v llama-server >/dev/null 2>&1; then
   echo "" >&2
-  echo "✗ FATAL: llama-server binary not found." >&2
+  echo "✗ FATAL: llama-server binary not found and could not be built." >&2
   echo "  The core's serving daemon needs it to bring up the inference engine." >&2
-  echo "  Put it on PATH, set LLAMA_SERVER_BIN in ~/.continuum/config.env, or" >&2
-  echo "  build llama.cpp (expected at ~/.unsloth/llama.cpp/llama-server)." >&2
+  echo "  Build it: tools/scripts/install-llama-server.sh" >&2
+  echo "  (or set LLAMA_SERVER_BIN in ~/.continuum/config.env to an existing one)." >&2
   echo "" >&2
   exit 1
 fi
-echo "✓ llama-server: $(command -v llama-server) — the core owns the launch" >&2
+echo "✓ llama-server: $(command -v llama-server) — the engine we own & launch" >&2
 
 # (2) Clear any FOREIGN inference server so the core starts from a clean slate
 # and gets the preferred port with the GPU to itself. At this point in a reboot

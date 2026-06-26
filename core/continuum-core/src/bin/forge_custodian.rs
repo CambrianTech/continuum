@@ -518,10 +518,19 @@ fn resolve_hf_base_dir(model_id: &str) -> Result<PathBuf, String> {
 
 /// Locate llama.cpp's `convert_lora_to_gguf.py`. Fail loud if absent — this is
 /// the custodian's required tool, not something to silently skip.
+///
+/// Default is the llama.cpp WE vendor (`core/vendor/llama.cpp` — our fork),
+/// resolved from the crate dir; the custodian is a training-time tool that runs
+/// where the source tree exists. We do NOT borrow `~/.unsloth` anymore (unsloth
+/// is excised; the convert script is ours, in the submodule). `FORGE_LLAMA_CPP_DIR`
+/// overrides for deployments that stage the script elsewhere.
 fn llama_cpp_converter() -> Result<PathBuf, String> {
     let dir = config_env::read("FORGE_LLAMA_CPP_DIR").unwrap_or_else(|| {
-        let home = std::env::var("HOME").unwrap_or_default();
-        format!("{home}/.unsloth/llama.cpp")
+        // CARGO_MANIFEST_DIR = <repo>/core/continuum-core → ../vendor/llama.cpp.
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../vendor/llama.cpp")
+            .to_string_lossy()
+            .into_owned()
     });
     let path = Path::new(&dir).join("convert_lora_to_gguf.py");
     if path.exists() {

@@ -177,15 +177,33 @@ pub fn serving_v1_url() -> String {
     format!("{}/v1", serving_root())
 }
 
-/// Path to the `llama-server` binary. Deployment shape: `LLAMA_SERVER_BIN`
-/// overrides; otherwise we rely on it being on `PATH`. We do NOT silently fall
-/// back to a different server — a missing binary surfaces loudly when spawn is
-/// attempted ([[fallbacks-are-illegal-fail-loud]]).
+/// Path to the `llama-server` binary — the inference engine WE OWN, built from
+/// our vendored llama.cpp submodule by `tools/scripts/install-llama-server.sh`
+/// into `~/.continuum/bin`. Resolution order:
+///   1. `LLAMA_SERVER_BIN` config override (deployment escape hatch),
+///   2. our owned install at `~/.continuum/bin/llama-server` (the normal case —
+///      the core knows where its own engine lives; no reliance on a launcher
+///      munging `PATH`, no borrowing `~/.unsloth`'s build),
+///   3. bare `"llama-server"` (let the OS resolve it on `PATH`).
+/// We do NOT silently fall back to a different engine — a missing binary
+/// surfaces loudly when spawn is attempted ([[fallbacks-are-illegal-fail-loud]]).
 fn server_bin() -> String {
-    crate::config_env::read("LLAMA_SERVER_BIN")
+    if let Some(over) = crate::config_env::read("LLAMA_SERVER_BIN")
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "llama-server".to_string())
+    {
+        return over;
+    }
+    if let Some(home) = std::env::var_os("HOME") {
+        let owned = std::path::Path::new(&home)
+            .join(".continuum")
+            .join("bin")
+            .join("llama-server");
+        if owned.is_file() {
+            return owned.to_string_lossy().into_owned();
+        }
+    }
+    "llama-server".to_string()
 }
 
 /// Published serving state. One model, is it ready, on what `/v1` url. The
