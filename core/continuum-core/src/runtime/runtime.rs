@@ -861,8 +861,12 @@ pub const MODULES: &[ModuleSpec] = &[
     ModuleSpec::new("gpu", ServiceGroup::ResourceGov, ModuleCategory::Core),
     ModuleSpec::new("resource-broker", ServiceGroup::ResourceGov, ModuleCategory::Core),
     ModuleSpec::new("pressure-broker", ServiceGroup::ResourceGov, ModuleCategory::Core),
-    // Inference — the engine
-    ModuleSpec::new("inference", ServiceGroup::Inference, ModuleCategory::Core),
+    // Inference — the engine. (The bare `inference` shell module was deleted in
+    // 89519a899 when its sole command `inference/capacity` became a stateless
+    // self-routing command; this MODULES entry is dropped to match — leaving it
+    // made `required_modules()` demand a module that no longer registers, which
+    // hard-failed boot with "missing [inference]". The engine is now carried by
+    // the coordinator / handle / llm / ai_provider modules below.)
     ModuleSpec::new("inference-coordinator", ServiceGroup::Inference, ModuleCategory::Core),
     ModuleSpec::new("ai-inference-handle", ServiceGroup::Inference, ModuleCategory::Core),
     ModuleSpec::new("inference-llm", ServiceGroup::Inference, ModuleCategory::Core),
@@ -1120,7 +1124,9 @@ mod conditional_modules_tests {
         let req = required_modules(&healthy(), BootMode::FullCitizen);
         assert!(req.contains(&"persona_instance_manager"));
         assert!(req.contains(&"persona-rag-inspect"));
-        assert!(req.contains(&"inference"));
+        // The bare `inference` shell module was retired (89519a899); the engine
+        // is now required via the coordinator.
+        assert!(req.contains(&"inference-coordinator"));
         assert!(req.contains(&"airc"));
     }
 
@@ -1131,8 +1137,9 @@ mod conditional_modules_tests {
         let req = required_modules(&healthy(), BootMode::InferenceOnly);
         assert!(!req.contains(&"persona_instance_manager"));
         assert!(!req.contains(&"persona-rag-inspect"));
-        // Core inference must still be there
-        assert!(req.contains(&"inference"));
+        // Core inference must still be there (coordinator carries the engine
+        // since the bare `inference` shell module was retired in 89519a899).
+        assert!(req.contains(&"inference-coordinator"));
         assert!(req.contains(&"embedding"));
         // airc module itself stays (it provides queue commands etc.
         // even when there's no live daemon to attach to)
