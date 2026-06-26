@@ -12,20 +12,25 @@
 //! prefix-route, and an unregistered `models/*` name fails loud at the executor
 //! rather than reaching a legacy arm.
 
+use crate::ai::AdapterRegistry;
 use crate::model_registry::live::ModelCatalog;
 use crate::runtime::{CommandResult, ModuleConfig, ModuleContext, ModulePriority, ServiceModule};
 use async_trait::async_trait;
 use serde_json::Value;
 use std::any::Any;
 use std::sync::Arc;
+use tokio::sync::RwLock;
 
 pub struct ModelsModule {
     catalog: Arc<ModelCatalog>,
+    /// The SAME shared adapter pool `ai/generate` uses — `models/try` runs the
+    /// model through it to verify. Never a parallel allocator.
+    registry: Arc<RwLock<AdapterRegistry>>,
 }
 
 impl ModelsModule {
-    pub fn new(catalog: Arc<ModelCatalog>) -> Self {
-        Self { catalog }
+    pub fn new(catalog: Arc<ModelCatalog>, registry: Arc<RwLock<AdapterRegistry>>) -> Self {
+        Self { catalog, registry }
     }
 }
 
@@ -59,7 +64,7 @@ impl ServiceModule for ModelsModule {
     }
 
     fn commands(&self) -> Vec<Arc<dyn crate::sdk_codegen::DynCommand>> {
-        crate::commands::models::command_objects(self.catalog.clone())
+        crate::commands::models::command_objects(self.catalog.clone(), self.registry.clone())
     }
 
     fn as_any(&self) -> &dyn Any {

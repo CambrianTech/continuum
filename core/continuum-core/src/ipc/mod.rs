@@ -1114,7 +1114,10 @@ pub fn start_server(
     let model_catalog = Arc::new(
         crate::model_registry::live::ModelCatalog::from_registry(crate::model_registry::global()),
     );
-    runtime.register(Arc::new(ModelsModule::new(model_catalog)));
+    runtime.register(Arc::new(ModelsModule::new(
+        model_catalog,
+        crate::modules::ai_provider::global_registry(),
+    )));
 
     // Phase 3: MemoryModule (wraps PersonaMemoryManager)
     let memory_state = Arc::new(MemoryState::new(memory_manager.clone()));

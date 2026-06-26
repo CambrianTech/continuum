@@ -30,26 +30,40 @@
 
 use std::sync::Arc;
 
+use tokio::sync::RwLock;
+
+use crate::ai::AdapterRegistry;
 use crate::model_registry::live::ModelCatalog;
 use crate::sdk_codegen::DynCommand;
 
 pub mod capabilities;
 pub mod discover;
 pub mod list;
+pub mod try_;
 
 use capabilities::ModelsCapabilities;
 use list::ModelsList;
+use try_::ModelsTry;
 
 /// The dep-holding `models/*` command objects the [`ModelsModule`](crate::modules::models::ModelsModule)
-/// contributes to the kernel's typed object map, each sharing the one
-/// `Arc<ModelCatalog>` so they read a single live universe. `models/discover` is
-/// stateless and self-registers, so it is intentionally absent here.
-pub fn command_objects(catalog: Arc<ModelCatalog>) -> Vec<Arc<dyn DynCommand>> {
+/// contributes to the kernel's typed object map. The read commands share the one
+/// `Arc<ModelCatalog>` so they read a single live universe; `models/try` also
+/// captures the shared `AdapterRegistry` (the SAME global pool `ai/generate`
+/// uses — never a parallel allocator) because verification runs the model.
+/// `models/discover` is stateless and self-registers, so it is intentionally
+/// absent here.
+pub fn command_objects(
+    catalog: Arc<ModelCatalog>,
+    registry: Arc<RwLock<AdapterRegistry>>,
+) -> Vec<Arc<dyn DynCommand>> {
     vec![
         Arc::new(ModelsList {
             catalog: catalog.clone(),
         }),
-        Arc::new(ModelsCapabilities { catalog }),
+        Arc::new(ModelsCapabilities {
+            catalog: catalog.clone(),
+        }),
+        Arc::new(ModelsTry { catalog, registry }),
     ]
 }
 
@@ -65,10 +79,12 @@ mod tests {
     fn family_exposes_the_catalog_backed_commands() {
         let reg = catalog::registry().expect("Rust catalog must validate");
         let cat = Arc::new(ModelCatalog::from_registry(&reg));
-        let objs = command_objects(cat);
+        let adapters = Arc::new(RwLock::new(AdapterRegistry::new()));
+        let objs = command_objects(cat, adapters);
         let names: Vec<&str> = objs.iter().map(|o| o.name()).collect();
         assert!(names.contains(&"models/list"));
         assert!(names.contains(&"models/capabilities"));
+        assert!(names.contains(&"models/try"));
         assert!(
             !names.contains(&"models/discover"),
             "discover is stateless + self-registered, never in the dep-holding family"
