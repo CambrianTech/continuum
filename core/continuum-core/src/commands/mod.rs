@@ -21,5 +21,6 @@ pub mod inference;
 pub mod memory;
 pub mod migration;
 pub mod rag;
+pub mod runtime;
 pub mod system;
 pub mod vector;

@@ -13,20 +13,27 @@ use crate::runtime::{
     CommandResult, ModuleConfig, ModuleContext, ModulePriority, ModuleRegistry, ServiceModule,
 };
 use async_trait::async_trait;
-use serde_json::{json, Value};
+use serde_json::Value;
 use std::any::Any;
 use std::sync::Arc;
 use tokio::sync::OnceCell;
 
+/// The runtime-introspection registry handle, shared between the module (which
+/// populates it at `initialize`) and the typed `runtime/*` command objects (which
+/// read it at dispatch time). `commands()` is collected during `register()` —
+/// before `initialize()` — so the commands capture this cell empty and resolve it
+/// lazily; a dispatch before init fails loud ("RuntimeModule not initialized").
+pub type RuntimeRegistryCell = Arc<OnceCell<Arc<ModuleRegistry>>>;
+
 pub struct RuntimeModule {
     /// Reference to registry for querying metrics (set during initialize)
-    registry: OnceCell<Arc<ModuleRegistry>>,
+    registry: RuntimeRegistryCell,
 }
 
 impl Default for RuntimeModule {
     fn default() -> Self {
         Self {
-            registry: OnceCell::new(),
+            registry: Arc::new(OnceCell::new()),
         }
     }
 }
@@ -59,100 +66,20 @@ impl ServiceModule for RuntimeModule {
         Ok(())
     }
 
-    async fn handle_command(&self, command: &str, params: Value) -> Result<CommandResult, String> {
-        let registry = self.registry.get().ok_or("RuntimeModule not initialized")?;
+    fn commands(&self) -> Vec<Arc<dyn crate::sdk_codegen::DynCommand>> {
+        // The four `runtime/*` introspection commands, each sharing the cell this
+        // module fills at `initialize`. See [`crate::commands::runtime`].
+        crate::commands::runtime::command_objects(self.registry.clone())
+    }
 
-        match command {
-            // Get stats for ALL modules
-            "runtime/metrics/all" => {
-                let module_names = registry.module_names();
-                let mut stats = Vec::new();
-
-                for name in module_names {
-                    if let Some(metrics) = registry.get_metrics(&name) {
-                        stats.push(metrics.stats());
-                    }
-                }
-
-                Ok(CommandResult::Json(json!({
-                    "modules": stats,
-                    "count": stats.len(),
-                })))
-            }
-
-            // Get stats for specific module
-            "runtime/metrics/module" => {
-                let module_name = params
-                    .get("module")
-                    .and_then(|v| v.as_str())
-                    .ok_or("Missing 'module' parameter")?;
-
-                let metrics = registry
-                    .get_metrics(module_name)
-                    .ok_or_else(|| format!("Module '{}' not found", module_name))?;
-
-                CommandResult::json(&metrics.stats())
-            }
-
-            // Get recent slow commands
-            "runtime/metrics/slow" => {
-                let module_names = registry.module_names();
-                let mut all_slow = Vec::new();
-
-                for name in module_names {
-                    if let Some(metrics) = registry.get_metrics(&name) {
-                        let slow = metrics.slow_commands();
-                        for timing in slow {
-                            all_slow.push(json!({
-                                "module": name,
-                                "command": timing.command,
-                                "total_ms": timing.total_time_ms,
-                                "execute_ms": timing.execute_time_ms,
-                                "queue_ms": timing.queue_time_ms,
-                            }));
-                        }
-                    }
-                }
-
-                // Sort by total_ms descending
-                all_slow.sort_by(|a, b| {
-                    let a_ms = a["total_ms"].as_u64().unwrap_or(0);
-                    let b_ms = b["total_ms"].as_u64().unwrap_or(0);
-                    b_ms.cmp(&a_ms)
-                });
-
-                Ok(CommandResult::Json(json!({
-                    "slow_commands": all_slow,
-                    "count": all_slow.len(),
-                    "threshold_ms": 50,
-                })))
-            }
-
-            // List all modules with configs
-            "runtime/list" => {
-                let module_names = registry.module_names();
-                let mut modules = Vec::new();
-
-                for name in module_names {
-                    if let Some(config) = registry.get_config(&name) {
-                        modules.push(json!({
-                            "name": config.name,
-                            "priority": format!("{:?}", config.priority),
-                            "command_prefixes": config.command_prefixes,
-                            "needs_dedicated_thread": config.needs_dedicated_thread,
-                            "max_concurrency": config.max_concurrency,
-                        }));
-                    }
-                }
-
-                Ok(CommandResult::Json(json!({
-                    "modules": modules,
-                    "count": modules.len(),
-                })))
-            }
-
-            _ => Err(format!("Unknown runtime command: {command}")),
-        }
+    async fn handle_command(&self, command: &str, _params: Value) -> Result<CommandResult, String> {
+        // MIGRATED: `runtime/metrics/{all,module,slow}` + `runtime/list` are now typed
+        // self-routing command objects (see `commands()` above). They win at
+        // `route_object`, so nothing should reach here. Fail loud on any stray name —
+        // this legacy `handle_command` retires entirely in Wave Z.
+        Err(format!(
+            "runtime command surface is migrated to the typed registry; '{command}' has no legacy handler"
+        ))
     }
 
     fn as_any(&self) -> &dyn Any {
