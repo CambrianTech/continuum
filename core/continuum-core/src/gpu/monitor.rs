@@ -27,6 +27,7 @@
 //!   - `VulkanMonitor` via VK_EXT_memory_budget for cross-vendor
 
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 use tokio::sync::watch;
 
 /// Live, fast-to-read memory + utilization signals for the policy.
@@ -289,6 +290,49 @@ impl GpuMonitor for MockMonitor {
     }
 }
 
+// ─── detect — the live-monitor analog of GpuMemoryManager::detect ────
+
+/// Detect and construct the **live-scanning** GPU monitor for THIS host.
+///
+/// This is the live-signal sibling of [`GpuMemoryManager::detect`](crate::gpu::memory_manager::GpuMemoryManager::detect):
+/// where that one captures a *static* working-set hint at boot,
+/// this one returns a monitor that re-samples free/process VRAM every
+/// tick (the signal that lets the resource governor SEE a game or
+/// renderer grabbing our headroom — the whole point of the
+/// net-of-external ceiling in [`GpuCapacitySource`](crate::resources::capacity::GpuCapacitySource)).
+///
+/// Returns `None` when no live-scanning adapter exists *for this
+/// platform yet* — `MetalMonitor` is the only one built today;
+/// `NvidiaMonitor` (NVML) and `VulkanMonitor` (`VK_EXT_memory_budget`)
+/// are the documented Phase 2.0a follow-ups. `None` is an honest
+/// **capability gap**, NOT a CPU fallback and NOT a hidden failure:
+/// the caller (the governor boot site) MUST decide explicitly and
+/// loudly what to do without a live VRAM signal — never silently
+/// treat `None` as "no governance needed". (Contrast
+/// [`detect_gpu`](crate::gpu::memory_manager) which hard-fails on a
+/// genuinely GPU-less host; absence of a *live monitor adapter* on a
+/// GPU host that has a working `GpuMemoryManager` is a different,
+/// non-fatal condition.)
+///
+/// On Apple Silicon the returned monitor is unified-memory aware, so
+/// its `free_bytes()` tracks real system headroom — exactly the live
+/// number serving's budget should be capped at.
+pub fn detect() -> Option<Arc<dyn GpuMonitor>> {
+    #[cfg(target_os = "macos")]
+    {
+        if let Some(m) = MetalMonitor::new() {
+            return Some(m as Arc<dyn GpuMonitor>);
+        }
+    }
+    // CUDA (NVML) and Vulkan (VK_EXT_memory_budget) live monitors are
+    // not built yet — the governor logs this gap by name at its boot
+    // site rather than silently degrading here.
+    None
+}
+
+#[cfg(target_os = "macos")]
+use super::MetalMonitor;
+
 // ─── Tests ─────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -429,5 +473,34 @@ mod tests {
         m.update_pressure(0.42);
         // borrow() reads latest published value
         assert!((*rx.borrow() - 0.42).abs() < 0.01);
+    }
+
+    /// What this catches: detect() handing back a monitor with a
+    /// garbage capacity (the `total == 0 → None` guard regressing) or a
+    /// bogus platform tag. Deliberately environment-INDEPENDENT (task
+    /// #72): a headless build env with no Metal device returns None, and
+    /// that's a valid pass — we only assert the invariant that WHEN a
+    /// live monitor is detected it reports real capacity and a known
+    /// platform. `#[tokio::test]` because MetalMonitor::new spawns its
+    /// sampling daemon on the shared runner, which needs a reactor.
+    #[tokio::test]
+    async fn detect_yields_a_sane_monitor_or_honest_none() {
+        match detect() {
+            Some(m) => {
+                assert!(
+                    m.total_bytes() > 0,
+                    "a detected live monitor must report real VRAM capacity, not 0"
+                );
+                assert!(
+                    matches!(m.platform(), "metal" | "cuda" | "vulkan"),
+                    "unexpected live-monitor platform tag: {}",
+                    m.platform()
+                );
+            }
+            // No live-scanning adapter for this platform/host yet — an
+            // honest capability gap, not a failure. The governor boot
+            // site is responsible for surfacing it loudly.
+            None => {}
+        }
     }
 }
