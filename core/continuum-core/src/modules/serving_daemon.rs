@@ -33,6 +33,7 @@ use crate::inference::llama_server::{
 use crate::persona::hw_tier_descriptor::HwTierCategory;
 use crate::model_registry::live::{Availability, CatalogSnapshot, ModelCatalog};
 use crate::model_registry::types::{Capability, Model};
+use crate::resources::{ResourceDaemon, ResourceKind};
 use crate::runtime::message_bus::MessageBus;
 use crate::runtime::{CommandResult, ModuleConfig, ModuleContext, ModulePriority, ServiceModule};
 use crate::system_resources::SystemResourceMonitor;
@@ -81,6 +82,15 @@ pub struct ServingDaemonModule {
     /// this drops when anything else grabs memory (a game, a build), so the
     /// plan ebbs and flows organically.
     system: Arc<SystemResourceMonitor>,
+    /// The ONE per-machine resource authority (#56). Serving reads the GOVERNED
+    /// VRAM headroom — capacity net of every external consumer (Bevy, LiveKit)
+    /// and every outstanding lease — from this board, instead of a fraction of
+    /// *total* VRAM blind to those consumers. That blindness was the
+    /// `host_budget()` OOM bug; the board's `available(Vram)` is the precise
+    /// net-of-everyone ceiling that fixes it. Mandatory (no Option): a host
+    /// with no governor has no honest VRAM ceiling, and serving must fail
+    /// closed rather than over-commit.
+    resource_daemon: Arc<ResourceDaemon>,
     /// The published decision. `None` until the first successful plan. Held as
     /// the module's only shared state; `send` takes `&self` so `tick()` can
     /// publish without interior-mutability gymnastics.
@@ -132,9 +142,16 @@ impl ServingDaemonModule {
     pub fn new(
         gpu: Arc<GpuMemoryManager>,
         system: Arc<SystemResourceMonitor>,
+        resource_daemon: Arc<ResourceDaemon>,
         catalog: Arc<ModelCatalog>,
     ) -> Self {
-        Self::with_control(gpu, system, Arc::new(LlamaServerProcess::new()), catalog)
+        Self::with_control(
+            gpu,
+            system,
+            resource_daemon,
+            Arc::new(LlamaServerProcess::new()),
+            catalog,
+        )
     }
 
     /// Construct with an injected serving control. Production uses
@@ -145,6 +162,7 @@ impl ServingDaemonModule {
     pub fn with_control(
         gpu: Arc<GpuMemoryManager>,
         system: Arc<SystemResourceMonitor>,
+        resource_daemon: Arc<ResourceDaemon>,
         server: Arc<dyn LlamaServerControl>,
         catalog: Arc<ModelCatalog>,
     ) -> Self {
@@ -154,6 +172,7 @@ impl ServingDaemonModule {
         Self {
             gpu,
             system,
+            resource_daemon,
             plan_tx,
             server,
             serving_tx,
@@ -209,7 +228,30 @@ impl ServingDaemonModule {
     /// the plan picks fewer lanes / a smaller model; load clears, it flows back.
     fn host_budget(&self) -> HostBudget {
         let available = self.system.snapshot().memory.available_bytes;
-        host_budget_from(available, self.gpu.total_vram_bytes(), perf_cores())
+        // VRAM cap = GOVERNED headroom (net of Bevy/LiveKit + outstanding
+        // leases), NOT total VRAM — this is the OOM-bug fix (#56). When the
+        // governor has no live VRAM scan (no GpuMonitor adapter for this GPU),
+        // there is no honest ceiling, so we cap at 0 and serving refuses rather
+        // than over-committing blind. That fail-CLOSED direction is the safe
+        // one; the missing-adapter cause is named once at the boot site, not
+        // re-logged on every 5s tick.
+        let vram_ceiling = self.governed_vram_ceiling().unwrap_or(0);
+        host_budget_from(available, vram_ceiling, perf_cores())
+    }
+
+    /// The governed VRAM ceiling RIGHT NOW: the resource authority's
+    /// `available(Vram)` — capacity (free + ours − reserve, scanned live by the
+    /// GpuMonitor) minus what is already leased. `None` when VRAM is ungoverned
+    /// (no live monitor → the kind never appears on the board), which the
+    /// caller treats as fail-closed. A lock-free `watch` snapshot read, never
+    /// the governor's accounting lock — safe on the hot tick.
+    fn governed_vram_ceiling(&self) -> Option<u64> {
+        self.resource_daemon
+            .board()
+            .kinds
+            .iter()
+            .find(|k| k.kind == ResourceKind::Vram)
+            .map(|k| k.available_bytes)
     }
 
     /// The servable candidates RIGHT NOW: the on-disk Ready models, MINUS any an
@@ -720,7 +762,7 @@ mod tests {
     async fn publish_plan_drives_the_watch() {
         let gpu = Arc::new(GpuMemoryManager::simulated("Apple M5 Pro", 53 * GB));
         let system = Arc::new(SystemResourceMonitor::new());
-        let daemon = ServingDaemonModule::new(gpu, system, test_catalog());
+        let daemon = ServingDaemonModule::new(gpu, system, test_resource_daemon(), test_catalog());
         let rx = daemon.subscribe();
         assert!(rx.borrow().is_none(), "starts unpublished");
 
@@ -803,10 +845,30 @@ mod tests {
         Arc::new(ModelCatalog::from_registry(&reg))
     }
 
+    /// A resource authority for daemon construction in tests — primed with a
+    /// generous mock VRAM ceiling so that if a test ever reaches `host_budget()`
+    /// it reads a real governed number rather than the fail-closed 0. Calls
+    /// `ResourceDaemon::start`, which spawns its tick task, so every test that
+    /// constructs a daemon through `daemon_with` must be `#[tokio::test]`.
+    fn test_resource_daemon() -> Arc<ResourceDaemon> {
+        use crate::resources::{DaemonConfig, MockCapacitySource};
+        ResourceDaemon::start(
+            vec![Arc::new(MockCapacitySource::new(ResourceKind::Vram, 53 * GB))],
+            vec![],
+            DaemonConfig::default(),
+        )
+    }
+
     fn daemon_with(server: Arc<dyn LlamaServerControl>) -> ServingDaemonModule {
         let gpu = Arc::new(GpuMemoryManager::simulated("Apple M5 Pro", 53 * GB));
         let system = Arc::new(SystemResourceMonitor::new());
-        let mut daemon = ServingDaemonModule::with_control(gpu, system, server, test_catalog());
+        let mut daemon = ServingDaemonModule::with_control(
+            gpu,
+            system,
+            test_resource_daemon(),
+            server,
+            test_catalog(),
+        );
         // Resolve any planned id to a fake Model so reconcile can build a
         // ServingTarget without a populated global registry.
         daemon.set_model_resolver(Arc::new(|id: &str| Some(fake_model(id))));
@@ -875,8 +937,8 @@ mod tests {
     // restores it as a candidate. Without this filter an unloaded model would be
     // re-planned on the very next tick and its VRAM would never free — the
     // imperative-suppress contract the operator chose.
-    #[test]
-    fn live_candidates_honors_the_suppress_set() {
+    #[tokio::test]
+    async fn live_candidates_honors_the_suppress_set() {
         use crate::model_registry::live::ModelStatus;
         use std::io::Write;
 

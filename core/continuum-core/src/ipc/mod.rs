@@ -887,9 +887,56 @@ pub fn start_server(
     let model_catalog = Arc::new(
         crate::model_registry::live::ModelCatalog::from_registry(crate::model_registry::global()),
     );
+
+    // The ONE per-machine resource authority (#56). Its VRAM ceiling comes from
+    // the LIVE GpuMonitor (`gpu::monitor::detect()` — Metal + every NVIDIA host),
+    // so serving leases against capacity net of Bevy/LiveKit + outstanding leases
+    // rather than a fraction of *total* VRAM (the host_budget() OOM bug). Bytes
+    // held off the top so we never lease the last sliver the driver/compositor
+    // needs; the ceiling already nets out external *resident* usage, so this is a
+    // small safety reserve, not a budget for the compositor.
+    const GPU_SAFETY_RESERVE_BYTES: u64 = 512 * 1024 * 1024;
+    let mut capacity_sources: Vec<Arc<dyn crate::resources::CapacitySource>> = Vec::new();
+    match crate::gpu::monitor::detect() {
+        Some(monitor) => {
+            log_info!(
+                "ipc",
+                "server",
+                "ResourceGovernor: live VRAM scan via {} ({}) — VRAM is governed",
+                monitor.platform(),
+                monitor.device_name()
+            );
+            capacity_sources.push(Arc::new(crate::resources::GpuCapacitySource::new(
+                monitor,
+                GPU_SAFETY_RESERVE_BYTES,
+            )));
+        }
+        None => {
+            // GpuMemoryManager::detect() already panics on a truly GPU-less host,
+            // so reaching here means a GPU exists but has no live GpuMonitor
+            // adapter yet — the non-NVIDIA Vulkan (VK_EXT_memory_budget/ash) gap.
+            // Name it loudly: VRAM stays UNGOVERNED and serving fails closed
+            // (host_budget caps at 0) rather than over-committing against a
+            // fabricated number. Build the Vulkan adapter or run on Metal/NVIDIA.
+            log_error!(
+                "ipc",
+                "server",
+                "ResourceGovernor: NO live GpuMonitor (nvidia-smi absent and the \
+                 non-NVIDIA Vulkan VK_EXT_memory_budget adapter is not built) — \
+                 VRAM is UNGOVERNED; serving will refuse until a live monitor exists"
+            );
+        }
+    }
+    let resource_daemon = crate::resources::ResourceDaemon::start(
+        capacity_sources,
+        Vec::new(),
+        crate::resources::DaemonConfig::default(),
+    );
+
     let serving_daemon = Arc::new(crate::modules::serving_daemon::ServingDaemonModule::new(
         gpu_manager.clone(),
         system_monitor.clone(),
+        resource_daemon.clone(),
         model_catalog.clone(),
     ));
     runtime.register(serving_daemon.clone());
@@ -942,6 +989,19 @@ pub fn start_server(
         );
         broker.register(
             pressure_monitor.clone() as Arc<dyn crate::paging::pool::ResourcePool>
+        );
+
+        // Wire the resource authority's per-kind lease pools onto the broker so
+        // cross-resource pressure relief reaches VRAM/RAM/disk leases: when a
+        // kind goes over its scanned ceiling (a game grabs VRAM), the broker's
+        // tick asks the lease pool to free bytes and the daemon's reconcile
+        // claws them back from the lowest-priority leaseholder. One orchestrator
+        // (the broker), not a parallel one. (#56)
+        resource_daemon.register_with_broker(&broker);
+        log_info!(
+            "ipc",
+            "server",
+            "ResourceDaemon lease pools registered with PressureBroker (VRAM/RAM/disk leases)"
         );
 
         // Register a `FilesystemTierPool` for the probe JSONL
