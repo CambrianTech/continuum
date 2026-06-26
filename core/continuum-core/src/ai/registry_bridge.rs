@@ -9,7 +9,7 @@
 //! is now effectively a thin TS-projection of `Model`.
 
 use super::types::{CostPer1kTokens, ModelInfo};
-use crate::model_registry::{Capability, Model};
+use crate::model_registry::Model;
 
 impl From<&Model> for ModelInfo {
     fn from(m: &Model) -> Self {
@@ -70,6 +70,7 @@ pub fn default_model_for_provider(provider_id: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model_registry::Capability;
 
     #[test]
     fn projects_sonnet_with_streaming_and_tools() {

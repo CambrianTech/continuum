@@ -59,39 +59,32 @@ impl From<ToolCallJson> for ToolCall {
     }
 }
 
-/// How a given model exchanges tool calls — a protocol-driven interface the
-/// adapter delegates to, selected PER MODEL (never hardcoded). `Native` = the
-/// gateway/model does real OpenAI function-calling (offer via the API `tools`
-/// param, read `tool_calls` back). `JsonInPrompt` = describe tools in the prompt
-/// + parse a JSON call from the text (the universal floor for models that ignore
-/// the `tools` param, like unsloth+GGUF today). Adding a model = data; swapping a
-/// gateway = a new variant — not a rewrite.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum ToolProtocol {
-    /// The model+gateway implement OpenAI function-calling natively.
-    #[default]
-    Native,
-    /// Tools are offered in the prompt; calls are parsed from the response text.
-    JsonInPrompt,
-}
+// The tool-exchange protocol enum is the ONE `model_registry::ToolProtocol`
+// (#69) — it's catalog data a provider declares. The rendering/parsing
+// BEHAVIOR lives here in `ai` (it depends on this module's `NativeToolSpec` /
+// `ToolCall` / parser), hung off that type as an inherent impl. Same crate, so
+// the impl is legal here even though the type is defined in `model_registry`.
+use crate::model_registry::ToolProtocol;
 
 impl ToolProtocol {
     /// The prompt block to inject when offering `tools`, or `None` when tools are
-    /// offered via the API `tools` param (native). Empty `tools` → `None`.
+    /// offered via the API `tools` param (native) or not at all. Empty `tools`
+    /// → `None`.
     pub fn tool_prompt(self, tools: &[NativeToolSpec]) -> Option<String> {
         match self {
-            ToolProtocol::Native => None,
+            ToolProtocol::NativeFunctionCalling | ToolProtocol::None => None,
             ToolProtocol::JsonInPrompt if tools.is_empty() => None,
             ToolProtocol::JsonInPrompt => Some(render_tool_instructions(tools)),
         }
     }
 
-    /// Extract a tool call from the model's TEXT response. `None` for `Native`
-    /// (the adapter reads structured `tool_calls` instead) and when the model
-    /// answered normally (no call).
+    /// Extract a tool call from the model's TEXT response. `None` for
+    /// `NativeFunctionCalling` (the adapter reads structured `tool_calls`
+    /// instead), `None` for `None` (no tools), and when the model answered
+    /// normally (no call).
     pub fn parse_text_call(self, text: &str) -> Option<ToolCall> {
         match self {
-            ToolProtocol::Native => None,
+            ToolProtocol::NativeFunctionCalling | ToolProtocol::None => None,
             ToolProtocol::JsonInPrompt => parse_tool_call(text),
         }
     }

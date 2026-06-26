@@ -7,7 +7,7 @@
 use super::loader::{Registry, RegistryError};
 use super::types::{
     Arch, AuthKind, Capability, Model, MultiPartyChatStrategy, Provider, ProviderCapabilities,
-    ProviderKind, ProviderToolProtocol,
+    ProviderKind, ToolProtocol,
 };
 use std::collections::BTreeSet;
 use std::path::PathBuf;
@@ -628,7 +628,7 @@ pub fn providers() -> Vec<Provider> {
             // (so the adapter pre-flights activation). These flags are what the
             // adapter reads instead of branching on the provider id (#55).
             capabilities: ProviderCapabilities {
-                tool_protocol: ProviderToolProtocol::Native,
+                tool_protocol: ToolProtocol::NativeFunctionCalling,
                 suppress_thinking: true,
                 supports_embeddings: true,
                 single_resident_model: true,

@@ -77,13 +77,15 @@ pub struct OpenAICompatibleConfig {
     /// Whether this provider requires an Authorization header. Derived
     /// from `Provider.auth`: Bearer → true, ApiKey → true, None → false.
     pub requires_auth: bool,
-    /// How this provider exchanges tool calls. Native = real OpenAI
-    /// function-calling; JsonInPrompt = describe tools in the prompt + parse the
-    /// JSON call from the response (for gateways/models that ignore the `tools`
-    /// param, e.g. unsloth+GGUF — proven 2026-06-21). Sourced from the registry
-    /// `Provider.capabilities.tool_protocol` (#55) — never an `id == "..."`
-    /// branch. Gateway-level for now; per-model refinement is the follow-up.
-    pub tool_protocol: super::json_in_prompt_tools::ToolProtocol,
+    /// How this provider exchanges tool calls. NativeFunctionCalling = real
+    /// OpenAI function-calling; JsonInPrompt = describe tools in the prompt +
+    /// parse the JSON call from the response (for gateways/models that ignore
+    /// the `tools` param, e.g. unsloth+GGUF — proven 2026-06-21). Stored
+    /// verbatim from the registry `Provider.capabilities.tool_protocol` (#69,
+    /// the ONE `model_registry::ToolProtocol`) — never an `id == "..."` branch,
+    /// never a per-adapter mirror. Gateway-level for now; per-model refinement
+    /// is the follow-up.
+    pub tool_protocol: crate::model_registry::ToolProtocol,
     /// Whether to suppress the model's chain-of-thought for this gateway (Qwen3
     /// `/no_think` soft-switch). Sourced from `Provider.capabilities
     /// .suppress_thinking` (#55). Gateway-level for now; per-task/per-request
@@ -602,16 +604,10 @@ impl OpenAICompatibleAdapter {
             // registry's declared `Provider.capabilities` (#55) — the adapter
             // CONSUMES them, it does not branch on `provider.id`. A local GGUF
             // gateway declares its real flags; cloud providers inherit the
-            // Native/keep-thinking defaults. One source of truth
-            // (model_registry/catalog.rs), no id stand-ins here.
-            tool_protocol: match provider.capabilities.tool_protocol {
-                crate::model_registry::types::ProviderToolProtocol::JsonInPrompt => {
-                    super::json_in_prompt_tools::ToolProtocol::JsonInPrompt
-                }
-                crate::model_registry::types::ProviderToolProtocol::Native => {
-                    super::json_in_prompt_tools::ToolProtocol::Native
-                }
-            },
+            // NativeFunctionCalling/keep-thinking defaults. One source of truth
+            // (model_registry/catalog.rs), no id stand-ins here, and the ONE
+            // `ToolProtocol` (#69) — stored verbatim, no per-adapter translation.
+            tool_protocol: provider.capabilities.tool_protocol,
             // A gateway that declares `suppress_thinking` (its forged reasoner
             // rambles/loops yet answers correctly without CoT) defaults to
             // SUPPRESS. Operator override: `UNSLOTH_THINKING=on` forces thinking
@@ -1182,14 +1178,15 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
             );
         }
 
-        // Add tools via the native OpenAI `tools` param — ONLY for Native
-        // providers. JsonInPrompt providers already had the tools described in the
-        // prompt above (sending the param too would be ignored or confuse them).
+        // Add tools via the native OpenAI `tools` param — ONLY for
+        // NativeFunctionCalling providers. JsonInPrompt providers already had
+        // the tools described in the prompt above (sending the param too would
+        // be ignored or confuse them).
         if let Some(tools) = &request.tools {
             if !tools.is_empty()
                 && self.config.capabilities.contains(&Capability::ToolUse)
                 && self.config.tool_protocol
-                    == super::json_in_prompt_tools::ToolProtocol::Native
+                    == crate::model_registry::ToolProtocol::NativeFunctionCalling
             {
                 let openai_tools: Vec<Value> = tools
                     .iter()

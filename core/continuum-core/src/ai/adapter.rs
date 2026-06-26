@@ -15,7 +15,7 @@
 //! - Local (Candle, llama.cpp)
 
 use crate::clog_warn;
-use crate::model_registry::Capability;
+use crate::model_registry::{Capability, ToolProtocol};
 use async_trait::async_trait;
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -90,47 +90,8 @@ impl Default for AdapterConfig {
     }
 }
 
-/// How the adapter ACCEPTS tool-call requests. This is arc 1's pivot
-/// insurance: cognition asks "can you do tools?" and the substrate
-/// routes accordingly — no special-casing per adapter, no "if openai
-/// then ..." branches. Per `[[adapter-pattern-is-the-pivot-insurance]]`.
-///
-/// The substrate's tool-execution loop reads this and either:
-/// 1. Calls the adapter natively (NativeFunctionCalling, JsonMode) and
-///    parses the structured response, OR
-/// 2. Wraps tool descriptors into the prompt itself (JsonInPrompt,
-///    XmlTags) and parses tool calls out of the text output stream
-///
-/// Adapters declare ONE protocol — the best they natively support.
-/// Bridged protocols (e.g., wrapping JsonInPrompt over a base model that
-/// could do better) belong in cognition's compose phase, not here.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub enum ToolCallProtocol {
-    /// No tool calling at all — caller must implement tool execution
-    /// out-of-band or skip tool use. Pure-text completion adapters
-    /// (HeuristicAdapter, embedding-only models).
-    #[default]
-    None,
-    /// Tools described in the system/user prompt as JSON schema; the
-    /// model emits JSON in its text output, substrate parses. Works on
-    /// any text model with sufficient instruction-following. The
-    /// fallback any prompt-driven model can fulfill.
-    JsonInPrompt,
-    /// Provider's native JSON mode (`response_format = json_object`) —
-    /// the model is constrained at sampling time to emit valid JSON.
-    /// Stronger guarantee than JsonInPrompt; weaker than function calling.
-    JsonMode,
-    /// Native function calling primitives — provider returns structured
-    /// tool_calls in its API response shape (OpenAI tools, Anthropic
-    /// tool_use). The substrate consumes them directly without parsing.
-    NativeFunctionCalling,
-    /// XML-style tool tags inside text output — Anthropic's pre-tool-use
-    /// pattern. Substrate parses `<tool>...</tool>` blocks.
-    XmlTags,
-}
-
 /// How the adapter ACCEPTS structured-output schemas. Same shape as
-/// `ToolCallProtocol` — cognition asks "can you constrain output to
+/// `ToolProtocol` — cognition asks "can you constrain output to
 /// this schema?" and routes accordingly. Independent of tool calling
 /// because some adapters support schemas without tools (and vice versa).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -181,12 +142,12 @@ pub enum NativeProtocols {
 
 impl NativeProtocols {
     /// The tool-calling protocol half of the pair.
-    pub fn tool_call(self) -> ToolCallProtocol {
+    pub fn tool_call(self) -> ToolProtocol {
         match self {
-            Self::None => ToolCallProtocol::None,
-            Self::PromptEmulated => ToolCallProtocol::None,
-            Self::FunctionCalling => ToolCallProtocol::NativeFunctionCalling,
-            Self::GrammarConstrained => ToolCallProtocol::JsonInPrompt,
+            Self::None => ToolProtocol::None,
+            Self::PromptEmulated => ToolProtocol::None,
+            Self::FunctionCalling => ToolProtocol::NativeFunctionCalling,
+            Self::GrammarConstrained => ToolProtocol::JsonInPrompt,
         }
     }
 
@@ -233,7 +194,7 @@ pub struct AdapterCapabilities {
 
     /// Tool-calling protocol the adapter NATIVELY speaks. Cognition's tool
     /// loop routes through this. Default means prompt-text emulation in compose.
-    pub tool_call_protocol: ToolCallProtocol,
+    pub tool_call_protocol: ToolProtocol,
     /// Structured-output protocol the adapter NATIVELY speaks. Independent of
     /// tool calling. Default means schema validation + retry happen in cognition.
     pub structured_output_protocol: StructuredOutputProtocol,
@@ -1164,7 +1125,7 @@ mod tests {
         assert!(floor.has(Capability::TextGeneration) && floor.has(Capability::Chat));
         assert!(!floor.has(Capability::ToolUse));
         assert!(!floor.is_local);
-        assert_eq!(floor.tool_call_protocol, ToolCallProtocol::None);
+        assert_eq!(floor.tool_call_protocol, ToolProtocol::None);
         assert_eq!(floor.structured_output_protocol, StructuredOutputProtocol::None);
 
         // A rich declaration adds only the deltas on top of the floor.
@@ -1182,20 +1143,20 @@ mod tests {
         // Each protocol profile maps to its coherent pair — the whole point of
         // NativeProtocols (an incoherent combo is unrepresentable).
         for (profile, tool, structured) in [
-            (NativeProtocols::None, ToolCallProtocol::None, StructuredOutputProtocol::None),
+            (NativeProtocols::None, ToolProtocol::None, StructuredOutputProtocol::None),
             (
                 NativeProtocols::PromptEmulated,
-                ToolCallProtocol::None,
+                ToolProtocol::None,
                 StructuredOutputProtocol::PromptOnly,
             ),
             (
                 NativeProtocols::FunctionCalling,
-                ToolCallProtocol::NativeFunctionCalling,
+                ToolProtocol::NativeFunctionCalling,
                 StructuredOutputProtocol::JsonSchema,
             ),
             (
                 NativeProtocols::GrammarConstrained,
-                ToolCallProtocol::JsonInPrompt,
+                ToolProtocol::JsonInPrompt,
                 StructuredOutputProtocol::GrammarConstrained,
             ),
         ] {

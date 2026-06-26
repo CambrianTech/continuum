@@ -326,7 +326,7 @@ impl AIProviderAdapter for HeuristicInferenceAdapter {
             max_context_window: u32::MAX,
             max_output_tokens: 4096,
             // Deterministic text-only adapter — no protocols beyond text I/O.
-            tool_call_protocol: crate::ai::adapter::ToolCallProtocol::None,
+            tool_call_protocol: crate::model_registry::ToolProtocol::None,
             structured_output_protocol: crate::ai::adapter::StructuredOutputProtocol::None,
             ..AdapterCapabilities::text_only()
         }

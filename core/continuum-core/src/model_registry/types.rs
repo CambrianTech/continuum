@@ -136,23 +136,36 @@ pub enum AuthKind {
     None,
 }
 
-/// Tool-calling shape a provider's HTTP endpoint accepts. Registry-level
-/// vocabulary (mirrors [`AuthKind`]): the adapter maps it onto its own
-/// `ToolProtocol`. Declared per-provider so the adapter never branches on
-/// `provider.id == "..."` to decide how to send tools.
+/// How tools are exchanged with a model/endpoint — the ONE tool-protocol
+/// vocabulary across the whole substrate. Lives in `model_registry` (the
+/// lowest layer) because a provider DECLARES its protocol in the catalog and
+/// `ai` layers the rendering/parsing behavior on top (see
+/// `ai::json_in_prompt_tools` — `tool_prompt`/`parse_text_call` hang off this
+/// type). There is no second tool-protocol enum: the old `ProviderToolProtocol`
+/// (registry) + `ai::ToolCallProtocol` (advertised) + `json_in_prompt_tools`'s
+/// local copy all collapsed here (#69).
+///
+/// Both an endpoint's catalog declaration (`ProviderCapabilities.tool_protocol`)
+/// AND an adapter's advertised surface (`AdapterCapabilities.tool_call_protocol`)
+/// are this same enum — the concept is identical, so the type is too.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum ProviderToolProtocol {
-    /// Native OpenAI function-calling — the endpoint honors the `tools`
-    /// request param and returns structured `tool_calls`. The cloud
-    /// common case, hence the default.
+pub enum ToolProtocol {
+    /// Native OpenAI/Anthropic function-calling — the endpoint honors the
+    /// `tools` request param and returns structured `tool_calls`/`tool_use`
+    /// the substrate consumes directly. The cloud common case, hence the
+    /// default (so a new cloud provider needs zero declaration; the adapter
+    /// floor sets `None` explicitly instead of leaning on this default).
     #[default]
-    Native,
+    NativeFunctionCalling,
     /// Tools described in the prompt; the model emits a JSON tool-call in
-    /// its text output, which the adapter parses. For local GGUF gateways
-    /// that ignore the OpenAI `tools` param (proven 2026-06-21 against the
-    /// forged 4B served over llama-server).
+    /// its text output, which the substrate parses. The universal floor for
+    /// local GGUF gateways that ignore the OpenAI `tools` param (proven
+    /// 2026-06-21 against the forged 4B served over llama-server).
     JsonInPrompt,
+    /// No tool calling at all — pure-text/embedding adapters (heuristic,
+    /// embedding-only models). Tools are neither offered nor parsed.
+    None,
 }
 
 /// Provider-level behavioral capabilities — the growable surface the
@@ -169,9 +182,9 @@ pub enum ProviderToolProtocol {
 /// branches that used to live in `OpenAICompatibleAdapter`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProviderCapabilities {
-    /// How the endpoint exchanges tool calls. See [`ProviderToolProtocol`].
+    /// How the endpoint exchanges tool calls. See [`ToolProtocol`].
     #[serde(default)]
-    pub tool_protocol: ProviderToolProtocol,
+    pub tool_protocol: ToolProtocol,
     /// Suppress the model's chain-of-thought by default. Some local
     /// reasoning GGUFs ramble/loop in their thinking (latency + the
     /// runaway-leak failure mode) yet answer correctly without it; cloud
