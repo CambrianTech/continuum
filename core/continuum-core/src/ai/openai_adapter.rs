@@ -565,10 +565,20 @@ impl OpenAICompatibleAdapter {
         {
             capabilities.insert(Capability::Vision);
         }
-        if provider.capabilities.supports_embeddings {
+        // Embedding + ImageGeneration are derived the SAME way as ToolUse and
+        // Vision above (#68): scan the provider's model rows. A provider
+        // "supports embeddings" iff it serves a model that declares it — the
+        // fact lives on the model, never on a provider-level bool.
+        if reg
+            .models_for_provider(provider_id)
+            .any(|m| m.has(Capability::Embedding))
+        {
             capabilities.insert(Capability::Embedding);
         }
-        if provider.capabilities.supports_image_generation {
+        if reg
+            .models_for_provider(provider_id)
+            .any(|m| m.has(Capability::ImageGeneration))
+        {
             capabilities.insert(Capability::ImageGeneration);
         }
         let requires_auth = !matches!(provider.auth, AuthKind::None);

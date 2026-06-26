@@ -117,6 +117,35 @@ pub fn models() -> Vec<Model> {
             cost_output_per_1k: 0.015,
             ..ModelSpec::default()
         }),
+        // OpenAI's embedding + image lanes as MODEL rows (#68): the provider's
+        // embedding/image capability is derived by the adapter SCANNING these
+        // — there is no provider-level `supports_embeddings` bool. These are
+        // capability-routed (not arch-dispatched), so `Arch::Gpt` just groups
+        // them with the OpenAI family.
+        model(ModelSpec {
+            id: "text-embedding-3-small",
+            name: "OpenAI Text Embedding 3 Small",
+            provider: "openai",
+            arch: Arch::Gpt,
+            context_window: 8_192,
+            max_output_tokens: 0,
+            tokens_per_second: 0.0,
+            capabilities: &[Capability::Embedding],
+            cost_input_per_1k: 0.00002,
+            cost_output_per_1k: 0.0,
+            ..ModelSpec::default()
+        }),
+        model(ModelSpec {
+            id: "dall-e-3",
+            name: "OpenAI DALL·E 3",
+            provider: "openai",
+            arch: Arch::Gpt,
+            context_window: 4_096,
+            max_output_tokens: 0,
+            tokens_per_second: 0.0,
+            capabilities: &[Capability::ImageGeneration],
+            ..ModelSpec::default()
+        }),
         model(ModelSpec {
             id: "deepseek-chat",
             name: "DeepSeek Chat",
@@ -360,6 +389,11 @@ pub fn models() -> Vec<Model> {
                 Capability::Chat,
                 Capability::ToolUse,
                 Capability::Streaming,
+                // llama-server serves /v1/embeddings from the resident model
+                // (`--embedding`), so the embedding capability is a fact of
+                // THIS row — the adapter scans it to advertise the provider's
+                // embedding lane (#68), replacing the old provider-level bool.
+                Capability::Embedding,
             ],
             gguf_hint: Some("huggingface.co/continuum-ai/qwen3.5-4b-code-forged-gguf"),
             chat_template: Some(QWEN35_CHAT_TEMPLATE),
@@ -483,13 +517,12 @@ pub fn providers() -> Vec<Provider> {
             auth: AuthKind::Bearer,
             kind: ProviderKind::Cloud,
             model_prefixes: &["gpt", "o1", "o3"],
-            // OpenAI exposes `/v1/embeddings` and image generation; everything
-            // else is the cloud default (native tools, keep thinking).
-            capabilities: ProviderCapabilities {
-                supports_embeddings: true,
-                supports_image_generation: true,
-                ..Default::default()
-            },
+            // Embeddings + image-gen are MODEL facts (the `text-embedding-3-*`
+            // and `dall-e-3` rows declare `Capability::Embedding` /
+            // `ImageGeneration`); the adapter derives them by scanning rows
+            // (#68). Everything else is the cloud default (native tools, keep
+            // thinking) — no provider-level capability block needed.
+            ..Default::default()
         }),
         provider(ProviderSpec {
             id: "deepseek",
@@ -630,7 +663,10 @@ pub fn providers() -> Vec<Provider> {
             capabilities: ProviderCapabilities {
                 tool_protocol: ToolProtocol::NativeFunctionCalling,
                 suppress_thinking: true,
-                supports_embeddings: true,
+                // Embeddings are a MODEL fact: the resident forged GGUF row
+                // declares `Capability::Embedding` (llama-server serves
+                // /v1/embeddings from it via `--embedding`); the adapter
+                // derives the provider-level capability by scanning rows (#68).
                 single_resident_model: true,
                 // llama.cpp server → forward `repeat_penalty` so the forged
                 // 4B doesn't loop its `<think>` block to the token budget

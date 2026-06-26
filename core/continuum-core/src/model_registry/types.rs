@@ -193,13 +193,15 @@ pub struct ProviderCapabilities {
     /// `UNSLOTH_THINKING=on` escape hatch). Default: `false` (keep thinking).
     #[serde(default)]
     pub suppress_thinking: bool,
-    /// The endpoint exposes OpenAI-compatible `/v1/embeddings`, so the
-    /// neural recall path can embed through it. Default: `false`.
-    #[serde(default)]
-    pub supports_embeddings: bool,
-    /// The endpoint exposes image generation. Default: `false`.
-    #[serde(default)]
-    pub supports_image_generation: bool,
+    // NOTE: embedding + image-generation are NOT here. They're capability
+    // FACTS of a MODEL, not behavioral traits of a provider — a provider
+    // "supports embeddings" only because it serves a model that does. They
+    // live as `Capability::Embedding` / `Capability::ImageGeneration` on the
+    // model rows and the adapter derives the provider-level capability by
+    // SCANNING those rows (`models_for_provider(..).any(|m| m.has(..))`) —
+    // uniform with how ToolUse and Vision are already derived (#68). One axis:
+    // this struct carries BEHAVIOR (how the endpoint talks); `capabilities`
+    // on the model carries WHAT it can do.
     /// The endpoint serves ONE resident model and IGNORES the request's
     /// `model` field (a single-slot local gateway that idle-unloads to
     /// free VRAM). The adapter must pre-flight model activation before each
