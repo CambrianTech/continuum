@@ -950,6 +950,18 @@ impl ServiceModule for AIProviderModule {
         Ok(())
     }
 
+    /// The migrated read-only `ai/*` introspection commands as typed self-routing
+    /// objects on the ONE registry. Each shares this module's `AdapterRegistry`;
+    /// the executor routes their names straight here (winning over the legacy
+    /// `ai/` prefix arm), and their `CommandSpec` descriptors flow into
+    /// `command_registry()` → the persona tool surface + grid ACL. The
+    /// `ai/generate` inference seam and the `_ => execute_ts` legacy TS-forward
+    /// remain in `handle_command` (separate concerns). See
+    /// [`crate::commands::ai`].
+    fn commands(&self) -> Vec<Arc<dyn crate::sdk_codegen::DynCommand>> {
+        crate::commands::ai::command_objects(self.registry.clone())
+    }
+
     async fn handle_command(&self, command: &str, params: Value) -> Result<CommandResult, String> {
         match command {
             "ai/generate" => {
@@ -1002,174 +1014,6 @@ impl ServiceModule for AIProviderModule {
                 });
 
                 Ok(CommandResult::Json(self.response_to_json(&response)))
-            }
-
-            "ai/providers/list" => {
-                let registry = self.registry.read().await;
-                let available = registry.available();
-
-                // Get all provider info
-                let mut providers_info = Vec::new();
-                for id in &available {
-                    if let Some(adapter) = registry.get(id) {
-                        let caps = adapter.capabilities();
-                        providers_info.push(json!({
-                            "id": id,
-                            "name": adapter.name(),
-                            "defaultModel": adapter.default_model(),
-                            "capabilities": {
-                                "textGeneration": caps.supports_text_generation,
-                                "chat": caps.supports_chat,
-                                "toolUse": caps.supports_tool_use,
-                                "vision": caps.supports_vision,
-                                "streaming": caps.supports_streaming,
-                                "embeddings": caps.supports_embeddings,
-                                "isLocal": caps.is_local,
-                                "maxContextWindow": caps.max_context_window
-                            }
-                        }));
-                    }
-                }
-
-                Ok(CommandResult::Json(json!({
-                    "success": true,
-                    "available": available,
-                    "providers": providers_info,
-                    "count": available.len()
-                })))
-            }
-
-            // Return ModelInfo for a specific provider+model.
-            // Called once at persona boot — PRG caches and passes the struct.
-            // Eliminates ALL lookup functions (getContextWindow, isSlowLocalModel, etc).
-            "ai/model-info" => {
-                let p = Params::new(&params);
-                let provider = p.str_opt("provider");
-                let model = p.str_opt("model");
-
-                let registry = self.registry.read().await;
-                let (provider_id, adapter) = registry
-                    .select(provider, model, InferenceDevice::default())
-                    .ok_or("No adapter available for requested provider/model")?;
-
-                let models = adapter.get_available_models().await;
-                let model_name = model.unwrap_or(adapter.default_model());
-
-                // Find exact model or return default
-                let info = models
-                    .iter()
-                    .find(|m| {
-                        m.id.to_lowercase().contains(&model_name.to_lowercase())
-                            || model_name.to_lowercase().contains(&m.id.to_lowercase())
-                    })
-                    .or_else(|| models.first());
-
-                match info {
-                    Some(model_info) => Ok(CommandResult::Json(json!({
-                        "success": true,
-                        "provider": provider_id,
-                        "modelInfo": serde_json::to_value(model_info).unwrap_or(Value::Null)
-                    }))),
-                    None => Ok(CommandResult::Json(json!({
-                        "success": false,
-                        "error": format!("No model info available for {}/{}", provider_id, model_name)
-                    }))),
-                }
-            }
-
-            "ai/providers/health" => {
-                let registry = self.registry.read().await;
-                let available = registry.available();
-
-                let mut health_results = Vec::new();
-                for id in &available {
-                    if let Some(adapter) = registry.get(id) {
-                        let health = adapter.health_check().await;
-                        health_results.push(json!({
-                            "provider": id,
-                            "name": adapter.name(),
-                            "status": format!("{:?}", health.status).to_lowercase(),
-                            "apiAvailable": health.api_available,
-                            "responseTimeMs": health.response_time_ms,
-                            "message": health.message
-                        }));
-                    }
-                }
-
-                Ok(CommandResult::Json(json!({
-                    "success": true,
-                    "providers": health_results
-                })))
-            }
-
-            "ai/models/list" => {
-                let registry = self.registry.read().await;
-                let available = registry.available();
-
-                let mut all_models = Vec::new();
-                for id in &available {
-                    if let Some(adapter) = registry.get(id) {
-                        let models = adapter.get_available_models().await;
-                        for model in models {
-                            all_models.push(serde_json::to_value(&model).unwrap_or(json!({})));
-                        }
-                    }
-                }
-
-                Ok(CommandResult::Json(json!({
-                    "success": true,
-                    "models": all_models,
-                    "count": all_models.len()
-                })))
-            }
-
-            "ai/lora/list" => {
-                let registry = self.registry.read().await;
-                let available = registry.available();
-
-                let mut all_adapters = Vec::new();
-                for id in &available {
-                    if let Some(adapter) = registry.get(id) {
-                        let lora_adapters = adapter.list_lora_adapters();
-                        for lora in lora_adapters {
-                            all_adapters.push(json!({
-                                "provider": id,
-                                "adapterId": lora.adapter_id,
-                                "path": lora.path,
-                                "scale": lora.scale,
-                                "loaded": lora.loaded,
-                                "active": lora.active
-                            }));
-                        }
-                    }
-                }
-
-                Ok(CommandResult::Json(json!({
-                    "success": true,
-                    "adapters": all_adapters,
-                    "count": all_adapters.len()
-                })))
-            }
-
-            "ai/lora/capabilities" => {
-                let registry = self.registry.read().await;
-                let available = registry.available();
-
-                let mut capabilities = Vec::new();
-                for id in &available {
-                    if let Some(adapter) = registry.get(id) {
-                        let caps = adapter.lora_capabilities();
-                        capabilities.push(json!({
-                            "provider": id,
-                            "capabilities": format!("{:?}", caps)
-                        }));
-                    }
-                }
-
-                Ok(CommandResult::Json(json!({
-                    "success": true,
-                    "providers": capabilities
-                })))
             }
 
             _ => {
