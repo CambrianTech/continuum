@@ -58,6 +58,12 @@ impl Registry {
                 });
             }
             resolve_model_artifacts(&mut m);
+            if let Err(detail) = super::hydrate::hydrate_model_from_gguf(&mut m) {
+                return Err(RegistryError::GgufHydration {
+                    model_id: m.id,
+                    detail,
+                });
+            }
             models.insert(m.id.clone(), m);
         }
 
@@ -108,6 +114,10 @@ pub enum RegistryError {
         "duplicate provider id `{id}` — each provider must appear exactly once in the Rust catalog (catalog.rs)"
     )]
     DuplicateProvider { id: String },
+    #[error(
+        "model `{model_id}` left a queryable field absent and its GGUF could not supply it: {detail}"
+    )]
+    GgufHydration { model_id: String, detail: String },
 }
 
 #[cfg(test)]

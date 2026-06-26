@@ -3,7 +3,7 @@
 /**
  * Model architecture family. Typed (not stringly-typed) so call sites
  * use enum matching, not string comparison. Adding a new arch means:
- * (a) add the variant here, (b) add a TOML row with `arch = "new_arch"`.
+ * (a) add the variant here, (b) add a catalog row with `arch = "new_arch"`.
  * Code that dispatches by arch gets a compile error reminding the author
  * to handle the new variant — precisely the pattern Joel's axiom calls
  * for ("code should NEVER know the model" — code knows the ARCHETYPES

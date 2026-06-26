@@ -1,9 +1,10 @@
 //! Value types for the model registry.
 //!
-//! No logic lives here. Just the vocabulary that config TOML + Rust code
-//! agree on. Everything is `Deserialize` so the loader can parse directly
-//! into these from TOML; `Serialize` is provided symmetrically (useful
-//! for tests + error messages), not because anything writes TOML back.
+//! No logic lives here. Just the vocabulary the hand-authored Rust catalog
+//! (`catalog.rs`) and the code that reads it agree on. `Deserialize` /
+//! `Serialize` are derived symmetrically — useful for tests, error
+//! messages, and the ts-rs wire exports — not because anything parses or
+//! writes a config file. (There is no TOML loader; that was deleted in #77.)
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
