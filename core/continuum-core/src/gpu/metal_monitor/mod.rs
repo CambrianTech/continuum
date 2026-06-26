@@ -55,6 +55,8 @@
 mod mach_ffi;
 
 use crate::gpu::monitor::GpuMonitor;
+use crate::runtime::{spawn_daemon, Daemon, DaemonChannel};
+use async_trait::async_trait;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::watch;
@@ -88,9 +90,19 @@ const TICK_INTERVAL: Duration = Duration::from_secs(1);
 pub struct MetalMonitor {
     device_name: String,
     total_bytes: u64,
-    free_bytes: Arc<AtomicU64>,
-    process_bytes: Arc<AtomicU64>,
-    pressure_rx: watch::Receiver<f32>,
+    free_bytes: AtomicU64,
+    process_bytes: AtomicU64,
+    /// The embedded publish channel — carries derived pressure (`1 - free/total`)
+    /// as its snapshot. Ungated: this monitor reports a continuous signal; the
+    /// pressure-broker decides what pressure level warrants backoff, so there is
+    /// no daemon-side gate here. `GpuMonitor::pressure_rx` mints a receiver from it.
+    channel: DaemonChannel<f32>,
+    /// The Metal device handle, owned so the tick can sample it each cycle.
+    /// `metal::Device` is `Send + Sync` (auto-impl via `foreign_obj_type!` in the
+    /// metal crate), so it crosses to the daemon task safely. Needed every tick on
+    /// Discrete mode for `current_allocated_size`; unused on Unified but kept for
+    /// symmetry + future IOReport hooks.
+    device: metal::Device,
     /// Sampling strategy fixed at construction time. Read-only after
     /// init; exposed via `memory_mode()` for telemetry / tests that
     /// branch on hardware shape.
@@ -98,12 +110,16 @@ pub struct MetalMonitor {
 }
 
 impl MetalMonitor {
-    /// Construct a MetalMonitor and spawn its background tick task.
+    /// Construct a MetalMonitor and spawn it on the shared [`Daemon`] runner.
     /// Returns `None` if no Metal device is available (rare on a Mac;
     /// happens in headless build environments without `MTLCreateSystemDefaultDevice`).
     /// Caller falls back to `CpuMonitor` in that case — same trait, no
     /// branch in policy code.
-    pub fn new() -> Option<Self> {
+    ///
+    /// Returns an `Arc<Self>` because [`spawn_daemon`] takes one (the runner's
+    /// task captures it for the process lifetime) and callers store the monitor
+    /// as `Arc<dyn GpuMonitor>` anyway.
+    pub fn new() -> Option<Arc<Self>> {
         let device = metal::Device::system_default()?;
         let total_bytes = device.recommended_max_working_set_size();
         let device_name = device.name().to_string();
@@ -116,37 +132,22 @@ impl MetalMonitor {
             MemoryMode::Discrete
         };
 
-        let (pressure_tx, pressure_rx) = watch::channel(0.0f32);
-        let monitor = Self {
+        let monitor = Arc::new(Self {
             device_name,
             total_bytes,
-            free_bytes: Arc::new(AtomicU64::new(total_bytes)),
-            process_bytes: Arc::new(AtomicU64::new(0)),
-            pressure_rx,
-            memory_mode,
-        };
-
-        // Spawn the background sampler. Lives for the process lifetime —
-        // when the last Arc drop happens the channel closes and the task
-        // exits naturally. We don't store a JoinHandle because there's no
-        // "stop monitoring" use case; if the process is alive, we want
-        // signals.
-        //
-        // The device handle is moved into the sampler — `metal::Device`
-        // is `Send + Sync` (auto-impl via `foreign_obj_type!` in the
-        // metal crate), so cross-thread use is safe. The sampler needs
-        // the device every tick on Discrete mode for
-        // `current_allocated_size`; on Unified mode the device handle
-        // is unused but kept for symmetry + future IOReport hooks.
-        spawn_sampler(
-            monitor.free_bytes.clone(),
-            monitor.process_bytes.clone(),
-            total_bytes,
-            memory_mode,
+            free_bytes: AtomicU64::new(total_bytes),
+            process_bytes: AtomicU64::new(0),
+            channel: DaemonChannel::ungated(0.0f32),
             device,
-            pressure_tx,
-        );
+            memory_mode,
+        });
 
+        // The shared runner owns the interval + per-tick catch_unwind. The
+        // previous hand-rolled sampler had NO isolation — a panic in a Mach FFI
+        // read would have killed GPU monitoring for the whole process; now it
+        // loses one tick and resumes against the last-good snapshot. The task
+        // captures this Arc for the process lifetime (no "stop monitoring" case).
+        let _ = spawn_daemon(monitor.clone());
         Some(monitor)
     }
 
@@ -158,45 +159,43 @@ impl MetalMonitor {
     }
 }
 
-/// Background tick that refreshes free + process bytes every `TICK_INTERVAL`
-/// and pushes derived pressure into the watch channel. Extracted so the
-/// spawn site is a single function call (easier to reason about in `new`)
-/// and the tick body is testable via mach_ffi's independent tests.
-fn spawn_sampler(
-    free_bytes: Arc<AtomicU64>,
-    process_bytes: Arc<AtomicU64>,
-    total: u64,
-    mode: MemoryMode,
-    device: metal::Device,
-    pressure_tx: watch::Sender<f32>,
-) {
-    tokio::spawn(async move {
-        let mut tick = tokio::time::interval(TICK_INTERVAL);
-        // First tick fires immediately; subsequent ticks at TICK_INTERVAL.
-        loop {
-            tick.tick().await;
-            if pressure_tx.is_closed() {
-                break;
-            }
-            let (free, proc) = sample_memory(mode, total, &device);
-            free_bytes.store(free, Ordering::Relaxed);
-            process_bytes.store(proc, Ordering::Relaxed);
+#[async_trait]
+impl Daemon for MetalMonitor {
+    type Snapshot = f32;
 
-            // Pressure: 1.0 - free/total. Clamped to [0,1] for sanity —
-            // on Unified, free can briefly exceed total in some
-            // host_statistics64 reporting windows due to
-            // inactive→free transitions racing with our read; on
-            // Discrete, free is `saturating_sub(total, allocated)`
-            // which never exceeds total, but the clamp keeps the
-            // shape uniform across modes.
-            let pressure = if total > 0 {
-                1.0 - (free as f32 / total as f32).clamp(0.0, 1.0)
-            } else {
-                0.0
-            };
-            let _ = pressure_tx.send(pressure);
-        }
-    });
+    fn name(&self) -> &'static str {
+        "metal-gpu"
+    }
+
+    fn cadence(&self) -> Duration {
+        TICK_INTERVAL
+    }
+
+    fn channel(&self) -> &DaemonChannel<f32> {
+        &self.channel
+    }
+
+    /// Refresh free + process bytes and publish derived pressure. Pure atomic
+    /// stores + one `sample_memory` call (two Mach syscalls + one Metal property
+    /// read) — no lock, no await held across state, so it slots straight into the
+    /// runner's per-tick `catch_unwind`.
+    async fn tick(&self) {
+        let (free, proc) = sample_memory(self.memory_mode, self.total_bytes, &self.device);
+        self.free_bytes.store(free, Ordering::Relaxed);
+        self.process_bytes.store(proc, Ordering::Relaxed);
+
+        // Pressure: 1.0 - free/total. Clamped to [0,1] for sanity — on Unified,
+        // free can briefly exceed total in some host_statistics64 reporting
+        // windows due to inactive→free transitions racing with our read; on
+        // Discrete, free is `saturating_sub(total, allocated)` which never
+        // exceeds total, but the clamp keeps the shape uniform across modes.
+        let pressure = if self.total_bytes > 0 {
+            1.0 - (free as f32 / self.total_bytes as f32).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        self.channel.publish(pressure);
+    }
 }
 
 /// Read (free_bytes, process_bytes) for the current tick. Branches
@@ -259,7 +258,7 @@ impl GpuMonitor for MetalMonitor {
         None
     }
     fn pressure_rx(&self) -> watch::Receiver<f32> {
-        self.pressure_rx.clone()
+        self.channel.handle().subscribe()
     }
 }
 
