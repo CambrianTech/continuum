@@ -36,6 +36,7 @@ pub mod command_events;
 pub mod command_executor;
 pub mod command_interceptor;
 pub mod control;
+pub mod daemon;
 pub mod governor_bus;
 pub mod core_ipc_transport;
 pub mod grid_interceptor;
@@ -79,6 +80,10 @@ pub use command_events::{CommandCompletedEvent, COMMAND_COMPLETED_TOPIC};
 pub use command_executor::CommandExecutor;
 pub use command_interceptor::{CommandInterceptor, InterceptorOutcome};
 pub use control::{ModuleInfo, RuntimeControl};
+pub use daemon::{
+    guarded, spawn_daemon, Daemon, DaemonChannel, DaemonHandle, Guarded, QuarantineLedger,
+    DEFAULT_QUARANTINE_LIMIT,
+};
 pub use governor_bus::{publish_persona_scheduled, PersonaScheduled, PERSONA_SCHEDULED_KEY};
 pub use grid_interceptor::GridInterceptor;
 pub use in_process_transport::InProcessTransport;
