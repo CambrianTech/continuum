@@ -280,12 +280,21 @@ pub fn detect() -> Option<Arc<dyn GpuMonitor>> {
     if let Some(m) = super::NvidiaMonitor::new() {
         return Some(m as Arc<dyn GpuMonitor>);
     }
-    // Remaining real adapter still to build: a non-NVIDIA Vulkan live
-    // monitor (AMD/Intel via VK_EXT_memory_budget — needs `ash` FFI). It is
+    // Remaining real adapter still to build: a Vulkan live monitor
+    // (AMD/Intel via VK_EXT_memory_budget — needs `ash` FFI). It is
     // deliberately NOT faked with a static heap size: a stale `free` that
     // never drops is the exact bug this whole live-monitor layer exists to
     // kill. On such a host detect() returns None and the governor boot site
     // fails loud naming the missing adapter — never a silent substitute.
+    //
+    // This adapter is double-duty: besides non-NVIDIA Linux GPUs, Vulkan is
+    // the ONLY shape by which a Linux container on a Mac could ever see the
+    // GPU — a Linux guest cannot call Metal directly, so any Mac-GPU-in-Docker
+    // passthrough surfaces as paravirtualized Metal-through-Vulkan. Because
+    // detect() is a real runtime PROBE (not platform inference), the day that
+    // ships it lights up here with no other change. Today: Mac deploys NATIVE
+    // (the Metal branch above, --features metal); Docker is the Linux/CUDA
+    // artifact (the NvidiaMonitor branch). CUDA-in-Docker is the proven path.
     None
 }
 
