@@ -4,22 +4,20 @@
 //! together with CognitionModule, these two prove the most different pattern from
 //! stateless HealthModule.
 //!
-//! Handles: channel/enqueue, channel/dequeue, channel/status,
-//!          channel/service-cycle, channel/service-cycle-full, channel/clear
+//! Commands: NONE. The old `channel/*` command surface (enqueue/dequeue/status/
+//! service-cycle{,-full}/clear/tick-config) was the retired TypeScript persona
+//! loop's task-queue control plane — zero callers today, and service-cycle-full
+//! drove the heuristic `fast_path_decision` slated for deletion. Those arms were
+//! deleted (retire-as-you-go) rather than migrated onto the typed registry. The
+//! live surface is the background `tick()` below: per-persona task polling +
+//! self-task generation, a lifecycle concern, not a command.
 
-use crate::log_info;
-use crate::logging::TimingGuard;
 use crate::persona::channel_items::TaskQueueItem;
-use crate::persona::channel_types::DOMAIN_PRIORITY_ORDER;
 use crate::persona::self_task_generator::SelfTaskGenerator;
-use crate::persona::{
-    ActivityDomain, ChannelEnqueueRequest, ChannelRegistry, InboxMessage, Modality,
-    PersonaCognition, PersonaState, SenderType,
-};
+use crate::persona::{ChannelRegistry, PersonaCognition, PersonaState};
 use crate::runtime::{
     CommandResult, LateBound, ModuleConfig, ModuleContext, ModulePriority, ServiceModule,
 };
-use crate::utils::params::Params;
 use async_trait::async_trait;
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
@@ -167,261 +165,20 @@ impl ServiceModule for ChannelModule {
         Ok(())
     }
 
-    async fn handle_command(&self, command: &str, params: Value) -> Result<CommandResult, String> {
-        let p = Params::new(&params);
-
-        match command {
-            "channel/enqueue" => {
-                let _timer = TimingGuard::new("module", "channel_enqueue");
-                let persona_uuid = p.uuid("persona_id")?;
-                let item = p.value("item").ok_or("Missing item")?;
-
-                // Parse the item as ChannelEnqueueRequest
-                let enqueue_request: ChannelEnqueueRequest =
-                    serde_json::from_value(item.clone())
-                        .map_err(|e| format!("Invalid item: {e}"))?;
-
-                let queue_item = enqueue_request.to_queue_item()?;
-
-                let mut entry = self
-                    .state
-                    .registries
-                    .entry(persona_uuid)
-                    .or_insert_with(|| (ChannelRegistry::new(), PersonaState::new()));
-                let (registry, _state) = entry.value_mut();
-
-                match registry.route(queue_item) {
-                    Ok(domain) => {
-                        let status = registry.status();
-                        Ok(CommandResult::Json(serde_json::json!({
-                            "routed_to": domain,
-                            "status": status,
-                        })))
-                    }
-                    Err(e) => Err(e),
-                }
-            }
-
-            "channel/dequeue" => {
-                let _timer = TimingGuard::new("module", "channel_dequeue");
-                let persona_uuid = p.uuid("persona_id")?;
-                let domain_str = p.str_opt("domain");
-
-                let mut entry = match self.state.registries.get_mut(&persona_uuid) {
-                    Some(r) => r,
-                    None => return Err(format!("No channel registry for {persona_uuid}")),
-                };
-                let (registry, _state) = entry.value_mut();
-
-                // Parse optional domain filter
-                let target_domain: Option<ActivityDomain> = match domain_str {
-                    Some(d) => {
-                        let domain: ActivityDomain =
-                            serde_json::from_value(serde_json::json!(d))
-                                .map_err(|e| format!("Invalid domain '{d}': {e}"))?;
-                        Some(domain)
-                    }
-                    None => None,
-                };
-
-                let item = match target_domain {
-                    Some(d) => registry.get_mut(d).and_then(|ch| ch.pop()),
-                    None => {
-                        // Pop from highest-priority channel that has work
-                        let mut popped = None;
-                        for &d in DOMAIN_PRIORITY_ORDER {
-                            if let Some(ch) = registry.get_mut(d) {
-                                if let Some(item) = ch.pop() {
-                                    popped = Some(item);
-                                    break;
-                                }
-                            }
-                        }
-                        popped
-                    }
-                };
-
-                match item {
-                    Some(queue_item) => {
-                        let json = queue_item.to_json();
-                        Ok(CommandResult::Json(serde_json::json!({
-                            "item": json,
-                            "dequeued": true,
-                        })))
-                    }
-                    None => Ok(CommandResult::Json(serde_json::json!({
-                        "item": null,
-                        "dequeued": false,
-                    }))),
-                }
-            }
-
-            "channel/status" => {
-                let _timer = TimingGuard::new("module", "channel_status");
-                let persona_uuid = p.uuid("persona_id")?;
-
-                let entry = match self.state.registries.get(&persona_uuid) {
-                    Some(r) => r,
-                    None => {
-                        // Return empty status if no registry exists yet
-                        return Ok(CommandResult::Json(serde_json::json!({
-                            "channels": [],
-                            "total_size": 0,
-                            "has_urgent_work": false,
-                            "has_work": false,
-                        })));
-                    }
-                };
-                let (registry, _state) = entry.value();
-
-                let status = registry.status();
-                Ok(CommandResult::Json(
-                    serde_json::to_value(&status).unwrap_or_default(),
-                ))
-            }
-
-            "channel/service-cycle" => {
-                let _timer = TimingGuard::new("module", "channel_service_cycle");
-                let persona_uuid = p.uuid("persona_id")?;
-
-                let mut entry = self
-                    .state
-                    .registries
-                    .entry(persona_uuid)
-                    .or_insert_with(|| (ChannelRegistry::new(), PersonaState::new()));
-                let (registry, state) = entry.value_mut();
-
-                let result = registry.service_cycle(state);
-                Ok(CommandResult::Json(
-                    serde_json::to_value(&result).unwrap_or_default(),
-                ))
-            }
-
-            "channel/service-cycle-full" => {
-                let _timer = TimingGuard::new("module", "channel_service_cycle_full");
-                let persona_uuid = p.uuid("persona_id")?;
-
-                // Step 1: Service cycle — consolidate, schedule, return next item
-                let service_result = {
-                    let mut entry = self
-                        .state
-                        .registries
-                        .entry(persona_uuid)
-                        .or_insert_with(|| (ChannelRegistry::new(), PersonaState::new()));
-                    let (registry, state) = entry.value_mut();
-                    registry.service_cycle(state)
-                };
-
-                // Step 2: If item returned, run fast_path_decision in the SAME call
-                let decision = if service_result.should_process {
-                    if let Some(ref item_json) = service_result.item {
-                        // Reconstruct InboxMessage from queue item JSON using Params
-                        let ip = Params::new(item_json);
-                        let inbox_msg = InboxMessage {
-                            id: ip.uuid_opt("id").unwrap_or_default(),
-                            room_id: ip.uuid_opt("roomId").unwrap_or_default(),
-                            sender_id: ip.uuid_opt("senderId").unwrap_or_default(),
-                            sender_name: ip.str_or("senderName", "Unknown").to_string(),
-                            sender_type: match ip.str_or("senderType", "human") {
-                                "persona" => SenderType::Persona,
-                                "agent" => SenderType::Agent,
-                                "system" => SenderType::System,
-                                _ => SenderType::Human,
-                            },
-                            content: ip.str_or("content", "").to_string(),
-                            timestamp: ip.u64_or("timestamp", 0),
-                            priority: ip.f32_or("priority", 0.5),
-                            source_modality: ip.str_opt("itemType").and_then(|t| {
-                                if t == "voice" {
-                                    Some(Modality::Voice)
-                                } else {
-                                    None
-                                }
-                            }),
-                            voice_session_id: ip.uuid_opt("voiceSessionId"),
-                        };
-
-                        // Get cognition engine for fast-path decision
-                        if let Some(persona) = self.state.personas.get(&persona_uuid) {
-                            let decision = persona.engine.fast_path_decision(&inbox_msg);
-                            Some(serde_json::json!({
-                                "should_respond": decision.should_respond,
-                                "confidence": decision.confidence,
-                                "reason": decision.reason,
-                                "decision_time_ms": decision.decision_time_ms,
-                                "fast_path_used": decision.fast_path_used,
-                            }))
-                        } else {
-                            None
-                        }
-                    } else {
-                        None
-                    }
-                } else {
-                    None
-                };
-
-                // Return flat structure matching TypeScript's expected format
-                Ok(CommandResult::Json(serde_json::json!({
-                    "should_process": service_result.should_process,
-                    "item": service_result.item,
-                    "channel": service_result.channel,
-                    "wait_ms": service_result.wait_ms,
-                    "stats": service_result.stats,
-                    "decision": decision,
-                })))
-            }
-
-            "channel/clear" => {
-                let _timer = TimingGuard::new("module", "channel_clear");
-                let persona_uuid = p.uuid("persona_id")?;
-
-                if let Some(mut entry) = self.state.registries.get_mut(&persona_uuid) {
-                    let (registry, _state) = entry.value_mut();
-                    registry.clear_all();
-                }
-
-                log_info!("module", "channel", "Cleared channels for {}", persona_uuid);
-                Ok(CommandResult::Json(serde_json::json!({ "cleared": true })))
-            }
-
-            "channel/tick-config" => {
-                let _timer = TimingGuard::new("module", "channel_tick_config");
-
-                // If params include config fields, update the tick config
-                let has_updates = params.get("tick_interval_ms").is_some()
-                    || params.get("task_poll_enabled").is_some()
-                    || params.get("self_task_enabled").is_some();
-
-                if has_updates {
-                    if let Ok(mut config) = self.state.tick_config.write() {
-                        if let Some(v) = params.get("tick_interval_ms").and_then(|v| v.as_u64()) {
-                            config.tick_interval_ms = v.max(100); // Floor: 100ms
-                        }
-                        if let Some(v) = params.get("task_poll_enabled").and_then(|v| v.as_bool()) {
-                            config.task_poll_enabled = v;
-                        }
-                        if let Some(v) = params.get("self_task_enabled").and_then(|v| v.as_bool()) {
-                            config.self_task_enabled = v;
-                        }
-                        log_info!("module", "channel", "Tick config updated: {:?}", *config);
-                    }
-                }
-
-                // Return current config
-                let config = self
-                    .state
-                    .tick_config
-                    .read()
-                    .map(|c| c.clone())
-                    .unwrap_or_default();
-                Ok(CommandResult::Json(
-                    serde_json::to_value(&config).unwrap_or_else(|_| serde_json::json!({})),
-                ))
-            }
-
-            _ => Err(format!("Unknown channel command: {command}")),
-        }
+    async fn handle_command(&self, command: &str, _params: Value) -> Result<CommandResult, String> {
+        // RETIRED: the `channel/*` command surface (enqueue, dequeue, status,
+        // service-cycle, service-cycle-full, clear, tick-config) was the old
+        // TypeScript persona loop's task-queue control plane — it has ZERO callers
+        // now that the loop is the Workspace/Faculty organism, and
+        // service-cycle-full drove `fast_path_decision` (the heuristic gating slated
+        // for deletion in task #9). Per the migration's retire-as-you-go curation
+        // ([[command-migration-retire-as-you-go]]), the dead commands are deleted
+        // rather than migrated onto the typed registry. The background `tick()`
+        // (task polling + self-task generation) stays — it's a live lifecycle
+        // concern, not a command. Fail loud on any stray invocation.
+        Err(format!(
+            "channel command surface is retired; '{command}' has no handler"
+        ))
     }
 
     /// Periodic tick: runs ALL background work for ALL personas in one batch.
