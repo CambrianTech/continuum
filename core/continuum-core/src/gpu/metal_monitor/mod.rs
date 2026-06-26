@@ -113,8 +113,10 @@ impl MetalMonitor {
     /// Construct a MetalMonitor and spawn it on the shared [`Daemon`] runner.
     /// Returns `None` if no Metal device is available (rare on a Mac;
     /// happens in headless build environments without `MTLCreateSystemDefaultDevice`).
-    /// Caller falls back to `CpuMonitor` in that case — same trait, no
-    /// branch in policy code.
+    /// `None` is NOT a cue to substitute a CPU monitor — there is no CPU
+    /// fallback (#980). A GPU host with no Metal device is a fail-loud
+    /// condition the caller surfaces by name; it must never silently run
+    /// "all CPU again" against fabricated numbers.
     ///
     /// Returns an `Arc<Self>` because [`spawn_daemon`] takes one (the runner's
     /// task captures it for the process lifetime) and callers store the monitor

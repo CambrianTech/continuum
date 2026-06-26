@@ -16,8 +16,13 @@
 //!
 //! Phase 2.0 ships:
 //!   - The trait
-//!   - `CpuMonitor` (no-GPU fallback) as the first concrete adapter
-//!   - `MockMonitor` for unit testing the policy without a real GPU
+//!   - `MockMonitor` (test-only) for unit testing the policy without a real GPU
+//!
+//! There is NO CpuMonitor / no-GPU fallback adapter: GPU acceleration is
+//! required (`detect_gpu()` hard-fails without it, #980), and a CPU stand-in
+//! would only mask a missing device with silently-wrong numbers — turning a
+//! GPU build "all CPU again" without anyone noticing. Absent device → fail
+//! loud at the seam, never substitute.
 //!
 //! Phase 2.0a (follow-up):
 //!   - `MetalMonitor` via IOReport FFI (the actual fix for the
@@ -114,76 +119,12 @@ pub struct GpuSnapshot {
     pub pressure: f32,
 }
 
-// ─── CpuMonitor — no-GPU fallback ────────────────────────────────────
-
-/// The "no GPU detected" fallback adapter. Reports system RAM as the
-/// "total" budget and never claims utilization (CPU inference still
-/// works, we just can't measure GPU stats). Used on Linux servers
-/// without GPUs, in test harnesses that want a deterministic monitor,
-/// and as the safety floor when GPU detection fails.
-pub struct CpuMonitor {
-    device_name: String,
-    total_bytes: u64,
-    pressure_tx: watch::Sender<f32>,
-    pressure_rx: watch::Receiver<f32>,
-}
-
-impl CpuMonitor {
-    pub fn new(total_ram_bytes: u64) -> Self {
-        let (pressure_tx, pressure_rx) = watch::channel(0.0);
-        Self {
-            device_name: "CPU (no GPU)".to_string(),
-            total_bytes: total_ram_bytes,
-            pressure_tx,
-            pressure_rx,
-        }
-    }
-
-    /// Update the pressure signal from caller-supplied accounting.
-    /// CPU-only setup has no live OS-level pressure source for "GPU
-    /// memory", so the caller (typically the FootprintRegistry's own
-    /// sum) becomes the proxy. Not as good as a real OS signal but
-    /// preserves the trait shape so the policy code doesn't change.
-    pub fn update_pressure(&self, p: f32) {
-        let _ = self.pressure_tx.send(p.clamp(0.0, 1.0));
-    }
-}
-
-impl GpuMonitor for CpuMonitor {
-    fn platform(&self) -> &'static str {
-        "cpu"
-    }
-    fn device_name(&self) -> &str {
-        &self.device_name
-    }
-    fn total_bytes(&self) -> u64 {
-        self.total_bytes
-    }
-    fn free_bytes(&self) -> u64 {
-        // Without an OS query, "free" = total minus the policy's
-        // own accounting reflected in the pressure signal.
-        let pressure = *self.pressure_rx.borrow();
-        let used = (self.total_bytes as f64 * pressure as f64) as u64;
-        self.total_bytes.saturating_sub(used)
-    }
-    fn process_bytes(&self) -> u64 {
-        // Same source as free: derived from accounted pressure.
-        let pressure = *self.pressure_rx.borrow();
-        (self.total_bytes as f64 * pressure as f64) as u64
-    }
-    fn utilization(&self) -> f32 {
-        0.0 // No GPU compute utilization to report.
-    }
-    fn temperature_c(&self) -> Option<f32> {
-        None
-    }
-    fn power_watts(&self) -> Option<f32> {
-        None
-    }
-    fn pressure_rx(&self) -> watch::Receiver<f32> {
-        self.pressure_rx.clone()
-    }
-}
+// NOTE: there is deliberately NO `CpuMonitor`. A "no-GPU fallback"
+// monitor is the exact plague `detect_gpu()` already outlaws (#980): GPU
+// acceleration is REQUIRED, and a CPU stand-in only masks a missing real
+// device with silently-wrong numbers. Absent GPU → fail loud, never
+// substitute. `MockMonitor` below is the test double; it is NOT a
+// production fallback (it lives for `#[cfg(test)]` policy scenarios only).
 
 // ─── MockMonitor — for unit tests of the policy ──────────────────────
 
@@ -305,14 +246,22 @@ impl GpuMonitor for MockMonitor {
 /// platform yet* — `MetalMonitor` is the only one built today;
 /// `NvidiaMonitor` (NVML) and `VulkanMonitor` (`VK_EXT_memory_budget`)
 /// are the documented Phase 2.0a follow-ups. `None` is an honest
-/// **capability gap**, NOT a CPU fallback and NOT a hidden failure:
-/// the caller (the governor boot site) MUST decide explicitly and
-/// loudly what to do without a live VRAM signal — never silently
-/// treat `None` as "no governance needed". (Contrast
-/// [`detect_gpu`](crate::gpu::memory_manager) which hard-fails on a
-/// genuinely GPU-less host; absence of a *live monitor adapter* on a
-/// GPU host that has a working `GpuMemoryManager` is a different,
-/// non-fatal condition.)
+/// **capability gap**, and it is emphatically NOT a cue to substitute a
+/// CPU monitor: a fake-GPU-monitor reporting RAM-as-VRAM is the exact
+/// "all CPU again" plague — it would silently mask a real GPU we should
+/// be using behind fabricated numbers. The caller (the governor boot
+/// site) MUST surface `None` loudly by name and fail at the seam; it must
+/// never swallow `None` into "use total" or "no governance needed".
+///
+/// To be precise about the one legitimate CPU scenario: the rule is GPU
+/// for all models, with a SINGLE sanctioned exception — a standalone
+/// install on a GPU-less Intel Mac with no grid peer to offload to. That
+/// is a deliberate, explicitly-chosen, loudly-logged deployment path, not
+/// a value this function ever silently returns. (Contrast
+/// [`detect_gpu`](crate::gpu::memory_manager) which today hard-fails on a
+/// genuinely GPU-less host; that absolute is the #980 stance and any CPU
+/// deployment path must be its own explicit branch, never a swallowed
+/// `None` here.)
 ///
 /// On Apple Silicon the returned monitor is unified-memory aware, so
 /// its `free_bytes()` tracks real system headroom — exactly the live
@@ -338,58 +287,6 @@ use super::MetalMonitor;
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// What this catches: CpuMonitor declaring itself a non-cpu platform
-    /// (would mislead the policy into trying GPU-specific code paths).
-    ///
-    /// Validated 2026-04-21: returned "cuda" from platform(), test fails.
-    #[test]
-    fn cpu_monitor_identifies_as_cpu_platform() {
-        let m = CpuMonitor::new(8 * 1024 * 1024 * 1024);
-        assert_eq!(m.platform(), "cpu");
-        assert!(m.device_name().contains("CPU"));
-    }
-
-    /// What this catches: CpuMonitor's free_bytes not adjusting with
-    /// pressure updates. Without this, the fallback monitor reports
-    /// constant free=total and the policy thinks RAM is infinite.
-    ///
-    /// Validated 2026-04-21: removed pressure subtraction in free_bytes,
-    /// test fails because free stays at total after pressure update.
-    #[test]
-    fn cpu_monitor_free_bytes_decreases_with_pressure() {
-        let total = 8 * 1024 * 1024 * 1024u64;
-        let m = CpuMonitor::new(total);
-        assert_eq!(m.free_bytes(), total, "no pressure → all free");
-
-        m.update_pressure(0.5);
-        let half_used = m.free_bytes();
-        assert!(
-            half_used < total && half_used > total / 4,
-            "50% pressure → roughly half free; got {half_used} of {total}"
-        );
-
-        m.update_pressure(1.0);
-        assert!(
-            m.free_bytes() < total / 10,
-            "full pressure → near-zero free"
-        );
-    }
-
-    /// What this catches: pressure value escaping the 0.0..1.0 range
-    /// when caller pushes nonsense (e.g. update_pressure(2.5)). Clamping
-    /// is the trait invariant; downstream policy assumes it.
-    ///
-    /// Validated 2026-04-21: removed clamp in update_pressure, test
-    /// fails because pressure_rx returns 2.5 directly.
-    #[test]
-    fn cpu_monitor_clamps_pressure_to_unit_range() {
-        let m = CpuMonitor::new(1024);
-        m.update_pressure(2.5);
-        assert!((0.0..=1.0).contains(&*m.pressure_rx().borrow()));
-        m.update_pressure(-1.0);
-        assert!((0.0..=1.0).contains(&*m.pressure_rx().borrow()));
-    }
 
     /// What this catches: MockMonitor not actually being mutable
     /// (e.g. a typo storing into the wrong field, or atomics dropped).
@@ -468,9 +365,9 @@ mod tests {
     /// receiver doesn't see the update.
     #[test]
     fn pressure_rx_receives_subsequent_updates() {
-        let m = CpuMonitor::new(1024);
+        let m = MockMonitor::new(1024);
         let rx = m.pressure_rx();
-        m.update_pressure(0.42);
+        m.set_pressure(0.42);
         // borrow() reads latest published value
         assert!((*rx.borrow() - 0.42).abs() < 0.01);
     }

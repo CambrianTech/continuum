@@ -17,13 +17,13 @@
 //!    surface from the start.
 //!
 //! 3. **Reusability.** Nothing in this file is Metal-specific. The Mach
-//!    VM info is process-wide memory accounting — a future `SystemMonitor`
-//!    or `CpuMonitor` on macOS can consume the same `read_system_free_bytes`
+//!    VM info is process-wide memory accounting — a future macOS
+//!    `SystemMonitor` can consume the same `read_system_free_bytes`
 //!    / `read_process_phys_footprint` without copy-pasting the FFI dance.
 //!
 //! All `unsafe` lives here. The public API is two safe functions that
-//! return `Option<u64>` — None on Mach error so the caller can fall back
-//! without baking in a wrong number.
+//! return `Option<u64>` — None on a genuine Mach error, surfaced honestly
+//! so the caller reports the gap rather than baking in a wrong number.
 
 use std::mem::size_of;
 

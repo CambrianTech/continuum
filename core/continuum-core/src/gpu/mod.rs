@@ -24,5 +24,5 @@ pub use memory_manager::{
 };
 #[cfg(target_os = "macos")]
 pub use metal_monitor::MetalMonitor;
-pub use monitor::{CpuMonitor, GpuMonitor, GpuSnapshot, MockMonitor};
+pub use monitor::{GpuMonitor, GpuSnapshot, MockMonitor};
 pub use tracker::GpuModelTracker;
