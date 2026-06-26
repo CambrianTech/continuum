@@ -124,6 +124,7 @@
 //! price; it still only enforces who-holds-what. Do NOT put a price/credit field
 //! on the lease — value lives in the arbiter, bytes live here.
 
+pub mod arbiter;
 pub mod broker;
 pub mod consumer;
 pub mod ledger;
@@ -139,6 +140,7 @@ pub use broker::{
     ResourceLaneBudget, ResourceRefusalReason,
 };
 
+pub use arbiter::{ArbiterContext, LeaseArbiter, TieredArbiter};
 pub use consumer::{
     ConsumerFootprint, ReclaimOutcome, ReclaimReason, ReclaimRequest, ReclaimStatus,
     ResourceConsumer,

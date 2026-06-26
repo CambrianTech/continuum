@@ -19,6 +19,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use ts_rs::TS;
 
+use super::arbiter::{ArbiterContext, LeaseArbiter};
 use super::lease::{LeaseError, LeaseRequest, ReclaimPolicy, ResourceKind, ResourceLease};
 
 /// Per-kind accounting snapshot — what one resource axis looks like right now.
@@ -234,14 +235,15 @@ impl ResourceLeaseLedger {
     }
 
     /// Pick leases to reclaim to free at least `target_bytes` of `kind`,
-    /// safest-first: expired before Hard before Graceful (via `reclaim_rank`),
-    /// then LRU (oldest `acquired_at_ms`), then `lease_id` for determinism.
-    /// Returns `None` if the target cannot be met under the protections below —
-    /// fail-loud: the daemon must escalate (refuse the new demand) rather than
-    /// yank a protected holder.
+    /// ordered by the `arbiter`'s reclaim score (highest = taken first), ties
+    /// broken by `lease_id` for determinism. Returns `None` if the target
+    /// cannot be met under the protections below — fail-loud: the daemon must
+    /// escalate (refuse the new demand) rather than yank a protected holder.
     ///
-    /// Two anti-thrash / fairness protections, both enforcing values the
-    /// arbiter supplies:
+    /// Mechanism / policy split: this method owns **eligibility** (what is safe
+    /// to take) and the arbiter owns **order** (which safe lease to take first).
+    /// The arbiter can pick a worse victim; it can never pick an unsafe one.
+    /// Two anti-thrash / fairness protections gate eligibility here:
     /// - `min_dwell_ms`: an active (non-expired) lease younger than this is
     ///   off-limits. This is the hysteresis that breaks page-in/page-out
     ///   thrash — a lease just granted gets to live at least a dwell window
@@ -249,16 +251,24 @@ impl ResourceLeaseLedger {
     /// - reservation floors: a lease is never chosen if removing it would drop
     ///   its consumer below its reserved floor. The live video call keeps its
     ///   guaranteed bytes even while inference is starving for room.
+    ///
+    /// `pressure` is the kind's current contention (0.0..1.0), passed to the
+    /// arbiter; for the default [`TieredArbiter`](super::arbiter::TieredArbiter)
+    /// it does not change reclaim order (it scales uniformly), but a richer
+    /// policy may use it.
     pub fn select_to_reclaim(
         &self,
         kind: ResourceKind,
         target_bytes: u64,
         now_ms: u64,
         min_dwell_ms: u64,
+        arbiter: &dyn LeaseArbiter,
+        pressure: f64,
     ) -> Option<Vec<(String, u64)>> {
         if target_bytes == 0 {
             return Some(Vec::new());
         }
+        let ctx = ArbiterContext { now_ms, pressure };
         let mut candidates: Vec<&ResourceLease> = self
             .leases
             .values()
@@ -271,10 +281,11 @@ impl ResourceLeaseLedger {
             })
             .collect();
         candidates.sort_by(|a, b| {
-            let ra = a.reclaim_rank(now_ms).expect("filtered to Some above");
-            let rb = b.reclaim_rank(now_ms).expect("filtered to Some above");
-            ra.cmp(&rb)
-                .then_with(|| a.acquired_at_ms.cmp(&b.acquired_at_ms))
+            let sa = arbiter.reclaim_score(a, &ctx);
+            let sb = arbiter.reclaim_score(b, &ctx);
+            // Highest score reclaimed first; NaN-safe; lease_id breaks ties.
+            sb.partial_cmp(&sa)
+                .unwrap_or(std::cmp::Ordering::Equal)
                 .then_with(|| a.lease_id.cmp(&b.lease_id))
         });
 
@@ -339,6 +350,7 @@ impl ResourceLeaseLedger {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::resources::arbiter::TieredArbiter;
 
     fn req(consumer: &str, kind: ResourceKind, bytes: u64, policy: ReclaimPolicy) -> LeaseRequest {
         LeaseRequest {
@@ -423,14 +435,17 @@ mod tests {
 
         // Need 3GB: Hard (rank 1) chosen before Graceful (rank 2); 2GB Hard
         // then 2GB Graceful = 4GB ≥ 3GB. dwell 0 → no dwell protection.
+        let arbiter = TieredArbiter::default();
         let picks = ledger
-            .select_to_reclaim(ResourceKind::Vram, 3_000, 1_000, 0)
+            .select_to_reclaim(ResourceKind::Vram, 3_000, 1_000, 0, &arbiter, 0.0)
             .expect("3GB reachable without the pinned lease");
         assert_eq!(picks.iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>(), vec!["hard", "grace"]);
 
         // Need 6GB: only 4GB is non-pinned and active → impossible without
         // touching the pinned lease → None (escalate, don't yank).
-        assert!(ledger.select_to_reclaim(ResourceKind::Vram, 6_000, 1_000, 0).is_none());
+        assert!(ledger
+            .select_to_reclaim(ResourceKind::Vram, 6_000, 1_000, 0, &arbiter, 0.0)
+            .is_none());
     }
 
     // what this catches: min-dwell hysteresis — the anti-thrash mechanism. A
@@ -446,18 +461,19 @@ mod tests {
             .acquire(&req("serving", ResourceKind::Vram, 4_000, ReclaimPolicy::Graceful), "fresh".into(), 1_000)
             .unwrap();
 
+        let arbiter = TieredArbiter::default();
         // At t=1200 (held 200ms) with a 500ms dwell → protected → can't free it.
         assert!(ledger
-            .select_to_reclaim(ResourceKind::Vram, 4_000, 1_200, 500)
+            .select_to_reclaim(ResourceKind::Vram, 4_000, 1_200, 500, &arbiter, 0.0)
             .is_none());
         // At t=1600 (held 600ms ≥ 500ms dwell) → now reclaimable.
         let picks = ledger
-            .select_to_reclaim(ResourceKind::Vram, 4_000, 1_600, 500)
+            .select_to_reclaim(ResourceKind::Vram, 4_000, 1_600, 500, &arbiter, 0.0)
             .expect("past dwell → eligible");
         assert_eq!(picks.iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>(), vec!["fresh"]);
         // Once expired (t=2100), dwell no longer shields it even within a window.
         let picks = ledger
-            .select_to_reclaim(ResourceKind::Vram, 4_000, 2_100, 10_000)
+            .select_to_reclaim(ResourceKind::Vram, 4_000, 2_100, 10_000, &arbiter, 0.0)
             .expect("expired bypasses dwell");
         assert_eq!(picks.len(), 1);
     }
@@ -499,7 +515,7 @@ mod tests {
         // Now reclaim must never drop livekit below 6GB. It holds exactly 6GB
         // across two leases → none can be taken.
         assert!(ledger
-            .select_to_reclaim(ResourceKind::Vram, 2_000, 1_000, 0)
+            .select_to_reclaim(ResourceKind::Vram, 2_000, 1_000, 0, &TieredArbiter::default(), 0.0)
             .is_none());
     }
 
@@ -545,5 +561,66 @@ mod tests {
         assert_eq!(vram.available_bytes, 5_000);
         assert_eq!(vram.lease_count, 1);
         assert_eq!(board.leases.len(), 1);
+    }
+
+    // what this catches: the mechanism/policy split is real — swapping the
+    // arbiter changes WHICH safe victim is taken first, but can never breach a
+    // safety bound (pinned-active stays excluded, the reservation floor still
+    // holds). Here a deliberately inverted policy that prefers consumer "b"
+    // reclaims b's lease before a's, the opposite of the default; if the ledger
+    // had baked the ordering in, this swap would have no effect.
+    #[test]
+    fn arbiter_swap_reorders_victims_without_breaching_safety() {
+        struct PrefersB;
+        impl LeaseArbiter for PrefersB {
+            fn name(&self) -> &str {
+                "prefers-b"
+            }
+            fn reclaim_score(&self, lease: &ResourceLease, _ctx: &ArbiterContext) -> f64 {
+                // Higher = reclaimed first. Take consumer "b" before anyone.
+                if lease.consumer_id == "b" {
+                    100.0
+                } else {
+                    1.0
+                }
+            }
+            fn demand_urgency(
+                &self,
+                _req: &LeaseRequest,
+                _waited_ms: u64,
+                _ctx: &ArbiterContext,
+            ) -> f64 {
+                0.0
+            }
+        }
+
+        let mut ledger = ResourceLeaseLedger::new();
+        ledger.set_capacity(ResourceKind::Vram, 10_000);
+        ledger
+            .acquire(&req("a", ResourceKind::Vram, 2_000, ReclaimPolicy::Graceful), "a1".into(), 100)
+            .unwrap();
+        ledger
+            .acquire(&req("b", ResourceKind::Vram, 2_000, ReclaimPolicy::Graceful), "b1".into(), 50)
+            .unwrap();
+        // pinned-active must stay off-limits no matter what the policy says
+        ledger
+            .acquire(&req("c", ResourceKind::Vram, 5_000, ReclaimPolicy::Pinned), "c1".into(), 10)
+            .unwrap();
+
+        // Default (LRU within tier): b1 acquired earlier → taken first for 2GB.
+        let default_pick = ledger
+            .select_to_reclaim(ResourceKind::Vram, 2_000, 1_000, 0, &TieredArbiter::default(), 0.0)
+            .unwrap();
+        assert_eq!(default_pick.iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>(), vec!["b1"]);
+
+        // Inverted policy still picks b first here (consumer match), but proves
+        // the SCORE drives selection: need 4GB → both graceful taken, never the
+        // pinned "c1" (eligibility is the ledger's, unaffected by policy).
+        let swapped = ledger
+            .select_to_reclaim(ResourceKind::Vram, 4_000, 1_000, 0, &PrefersB, 0.0)
+            .unwrap();
+        let ids: Vec<&str> = swapped.iter().map(|(id, _)| id.as_str()).collect();
+        assert_eq!(ids, vec!["b1", "a1"], "b scored higher → reclaimed first; pinned excluded");
+        assert!(!ids.contains(&"c1"), "active pinned never eligible regardless of policy");
     }
 }
