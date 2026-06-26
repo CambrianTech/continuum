@@ -13,6 +13,7 @@ use tokio::sync::RwLock;
 use crate::ai::AdapterRegistry;
 use crate::sdk_codegen::DynCommand;
 
+pub mod generate;
 pub mod lora;
 pub mod model_info;
 pub mod models;
@@ -28,11 +29,12 @@ pub mod providers;
 #[ts(export, export_to = "../../../protocol/typescript/ai/AiRegistryQueryParams.ts")]
 pub struct AiRegistryQueryParams {}
 
-/// The `ai/*` introspection commands as typed self-routing objects, each sharing
-/// the module's `AdapterRegistry`. `ai/generate` (the keystone inference seam)
-/// is migrated separately.
+/// The `ai/*` commands as typed self-routing objects, each sharing the module's
+/// `AdapterRegistry`: the read-only registry-introspection commands plus the
+/// `ai/generate` inference seam.
 pub fn command_objects(registry: Arc<RwLock<AdapterRegistry>>) -> Vec<Arc<dyn DynCommand>> {
     vec![
+        Arc::new(generate::AiGenerate { registry: registry.clone() }),
         Arc::new(providers::list::AiProvidersList { registry: registry.clone() }),
         Arc::new(providers::health::AiProvidersHealth { registry: registry.clone() }),
         Arc::new(models::list::AiModelsList { registry: registry.clone() }),
@@ -58,6 +60,7 @@ mod tests {
             providers::health::AiProvidersHealth::NAME,
             "ai/providers/health"
         );
+        assert_eq!(generate::AiGenerate::NAME, "ai/generate");
         assert_eq!(models::list::AiModelsList::NAME, "ai/models/list");
         assert_eq!(model_info::AiModelInfo::NAME, "ai/model-info");
         assert_eq!(lora::list::AiLoraList::NAME, "ai/lora/list");

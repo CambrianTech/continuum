@@ -20,19 +20,17 @@
 
 use crate::ai::{
     adapter::{AIProviderAdapter, InferenceDevice},
-    AdapterRegistry, AnthropicAdapter, ChatMessage, MessageContent, OpenAICompatibleAdapter,
-    RoutingInfo, TextGenerationRequest, TextGenerationResponse,
+    AdapterRegistry, AnthropicAdapter, OpenAICompatibleAdapter, RoutingInfo, TextGenerationRequest,
+    TextGenerationResponse,
 };
-use crate::logging::TimingGuard;
 use crate::runtime::{
     CommandResult, LateBound, ModuleConfig, ModuleContext, ModuleLogger, ModulePriority,
     ServiceModule,
 };
 use crate::secrets::get_secret;
-use crate::utils::params::Params;
 use async_trait::async_trait;
 use once_cell::sync::Lazy;
-use serde_json::{json, Value};
+use serde_json::Value;
 use std::any::Any;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -191,7 +189,7 @@ impl AIProviderModule {
 ///
 /// Hoisted out of both `ai/generate` and the convenience `generate_text` so
 /// the two paths report the same diagnosis.
-fn select_failure_message(
+pub(crate) fn select_failure_message(
     registry: &AdapterRegistry,
     requested_provider: Option<&str>,
     requested_model: Option<&str>,
@@ -708,94 +706,6 @@ impl AIProviderModule {
 
         Ok(())
     }
-
-    /// Parse TextGenerationRequest from JSON params
-    fn parse_request(&self, params: &Value) -> Result<TextGenerationRequest, String> {
-        let p = Params::new(params);
-
-        // Parse messages (array) or simple prompt (string)
-        let messages: Vec<ChatMessage> = if let Some(msgs) = p.value("messages") {
-            serde_json::from_value(msgs.clone())
-                .map_err(|e| format!("Failed to parse messages: {}", e))?
-        } else if let Some(prompt) = p.str_opt("prompt") {
-            vec![ChatMessage {
-                role: "user".to_string(),
-                content: MessageContent::Text(prompt.to_string()),
-                name: None,
-            }]
-        } else {
-            return Err("Missing messages or prompt".to_string());
-        };
-
-        if messages.is_empty() {
-            return Err("Messages cannot be empty".to_string());
-        }
-
-        Ok(TextGenerationRequest {
-            messages,
-            system_prompt: p.string_opt_alias("system_prompt", "systemPrompt"),
-            model: p.str_opt("model").map(String::from),
-            provider: p.str_opt("provider").map(String::from),
-            temperature: p.f32_opt("temperature"),
-            max_tokens: p.u64_opt_alias("max_tokens", "maxTokens").map(|t| t as u32),
-            top_p: p.f64_opt_alias("top_p", "topP").map(|t| t as f32),
-            top_k: p.u64_opt_alias("top_k", "topK").map(|t| t as u32),
-            repeat_penalty: p
-                .f32_opt("repeat_penalty")
-                .or_else(|| p.f32_opt("repeatPenalty")),
-            stop_sequences: p
-                .json_opt("stop_sequences")
-                .or_else(|| p.json_opt("stopSequences")),
-            tools: p.json_opt("tools"),
-            tool_choice: p.json_opt("tool_choice"),
-            response_format: None,
-            active_adapters: p.json_opt("activeAdapters"),
-            request_id: p.string_opt_alias("request_id", "requestId"),
-            user_id: p.string_opt_alias("user_id", "userId"),
-            room_id: p.string_opt_alias("room_id", "roomId"),
-            purpose: p.str_opt("purpose").map(String::from),
-            // Caller-provided persona attribution. TS sends `personaId`
-            // (camelCase) per Continuum convention; snake_case alias
-            // accepted for symmetry with the sibling fields.
-            persona_id: p.string_opt_alias("persona_id", "personaId"),
-        })
-    }
-
-    /// Convert response to JSON Value
-    fn response_to_json(&self, response: &TextGenerationResponse) -> Value {
-        let mut result = json!({
-            "success": true,
-            "text": response.text,
-            "finishReason": format!("{}", response.finish_reason),
-            "model": response.model,
-            "provider": response.provider,
-            "usage": {
-                "inputTokens": response.usage.input_tokens,
-                "outputTokens": response.usage.output_tokens,
-                "totalTokens": response.usage.total_tokens,
-                "estimatedCost": response.usage.estimated_cost
-            },
-            "responseTimeMs": response.response_time_ms,
-            "requestId": response.request_id
-        });
-
-        // Add content blocks if present
-        if let Some(content) = &response.content {
-            result["content"] = serde_json::to_value(content).unwrap_or(json!([]));
-        }
-
-        // Add tool calls if present
-        if let Some(tool_calls) = &response.tool_calls {
-            result["toolCalls"] = serde_json::to_value(tool_calls).unwrap_or(json!([]));
-        }
-
-        // Add routing info if present
-        if let Some(routing) = &response.routing {
-            result["routing"] = serde_json::to_value(routing).unwrap_or(json!({}));
-        }
-
-        result
-    }
 }
 
 impl Default for AIProviderModule {
@@ -963,76 +873,22 @@ impl ServiceModule for AIProviderModule {
     }
 
     async fn handle_command(&self, command: &str, params: Value) -> Result<CommandResult, String> {
-        match command {
-            "ai/generate" => {
-                let _timer = TimingGuard::new("module", "ai_generate");
-
-                // Parse request
-                let request = self.parse_request(&params)?;
-
-                // Get registry
-                let registry = self.registry.read().await;
-
-                // Select adapter
-                let (provider_id, adapter) = registry
-                    .select(
-                        request.provider.as_deref(),
-                        request.model.as_deref(),
-                        InferenceDevice::default(),
-                    )
-                    .ok_or_else(|| {
-                        select_failure_message(
-                            &registry,
-                            request.provider.as_deref(),
-                            request.model.as_deref(),
-                        )
-                    })?;
-
-                self.log().info(&format!(
-                    "Using {} adapter for model {:?}",
-                    provider_id, request.model
-                ));
-
-                // Generate text
-                let mut response = adapter.generate_text(request).await?;
-
-                // Add routing info (preserve adapters_applied from adapter response)
-                let prior_routing = response.routing.take();
-                response.routing = Some(RoutingInfo {
-                    provider: provider_id.to_string(),
-                    is_local: adapter.capabilities().is_local,
-                    routing_reason: prior_routing
-                        .as_ref()
-                        .map(|r| r.routing_reason.clone())
-                        .unwrap_or_else(|| "adapter_selected".to_string()),
-                    adapters_applied: prior_routing
-                        .as_ref()
-                        .map(|r| r.adapters_applied.clone())
-                        .unwrap_or_default(),
-                    model_mapped: None,
-                    model_requested: prior_routing.and_then(|r| r.model_requested),
-                });
-
-                Ok(CommandResult::Json(self.response_to_json(&response)))
-            }
-
-            _ => {
-                // Forward unknown ai/* commands directly to TypeScript via Unix socket.
-                // MUST use execute_ts (not execute) to bypass Rust registry — otherwise
-                // the registry matches "ai/" prefix back to this module → infinite recursion.
-                let log = crate::runtime::logger("ai_provider");
-                log.info(&format!(
-                    "Forwarding '{}' to TypeScript via Unix socket (bypassing registry)",
-                    command
-                ));
-                match self.executor.get() {
-                    Some(exec) => exec.execute_ts(command, params).await,
-                    None => Err(
-                        "AIProviderModule: CommandExecutor not installed; cannot forward to TS"
-                            .to_string(),
-                    ),
-                }
-            }
+        // All typed `ai/*` commands (generate + introspection) now self-route through
+        // the registry via `commands()`. Anything still arriving here is an unmigrated
+        // `ai/*` name: forward it directly to TypeScript over the Unix socket.
+        // MUST use execute_ts (not execute) to bypass the Rust registry — otherwise the
+        // `ai/` prefix matches back to this module → infinite recursion. (This legacy
+        // TS-forward retires in Wave Z.)
+        let log = crate::runtime::logger("ai_provider");
+        log.info(&format!(
+            "Forwarding '{}' to TypeScript via Unix socket (bypassing registry)",
+            command
+        ));
+        match self.executor.get() {
+            Some(exec) => exec.execute_ts(command, params).await,
+            None => Err(
+                "AIProviderModule: CommandExecutor not installed; cannot forward to TS".to_string(),
+            ),
         }
     }
 
