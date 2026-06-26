@@ -3,10 +3,10 @@
 //!
 //! After the #65 capability collapse there is no longer a vocabulary to
 //! translate: both shapes carry `model_registry::Capability` directly, so
-//! the projection is a field-for-field clone (plus the two derived
-//! convenience bools `supports_streaming`/`supports_tools` the wire type
-//! exposes for callers that don't want to scan the set). `ModelInfo` is now
-//! effectively a thin TS-projection of `Model`.
+//! the projection is a field-for-field clone. After #66 there are no derived
+//! convenience bools either — streaming/tool-use resolve through
+//! `ModelInfo::has`, never a mirror that can drift from the set. `ModelInfo`
+//! is now effectively a thin TS-projection of `Model`.
 
 use super::types::{CostPer1kTokens, ModelInfo};
 use crate::model_registry::{Capability, Model};
@@ -31,8 +31,6 @@ impl From<&Model> for ModelInfo {
                 output: m.cost_output_per_1k as f64,
             },
             tokens_per_second: m.tokens_per_second,
-            supports_streaming: m.has(Capability::Streaming),
-            supports_tools: m.has(Capability::ToolUse),
         }
     }
 }
@@ -83,8 +81,9 @@ mod tests {
         assert_eq!(projected.id, "claude-sonnet-4-5-20250929");
         assert_eq!(projected.name, "Claude Sonnet 4.5");
         assert_eq!(projected.provider, "anthropic");
-        assert!(projected.supports_streaming);
-        assert!(projected.supports_tools);
+        // Streaming + tools resolve through has() now, not a bool mirror (#66).
+        assert!(projected.has(Capability::Streaming));
+        assert!(projected.has(Capability::ToolUse));
         assert!(projected.capabilities.contains(&Capability::Vision));
         assert!(projected.capabilities.contains(&Capability::Chat));
         assert!(projected.capabilities.contains(&Capability::ToolUse));

@@ -443,8 +443,11 @@ pub struct ModelInfo {
     /// What this model can do. ONE capability vocabulary across the whole
     /// substrate: [`crate::model_registry::Capability`]. There is no second
     /// enum and no bool mirror — modality routing (vision/audio bridge),
-    /// tool-use gating, and embedding/image-gen support all read this set.
-    /// (#55 / #65 capability collapse — ModelCapability + ModalitySet deleted.)
+    /// tool-use gating, streaming, and embedding/image-gen support all read
+    /// this set via [`ModelInfo::has`]. (#55 / #65 capability collapse —
+    /// ModelCapability + ModalitySet deleted; #66 — supports_* bools deleted.)
+    /// `Vec` (not the internal `BTreeSet`) is the idiomatic JSON-array shape
+    /// for this wire DTO; the registry hands it an already-deduped set.
     pub capabilities: Vec<crate::model_registry::Capability>,
     pub context_window: u32,
     pub max_output_tokens: u32,
@@ -453,8 +456,15 @@ pub struct ModelInfo {
     /// Used by RAG budget and slot coordination.
     #[ts(type = "number")]
     pub tokens_per_second: f32,
-    pub supports_streaming: bool,
-    pub supports_tools: bool,
+}
+
+impl ModelInfo {
+    /// Does this model declare `cap`? The ONE accessor — streaming, tool-use,
+    /// vision, embedding all resolve here, never a bool mirror that can drift
+    /// from `capabilities`. Mirrors [`crate::ai::adapter::AdapterCapabilities::has`].
+    pub fn has(&self, cap: crate::model_registry::Capability) -> bool {
+        self.capabilities.contains(&cap)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]

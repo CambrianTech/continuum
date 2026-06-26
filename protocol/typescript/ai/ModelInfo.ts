@@ -12,12 +12,15 @@ export type ModelInfo = { id: string, name: string, provider: string,
  * What this model can do. ONE capability vocabulary across the whole
  * substrate: [`crate::model_registry::Capability`]. There is no second
  * enum and no bool mirror — modality routing (vision/audio bridge),
- * tool-use gating, and embedding/image-gen support all read this set.
- * (#55 / #65 capability collapse — ModelCapability + ModalitySet deleted.)
+ * tool-use gating, streaming, and embedding/image-gen support all read
+ * this set via [`ModelInfo::has`]. (#55 / #65 capability collapse —
+ * ModelCapability + ModalitySet deleted; #66 — supports_* bools deleted.)
+ * `Vec` (not the internal `BTreeSet`) is the idiomatic JSON-array shape
+ * for this wire DTO; the registry hands it an already-deduped set.
  */
 capabilities: Array<Capability>, contextWindow: number, maxOutputTokens: number, costPer1kTokens: CostPer1kTokens, 
 /**
  * Measured or estimated inference speed on current hardware.
  * Used by RAG budget and slot coordination.
  */
-tokensPerSecond: number, supportsStreaming: boolean, supportsTools: boolean, };
+tokensPerSecond: number, };

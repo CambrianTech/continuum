@@ -467,8 +467,6 @@ impl AIProviderAdapter for HeuristicInferenceAdapter {
                 output: 0.0,
             },
             tokens_per_second: 1_000_000.0,
-            supports_streaming: false,
-            supports_tools: false,
         }]
     }
 
