@@ -126,7 +126,9 @@
 
 pub mod arbiter;
 pub mod broker;
+pub mod capacity;
 pub mod consumer;
+pub mod daemon;
 pub mod governor;
 pub mod ledger;
 pub mod lease;
@@ -142,6 +144,8 @@ pub use broker::{
 };
 
 pub use arbiter::{ArbiterContext, LeaseArbiter, TieredArbiter};
+pub use capacity::{CapacitySource, GpuCapacitySource, MockCapacitySource};
+pub use daemon::{DaemonConfig, LeasePoolView, ResourceDaemon};
 pub use governor::{GovernorConfig, PlannedReclaim, ResourceGovernor};
 pub use consumer::{
     ConsumerFootprint, ReclaimOutcome, ReclaimReason, ReclaimRequest, ReclaimStatus,

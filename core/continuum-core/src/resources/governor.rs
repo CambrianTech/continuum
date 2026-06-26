@@ -161,6 +161,25 @@ impl ResourceGovernor {
         now_ms: u64,
         pressure: impl Fn(ResourceKind) -> f64,
     ) -> Vec<PlannedReclaim> {
+        // No external demand — the over-budget + overdue-expiry path only.
+        self.reconcile_for_demand(now_ms, pressure, |_| 0)
+    }
+
+    /// `reconcile` plus an external **reclaim demand** per kind — the seam the
+    /// daemon uses to honor a [`PressureBroker`](crate::paging::PressureBroker)
+    /// `evict_at_least` ask. A cross-resource relief request ("another tier
+    /// needs room — shed N bytes of this kind even though you are within your
+    /// own budget") folds in as a third target source alongside the over-budget
+    /// overage and overdue expirations. It still flows through the SAME victim
+    /// selector, so floors / dwell / pinned-active protection are honored
+    /// identically — a broker ask can never breach a protection the over-budget
+    /// path could not. `demand(kind) == 0` makes this exactly `reconcile`.
+    pub fn reconcile_for_demand(
+        &self,
+        now_ms: u64,
+        pressure: impl Fn(ResourceKind) -> f64,
+        demand: impl Fn(ResourceKind) -> u64,
+    ) -> Vec<PlannedReclaim> {
         let mut plans = Vec::new();
         for kind in ResourceKind::ALL {
             let granted = self.ledger.granted(kind);
@@ -173,7 +192,7 @@ impl ResourceGovernor {
                 .filter(|l| l.kind == kind)
                 .map(|l| l.bytes)
                 .fold(0u64, |a, b| a.saturating_add(b));
-            let target = overage.max(expired_bytes);
+            let target = overage.max(expired_bytes).max(demand(kind));
             if target == 0 {
                 continue;
             }
@@ -234,6 +253,13 @@ impl ResourceGovernor {
 
     pub fn available(&self, kind: ResourceKind) -> u64 {
         self.ledger.available(kind)
+    }
+
+    /// The scanned ceiling currently in effect for a kind — what the daemon last
+    /// fed via [`set_capacity`](Self::set_capacity). The broker pool view reports
+    /// this as its `capacity_bytes`.
+    pub fn capacity(&self, kind: ResourceKind) -> u64 {
+        self.ledger.capacity(kind)
     }
 
     // ---- internals ---------------------------------------------------------

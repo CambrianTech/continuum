@@ -20,7 +20,9 @@ use std::collections::BTreeMap;
 use ts_rs::TS;
 
 use super::arbiter::{ArbiterContext, LeaseArbiter};
-use super::lease::{LeaseError, LeaseRequest, ReclaimPolicy, ResourceKind, ResourceLease};
+use super::lease::{LeaseError, LeaseRequest, ResourceKind, ResourceLease};
+#[cfg(test)]
+use super::lease::ReclaimPolicy;
 
 /// Per-kind accounting snapshot — what one resource axis looks like right now.
 /// `available = capacity − granted`; `granted` sums *all* live leases including
