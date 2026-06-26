@@ -16,6 +16,7 @@ pub mod code;
 pub mod command;
 pub mod data;
 pub mod help;
+pub mod inference;
 pub mod memory;
 pub mod migration;
 pub mod rag;

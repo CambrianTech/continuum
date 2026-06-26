@@ -20,7 +20,6 @@ use crate::modules::airc_bridge_directive::AircBridgeDirectiveModule;
 use crate::modules::airc_bridge_dispatch::AircBridgeDispatchModule;
 use crate::modules::health::HealthModule;
 use crate::modules::launch_mode::LaunchModeModule;
-use crate::modules::inference::InferenceModule;
 use crate::modules::live::{VoiceModule, VoiceState};
 use crate::modules::logger::LoggerModule;
 use crate::modules::memory::{MemoryModule, MemoryState};
@@ -1024,10 +1023,9 @@ pub fn start_server(
         crate::modules::resource_broker::ResourceBrokerModule::new(),
     ));
 
-    // Phase 1: InferenceModule — exposes inference/capacity so TS side
-    // (InferenceCoordinator) reads a single Rust source of truth instead
-    // of duplicating the RAM formula. See issue #887.
-    runtime.register(Arc::new(InferenceModule::new()));
+    // `inference/capacity` is now a stateless self-routing command
+    // (`commands/inference/capacity.rs`) — same single-source-of-truth RAM
+    // formula (issue #887), no module shell needed. See the typed registry.
 
     // InferenceHandleModule — the `ai/inference/{open,generate,close,inspect}`
     // lane command surface, routed through the SAME `InferenceCoordinator`

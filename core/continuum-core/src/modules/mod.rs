@@ -47,7 +47,6 @@ pub mod grant_issuance;
 pub mod grid;
 pub mod health;
 pub mod hippocampus;
-pub mod inference;
 pub mod inference_coordinator_module;
 pub mod launch_mode;
 pub mod live;
