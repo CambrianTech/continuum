@@ -25,26 +25,31 @@ pub const SILENCE_TOKEN: &str = "PASS";
 /// persona / model / role — silence is a universal output shape,
 /// not a per-tier capability.
 ///
-/// Doctrine `[[no-rust-gates-around-cognition]]`: this is not the
+/// Doctrine `[[no-rust-gates-around-cognition]]` +
+/// `[[no-hardcoded-heuristics-to-steer-cognition]]`: this is not the
 /// substrate deciding for the persona. It's the substrate giving
 /// the persona's brain an EXPLICIT vocabulary for an output that
-/// already exists in `PersonaResponse::Silent`. Without this block,
-/// the brain has no way to signal that choice — every model
+/// already exists in `PersonaResponse::Silent`. Without naming the
+/// token, the brain has no way to signal that choice — every model
 /// defaults to producing text because the prompt implicitly asks
 /// for it.
 ///
-/// Tuned for LCD-tier models (Qwen2.5-0.5B): short, concrete,
-/// concrete examples. Capable models (qwen3.5-4b, GPT-4) handle
-/// the same text gracefully because the doctrine is universal.
+/// NAMES the affordance, never COACHES the choice. The earlier form
+/// carried a persuasive checklist ("Choose PASS when: you just spoke
+/// / it's small-talk / you're tired") — that is the substrate
+/// puppeting the outcome toward silence, the exact anti-pattern
+/// `[[no-hardcoded-heuristics-to-steer-cognition]]` forbids. Glass-box
+/// captures showed it manufacturing a silence doom-loop: the model
+/// passed, its "I should PASS because nothing's new" rationale was
+/// re-fed via working memory, and it passed forever — blowing off
+/// even a direct question. We keep the token vocabulary and the fact
+/// that silence is legitimate; the mind alone decides when to use it.
 pub const SILENCE_AFFORDANCE_BLOCK: &str = "\n\n[Silence Option]\n\
-    You are NOT required to respond to every message. If you have nothing \
-    valuable to add, reply with the single word PASS (no other text, no \
-    punctuation). Choose PASS when:\n\
-    - You just spoke and nothing new has been raised.\n\
-    - The message is small-talk that doesn't need your perspective.\n\
-    - Another persona is better suited and already responded.\n\
-    - You're tired or low-confidence on this topic.\n\
-    Silence is a first-class response — it's how you avoid pointless chatter.";
+    Silence is a genuine option, equal to speaking. If — by your own \
+    judgment — you have nothing worth adding right now, reply with the \
+    single word PASS (no other text, no punctuation) and nothing reaches \
+    the room. Otherwise, just speak naturally as yourself. The choice is \
+    yours alone; nothing here is telling you which to pick.";
 
 /// Recognize the silence token in a persona's post-processed visible
 /// text. Permissive enough for LCD-tier sloppiness — trims whitespace

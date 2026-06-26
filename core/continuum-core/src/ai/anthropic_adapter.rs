@@ -17,8 +17,10 @@
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::{json, Value};
+use std::collections::BTreeSet;
 use std::time::Instant;
 
+use crate::model_registry::Capability;
 use crate::secrets::get_secret;
 
 use super::adapter::{AIProviderAdapter, AdapterCapabilities, ApiStyle};
@@ -257,30 +259,23 @@ impl AIProviderAdapter for AnthropicAdapter {
     }
 
     fn capabilities(&self) -> AdapterCapabilities {
+        // Anthropic: native function calling (tool_use blocks) + native JSON
+        // Schema enforcement, streaming, and vision-in. Audio is bridged
+        // (STT/TTS) since it's absent from the set. Embeddings/image-gen not
+        // offered by this API.
         AdapterCapabilities {
-            supports_text_generation: true,
-            supports_chat: true,
-            supports_tool_use: true,
-            supports_vision: true,
-            supports_streaming: true,
-            supports_embeddings: false,
-            supports_audio: false,
-            supports_image_generation: false,
+            capabilities: BTreeSet::from([
+                Capability::TextGeneration,
+                Capability::Chat,
+                Capability::ToolUse,
+                Capability::Vision,
+                Capability::Streaming,
+            ]),
             is_local: false,
             max_context_window: 200000,
-
-            // Arc 1: Anthropic ships native function calling (tool_use blocks)
-            // + native JSON Schema enforcement. Vision-in native; audio bridged.
+            max_output_tokens: 8192,
             tool_call_protocol: crate::ai::adapter::ToolCallProtocol::NativeFunctionCalling,
             structured_output_protocol: crate::ai::adapter::StructuredOutputProtocol::JsonSchema,
-            modalities: crate::ai::adapter::ModalitySet {
-                text_in: true,
-                text_out: true,
-                vision_in: true,
-                audio_in: false,
-                audio_out: false,
-            },
-            max_output_tokens: 8192,
         }
     }
 

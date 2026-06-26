@@ -94,30 +94,16 @@ impl AIProviderAdapter for AircRemoteInferenceAdapter {
         // intersection of what most modern transformer adapters
         // support; the substrate can refine via a future
         // capability-discovery handshake.
+        // Text-only safe floor: without a capability-discovery handshake
+        // (future card) this adapter doesn't introspect the remote peer's
+        // adapter, so it advertises only what every transformer adapter does.
+        // The substrate refines once the peer reports its real set.
         AdapterCapabilities {
-            supports_text_generation: true,
-            supports_chat: true,
-            supports_tool_use: false,
-            supports_vision: false,
-            supports_streaming: false,
-            supports_embeddings: false,
-            supports_audio: false,
-            supports_image_generation: false,
-            // Cloud-shaped from THIS host's perspective — no local
-            // hardware footprint.
+            // Cloud-shaped from THIS host's perspective — no local hardware
+            // footprint. Unknown context; defer to whatever the peer can do.
             is_local: false,
-            // Unknown; defer to whatever the peer can do.
             max_context_window: u32::MAX,
-
-            // Arc 1: remote peer adapter — without a capability-discovery
-            // handshake (future card), we don't know what protocols the
-            // peer's adapter supports. Defer to None / TEXT_ONLY as the
-            // safe-floor; the substrate refines once the peer reports.
-            tool_call_protocol: crate::ai::adapter::ToolCallProtocol::None,
-            structured_output_protocol:
-                crate::ai::adapter::StructuredOutputProtocol::None,
-            modalities: crate::ai::adapter::ModalitySet::TEXT_ONLY,
-            max_output_tokens: 4096,
+            ..AdapterCapabilities::text_only()
         }
     }
 
@@ -306,8 +292,8 @@ mod tests {
         });
         let adapter = AircRemoteInferenceAdapter::new(transport);
         let caps = adapter.capabilities();
-        assert!(caps.supports_text_generation);
-        assert!(caps.supports_chat);
+        assert!(caps.has(crate::model_registry::Capability::TextGeneration));
+        assert!(caps.has(crate::model_registry::Capability::Chat));
         assert!(!caps.is_local);
     }
 

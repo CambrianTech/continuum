@@ -454,7 +454,10 @@ pub async fn resolve_recall_embedder(adapter: Arc<dyn AIProviderAdapter>) -> Arc
 
     // 2. Fallback: the chat adapter's embeddings endpoint, for a gateway that
     //    serves an embedding lane (e.g. unsloth/llama-server started --embeddings).
-    if adapter.capabilities().supports_embeddings {
+    if adapter
+        .capabilities()
+        .has(crate::model_registry::Capability::Embedding)
+    {
         if let Some(provider) = try_neural_embedder(adapter, &model).await {
             crate::probe!(
                 class = "recall.embedder.resolved",
@@ -685,8 +688,12 @@ mod tests {
             "fake-model"
         }
         fn capabilities(&self) -> crate::ai::adapter::AdapterCapabilities {
+            let mut capabilities = std::collections::BTreeSet::new();
+            if self.supports {
+                capabilities.insert(crate::model_registry::Capability::Embedding);
+            }
             crate::ai::adapter::AdapterCapabilities {
-                supports_embeddings: self.supports,
+                capabilities,
                 ..Default::default()
             }
         }

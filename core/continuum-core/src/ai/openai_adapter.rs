@@ -18,6 +18,7 @@
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::{json, Value};
+use std::collections::BTreeSet;
 use std::time::Instant;
 
 use crate::model_registry::{AuthKind, Capability};
@@ -64,8 +65,13 @@ pub struct OpenAICompatibleConfig {
     pub base_url: String,
     pub api_key_env: Option<String>,
     pub default_model: String,
-    pub supports_tools: bool,
-    pub supports_vision: bool,
+    /// What this provider's models can do — projected into the ONE capability
+    /// vocabulary (#65). Tool-use + vision come from scanning the provider's
+    /// models; embeddings + image-gen come from the provider's declared
+    /// `ProviderCapabilities`. The adapter CONSUMES this set via
+    /// `capabilities.contains(Capability::X)` — it never branches on
+    /// `provider.id`, and there is no bool mirror.
+    pub capabilities: BTreeSet<Capability>,
     pub models: Vec<ModelInfo>,
     pub model_prefixes: Vec<String>,
     /// Whether this provider requires an Authorization header. Derived
@@ -83,19 +89,25 @@ pub struct OpenAICompatibleConfig {
     /// .suppress_thinking` (#55). Gateway-level for now; per-task/per-request
     /// refinement is the follow-up.
     pub thinking: ThinkingMode,
-    /// This provider's endpoint exposes OpenAI-compatible `/v1/embeddings`.
-    /// From `Provider.capabilities.supports_embeddings` (#55) — replaces the
-    /// `matches!(id, "openai" | "unsloth")` branch in `capabilities()`.
-    pub supports_embeddings: bool,
-    /// This provider's endpoint exposes image generation. From
-    /// `Provider.capabilities.supports_image_generation` (#55) — replaces the
-    /// `id == "openai"` branch in `capabilities()`.
-    pub supports_image_generation: bool,
     /// This endpoint serves ONE resident model and ignores the request's
     /// `model` field, so the adapter must pre-flight model activation before
     /// each generation. From `Provider.capabilities.single_resident_model`
     /// (#55) — replaces the `id == "unsloth"` branch in `generate_text`.
     pub single_resident_model: bool,
+    /// This endpoint has a DYNAMIC `/v1/models` catalog with ids that differ
+    /// from the registry's logical ids (DMR's `hf.co/…:latest` mangling), so
+    /// the adapter fetches the live catalog at init, resolves logical→live ids
+    /// per POST, and answers `supports_model` from the live set. From
+    /// `Provider.capabilities.dynamic_model_catalog` (#55) — replaces the
+    /// `id == "docker-model-runner"` branches in `initialize`, `generate_text`,
+    /// and `supports_model`.
+    pub dynamic_model_catalog: bool,
+    /// This llama.cpp-family endpoint accepts native sampling extension fields
+    /// (`repeat_penalty`) beyond the OpenAI body, so the adapter forwards them
+    /// to stop the forged 4B looping. From
+    /// `Provider.capabilities.llamacpp_sampling_extensions` (#55) — replaces
+    /// the `id == "docker-model-runner"` `repeat_penalty` branch.
+    pub llamacpp_sampling_extensions: bool,
 }
 
 /// What the serving backend told us when we asked it `GET /lora-adapters`.
@@ -178,20 +190,17 @@ impl OpenAICompatibleAdapter {
             .build()
             .expect("Failed to create HTTP client");
 
-        // Per-provider concurrency gate. DMR = 1 slot (single-slot
-        // llama.cpp). Everyone else = effectively unbounded. When N
-        // personas fan-out into concurrent DMR POSTs, the excess
-        // queue in this semaphore INSTEAD of stalling inside reqwest
-        // past its 120s client timeout — which is the specific
-        // failure mode where personas emitted "error sending request
-        // for url -> operation timed out" with connect=false (the
-        // request reached DMR, but DMR was busy on the prior
-        // persona's forward pass when its 120s budget expired).
-        let slots = if config.provider_id == "docker-model-runner" {
-            1
-        } else {
-            64
-        };
+        // Per-provider concurrency gate. A single-resident-model gateway
+        // (DMR, llama-server) serves ONE model on ONE slot, so N personas
+        // fanning out into concurrent POSTs must queue in this semaphore
+        // INSTEAD of stalling inside reqwest past its 120s client timeout —
+        // the specific failure mode where personas emitted "error sending
+        // request for url -> operation timed out" with connect=false (the
+        // request reached the gateway, but it was busy on the prior persona's
+        // forward pass when its 120s budget expired). Multi-model / cloud
+        // endpoints are effectively unbounded. Keyed on the TYPED capability
+        // (#55), never the provider id.
+        let slots = if config.single_resident_model { 1 } else { 64 };
         let concurrency = std::sync::Arc::new(tokio::sync::Semaphore::new(slots));
 
         Self {
@@ -530,12 +539,36 @@ impl OpenAICompatibleAdapter {
         });
 
         let models = models_for_provider_via_registry(provider_id);
-        let supports_tools = reg
+
+        // Project this provider's real capabilities into the ONE vocabulary
+        // (#65). Every OpenAI-compatible adapter does text + chat + streaming;
+        // tool-use + vision come from scanning the provider's models; embeddings
+        // + image-gen come from the provider's declared `ProviderCapabilities`.
+        // A new vision-capable model in TOML flips the Vision flag automatically
+        // on next boot — no code change, no `id == "..."` branch.
+        let mut capabilities = BTreeSet::from([
+            Capability::TextGeneration,
+            Capability::Chat,
+            Capability::Streaming,
+        ]);
+        if reg
             .models_for_provider(provider_id)
-            .any(|m| m.has(Capability::ToolUse));
-        let supports_vision = reg
+            .any(|m| m.has(Capability::ToolUse))
+        {
+            capabilities.insert(Capability::ToolUse);
+        }
+        if reg
             .models_for_provider(provider_id)
-            .any(|m| m.has(Capability::Vision));
+            .any(|m| m.has(Capability::Vision))
+        {
+            capabilities.insert(Capability::Vision);
+        }
+        if provider.capabilities.supports_embeddings {
+            capabilities.insert(Capability::Embedding);
+        }
+        if provider.capabilities.supports_image_generation {
+            capabilities.insert(Capability::ImageGeneration);
+        }
         let requires_auth = !matches!(provider.auth, AuthKind::None);
 
         // `default_model` is non-optional in the adapter trait
@@ -560,17 +593,17 @@ impl OpenAICompatibleAdapter {
             base_url: provider.base_url.clone(),
             api_key_env: provider.api_key_env.clone(),
             default_model,
-            supports_tools,
-            supports_vision,
+            capabilities,
             models,
             model_prefixes: provider.model_prefixes.clone(),
             requires_auth,
-            // Tool-call shape + thinking + embeddings + single-slot residency all
-            // come from the registry's declared `Provider.capabilities` (#55) — the
-            // adapter CONSUMES them, it does not branch on `provider.id`. A local
-            // GGUF gateway declares JsonInPrompt + suppress_thinking; cloud
-            // providers inherit the Native/keep-thinking defaults. One source of
-            // truth (model_registry/catalog.rs), no id stand-ins here.
+            // Tool-call shape + thinking + embeddings + single-slot residency +
+            // dynamic-catalog + llama.cpp sampling extensions ALL come from the
+            // registry's declared `Provider.capabilities` (#55) — the adapter
+            // CONSUMES them, it does not branch on `provider.id`. A local GGUF
+            // gateway declares its real flags; cloud providers inherit the
+            // Native/keep-thinking defaults. One source of truth
+            // (model_registry/catalog.rs), no id stand-ins here.
             tool_protocol: match provider.capabilities.tool_protocol {
                 crate::model_registry::types::ProviderToolProtocol::JsonInPrompt => {
                     super::json_in_prompt_tools::ToolProtocol::JsonInPrompt
@@ -593,9 +626,9 @@ impl OpenAICompatibleAdapter {
                     ThinkingMode::Default
                 }
             },
-            supports_embeddings: provider.capabilities.supports_embeddings,
-            supports_image_generation: provider.capabilities.supports_image_generation,
             single_resident_model: provider.capabilities.single_resident_model,
+            dynamic_model_catalog: provider.capabilities.dynamic_model_catalog,
+            llamacpp_sampling_extensions: provider.capabilities.llamacpp_sampling_extensions,
         })
     }
 
@@ -881,22 +914,15 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
     }
 
     fn capabilities(&self) -> AdapterCapabilities {
-        let supports_tools = self.config.supports_tools;
-        let supports_vision = self.config.supports_vision;
+        // The capability set is already projected from the registry at
+        // construction (#65) — the adapter just hands it through, adding the
+        // scalar/protocol axes. Tool-use drives the native function-calling +
+        // JSON-Schema protocols; vision/embeddings/image-gen ride in the set
+        // itself, and any modality absent from the set is bridged (vision →
+        // VisionDescriptionService, audio → STT/TTS) before the request lands.
+        let supports_tools = self.config.capabilities.contains(&Capability::ToolUse);
         AdapterCapabilities {
-            supports_text_generation: true,
-            supports_chat: true,
-            supports_tool_use: supports_tools,
-            supports_vision,
-            supports_streaming: true,
-            // Embeddings + image generation are declared per-provider in the
-            // registry (#55), not branched on id here. A gateway that exposes
-            // OpenAI-compatible `/v1/embeddings` sets `supports_embeddings`, which
-            // is what lets continuum's neural recall path embed through it and
-            // delete the local fastembed/ONNX embedder.
-            supports_embeddings: self.config.supports_embeddings,
-            supports_audio: false,
-            supports_image_generation: self.config.supports_image_generation,
+            capabilities: self.config.capabilities.clone(),
             is_local: false,
             max_context_window: self
                 .config
@@ -904,11 +930,16 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
                 .first()
                 .map(|m| m.context_window)
                 .unwrap_or(128000),
-
-            // Arc 1: OpenAI-compatible providers (OpenAI, DeepSeek, Together,
-            // Fireworks, Groq, xAI, Mistral) support native function calling
-            // when supports_tools is set, and JSON Schema for structured output.
-            // Vision-in when supports_vision is set; rest goes through bridges.
+            // Sourced from the served model's declared ceiling (#46), mirroring
+            // max_context_window above — never a hardcoded per-adapter clamp.
+            // The 16_384 floor only applies when no model row is present (a
+            // mis-provisioned adapter), which fails loud downstream anyway.
+            max_output_tokens: self
+                .config
+                .models
+                .first()
+                .map(|m| m.max_output_tokens)
+                .unwrap_or(16_384),
             tool_call_protocol: if supports_tools {
                 crate::ai::adapter::ToolCallProtocol::NativeFunctionCalling
             } else {
@@ -919,14 +950,6 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
             } else {
                 crate::ai::adapter::StructuredOutputProtocol::PromptOnly
             },
-            modalities: crate::ai::adapter::ModalitySet {
-                text_in: true,
-                text_out: true,
-                vision_in: supports_vision,
-                audio_in: false,
-                audio_out: false,
-            },
-            max_output_tokens: 16_384,
         }
     }
 
@@ -980,7 +1003,8 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
         // succeeds — runtime_models stays None → supports_model returns false
         // → registry hard-errors instead of silently routing to this adapter.
         // That's the correct failure mode: don't falsely claim availability.
-        if self.config.provider_id == "docker-model-runner" {
+        // Gated on the TYPED capability (#55), never the provider id.
+        if self.config.dynamic_model_catalog {
             if let Err(e) = self.refresh_runtime_models().await {
                 clog_warn!(
                     "DMR model catalog fetch failed at init: {}. DMR will report no models available until a successful refresh.",
@@ -1032,7 +1056,7 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
         // If DMR doesn't have the model, resolve returns Err — we propagate
         // it as a fast, explicit failure instead of POSTing an unresolved
         // name and stalling on the 120s request timeout.
-        let resolved_model: String = if self.config.provider_id == "docker-model-runner" {
+        let resolved_model: String = if self.config.dynamic_model_catalog {
             self.resolve_dmr_model_name(raw_model).await?
         } else {
             raw_model.to_string()
@@ -1086,12 +1110,14 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
         // does NOT exhibit this failure mode on Mac Metal. Classic RULE 1
         // divergence (integration test path ≠ production path).
         //
-        // Scoped to docker-model-runner ONLY because cloud OpenAI-compat
-        // providers (openai, groq, xai, fireworks, together) do NOT accept
-        // `repeat_penalty` (non-standard field); some ignore it silently,
-        // others reject. Behavior parity with pre-patch for those
-        // providers is preserved by gating on provider_id.
-        if self.config.provider_id == "docker-model-runner" {
+        // Scoped to llama.cpp-family gateways (DMR, llama-server) via the TYPED
+        // `llamacpp_sampling_extensions` capability (#55), NOT the provider id:
+        // cloud OpenAI-compat providers (openai, groq, xai, fireworks, together)
+        // do NOT accept `repeat_penalty` (non-standard field) — some ignore it
+        // silently, others reject — so they leave the flag false and the field
+        // is omitted. llama-server inherits the same protection DMR had: the
+        // forged 4B loops its `<think>` block to the token budget without it.
+        if self.config.llamacpp_sampling_extensions {
             let rp = request.repeat_penalty.unwrap_or(1.1);
             if let Some(obj) = body.as_object_mut() {
                 obj.insert("repeat_penalty".to_string(), json!(rp));
@@ -1161,7 +1187,7 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
         // prompt above (sending the param too would be ignored or confuse them).
         if let Some(tools) = &request.tools {
             if !tools.is_empty()
-                && self.config.supports_tools
+                && self.config.capabilities.contains(&Capability::ToolUse)
                 && self.config.tool_protocol
                     == super::json_in_prompt_tools::ToolProtocol::Native
             {
@@ -1579,17 +1605,18 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
     /// The default trait impl uses `starts_with` against
     /// `supported_model_prefixes`. We override because prefixes now live
     /// in `config/providers.toml` (Provider.model_prefixes), not as
-    /// `&'static str` embedded in code. DMR is special-cased because its
-    /// catalog is dynamic — what's available depends on `docker model
-    /// pull` history — so we check the live runtime_models set populated
-    /// at init.
+    /// `&'static str` embedded in code. A dynamic-catalog gateway (DMR) is
+    /// special-cased because its catalog depends on `docker model pull`
+    /// history — so we check the live runtime_models set populated at init.
     ///
-    /// Returning false when DMR's live set is empty/missing is the right
+    /// Returning false when the live set is empty/missing is the right
     /// behavior: AdapterRegistry::select hard-errors when no adapter
     /// supports a model, which surfaces the real problem ("user never
     /// pulled X") instead of silently routing to some other provider.
+    /// Gated on the TYPED `dynamic_model_catalog` capability (#55), not
+    /// the provider id.
     fn supports_model(&self, model_name: &str) -> bool {
-        if self.config.provider_id == "docker-model-runner" {
+        if self.config.dynamic_model_catalog {
             return self.runtime_models_contain(model_name);
         }
         let lower = model_name.to_lowercase();

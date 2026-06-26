@@ -56,9 +56,9 @@ use crate::ai::adapter::{
 };
 use crate::ai::types::{
     ChatMessage, ContentPart, CostPer1kTokens, FinishReason, HealthState, HealthStatus,
-    MessageContent, ModelCapability, ModelInfo, TextGenerationRequest, TextGenerationResponse,
-    UsageMetrics,
+    MessageContent, ModelInfo, TextGenerationRequest, TextGenerationResponse, UsageMetrics,
 };
+use crate::model_registry::Capability;
 
 /// Provider ID used to register + select this adapter from the global
 /// AdapterRegistry. `Commands.execute('inference/llm/request', {
@@ -314,32 +314,21 @@ impl AIProviderAdapter for HeuristicInferenceAdapter {
 
 
     fn capabilities(&self) -> AdapterCapabilities {
+        // Heuristic adapter intentionally advertises only text I/O — tool
+        // use, vision, embeddings, etc. are peer-adapter territory (per
+        // [[ai-namespace-multimodal-crutches]]). A future
+        // HeuristicVisionAdapter / HeuristicEmbeddingAdapter would each add
+        // its capability to this set.
         AdapterCapabilities {
-            supports_text_generation: true,
-            supports_chat: true,
-            // Heuristic adapter intentionally does NOT advertise tool
-            // use, vision, embeddings, etc. — those are peer-adapter
-            // territory (per [[ai-namespace-multimodal-crutches]]).
-            // A future HeuristicVisionAdapter / HeuristicEmbeddingAdapter
-            // would handle each modality.
-            supports_tool_use: false,
-            supports_vision: false,
-            supports_streaming: false,
-            supports_embeddings: false,
-            supports_audio: false,
-            supports_image_generation: false,
             // Local in the "no network, no GPU" sense.
             is_local: true,
             // Effectively unlimited — we never reject by length.
             max_context_window: u32::MAX,
-
-            // Arc 1 typed descriptors: heuristic is a deterministic
-            // text-only adapter — no protocols beyond text I/O.
-            tool_call_protocol: crate::ai::adapter::ToolCallProtocol::None,
-            structured_output_protocol:
-                crate::ai::adapter::StructuredOutputProtocol::None,
-            modalities: crate::ai::adapter::ModalitySet::TEXT_ONLY,
             max_output_tokens: 4096,
+            // Deterministic text-only adapter — no protocols beyond text I/O.
+            tool_call_protocol: crate::ai::adapter::ToolCallProtocol::None,
+            structured_output_protocol: crate::ai::adapter::StructuredOutputProtocol::None,
+            ..AdapterCapabilities::text_only()
         }
     }
 
@@ -470,7 +459,7 @@ impl AIProviderAdapter for HeuristicInferenceAdapter {
             id: HEURISTIC_DEFAULT_MODEL.to_string(),
             name: "Heuristic Echo v1".to_string(),
             provider: HEURISTIC_PROVIDER_ID.to_string(),
-            capabilities: vec![ModelCapability::TextGeneration, ModelCapability::Chat],
+            capabilities: vec![Capability::TextGeneration, Capability::Chat],
             context_window: u32::MAX,
             max_output_tokens: 4_096,
             cost_per_1k_tokens: CostPer1kTokens {
@@ -678,11 +667,11 @@ mod tests {
     async fn capabilities_admit_text_chat_but_not_modality_specific() {
         let adapter = HeuristicInferenceAdapter::new();
         let caps = adapter.capabilities();
-        assert!(caps.supports_text_generation);
-        assert!(caps.supports_chat);
-        assert!(!caps.supports_tool_use);
-        assert!(!caps.supports_vision);
-        assert!(!caps.supports_embeddings);
+        assert!(caps.has(Capability::TextGeneration));
+        assert!(caps.has(Capability::Chat));
+        assert!(!caps.has(Capability::ToolUse));
+        assert!(!caps.has(Capability::Vision));
+        assert!(!caps.has(Capability::Embedding));
         assert!(caps.is_local);
     }
 

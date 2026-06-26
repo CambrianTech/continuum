@@ -6,6 +6,7 @@ use tokio::sync::RwLock;
 
 use crate::ai::AdapterRegistry;
 use crate::commands::ai::AiRegistryQueryParams;
+use crate::model_registry::Capability;
 
 /// Capability summary for one provider — the subset cognition + clients read
 /// when choosing a provider/model.
@@ -71,12 +72,12 @@ crate::action_command! {
                     name: adapter.name().to_string(),
                     default_model: adapter.default_model().to_string(),
                     capabilities: ProviderCapabilitiesView {
-                        text_generation: caps.supports_text_generation,
-                        chat: caps.supports_chat,
-                        tool_use: caps.supports_tool_use,
-                        vision: caps.supports_vision,
-                        streaming: caps.supports_streaming,
-                        embeddings: caps.supports_embeddings,
+                        text_generation: caps.has(Capability::TextGeneration),
+                        chat: caps.has(Capability::Chat),
+                        tool_use: caps.has(Capability::ToolUse),
+                        vision: caps.has(Capability::Vision),
+                        streaming: caps.has(Capability::Streaming),
+                        embeddings: caps.has(Capability::Embedding),
                         is_local: caps.is_local,
                         max_context_window: caps.max_context_window,
                     },

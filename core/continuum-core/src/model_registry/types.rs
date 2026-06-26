@@ -195,6 +195,30 @@ pub struct ProviderCapabilities {
     /// `model` id and leave this `false`. Default: `false`.
     #[serde(default)]
     pub single_resident_model: bool,
+    /// The endpoint publishes a DYNAMIC model catalog over `/v1/models`
+    /// whose ids differ from the registry's logical ids (e.g. Docker Model
+    /// Runner mangles `continuum-ai/qwen3.5-4b-code-forged-GGUF` into
+    /// `huggingface.co/continuum-ai/qwen3.5-4b-code-forged-gguf:latest`).
+    /// The adapter must (1) fetch that live catalog at init, (2) resolve a
+    /// logical id to the live id before each POST, and (3) answer
+    /// `supports_model` from the live set — because what's available depends
+    /// on `docker model pull` history, not a static row. A provider whose
+    /// served model ids match the registry (cloud APIs, llama-server's
+    /// resident GGUF) leaves this `false` and routes by the static rows.
+    /// Default: `false`.
+    #[serde(default)]
+    pub dynamic_model_catalog: bool,
+    /// The endpoint is a llama.cpp-family server that accepts llama.cpp's
+    /// NATIVE sampling extension fields (`repeat_penalty`, etc.) on top of
+    /// the OpenAI-standard body. Without `repeat_penalty` a llama.cpp server
+    /// runs it at its default of 1.0 (disabled) and small forged reasoners
+    /// loop — reprinting the same `<think>` paragraph until they burn the
+    /// token budget without emitting a real reply (verified on the forged 4B
+    /// over both DMR and llama-server). Cloud OpenAI-compatible providers
+    /// reject the non-standard field, so they leave this `false`. Default:
+    /// `false`.
+    #[serde(default)]
+    pub llamacpp_sampling_extensions: bool,
 }
 
 /// How prompt_assembly should shape multi-party chat history when

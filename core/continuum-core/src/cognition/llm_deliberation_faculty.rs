@@ -666,8 +666,22 @@ impl Faculty for LlmDeliberationFaculty {
         // is `Some` only when thinking is enabled (a `<think>` block the adapter
         // separated); the room only ever saw `resp.text`. Recorded for EVERY verdict
         // shape (act or speak) — acting is thinking too.
-        if let (Some(wm), Some(reasoning)) = (&self.working_memory, &resp.reasoning) {
-            wm.record(reasoning);
+        //
+        // EXCEPT a silence turn (PASS): re-feeding its self-justification ("nothing
+        // new, I should PASS") is what seeds the silence doom-loop the glass box
+        // exposed — three stored rationalizations and the mind passes forever, even
+        // when directly addressed. Instead record a STAMPED proprioceptive marker
+        // (same mechanism `record_action` uses for repeated acts): the mind perceives
+        // THAT it has been quiet, and — via the monotonic stamp — how many turns
+        // running, which lets it notice the pattern and break out. The inverse of
+        // reading fresh reasons to keep passing.
+        // ([[no-hardcoded-heuristics-to-steer-cognition]])
+        if let Some(wm) = &self.working_memory {
+            if crate::persona::prompt_assembly::looks_like_silence_token(&resp.text) {
+                wm.record_action("chose silence — said nothing to the room");
+            } else if let Some(reasoning) = &resp.reasoning {
+                wm.record(reasoning);
+            }
         }
 
         // Did she choose to act? Two shapes, both → `Decision::Act`:

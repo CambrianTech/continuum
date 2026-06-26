@@ -587,6 +587,27 @@ impl LlamaServerControl for LlamaServerProcess {
             // Serve embeddings from the same process so the embedder doesn't
             // need a second server. Personas' embedding adapter points here too.
             .arg("--embeddings");
+        // Native tool-calling needs the model's TOOL-CAPABLE chat template. The
+        // mlx→gguf conversion can strip the embedded template down to a bare
+        // ChatML loop (no `<tools>`/`<tool_call>` rendering) — which silently
+        // disables native function-calling, so the gateway ignores the `tools`
+        // param and the persona's hands go dead (verified live 2026-06-26: the
+        // forged GGUF carried a 208-char template, zero tool support). When the
+        // forge writes a `chat_template.jinja` sidecar next to the GGUF, hand it
+        // to llama-server with --jinja so it renders tools and does
+        // grammar-constrained native tool calls — VALID tool-call JSON guaranteed
+        // by the sampler, not hand-escaped by a 4B model into a JSON string (the
+        // failure that made multi-line code calls unparseable). This is an
+        // explicit override file, not a silent fallback: present → it's the
+        // truth the GGUF should have carried; absent → the embedded template
+        // stands.
+        if let Some(tpl) = gguf
+            .parent()
+            .map(|d| d.join("chat_template.jinja"))
+            .filter(|p| p.is_file())
+        {
+            cmd.arg("--jinja").arg("--chat-template-file").arg(tpl);
+        }
         // Load each trained genome layer into the `/lora-adapters` catalog at
         // index order; the per-request `"lora":[{id,scale}]` field pages them in.
         for adapter in &target.adapters {

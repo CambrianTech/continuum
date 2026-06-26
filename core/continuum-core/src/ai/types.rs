@@ -430,25 +430,6 @@ pub enum HealthState {
     RateLimited,
 }
 
-/// Model capabilities
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/ai/ModelCapability.ts")]
-#[serde(rename_all = "kebab-case")]
-pub enum ModelCapability {
-    TextGeneration,
-    TextCompletion,
-    Chat,
-    AudioGeneration,
-    AudioTranscription,
-    ImageGeneration,
-    ImageAnalysis,
-    VideoGeneration,
-    VideoAnalysis,
-    Embeddings,
-    Multimodal,
-    ToolUse,
-}
-
 /// Model information — ALL fields REQUIRED.
 /// The adapter knows its model. No optionals, no defaults, no guessing.
 /// If an adapter can't provide a field, it's not ready to register.
@@ -459,7 +440,12 @@ pub struct ModelInfo {
     pub id: String,
     pub name: String,
     pub provider: String,
-    pub capabilities: Vec<ModelCapability>,
+    /// What this model can do. ONE capability vocabulary across the whole
+    /// substrate: [`crate::model_registry::Capability`]. There is no second
+    /// enum and no bool mirror — modality routing (vision/audio bridge),
+    /// tool-use gating, and embedding/image-gen support all read this set.
+    /// (#55 / #65 capability collapse — ModelCapability + ModalitySet deleted.)
+    pub capabilities: Vec<crate::model_registry::Capability>,
     pub context_window: u32,
     pub max_output_tokens: u32,
     pub cost_per_1k_tokens: CostPer1kTokens,
@@ -677,7 +663,6 @@ mod tests {
         RoutingInfo::export(&cfg).expect("export RoutingInfo");
         HealthStatus::export(&cfg).expect("export HealthStatus");
         HealthState::export(&cfg).expect("export HealthState");
-        ModelCapability::export(&cfg).expect("export ModelCapability");
         ModelInfo::export(&cfg).expect("export ModelInfo");
         CostPer1kTokens::export(&cfg).expect("export CostPer1kTokens");
         EmbeddingRequest::export(&cfg).expect("export EmbeddingRequest");

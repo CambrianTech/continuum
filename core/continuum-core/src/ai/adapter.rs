@@ -15,12 +15,14 @@
 //! - Local (Candle, llama.cpp)
 
 use crate::clog_warn;
+use crate::model_registry::Capability;
 use async_trait::async_trait;
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use super::types::{
-    EmbeddingRequest, EmbeddingResponse, HealthStatus, ModelCapability, ModelInfo,
-    TextGenerationRequest, TextGenerationResponse,
+    EmbeddingRequest, EmbeddingResponse, HealthStatus, ModelInfo, TextGenerationRequest,
+    TextGenerationResponse,
 };
 
 /// Device preference for inference — same pattern as PyTorch device='cuda'
@@ -148,101 +150,64 @@ pub enum StructuredOutputProtocol {
     PromptOnly,
 }
 
-/// Which modalities the adapter handles. The pivot insurance for
-/// sensory parity per `[[ai-namespace-multimodal-crutches]]`: lesser
-/// models declare `vision_in = false` here; the substrate's
-/// VisionDescriptionService bridges by rendering an image description
-/// into text BEFORE the adapter sees the request. Same for STT (audio
-/// → text) and TTS (text → audio). Capability declared honestly =
-/// bridges applied correctly = LCD personas get the same sensory
-/// experience as Claude.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct ModalitySet {
-    /// Accepts text input (system + user messages, raw prompts).
-    pub text_in: bool,
-    /// Produces text output (the common case).
-    pub text_out: bool,
-    /// Accepts image input natively (base64 or URL).
-    pub vision_in: bool,
-    /// Accepts audio input natively (audio file or raw samples).
-    pub audio_in: bool,
-    /// Produces audio output natively (TTS-equivalent).
-    pub audio_out: bool,
-}
-
-impl ModalitySet {
-    /// Text-only modality (most LLMs).
-    pub const TEXT_ONLY: Self = Self {
-        text_in: true,
-        text_out: true,
-        vision_in: false,
-        audio_in: false,
-        audio_out: false,
-    };
-}
-
 /// AI provider adapter capabilities — the typed surface the substrate's
 /// coordinator consults when routing a workload to the best-fit adapter.
 ///
-/// Arc 1 (card 42bd9367): added typed protocol descriptors
-/// (`tool_call_protocol`, `structured_output_protocol`, `modalities`)
-/// alongside the legacy bool flags. The bool flags are retained for
-/// existing callers; new selectors should consult the typed fields.
+/// ONE capability vocabulary (#65 collapse): `model_registry::Capability`.
+/// There is no `ModalitySet`, no `supports_*` bool mirror, no second enum —
+/// `caps.has(Capability::Vision)` IS the modality check, and that same check
+/// is what fires the sensory bridge: a capability NOT in this set is bridged
+/// by the substrate before the adapter sees the request (vision →
+/// VisionDescriptionService, AudioInput → STT, AudioOutput → TTS). Capability
+/// declared honestly = bridges applied correctly = LCD personas get the same
+/// sensory experience as Claude (`[[ai-namespace-multimodal-crutches]]`).
+///
 /// Per `[[adapter-pattern-is-the-pivot-insurance]]`: every ML-touching
-/// capability sits behind this trait so the substrate can pivot
-/// (swap framework, swap model, swap provider) by declaration, not
-/// rewrite.
+/// capability sits behind this trait so the substrate can pivot (swap
+/// framework, swap model, swap provider) by declaration, not rewrite. The
+/// only non-capability members are the scalars cognition needs to bound a
+/// turn and the protocol descriptors the tool/structured-output loops route
+/// through (protocol = HOW, distinct axis from WHAT the model can do).
 #[derive(Debug, Clone, Default)]
 pub struct AdapterCapabilities {
-    pub supports_text_generation: bool,
-    pub supports_chat: bool,
-    pub supports_tool_use: bool,
-    pub supports_vision: bool,
-    pub supports_streaming: bool,
-    pub supports_embeddings: bool,
-    pub supports_audio: bool,
-    pub supports_image_generation: bool,
+    /// What the adapter's model can do — the single source of truth.
+    pub capabilities: BTreeSet<Capability>,
+    /// Inference runs on this host (provider kind == Local).
     pub is_local: bool,
+    /// Context window (input + output limit).
     pub max_context_window: u32,
-
-    // ─── Arc 1: typed protocol descriptors (card 42bd9367) ─────────────────
-    /// Tool-calling protocol the adapter NATIVELY supports. Cognition's
-    /// tool loop routes through this. `None` means the substrate either
-    /// skips tools or wraps via prompt-text emulation in compose phase.
-    pub tool_call_protocol: ToolCallProtocol,
-    /// Structured-output protocol the adapter NATIVELY supports.
-    /// Independent of tool calling. `None` means schema validation +
-    /// retry happen in cognition.
-    pub structured_output_protocol: StructuredOutputProtocol,
-    /// Modalities the adapter handles natively. Modalities NOT in this
-    /// set are bridged by the substrate before the adapter sees the
-    /// request (vision → VisionDescriptionService, audio_in → STT,
-    /// audio_out → TTS). LCD personas get sensory parity via bridges
-    /// per `[[ai-namespace-multimodal-crutches]]`.
-    pub modalities: ModalitySet,
-    /// Maximum tokens the adapter will emit in a single response.
-    /// Distinct from `max_context_window` (input + output limit).
-    /// Used by cognition to bound the compose phase.
+    /// Maximum tokens the adapter will emit in a single response. Distinct
+    /// from `max_context_window`; used by cognition to bound the compose phase.
     pub max_output_tokens: u32,
+
+    /// Tool-calling protocol the adapter NATIVELY speaks. Cognition's tool
+    /// loop routes through this. Default means prompt-text emulation in compose.
+    pub tool_call_protocol: ToolCallProtocol,
+    /// Structured-output protocol the adapter NATIVELY speaks. Independent of
+    /// tool calling. Default means schema validation + retry happen in cognition.
+    pub structured_output_protocol: StructuredOutputProtocol,
 }
 
 impl AdapterCapabilities {
+    /// Does the adapter's model declare this capability? The one accessor —
+    /// modality routing, tool gating, embedding/image-gen all resolve here.
+    pub fn has(&self, cap: Capability) -> bool {
+        self.capabilities.contains(&cap)
+    }
+
     /// A minimal text-only capability set — the common case for a basic
     /// chat/completion adapter (and the trait's default `capabilities()`).
-    ///
-    /// Text in/out, chat-shaped, no tools/vision/audio/streaming, no
-    /// native tool-call or structured-output protocol. Richer adapters
-    /// build on it with struct-update syntax:
+    /// Richer adapters extend the set with struct-update syntax:
     /// ```ignore
-    /// AdapterCapabilities { supports_tool_use: true,
+    /// AdapterCapabilities {
+    ///     capabilities: BTreeSet::from([Capability::TextGeneration, Capability::Chat, Capability::ToolUse]),
     ///     tool_call_protocol: ToolCallProtocol::NativeFunctionCalling,
-    ///     ..AdapterCapabilities::text_only() }
+    ///     ..AdapterCapabilities::text_only()
+    /// }
     /// ```
     pub fn text_only() -> Self {
         Self {
-            supports_text_generation: true,
-            supports_chat: true,
-            modalities: ModalitySet::TEXT_ONLY,
+            capabilities: BTreeSet::from([Capability::TextGeneration, Capability::Chat]),
             max_context_window: 4096,
             max_output_tokens: 2048,
             ..Default::default()
@@ -424,21 +389,10 @@ pub trait AIProviderAdapter: Send + Sync {
         None // Adapters MUST override — None means "I don't know my own models"
     }
 
-    /// Check if this adapter supports a specific capability
-    fn supports(&self, capability: ModelCapability) -> bool {
-        let caps = self.capabilities();
-        match capability {
-            ModelCapability::TextGeneration => caps.supports_text_generation,
-            ModelCapability::Chat => caps.supports_chat,
-            ModelCapability::ToolUse => caps.supports_tool_use,
-            ModelCapability::ImageAnalysis | ModelCapability::Multimodal => caps.supports_vision,
-            ModelCapability::Embeddings => caps.supports_embeddings,
-            ModelCapability::AudioGeneration | ModelCapability::AudioTranscription => {
-                caps.supports_audio
-            }
-            ModelCapability::ImageGeneration => caps.supports_image_generation,
-            _ => false,
-        }
+    /// Check if this adapter's model declares a capability. Resolves through
+    /// the ONE vocabulary — `adapter.capabilities().has(Capability::X)`.
+    fn supports(&self, capability: Capability) -> bool {
+        self.capabilities().has(capability)
     }
 
     // ─── LoRA Capabilities ─────────────────────────────────────────────────────
@@ -1048,14 +1002,12 @@ mod tests {
         // api_style defaults to local in-process inference.
         assert_eq!(a.api_style(), ApiStyle::Local);
 
-        // capabilities default to a text-only set.
+        // capabilities default to a text-only set — one vocabulary.
         let caps = a.capabilities();
-        assert!(caps.supports_text_generation);
-        assert!(caps.supports_chat);
-        assert!(!caps.supports_tool_use);
-        assert!(!caps.supports_vision);
-        assert!(caps.modalities.text_in && caps.modalities.text_out);
-        assert!(!caps.modalities.vision_in);
+        assert!(caps.has(Capability::TextGeneration));
+        assert!(caps.has(Capability::Chat));
+        assert!(!caps.has(Capability::ToolUse));
+        assert!(!caps.has(Capability::Vision));
 
         // health defaults to nominal-healthy (no remote probe).
         let health = a.health_check().await;

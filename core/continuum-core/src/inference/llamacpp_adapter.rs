@@ -34,6 +34,8 @@
 
 use crate::ai::adapter::{AIProviderAdapter, AdapterCapabilities, ApiStyle, InferenceDevice};
 use crate::ai::registry_bridge::models_for_provider_via_registry;
+use crate::model_registry::Capability;
+use std::collections::BTreeSet;
 use crate::ai::types::{
     EmbeddingInput, EmbeddingRequest, EmbeddingResponse, FinishReason, HealthState, HealthStatus,
     MessageContent, ModelInfo, ResponseFormat, TextGenerationRequest, TextGenerationResponse,
@@ -675,28 +677,26 @@ impl AIProviderAdapter for LlamaCppAdapter {
             .as_ref()
             .map(|b| b.n_ctx_train())
             .unwrap_or(0);
+        // llama.cpp does text + chat + streaming, native (prompt-driven) tool
+        // calls, and embeddings (--embedding mode). Vision is handled by the
+        // mmproj adapter when loaded, not declared at this text-LLM layer;
+        // audio is bridged via STT (whisper) / TTS in the substrate.
         AdapterCapabilities {
-            supports_text_generation: true,
-            supports_chat: true,
-            supports_tool_use: true,
-            supports_vision: false,
-            supports_streaming: true,
-            supports_embeddings: true,
-            supports_audio: false,
-            supports_image_generation: false,
+            capabilities: BTreeSet::from([
+                Capability::TextGeneration,
+                Capability::Chat,
+                Capability::ToolUse,
+                Capability::Streaming,
+                Capability::Embedding,
+            ]),
             is_local: true,
             max_context_window: max_ctx,
-
-            // Arc 1: llama.cpp tools are prompt-driven (no native protocol);
-            // structured output via GBNF grammar-constrained sampling, which
-            // IS native to llama.cpp. Vision-in handled by mmproj adapter
-            // when loaded; not declared here at the text-LLM layer.
-            // Audio bridged via STT (whisper) / TTS in the substrate.
+            max_output_tokens: 4096,
+            // Tools are prompt-driven (no native protocol); structured output
+            // via GBNF grammar-constrained sampling, which IS native to llama.cpp.
             tool_call_protocol: crate::ai::adapter::ToolCallProtocol::JsonInPrompt,
             structured_output_protocol:
                 crate::ai::adapter::StructuredOutputProtocol::GrammarConstrained,
-            modalities: crate::ai::adapter::ModalitySet::TEXT_ONLY,
-            max_output_tokens: 4096,
         }
     }
 

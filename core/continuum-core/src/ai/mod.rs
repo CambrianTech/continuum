@@ -53,7 +53,7 @@ pub use heuristic_adapter::{HeuristicInferenceAdapter, HEURISTIC_DEFAULT_MODEL, 
 pub use openai_adapter::OpenAICompatibleAdapter;
 pub use types::{
     ActiveAdapterRequest, ChatMessage, ContentPart, EmbeddingInput, EmbeddingRequest,
-    EmbeddingResponse, FinishReason, HealthState, HealthStatus, MessageContent, ModelCapability,
-    ModelInfo, NativeToolSpec, RoutingInfo, TextGenerationRequest, TextGenerationResponse,
+    EmbeddingResponse, FinishReason, HealthState, HealthStatus, MessageContent, ModelInfo,
+    NativeToolSpec, RoutingInfo, TextGenerationRequest, TextGenerationResponse,
     ToolCall, ToolChoice, ToolInputSchema, ToolResult, UsageMetrics,
 };

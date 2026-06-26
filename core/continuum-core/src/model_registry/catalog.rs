@@ -335,7 +335,22 @@ pub fn models() -> Vec<Model> {
         model(ModelSpec {
             id: "continuum-ai/qwen3.5-4b-code-forged-GGUF",
             name: "Qwen3.5 4B Code-Forged (in-process)",
-            provider: "llamacpp-local",
+            // Provider is "llama-server" (the HTTP llama.cpp /v1 gateway) — NOT
+            // "llamacpp-local" (the retiring in-process Metal path, #41) — because
+            // this is the row llama-server's `default_model` references and the
+            // gateway is what actually serves it (live responses carry
+            // provider=llama-server). It MUST be registered under llama-server so
+            // `OpenAICompatibleAdapter::from_registry("llama-server")` derives
+            // `supports_tools = true` from this model's ToolUse capability (the
+            // adapter's "any model under this provider advertises ToolUse" rule).
+            // With supports_tools=false the adapter SILENTLY dropped the native
+            // `tools` param (openai_adapter.rs gates the tools body on
+            // supports_tools && Native), so the 4B model never got the
+            // grammar-constrained tool channel and hand-emitted unparseable
+            // multi-line `{"tool_call":...}` JSON as prose → demoted to chat →
+            // confabulated success. Registering it here is what makes native tool
+            // calls actually fire in the live cognition path (verified 2026-06-26).
+            provider: "llama-server",
             arch: Arch::Qwen35,
             context_window: 262_144,
             max_output_tokens: 32_768,
@@ -562,6 +577,21 @@ pub fn providers() -> Vec<Provider> {
             auth: AuthKind::None,
             kind: ProviderKind::Local,
             model_prefixes: &[],
+            // DMR is a single-slot llama.cpp gateway with a dynamic catalog:
+            // it mangles model ids (`hf.co/…:latest`), so the adapter must
+            // fetch `/v1/models` at init, resolve logical→live ids per POST,
+            // and answer `supports_model` from the live set
+            // (`dynamic_model_catalog`). Being llama.cpp it accepts
+            // `repeat_penalty` (`llamacpp_sampling_extensions`) — without it
+            // the forged 4B loops. One resident slot (`single_resident_model`)
+            // → the adapter caps concurrency at 1. These typed flags are what
+            // the adapter reads instead of branching on the provider id (#55).
+            capabilities: ProviderCapabilities {
+                dynamic_model_catalog: true,
+                llamacpp_sampling_extensions: true,
+                single_resident_model: true,
+                ..Default::default()
+            },
             ..Default::default()
         }),
         // llama-server — the local OpenAI-compatible serving gateway (llama.cpp's
@@ -582,17 +612,34 @@ pub fn providers() -> Vec<Provider> {
             auth: AuthKind::None,
             kind: ProviderKind::Local,
             model_prefixes: &[],
-            // The local single-slot GGUF gateway: it ignores the OpenAI `tools`
-            // param (prompt-based tools), its forged 4B reasoner rambles unless
-            // thinking is suppressed, it serves OpenAI-compatible embeddings, and
-            // it holds ONE resident model (so the adapter pre-flights activation).
-            // These four flags are what the adapter reads instead of branching on
-            // the provider id (#55).
+            // The local single-slot GGUF gateway. It does NATIVE OpenAI
+            // function-calling: llama-server is launched with `--jinja` +
+            // `--chat-template-file <model>/chat_template.jinja` (the forge's
+            // tool-capable template sidecar), so it renders the `tools` param into
+            // the prompt and does grammar-constrained tool-call generation —
+            // valid tool-call JSON is guaranteed by the sampler, not hand-escaped
+            // by the 4B model (the failure that made multi-line `code/run` calls
+            // unparseable under prompt-based tools; verified live 2026-06-26).
+            // Native is correct ONLY because the template sidecar is present; if a
+            // future model ships without one, the GGUF's stripped template would
+            // silently ignore tools — the forge MUST write the sidecar (#32/#52).
+            // Its forged 4B reasoner rambles unless thinking is suppressed, it
+            // serves OpenAI-compatible embeddings, and it holds ONE resident model
+            // (so the adapter pre-flights activation). These flags are what the
+            // adapter reads instead of branching on the provider id (#55).
             capabilities: ProviderCapabilities {
-                tool_protocol: ProviderToolProtocol::JsonInPrompt,
+                tool_protocol: ProviderToolProtocol::Native,
                 suppress_thinking: true,
                 supports_embeddings: true,
                 single_resident_model: true,
+                // llama.cpp server → forward `repeat_penalty` so the forged
+                // 4B doesn't loop its `<think>` block to the token budget
+                // (same failure DMR hit; the in-process path defaults 1.1).
+                llamacpp_sampling_extensions: true,
+                // Its served model ids match the registry rows (the forged
+                // model now lives under this provider), so NO dynamic-catalog
+                // name resolution — `dynamic_model_catalog` stays false and
+                // `supports_model` answers from the static rows.
                 ..Default::default()
             },
         }),
