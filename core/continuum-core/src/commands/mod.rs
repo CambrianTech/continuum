@@ -20,6 +20,7 @@ pub mod help;
 pub mod inference;
 pub mod memory;
 pub mod migration;
+pub mod models;
 pub mod rag;
 pub mod runtime;
 pub mod system;

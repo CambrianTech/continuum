@@ -30,22 +30,28 @@
 //!
 //! ## Not a parallel allocator
 //!
-//! There is no other owner of live model state — the legacy `ModelsModule` is
-//! stateless and the registry is the immutable seed. [`ModelCatalog`] is the
-//! single owner of a concern that previously had no live home, not a second
-//! manager competing with one.
+//! There is no other owner of live model state — the registry is the immutable
+//! seed, and `ModelsModule` now HOLDS this one `ModelCatalog` (the rich
+//! `models/*` commands capture the same `Arc`). [`ModelCatalog`] is the single
+//! owner of a concern that previously had no live home, not a second manager
+//! competing with one.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
+use ts_rs::TS;
 
 use super::registry::Registry;
 use super::types::{Model, ProviderKind};
 
 /// Whether a model is usable *right now* on this host. The one runtime fact a
 /// `models/pull` flips and a `models/list` reports.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS, JsonSchema)]
+#[ts(export, export_to = "../../../protocol/typescript/model_registry/Availability.ts")]
+#[serde(rename_all = "snake_case")]
 pub enum Availability {
     /// Artifact present on disk (local) or remote endpoint configured (cloud) —
     /// the model can be served without first fetching anything.
@@ -58,7 +64,8 @@ pub enum Availability {
 /// What `models/try` learned by actually loading a model and running a smoke
 /// inference against it. Absent until verification runs; attached to the live
 /// status once it does. This is the "can we actually handle it?" record.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
+#[ts(export, export_to = "../../../protocol/typescript/model_registry/VerifyReport.ts")]
 pub struct VerifyReport {
     /// A minimal text generation completed.
     pub text_ok: bool,

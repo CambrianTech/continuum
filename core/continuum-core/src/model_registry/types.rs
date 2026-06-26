@@ -18,7 +18,18 @@ use std::path::PathBuf;
 /// for ("code should NEVER know the model" — code knows the ARCHETYPES
 /// via this enum, models are data).
 #[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, ts_rs::TS,
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Hash,
+    PartialOrd,
+    Ord,
+    Serialize,
+    Deserialize,
+    ts_rs::TS,
+    schemars::JsonSchema,
 )]
 #[ts(export, export_to = "../../../protocol/typescript/model_registry/Arch.ts")]
 #[serde(rename_all = "snake_case")]
@@ -52,7 +63,18 @@ pub enum Arch {
 /// a list of these values. TS hosts read/write the same kebab-case
 /// strings serde produces.
 #[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, ts_rs::TS,
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Hash,
+    PartialOrd,
+    Ord,
+    Serialize,
+    Deserialize,
+    ts_rs::TS,
+    schemars::JsonSchema,
 )]
 #[ts(
     export,

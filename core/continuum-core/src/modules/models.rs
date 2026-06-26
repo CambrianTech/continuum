@@ -1,30 +1,31 @@
-//! ModelsModule — wraps model discovery functionality.
+//! ModelsModule — owner of the live model universe.
 //!
-//! Handles: models/discover
+//! Holds the single `Arc<ModelCatalog>` (the runtime-mutable watch-snapshot layer
+//! seeded from the immutable registry) and contributes the `models/*` command
+//! family to the kernel's typed object map via [`commands()`](ModelsModule::commands).
+//! The commands themselves live under [`crate::commands::models`].
 //!
-//! Stateless module (like HealthModule) that performs async HTTP requests
-//! to provider APIs to discover available models.
+//! This module no longer routes through the stringly `handle_command` `match` —
+//! every `models/*` verb is a typed [`ActionCommand`](crate::sdk_codegen::ActionCommand)
+//! on the ONE registry, so each appears in the persona tool surface, the grid
+//! ACL, codegen, and `cu`. `command_prefixes` is empty: there is nothing left to
+//! prefix-route, and an unregistered `models/*` name fails loud at the executor
+//! rather than reaching a legacy arm.
 
-use crate::log_info;
-use crate::logging::TimingGuard;
-use crate::model_registry::discovery::{discover_all, ProviderConfig};
+use crate::model_registry::live::ModelCatalog;
 use crate::runtime::{CommandResult, ModuleConfig, ModuleContext, ModulePriority, ServiceModule};
-use crate::utils::params::Params;
 use async_trait::async_trait;
 use serde_json::Value;
 use std::any::Any;
+use std::sync::Arc;
 
-pub struct ModelsModule;
-
-impl Default for ModelsModule {
-    fn default() -> Self {
-        Self
-    }
+pub struct ModelsModule {
+    catalog: Arc<ModelCatalog>,
 }
 
 impl ModelsModule {
-    pub fn new() -> Self {
-        Self
+    pub fn new(catalog: Arc<ModelCatalog>) -> Self {
+        Self { catalog }
     }
 }
 
@@ -34,7 +35,9 @@ impl ServiceModule for ModelsModule {
         ModuleConfig {
             name: "models",
             priority: ModulePriority::Background,
-            command_prefixes: &["models/"],
+            // Empty: every `models/*` verb is a typed command on the ONE registry,
+            // routed by the executor's object map. Nothing prefix-routes here.
+            command_prefixes: &[],
             event_subscriptions: &[],
             needs_dedicated_thread: false,
             max_concurrency: 0,
@@ -46,71 +49,17 @@ impl ServiceModule for ModelsModule {
         Ok(())
     }
 
-    async fn handle_command(&self, command: &str, params: Value) -> Result<CommandResult, String> {
-        match command {
-            "models/discover" => {
-                let _timer = TimingGuard::new("module", "models_discover");
-                let p = Params::new(&params);
-                let providers: Vec<ProviderConfig> = p.json_or("providers");
+    async fn handle_command(&self, command: &str, _params: Value) -> Result<CommandResult, String> {
+        // No legacy arms remain — every `models/*` verb is a typed ActionCommand.
+        // Reaching here means the executor routed an unregistered name to this
+        // module; fail loud naming it rather than silently swallowing.
+        Err(format!(
+            "'{command}' is not a registered models command — the models surface is the typed `models/*` ActionCommands, not a legacy handler"
+        ))
+    }
 
-                let provider_count = providers.len();
-
-                // Run async discovery (all HTTP I/O off main thread)
-                let models = discover_all(providers).await;
-
-                let model_count = models.len();
-                log_info!(
-                    "module",
-                    "models",
-                    "Discovered {} models from {} providers",
-                    model_count,
-                    provider_count
-                );
-
-                Ok(CommandResult::Json(serde_json::json!({
-                    "models": models,
-                    "count": model_count,
-                    "providers": provider_count
-                })))
-            }
-
-            // Return the canonical capability vocabulary for a Rust catalog
-            // model id.
-            //
-            // This is intentionally strict: callers that only know desired
-            // capabilities must use the allocator/resolver boundary, not send
-            // raw HuggingFace or provider strings to this lookup command.
-            "models/capabilities" => {
-                let _timer = TimingGuard::new("module", "models_capabilities");
-                let p = Params::new(&params);
-                let model_id = p.str("model_id")?;
-
-                let registry = crate::model_registry::try_global()
-                    .ok_or("model registry is not initialized".to_string())?;
-                let model = registry.model(model_id).ok_or_else(|| {
-                    format!(
-                        "unknown Rust catalog model id '{model_id}' — call the Rust model allocator instead of naming provider artifacts"
-                    )
-                })?;
-
-                // Serialize each Capability via its serde rename so the
-                // wire string matches what the cognition/respond IPC
-                // handler later parses back via from_value.
-                let caps: Vec<String> = model
-                    .capabilities
-                    .iter()
-                    .filter_map(|c| serde_json::to_value(c).ok())
-                    .filter_map(|v| v.as_str().map(String::from))
-                    .collect();
-
-                Ok(CommandResult::Json(serde_json::json!({
-                    "modelId": model_id,
-                    "capabilities": caps,
-                })))
-            }
-
-            _ => Err(format!("Unknown models command: {command}")),
-        }
+    fn commands(&self) -> Vec<Arc<dyn crate::sdk_codegen::DynCommand>> {
+        crate::commands::models::command_objects(self.catalog.clone())
     }
 
     fn as_any(&self) -> &dyn Any {

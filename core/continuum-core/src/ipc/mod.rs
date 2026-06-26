@@ -1107,8 +1107,14 @@ pub fn start_server(
     ));
     runtime.register(Arc::new(ChannelModule::new(channel_state)));
 
-    // Phase 3: ModelsModule (stateless, async HTTP discovery)
-    runtime.register(Arc::new(ModelsModule::new()));
+    // Phase 3: ModelsModule owns the live model universe — the runtime-mutable
+    // watch-snapshot layer SEEDED from the immutable registry global (initialized
+    // above at `init_global`). The rich `models/*` commands capture this one
+    // `Arc<ModelCatalog>`, so every caller reads/mutates the SAME live universe.
+    let model_catalog = Arc::new(
+        crate::model_registry::live::ModelCatalog::from_registry(crate::model_registry::global()),
+    );
+    runtime.register(Arc::new(ModelsModule::new(model_catalog)));
 
     // Phase 3: MemoryModule (wraps PersonaMemoryManager)
     let memory_state = Arc::new(MemoryState::new(memory_manager.clone()));
