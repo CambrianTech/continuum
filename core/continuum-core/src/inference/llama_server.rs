@@ -261,7 +261,16 @@ pub fn current_serving() -> ServingSnapshot {
 /// enough to cover a cold relaunch of a large GGUF, bounded so an empty/wedged
 /// serving plan fails loud instead of hanging. Hot-path readers that must not
 /// block use [`current_serving`] (no wait) instead.
-pub const DEFAULT_SERVING_WAIT: Duration = Duration::from_secs(30);
+///
+/// DERIVED from [`READY_TIMEOUT`] (the spawner's own load budget) + a margin for
+/// the reconcile to start (tick cadence) and HTTP slack. The two constants
+/// describe the SAME physical event — a cold model becoming ready — so the boot
+/// gate must never fail before the spawner has exhausted its legitimate budget.
+/// A flat 30s here was the bug: a genuine 31–90s cold load is still within the
+/// spawner's window, yet the boot-time inference gate declared failure and
+/// hard-killed the core. Fail LOUD, not fail FAST — a premature false failure is
+/// worse than a slower true one. Bump READY_TIMEOUT and this follows.
+pub const DEFAULT_SERVING_WAIT: Duration = Duration::from_secs(READY_TIMEOUT.as_secs() + 30);
 
 /// The registry id of the local OpenAI-compatible serving gateway this seam
 /// fronts — `llama-server` (llama.cpp's `/v1` server, proven live on :58057).
