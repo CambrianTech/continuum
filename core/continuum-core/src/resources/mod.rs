@@ -127,6 +127,7 @@
 pub mod arbiter;
 pub mod broker;
 pub mod consumer;
+pub mod governor;
 pub mod ledger;
 pub mod lease;
 
@@ -141,6 +142,7 @@ pub use broker::{
 };
 
 pub use arbiter::{ArbiterContext, LeaseArbiter, TieredArbiter};
+pub use governor::{GovernorConfig, PlannedReclaim, ResourceGovernor};
 pub use consumer::{
     ConsumerFootprint, ReclaimOutcome, ReclaimReason, ReclaimRequest, ReclaimStatus,
     ResourceConsumer,

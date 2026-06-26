@@ -223,6 +223,29 @@ impl ResourceLeaseLedger {
             })
     }
 
+    /// Reduce a lease's footprint by `freed_bytes` without ending it — the
+    /// accounting side of a consumer satisfying a reclaim by SHRINKING rather
+    /// than releasing (a persona tier-downgrade swapping to a smaller base
+    /// frees some VRAM but stays alive). Saturating; if the lease reaches zero
+    /// it is removed (equivalent to a full release). A `freed_bytes` of 0 is a
+    /// no-op — the honest accounting when a consumer Defers or Refuses. Missing
+    /// lease is fail-loud (a stale id is a real bug). Returns the bytes still
+    /// held by the lease (0 if it was removed).
+    pub fn shrink(&mut self, lease_id: &str, freed_bytes: u64) -> Result<u64, LeaseError> {
+        let lease = self
+            .leases
+            .get_mut(lease_id)
+            .ok_or_else(|| LeaseError::MissingLease {
+                lease_id: lease_id.to_string(),
+            })?;
+        lease.bytes = lease.bytes.saturating_sub(freed_bytes);
+        let remaining = lease.bytes;
+        if remaining == 0 {
+            self.leases.remove(lease_id);
+        }
+        Ok(remaining)
+    }
+
     /// Report every lease past its deadline. Does NOT remove them — the daemon
     /// uses this list to drive reclaim callbacks; the bytes free only when the
     /// holder confirms via `release`. Returned in stable id order.
