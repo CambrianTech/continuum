@@ -247,6 +247,29 @@ impl ModelCatalog {
         present
     }
 
+    /// The exact inverse of [`attach_local_artifact`](Self::attach_local_artifact):
+    /// after `models/remove` deletes the bytes from disk, forget where they were
+    /// and flip the model back to [`Availability::NotDownloaded`] in one mutation.
+    /// The live universe now truthfully reports the model as re-acquirable (its
+    /// `gguf_local_path`/`mmproj_local_path` cleared), the snapshot generation
+    /// bumps, and serving — which plans off the snapshot — stops treating it as a
+    /// candidate WITHOUT a reboot. Allocation and deallocation are symmetric: a
+    /// pull sets the path + flips Ready; a remove clears the path + flips
+    /// NotDownloaded. Returns whether the model was present.
+    pub fn detach_local_artifact(&self, id: &str) -> bool {
+        let present = self.tx.borrow().models.contains_key(id);
+        if present {
+            self.mutate(|snap| {
+                if let Some(live) = snap.models.get_mut(id) {
+                    live.model.gguf_local_path = None;
+                    live.model.mmproj_local_path = None;
+                    live.status.availability = Availability::NotDownloaded;
+                }
+            });
+        }
+        present
+    }
+
     /// Attach a verification result after `models/try` runs. Returns whether the
     /// model was present.
     pub fn attach_verification(&self, id: &str, report: VerifyReport) -> bool {
@@ -413,5 +436,51 @@ mod tests {
         assert_eq!(live.model.gguf_local_path.as_ref(), Some(&gguf));
         assert_eq!(live.model.mmproj_local_path.as_ref(), Some(&mmproj));
         assert!(snap.generation > gen_before, "the mutation bumps generation");
+    }
+
+    // what this catches: detach is the exact inverse of attach — after a
+    // models/remove frees the bytes, the live model forgets both paths AND flips
+    // back to NotDownloaded in one generation bump, so serving stops seeing it as
+    // a candidate. Round-tripping attach→detach returns the entry to its
+    // pre-pull shape. An unknown id reports false (no silent success).
+    #[test]
+    fn detach_local_artifact_is_the_inverse_of_attach() {
+        use std::path::PathBuf;
+        let reg = catalog::registry().expect("Rust catalog must validate");
+        let catalog = ModelCatalog::from_registry(&reg);
+
+        assert!(
+            !catalog.detach_local_artifact("nope/not-a-model"),
+            "an unknown id must report false, not silently succeed"
+        );
+
+        let id = catalog
+            .snapshot()
+            .models
+            .values()
+            .find(|m| m.status.availability == Availability::NotDownloaded)
+            .map(|m| m.model.id.clone())
+            .expect("seeded universe has a not-downloaded local model");
+
+        // Allocate (pull), then deallocate (remove).
+        catalog.attach_local_artifact(
+            &id,
+            PathBuf::from("/tmp/pulled-Q4_K_M.gguf"),
+            Some(PathBuf::from("/tmp/mmproj-f16.gguf")),
+        );
+        assert_eq!(catalog.snapshot().get(&id).unwrap().status.availability, Availability::Ready);
+        let gen_after_attach = catalog.snapshot().generation;
+
+        assert!(catalog.detach_local_artifact(&id));
+        let snap = catalog.snapshot();
+        let live = snap.get(&id).expect("model still present");
+        assert_eq!(
+            live.status.availability,
+            Availability::NotDownloaded,
+            "remove flips NotDownloaded — the model is re-acquirable again"
+        );
+        assert!(live.model.gguf_local_path.is_none(), "the gguf path is forgotten");
+        assert!(live.model.mmproj_local_path.is_none(), "the projector path is forgotten");
+        assert!(snap.generation > gen_after_attach, "the deallocation also bumps generation");
     }
 }

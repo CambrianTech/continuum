@@ -31,9 +31,10 @@
 
 use std::sync::Arc;
 
-use tokio::sync::RwLock;
+use tokio::sync::{watch, RwLock};
 
 use crate::ai::AdapterRegistry;
+use crate::inference::llama_server::ServingSnapshot;
 use crate::model_registry::live::ModelCatalog;
 use crate::sdk_codegen::DynCommand;
 
@@ -41,11 +42,13 @@ pub mod capabilities;
 pub mod discover;
 pub mod list;
 pub mod pull;
+pub mod remove;
 pub mod try_;
 
 use capabilities::ModelsCapabilities;
 use list::ModelsList;
 use pull::ModelsPull;
+use remove::ModelsRemove;
 use try_::ModelsTry;
 
 /// The dep-holding `models/*` command objects the [`ModelsModule`](crate::modules::models::ModelsModule)
@@ -53,11 +56,15 @@ use try_::ModelsTry;
 /// `Arc<ModelCatalog>` so they read a single live universe; `models/try` also
 /// captures the shared `AdapterRegistry` (the SAME global pool `ai/generate`
 /// uses — never a parallel allocator) because verification runs the model.
+/// `models/remove` (the deallocation counterpart of `pull`) also holds the
+/// serving daemon's published [`ServingSnapshot`] receiver so it can fail loud
+/// rather than delete weights out from under a live lane.
 /// `models/discover` is stateless and self-registers, so it is intentionally
 /// absent here.
 pub fn command_objects(
     catalog: Arc<ModelCatalog>,
     registry: Arc<RwLock<AdapterRegistry>>,
+    serving: watch::Receiver<ServingSnapshot>,
 ) -> Vec<Arc<dyn DynCommand>> {
     vec![
         Arc::new(ModelsList {
@@ -68,6 +75,10 @@ pub fn command_objects(
         }),
         Arc::new(ModelsPull {
             catalog: catalog.clone(),
+        }),
+        Arc::new(ModelsRemove {
+            catalog: catalog.clone(),
+            serving,
         }),
         Arc::new(ModelsTry { catalog, registry }),
     ]
@@ -86,11 +97,14 @@ mod tests {
         let reg = catalog::registry().expect("Rust catalog must validate");
         let cat = Arc::new(ModelCatalog::from_registry(&reg));
         let adapters = Arc::new(RwLock::new(AdapterRegistry::new()));
-        let objs = command_objects(cat, adapters);
+        let (_tx, serving) = watch::channel(ServingSnapshot::empty());
+        let objs = command_objects(cat, adapters, serving);
         let names: Vec<&str> = objs.iter().map(|o| o.name()).collect();
         assert!(names.contains(&"models/list"));
         assert!(names.contains(&"models/capabilities"));
         assert!(names.contains(&"models/pull"));
+        // pull's deallocation counterpart — the symmetry must be wired too.
+        assert!(names.contains(&"models/remove"));
         assert!(names.contains(&"models/try"));
         assert!(
             !names.contains(&"models/discover"),

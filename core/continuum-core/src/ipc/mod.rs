@@ -1124,6 +1124,9 @@ pub fn start_server(
     runtime.register(Arc::new(ModelsModule::new(
         model_catalog,
         crate::modules::ai_provider::global_registry(),
+        // The serving daemon's live snapshot — so `models/remove` refuses to
+        // delete weights out from under the currently-served lane.
+        serving_daemon.subscribe_serving(),
     )));
 
     // Phase 3: MemoryModule (wraps PersonaMemoryManager)

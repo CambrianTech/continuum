@@ -13,24 +13,36 @@
 //! rather than reaching a legacy arm.
 
 use crate::ai::AdapterRegistry;
+use crate::inference::llama_server::ServingSnapshot;
 use crate::model_registry::live::ModelCatalog;
 use crate::runtime::{CommandResult, ModuleConfig, ModuleContext, ModulePriority, ServiceModule};
 use async_trait::async_trait;
 use serde_json::Value;
 use std::any::Any;
 use std::sync::Arc;
-use tokio::sync::RwLock;
+use tokio::sync::{watch, RwLock};
 
 pub struct ModelsModule {
     catalog: Arc<ModelCatalog>,
     /// The SAME shared adapter pool `ai/generate` uses — `models/try` runs the
     /// model through it to verify. Never a parallel allocator.
     registry: Arc<RwLock<AdapterRegistry>>,
+    /// The serving daemon's published live state — `models/remove` reads it to
+    /// refuse deleting weights out from under the currently-served lane.
+    serving: watch::Receiver<ServingSnapshot>,
 }
 
 impl ModelsModule {
-    pub fn new(catalog: Arc<ModelCatalog>, registry: Arc<RwLock<AdapterRegistry>>) -> Self {
-        Self { catalog, registry }
+    pub fn new(
+        catalog: Arc<ModelCatalog>,
+        registry: Arc<RwLock<AdapterRegistry>>,
+        serving: watch::Receiver<ServingSnapshot>,
+    ) -> Self {
+        Self {
+            catalog,
+            registry,
+            serving,
+        }
     }
 }
 
@@ -64,7 +76,11 @@ impl ServiceModule for ModelsModule {
     }
 
     fn commands(&self) -> Vec<Arc<dyn crate::sdk_codegen::DynCommand>> {
-        crate::commands::models::command_objects(self.catalog.clone(), self.registry.clone())
+        crate::commands::models::command_objects(
+            self.catalog.clone(),
+            self.registry.clone(),
+            self.serving.clone(),
+        )
     }
 
     fn as_any(&self) -> &dyn Any {

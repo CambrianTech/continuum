@@ -11,7 +11,7 @@ export type ResolvedModel = { modelId: string, providerId: string,
 /**
  * Expected memory footprint in megabytes if the registry knows it.
  * `None` for cloud models (always-fits) and for local models whose
- * row in `models.toml` doesn't yet declare a memory estimate. A
+ * row in the Rust catalog (catalog.rs) doesn't yet declare a memory estimate. A
  * follow-up adds an `estimated_memory_mb` field to the Model schema;
  * until then memory-budget filtering is best-effort on local models
  * (the resolver still rejects cloud models from `LocalOnly` queries).
