@@ -19,6 +19,7 @@ pub mod artifacts;
 pub mod catalog;
 pub mod discovery;
 pub mod hydrate;
+pub mod live;
 pub mod registry;
 pub mod singleton;
 pub mod types;
