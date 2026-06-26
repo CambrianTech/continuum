@@ -98,13 +98,12 @@ impl AIProviderAdapter for AircRemoteInferenceAdapter {
         // (future card) this adapter doesn't introspect the remote peer's
         // adapter, so it advertises only what every transformer adapter does.
         // The substrate refines once the peer reports its real set.
-        AdapterCapabilities {
-            // Cloud-shaped from THIS host's perspective — no local hardware
-            // footprint. Unknown context; defer to whatever the peer can do.
-            is_local: false,
-            max_context_window: u32::MAX,
-            ..AdapterCapabilities::text_only()
-        }
+        // Cloud-shaped from THIS host's perspective — no local hardware
+        // footprint. Unknown context; defer to whatever the peer can do.
+        AdapterCapabilities::builder()
+            .remote()
+            .context_window(u32::MAX)
+            .build()
     }
 
     fn api_style(&self) -> ApiStyle {

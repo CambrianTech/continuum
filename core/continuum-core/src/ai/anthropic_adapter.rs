@@ -17,7 +17,6 @@
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::{json, Value};
-use std::collections::BTreeSet;
 use std::time::Instant;
 
 use crate::model_registry::Capability;
@@ -263,20 +262,19 @@ impl AIProviderAdapter for AnthropicAdapter {
         // Schema enforcement, streaming, and vision-in. Audio is bridged
         // (STT/TTS) since it's absent from the set. Embeddings/image-gen not
         // offered by this API.
-        AdapterCapabilities {
-            capabilities: BTreeSet::from([
+        AdapterCapabilities::builder()
+            .capabilities([
                 Capability::TextGeneration,
                 Capability::Chat,
                 Capability::ToolUse,
                 Capability::Vision,
                 Capability::Streaming,
-            ]),
-            is_local: false,
-            max_context_window: 200000,
-            max_output_tokens: 8192,
-            tool_call_protocol: crate::ai::adapter::ToolCallProtocol::NativeFunctionCalling,
-            structured_output_protocol: crate::ai::adapter::StructuredOutputProtocol::JsonSchema,
-        }
+            ])
+            .remote()
+            .context_window(200_000)
+            .max_output_tokens(8_192)
+            .protocols(crate::ai::adapter::NativeProtocols::FunctionCalling)
+            .build()
     }
 
     fn api_style(&self) -> ApiStyle {

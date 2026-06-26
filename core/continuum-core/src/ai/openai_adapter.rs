@@ -921,36 +921,36 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
         // itself, and any modality absent from the set is bridged (vision →
         // VisionDescriptionService, audio → STT/TTS) before the request lands.
         let supports_tools = self.config.capabilities.contains(&Capability::ToolUse);
-        AdapterCapabilities {
-            capabilities: self.config.capabilities.clone(),
-            is_local: false,
-            max_context_window: self
-                .config
-                .models
-                .first()
-                .map(|m| m.context_window)
-                .unwrap_or(128000),
-            // Sourced from the served model's declared ceiling (#46), mirroring
-            // max_context_window above — never a hardcoded per-adapter clamp.
-            // The 16_384 floor only applies when no model row is present (a
-            // mis-provisioned adapter), which fails loud downstream anyway.
-            max_output_tokens: self
-                .config
-                .models
-                .first()
-                .map(|m| m.max_output_tokens)
-                .unwrap_or(16_384),
-            tool_call_protocol: if supports_tools {
-                crate::ai::adapter::ToolCallProtocol::NativeFunctionCalling
+        AdapterCapabilities::builder()
+            .capabilities(self.config.capabilities.iter().copied())
+            .remote()
+            // Sourced from the served model's declared ceiling (#46) — never a
+            // hardcoded per-adapter clamp. The fallbacks only apply when no
+            // model row is present (a mis-provisioned adapter), which fails
+            // loud downstream anyway.
+            .context_window(
+                self.config
+                    .models
+                    .first()
+                    .map(|m| m.context_window)
+                    .unwrap_or(128_000),
+            )
+            .max_output_tokens(
+                self.config
+                    .models
+                    .first()
+                    .map(|m| m.max_output_tokens)
+                    .unwrap_or(16_384),
+            )
+            // Native function-calling + JSON-Schema when the served model does
+            // tools; otherwise the model is a competent chat model and cognition
+            // emulates tools/schema in-prompt.
+            .protocols(if supports_tools {
+                crate::ai::adapter::NativeProtocols::FunctionCalling
             } else {
-                crate::ai::adapter::ToolCallProtocol::None
-            },
-            structured_output_protocol: if supports_tools {
-                crate::ai::adapter::StructuredOutputProtocol::JsonSchema
-            } else {
-                crate::ai::adapter::StructuredOutputProtocol::PromptOnly
-            },
-        }
+                crate::ai::adapter::NativeProtocols::PromptEmulated
+            })
+            .build()
     }
 
     fn api_style(&self) -> ApiStyle {

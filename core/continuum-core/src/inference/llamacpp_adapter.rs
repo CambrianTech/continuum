@@ -35,7 +35,6 @@
 use crate::ai::adapter::{AIProviderAdapter, AdapterCapabilities, ApiStyle, InferenceDevice};
 use crate::ai::registry_bridge::models_for_provider_via_registry;
 use crate::model_registry::Capability;
-use std::collections::BTreeSet;
 use crate::ai::types::{
     EmbeddingInput, EmbeddingRequest, EmbeddingResponse, FinishReason, HealthState, HealthStatus,
     MessageContent, ModelInfo, ResponseFormat, TextGenerationRequest, TextGenerationResponse,
@@ -681,23 +680,21 @@ impl AIProviderAdapter for LlamaCppAdapter {
         // calls, and embeddings (--embedding mode). Vision is handled by the
         // mmproj adapter when loaded, not declared at this text-LLM layer;
         // audio is bridged via STT (whisper) / TTS in the substrate.
-        AdapterCapabilities {
-            capabilities: BTreeSet::from([
+        // Tools are prompt-driven (no native protocol); structured output via
+        // GBNF grammar-constrained sampling, which IS native to llama.cpp.
+        AdapterCapabilities::builder()
+            .capabilities([
                 Capability::TextGeneration,
                 Capability::Chat,
                 Capability::ToolUse,
                 Capability::Streaming,
                 Capability::Embedding,
-            ]),
-            is_local: true,
-            max_context_window: max_ctx,
-            max_output_tokens: 4096,
-            // Tools are prompt-driven (no native protocol); structured output
-            // via GBNF grammar-constrained sampling, which IS native to llama.cpp.
-            tool_call_protocol: crate::ai::adapter::ToolCallProtocol::JsonInPrompt,
-            structured_output_protocol:
-                crate::ai::adapter::StructuredOutputProtocol::GrammarConstrained,
-        }
+            ])
+            .local()
+            .context_window(max_ctx)
+            .max_output_tokens(4096)
+            .protocols(crate::ai::adapter::NativeProtocols::GrammarConstrained)
+            .build()
     }
 
     fn api_style(&self) -> ApiStyle {

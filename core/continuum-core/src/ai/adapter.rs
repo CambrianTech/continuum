@@ -150,6 +150,57 @@ pub enum StructuredOutputProtocol {
     PromptOnly,
 }
 
+/// The coherent NATIVE protocol pair an adapter speaks — `tool_call_protocol`
+/// and `structured_output_protocol` always travel together, so the pairing is
+/// codified here once instead of being re-derived (and risked-inconsistent) in
+/// every `capabilities()`. Picking a `NativeProtocols` makes an incoherent
+/// combo (native function-calling tools but prompt-only structure, say)
+/// unrepresentable, and gives the next adapter author ONE thing to choose.
+///
+/// Each variant is a real, observed adapter shape. To add a base model with a
+/// new wire format, add a variant here — never a fresh ad-hoc `(tool, struct)`
+/// pair in an adapter.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum NativeProtocols {
+    /// No native protocol — the model makes no tool/structure guarantee.
+    /// Cognition does everything out-of-band. The text/embedding floor
+    /// (heuristic, embedding-only, remote-peer-unknown).
+    #[default]
+    None,
+    /// No native protocol, but the model is a competent chat model: tools and
+    /// schema are described in-prompt and cognition validates + retries.
+    /// (OpenAI-compatible endpoint serving a model without tool support.)
+    PromptEmulated,
+    /// Cloud function-calling: native `tool_use`/`tool_calls` blocks + native
+    /// JSON-Schema enforcement. (Anthropic, OpenAI-with-tools.)
+    FunctionCalling,
+    /// llama.cpp family: prompt-driven tool JSON + GBNF grammar-constrained
+    /// structured output (the sampler refuses grammar-violating tokens).
+    GrammarConstrained,
+}
+
+impl NativeProtocols {
+    /// The tool-calling protocol half of the pair.
+    pub fn tool_call(self) -> ToolCallProtocol {
+        match self {
+            Self::None => ToolCallProtocol::None,
+            Self::PromptEmulated => ToolCallProtocol::None,
+            Self::FunctionCalling => ToolCallProtocol::NativeFunctionCalling,
+            Self::GrammarConstrained => ToolCallProtocol::JsonInPrompt,
+        }
+    }
+
+    /// The structured-output protocol half of the pair.
+    pub fn structured_output(self) -> StructuredOutputProtocol {
+        match self {
+            Self::None => StructuredOutputProtocol::None,
+            Self::PromptEmulated => StructuredOutputProtocol::PromptOnly,
+            Self::FunctionCalling => StructuredOutputProtocol::JsonSchema,
+            Self::GrammarConstrained => StructuredOutputProtocol::GrammarConstrained,
+        }
+    }
+}
+
 /// AI provider adapter capabilities — the typed surface the substrate's
 /// coordinator consults when routing a workload to the best-fit adapter.
 ///
@@ -197,21 +248,98 @@ impl AdapterCapabilities {
 
     /// A minimal text-only capability set — the common case for a basic
     /// chat/completion adapter (and the trait's default `capabilities()`).
-    /// Richer adapters extend the set with struct-update syntax:
-    /// ```ignore
-    /// AdapterCapabilities {
-    ///     capabilities: BTreeSet::from([Capability::TextGeneration, Capability::Chat, Capability::ToolUse]),
-    ///     tool_call_protocol: ToolCallProtocol::NativeFunctionCalling,
-    ///     ..AdapterCapabilities::text_only()
-    /// }
-    /// ```
+    /// This is also the [`builder`](Self::builder) seed, so a richer adapter
+    /// declares only what it adds on top of the floor.
     pub fn text_only() -> Self {
         Self {
             capabilities: BTreeSet::from([Capability::TextGeneration, Capability::Chat]),
-            max_context_window: 4096,
-            max_output_tokens: 2048,
+            max_context_window: Self::FLOOR_CONTEXT_WINDOW,
+            max_output_tokens: Self::FLOOR_OUTPUT_TOKENS,
             ..Default::default()
         }
+    }
+
+    /// Context/output ceilings the text-only floor reports when an adapter has
+    /// no model-declared number to project. Real adapters override from the
+    /// served model (#46) — these only apply to the floor.
+    const FLOOR_CONTEXT_WINDOW: u32 = 4096;
+    const FLOOR_OUTPUT_TOKENS: u32 = 2048;
+
+    /// Fluent constructor seeded from the text-only floor. The codified
+    /// projection every adapter's `capabilities()` builds through, so the next
+    /// adapter declares (what, where, how-big, which-protocols) without
+    /// hand-assembling the struct or risking an incoherent protocol pair:
+    /// ```ignore
+    /// AdapterCapabilities::builder()
+    ///     .capabilities([Capability::TextGeneration, Capability::Chat, Capability::ToolUse, Capability::Vision])
+    ///     .remote()
+    ///     .context_window(200_000)
+    ///     .max_output_tokens(8_192)
+    ///     .protocols(NativeProtocols::FunctionCalling)
+    ///     .build()
+    /// ```
+    /// Zero runtime cost — moves a value, compiles to the same as a literal.
+    pub fn builder() -> AdapterCapabilitiesBuilder {
+        AdapterCapabilitiesBuilder {
+            inner: Self::text_only(),
+        }
+    }
+}
+
+/// Builder for [`AdapterCapabilities`] — see [`AdapterCapabilities::builder`].
+#[derive(Debug, Clone)]
+pub struct AdapterCapabilitiesBuilder {
+    inner: AdapterCapabilities,
+}
+
+impl AdapterCapabilitiesBuilder {
+    /// Declare the full capability set (replaces the floor's text+chat).
+    pub fn capabilities(mut self, caps: impl IntoIterator<Item = Capability>) -> Self {
+        self.inner.capabilities = caps.into_iter().collect();
+        self
+    }
+
+    /// Add one capability on top of the current set.
+    pub fn with(mut self, cap: Capability) -> Self {
+        self.inner.capabilities.insert(cap);
+        self
+    }
+
+    /// Inference runs on this host (provider kind == Local).
+    pub fn local(mut self) -> Self {
+        self.inner.is_local = true;
+        self
+    }
+
+    /// Inference runs off-host (cloud API or remote grid peer).
+    pub fn remote(mut self) -> Self {
+        self.inner.is_local = false;
+        self
+    }
+
+    /// Context window (input + output ceiling) — from the served model.
+    pub fn context_window(mut self, n: u32) -> Self {
+        self.inner.max_context_window = n;
+        self
+    }
+
+    /// Maximum tokens emitted in a single response — from the served model.
+    pub fn max_output_tokens(mut self, n: u32) -> Self {
+        self.inner.max_output_tokens = n;
+        self
+    }
+
+    /// Declare the coherent native (tool-call, structured-output) protocol
+    /// pair in one move. See [`NativeProtocols`].
+    pub fn protocols(mut self, protocols: NativeProtocols) -> Self {
+        self.inner.tool_call_protocol = protocols.tool_call();
+        self.inner.structured_output_protocol = protocols.structured_output();
+        self
+    }
+
+    /// Finish building.
+    pub fn build(self) -> AdapterCapabilities {
+        self.inner
     }
 }
 
@@ -1020,5 +1148,63 @@ mod tests {
         // device defaults to GPU; production-capable unless opted out.
         assert_eq!(a.device_type(), InferenceDevice::Gpu);
         assert!(a.is_production_capable());
+    }
+
+    // what this catches: the codified `capabilities()` projection regressing —
+    // builder() must seed the text-only floor (so an adapter declares only what
+    // it adds), and each NativeProtocols variant must map to its coherent
+    // (tool_call, structured_output) pair. If someone re-splits the protocol
+    // pair or changes the floor, the next adapter silently gets a wrong/
+    // incoherent surface; this pins both.
+    #[test]
+    fn builder_seeds_floor_and_native_protocols_pair_coherently() {
+        // builder() with no overrides == the text-only floor.
+        let floor = AdapterCapabilities::builder().build();
+        assert_eq!(floor.capabilities, AdapterCapabilities::text_only().capabilities);
+        assert!(floor.has(Capability::TextGeneration) && floor.has(Capability::Chat));
+        assert!(!floor.has(Capability::ToolUse));
+        assert!(!floor.is_local);
+        assert_eq!(floor.tool_call_protocol, ToolCallProtocol::None);
+        assert_eq!(floor.structured_output_protocol, StructuredOutputProtocol::None);
+
+        // A rich declaration adds only the deltas on top of the floor.
+        let rich = AdapterCapabilities::builder()
+            .capabilities([Capability::TextGeneration, Capability::Chat, Capability::ToolUse])
+            .local()
+            .context_window(200_000)
+            .max_output_tokens(8_192)
+            .protocols(NativeProtocols::FunctionCalling)
+            .build();
+        assert!(rich.has(Capability::ToolUse) && rich.is_local);
+        assert_eq!(rich.max_context_window, 200_000);
+        assert_eq!(rich.max_output_tokens, 8_192);
+
+        // Each protocol profile maps to its coherent pair — the whole point of
+        // NativeProtocols (an incoherent combo is unrepresentable).
+        for (profile, tool, structured) in [
+            (NativeProtocols::None, ToolCallProtocol::None, StructuredOutputProtocol::None),
+            (
+                NativeProtocols::PromptEmulated,
+                ToolCallProtocol::None,
+                StructuredOutputProtocol::PromptOnly,
+            ),
+            (
+                NativeProtocols::FunctionCalling,
+                ToolCallProtocol::NativeFunctionCalling,
+                StructuredOutputProtocol::JsonSchema,
+            ),
+            (
+                NativeProtocols::GrammarConstrained,
+                ToolCallProtocol::JsonInPrompt,
+                StructuredOutputProtocol::GrammarConstrained,
+            ),
+        ] {
+            assert_eq!(profile.tool_call(), tool, "{profile:?} tool half");
+            assert_eq!(
+                profile.structured_output(),
+                structured,
+                "{profile:?} structured half"
+            );
+        }
     }
 }
