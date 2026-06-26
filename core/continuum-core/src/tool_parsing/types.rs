@@ -25,34 +25,6 @@ pub enum ModelFamily {
     Generic,
 }
 
-/// Detect model family from provider + model name strings.
-pub fn detect_model_family(provider: &str, model: &str) -> ModelFamily {
-    let p = provider.to_lowercase();
-    let m = model.to_lowercase();
-
-    // Provider-level matches
-    if p == "deepseek" || m.contains("deepseek") {
-        return ModelFamily::DeepSeek;
-    }
-
-    // Model name matches — check more specific names first
-    // (e.g. "hermes-3-llama-3.1" should match Hermes, not Llama)
-    if m.contains("hermes") {
-        return ModelFamily::Hermes;
-    }
-    if m.contains("qwen") {
-        return ModelFamily::Qwen;
-    }
-    if m.contains("mistral") || m.contains("mixtral") {
-        return ModelFamily::Mistral;
-    }
-    if m.contains("llama") {
-        return ModelFamily::Llama;
-    }
-
-    ModelFamily::Generic
-}
-
 /// Parse a model_family string hint into the enum.
 pub fn parse_model_family(hint: &str) -> ModelFamily {
     match hint.to_lowercase().as_str() {
@@ -178,34 +150,6 @@ mod tests {
         assert!(_ts.contains("tool_name"));
         assert!(_ts.contains("name_changed"));
         assert!(_ts.contains("param_corrections"));
-    }
-
-    #[test]
-    fn detect_model_family_from_provider() {
-        assert_eq!(
-            detect_model_family("deepseek", "deepseek-chat"),
-            ModelFamily::DeepSeek
-        );
-        assert_eq!(
-            detect_model_family("candle", "llama-3.1-8b"),
-            ModelFamily::Llama
-        );
-        assert_eq!(
-            detect_model_family("candle", "qwen2.5-coder-14b"),
-            ModelFamily::Qwen
-        );
-        assert_eq!(
-            detect_model_family("candle", "mistral-7b"),
-            ModelFamily::Mistral
-        );
-        assert_eq!(
-            detect_model_family("candle", "hermes-3-llama-3.1"),
-            ModelFamily::Hermes
-        );
-        assert_eq!(
-            detect_model_family("anthropic", "claude-3"),
-            ModelFamily::Generic
-        );
     }
 
     #[test]

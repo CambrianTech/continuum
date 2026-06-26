@@ -15,7 +15,7 @@
 //! - Local (Candle, llama.cpp)
 
 use crate::clog_warn;
-use crate::model_registry::{Capability, ToolProtocol};
+use crate::model_registry::{Capability, ProviderKind, ToolProtocol};
 use async_trait::async_trait;
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -216,6 +216,14 @@ impl AdapterCapabilities {
             capabilities: BTreeSet::from([Capability::TextGeneration, Capability::Chat]),
             max_context_window: Self::FLOOR_CONTEXT_WINDOW,
             max_output_tokens: Self::FLOOR_OUTPUT_TOKENS,
+            // The floor has no ToolUse capability, so its protocol pair must be
+            // None — set it explicitly, NOT via Default. `ToolProtocol::default()`
+            // is `NativeFunctionCalling` (the right default for a registry Provider
+            // that DOES declare tools), which would falsely advertise native
+            // function calling on a text-only adapter. The protocol must always
+            // match the capability: no ToolUse ⇒ no tool protocol.
+            tool_call_protocol: ToolProtocol::None,
+            structured_output_protocol: StructuredOutputProtocol::None,
             ..Default::default()
         }
     }
@@ -855,30 +863,31 @@ impl AdapterRegistry {
             // "local" — fall through to device-filtered auto-selection below
         }
 
-        // 2. Cloud-provider prefix detection (always eligible regardless of device).
-        // These are the well-known cloud API providers whose model names
-        // unambiguously identify the provider.
+        // 2. Registry-driven cloud routing (#70). A model's provider is a
+        // registry FACT — look it up instead of re-guessing it from the name
+        // prefix. Only CLOUD providers short-circuit here: they're always
+        // eligible (no local device cost), whereas local models must fall
+        // through to tier-3 device-filtered selection. An UNREGISTERED model
+        // name resolves to nothing and falls through too — we never route by
+        // guessing a provider from an unmodeled name (that was the smell).
+        // `try_global()` (not `global()`): consult the registry IF it's up.
+        // This is not a fallback — tier 2 asks "is this a registered CLOUD
+        // model?", and "registry not yet initialized" is materially the same
+        // answer as "not a registered cloud model": proceed to tier 3. In
+        // production the registry is always booted in backend_init before any
+        // adapter selects, so the None branch here is exclusively the bare
+        // unit-test case; panicking via global() would couple selection to
+        // global boot for no gain.
         if let Some(model_name) = model {
-            let model_lower = model_name.to_lowercase();
-            let cloud_match: Option<&str> = if model_lower.starts_with("claude") {
-                Some("anthropic")
-            } else if model_lower.starts_with("gpt")
-                || model_lower.starts_with("o1")
-                || model_lower.starts_with("o3")
-            {
-                Some("openai")
-            } else if model_lower.starts_with("deepseek") {
-                Some("deepseek")
-            } else if model_lower.starts_with("grok") {
-                Some("xai")
-            } else if model_lower.starts_with("gemini") {
-                Some("google")
-            } else {
-                None
-            };
-            if let Some(provider_id) = cloud_match {
-                if let Some(adapter) = self.get(provider_id) {
-                    return Some((provider_id, adapter));
+            if let Some(reg) = crate::model_registry::try_global() {
+                if let Some(spec) = reg.model(model_name) {
+                    let is_cloud =
+                        reg.provider(&spec.provider).map(|p| p.kind) == Some(ProviderKind::Cloud);
+                    if is_cloud {
+                        if let Some(adapter) = self.get(&spec.provider) {
+                            return Some((spec.provider.as_str(), adapter));
+                        }
+                    }
                 }
             }
         }

@@ -562,11 +562,19 @@ impl AIProviderAdapter for AnthropicAdapter {
 
 impl AnthropicAdapter {
     fn calculate_cost(&self, input_tokens: u32, output_tokens: u32, model: &str) -> f64 {
-        let (input_cost, output_cost) = match model {
-            m if m.contains("sonnet") => (0.003, 0.015),
-            m if m.contains("opus") => (0.015, 0.075),
-            m if m.contains("haiku") => (0.00025, 0.00125),
-            _ => (0.003, 0.015), // Default to Sonnet pricing
+        // Per-model cost is a registry FACT (#70) — read it, never re-guess it
+        // from the name, and never silently default an unknown model to Sonnet
+        // pricing (that was a fallback masking a misconfig). An unmodeled id
+        // genuinely has no cost estimate; report 0 and name it, loudly.
+        let (input_cost, output_cost) = match crate::model_registry::global().model(model) {
+            Some(m) => (m.cost_input_per_1k as f64, m.cost_output_per_1k as f64),
+            None => {
+                crate::clog_warn!(
+                    "calculate_cost: model '{model}' not in registry — \
+                     no cost fields to read; reporting 0 (telemetry only, not dispatch)"
+                );
+                (0.0, 0.0)
+            }
         };
 
         (input_tokens as f64 / 1000.0) * input_cost + (output_tokens as f64 / 1000.0) * output_cost
