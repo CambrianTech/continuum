@@ -44,6 +44,30 @@
 //! how aggressively to reclaim vs refuse — are policy a higher arbiter (the
 //! daemon, reading governor pressure such as `UserActive` during a call)
 //! supplies. Mechanism enforces; policy decides.
+//!
+//! # Forward design: adaptive quality scaling (persona tier up/down)
+//!
+//! The arbiter's eventual job is not just *evict vs keep* but *resize* — the
+//! cognition analogue of adaptive video bitrate / CPU DVFS. Under VRAM
+//! pressure, downgrade a persona's base model (qwen-30B → qwen-7B) instead of
+//! killing it; when a call ends and headroom returns, upgrade it back. The
+//! authority is the natural home because only it sees the whole footprint
+//! (Bevy + LiveKit + N personas) at once.
+//!
+//! The reclaim interface here ALREADY accommodates the **downgrade** half: a
+//! consumer (serving) can satisfy a [`ReclaimRequest`] by swapping to a smaller
+//! base and reporting [`ReclaimStatus::Partial`] with the bytes that move freed
+//! — the persona stays alive at lower fidelity rather than evicting. The
+//! consumer owns *how* it frees; tier-down is one strategy among unload / cache-
+//! drop. No new type is needed for this direction.
+//!
+//! The **upgrade** half is the one open seam: there is no `offer`-direction to
+//! mirror `reclaim` — no way for the authority to say "headroom appeared, want
+//! to grow?". When built, it pairs with the lease being keyed on the
+//! `(base_model, genome)` it is contracted at (see the seamless-failover work),
+//! so a tier change is a re-contract, not an evict+respawn. Until then: do NOT
+//! bake model-size policy into the ledger — it stays in the arbiter, and the
+//! ledger only ever sees the resulting byte deltas.
 
 pub mod broker;
 pub mod consumer;
