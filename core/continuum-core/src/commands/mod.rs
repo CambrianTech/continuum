@@ -23,5 +23,6 @@ pub mod migration;
 pub mod models;
 pub mod rag;
 pub mod runtime;
+pub mod serving;
 pub mod system;
 pub mod vector;

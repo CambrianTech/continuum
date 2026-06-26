@@ -39,6 +39,7 @@ use crate::system_resources::SystemResourceMonitor;
 use async_trait::async_trait;
 use serde_json::Value;
 use std::any::Any;
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
@@ -115,6 +116,16 @@ pub struct ServingDaemonModule {
     /// serving candidate on the very next tick — no reboot. This is the consumer
     /// side of the rich API: serving reacts to the universe changing.
     catalog: Arc<ModelCatalog>,
+    /// Model ids the operator has explicitly UNLOADED — the VRAM-axis "free".
+    /// The daemon is holistically in charge of VRAM, so freeing a lane is a
+    /// runtime act, never a restart: `serving/unload` inserts an id here, the
+    /// next plan recompute excludes it from candidates, and the reconcile drops
+    /// it (relaunch to the next-best fit, or empty) — VRAM freed live.
+    /// `serving/load` removes it, permitting the planner to serve it again when
+    /// it fits the budget. COW `Arc<HashSet>` on a watch so the command writes
+    /// and the plan reads the same authority lock-free; the planner still owns
+    /// the decision (this only ever EXCLUDES, never forces).
+    suppressed: watch::Sender<Arc<HashSet<String>>>,
 }
 
 impl ServingDaemonModule {
@@ -139,6 +150,7 @@ impl ServingDaemonModule {
     ) -> Self {
         let (plan_tx, _rx) = watch::channel(None);
         let (serving_tx, _srx) = watch::channel(ServingSnapshot::empty());
+        let (suppressed, _urx) = watch::channel(Arc::new(HashSet::new()));
         Self {
             gpu,
             system,
@@ -154,6 +166,7 @@ impl ServingDaemonModule {
                 crate::model_registry::try_global().and_then(|r| r.model(id).cloned())
             }),
             catalog,
+            suppressed,
         }
     }
 
@@ -199,13 +212,34 @@ impl ServingDaemonModule {
         host_budget_from(available, self.gpu.total_vram_bytes(), perf_cores())
     }
 
+    /// The servable candidates RIGHT NOW: the on-disk Ready models, MINUS any an
+    /// operator has explicitly unloaded (`serving/unload`). The single chokepoint
+    /// every plan flows through, so a suppressed model can never be planned, never
+    /// relaunched — its VRAM stays freed until `serving/load` permits it again.
+    /// The planner still owns the choice among what remains (suppress only ever
+    /// subtracts).
+    fn live_candidates(&self) -> Vec<ModelFootprint> {
+        let suppressed = self.suppressed.borrow();
+        candidates_from_snapshot(&self.catalog.snapshot())
+            .into_iter()
+            .filter(|c| !suppressed.contains(&c.model_id))
+            .collect()
+    }
+
+    /// A clone of the suppress-set writer, for the `serving/unload` ·
+    /// `serving/load` commands to mutate the VRAM-axis allocation ledger. The
+    /// daemon stays the authority: the commands only edit the exclude-set; the
+    /// plan + reconcile (owned here) turn that into an actual load/unload.
+    pub fn suppress_sender(&self) -> watch::Sender<Arc<HashSet<String>>> {
+        self.suppressed.clone()
+    }
+
     /// Compute the current serving plan from the live host snapshot + on-disk
     /// models, WITHOUT relying on a tick having run. The boot path calls this
     /// to drive the spawner before the tick loop starts — single source of
     /// truth for "what model + how many lanes."
     pub fn compute_plan(&self) -> Option<ServingPlan> {
-        let candidates = candidates_from_snapshot(&self.catalog.snapshot());
-        plan_serving(self.host_budget(), &candidates)
+        plan_serving(self.host_budget(), &self.live_candidates())
     }
 
     /// The detected hardware tier for this host, for the persona spawner's
@@ -219,8 +253,7 @@ impl ServingDaemonModule {
     /// it, and log the decision. Idempotent — safe to call on init and tick.
     fn recompute(&self) {
         let budget = self.host_budget();
-        let candidates = candidates_from_snapshot(&self.catalog.snapshot());
-        self.publish_plan(budget, &candidates);
+        self.publish_plan(budget, &self.live_candidates());
     }
 
     /// Bring the running `llama-server` in line with the published plan. FAST —
@@ -601,6 +634,21 @@ impl ServiceModule for ServingDaemonModule {
         }
     }
 
+    /// The typed VRAM-axis deallocation pair — `serving/unload` (free a lane) and
+    /// `serving/load` (permit it again) — on the ONE command registry, so a
+    /// persona/operator/grid peer is OFFERED VRAM control as a real tool. They
+    /// share the daemon's suppress-set writer + serving snapshot; the daemon's
+    /// own plan/reconcile loop turns their edits into actual (un)loads. The
+    /// legacy `serving/plan` · `serving/status` queries stay on `handle_command`
+    /// until their own migration slice.
+    fn commands(&self) -> Vec<Arc<dyn crate::sdk_codegen::DynCommand>> {
+        crate::commands::serving::command_objects(
+            self.suppress_sender(),
+            self.subscribe_serving(),
+            self.catalog.clone(),
+        )
+    }
+
     fn as_any(&self) -> &dyn Any {
         self
     }
@@ -817,6 +865,66 @@ mod tests {
         assert_eq!(
             found.weights_bytes, 4096,
             "footprint counts the real bytes that will be loaded"
+        );
+    }
+
+    // what this catches: the VRAM-axis deallocation. `serving/unload` inserts a
+    // model id into the daemon's suppress-set; `live_candidates` must then EXCLUDE
+    // that model even though it is Ready on disk, so the planner can no longer pick
+    // it and the next reconcile frees its lane. `serving/load` (un-suppress)
+    // restores it as a candidate. Without this filter an unloaded model would be
+    // re-planned on the very next tick and its VRAM would never free — the
+    // imperative-suppress contract the operator chose.
+    #[test]
+    fn live_candidates_honors_the_suppress_set() {
+        use crate::model_registry::live::ModelStatus;
+        use std::io::Write;
+
+        let serves = Arc::new(AtomicUsize::new(0));
+        let daemon = daemon_with(Arc::new(FakeServer { serves, ok: true }));
+        let id = "suppress-probe";
+
+        // Land a Ready model so it IS a candidate to begin with.
+        let mut gguf = tempfile::Builder::new()
+            .suffix(".gguf")
+            .tempfile()
+            .expect("temp gguf");
+        gguf.write_all(&[0u8; 4096]).expect("write weights");
+        gguf.flush().expect("flush");
+        daemon.catalog.register(
+            fake_model(id),
+            ModelStatus {
+                availability: Availability::NotDownloaded,
+                verified: None,
+            },
+        );
+        assert!(
+            daemon
+                .catalog
+                .attach_local_artifact(id, gguf.path().to_path_buf(), None),
+            "ready model lands on disk"
+        );
+        assert!(
+            daemon.live_candidates().iter().any(|f| f.model_id == id),
+            "a Ready model is a candidate before unload"
+        );
+
+        // serving/unload: pin it OFF → excluded from candidates → lane frees.
+        daemon.suppress_sender().send_modify(|s| {
+            Arc::make_mut(s).insert(id.to_string());
+        });
+        assert!(
+            !daemon.live_candidates().iter().any(|f| f.model_id == id),
+            "a suppressed model is excluded → planner drops it → VRAM frees"
+        );
+
+        // serving/load: permit it again → returns as a candidate (planner decides).
+        daemon.suppress_sender().send_modify(|s| {
+            Arc::make_mut(s).remove(id);
+        });
+        assert!(
+            daemon.live_candidates().iter().any(|f| f.model_id == id),
+            "an un-suppressed model returns as a candidate"
         );
     }
 
