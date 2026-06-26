@@ -16,8 +16,7 @@
 //! A deferred `init_global` keeps that control.
 
 use super::catalog;
-use super::loader::{load_registry, Registry, RegistryError};
-use std::path::Path;
+use super::registry::{Registry, RegistryError};
 use std::sync::OnceLock;
 
 static GLOBAL: OnceLock<Registry> = OnceLock::new();
@@ -33,16 +32,6 @@ static GLOBAL: OnceLock<Registry> = OnceLock::new();
 /// ```
 pub fn init_global() -> Result<&'static Registry, RegistryError> {
     init_global_with(catalog::registry)
-}
-
-/// Legacy TOML initializer for parser tests and the short-lived migration
-/// window. Runtime boot must call [`init_global`], which uses the Rust
-/// catalog directly.
-pub fn init_global_from(
-    models: &Path,
-    providers: &Path,
-) -> Result<&'static Registry, RegistryError> {
-    init_global_with(|| load_registry(models, providers))
 }
 
 fn init_global_with(

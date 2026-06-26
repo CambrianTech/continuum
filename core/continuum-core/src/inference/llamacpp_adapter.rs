@@ -58,7 +58,7 @@ pub const LLAMACPP_PROVIDER_ID: &str = "llamacpp-local";
 
 /// Overlay live runtime metadata (throughput) on top of the registry's
 /// declared ModelInfo. Context-window still flows from `backend.n_ctx_train()`
-/// because that's the GGUF's ground truth — the TOML value is the intent,
+/// because that's the GGUF's ground truth — the catalog value is the intent,
 /// the GGUF metadata is what the runtime actually loaded. If they drift,
 /// we trust the model, not the config.
 fn model_info_with_runtime(
@@ -315,7 +315,7 @@ impl LlamaCppAdapter {
     /// multiple llamacpp-local entries (text + vision) needs a way to
     /// say which one this adapter instance serves.
     ///
-    /// The `model_id` MUST match a row in `config/models.toml` so the
+    /// The `model_id` MUST match a row in the Rust catalog (catalog.rs) so the
     /// adapter can look up that model's chat_template, mmproj_path,
     /// stop_sequences, and capabilities. A mismatch produces silently
     /// wrong output (wrong chat template → garbled response).
@@ -601,7 +601,7 @@ impl LlamaCppAdapter {
             // persona prompts without ballooning memory (graph nodes
             // scale with n_ubatch but at ~4 KiB per node × 942 nodes ×
             // 4 multiplier we're talking ~15 MiB per scheduler — trivial).
-            // Future: derive from `models.toml` row per [[orm-everything-
+            // Future: derive from the Rust catalog (catalog.rs) row per [[orm-everything-
             // not-hand-edited-files]] so each model declares its own
             // realistic batch ceiling.
             n_ubatch: self.n_ubatch_override.unwrap_or(512),
@@ -791,9 +791,9 @@ impl AIProviderAdapter for LlamaCppAdapter {
         // Resolution order, no fallback:
         //   1. GGUF metadata `tokenizer.chat_template` (forge bake should
         //      put it here).
-        //   2. models.toml `chat_template` field (memento's registry —
+        //   2. the Rust catalog (catalog.rs) `chat_template` field (memento's registry —
         //      authoritative when GGUF is silent).
-        // No in-code constant. Adding a new model = TOML row, never an
+        // No in-code constant. Adding a new model = catalog row, never an
         // adapter edit. If both sources are absent, render_chat passes
         // None to llama.cpp which is its own loud failure (chatml default
         // doesn't match qwen3.5's special tokens — output corruption).
@@ -1212,10 +1212,10 @@ impl AIProviderAdapter for LlamaCppAdapter {
     }
 
     async fn get_available_models(&self) -> Vec<ModelInfo> {
-        // Identity + capabilities come from the registry (config/models.toml).
+        // Identity + capabilities come from the registry (the Rust catalog (catalog.rs)).
         // Runtime overlay (context_window from GGUF metadata, tokens/sec
         // from last measurement) only applies if the backend is loaded;
-        // otherwise we return the TOML-declared view and let the first
+        // otherwise we return the catalog-declared view and let the first
         // generate_text call refresh the numbers.
         let base = models_for_provider_via_registry(LLAMACPP_PROVIDER_ID);
         let backend_guard = self.backend.read();

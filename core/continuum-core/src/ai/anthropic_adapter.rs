@@ -35,11 +35,11 @@ pub struct AnthropicAdapter {
     initialized: bool,
     /// Resolved from registry at construction. Held as `String` so
     /// `default_model()` can return `&str`. No hardcoded CLAUDE_* const
-    /// — the ID lives in `config/models.toml`, this is the cached view.
+    /// — the ID lives in the Rust catalog (catalog.rs), this is the cached view.
     default_model: String,
     /// Cheapest Anthropic model by `cost_input_per_1k`, used for the
     /// auth-probe health check. Picked at construction rather than
-    /// hardcoded so a TOML edit that adds a cheaper model
+    /// hardcoded so a catalog edit that adds a cheaper model
     /// (Claude 4.0 Haiku?) takes effect without code changes.
     health_check_model: String,
 }
@@ -58,7 +58,7 @@ impl AnthropicAdapter {
         let default_model = reg
             .provider("anthropic")
             .and_then(|p| p.default_model.clone())
-            .expect("anthropic provider has no default_model in config/providers.toml");
+            .expect("anthropic provider has no default_model in the Rust catalog (catalog.rs)");
         let health_check_model = reg
             .models_for_provider("anthropic")
             .min_by(|a, b| {
@@ -242,7 +242,7 @@ struct AnthropicUsage {
 }
 
 // Model IDs
-// Model identity lives in config/models.toml + config/providers.toml.
+// Model identity lives in the Rust catalog (catalog.rs).
 // Adapter caches resolved ids in `self.default_model` + `self.health_check_model`
 // at construction. Any code that needs a Claude id reads it via the
 // registry, not via a constant here.
@@ -549,7 +549,7 @@ impl AIProviderAdapter for AnthropicAdapter {
     }
 
     async fn get_available_models(&self) -> Vec<ModelInfo> {
-        // Source of truth lives in config/models.toml. Registry projects
+        // Source of truth lives in the Rust catalog (catalog.rs). Registry projects
         // each model_registry::Model to the legacy ai::ModelInfo shape
         // via the From impl in registry_bridge.
         super::registry_bridge::models_for_provider_via_registry("anthropic")

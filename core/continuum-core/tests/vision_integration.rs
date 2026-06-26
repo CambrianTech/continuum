@@ -19,7 +19,7 @@
 //! this test can only go green against a LOCAL vision-capable model.
 //!
 //! Which also means: until anvil's in-flight work lands
-//! (config/models.toml registers Qwen2-VL-7B with `Capability::Vision`
+//! (the Rust catalog (catalog.rs) registers Qwen2-VL-7B with `Capability::Vision`
 //! + `LlamaCppAdapter::generate_text` stops filter-mapping out
 //! `ContentPart::Image` + `LlamaCppBackend` routes images through
 //! mtmd — FFI side already in d32b8840a/6557dce34), the test stays
@@ -112,7 +112,7 @@ fn build_vision_request(model_id: &str) -> RespondInput {
 /// vision-capable model. Runs once anvil's pieces land:
 ///
 ///   - `Qwen/Qwen2-VL-7B-Instruct` (or bartowski GGUF re-pack)
-///     registered in `config/models.toml` with `Capability::Vision`
+///     registered in the Rust catalog (catalog.rs) with `Capability::Vision`
 ///   - `LlamaCppAdapter::generate_text` stops filter_mapping out
 ///     `ContentPart::Image` (the current drop at llamacpp_adapter.rs)
 ///   - `LlamaCppBackend` wired through `MtmdContext::encode_image`
@@ -128,7 +128,7 @@ async fn vision_roundtrip_local_qwen2_vl() {
 
     continuum_core::model_registry::init_global().expect("seeded config loads");
 
-    // The TOML row id we registered (anvil 2026-04-21). Memento's earlier
+    // The catalog row id we registered (anvil 2026-04-21). Memento's earlier
     // draft pointed at a forge name that doesn't exist yet —
     // `continuum-ai/qwen2-vl-7b-forged-GGUF` is the eventual forged
     // variant; until that bake exists, the bartowski Q4_K_M GGUF + its
@@ -140,7 +140,7 @@ async fn vision_roundtrip_local_qwen2_vl() {
     let reg = continuum_core::model_registry::global();
     let model_meta = reg.model(model_id).unwrap_or_else(|| {
         panic!(
-            "'{model_id}' not in config/models.toml. Add a Vision-capable \
+            "'{model_id}' not in the Rust catalog (catalog.rs). Add a Vision-capable \
              entry (gguf_hint + mmproj + Capability::Vision). FFI side \
              shipped in d32b8840a / 6557dce34, dedup fix in f098c4331; \
              this test is the persona-pipeline end-to-end proof."
@@ -153,7 +153,7 @@ async fn vision_roundtrip_local_qwen2_vl() {
     let model_path = model_meta
         .gguf_local_path
         .clone()
-        .expect("qwen2-vl-7b-instruct should declare gguf_local_path in models.toml");
+        .expect("qwen2-vl-7b-instruct should declare gguf_local_path in the Rust catalog (catalog.rs)");
     if !model_path.exists() {
         eprintln!(
             "[vision-int] skipping — Qwen2-VL-7B GGUF not at {}. Pull via \

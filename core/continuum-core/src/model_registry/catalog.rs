@@ -4,7 +4,7 @@
 //! Discovery may propose candidates elsewhere; admission only chooses from
 //! this vetted catalog.
 
-use super::loader::{Registry, RegistryError};
+use super::registry::{Registry, RegistryError};
 use super::types::{
     Arch, AuthKind, Capability, Model, MultiPartyChatStrategy, Provider, ProviderCapabilities,
     ProviderKind, ToolProtocol,

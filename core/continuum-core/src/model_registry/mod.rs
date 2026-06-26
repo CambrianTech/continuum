@@ -11,11 +11,14 @@
 //! - Enum variants (`Arch`, `Capability`, `AuthKind`) are the closed
 //!   vocabulary. Adding a model with a new arch means adding an `Arch::`
 //!   variant and one catalog row.
+//! - The Rust catalog (`catalog.rs`) is the ONLY hand-authored source.
+//!   There is no TOML loader. Hand-authoring is for the residue no query
+//!   can supply; everything else hydrates from artifact metadata.
 
 pub mod artifacts;
 pub mod catalog;
 pub mod discovery;
-pub mod loader;
+pub mod registry;
 pub mod singleton;
 pub mod types;
 
@@ -24,6 +27,6 @@ pub use artifacts::{
     resolve_local_model_dir_for_model_id,
 };
 pub use catalog::{models as catalog_models, providers as catalog_providers};
-pub use loader::{load_models, load_providers, load_registry, Registry, RegistryError};
+pub use registry::{Registry, RegistryError};
 pub use singleton::{global, init_global, try_global};
 pub use types::{Arch, AuthKind, Capability, Model, Provider, ProviderKind, ToolProtocol};

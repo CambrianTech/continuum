@@ -79,7 +79,7 @@ fn qwen35_persona_style_chat_produces_coherent_short_reply() {
     // chat() defaults (temp=0.6, repeat_penalty=1.1, top_k=40, top_p=0.95).
     let sampling = SamplingConfig::chat();
 
-    // Stop sequences match what models.toml declares for qwen3.5 — these
+    // Stop sequences match what the Rust catalog (catalog.rs) declares for qwen3.5 — these
     // catch the chat-template terminator since the GGUF's eos_token_id is wrong.
     let stop: [&str; 2] = ["<|im_end|>", "<|endoftext|>"];
 

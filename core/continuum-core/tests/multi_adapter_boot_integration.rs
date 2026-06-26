@@ -1,5 +1,5 @@
 //! Multi-adapter boot integration test — mirrors the runtime's
-//! `register_adapters` walk over `models.toml`'s llamacpp-local rows
+//! `register_adapters` walk over the Rust catalog (catalog.rs)'s llamacpp-local rows
 //! and proves the cumulative Metal residency + first-decode pressure
 //! doesn't wedge the GPU.
 //!
@@ -28,7 +28,7 @@
 //! The existing `vision_integration.rs` only registers ONE adapter
 //! (qwen2-vl), so it never exercised the multi-row scenario. Result:
 //! Joel's bug had no test that would have caught it. This file fixes
-//! that — it walks every llamacpp-local row in `models.toml` whose
+//! that — it walks every llamacpp-local row in the Rust catalog (catalog.rs) whose
 //! files exist on disk and instantiates each adapter the way the
 //! runtime does in `modules::ai_provider::register_adapters`.
 //!
@@ -38,7 +38,7 @@
 //! initialized, EVERY adapter must accept a tiny smoke decode without
 //! returning `-3`. If two mtmd-capable rows can't coexist on the host
 //! GPU, this test fails — same as production. Adding a new local
-//! model row to `models.toml` should run this test as the gate, not
+//! model row to the Rust catalog (catalog.rs) should run this test as the gate, not
 //! "ship it and watch chat brick at runtime."
 //!
 //! # Run
@@ -57,17 +57,17 @@ use continuum_core::ai::types::TextGenerationRequest;
 use continuum_core::inference::{LlamaCppAdapter, LLAMACPP_PROVIDER_ID};
 use continuum_core::model_registry;
 
-/// Walk `models.toml`'s llamacpp-local rows, register one adapter per
+/// Walk the Rust catalog (catalog.rs)'s llamacpp-local rows, register one adapter per
 /// model that has its files on disk, then smoke-decode each. Asserts
 /// no Metal OOM occurs across the cumulative load + first decode of
 /// every backend. This is the test that would have failed the moment
-/// `qwen2-audio-7b-instruct` was added to `models.toml` next to
+/// `qwen2-audio-7b-instruct` was added to the Rust catalog (catalog.rs) next to
 /// `qwen2-vl-7b-instruct` — same coexistence behavior the runtime
 /// exhibits, just isolated and asserted.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "loads real GGUFs (~5–10GB Metal); run via --ignored --nocapture"]
 async fn llamacpp_local_models_coexist_without_metal_oom() {
-    model_registry::init_global().expect("models.toml loads");
+    model_registry::init_global().expect("the Rust catalog (catalog.rs) loads");
     let registry = model_registry::global();
     let local_rows: Vec<_> = registry
         .models_for_provider(LLAMACPP_PROVIDER_ID)
@@ -185,7 +185,7 @@ async fn llamacpp_local_models_coexist_without_metal_oom() {
                     model_id,
                     if is_metal_brick {
                         "this is the Metal multi-backend brick. Adding this model \
-                         to models.toml + the others below it overflowed Metal at \
+                         to the Rust catalog (catalog.rs) + the others below it overflowed Metal at \
                          boot. Either disable one mtmd row OR ship the substrate \
                          work (mmproj init mutex + backend recovery on OOM) before \
                          re-enabling."

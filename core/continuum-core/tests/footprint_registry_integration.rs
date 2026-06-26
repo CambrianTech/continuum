@@ -43,7 +43,7 @@ fn qwen35_4b_target_path() -> PathBuf {
 #[ignore = "requires real qwen3.5-4b GGUF + 5-10s; run manually with --ignored --nocapture"]
 async fn llamacpp_adapter_reports_model_weights_to_global_registry() {
     // Need the model registry initialized so LlamaCppAdapter::new() can
-    // resolve the llamacpp-local row from config/models.toml.
+    // resolve the llamacpp-local row from the Rust catalog (catalog.rs).
     let _reg = continuum_core::model_registry::init_global()
         .expect("model_registry init for adapter construction");
 

@@ -11,7 +11,7 @@ use std::path::PathBuf;
 
 /// Model architecture family. Typed (not stringly-typed) so call sites
 /// use enum matching, not string comparison. Adding a new arch means:
-/// (a) add the variant here, (b) add a TOML row with `arch = "new_arch"`.
+/// (a) add the variant here, (b) add a catalog row with `arch = "new_arch"`.
 /// Code that dispatches by arch gets a compile error reminding the author
 /// to handle the new variant — precisely the pattern Joel's axiom calls
 /// for ("code should NEVER know the model" — code knows the ARCHETYPES
@@ -89,7 +89,7 @@ pub enum Capability {
 /// Where a provider runs its inference. Resolver consumes this to honor
 /// `LocalOrCloudPolicy` without needing a hardcoded provider-id list.
 /// Providers default to [`ProviderKind::Cloud`] so adding a new cloud
-/// provider TOML row doesn't require an explicit `kind` line; local
+/// provider catalog row doesn't require an explicit `kind` line; local
 /// providers MUST declare `kind = "local"` explicitly.
 #[derive(
     Debug,
@@ -306,7 +306,7 @@ pub struct Model {
     pub context_window: u32,
     pub max_output_tokens: u32,
     /// Decoded tokens per second at single-stream inference. Populated
-    /// from adapter reports at load; the TOML value is a reasonable
+    /// from adapter reports at load; the catalog value is a reasonable
     /// startup estimate, the live registry updates it post-init.
     pub tokens_per_second: f32,
     /// Sorted set of advertised capabilities. BTreeSet for deterministic
@@ -423,7 +423,7 @@ pub struct Provider {
     #[serde(default)]
     pub model_prefixes: Vec<String>,
     /// Where this provider runs inference. See [`ProviderKind`]. Defaults
-    /// to `Cloud` when omitted in TOML — local providers must declare
+    /// to `Cloud` when omitted in the catalog — local providers must declare
     /// `kind = "local"` explicitly so adding a new cloud provider doesn't
     /// require touching this field.
     #[serde(default)]

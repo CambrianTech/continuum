@@ -21,7 +21,7 @@
 //!
 //! Source-of-truth ordering for model data: this module reads Models from
 //! the typed registry (`crate::model_registry`). It does NOT itself read
-//! `models.toml` or `models.json` — the registry already loaded both.
+//! the Rust catalog (catalog.rs) — the registry already loaded it.
 
 //! # Module layout (continuum#1208)
 //!
@@ -72,7 +72,7 @@ fn derive_target_silicon(
 /// 3. `context_window_min` — model's window ≥ requirement
 /// 4. `provider_policy` — Local/Cloud filter, keyed on the provider's
 ///    [`ProviderKind`] (no hardcoded provider-id list — providers declare
-///    their own residency in `providers.toml`)
+///    their own residency in the Rust catalog (catalog.rs))
 /// 5. `silicon_residency` — after the best candidate is ranked and its
 ///    target silicon derived, reject if the silicon violates the caller's
 ///    residency requirement. Enforces the alpha bar's no-silent-CPU
@@ -815,7 +815,7 @@ mod tests {
 
     #[test]
     fn current_registry_state_fails_alpha_bar_naming_the_forge_gap() {
-        // The current test registry mirrors today's models.toml: qwen3.5-4b
+        // The current test registry mirrors today's the Rust catalog (catalog.rs): qwen3.5-4b
         // has Chat+ToolUse but no Vision/Audio. qwen2-vl-7b has Chat+Vision
         // but no Audio. gpt-4o has the full sensory bundle but is CLOUD.
         // No LOCAL multimodal base = the forge gap PR #1072 names. This

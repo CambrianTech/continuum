@@ -227,7 +227,7 @@ impl OpenAICompatibleAdapter {
 
     /// Override the default model id (the one a `request.model: None` resolves to).
     /// Used at persona upstart to bind the adapter to the model unsloth ACTUALLY
-    /// serves (discovered via `/v1/models`), instead of the providers.toml default
+    /// serves (discovered via `/v1/models`), instead of the the Rust catalog (catalog.rs) default
     /// — which can drift from what's loaded. Called post-construction, before init.
     pub fn with_default_model(mut self, model: String) -> Self {
         self.config.default_model = model;
@@ -519,7 +519,7 @@ impl OpenAICompatibleAdapter {
     /// Build an adapter for `provider_id` by reading everything from the
     /// model_registry. Replaces eight hand-rolled factories whose combined
     /// bulk was ~280 LOC of `ModelInfo { ... }` literals that drifted
-    /// whenever a new model shipped. Now the TOML is the only place a
+    /// whenever a new model shipped. Now the catalog is the only place a
     /// new model's context_window / capabilities / pricing lives.
     ///
     /// Panics if the provider isn't in the registry — that's a boot-time
@@ -527,14 +527,14 @@ impl OpenAICompatibleAdapter {
     ///
     /// Capability flags (`supports_tools`, `supports_vision`) are derived
     /// from whether ANY model under this provider advertises the relevant
-    /// Capability. A new Vision-capable model showing up in TOML flips
+    /// Capability. A new Vision-capable model showing up in the catalog flips
     /// the adapter's vision flag automatically on next boot — no code
     /// change.
     pub fn from_registry(provider_id: &str) -> Self {
         let reg = crate::model_registry::global();
         let provider = reg.provider(provider_id).unwrap_or_else(|| {
             panic!(
-                "provider `{}` not in config/providers.toml — can't build \
+                "provider `{}` not in the Rust catalog (catalog.rs) — can't build \
                  OpenAICompatibleAdapter",
                 provider_id
             )
@@ -546,8 +546,8 @@ impl OpenAICompatibleAdapter {
         // (#65). Every OpenAI-compatible adapter does text + chat + streaming;
         // tool-use + vision come from scanning the provider's models; embeddings
         // + image-gen come from the provider's declared `ProviderCapabilities`.
-        // A new vision-capable model in TOML flips the Vision flag automatically
-        // on next boot — no code change, no `id == "..."` branch.
+        // A new vision-capable model in the catalog flips the Vision flag
+        // automatically on next boot — no code change, no `id == "..."` branch.
         let mut capabilities = BTreeSet::from([
             Capability::TextGeneration,
             Capability::Chat,
@@ -592,7 +592,7 @@ impl OpenAICompatibleAdapter {
         // condition.
         let default_model = provider.default_model.clone().unwrap_or_else(|| {
             panic!(
-                "provider `{}` has no `default_model` in config/providers.toml — \
+                "provider `{}` has no `default_model` in the Rust catalog (catalog.rs) — \
                  every OpenAI-compatible adapter needs one because the trait \
                  returns &str, not Option<&str>",
                 provider_id
@@ -984,12 +984,12 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
 
     async fn initialize(&mut self) -> Result<(), String> {
         // Only require API key if provider needs auth. Providers without
-        // an `api_key_env` in TOML (localhost DMR, llamacpp-local) skip
+        // an `api_key_env` in the catalog (localhost DMR, llamacpp-local) skip
         // this entirely — their `requires_auth` is false.
         if self.config.requires_auth {
             let key_env = self.config.api_key_env.as_deref().unwrap_or_else(|| {
                 panic!(
-                    "provider `{}` requires auth but has no api_key_env in TOML",
+                    "provider `{}` requires auth but has no api_key_env in the catalog",
                     self.config.provider_id
                 )
             });
@@ -1611,7 +1611,7 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
     ///
     /// The default trait impl uses `starts_with` against
     /// `supported_model_prefixes`. We override because prefixes now live
-    /// in `config/providers.toml` (Provider.model_prefixes), not as
+    /// in the Rust catalog (catalog.rs) (Provider.model_prefixes), not as
     /// `&'static str` embedded in code. A dynamic-catalog gateway (DMR) is
     /// special-cased because its catalog depends on `docker model pull`
     /// history — so we check the live runtime_models set populated at init.

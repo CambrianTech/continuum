@@ -137,8 +137,8 @@ impl std::fmt::Display for InferenceProfileError {
             Self::UnknownModel { model_id, role_id } => write!(
                 f,
                 "PersonaInferenceProfile: role '{}' references model '{}' \
-                 not found in registry. Either add the TOML row in \
-                 config/models.toml or update the role_template.",
+                 not found in registry. Either add the model row in \
+                 the Rust catalog (catalog.rs) or update the role_template.",
                 role_id, model_id
             ),
             Self::NoLocalGguf {
@@ -351,7 +351,7 @@ mod tests {
         assert!(msg.contains("helper"), "names the role: {msg}");
         assert!(msg.contains("nonexistent/model"), "names the model: {msg}");
         assert!(
-            msg.contains("config/models.toml"),
+            msg.contains("catalog.rs"),
             "points at the registry: {msg}"
         );
 

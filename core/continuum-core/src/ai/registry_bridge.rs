@@ -1,4 +1,4 @@
-//! Projects `model_registry::Model` (the TOML-driven source of truth) into
+//! Projects `model_registry::Model` (the hand-authored catalog source of truth) into
 //! `ai::ModelInfo` (the wire type adapters return and ts-rs exports to TS).
 //!
 //! After the #65 capability collapse there is no longer a vocabulary to
@@ -15,7 +15,7 @@ impl From<&Model> for ModelInfo {
     fn from(m: &Model) -> Self {
         // Display name — fall back to id if TOML didn't supply one. The
         // fallback is intentionally ugly (full id, often dotted hf.co paths)
-        // so the empty-name case surfaces at UI time and the TOML gets fixed.
+        // so the empty-name case surfaces at UI time and the catalog gets fixed.
         let name = m.name.clone().unwrap_or_else(|| m.id.clone());
 
         ModelInfo {

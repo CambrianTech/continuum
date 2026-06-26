@@ -418,7 +418,7 @@ impl LlamaCppBackend {
         let mmproj = self.config.mmproj_path.as_ref().ok_or_else(|| {
             format!(
                 "model {} has no mmproj configured — text-only backend can't process images. \
-                 Set `mmproj_local_path` in models.toml AND declare Capability::Vision.",
+                 Set `mmproj_local_path` in the Rust catalog (catalog.rs) AND declare Capability::Vision.",
                 self.model_id
             )
         })?;
@@ -548,7 +548,7 @@ impl LlamaCppBackend {
         //
         // The window comes from the model's REAL ceiling bounded by REAL
         // available memory (`effective_context_length`), NOT a hand-set
-        // models.toml value and NOT a blind fall to n_ctx_train. The old
+        // the Rust catalog (catalog.rs) value and NOT a blind fall to n_ctx_train. The old
         // blind fallback allocated a 262144-token KV cache for qwen3.5
         // (~38GB/seq) and crushed Metal to 12 tok/s (2026-04); the memory
         // bound makes that impossible by construction while still honoring
@@ -737,7 +737,7 @@ impl LlamaCppBackend {
     fn scheduler(&self) -> &Scheduler {
         self.scheduler.get_or_init(|| {
             // Per-sequence window from the model's REAL ceiling bounded by
-            // REAL available memory (task #46), not a hand-set models.toml
+            // REAL available memory (task #46), not a hand-set the Rust catalog (catalog.rs)
             // value. `effective_context_length` already divides the memory
             // budget by n_seq_max, so the total below stays within budget —
             // this is what makes the 2026-04 262144-token Metal OOM
