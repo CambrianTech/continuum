@@ -99,6 +99,30 @@
 //!
 //! Single-machine first; this is the deferred grid wave, recorded so it is built
 //! as the cell's own pattern gossiped, not re-derived as a parallel scheduler.
+//!
+//! # Why this is the core advantage: a lease is an economic primitive
+//!
+//! The unifying "why" behind the notes above. Most systems pin resources
+//! statically (provision for peak, waste at idle, re-provision by hand). This
+//! module makes resources a *live allocation* that continuously meets everyone's
+//! goals under current scarcity — so adding a node or a peer just grows the pool
+//! the allocator draws from. That dynamism IS the differentiator.
+//!
+//! And it is already shaped for the literal economy that comes later, with no
+//! ledger rewrite — only a richer price signal in the arbiter:
+//! - [`LeaseRequest`] = a **bid** (today valued by the coarse `Pinned > Hard >
+//!   Graceful` ladder).
+//! - [`LeaseBoard`] = the **order book** (supplied / held / free).
+//! - reclaim = the **call** — broker a transfer when someone values bytes more.
+//! - reservation floors = **entitlements** — the welfare floor everyone gets
+//!   before the market opens (the call always runs; no persona starved).
+//!
+//! Every good economy is *rights floor + efficient surplus allocation*; floors +
+//! priced reclaim are exactly that. The "literal economy" (credits,
+//! contribution-weighting, willingness-to-pay) is the arbiter learning to price
+//! — it swaps the coarse tier for a continuous value. The ledger never sees the
+//! price; it still only enforces who-holds-what. Do NOT put a price/credit field
+//! on the lease — value lives in the arbiter, bytes live here.
 
 pub mod broker;
 pub mod consumer;
