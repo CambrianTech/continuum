@@ -219,6 +219,34 @@ impl ModelCatalog {
         present
     }
 
+    /// Record the artifact a `models/pull` just landed: set the live model's
+    /// resolved GGUF path (and the multimodal projector path, if one came down)
+    /// AND flip availability to [`Availability::Ready`] in one mutation. This is
+    /// the truthful pull result — the live universe now knows not just THAT the
+    /// model is ready but exactly WHERE its bytes are, so serving resolves the
+    /// path off the snapshot instead of re-scanning disk. Returns whether the
+    /// model was present.
+    pub fn attach_local_artifact(
+        &self,
+        id: &str,
+        gguf_path: std::path::PathBuf,
+        mmproj_path: Option<std::path::PathBuf>,
+    ) -> bool {
+        let present = self.tx.borrow().models.contains_key(id);
+        if present {
+            self.mutate(|snap| {
+                if let Some(live) = snap.models.get_mut(id) {
+                    live.model.gguf_local_path = Some(gguf_path);
+                    if mmproj_path.is_some() {
+                        live.model.mmproj_local_path = mmproj_path;
+                    }
+                    live.status.availability = Availability::Ready;
+                }
+            });
+        }
+        present
+    }
+
     /// Attach a verification result after `models/try` runs. Returns whether the
     /// model was present.
     pub fn attach_verification(&self, id: &str, report: VerifyReport) -> bool {
@@ -348,5 +376,42 @@ mod tests {
         let snap = catalog.snapshot();
         let live = snap.get(&id).expect("model still present");
         assert_eq!(live.status.verified.as_ref().unwrap().measured_tps, Some(42.0));
+    }
+
+    // what this catches: a models/pull result is recorded truthfully — the live
+    // model gets its resolved GGUF + projector paths AND flips to Ready in one
+    // generation bump, so serving reads the path off the snapshot instead of
+    // re-scanning disk. An unknown id reports false (no silent success).
+    #[test]
+    fn attach_local_artifact_records_paths_and_flips_ready() {
+        use std::path::PathBuf;
+        let reg = catalog::registry().expect("Rust catalog must validate");
+        let catalog = ModelCatalog::from_registry(&reg);
+
+        assert!(
+            !catalog.attach_local_artifact("nope/not-a-model", PathBuf::from("/x.gguf"), None),
+            "an unknown id must report false, not silently succeed"
+        );
+
+        // A local model that seeds NotDownloaded (no artifact on disk).
+        let id = catalog
+            .snapshot()
+            .models
+            .values()
+            .find(|m| m.status.availability == Availability::NotDownloaded)
+            .map(|m| m.model.id.clone())
+            .expect("seeded universe has a not-downloaded local model");
+        let gen_before = catalog.snapshot().generation;
+
+        let gguf = PathBuf::from("/tmp/pulled-model-Q4_K_M.gguf");
+        let mmproj = PathBuf::from("/tmp/mmproj-f16.gguf");
+        assert!(catalog.attach_local_artifact(&id, gguf.clone(), Some(mmproj.clone())));
+
+        let snap = catalog.snapshot();
+        let live = snap.get(&id).expect("model still present");
+        assert_eq!(live.status.availability, Availability::Ready, "pull flips Ready");
+        assert_eq!(live.model.gguf_local_path.as_ref(), Some(&gguf));
+        assert_eq!(live.model.mmproj_local_path.as_ref(), Some(&mmproj));
+        assert!(snap.generation > gen_before, "the mutation bumps generation");
     }
 }

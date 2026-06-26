@@ -7,7 +7,8 @@
 //! them, how fast are they?" — answered live, mutated without a reboot. The
 //! data comes from the live [`ModelCatalog`](crate::model_registry::live::ModelCatalog):
 //! seeded from the immutable registry at boot, mutated at runtime by this very
-//! surface (`pull`/`try`/`register` in later slices). Reads project the current
+//! surface (`pull` acquires, `try` verifies; `register` lands in a later slice).
+//! Reads project the current
 //! `Arc<CatalogSnapshot>` lock-free; the widget/persona subscribe to the watch
 //! channel and react when the universe changes.
 //!
@@ -39,10 +40,12 @@ use crate::sdk_codegen::DynCommand;
 pub mod capabilities;
 pub mod discover;
 pub mod list;
+pub mod pull;
 pub mod try_;
 
 use capabilities::ModelsCapabilities;
 use list::ModelsList;
+use pull::ModelsPull;
 use try_::ModelsTry;
 
 /// The dep-holding `models/*` command objects the [`ModelsModule`](crate::modules::models::ModelsModule)
@@ -61,6 +64,9 @@ pub fn command_objects(
             catalog: catalog.clone(),
         }),
         Arc::new(ModelsCapabilities {
+            catalog: catalog.clone(),
+        }),
+        Arc::new(ModelsPull {
             catalog: catalog.clone(),
         }),
         Arc::new(ModelsTry { catalog, registry }),
@@ -84,6 +90,7 @@ mod tests {
         let names: Vec<&str> = objs.iter().map(|o| o.name()).collect();
         assert!(names.contains(&"models/list"));
         assert!(names.contains(&"models/capabilities"));
+        assert!(names.contains(&"models/pull"));
         assert!(names.contains(&"models/try"));
         assert!(
             !names.contains(&"models/discover"),
