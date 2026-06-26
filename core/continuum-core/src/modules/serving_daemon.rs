@@ -31,8 +31,8 @@ use crate::inference::llama_server::{
     LlamaServerProcess, ServingSnapshot, ServingTarget,
 };
 use crate::persona::hw_tier_descriptor::HwTierCategory;
+use crate::model_registry::live::{Availability, CatalogSnapshot, ModelCatalog};
 use crate::model_registry::types::{Capability, Model};
-use crate::model_registry::Registry;
 use crate::runtime::message_bus::MessageBus;
 use crate::runtime::{CommandResult, ModuleConfig, ModuleContext, ModulePriority, ServiceModule};
 use crate::system_resources::SystemResourceMonitor;
@@ -108,20 +108,34 @@ pub struct ServingDaemonModule {
     /// carry onto the [`ServingTarget`]. Defaults to the global registry; tests
     /// override it ([`Self::set_model_resolver`]).
     model_resolver: ModelResolver,
+    /// The LIVE model universe — the SAME `Arc<ModelCatalog>` the `models/*`
+    /// command surface mutates. The daemon plans off this snapshot, NOT the
+    /// immutable seed registry, so a model acquired at runtime (`models/pull`
+    /// flips it to [`Availability::Ready`] with its real on-disk path) becomes a
+    /// serving candidate on the very next tick — no reboot. This is the consumer
+    /// side of the rich API: serving reacts to the universe changing.
+    catalog: Arc<ModelCatalog>,
 }
 
 impl ServingDaemonModule {
-    pub fn new(gpu: Arc<GpuMemoryManager>, system: Arc<SystemResourceMonitor>) -> Self {
-        Self::with_control(gpu, system, Arc::new(LlamaServerProcess::new()))
+    pub fn new(
+        gpu: Arc<GpuMemoryManager>,
+        system: Arc<SystemResourceMonitor>,
+        catalog: Arc<ModelCatalog>,
+    ) -> Self {
+        Self::with_control(gpu, system, Arc::new(LlamaServerProcess::new()), catalog)
     }
 
     /// Construct with an injected serving control. Production uses
     /// [`Self::new`] (real `LlamaServerProcess`); tests inject a fake to drive
-    /// the reconcile decision without a live process.
+    /// the reconcile decision without a live process. `catalog` is the SAME live
+    /// universe the `models/*` commands mutate — the daemon plans off its
+    /// snapshot so runtime acquisitions become servable without a reboot.
     pub fn with_control(
         gpu: Arc<GpuMemoryManager>,
         system: Arc<SystemResourceMonitor>,
         server: Arc<dyn LlamaServerControl>,
+        catalog: Arc<ModelCatalog>,
     ) -> Self {
         let (plan_tx, _rx) = watch::channel(None);
         let (serving_tx, _srx) = watch::channel(ServingSnapshot::empty());
@@ -139,6 +153,7 @@ impl ServingDaemonModule {
             model_resolver: Arc::new(|id: &str| {
                 crate::model_registry::try_global().and_then(|r| r.model(id).cloned())
             }),
+            catalog,
         }
     }
 
@@ -189,7 +204,7 @@ impl ServingDaemonModule {
     /// to drive the spawner before the tick loop starts — single source of
     /// truth for "what model + how many lanes."
     pub fn compute_plan(&self) -> Option<ServingPlan> {
-        let candidates = candidates_from_registry(crate::model_registry::global());
+        let candidates = candidates_from_snapshot(&self.catalog.snapshot());
         plan_serving(self.host_budget(), &candidates)
     }
 
@@ -204,7 +219,7 @@ impl ServingDaemonModule {
     /// it, and log the decision. Idempotent — safe to call on init and tick.
     fn recompute(&self) {
         let budget = self.host_budget();
-        let candidates = candidates_from_registry(crate::model_registry::global());
+        let candidates = candidates_from_snapshot(&self.catalog.snapshot());
         self.publish_plan(budget, &candidates);
     }
 
@@ -453,9 +468,23 @@ fn footprint_from_parts(
     })
 }
 
-/// All on-disk servable models in the registry as footprints.
-pub fn candidates_from_registry(registry: &Registry) -> Vec<ModelFootprint> {
-    registry.models().filter_map(footprint_for).collect()
+/// The servable candidates from the LIVE model universe — every model that is
+/// [`Availability::Ready`] (its artifact is on disk, or it was just pulled and
+/// flipped Ready with its real path) and yields a footprint. Planning off the
+/// snapshot (not the immutable seed) is what makes a runtime acquisition
+/// servable without a reboot: `models/pull` writes the path + Ready into this
+/// same snapshot, and the next tick's `candidates_from_snapshot` includes it.
+/// A `NotDownloaded` model is correctly excluded — we only offer what we can
+/// actually serve right now. The footprint resolves through the live model's
+/// `gguf_local_path` (which `resolve_gguf` prefers when present), so the bytes
+/// counted are the bytes that will be loaded.
+pub fn candidates_from_snapshot(snapshot: &CatalogSnapshot) -> Vec<ModelFootprint> {
+    snapshot
+        .models
+        .values()
+        .filter(|live| live.status.availability == Availability::Ready)
+        .filter_map(|live| footprint_for(&live.model))
+        .collect()
 }
 
 /// Classify the detected GPU into the persona spawner's tier inputs — the
@@ -643,7 +672,7 @@ mod tests {
     async fn publish_plan_drives_the_watch() {
         let gpu = Arc::new(GpuMemoryManager::simulated("Apple M5 Pro", 53 * GB));
         let system = Arc::new(SystemResourceMonitor::new());
-        let daemon = ServingDaemonModule::new(gpu, system);
+        let daemon = ServingDaemonModule::new(gpu, system, test_catalog());
         let rx = daemon.subscribe();
         assert!(rx.borrow().is_none(), "starts unpublished");
 
@@ -717,14 +746,78 @@ mod tests {
         }
     }
 
+    /// A live catalog seeded from the real registry — the shared universe the
+    /// daemon plans off. Tests that drive `publish_plan` directly pass candidates
+    /// explicitly and never touch it; the reconcile-wiring tests just need it to
+    /// exist so the daemon can be constructed.
+    fn test_catalog() -> Arc<ModelCatalog> {
+        let reg = crate::model_registry::catalog::registry().expect("Rust catalog must validate");
+        Arc::new(ModelCatalog::from_registry(&reg))
+    }
+
     fn daemon_with(server: Arc<dyn LlamaServerControl>) -> ServingDaemonModule {
         let gpu = Arc::new(GpuMemoryManager::simulated("Apple M5 Pro", 53 * GB));
         let system = Arc::new(SystemResourceMonitor::new());
-        let mut daemon = ServingDaemonModule::with_control(gpu, system, server);
+        let mut daemon = ServingDaemonModule::with_control(gpu, system, server, test_catalog());
         // Resolve any planned id to a fake Model so reconcile can build a
         // ServingTarget without a populated global registry.
         daemon.set_model_resolver(Arc::new(|id: &str| Some(fake_model(id))));
         daemon
+    }
+
+    // what this catches: THE slice-6 no-reboot servability contract. A model that
+    // is NotDownloaded is NOT offered as a serving candidate; the instant a pull
+    // flips it Ready with a real on-disk path (`attach_local_artifact`), the SAME
+    // live snapshot yields it as a candidate. Proves serving plans off the LIVE
+    // catalog, not the immutable seed — a runtime acquisition becomes servable on
+    // the next tick with no restart. Regresses the convergence gap where serving
+    // re-derived candidates from `model_registry::global()` and never saw a pull.
+    #[test]
+    fn pulled_model_becomes_a_candidate_without_reboot() {
+        use crate::model_registry::live::ModelStatus;
+        use std::io::Write;
+
+        let catalog = test_catalog();
+        let id = "slice6-convergence-probe";
+        // A fresh local model with no artifact on disk → NotDownloaded.
+        catalog.register(
+            fake_model(id),
+            ModelStatus {
+                availability: Availability::NotDownloaded,
+                verified: None,
+            },
+        );
+
+        // Before the pull: not on disk ⇒ never offered for serving.
+        let before = candidates_from_snapshot(&catalog.snapshot());
+        assert!(
+            !before.iter().any(|f| f.model_id == id),
+            "a NotDownloaded model must never be a serving candidate"
+        );
+
+        // The pull lands the artifact: a real, non-empty GGUF on disk.
+        let mut gguf = tempfile::Builder::new()
+            .suffix(".gguf")
+            .tempfile()
+            .expect("temp gguf");
+        gguf.write_all(&[0u8; 4096]).expect("write weights");
+        gguf.flush().expect("flush");
+        assert!(
+            catalog.attach_local_artifact(id, gguf.path().to_path_buf(), None),
+            "model is present, artifact attaches + flips Ready"
+        );
+
+        // After the pull: the SAME live snapshot now yields it as a candidate,
+        // with the footprint reflecting the real on-disk bytes — no reboot.
+        let after = candidates_from_snapshot(&catalog.snapshot());
+        let found = after
+            .iter()
+            .find(|f| f.model_id == id)
+            .expect("a freshly-pulled Ready model becomes a serving candidate on the next snapshot");
+        assert_eq!(
+            found.weights_bytes, 4096,
+            "footprint counts the real bytes that will be loaded"
+        );
     }
 
     // what this catches: the EnsureOutcome → ServingSnapshot mapping. A live or

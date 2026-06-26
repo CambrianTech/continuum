@@ -878,9 +878,19 @@ pub fn start_server(
     // across inference + TTS/STT + classifier CNNs + renderers; next refinement
     // is negotiating an arbitrated share from the broker rather than reading
     // raw free memory. Registered after the monitor so it can read it.
+    // The live model universe — the runtime-mutable watch-snapshot layer SEEDED
+    // from the immutable registry global (initialized above at `init_global`).
+    // Constructed HERE so the SAME `Arc<ModelCatalog>` is shared by the serving
+    // daemon (which plans off its snapshot) and the `models/*` command surface
+    // (which mutates it). One owner, one live universe: a `models/pull` that
+    // flips a model Ready is seen by the very next serving tick — no reboot.
+    let model_catalog = Arc::new(
+        crate::model_registry::live::ModelCatalog::from_registry(crate::model_registry::global()),
+    );
     let serving_daemon = Arc::new(crate::modules::serving_daemon::ServingDaemonModule::new(
         gpu_manager.clone(),
         system_monitor.clone(),
+        model_catalog.clone(),
     ));
     runtime.register(serving_daemon.clone());
 
@@ -1107,13 +1117,10 @@ pub fn start_server(
     ));
     runtime.register(Arc::new(ChannelModule::new(channel_state)));
 
-    // Phase 3: ModelsModule owns the live model universe — the runtime-mutable
-    // watch-snapshot layer SEEDED from the immutable registry global (initialized
-    // above at `init_global`). The rich `models/*` commands capture this one
-    // `Arc<ModelCatalog>`, so every caller reads/mutates the SAME live universe.
-    let model_catalog = Arc::new(
-        crate::model_registry::live::ModelCatalog::from_registry(crate::model_registry::global()),
-    );
+    // Phase 3: ModelsModule holds the SAME live model universe constructed above
+    // (shared with the serving daemon). The rich `models/*` commands capture this
+    // one `Arc<ModelCatalog>`, so every caller reads/mutates — and the serving
+    // daemon plans off — the SAME live universe.
     runtime.register(Arc::new(ModelsModule::new(
         model_catalog,
         crate::modules::ai_provider::global_registry(),
