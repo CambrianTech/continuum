@@ -352,6 +352,7 @@ mod tests {
                 schema_type: "object".to_string(),
                 properties: serde_json::json!({}),
                 required: None,
+                definitions: None,
             },
         }
     }

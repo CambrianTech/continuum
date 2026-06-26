@@ -895,6 +895,7 @@ mod tests {
                         "mode": { "type": "string", "enum": ["read", "write", "append"] }
                     }),
                     required: Some(vec!["path".to_string()]),
+                    definitions: None,
                 },
             })
             .collect();
@@ -989,6 +990,7 @@ mod tests {
                 schema_type: "object".to_string(),
                 properties: json!({ "path": { "type": "string" } }),
                 required: Some(vec!["path".to_string()]),
+                definitions: None,
             },
         }
     }
@@ -1138,6 +1140,7 @@ mod tests {
                 schema_type: "object".to_string(),
                 properties: json!({}),
                 required: None,
+                definitions: None,
             },
         };
         let faculty = LlmDeliberationFaculty::new(persona, "Asha", "You are Asha.", adapter)

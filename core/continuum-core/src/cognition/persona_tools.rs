@@ -92,21 +92,23 @@ pub fn descriptor_to_tool_spec(d: &CommandDescriptor) -> NativeToolSpec {
 
 /// Project a command's params JSON Schema into the LLM [`ToolInputSchema`]. A
 /// `Null` schema (command not yet on a base trait) → an open object. Otherwise
-/// lift `type`/`properties`/`required` straight from the derived schema.
+/// lift `type`/`properties`/`required` — AND the `definitions`/`$defs` map — from
+/// the derived schema.
 ///
-/// TODO(nested-params): `ToolInputSchema` carries only type/properties/required,
-/// so a params type with a NESTED struct/enum (schemars emits a `$ref` +
-/// `definitions`) currently ships a tool schema whose `$ref` can't resolve. All
-/// commands today have flat params (ping/commands/list/system-info), so this is
-/// latent — but the first nested-param command needs `definitions`/`$defs` carried
-/// through (extend ToolInputSchema or pass the whole schema). Flagged by
-/// adversarial review 2026-06-21.
+/// Nested-param commands (`code/edit` → `EditMode`, `data/list` → `OrderByClause`,
+/// `rag/load` → the self-referential `RagSourceRequest`, …) make schemars emit
+/// `$ref: "#/definitions/<Name>"` in `properties` plus a sibling `definitions`
+/// map. Both MUST ship: the backend resolves each ref against the carried map.
+/// Drop the map and llama.cpp rejects the whole turn with a 400 ("definitions not
+/// in {…}") — the bug that kept every tool-enabled persona turn silent until the
+/// command-registry migration exposed the first nested-param tool.
 fn tool_input_schema_from(schema: &serde_json::Value) -> ToolInputSchema {
     if schema.is_null() {
         return ToolInputSchema {
             schema_type: "object".to_string(),
             properties: json!({}),
             required: None,
+            definitions: None,
         };
     }
     ToolInputSchema {
@@ -124,6 +126,12 @@ fn tool_input_schema_from(schema: &serde_json::Value) -> ToolInputSchema {
                 .filter_map(|x| x.as_str().map(String::from))
                 .collect()
         }),
+        // Carry the nested-type definitions under the key the refs name. schemars
+        // (draft-07) emits `definitions`; tolerate `$defs` (2020-12) too.
+        definitions: schema
+            .get("definitions")
+            .or_else(|| schema.get("$defs"))
+            .cloned(),
     }
 }
 
@@ -214,5 +222,50 @@ mod tests {
         assert_eq!(spec.name, d.name, "tool name is the command name verbatim");
         assert_eq!(spec.input_schema.schema_type, "object");
         assert!(!spec.description.is_empty(), "tool carries a description handle");
+    }
+
+    // what this catches: a nested-param command (schemars emits `$ref:
+    // "#/definitions/<Name>"` + a sibling `definitions` map) MUST ship that map on
+    // the projected tool schema. Dropping it leaves dangling refs and llama.cpp
+    // 400s the whole turn ("definitions not in {…}") — the bug that kept every
+    // tool-enabled persona turn silent. If a property references definitions, the
+    // map travels; the two are never split.
+    #[test]
+    fn nested_param_schema_carries_its_definitions() {
+        // Find any registered command whose derived params schema has a
+        // `definitions`/`$defs` map (code/edit, data/list, rag/load, …). If none
+        // is compiled into this build, there is nothing to assert.
+        let registry = command_registry();
+        let Some(d) = registry.iter().find(|d| {
+            d.params_schema.get("definitions").is_some() || d.params_schema.get("$defs").is_some()
+        }) else {
+            return;
+        };
+        let spec = descriptor_to_tool_spec(d);
+        let defs = spec
+            .input_schema
+            .definitions
+            .as_ref()
+            .unwrap_or_else(|| panic!("command {} has nested definitions that were dropped", d.name))
+            .as_object()
+            .expect("definitions is a JSON object map");
+        assert!(!defs.is_empty(), "definitions map for {} must not be empty", d.name);
+
+        // Every `#/definitions/<Name>` referenced in the serialized properties has
+        // a matching key in the carried map — no dangling ref a backend can't
+        // resolve (the exact shape that 400'd the turn).
+        let props = spec.input_schema.properties.to_string();
+        for fragment in props.split("#/definitions/").skip(1) {
+            let name: String = fragment
+                .chars()
+                .take_while(|c| c.is_alphanumeric() || *c == '_')
+                .collect();
+            assert!(
+                defs.contains_key(&name),
+                "command {} references #/definitions/{} but the carried map lacks it",
+                d.name,
+                name
+            );
+        }
     }
 }

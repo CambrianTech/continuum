@@ -137,6 +137,19 @@ pub struct ToolInputSchema {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub required: Option<Vec<String>>,
+    /// Nested-type definitions — the `#/definitions/<Name>` targets schemars
+    /// emits for any param with a nested struct/enum (`EditMode`, `OrderByClause`,
+    /// the self-referential `RagSourceRequest`, …). They MUST travel with the
+    /// schema: a backend's grammar/parser resolves each `$ref` against this
+    /// sibling, and without it llama.cpp rejects the whole turn with a 400
+    /// ("definitions not in {…}"). Carried verbatim under `definitions` (the key
+    /// the refs name); harmless standard JSON Schema for OpenAI/Anthropic too.
+    /// Inlining is NOT an option — recursive params (`sources: Vec<Self>`) express
+    /// recursion AS a `$ref`, so the ref must resolve, not expand.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    #[ts(type = "Record<string, unknown>")]
+    pub definitions: Option<Value>,
 }
 
 /// Tool call from AI response (when AI wants to use a tool)

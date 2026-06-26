@@ -4,4 +4,16 @@
  * JSON Schema for tool input parameters.
  * Matches Anthropic API wire format (snake_case field names).
  */
-export type ToolInputSchema = { type: string, properties: Record<string, unknown>, required?: Array<string>, };
+export type ToolInputSchema = { type: string, properties: Record<string, unknown>, required?: Array<string>, 
+/**
+ * Nested-type definitions — the `#/definitions/<Name>` targets schemars
+ * emits for any param with a nested struct/enum (`EditMode`, `OrderByClause`,
+ * the self-referential `RagSourceRequest`, …). They MUST travel with the
+ * schema: a backend's grammar/parser resolves each `$ref` against this
+ * sibling, and without it llama.cpp rejects the whole turn with a 400
+ * ("definitions not in {…}"). Carried verbatim under `definitions` (the key
+ * the refs name); harmless standard JSON Schema for OpenAI/Anthropic too.
+ * Inlining is NOT an option — recursive params (`sources: Vec<Self>`) express
+ * recursion AS a `$ref`, so the ref must resolve, not expand.
+ */
+definitions?: Record<string, unknown>, };
