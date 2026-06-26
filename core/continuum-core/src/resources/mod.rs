@@ -100,6 +100,48 @@
 //! Single-machine first; this is the deferred grid wave, recorded so it is built
 //! as the cell's own pattern gossiped, not re-derived as a parallel scheduler.
 //!
+//! # Forward design: distributed residency + node loss is an involuntary reclaim
+//!
+//! On a fast mesh (gigabit, many heterogeneous GPUs) a model larger than any one
+//! node can become a *distributed residency*: its bytes are N leases on N
+//! machines — one logical placement (pipeline stages, or an MoE's experts
+//! sharded across peers), tokens flowing node→node. Nothing new in the ledger:
+//! each node grants its own slice locally; the placement is the *set* of leases,
+//! keyed on `(base_model, genome, shard_index)`. The arbiter's job is to pick the
+//! highest tier the *mesh* affords — the single-machine model-fit decision lifted
+//! to the federated board.
+//!
+//! The genuinely new event class is a node going **offline mid-inference**. A
+//! graceful [`consumer::ReclaimOutcome`] is a holder *answering* "I freed it". A
+//! vanished node is a reclaim **no one consented to** — the shard is simply gone.
+//! But the detector already exists: the local authority reconciles each
+//! consumer's `footprint()` against the hardware scan to catch drift; at grid
+//! scale, the **federated board losing a peer's entries IS that drift signal**.
+//! Node loss = "bytes I was counting on are not there" — the same shape, one
+//! level up, surfaced by the failover watch (see the seamless-failover seam:
+//! `ServingSnapshot`/`ServingBoard` over the bus).
+//!
+//! "Figure it out on the fly" is then an arbiter *policy ladder* over mesh
+//! headroom — NOT a new subsystem, the same adaptive-quality-scaling named above:
+//!
+//! 1. **Re-place** the lost shard on another node that can take the page-in —
+//!    cheap when a peer already holds that base resident (genome = light portable
+//!    self; base = heavy shared resident).
+//! 2. **Downgrade** — if no single re-placement fits, drop to a smaller base that
+//!    fits the *surviving* mesh (a 30B sharded across 4 → a 7B on one). The
+//!    persona stays alive at lower fidelity rather than dying.
+//! 3. **Freeze** — suspend the persona's lease, hold its engram self, until
+//!    headroom returns. A pause, not a death.
+//! 4. **Disconnect** — the floor, and even here the engram identity is durable,
+//!    so the self re-homes when the mesh recovers (lease re-contracted on
+//!    `(base_model, genome)`, zero-downtime by design).
+//!
+//! The discipline this imposes on the single-machine build: model node loss as
+//! the *timeout/missing-footprint* path from day one (a consumer that never
+//! answers a reclaim is the local rehearsal of a node that never answers the
+//! mesh), and keep placement a swappable arbiter policy — never a fixed master,
+//! never a hardcoded tier — so the same ladder runs locally and grid-wide.
+//!
 //! # Why this is the core advantage: a lease is an economic primitive
 //!
 //! The unifying "why" behind the notes above. Most systems pin resources
