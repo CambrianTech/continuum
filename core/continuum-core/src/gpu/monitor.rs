@@ -273,9 +273,19 @@ pub fn detect() -> Option<Arc<dyn GpuMonitor>> {
             return Some(m as Arc<dyn GpuMonitor>);
         }
     }
-    // CUDA (NVML) and Vulkan (VK_EXT_memory_budget) live monitors are
-    // not built yet — the governor logs this gap by name at its boot
-    // site rather than silently degrading here.
+    // NVIDIA via `nvidia-smi` — covers CUDA hosts AND NVIDIA-on-Vulkan
+    // hosts with a genuine live free-VRAM signal (not a static lie).
+    // `new()` returns None on non-NVIDIA hosts, so this is safe to try
+    // everywhere; on macOS the Metal branch above already returned.
+    if let Some(m) = super::NvidiaMonitor::new() {
+        return Some(m as Arc<dyn GpuMonitor>);
+    }
+    // Remaining real adapter still to build: a non-NVIDIA Vulkan live
+    // monitor (AMD/Intel via VK_EXT_memory_budget — needs `ash` FFI). It is
+    // deliberately NOT faked with a static heap size: a stale `free` that
+    // never drops is the exact bug this whole live-monitor layer exists to
+    // kill. On such a host detect() returns None and the governor boot site
+    // fails loud naming the missing adapter — never a silent substitute.
     None
 }
 

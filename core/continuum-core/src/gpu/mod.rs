@@ -13,6 +13,11 @@ pub mod memory_manager;
 #[cfg(target_os = "macos")]
 pub mod metal_monitor;
 pub mod monitor;
+// NvidiaMonitor is pure subprocess (`nvidia-smi`) + parsing — no NVIDIA
+// FFI — so it compiles on every platform (its parser tests run on the Mac
+// dev box). `new()` returns None where `nvidia-smi` is absent, so building
+// it everywhere costs nothing on non-NVIDIA hosts.
+pub mod nvidia_monitor;
 pub mod tracker;
 
 pub use eviction_registry::{
@@ -25,4 +30,5 @@ pub use memory_manager::{
 #[cfg(target_os = "macos")]
 pub use metal_monitor::MetalMonitor;
 pub use monitor::{GpuMonitor, GpuSnapshot, MockMonitor};
+pub use nvidia_monitor::NvidiaMonitor;
 pub use tracker::GpuModelTracker;
