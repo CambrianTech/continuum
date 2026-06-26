@@ -372,6 +372,15 @@ impl ServiceModule for PersonaInstanceManagerModule {
         }
     }
 
+    /// Contribute the dep-holding `persona/instances/*` typed commands to the
+    /// kernel's object map. Today that is `persona/instances/despawn` — the
+    /// deallocation counterpart of `bootstrap`, sharing this module's live
+    /// `PersonaAircRuntimeRegistry` so it acts on the same roster the legacy
+    /// arms read. (bootstrap/list/get migrate onto this path under task #62.)
+    fn commands(&self) -> Vec<Arc<dyn crate::sdk_codegen::DynCommand>> {
+        crate::commands::persona::command_objects(self.registry.clone())
+    }
+
     fn install_executor(&self, executor: std::sync::Arc<crate::runtime::CommandExecutor>) {
         self.executor.install(executor);
     }
