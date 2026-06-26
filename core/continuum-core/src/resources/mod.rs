@@ -68,6 +68,37 @@
 //! so a tier change is a re-contract, not an evict+respawn. Until then: do NOT
 //! bake model-size policy into the ledger — it stays in the arbiter, and the
 //! ledger only ever sees the resulting byte deltas.
+//!
+//! # Forward design: the grid is this ledger one scale up (fractal)
+//!
+//! The end goal — "combine my compute in a grid" — is NOT a separate system. A
+//! *consumer* is to a *machine* what a *machine* is to the *grid*: the same
+//! lease/reclaim handshake, one level up. The per-machine authority is the cell
+//! the grid is made of, and it is the *precondition* for pooling — you cannot
+//! safely combine compute you cannot honestly account for.
+//!
+//! - **State what we have** = publish each node's [`LeaseBoard`] over the event
+//!   substrate; peers union them (filtered by trust — see GridTrustAuthPolicy)
+//!   into a *federated board*. No node introspects another's hardware; the local
+//!   authority makes the self-declaration trustworthy.
+//! - **Which node runs a persona's model** = placement: match the persona's
+//!   `(base_model, genome, quality-range)` contract against the federated board,
+//!   pick the best tier that fits *somewhere* in trust. The single-machine
+//!   model-fit decision, lifted. The genome (LoRA) is the light portable self;
+//!   the base is the heavy shared resident — so a node that already hosts the
+//!   base takes only a cheap page-in, while "no base resident" forces a load or
+//!   a downgrade-to-a-resident-base.
+//! - **Who divvies it out** = a grid arbiter (rotating / emergent, never a fixed
+//!   master) *proposes* placements from the federated view; each node *consents*
+//!   by granting the lease. Grant authority stays local — remote asks honor the
+//!   same floors/dwell, so the grid can no more OOM a node than inference can.
+//! - **Ranges** = a future [`LeaseRequest`] grows a `(min, ideal)` tier band;
+//!   the scheduler satisfies the highest tier the mesh affords now and
+//!   re-negotiates (downgrade under grid pressure, upgrade-offer on freed
+//!   headroom) — adaptive quality scaling with mesh-wide headroom.
+//!
+//! Single-machine first; this is the deferred grid wave, recorded so it is built
+//! as the cell's own pattern gossiped, not re-derived as a parallel scheduler.
 
 pub mod broker;
 pub mod consumer;
