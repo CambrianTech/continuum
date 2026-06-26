@@ -46,17 +46,19 @@
 //! `.await`. Holding a sync lock across await is the bug this shape avoids.
 
 use std::collections::HashMap;
-use std::panic::AssertUnwindSafe;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Weak};
 use std::time::Duration;
 
-use futures::FutureExt;
+use async_trait::async_trait;
 use parking_lot::{Mutex, RwLock};
 use tokio::sync::{mpsc, watch};
 
 use crate::paging::pool::{ResourcePool, ResourcePoolEntry};
 use crate::paging::PressureBroker;
+use crate::runtime::daemon::{
+    guarded, spawn_daemon, Daemon, DaemonChannel, Guarded, QuarantineLedger,
+    DEFAULT_QUARANTINE_LIMIT,
+};
 use crate::{clog_info, clog_warn};
 
 use super::capacity::CapacitySource;
@@ -76,10 +78,6 @@ const DEFAULT_TICK_MS: u64 = 1_000;
 /// the daemon treats it as timed-out. Bounded so a hung consumer can't stall the
 /// fan-out.
 const MIN_RECLAIM_BUDGET_MS: u64 = 100;
-
-/// Consecutive reclaim panics before a consumer is quarantined (skipped in
-/// future ticks). Mirrors `MemoryPressureMonitor`'s reporter quarantine.
-const QUARANTINE_AFTER_PANICS: u32 = 3;
 
 /// Daemon policy knobs. Constructed in code (defaults via `Default`); never env
 /// vars. The `governor` field carries the dwell/grace the inner core applies.
@@ -101,16 +99,27 @@ impl Default for DaemonConfig {
     }
 }
 
-/// A registered consumer plus its quarantine bookkeeping. The daemon owns these
-/// behind a `parking_lot::RwLock` so consumers can join after startup
-/// (`add_consumer`) without restarting the task.
-struct ConsumerEntry {
-    consumer: Arc<dyn ResourceConsumer>,
-    consecutive_panics: u32,
-    disabled: bool,
+/// True if any kind on the published board holds more than its scanned ceiling.
+/// This is the daemon's gate, derived purely from the snapshot it publishes — the
+/// [`DaemonChannel`] recomputes it on every `publish`, so there is no separate
+/// over-budget flag to keep in sync (the old hand-maintained `AtomicBool` is
+/// gone). Shared by the channel's gate derivation and any reader.
+fn board_over_budget(board: &LeaseBoard) -> bool {
+    board
+        .kinds
+        .iter()
+        .any(|k| k.granted_bytes > k.capacity_bytes)
 }
 
 /// The single per-machine resource authority's runtime shell.
+///
+/// A [`Daemon`] — but a *hybrid* one: it publishes its [`LeaseBoard`] both from
+/// its tick (reconcile) AND from synchronous lease ops (`acquire`/`release`),
+/// because a caller must see its lease on the board immediately, before the next
+/// tick. That is exactly why the publish channel is *embedded* ([`DaemonChannel`])
+/// rather than handed only to `tick`: a pure poller couldn't surface a
+/// synchronous mutation. The runner ([`spawn_daemon`]) owns the loop + per-tick
+/// panic isolation; this type owns the accounting and the lease API.
 pub struct ResourceDaemon {
     /// The deterministic accounting core. `parking_lot::Mutex` because every
     /// critical section is sync and short — NEVER held across an await.
@@ -118,16 +127,22 @@ pub struct ResourceDaemon {
     /// Scan sources, one per managed kind. Read off-lock each tick.
     sources: Vec<Arc<dyn CapacitySource>>,
     /// Leaseholders, by registration order. Grows via `add_consumer`.
-    consumers: RwLock<Vec<ConsumerEntry>>,
-    /// Latest published board — hot readers borrow this, never the governor lock.
-    board_tx: watch::Sender<LeaseBoard>,
-    board_rx: watch::Receiver<LeaseBoard>,
-    /// Lock-free "any kind over its ceiling" flag for fast reads (e.g. a
-    /// consumer deciding whether to grow). Updated each tick.
-    over_budget: AtomicBool,
+    consumers: RwLock<Vec<Arc<dyn ResourceConsumer>>>,
+    /// Three-strikes quarantine for misbehaving consumers — the shared base
+    /// policy, replacing the hand-rolled `consecutive_panics`/`disabled` triad.
+    quarantine: Mutex<QuarantineLedger>,
+    /// The embedded publish channel: latest board + lock-free over-budget gate.
+    /// Hot readers borrow it, never the governor lock; the tick AND the
+    /// synchronous lease ops publish through it.
+    channel: DaemonChannel<LeaseBoard>,
     /// The sync→async bridge: `ResourcePool::evict_at_least` posts `(kind, want)`
     /// here and returns; the tick drains it into the reconcile demand.
     evict_tx: mpsc::UnboundedSender<(ResourceKind, u64)>,
+    /// Receiver half of the evict bridge, owned behind a brief sync lock so the
+    /// `&self` tick (the [`Daemon`] contract) can drain it. Only the single
+    /// daemon task ever touches it; the lock is uncontended and never held across
+    /// an await.
+    evict_rx: Mutex<mpsc::UnboundedReceiver<(ResourceKind, u64)>>,
     config: DaemonConfig,
 }
 
@@ -147,44 +162,27 @@ impl ResourceDaemon {
         for src in &sources {
             governor.set_capacity(src.kind(), src.ceiling_bytes());
         }
-        let (board_tx, board_rx) = watch::channel(governor.board());
+        let channel = DaemonChannel::new(governor.board(), board_over_budget);
         let (evict_tx, evict_rx) = mpsc::unbounded_channel();
-
-        let entries = consumers
-            .into_iter()
-            .map(|c| ConsumerEntry {
-                consumer: c,
-                consecutive_panics: 0,
-                disabled: false,
-            })
-            .collect();
 
         let daemon = Arc::new(Self {
             governor: Mutex::new(governor),
             sources,
-            consumers: RwLock::new(entries),
-            board_tx,
-            board_rx,
-            over_budget: AtomicBool::new(false),
+            consumers: RwLock::new(consumers),
+            quarantine: Mutex::new(QuarantineLedger::new(DEFAULT_QUARANTINE_LIMIT)),
+            channel,
             evict_tx,
+            evict_rx: Mutex::new(evict_rx),
             config,
         });
 
-        // Own task; AssertUnwindSafe + catch_unwind wraps the whole loop so a
-        // panic in non-consumer code stops the daemon cleanly rather than
-        // poisoning the runtime. (Consumer panics are caught per-reclaim and
-        // quarantined — they never reach here.)
-        {
-            let d = daemon.clone();
-            tokio::spawn(async move {
-                let result = AssertUnwindSafe(Self::run_loop(d, evict_rx))
-                    .catch_unwind()
-                    .await;
-                if let Err(e) = result {
-                    clog_warn!("🧮 ResourceDaemon task panicked (daemon stopped): {:?}", e);
-                }
-            });
-        }
+        // The canonical runner owns the loop: interval + Skip + PER-TICK
+        // catch_unwind. A panicking tick is isolated and the daemon keeps ticking
+        // against last-good state — strictly better than the old whole-loop catch
+        // that stopped the daemon on the first stray panic. (Consumer panics are
+        // additionally caught per-reclaim by `guarded` and quarantined.) We don't
+        // need the returned handle — the daemon exposes its own board/subscribe.
+        let _ = spawn_daemon(daemon.clone());
 
         daemon
     }
@@ -200,7 +198,9 @@ impl ResourceDaemon {
             let lease = g.acquire(req, now)?;
             (lease, g.board())
         };
-        let _ = self.board_tx.send(board);
+        // Publish synchronously (outside the tick) so a caller sees its lease on
+        // the board immediately — the property the embedded channel exists for.
+        self.channel.publish(board);
         Ok(lease)
     }
 
@@ -210,7 +210,7 @@ impl ResourceDaemon {
             let lease = g.release(lease_id)?;
             (lease, g.board())
         };
-        let _ = self.board_tx.send(board);
+        self.channel.publish(board);
         Ok(lease)
     }
 
@@ -229,29 +229,31 @@ impl ResourceDaemon {
     /// "never restart a daemon to manage resources").
     pub fn add_consumer(&self, consumer: Arc<dyn ResourceConsumer>) {
         let id = consumer.consumer_id().to_string();
-        self.consumers.write().push(ConsumerEntry {
-            consumer,
-            consecutive_panics: 0,
-            disabled: false,
-        });
+        // A re-registering consumer clears any stale quarantine from a prior
+        // incarnation — it gets a fresh chance, the conservative-but-not-permanent
+        // default.
+        self.quarantine.lock().clear(&id);
+        self.consumers.write().push(consumer);
         clog_info!("🧮 ResourceDaemon: consumer '{id}' registered");
     }
 
     // ---- hot, lock-free reads ----------------------------------------------
 
-    /// Latest board — a `watch` borrow, never the accounting lock.
+    /// Latest board — a `watch` borrow via the embedded channel, never the
+    /// accounting lock.
     pub fn board(&self) -> LeaseBoard {
-        self.board_rx.borrow().clone()
+        self.channel.snapshot()
     }
 
     /// Subscribe to board changes (for `resources/*` watch commands / grid).
     pub fn subscribe(&self) -> watch::Receiver<LeaseBoard> {
-        self.board_rx.clone()
+        self.channel.handle().subscribe()
     }
 
-    /// Is any kind currently over its scanned ceiling? Lock-free atomic read.
+    /// Is any kind currently over its scanned ceiling? Lock-free atomic read —
+    /// the channel's gate, derived from the published board.
     pub fn is_over_budget(&self) -> bool {
-        self.over_budget.load(Ordering::Relaxed)
+        self.channel.is_gated()
     }
 
     // ---- broker integration (the ONE orchestrator, not a parallel one) ------
@@ -269,35 +271,28 @@ impl ResourceDaemon {
         }
     }
 
-    // ---- the tick -----------------------------------------------------------
-
-    async fn run_loop(
-        daemon: Arc<Self>,
-        mut evict_rx: mpsc::UnboundedReceiver<(ResourceKind, u64)>,
-    ) {
-        let mut ticker = tokio::time::interval(daemon.config.tick_interval);
-        // Coalesce late ticks — never build a backlog of reconciles.
-        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-
-        loop {
-            ticker.tick().await;
-            daemon.tick(&mut evict_rx).await;
-        }
-    }
+    // ---- the reconcile cycle (driven by the Daemon contract below) ----------
 
     /// One reconcile cycle. Structured so the governor lock is taken twice, each
     /// time briefly and never across an await; everything async (the consumer
-    /// reclaims) happens between, lock-free.
-    async fn tick(&self, evict_rx: &mut mpsc::UnboundedReceiver<(ResourceKind, u64)>) {
+    /// reclaims) happens between, lock-free. Publishes the board through the
+    /// embedded channel post-plan and post-reclaim; the channel re-derives the
+    /// over-budget gate from each board, so there is no separate flag to maintain.
+    async fn reconcile(&self) {
         let now = now_ms();
 
         // 1. Drain broker evict asks (non-blocking) into a per-kind demand. Take
         //    the largest ask per kind this tick; it is a one-shot relief request
         //    — if the pool still needs room the broker re-asks on its own tick.
+        //    Brief sync lock on the receiver — only this daemon task touches it,
+        //    so it is uncontended and never held across an await.
         let mut demand: HashMap<ResourceKind, u64> = HashMap::new();
-        while let Ok((kind, want)) = evict_rx.try_recv() {
-            let e = demand.entry(kind).or_insert(0);
-            *e = (*e).max(want);
+        {
+            let mut evict_rx = self.evict_rx.lock();
+            while let Ok((kind, want)) = evict_rx.try_recv() {
+                let e = demand.entry(kind).or_insert(0);
+                *e = (*e).max(want);
+            }
         }
 
         // 2. Read every ceiling OFF the accounting lock (cached monitor reads).
@@ -308,8 +303,8 @@ impl ResourceDaemon {
             .collect();
 
         // 3. Brief lock: ingest capacity, compute per-kind pressure, plan the
-        //    reclaims, snapshot the board + over-budget flag. No await inside.
-        let (plans, board, over) = {
+        //    reclaims, snapshot the board. No await inside.
+        let (plans, board) = {
             let mut g = self.governor.lock();
             for (kind, ceil) in &ceilings {
                 g.set_capacity(*kind, *ceil);
@@ -331,25 +326,28 @@ impl ResourceDaemon {
                 |k| pmap[kind_idx(k)],
                 |k| demand.get(&k).copied().unwrap_or(0),
             );
-            (plans, g.board(), is_over(&g))
+            (plans, g.board())
         };
 
-        // Publish board + flag every tick so readers stay fresh even when calm.
-        self.over_budget.store(over, Ordering::Relaxed);
-        let _ = self.board_tx.send(board);
+        // Publish post-plan board so readers (and the gate) stay fresh even when
+        // calm.
+        self.channel.publish(board);
 
         if plans.is_empty() {
             return;
         }
 
-        // 4. Snapshot live consumers (clone Arcs) under a brief read lock, then
-        //    fan out the reclaims CONCURRENTLY off-lock. A plan for an
-        //    unregistered/quarantined consumer is logged, never silently dropped.
+        // 4. Snapshot live (non-quarantined) consumers, then fan out the reclaims
+        //    CONCURRENTLY off-lock. A plan for an unregistered/quarantined consumer
+        //    is logged, never silently dropped. We clone the Arcs out from under
+        //    the consumers lock BEFORE taking the quarantine lock, so the two
+        //    locks never nest.
+        let all: Vec<Arc<dyn ResourceConsumer>> = self.consumers.read().iter().cloned().collect();
         let live: Vec<(String, Arc<dyn ResourceConsumer>)> = {
-            let cs = self.consumers.read();
-            cs.iter()
-                .filter(|e| !e.disabled)
-                .map(|e| (e.consumer.consumer_id().to_string(), e.consumer.clone()))
+            let q = self.quarantine.lock();
+            all.into_iter()
+                .filter(|c| !q.is_quarantined(c.consumer_id()))
+                .map(|c| (c.consumer_id().to_string(), c))
                 .collect()
         };
 
@@ -377,41 +375,39 @@ impl ResourceDaemon {
                 .max(self.config.min_reclaim_budget.as_millis() as u64);
             let budget = Duration::from_millis(budget_ms);
 
+            // `guarded` bounds the reclaim by the grace budget and isolates a
+            // panic — the shared fan-out kernel, classifying complete/panic/timeout
+            // so we quarantine a crash but merely re-ask a slow consumer.
             futs.push(async move {
-                let res =
-                    tokio::time::timeout(budget, AssertUnwindSafe(consumer.reclaim(req)).catch_unwind())
-                        .await;
-                (consumer_id, lease_id, res)
+                let outcome = guarded(budget, consumer.reclaim(req)).await;
+                (consumer_id, lease_id, outcome)
             });
         }
 
         let results = futures::future::join_all(futs).await;
 
-        // 5. Fold results: collect honest outcomes, update quarantine counters.
+        // 5. Fold results via the shared quarantine ledger: a completed reclaim
+        //    is authoritative (any status) and resets the streak; a panic is a
+        //    strike (bytes stay held, re-surface next tick); a timeout is patient
+        //    backpressure, NOT a strike.
         let mut outcomes: Vec<(String, ReclaimOutcome)> = Vec::new();
         {
-            let mut cs = self.consumers.write();
-            for (consumer_id, lease_id, res) in results {
-                match res {
-                    // Reclaim returned a value (any status — Released/Partial/
-                    // Deferred/Refused). The byte delta is authoritative.
-                    Ok(Ok(outcome)) => {
-                        reset_panics(&mut cs, &consumer_id);
-                        outcomes.push((lease_id, outcome));
+            let mut q = self.quarantine.lock();
+            for (consumer_id, lease_id, outcome) in results {
+                match outcome {
+                    Guarded::Completed(o) => {
+                        q.record_success(&consumer_id);
+                        outcomes.push((lease_id, o));
                     }
-                    // Consumer panicked — isolated by catch_unwind. Count toward
-                    // quarantine; its bytes stay held and re-surface next tick.
-                    Ok(Err(_panic)) => {
-                        let disabled = bump_panic(&mut cs, &consumer_id);
+                    Guarded::Panicked => {
+                        let quarantined = q.record_failure(&consumer_id);
                         clog_warn!(
                             "🧮 ResourceConsumer '{consumer_id}' panicked during reclaim of \
                              {lease_id}{}",
-                            if disabled { " — quarantined" } else { "" }
+                            if quarantined { " — quarantined" } else { "" }
                         );
                     }
-                    // Timed out — honest backpressure, NOT a panic (don't
-                    // quarantine). Bytes stay held; next tick re-plans the ask.
-                    Err(_elapsed) => {
+                    Guarded::TimedOut => {
                         clog_warn!(
                             "🧮 ResourceConsumer '{consumer_id}' did not free {lease_id} within \
                              grace — re-asking next tick"
@@ -425,30 +421,44 @@ impl ResourceDaemon {
             return;
         }
 
-        // 6. Brief lock: apply the byte deltas, recompute the over-budget flag
-        //    against the POST-reclaim grants (so a freed lease clears the flag in
-        //    the same tick, not one tick late), publish the reconciled board.
-        let (board, over) = {
+        // 6. Brief lock: apply the byte deltas, publish the reconciled board. The
+        //    channel re-derives the over-budget gate against the POST-reclaim
+        //    grants, so a freed lease clears the gate in the same tick, not one
+        //    tick late.
+        let board = {
             let mut g = self.governor.lock();
             for (lease_id, outcome) in &outcomes {
                 if let Err(e) = g.apply_reclaim_outcome(lease_id, outcome) {
                     clog_warn!("🧮 apply_reclaim_outcome failed for {lease_id}: {e:?}");
                 }
             }
-            (g.board(), is_over(&g))
+            g.board()
         };
-        self.over_budget.store(over, Ordering::Relaxed);
-        let _ = self.board_tx.send(board);
+        self.channel.publish(board);
     }
 }
 
-/// True if any kind currently holds more than its scanned ceiling. Shared by the
-/// tick's plan phase and its post-reclaim recompute so both read the flag the
-/// same way.
-fn is_over(g: &ResourceGovernor) -> bool {
-    ResourceKind::ALL
-        .iter()
-        .any(|&k| g.granted(k) > g.capacity(k))
+#[async_trait]
+impl Daemon for ResourceDaemon {
+    type Snapshot = LeaseBoard;
+
+    fn name(&self) -> &'static str {
+        "resources"
+    }
+
+    fn cadence(&self) -> Duration {
+        // Faster than the 5 s broker tick because the daemon also drives lease
+        // expirations, which want sub-second resolution.
+        self.config.tick_interval
+    }
+
+    fn channel(&self) -> &DaemonChannel<LeaseBoard> {
+        &self.channel
+    }
+
+    async fn tick(&self) {
+        self.reconcile().await;
+    }
 }
 
 /// A per-kind [`ResourcePool`] facade over the daemon, registered with the
@@ -529,31 +539,12 @@ fn kind_idx(kind: ResourceKind) -> usize {
     }
 }
 
-fn reset_panics(cs: &mut [ConsumerEntry], consumer_id: &str) {
-    if let Some(e) = cs.iter_mut().find(|e| e.consumer.consumer_id() == consumer_id) {
-        e.consecutive_panics = 0;
-    }
-}
-
-/// Increment the consumer's panic counter; returns true if it just crossed into
-/// quarantine.
-fn bump_panic(cs: &mut [ConsumerEntry], consumer_id: &str) -> bool {
-    if let Some(e) = cs.iter_mut().find(|e| e.consumer.consumer_id() == consumer_id) {
-        e.consecutive_panics += 1;
-        if e.consecutive_panics >= QUARANTINE_AFTER_PANICS && !e.disabled {
-            e.disabled = true;
-            return true;
-        }
-    }
-    false
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::resources::capacity::MockCapacitySource;
     use crate::resources::consumer::{ConsumerFootprint, ReclaimRequest, ReclaimStatus};
-    use std::sync::atomic::AtomicU64;
+    use std::sync::atomic::{AtomicU64, Ordering};
 
     /// A scriptable consumer: holds bytes, frees per a configurable response so a
     /// scenario can make it Release / tier-down-Partial / Defer / panic on cue.
