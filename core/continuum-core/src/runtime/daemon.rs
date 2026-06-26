@@ -5,14 +5,25 @@
 //! [CONCURRENCY-STYLE-GUIDE.md] tells every new monitor to *"copy
 //! `MemoryPressureMonitor`"* — own tokio task + `tokio::time::interval` +
 //! `watch::Sender<Snapshot>` + atomic gate + `spawn_blocking`/timeout/quarantine.
-//! That instruction is correct about the *shape* but wrong about the *mechanism*:
-//! copying a 1000-line file per concern means every daemon re-hand-rolls the loop
-//! and they drift. They already have. The "canonical" `MemoryPressureMonitor`
-//! ticks with `loop { sleep().await }` (drifts under load — forbidden move #3) and
-//! wraps the *whole loop* in `catch_unwind` (one panic kills the monitor forever);
-//! the newer `ResourceDaemon` got `interval` + `Skip` right but also wraps the
-//! whole loop; `MetalMonitor` and `PressureBroker::spawn_tick` have no isolation
-//! at all. Several copies, several behaviours, one already buggy.
+//! That instruction was correct about the *shape* but wrong about the *mechanism*:
+//! copying a 1000-line file per concern meant every standalone monitor re-hand-
+//! rolled the loop and they drifted. They had. The old `MemoryPressureMonitor`
+//! ticked with `loop { sleep().await }` (drifts under load — forbidden move #3) and
+//! wrapped the *whole loop* in `catch_unwind` (one panic killed the monitor
+//! forever); `ResourceDaemon` got `interval` + `Skip` right but also wrapped the
+//! whole loop; `MetalMonitor` and the (since-deleted) `PressureBroker::spawn_tick`
+//! had no isolation at all. Several copies, several behaviours, one buggy. All four
+//! standalone monitors now ride this base; `spawn_tick` was dead and is gone.
+//!
+//! Note the deliberate scope: this base is for **standalone monitor concerns** that
+//! own a tick loop and publish a [`DaemonChannel`] snapshot read lock-free by many
+//! consumers. A `ServiceModule` that declares a `tick_interval` is the *other*
+//! correct shape — its tick is driven by the runtime's `start_tick_loops` /
+//! `run_tick_loop_for` runner, which is the module analog of [`spawn_daemon`] and
+//! already gives the identical RTOS guarantees (`interval` + `Skip` + per-tick
+//! `catch_unwind` + adaptive cadence). So `PressureBrokerModule` /
+//! `ServingDaemonModule` are NOT on this base — they're already isolated by the
+//! module runner. Two runners, one shape, no third hand-rolled copy.
 //!
 //! This module is the daemon analog of the command-registry collapse: as commands
 //! collapsed onto one `ActionCommand` → `DynCommand` base + one runner, daemons

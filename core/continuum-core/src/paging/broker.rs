@@ -409,23 +409,6 @@ impl PressureBroker {
         }
     }
 
-    /// Spawn a tokio task that calls `relieve()` on `tick_interval`.
-    /// Returns the JoinHandle so the caller can abort on shutdown.
-    /// Idempotent at the call site — caller decides if/when to spawn.
-    pub fn spawn_tick(self: Arc<Self>) -> tokio::task::JoinHandle<()> {
-        let interval = self.config.tick_interval;
-        tokio::spawn(async move {
-            let mut ticker = tokio::time::interval(interval);
-            // Skip the immediate first tick — let pools warm up before
-            // we start measuring + acting.
-            ticker.tick().await;
-            loop {
-                ticker.tick().await;
-                let _report = self.relieve();
-                // Future: emit IPC event or log when triggered=true.
-            }
-        })
-    }
 }
 
 #[cfg(test)]
