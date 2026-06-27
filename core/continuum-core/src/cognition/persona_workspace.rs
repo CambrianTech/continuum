@@ -377,6 +377,37 @@ impl PersonaWorkspaceRegistry {
         Some(build_workspace_cycle(cfg))
     }
 
+    /// Like [`fork_eval_cycle`] but ROUTES the ephemeral copy's deliberation at a
+    /// caller-supplied `adapter` instead of the live persona's. Everything else —
+    /// admission snapshot (forked detached), grounding, recall, tools — is the
+    /// persona's real cognition; only the model backend is swapped.
+    ///
+    /// The genome A/B (`cognition/eval`) uses this to point the measurement fork
+    /// at an [`crate::inference::llama_server::EphemeralServingLane`] serving the
+    /// gene's forged base, so a candidate is scored on a COPY, on its own base,
+    /// without re-homing the model the living persona is currently thinking with
+    /// (the humane-eval invariant, #59). The faculty's own `model` stays `None`,
+    /// so the request omits the model id and the override adapter's default model
+    /// (set via `with_default_model`) is authoritative.
+    ///
+    /// `context_window` is the window the override lane actually serves (`-c` per
+    /// slot). It REPLACES the live persona's served window in the fork so the
+    /// deliberation faculty budgets its prompt against what THIS lane serves —
+    /// otherwise a fork carrying the 14B's larger window could build a prompt the
+    /// ephemeral 4B lane can't hold and overflow it (the Asha-mute failure class).
+    pub fn fork_eval_cycle_with_adapter(
+        &self,
+        persona_id: &Uuid,
+        adapter: Arc<dyn AIProviderAdapter>,
+        context_window: u32,
+    ) -> Option<WorkspaceCycle> {
+        let mut cfg = self.templates.lock().unwrap().get(persona_id)?.clone();
+        cfg.admission = Arc::new(cfg.admission.fork_detached());
+        cfg.adapter = adapter;
+        cfg.context_window = context_window;
+        Some(build_workspace_cycle(cfg))
+    }
+
     /// Enumerate the resident minds: `(persona_id, persona_name)` for every
     /// registered cycle. The name is read from the cycle's `ActingBody`
     /// (`None` for a pure-cognition persona with no hands). The seam the
