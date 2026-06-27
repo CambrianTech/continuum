@@ -7,7 +7,7 @@ pub const DEFAULT_TIMEOUT_MS: u64 = 10_000;
 pub const MIN_TIMEOUT_MS: u64 = 100;
 pub const MAX_TIMEOUT_MS: u64 = 60_000;
 
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[ts(
     export,
     export_to = "../../../protocol/typescript/airc/AircQueueScanParams.ts"

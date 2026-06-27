@@ -5,13 +5,14 @@
 //! wrap existing Continuum payload schemas instead of redefining JTAG, Grid, or
 //! LiveKit messages.
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use ts_rs::TS;
 use uuid::Uuid;
 
 /// Delivery handling requested from the AIRC substrate.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 #[ts(
     export,
@@ -29,7 +30,7 @@ pub enum AircRealtimeDelivery {
 }
 
 /// Existing Continuum schema carried by an AIRC realtime envelope.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 #[ts(
     export,
@@ -51,7 +52,7 @@ pub enum AircRealtimeSchema {
 }
 
 /// Handle to a payload already defined by a Continuum schema.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 #[ts(
     export,
@@ -88,7 +89,7 @@ impl AircRealtimePayloadRef {
 }
 
 /// Presence states used by chat, avatars, and rooms.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 #[ts(
     export,
@@ -132,7 +133,7 @@ impl AircPresenceState {
 }
 
 /// Presence update that AIRC can coalesce by `room_id + subject_id + state`.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 #[ts(
     export,
@@ -178,7 +179,7 @@ impl AircPresenceEvent {
 }
 
 /// Subscribe/unsubscribe/cursor command for bounded event delivery.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 #[ts(
     export,
@@ -192,7 +193,7 @@ pub enum AircSubscriptionAction {
 }
 
 /// Cursor for replay/resume across reconnects.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 #[ts(
     export,
@@ -233,7 +234,7 @@ impl AircReplayCursor {
 }
 
 /// Subscription control-plane payload.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 #[ts(
     export,
@@ -259,7 +260,7 @@ impl AircSubscriptionEvent {
 }
 
 /// WebRTC/LiveKit control-plane metadata. Binary audio/video never rides here.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 #[ts(
     export,
@@ -290,7 +291,7 @@ impl AircMediaControlEvent {
 }
 
 /// Capability advertised by a peer in a room.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 #[ts(
     export,
@@ -314,7 +315,7 @@ pub struct AircPeerCapability {
 /// publishes a fresh manifest; receivers that already have one for that
 /// peer_id reject the mismatch loud (key rotation has to go through the
 /// proper trust-rotation event class, not silent overwrite).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 #[ts(
     export,
@@ -418,7 +419,7 @@ fn validate_signing_pubkey_hex(hex: &str) -> Result<(), AircPeerManifestError> {
 }
 
 /// Acknowledgement and receipt state for durable delivery.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 #[ts(export, export_to = "../../../protocol/typescript/airc/AircReceipt.ts")]
 pub struct AircReceipt {
@@ -430,7 +431,7 @@ pub struct AircReceipt {
 }
 
 /// Realtime payload carried by AIRC.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 #[ts(
     export,
@@ -462,7 +463,7 @@ impl AircRealtimePayload {
 }
 
 /// Top-level realtime envelope persisted or transmitted by AIRC.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 #[ts(
     export,

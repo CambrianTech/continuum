@@ -18,7 +18,7 @@ pub const DEFAULT_ROOM_REPLAY_LIMIT: usize = 100;
 pub const MAX_ROOM_REPLAY_LIMIT: usize = 500;
 pub const DEFAULT_EVENTS_PER_ROOM: usize = 2_000;
 
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 #[ts(
     export,
@@ -49,7 +49,7 @@ pub struct AircRealtimePublishResult {
     pub active_peer_manifest_count: usize,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 #[ts(
     export,

@@ -12,6 +12,7 @@
 
 pub mod adapter;
 pub mod agent;
+pub mod airc;
 pub mod auth;
 pub mod avatar;
 pub mod ai;
