@@ -655,6 +655,169 @@ impl ActionCommand for CodeShellKill {
     }
 }
 
+// ─────────────────────────── code/delete ─────────────────────────
+
+/// Delete a file from the workspace (tracked in the change history, undoable).
+pub struct CodeDelete {
+    pub state: Arc<CodeState>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
+pub struct CodeDeleteParams {
+    /// Path to the file to delete, relative to the workspace (repo) root.
+    pub file_path: String,
+    /// Optional note describing why (recorded in the change history).
+    #[serde(default)]
+    pub description: Option<String>,
+}
+
+#[async_trait]
+impl ActionCommand for CodeDelete {
+    const NAME: &'static str = "code/delete";
+    const DESCRIPTION: &'static str =
+        "Delete a file from the workspace. Tracked in the change history (undoable via code/undo).";
+    type Params = CodeDeleteParams;
+    type Output = WriteResult;
+
+    async fn run(&self, ctx: &Ctx, p: CodeDeleteParams) -> Result<WriteResult, CommandError> {
+        let engine = engine!(self, ctx);
+        engine
+            .delete(&p.file_path, p.description.as_deref())
+            .map_err(|e| CommandError::Internal(e.to_string()))
+    }
+}
+
+// ─────────────────────────── code/diff ───────────────────────────
+
+/// Preview the unified diff an edit WOULD produce, without applying it.
+pub struct CodeDiff {
+    pub state: Arc<CodeState>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
+pub struct CodeDiffParams {
+    /// Path to the file, relative to the workspace (repo) root.
+    pub file_path: String,
+    /// The edit to preview: line-range replace, search/replace, insert-at, or append.
+    pub edit_mode: EditMode,
+}
+
+#[async_trait]
+impl ActionCommand for CodeDiff {
+    const NAME: &'static str = "code/diff";
+    const DESCRIPTION: &'static str =
+        "Preview the unified diff an edit would produce WITHOUT applying it — a dry run before code/edit.";
+    type Params = CodeDiffParams;
+    type Output = crate::code::types::FileDiff;
+
+    async fn run(
+        &self,
+        ctx: &Ctx,
+        p: CodeDiffParams,
+    ) -> Result<crate::code::types::FileDiff, CommandError> {
+        let engine = engine!(self, ctx);
+        engine
+            .preview_diff(&p.file_path, &p.edit_mode)
+            .map_err(|e| CommandError::Internal(e.to_string()))
+    }
+}
+
+// ─────────────────────────── code/undo ───────────────────────────
+
+/// Undo a tracked change: a specific change by id, or the last N changes.
+pub struct CodeUndo {
+    pub state: Arc<CodeState>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
+pub struct CodeUndoParams {
+    /// Undo a SPECIFIC change by its id (from a WriteResult / code/history). Takes
+    /// precedence over `count` when present.
+    #[serde(default)]
+    pub change_id: Option<String>,
+    /// Undo the last N changes (default 1). Ignored when `change_id` is given.
+    #[serde(default)]
+    pub count: Option<u32>,
+}
+
+#[async_trait]
+impl ActionCommand for CodeUndo {
+    const NAME: &'static str = "code/undo";
+    const DESCRIPTION: &'static str =
+        "Undo tracked workspace changes: a specific change by change_id, or the last N (default 1). \
+         Returns the reverting WriteResults.";
+    type Params = CodeUndoParams;
+    type Output = crate::code::types::UndoResult;
+
+    async fn run(
+        &self,
+        ctx: &Ctx,
+        p: CodeUndoParams,
+    ) -> Result<crate::code::types::UndoResult, CommandError> {
+        let engine = engine!(self, ctx);
+        // By-id undo and last-N undo unify on UndoResult (the by-id legacy arm built
+        // the same {success, changes_undone, error} shape ad-hoc; here it's typed).
+        match p.change_id {
+            Some(id) => {
+                let change_uuid = uuid::Uuid::parse_str(&id)
+                    .map_err(|e| CommandError::Invalid(format!("invalid change_id: {e}")))?;
+                let reverted = engine
+                    .undo(&change_uuid)
+                    .map_err(|e| CommandError::Internal(e.to_string()))?;
+                Ok(crate::code::types::UndoResult {
+                    success: true,
+                    changes_undone: vec![reverted],
+                    error: None,
+                })
+            }
+            None => engine
+                .undo_last(p.count.unwrap_or(1) as usize)
+                .map_err(|e| CommandError::Internal(e.to_string())),
+        }
+    }
+}
+
+// ─────────────────────────── code/history ────────────────────────
+
+/// The change history for one file, or the whole workspace.
+pub struct CodeHistory {
+    pub state: Arc<CodeState>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
+pub struct CodeHistoryParams {
+    /// Scope to one file (relative to the workspace root). Omit for the whole
+    /// workspace's history.
+    #[serde(default)]
+    pub file_path: Option<String>,
+    /// Cap on the number of changes returned (most recent first). Defaults to 50.
+    #[serde(default)]
+    pub limit: Option<u32>,
+}
+
+#[async_trait]
+impl ActionCommand for CodeHistory {
+    const NAME: &'static str = "code/history";
+    const DESCRIPTION: &'static str =
+        "The change history (most recent first) for one file or the whole workspace — what changed, \
+         when, and the change_ids to undo.";
+    type Params = CodeHistoryParams;
+    type Output = crate::code::types::HistoryResult;
+
+    async fn run(
+        &self,
+        ctx: &Ctx,
+        p: CodeHistoryParams,
+    ) -> Result<crate::code::types::HistoryResult, CommandError> {
+        let engine = engine!(self, ctx);
+        let limit = p.limit.unwrap_or(50) as usize;
+        Ok(match p.file_path {
+            Some(fp) => engine.file_history(&fp, limit),
+            None => engine.workspace_history(limit),
+        })
+    }
+}
+
 // ─────────────────── one registry: descriptors + objects ─────────────────
 
 // Static descriptors → the ONE `command_registry()` the persona surface + grid
@@ -671,6 +834,10 @@ crate::register_command!(CodeSearch);
 crate::register_command!(CodeShell);
 crate::register_command!(CodeShellPoll);
 crate::register_command!(CodeShellKill);
+crate::register_command!(CodeDelete);
+crate::register_command!(CodeDiff);
+crate::register_command!(CodeUndo);
+crate::register_command!(CodeHistory);
 
 /// The dep-holding command objects the [`CodeModule`](super::code::CodeModule)
 /// contributes to the kernel's typed object map (via `ServiceModule::commands`),
@@ -688,6 +855,97 @@ pub fn command_objects(state: Arc<CodeState>) -> Vec<Arc<dyn DynCommand>> {
         Arc::new(CodeSearch { state: state.clone() }),
         Arc::new(CodeShell { state: state.clone() }),
         Arc::new(CodeShellPoll { state: state.clone() }),
-        Arc::new(CodeShellKill { state }),
+        Arc::new(CodeShellKill { state: state.clone() }),
+        Arc::new(CodeDelete { state: state.clone() }),
+        Arc::new(CodeDiff { state: state.clone() }),
+        Arc::new(CodeUndo { state: state.clone() }),
+        Arc::new(CodeHistory { state }),
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::sdk_codegen::{AccessLevel, Ctx};
+    use dashmap::DashMap;
+
+    /// A `CodeState` whose `local-owner` engine (the `Ctx::default` caller) is rooted
+    /// at the OS temp dir, so read-only commands run without touching the repo or
+    /// depending on the process cwd. Pre-seeding the engine makes `ensure_engine`
+    /// short-circuit on `contains_key`, so no `current_dir` lookup happens.
+    fn state_rooted_at_temp() -> Arc<CodeState> {
+        let security = PathSecurity::new(&std::env::temp_dir()).expect("temp dir is a valid root");
+        let file_engines = Arc::new(DashMap::new());
+        file_engines.insert(
+            "local-owner".to_string(),
+            FileEngine::new("local-owner", security),
+        );
+        Arc::new(CodeState::new(
+            file_engines,
+            Arc::new(DashMap::new()),
+            tokio::runtime::Handle::current(),
+        ))
+    }
+
+    // what this catches: the four file-op hands migrated off the legacy persona_id
+    // arms (#62) reach the persona tool surface under their canonical names and the
+    // AiSafe gating a workspace-mutating-but-undoable hand warrants (same class as
+    // code/write). A wrong NAME (persona can't find the tool) or a drifted ACCESS
+    // (security-boundary regression) is caught here.
+    #[test]
+    fn migrated_file_ops_are_aisafe_named_hands() {
+        assert_eq!(CodeDelete::NAME, "code/delete");
+        assert_eq!(CodeDiff::NAME, "code/diff");
+        assert_eq!(CodeUndo::NAME, "code/undo");
+        assert_eq!(CodeHistory::NAME, "code/history");
+        for access in [
+            CodeDelete::ACCESS,
+            CodeDiff::ACCESS,
+            CodeUndo::ACCESS,
+            CodeHistory::ACCESS,
+        ] {
+            assert!(matches!(access, AccessLevel::AiSafe), "file-op hands are AiSafe");
+        }
+    }
+
+    // what this catches: code/history runs caller-scoped (Ctx::default → local-owner)
+    // through the lazy engine and returns a typed, well-formed HistoryResult — an
+    // empty history on a fresh workspace — proving the migrated run path + identity
+    // scoping work end to end WITHOUT a persona_id param. A regression to the legacy
+    // param shape (or a panic on the empty change graph) is caught.
+    #[tokio::test]
+    async fn history_on_fresh_workspace_is_typed_and_empty() {
+        let cmd = CodeHistory {
+            state: state_rooted_at_temp(),
+        };
+        let out = cmd
+            .run(
+                &Ctx::default(),
+                CodeHistoryParams {
+                    file_path: None,
+                    limit: None,
+                },
+            )
+            .await
+            .expect("history never errors on a fresh workspace");
+        assert!(out.success, "fresh history is a success");
+        assert!(out.nodes.is_empty(), "no changes recorded yet");
+        let json = serde_json::to_value(&out).unwrap();
+        assert!(json["nodes"].is_array(), "nodes is the wire array");
+        assert!(json["total_count"].is_number(), "total_count present on the wire");
+    }
+
+    // what this catches: the four hands are contributed to the module object map via
+    // command_objects — a regression that drops one (the descriptor still registers,
+    // but the persona has no runtime object to route to) is caught.
+    #[tokio::test]
+    async fn command_objects_includes_the_file_op_hands() {
+        let names: Vec<&str> = command_objects(state_rooted_at_temp())
+            .iter()
+            .map(|c| c.name())
+            .collect();
+        for n in ["code/delete", "code/diff", "code/undo", "code/history"] {
+            assert!(names.contains(&n), "command_objects missing {n}; got {names:?}");
+        }
+    }
 }

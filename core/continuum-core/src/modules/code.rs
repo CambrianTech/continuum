@@ -131,106 +131,17 @@ impl ServiceModule for CodeModule {
             // code/read, code/write, code/edit are migrated to typed ActionCommands
             // (modules/code_commands.rs) and route via the object map — caller-scoped
             // identity, real param schema, one registry. No legacy arm here.
-            "code/delete" => {
-                let _timer = TimingGuard::new("module", "code_delete");
-                let persona_id = p.str("persona_id")?;
-                let file_path = p.str("file_path")?;
-                let description = p.str_opt("description");
-
-                let engine = self
-                    .state
-                    .file_engines
-                    .get(persona_id)
-                    .ok_or_else(|| format!("No workspace for persona {}", persona_id))?;
-
-                let result = engine
-                    .delete(file_path, description)
-                    .map_err(|e| e.to_string())?;
-                log_info!("module", "code", "Delete {} by {}", file_path, persona_id);
-                Ok(CommandResult::Json(
-                    serde_json::to_value(&result).unwrap_or_default(),
-                ))
-            }
-
-            "code/diff" => {
-                let _timer = TimingGuard::new("module", "code_diff");
-                let persona_id = p.str("persona_id")?;
-                let file_path = p.str("file_path")?;
-                let edit: crate::code::EditMode = p.json("edit_mode")?;
-
-                let engine = self
-                    .state
-                    .file_engines
-                    .get(persona_id)
-                    .ok_or_else(|| format!("No workspace for persona {}", persona_id))?;
-
-                let result = engine
-                    .preview_diff(file_path, &edit)
-                    .map_err(|e| e.to_string())?;
-                Ok(CommandResult::Json(
-                    serde_json::to_value(&result).unwrap_or_default(),
-                ))
-            }
-
-            "code/undo" => {
-                let _timer = TimingGuard::new("module", "code_undo");
-                let persona_id = p.str("persona_id")?;
-                let change_id = p.str_opt("change_id");
-                let count = p.u64_opt("count").map(|n| n as usize);
-
-                let engine = self
-                    .state
-                    .file_engines
-                    .get(persona_id)
-                    .ok_or_else(|| format!("No workspace for persona {}", persona_id))?;
-
-                if let Some(id_str) = change_id {
-                    let change_uuid =
-                        Uuid::parse_str(id_str).map_err(|e| format!("Invalid change_id: {}", e))?;
-                    let result = engine.undo(&change_uuid).map_err(|e| e.to_string())?;
-                    log_info!("module", "code", "Undo {} by {}", id_str, persona_id);
-                    Ok(CommandResult::Json(serde_json::json!({
-                        "success": true,
-                        "changes_undone": [serde_json::to_value(&result).unwrap_or_default()],
-                        "error": null
-                    })))
-                } else {
-                    let n = count.unwrap_or(1);
-                    let result = engine.undo_last(n).map_err(|e| e.to_string())?;
-                    log_info!(
-                        "module",
-                        "code",
-                        "Undo {} changes by {}",
-                        result.changes_undone.len(),
-                        persona_id
-                    );
-                    Ok(CommandResult::Json(
-                        serde_json::to_value(&result).unwrap_or_default(),
-                    ))
-                }
-            }
-
-            "code/history" => {
-                let _timer = TimingGuard::new("module", "code_history");
-                let persona_id = p.str("persona_id")?;
-                let file_path = p.str_opt("file_path");
-                let limit = p.u64_or("limit", 50) as usize;
-
-                let engine = self
-                    .state
-                    .file_engines
-                    .get(persona_id)
-                    .ok_or_else(|| format!("No workspace for persona {}", persona_id))?;
-
-                let result = if let Some(fp) = file_path {
-                    engine.file_history(fp, limit)
-                } else {
-                    engine.workspace_history(limit)
-                };
-                Ok(CommandResult::Json(
-                    serde_json::to_value(&result).unwrap_or_default(),
-                ))
-            }
+            // code/delete, code/diff, code/undo, code/history are migrated to typed
+            // ActionCommands (modules/code_commands.rs) — caller-scoped identity
+            // (ctx.caller, never a spoofable persona_id param), real param schemas,
+            // one registry. They route via route_object; reaching these arms means
+            // the typed path failed to register, so fail loud naming the migration
+            // rather than silently re-handling on the legacy persona_id path.
+            "code/delete" | "code/diff" | "code/undo" | "code/history" => Err(format!(
+                "'{command}' is migrated to the typed registry (commands route via \
+                 modules/code_commands.rs) — it must route via route_object, not the \
+                 legacy handle_command path"
+            )),
 
             // code/search, code/tree, code/exists, code/list, code/glob are migrated
             // to typed ActionCommands (modules/code_commands.rs) and route via the
@@ -526,5 +437,39 @@ impl ServiceModule for CodeModule {
 
     fn as_any(&self) -> &dyn Any {
         self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::runtime::ServiceModule;
+
+    fn module() -> CodeModule {
+        let state = Arc::new(CodeState::new(
+            Arc::new(DashMap::new()),
+            Arc::new(DashMap::new()),
+            tokio::runtime::Handle::current(),
+        ));
+        CodeModule::new(state)
+    }
+
+    // what this catches: code/delete, code/diff, code/undo, code/history are migrated
+    // to typed ActionCommands (modules/code_commands.rs) that route via route_object
+    // with caller-scoped identity. The legacy handle_command arms must FAIL LOUD
+    // naming the migration — never silently re-handle on the spoofable persona_id
+    // path. A regression that re-adds an inline handler (forking a file op away from
+    // the typed, identity-safe command) is caught here.
+    #[tokio::test]
+    async fn migrated_file_op_arms_fail_loud() {
+        let module = module();
+        for command in ["code/delete", "code/diff", "code/undo", "code/history"] {
+            let err = module
+                .handle_command(command, Value::Null)
+                .await
+                .expect_err("migrated arm must fail loud");
+            assert!(err.contains("migrated"), "got {err}");
+            assert!(err.contains(command), "got {err}");
+        }
     }
 }
