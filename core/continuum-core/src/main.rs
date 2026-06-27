@@ -23,7 +23,7 @@ use continuum_core::memory::PersonaMemoryManager;
 /// - VoiceOrchestrator and PersonaInbox
 /// - DataModule (ORM operations via ORMRustClient)
 /// - EmbeddingModule (vector similarity / clustering math; generation is adapter-routed)
-/// - SearchModule (BM25, TF-IDF, vector search)
+/// - search/* commands (BM25, bag-of-words, cosine vector search) on the DynCommand registry
 /// - LoggerModule (structured logging)
 /// - LiveKit WebRTC agent for live audio/video
 ///

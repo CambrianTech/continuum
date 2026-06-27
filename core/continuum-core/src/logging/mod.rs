@@ -171,8 +171,8 @@ pub fn module_path_to_category(module_path: &str) -> &'static str {
         "modules/data"
     } else if path.starts_with("modules::embedding") {
         "modules/embedding"
-    } else if path.starts_with("modules::search") {
-        "modules/search"
+    } else if path.starts_with("commands::search") {
+        "commands/search"
     } else if path.starts_with("modules::logger") {
         "modules/logger"
     } else if path.starts_with("modules::live") {

@@ -1,51 +1,45 @@
-//! SearchModule — Absorbs the standalone search worker into the unified runtime.
+//! Search algorithm core — the OpenCV-style `cv::Algorithm` registry that the
+//! `search/*` commands run.
 //!
-//! Provides search algorithms (BoW, BM25, Cosine) with OpenCV-style interface:
-//! - Factory creation via algorithm registry
-//! - Named parameters with get/set
-//! - Polymorphism-based, not template-heavy
-//!
-//! Commands:
-//! - search/execute: Run text search algorithm
-//! - search/vector: Run vector similarity search
-//! - search/list: List available algorithms
-//! - search/params: Get algorithm parameters
-//!
-//! Migration from: workers/search (258 lines main.rs + algorithms)
+//! Polymorphism over templates: a [`SearchAlgorithm`] trait, named get/set params,
+//! and a factory [`AlgorithmRegistry`] that creates by name at runtime (bow, bm25,
+//! cosine). Moved verbatim out of the old `modules/search.rs` `ServiceModule` when
+//! the four search commands migrated onto the typed registry — the compute lives
+//! here, co-located with the `commands/search/<verb>.rs` files that expose it, so
+//! there is no `handle_command` `match` arm left to drift from.
 
-use crate::runtime::{CommandResult, ModuleConfig, ModuleContext, ModulePriority, ServiceModule};
-use crate::utils::params::Params;
-use async_trait::async_trait;
+use std::collections::{HashMap, HashSet};
+
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::any::Any;
-use std::collections::{HashMap, HashSet};
 use ts_rs::TS;
 
 // ============================================================================
 // Types
 // ============================================================================
 
-/// Input to any search algorithm
+/// Input to any text search algorithm.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../../protocol/typescript/search/SearchInput.ts")]
-pub struct SearchInput {
+pub(crate) struct SearchInput {
     pub query: String,
     pub corpus: Vec<String>,
 }
 
-/// Output from any search algorithm
+/// Output from any search algorithm — scores parallel to the corpus plus the
+/// indices sorted best-first.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../../protocol/typescript/search/SearchOutput.ts")]
-pub struct SearchOutput {
-    /// Scores normalized to 0-1, parallel to corpus
+pub(crate) struct SearchOutput {
+    /// Scores normalized to 0-1, parallel to corpus.
     pub scores: Vec<f64>,
-    /// Indices sorted by score descending
+    /// Indices sorted by score descending.
     pub ranked_indices: Vec<usize>,
 }
 
-/// Input for vector-based search
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+/// Params for `search/vector` — also the cosine algorithm's direct input.
+#[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
 #[ts(
     export,
     export_to = "../../../protocol/typescript/search/VectorSearchInput.ts"
@@ -64,11 +58,25 @@ fn default_true() -> bool {
     true
 }
 
+/// The shared result shape for `search/execute` and `search/vector`: which
+/// algorithm ran, the per-document scores, and the best-first ranking.
+#[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
+#[ts(export, export_to = "../../../protocol/typescript/search/SearchResult.ts")]
+#[serde(rename_all = "camelCase")]
+pub struct SearchResult {
+    /// The algorithm that produced these scores (bow, bm25, cosine).
+    pub algorithm: String,
+    /// Scores normalized to 0-1, parallel to the corpus.
+    pub scores: Vec<f64>,
+    /// Corpus indices sorted by score descending (best match first).
+    pub ranked_indices: Vec<usize>,
+}
+
 // ============================================================================
 // Algorithm Trait (OpenCV cv::Algorithm style)
 // ============================================================================
 
-trait SearchAlgorithm: Send + Sync {
+pub(crate) trait SearchAlgorithm: Send + Sync {
     fn name(&self) -> &'static str;
     fn execute(&self, input: &SearchInput) -> SearchOutput;
     fn get_param(&self, name: &str) -> Option<Value>;
@@ -78,12 +86,12 @@ trait SearchAlgorithm: Send + Sync {
 
 type AlgorithmFactory = fn() -> Box<dyn SearchAlgorithm>;
 
-struct AlgorithmRegistry {
+pub(crate) struct AlgorithmRegistry {
     factories: HashMap<&'static str, AlgorithmFactory>,
 }
 
 impl AlgorithmRegistry {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         let mut registry = Self {
             factories: HashMap::new(),
         };
@@ -93,11 +101,11 @@ impl AlgorithmRegistry {
         registry
     }
 
-    fn create(&self, name: &str) -> Option<Box<dyn SearchAlgorithm>> {
+    pub(crate) fn create(&self, name: &str) -> Option<Box<dyn SearchAlgorithm>> {
         self.factories.get(name).map(|factory| factory())
     }
 
-    fn create_with_params(
+    pub(crate) fn create_with_params(
         &self,
         name: &str,
         params: &HashMap<String, Value>,
@@ -111,7 +119,7 @@ impl AlgorithmRegistry {
         Ok(algo)
     }
 
-    fn list(&self) -> Vec<&'static str> {
+    pub(crate) fn list(&self) -> Vec<&'static str> {
         self.factories.keys().copied().collect()
     }
 }
@@ -405,9 +413,9 @@ impl SearchAlgorithm for Bm25Algorithm {
 // Cosine Similarity Algorithm
 // ============================================================================
 
-struct CosineAlgorithm {
-    normalize: bool,
-    threshold: f64,
+pub(crate) struct CosineAlgorithm {
+    pub(crate) normalize: bool,
+    pub(crate) threshold: f64,
 }
 
 impl CosineAlgorithm {
@@ -445,7 +453,7 @@ impl CosineAlgorithm {
         }
     }
 
-    fn vector_search(&self, input: &VectorSearchInput) -> SearchOutput {
+    pub(crate) fn vector_search(&self, input: &VectorSearchInput) -> SearchOutput {
         let mut query = input.query_vector.clone();
         if self.normalize {
             Self::l2_normalize(&mut query);
@@ -548,200 +556,36 @@ impl SearchAlgorithm for CosineAlgorithm {
     }
 }
 
-// ============================================================================
-// SearchModule — ServiceModule Implementation
-// ============================================================================
-
-pub struct SearchModule {
-    registry: AlgorithmRegistry,
-}
-
-impl SearchModule {
-    pub fn new() -> Self {
-        Self {
-            registry: AlgorithmRegistry::new(),
-        }
-    }
-
-    fn handle_execute(&self, params: Value) -> Result<CommandResult, String> {
-        let p = Params::new(&params);
-        let algorithm = p.str_or("algorithm", "bm25");
-        let query = p.str("query")?;
-        let corpus: Vec<String> = p
-            .array("corpus")?
-            .iter()
-            .filter_map(|v| v.as_str().map(String::from))
-            .collect();
-
-        let algo_params: HashMap<String, Value> = p
-            .value("params")
-            .and_then(|v| v.as_object())
-            .map(|o| o.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
-            .unwrap_or_default();
-
-        let algo = if algo_params.is_empty() {
-            self.registry
-                .create(algorithm)
-                .ok_or_else(|| format!("Unknown algorithm: {algorithm}"))?
-        } else {
-            self.registry.create_with_params(algorithm, &algo_params)?
-        };
-
-        let input = SearchInput {
-            query: query.to_string(),
-            corpus,
-        };
-        let output = algo.execute(&input);
-
-        Ok(CommandResult::Json(json!({
-            "algorithm": algorithm,
-            "scores": output.scores,
-            "rankedIndices": output.ranked_indices
-        })))
-    }
-
-    fn handle_vector(&self, params: Value) -> Result<CommandResult, String> {
-        let input: VectorSearchInput = serde_json::from_value(params)
-            .map_err(|e| format!("Invalid vector search params: {e}"))?;
-
-        let algo = CosineAlgorithm {
-            normalize: input.normalize,
-            threshold: input.threshold,
-        };
-
-        let output = algo.vector_search(&input);
-
-        Ok(CommandResult::Json(json!({
-            "algorithm": "cosine",
-            "scores": output.scores,
-            "rankedIndices": output.ranked_indices
-        })))
-    }
-
-    fn handle_list(&self) -> Result<CommandResult, String> {
-        Ok(CommandResult::Json(json!({
-            "algorithms": self.registry.list()
-        })))
-    }
-
-    fn handle_params(&self, params: Value) -> Result<CommandResult, String> {
-        let p = Params::new(&params);
-        let algorithm = p.str("algorithm")?;
-        let algo = self
-            .registry
-            .create(algorithm)
-            .ok_or_else(|| format!("Unknown algorithm: {algorithm}"))?;
-
-        // Build params with current values using get_param()
-        let param_values: serde_json::Map<String, Value> = algo
-            .param_names()
-            .iter()
-            .filter_map(|name| algo.get_param(name).map(|value| (name.to_string(), value)))
-            .collect();
-
-        Ok(CommandResult::Json(json!({
-            "algorithm": algo.name(),
-            "params": algo.param_names(),
-            "values": param_values
-        })))
-    }
-}
-
-impl Default for SearchModule {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-#[async_trait]
-impl ServiceModule for SearchModule {
-    fn config(&self) -> ModuleConfig {
-        ModuleConfig {
-            name: "search",
-            priority: ModulePriority::Normal,
-            command_prefixes: &["search/"],
-            event_subscriptions: &[],
-            needs_dedicated_thread: false,
-            max_concurrency: 0,
-            tick_interval: None,
-        }
-    }
-
-    async fn initialize(&self, _ctx: &ModuleContext) -> Result<(), String> {
-        Ok(())
-    }
-
-    async fn handle_command(&self, command: &str, params: Value) -> Result<CommandResult, String> {
-        match command {
-            "search/execute" => self.handle_execute(params),
-            "search/vector" => self.handle_vector(params),
-            "search/list" => self.handle_list(),
-            "search/params" => self.handle_params(params),
-            _ => Err(format!("Unknown search command: {command}")),
-        }
-    }
-
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[tokio::test]
-    async fn test_search_list() {
-        let module = SearchModule::new();
-        let result = module.handle_command("search/list", Value::Null).await;
-        assert!(result.is_ok());
-        if let Ok(CommandResult::Json(json)) = result {
-            let algos = json["algorithms"].as_array().unwrap();
-            assert!(algos.len() >= 3); // bow, bm25, cosine
-        }
+    // what this catches: the factory registry still creates all three algorithms by
+    // name — the contract `search/list` and `search/execute` depend on. A dropped
+    // factory insert would silently make an algorithm unreachable.
+    #[test]
+    fn registry_lists_all_three_algorithms() {
+        let registry = AlgorithmRegistry::new();
+        let mut algos = registry.list();
+        algos.sort();
+        assert_eq!(algos, vec!["bm25", "bow", "cosine"]);
     }
 
-    #[tokio::test]
-    async fn test_search_execute() {
-        let module = SearchModule::new();
-        let params = json!({
-            "algorithm": "bm25",
-            "query": "genome register",
-            "corpus": [
-                "Use genome/paging-register with personaId",
-                "The weather is nice today",
-                "Register genome adapters for personas"
-            ]
-        });
-        let result = module.handle_command("search/execute", params).await;
-        assert!(result.is_ok());
-        if let Ok(CommandResult::Json(json)) = result {
-            assert_eq!(json["algorithm"], "bm25");
-            let scores = json["scores"].as_array().unwrap();
-            assert_eq!(scores.len(), 3);
-            // Docs with query terms should score higher
-            assert!(scores[0].as_f64().unwrap() > scores[1].as_f64().unwrap());
-        }
-    }
-
-    #[tokio::test]
-    async fn test_vector_search() {
-        let module = SearchModule::new();
-        let params = json!({
-            "queryVector": [1.0, 0.0, 0.0],
-            "corpusVectors": [
-                [1.0, 0.0, 0.0],
-                [0.0, 1.0, 0.0],
-                [0.7, 0.7, 0.0]
+    // what this catches: bm25 ranks a doc containing the query terms above an
+    // unrelated doc — the core relevance guarantee of the default algorithm.
+    #[test]
+    fn bm25_ranks_relevant_doc_first() {
+        let registry = AlgorithmRegistry::new();
+        let algo = registry.create("bm25").expect("bm25 exists");
+        let out = algo.execute(&SearchInput {
+            query: "genome register".to_string(),
+            corpus: vec![
+                "Use genome/paging-register with personaId".to_string(),
+                "The weather is nice today".to_string(),
             ],
-            "normalize": true,
-            "threshold": 0.0
         });
-        let result = module.handle_command("search/vector", params).await;
-        assert!(result.is_ok());
-        if let Ok(CommandResult::Json(json)) = result {
-            let ranked = json["rankedIndices"].as_array().unwrap();
-            assert_eq!(ranked[0], 0); // Most similar (identical) first
-        }
+        assert_eq!(out.scores.len(), 2);
+        assert!(out.scores[0] > out.scores[1]);
+        assert_eq!(out.ranked_indices[0], 0);
     }
 }

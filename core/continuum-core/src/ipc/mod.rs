@@ -26,7 +26,6 @@ use crate::modules::memory::{MemoryModule, MemoryState};
 use crate::modules::models::ModelsModule;
 use crate::modules::persona_allocator::PersonaAllocatorModule;
 use crate::modules::rag::{RagModule, RagState};
-use crate::modules::search::SearchModule;
 use crate::modules::sentinel::SentinelModule;
 use crate::modules::system_resources::SystemResourceModule;
 use crate::modules::tool_parsing::ToolParsingModule;
@@ -1225,9 +1224,8 @@ pub fn start_server(
     // Provides log/write, log/ping via main socket
     runtime.register(Arc::new(LoggerModule::new()));
 
-    // Phase 4b: SearchModule (absorbs standalone search worker)
-    // Provides search/execute, search/vector, search/list, search/params
-    runtime.register(Arc::new(SearchModule::new()));
+    // search/* migrated to the DynCommand registry (commands/search/*) — the four
+    // verbs self-register via inventory, no module registration needed here.
 
     // Phase 4c: EmbeddingModule (absorbs standalone embedding worker)
     // Provides embedding/generate, embedding/model/{load,list,info,unload}

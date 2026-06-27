@@ -24,6 +24,7 @@ pub mod models;
 pub mod persona;
 pub mod rag;
 pub mod runtime;
+pub mod search;
 pub mod serving;
 pub mod system;
 pub mod vector;
