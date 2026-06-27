@@ -498,6 +498,26 @@ impl LlamaServerProcess {
         }
     }
 
+    /// Build a process bound to an EXPLICIT `root` (`http://host:port`) instead of
+    /// the global [`serving_root`]. This is the seam that lets a SECOND
+    /// llama-server run on its own port without colliding with the live lane or
+    /// publishing to the global serving snapshot (`serve()` is already
+    /// snapshot-free — only [`crate::modules::serving_daemon`] publishes the
+    /// global state). [`EphemeralServingLane`] is the only caller; the `v1_url` is
+    /// derived from `root` so a persona's inference adapter can point straight at
+    /// this lane.
+    pub fn with_root(root: String) -> Self {
+        let v1_url = format!("{}/v1", root.trim_end_matches('/'));
+        Self {
+            root,
+            v1_url,
+            bin: server_bin(),
+            client: reqwest::Client::new(),
+            child: Arc::new(StdMutex::new(None)),
+            served_adapters: Arc::new(StdMutex::new(Vec::new())),
+        }
+    }
+
     /// Kill the currently-running child, if any. Idempotent.
     fn kill_child(&self) {
         if let Some(mut child) = self.child.lock().unwrap().take() {
@@ -538,6 +558,61 @@ impl Default for LlamaServerProcess {
 impl Drop for LlamaServerProcess {
     fn drop(&mut self) {
         self.kill_child();
+    }
+}
+
+/// An ephemeral, self-contained llama-server lane on its OWN port — the
+/// serving-LEASE primitive in embryo: stand up capacity for a
+/// `(base model, adapters, context window)` on demand, use it, release it.
+///
+/// The live persona lane (the global [`serving_root`] snapshot) is never
+/// touched: this spawns a SECOND server on a free port scanned up from a
+/// caller-chosen base, and the child dies when the lane is dropped (inherited
+/// from [`LlamaServerProcess`]'s `Drop`). That isolation is exactly what
+/// [`crate::cognition::eval`]'s genome A/B needs — the humane-eval invariant
+/// (#59) is "measure a copy, never degrade the living persona", and you cannot
+/// measure a gene against its forged base if doing so re-homes the model the
+/// living persona is currently thinking with.
+///
+/// Generalized, this is the same lease the grid uses to place demand-driven
+/// capacity across heterogeneous nodes: today the host is `localhost` and the
+/// budget check is one machine's free VRAM (the `ResourceGovernor`'s job, #56);
+/// tomorrow the host is a peer and the budget spans the interlinked grid. One
+/// abstraction, misfit toys.
+pub struct EphemeralServingLane {
+    proc: LlamaServerProcess,
+    port: u16,
+}
+
+impl EphemeralServingLane {
+    /// Stand up a fresh llama-server for `target` on a free port scanned up from
+    /// `base_port` (distinct from the live lane). Fails loud
+    /// ([[fallbacks-are-illegal-fail-loud]]) if no port binds, the model GGUF is
+    /// missing, or any `--lora` gene file is absent — never serves a substitute.
+    /// Budget-gating ("does this fit alongside the live lane?") is the
+    /// `ResourceGovernor`'s concern (#56); this primitive only stands the lane up.
+    pub async fn spawn(target: &ServingTarget, base_port: u16) -> Result<Self, LlamaServerError> {
+        let port = first_free_port(base_port);
+        let root = format!("http://{}:{}", DEFAULT_HOST, port);
+        let proc = LlamaServerProcess::with_root(root);
+        proc.serve(target).await?;
+        Ok(Self { proc, port })
+    }
+
+    /// The OpenAI-compatible `/v1` base url a persona's inference adapter points
+    /// at to route deliberation through THIS lane instead of the live one.
+    pub fn v1_url(&self) -> String {
+        self.proc.v1_url.clone()
+    }
+
+    /// `http://host:port` of this lane (no `/v1`).
+    pub fn root(&self) -> &str {
+        &self.proc.root
+    }
+
+    /// The bound port — for probes/telemetry that want to name the lane.
+    pub fn port(&self) -> u16 {
+        self.port
     }
 }
 
@@ -934,6 +1009,20 @@ mod tests {
             std::net::TcpListener::bind((DEFAULT_HOST, chosen)).is_ok(),
             "scanned port {chosen} should be free"
         );
+    }
+
+    // what this catches: an ephemeral lane must derive its `/v1` url from the
+    // EXPLICIT root it was handed (not the global serving_root), and must not
+    // double up the scheme or the `/v1` segment — the same `/v1/v1` class of bug
+    // that muted Asha. `with_root` is the seam EphemeralServingLane builds on.
+    #[test]
+    fn with_root_derives_v1_url_from_explicit_root() {
+        let proc = LlamaServerProcess::with_root("http://127.0.0.1:59123".to_string());
+        assert_eq!(proc.root, "http://127.0.0.1:59123");
+        assert_eq!(proc.v1_url, "http://127.0.0.1:59123/v1");
+        // a trailing slash on the root must not yield `//v1`.
+        let proc = LlamaServerProcess::with_root("http://127.0.0.1:59123/".to_string());
+        assert_eq!(proc.v1_url, "http://127.0.0.1:59123/v1");
     }
 
     // what this catches: the readiness gate `await_ready_serving` waits on must
