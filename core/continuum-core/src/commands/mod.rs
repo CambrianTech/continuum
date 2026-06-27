@@ -28,6 +28,7 @@ pub mod memory;
 pub mod migration;
 pub mod models;
 pub mod persona;
+pub mod plasticity;
 pub mod rag;
 pub mod runtime;
 pub mod search;

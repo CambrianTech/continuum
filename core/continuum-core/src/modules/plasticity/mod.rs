@@ -32,7 +32,6 @@ use crate::runtime::{CommandResult, ModuleConfig, ModuleContext, ModulePriority,
 use async_trait::async_trait;
 use serde_json::Value;
 use std::any::Any;
-use std::path::{Path, PathBuf};
 
 pub struct PlasticityModule;
 
@@ -60,331 +59,19 @@ impl ServiceModule for PlasticityModule {
         Ok(())
     }
 
-    async fn handle_command(&self, command: &str, params: Value) -> Result<CommandResult, String> {
-        match command {
-            "plasticity/analyze" => self.handle_analyze(params).await,
-            "plasticity/compact" => self.handle_compact(params).await,
-            "plasticity/compress" => self.handle_compress(params).await,
-            "plasticity/topology" => self.handle_topology(params).await,
-            "plasticity/pipeline" => self.handle_pipeline(params).await,
-            _ => Err(format!("Unknown plasticity command: {command}")),
-        }
+    /// The `plasticity/*` verbs are migrated to the typed registry — they live as
+    /// stateless [`ActionCommand`](crate::sdk_codegen::ActionCommand)s under
+    /// `commands/plasticity/` and self-register, so this module owns no legacy
+    /// `match` arm. Any call into the legacy path fails loud naming the command.
+    async fn handle_command(&self, command: &str, _params: Value) -> Result<CommandResult, String> {
+        Err(format!(
+            "plasticity command surface is migrated to the typed registry; \
+             '{command}' has no legacy handler"
+        ))
     }
 
     fn as_any(&self) -> &dyn Any {
         self
-    }
-}
-
-impl PlasticityModule {
-    /// Dry-run analysis: compute what compaction WOULD do without modifying files.
-    ///
-    /// Params:
-    /// - `adapterPath` (string): Path to adapter directory containing gate_gradients.json
-    /// - `config` (object, optional): CompactionConfig overrides
-    async fn handle_analyze(&self, params: Value) -> Result<CommandResult, String> {
-        let adapter_path = params
-            .get("adapterPath")
-            .and_then(|v| v.as_str())
-            .ok_or("plasticity/analyze requires 'adapterPath' string param")?;
-
-        let config = parse_config(&params);
-
-        let gradients_path = PathBuf::from(adapter_path).join("gate_gradients.json");
-        let utilization = topology::load_utilization_data(&gradients_path)?;
-
-        let layer_summaries = scoring::compute_layer_summaries(
-            &utilization,
-            &scoring::compute_optimization_plan(&utilization, &config),
-            &config,
-        );
-        let saturated_heads = scoring::find_saturated_heads(&utilization, &config);
-
-        let topo = build_topology(&utilization, &config);
-
-        let (orig_bytes, quant_bytes) =
-            quantizer::estimate_total_savings(&topo, infer_hidden_size(&utilization));
-
-        let result = types::AnalysisResult {
-            topology: topo,
-            layer_summaries,
-            estimated_savings_bytes: orig_bytes.saturating_sub(quant_bytes),
-            saturated_heads,
-        };
-
-        let json = serde_json::to_value(result)
-            .map_err(|e| format!("Failed to serialize analysis result: {e}"))?;
-        Ok(CommandResult::Json(json))
-    }
-
-    /// Compact a model: physically remove pruned heads and write compacted safetensors.
-    ///
-    /// Params:
-    /// - `adapterPath` (string): Path to adapter directory containing gate_gradients.json
-    /// - `modelPath` (string): Path to base model — either a single .safetensors file
-    ///   or a directory containing model-NNNNN-of-NNNNN.safetensors shards
-    /// - `outputPath` (string, optional): Output path (defaults to adapter_path/compacted_model.safetensors)
-    /// - `config` (object, optional): CompactionConfig overrides
-    async fn handle_compact(&self, params: Value) -> Result<CommandResult, String> {
-        let adapter_path = params
-            .get("adapterPath")
-            .and_then(|v| v.as_str())
-            .ok_or("plasticity/compact requires 'adapterPath' string param")?;
-
-        let model_path = params
-            .get("modelPath")
-            .and_then(|v| v.as_str())
-            .ok_or("plasticity/compact requires 'modelPath' string param")?;
-
-        let output_path = params
-            .get("outputPath")
-            .and_then(|v| v.as_str())
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from(adapter_path).join("compacted_model.safetensors"));
-
-        let config = parse_config(&params);
-
-        // Load utilization data
-        let gradients_path = PathBuf::from(adapter_path).join("gate_gradients.json");
-        let utilization = topology::load_utilization_data(&gradients_path)?;
-
-        // Compute optimization plan
-        let topo = build_topology(&utilization, &config);
-
-        // Auto-detect single file vs directory of shards
-        let model_path_buf = PathBuf::from(model_path);
-        let result = if model_path_buf.is_dir() {
-            compactor::compact_model_sharded(&model_path_buf, &topo, &output_path)?
-        } else {
-            compactor::compact_model(&model_path_buf, &topo, &output_path)?
-        };
-
-        let json = serde_json::to_value(result)
-            .map_err(|e| format!("Failed to serialize compaction result: {e}"))?;
-        Ok(CommandResult::Json(json))
-    }
-
-    /// Get topology of an already-compacted model.
-    ///
-    /// Params:
-    /// - `topologyPath` (string): Path to head_topology.json
-    /// Compress a model to a mixed-quantization GGUF, fitted to a target device.
-    ///
-    /// Params:
-    /// - `capturePath` (string): Directory with head_topology.json
-    /// - `modelPath` (string): Base model safetensors directory
-    /// - `deviceSpec` (string, optional): Target device ("32gb", "16gb", "5090"). Default: "32gb"
-    /// - `outputPath` (string, optional): Output GGUF path
-    /// - `architecture` (string, optional): "qwen2" or "llama". Auto-detected if absent.
-    async fn handle_compress(&self, params: Value) -> Result<CommandResult, String> {
-        let capture_path = params
-            .get("capturePath")
-            .and_then(|v| v.as_str())
-            .ok_or("plasticity/compress requires 'capturePath' string param")?;
-
-        let model_path = params
-            .get("modelPath")
-            .and_then(|v| v.as_str())
-            .ok_or("plasticity/compress requires 'modelPath' string param")?;
-
-        let device_spec_str = params
-            .get("deviceSpec")
-            .and_then(|v| v.as_str())
-            .unwrap_or("32gb");
-
-        let device_spec = pipeline::parse_device_spec(device_spec_str)?;
-
-        let output_path = params
-            .get("outputPath")
-            .and_then(|v| v.as_str())
-            .map(PathBuf::from)
-            .unwrap_or_else(|| {
-                let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
-                PathBuf::from(home)
-                    .join(".continuum/genome/models")
-                    .join(format!(
-                        "{}-compressed.gguf",
-                        PathBuf::from(model_path)
-                            .file_name()
-                            .and_then(|n| n.to_str())
-                            .unwrap_or("model")
-                    ))
-            });
-
-        let architecture = params
-            .get("architecture")
-            .and_then(|v| v.as_str())
-            .unwrap_or("qwen2")
-            .to_string();
-
-        let config = pipeline::CompressConfig {
-            capture_path: PathBuf::from(capture_path),
-            model_path: PathBuf::from(model_path),
-            output_path,
-            device_spec,
-            architecture,
-        };
-
-        let result = pipeline::compress(&config)?;
-
-        let json = serde_json::to_value(&result).map_err(|e| format!("Serialize result: {e}"))?;
-        Ok(CommandResult::Json(json))
-    }
-
-    async fn handle_topology(&self, params: Value) -> Result<CommandResult, String> {
-        let topo_path = params
-            .get("topologyPath")
-            .and_then(|v| v.as_str())
-            .ok_or("plasticity/topology requires 'topologyPath' string param")?;
-
-        let topo = topology::load_topology(&PathBuf::from(topo_path))?;
-
-        let json =
-            serde_json::to_value(topo).map_err(|e| format!("Failed to serialize topology: {e}"))?;
-        Ok(CommandResult::Json(json))
-    }
-
-    /// End-to-end pipeline: gate_gradients.json → analysis → compaction.
-    ///
-    /// This is the "wake up to a compacted model" command. Given a gate capture
-    /// directory and a model path, it runs the full pipeline:
-    ///
-    /// 1. Load gate_gradients.json from capture directory
-    /// 2. Compute optimization plan (scoring + GQA constraints)
-    /// 3. Build topology with per-head precision assignments
-    /// 4. Compact model (multi-shard aware, head pruning)
-    /// 5. Write compacted model + topology to output directory
-    ///
-    /// Params:
-    /// - `capturePath` (string): Gate capture directory (contains gate_gradients.json)
-    /// - `modelPath` (string): Base model path — directory for multi-shard, file for single
-    /// - `outputPath` (string, optional): Output directory (defaults to capturePath/compacted/)
-    /// - `config` (object, optional): CompactionConfig overrides
-    async fn handle_pipeline(&self, params: Value) -> Result<CommandResult, String> {
-        let capture_path = params
-            .get("capturePath")
-            .and_then(|v| v.as_str())
-            .ok_or("plasticity/pipeline requires 'capturePath' string param")?;
-
-        let model_path = params
-            .get("modelPath")
-            .and_then(|v| v.as_str())
-            .ok_or("plasticity/pipeline requires 'modelPath' string param")?;
-
-        let output_dir = params
-            .get("outputPath")
-            .and_then(|v| v.as_str())
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from(capture_path).join("compacted"));
-
-        let config = parse_config(&params);
-
-        // 1. Load gate gradients
-        let gradients_path = PathBuf::from(capture_path).join("gate_gradients.json");
-        if !gradients_path.exists() {
-            // Also check results subdirectory (RunPod capture downloads to results/)
-            let alt_path = PathBuf::from(capture_path)
-                .join("results")
-                .join("gate_gradients.json");
-            if !alt_path.exists() {
-                return Err(format!(
-                    "gate_gradients.json not found in {} or {}/results/",
-                    capture_path, capture_path
-                ));
-            }
-            return self
-                .run_pipeline(&alt_path, model_path, &output_dir, &config)
-                .await;
-        }
-
-        self.run_pipeline(&gradients_path, model_path, &output_dir, &config)
-            .await
-    }
-
-    async fn run_pipeline(
-        &self,
-        gradients_path: &Path,
-        model_path: &str,
-        output_dir: &Path,
-        config: &types::CompactionConfig,
-    ) -> Result<CommandResult, String> {
-        eprintln!(
-            "[plasticity/pipeline] Loading gate gradients from {}",
-            gradients_path.display()
-        );
-        let utilization = topology::load_utilization_data(gradients_path)?;
-
-        eprintln!(
-            "[plasticity/pipeline] Model: {}, {} layers, {} heads ({} KV), {} training steps",
-            utilization.model_name,
-            utilization.layer_scores.len(),
-            utilization.num_heads,
-            utilization.num_kv_heads,
-            utilization.num_steps
-        );
-
-        // 2. Compute topology
-        let topo = build_topology(&utilization, config);
-
-        eprintln!(
-            "[plasticity/pipeline] Optimization plan: {:.1}% parameter reduction, profile: removed={} ternary={} q2={} q4={} q8={} bf16={}",
-            topo.parameter_reduction * 100.0,
-            topo.precision_profile.removed,
-            topo.precision_profile.ternary,
-            topo.precision_profile.q2,
-            topo.precision_profile.q4,
-            topo.precision_profile.q8,
-            topo.precision_profile.bf16,
-        );
-
-        // 3. Create output directory
-        std::fs::create_dir_all(output_dir).map_err(|e| {
-            format!(
-                "Failed to create output directory {}: {}",
-                output_dir.display(),
-                e
-            )
-        })?;
-
-        let output_file = output_dir.join("compacted_model.safetensors");
-
-        // 4. Compact
-        let model_path_buf = PathBuf::from(model_path);
-        let result = if model_path_buf.is_dir() {
-            eprintln!("[plasticity/pipeline] Multi-shard model detected, scanning for shards...");
-            compactor::compact_model_sharded(&model_path_buf, &topo, &output_file)?
-        } else {
-            compactor::compact_model(&model_path_buf, &topo, &output_file)?
-        };
-
-        // 5. Also save analysis summary alongside
-        let hidden_size = infer_hidden_size(&utilization);
-        let (orig_bytes, quant_bytes) = quantizer::estimate_total_savings(&topo, hidden_size);
-        let layer_summaries = scoring::compute_layer_summaries(&utilization, &topo.layers, config);
-
-        let analysis = types::AnalysisResult {
-            topology: topo.clone(),
-            layer_summaries,
-            estimated_savings_bytes: orig_bytes.saturating_sub(quant_bytes),
-            saturated_heads: scoring::find_saturated_heads(&utilization, config),
-        };
-
-        let analysis_path = output_dir.join("analysis.json");
-        let analysis_json = serde_json::to_string_pretty(&analysis)
-            .map_err(|e| format!("Failed to serialize analysis: {e}"))?;
-        std::fs::write(&analysis_path, analysis_json)
-            .map_err(|e| format!("Failed to write analysis: {e}"))?;
-
-        eprintln!(
-            "[plasticity/pipeline] Complete! Output: {}, topology: {}, analysis: {}",
-            result.model_path,
-            result.topology_path,
-            analysis_path.display()
-        );
-
-        let json = serde_json::to_value(&result)
-            .map_err(|e| format!("Failed to serialize pipeline result: {e}"))?;
-        Ok(CommandResult::Json(json))
     }
 }
 
@@ -393,7 +80,12 @@ impl PlasticityModule {
 /// When `config.target_size_gb` is set, uses budget-aware allocation that optimally
 /// distributes precision tiers to fit within the target size. Otherwise falls back
 /// to fixed-threshold assignment.
-fn build_topology(
+///
+/// `pub(crate)`: the `plasticity/{analyze,compact,pipeline}` command bodies in
+/// `commands/plasticity/` orchestrate over it. The topology-construction domain
+/// logic stays here in the module (mirrors genome's domain-in-module / wire-in-
+/// commands split); the commands are thin.
+pub(crate) fn build_topology(
     utilization: &types::UtilizationData,
     config: &types::CompactionConfig,
 ) -> types::HeadTopology {
@@ -463,55 +155,6 @@ fn build_topology(
         precision_profile,
         created_at: chrono_now(),
     }
-}
-
-/// Parse CompactionConfig from command params, using defaults for missing fields.
-fn parse_config(params: &Value) -> types::CompactionConfig {
-    let config_val = params.get("config");
-
-    let mut config = types::CompactionConfig::default();
-
-    if let Some(c) = config_val {
-        if let Some(v) = c.get("minHeadsPerLayer").and_then(|v| v.as_u64()) {
-            config.min_heads_per_layer = v as usize;
-        }
-        if let Some(v) = c.get("minKvHeadsPerLayer").and_then(|v| v.as_u64()) {
-            config.min_kv_heads_per_layer = v as usize;
-        }
-        if let Some(v) = c.get("deadThreshold").and_then(|v| v.as_f64()) {
-            config.dead_threshold = v;
-        }
-        if let Some(v) = c.get("dormantThreshold").and_then(|v| v.as_f64()) {
-            config.dormant_threshold = v;
-        }
-        if let Some(v) = c.get("lowThreshold").and_then(|v| v.as_f64()) {
-            config.low_threshold = v;
-        }
-        if let Some(v) = c.get("mediumThreshold").and_then(|v| v.as_f64()) {
-            config.medium_threshold = v;
-        }
-        if let Some(v) = c.get("highThreshold").and_then(|v| v.as_f64()) {
-            config.high_threshold = v;
-        }
-        if let Some(v) = c.get("saturatedThreshold").and_then(|v| v.as_f64()) {
-            config.saturated_threshold = v;
-        }
-        if let Some(v) = c.get("enableQuantization").and_then(|v| v.as_bool()) {
-            config.enable_quantization = v;
-        }
-        if let Some(v) = c.get("targetSizeGb").and_then(|v| v.as_f64()) {
-            config.target_size_gb = Some(v);
-        }
-    }
-
-    // Also check top-level param (convenience — can pass targetSizeGb outside config block)
-    if config.target_size_gb.is_none() {
-        if let Some(v) = params.get("targetSizeGb").and_then(|v| v.as_f64()) {
-            config.target_size_gb = Some(v);
-        }
-    }
-
-    config
 }
 
 /// Known model architecture configurations.
@@ -632,7 +275,10 @@ fn infer_head_dim(data: &types::UtilizationData) -> usize {
 }
 
 /// Infer hidden_size from model architecture.
-fn infer_hidden_size(data: &types::UtilizationData) -> usize {
+///
+/// `pub(crate)`: the `plasticity/{analyze,pipeline}` command bodies size the
+/// quantization-savings estimate off it.
+pub(crate) fn infer_hidden_size(data: &types::UtilizationData) -> usize {
     lookup_model_arch(&data.model_name)
         .map(|c| c.hidden_size)
         .unwrap_or_else(|| data.num_heads * infer_head_dim(data))
@@ -652,41 +298,6 @@ fn chrono_now() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_parse_config_defaults() {
-        let config = parse_config(&Value::Null);
-        assert_eq!(config.min_heads_per_layer, 4);
-        assert_eq!(config.dead_threshold, 0.1);
-        assert!(config.enable_quantization);
-        assert!(config.target_size_gb.is_none());
-    }
-
-    #[test]
-    fn test_parse_config_overrides() {
-        let params = serde_json::json!({
-            "config": {
-                "minHeadsPerLayer": 2,
-                "deadThreshold": 0.05,
-                "enableQuantization": false,
-                "targetSizeGb": 20.0
-            }
-        });
-        let config = parse_config(&params);
-        assert_eq!(config.min_heads_per_layer, 2);
-        assert_eq!(config.dead_threshold, 0.05);
-        assert!(!config.enable_quantization);
-        assert_eq!(config.target_size_gb, Some(20.0));
-    }
-
-    #[test]
-    fn test_parse_config_target_size_top_level() {
-        let params = serde_json::json!({
-            "targetSizeGb": 18.5
-        });
-        let config = parse_config(&params);
-        assert_eq!(config.target_size_gb, Some(18.5));
-    }
 
     #[test]
     fn test_infer_head_dim_llama_3b() {
@@ -827,43 +438,17 @@ mod tests {
         );
     }
 
+    // what this catches: the legacy string-dispatch path is dead — any call into it
+    // fails loud naming the command, never silently no-ops. The plasticity verbs route
+    // through the typed registry (commands/plasticity/), not handle_command.
     #[tokio::test]
-    async fn test_unknown_command() {
+    async fn legacy_handle_command_fails_loud() {
         let module = PlasticityModule::new();
-        let result = module
-            .handle_command("plasticity/unknown", Value::Null)
-            .await;
-        assert!(result.is_err());
-        assert!(result.unwrap_err().contains("Unknown plasticity command"));
-    }
-
-    #[tokio::test]
-    async fn test_analyze_missing_params() {
-        let module = PlasticityModule::new();
-        let result = module
+        let err = module
             .handle_command("plasticity/analyze", Value::Null)
-            .await;
-        assert!(result.is_err());
-        assert!(result.unwrap_err().contains("adapterPath"));
-    }
-
-    #[tokio::test]
-    async fn test_compact_missing_params() {
-        let module = PlasticityModule::new();
-        let result = module
-            .handle_command("plasticity/compact", Value::Null)
-            .await;
-        assert!(result.is_err());
-        assert!(result.unwrap_err().contains("adapterPath"));
-    }
-
-    #[tokio::test]
-    async fn test_topology_missing_params() {
-        let module = PlasticityModule::new();
-        let result = module
-            .handle_command("plasticity/topology", Value::Null)
-            .await;
-        assert!(result.is_err());
-        assert!(result.unwrap_err().contains("topologyPath"));
+            .await
+            .unwrap_err();
+        assert!(err.contains("plasticity/analyze"));
+        assert!(err.contains("migrated to the typed registry"));
     }
 }
