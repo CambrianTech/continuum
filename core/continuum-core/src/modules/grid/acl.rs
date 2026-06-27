@@ -221,9 +221,12 @@ mod tests {
         assert!(is_command_authorized("ai/generate", TrustLevel::Trusted));
         assert!(is_command_authorized("ai/generate", TrustLevel::Owner));
         assert!(!is_command_authorized("ai/generate", TrustLevel::Blocked));
-        // The Provisional rule must NOT leak access to other commands.
+        // The Provisional rule must NOT leak access to Owner-gated commands. Use a
+        // genuinely unclassified op (genome/train → defaults to Owner): a non-AiSafe
+        // sibling stays denied. (gpu/stats is itself declared AiSafe, so it IS
+        // Provisional-authorized — it is not a valid "should be denied" example.)
         assert!(!is_command_authorized("data/delete", TrustLevel::Provisional));
-        assert!(!is_command_authorized("gpu/stats", TrustLevel::Provisional));
+        assert!(!is_command_authorized("genome/train", TrustLevel::Provisional));
     }
 
     // what this catches: THE reconciliation that lets a persona's hands work — a

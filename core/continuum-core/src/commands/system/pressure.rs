@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use crate::modules::system_resources::SystemResourceService;
 use crate::sdk_codegen::CommandError;
+use crate::system_resources::PressureSnapshot;
 
 use super::SystemQuery;
 
@@ -15,7 +16,7 @@ crate::action_command! {
     name: "system/pressure",
     access: AiSafe,
     params: SystemQuery,
-    output: serde_json::Value,
+    output: PressureSnapshot,
     run(this, _ctx, _p) => {
         this.service.pressure().map_err(CommandError::Internal)
     }

@@ -66,6 +66,22 @@ pub struct DatasetMetrics {
     pub avg_lines_of_code: Option<f64>,
 }
 
+/// Result of `dataset/list` — the manifests found under the datasets root.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/dataset/DatasetListResult.ts"
+)]
+pub struct DatasetListResult {
+    /// One manifest per discovered dataset subdirectory.
+    pub datasets: Vec<DatasetManifest>,
+    /// Number of datasets found (`datasets.len()`).
+    #[ts(type = "number")]
+    pub count: usize,
+    /// The resolved datasets root directory the listing came from.
+    pub root: String,
+}
+
 // ============================================================================
 // Command params — the typed input contracts for the `dataset/*` verbs.
 // They live here with the service so the service methods take them directly;
@@ -264,7 +280,7 @@ impl DatasetService {
     }
 
     /// Import a generic CSV file as a JSONL training dataset.
-    pub fn import_csv(&self, p: &ImportCsvParams) -> Result<Value, String> {
+    pub fn import_csv(&self, p: &ImportCsvParams) -> Result<DatasetManifest, String> {
         let output_dir = self.resolve_root(p.output_dir.as_deref());
 
         let csv_path = PathBuf::from(&p.csv_path);
@@ -327,7 +343,7 @@ impl DatasetService {
         }
 
         let manifest = self.split_and_write(&p.name, &output_dir, &examples, p.split_ratio, None)?;
-        serde_json::to_value(&manifest).map_err(|e| format!("Failed to serialize manifest: {e}"))
+        Ok(manifest)
     }
 
     /// Convert recorded persona turns into a ShareGPT/chat training dataset.
@@ -343,7 +359,7 @@ impl DatasetService {
     /// `~/.continuum/fixtures/persona-respond`), NOT engrams — engrams are
     /// curated *recall* memory, not paired SFT turns. Only `spoke` turns yield a
     /// training pair; `silent` / errored / malformed turns are skipped.
-    pub fn from_turns(&self, p: &FromTurnsParams) -> Result<Value, String> {
+    pub fn from_turns(&self, p: &FromTurnsParams) -> Result<DatasetManifest, String> {
         let turns_dir = p
             .turns_dir
             .as_deref()
@@ -401,7 +417,7 @@ impl DatasetService {
         }
 
         let manifest = self.split_and_write(&p.name, &output_dir, &examples, p.split_ratio, None)?;
-        serde_json::to_value(&manifest).map_err(|e| format!("Failed to serialize manifest: {e}"))
+        Ok(manifest)
     }
 
     /// Convert LIVE prompt-captures into a training dataset — the rooms→training
@@ -412,7 +428,7 @@ impl DatasetService {
     /// the data" had quietly stopped being true for the live path. Same one output
     /// shape, same split/write/manifest — only the SOURCE differs, so the genome
     /// loop trains on what the persona actually does today.
-    pub fn from_captures(&self, p: &FromCapturesParams) -> Result<Value, String> {
+    pub fn from_captures(&self, p: &FromCapturesParams) -> Result<DatasetManifest, String> {
         let dir = p
             .captures_dir
             .as_deref()
@@ -473,7 +489,7 @@ impl DatasetService {
         }
 
         let manifest = self.split_and_write(&p.name, &output_dir, &examples, p.split_ratio, None)?;
-        serde_json::to_value(&manifest).map_err(|e| format!("Failed to serialize manifest: {e}"))
+        Ok(manifest)
     }
 
     /// Import RealClassEval dataset from cloned repo directory → structured JSONL + manifest.
@@ -486,7 +502,10 @@ impl DatasetService {
     /// Accepts either:
     ///   - `repoDir`: path to cloned repo root (auto-discovers CSVs + tests)
     ///   - `csvPath` + `testsDir`: legacy single-CSV mode (backward compat)
-    pub fn import_realclasseval(&self, p: &ImportRealClassEvalParams) -> Result<Value, String> {
+    pub fn import_realclasseval(
+        &self,
+        p: &ImportRealClassEvalParams,
+    ) -> Result<DatasetManifest, String> {
         let output_dir = p
             .output_dir
             .as_deref()
@@ -680,11 +699,11 @@ impl DatasetService {
         std::fs::write(&manifest_path, &manifest_json)
             .map_err(|e| format!("Failed to write manifest: {e}"))?;
 
-        serde_json::to_value(&manifest).map_err(|e| format!("Failed to serialize manifest: {e}"))
+        Ok(manifest)
     }
 
     /// List datasets in the datasets root directory.
-    pub fn list_datasets(&self, p: &ListDatasetsParams) -> Result<Value, String> {
+    pub fn list_datasets(&self, p: &ListDatasetsParams) -> Result<DatasetListResult, String> {
         let root = self.resolve_root(p.output_dir.as_deref());
 
         let mut datasets: Vec<DatasetManifest> = Vec::new();
@@ -709,15 +728,16 @@ impl DatasetService {
             }
         }
 
-        Ok(json!({
-            "datasets": datasets,
-            "count": datasets.len(),
-            "root": root.to_string_lossy(),
-        }))
+        let count = datasets.len();
+        Ok(DatasetListResult {
+            datasets,
+            count,
+            root: root.to_string_lossy().into_owned(),
+        })
     }
 
     /// Read manifest for a specific dataset.
-    pub fn dataset_info(&self, p: &DatasetInfoParams) -> Result<Value, String> {
+    pub fn dataset_info(&self, p: &DatasetInfoParams) -> Result<DatasetManifest, String> {
         let root = self.resolve_root(p.output_dir.as_deref());
         let manifest_path = root.join(&p.name).join("manifest.json");
 
@@ -734,7 +754,7 @@ impl DatasetService {
         let manifest: DatasetManifest =
             serde_json::from_str(&content).map_err(|e| format!("Failed to parse manifest: {e}"))?;
 
-        serde_json::to_value(&manifest).map_err(|e| format!("Failed to serialize manifest: {e}"))
+        Ok(manifest)
     }
 
     /// Split examples into train/eval, write JSONL files and manifest.
@@ -1056,10 +1076,10 @@ mod tests {
             })
             .unwrap();
 
-        assert_eq!(v["name"], "test-dataset");
-        assert_eq!(v["total_examples"], 2);
-        assert_eq!(v["train_examples"], 1);
-        assert_eq!(v["eval_examples"], 1);
+        assert_eq!(v.name, "test-dataset");
+        assert_eq!(v.total_examples, 2);
+        assert_eq!(v.train_examples, 1);
+        assert_eq!(v.eval_examples, 1);
 
         assert!(output_dir.join("train.jsonl").exists());
         assert!(output_dir.join("eval.jsonl").exists());
@@ -1172,8 +1192,8 @@ mod tests {
             })
             .unwrap();
 
-        assert_eq!(v["name"], "gastro-turns");
-        assert_eq!(v["total_examples"], 1, "only the spoke turn is a pair");
+        assert_eq!(v.name, "gastro-turns");
+        assert_eq!(v.total_examples, 1, "only the spoke turn is a pair");
 
         // The written example is a chat SFT record: system + user + assistant.
         let train = std::fs::read_to_string(output_dir.join("train.jsonl")).unwrap();
@@ -1263,12 +1283,18 @@ snippet_200,Parser,"class Parser:\n    def parse(self, text):\n        return te
             })
             .unwrap();
 
-        assert_eq!(v["name"], "realclasseval");
-        assert_eq!(v["total_examples"], 2);
-        assert_eq!(v["source"], "arxiv:2510.26130");
+        assert_eq!(v.name, "realclasseval");
+        assert_eq!(v.total_examples, 2);
+        assert_eq!(v.source.as_deref(), Some("arxiv:2510.26130"));
         // Legacy mode: all counted as pre-cutoff (is_post=false)
-        assert_eq!(v["pre_cutoff"], 2);
-        assert!(v["metrics"]["avg_cyclomatic_complexity"].as_f64().unwrap() > 0.0);
+        assert_eq!(v.pre_cutoff, Some(2));
+        assert!(
+            v.metrics
+                .as_ref()
+                .and_then(|m| m.avg_cyclomatic_complexity)
+                .unwrap()
+                > 0.0
+        );
     }
 
     // what this catches: RealClassEval repo-dir auto-discovery splits csn (pre) +
@@ -1317,11 +1343,11 @@ snippet_200,Parser,"class Parser:\n    def parse(self, text):\n        return te
             })
             .unwrap();
 
-        assert_eq!(v["name"], "realclasseval");
-        assert_eq!(v["total_examples"], 2);
-        assert_eq!(v["source"], "arxiv:2510.26130");
-        assert_eq!(v["pre_cutoff"], 1); // csn
-        assert_eq!(v["post_cutoff"], 1); // post_cut-off
+        assert_eq!(v.name, "realclasseval");
+        assert_eq!(v.total_examples, 2);
+        assert_eq!(v.source.as_deref(), Some("arxiv:2510.26130"));
+        assert_eq!(v.pre_cutoff, Some(1)); // csn
+        assert_eq!(v.post_cutoff, Some(1)); // post_cut-off
 
         assert!(output_dir.join("train.jsonl").exists());
         assert!(output_dir.join("eval.jsonl").exists());
@@ -1361,8 +1387,8 @@ snippet_200,Parser,"class Parser:\n    def parse(self, text):\n        return te
                 output_dir: Some(tmp.path().to_str().unwrap().to_string()),
             })
             .unwrap();
-        assert_eq!(v["count"], 1);
-        assert_eq!(v["datasets"][0]["name"], "my-dataset");
+        assert_eq!(v.count, 1);
+        assert_eq!(v.datasets[0].name, "my-dataset");
     }
 
     // what this catches: info reads one named dataset's manifest.
@@ -1399,8 +1425,8 @@ snippet_200,Parser,"class Parser:\n    def parse(self, text):\n        return te
                 output_dir: Some(tmp.path().to_str().unwrap().to_string()),
             })
             .unwrap();
-        assert_eq!(v["name"], "test-ds");
-        assert_eq!(v["total_examples"], 50);
+        assert_eq!(v.name, "test-ds");
+        assert_eq!(v.total_examples, 50);
     }
 
     // what this catches: info on a missing dataset is a loud error, not an empty ok.

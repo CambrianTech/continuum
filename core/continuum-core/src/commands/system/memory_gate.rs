@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use crate::modules::system_resources::SystemResourceService;
+use crate::modules::system_resources::{MemoryGateState, SystemResourceService};
 
 use super::SystemQuery;
 
@@ -15,7 +15,7 @@ crate::action_command! {
     name: "system/memory-gate",
     access: AiSafe,
     params: SystemQuery,
-    output: serde_json::Value,
+    output: MemoryGateState,
     run(this, _ctx, _p) => {
         Ok(this.service.memory_gate())
     }
@@ -47,8 +47,8 @@ mod tests {
             ))),
         };
         let out = cmd.run(&Ctx::default(), SystemQuery {}).await.unwrap();
-        assert!(out["closed"].is_boolean());
-        assert_eq!(out["pressure"].as_f64().unwrap(), 0.0);
-        assert_eq!(out["rss_bytes"].as_u64().unwrap(), 0);
+        // closed is a bool by type; unwired monitor reports zeros.
+        assert_eq!(out.pressure, 0.0);
+        assert_eq!(out.rss_bytes, 0);
     }
 }

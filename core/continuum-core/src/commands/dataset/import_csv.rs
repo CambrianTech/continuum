@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use crate::modules::dataset::{DatasetService, ImportCsvParams};
+use crate::modules::dataset::{DatasetManifest, DatasetService, ImportCsvParams};
 use crate::sdk_codegen::CommandError;
 
 crate::action_command! {
@@ -14,7 +14,7 @@ crate::action_command! {
     name: "dataset/import-csv",
     access: Privileged,
     params: ImportCsvParams,
-    output: serde_json::Value,
+    output: DatasetManifest,
     run(this, _ctx, p) => {
         this.service.import_csv(&p).map_err(CommandError::Internal)
     }

@@ -14,6 +14,15 @@ use crate::modules::agent::{AgentService, AgentStatusInfo};
 #[ts(export, export_to = "../../../protocol/typescript/agent/AgentListParams.ts")]
 pub struct AgentListParams {}
 
+/// Result of `agent/list` — the live set of tracked agents. A named wrapper so the
+/// wire type is a struct, not a bare `Array<T>`.
+#[derive(Debug, Clone, Serialize, TS)]
+#[ts(export, export_to = "../../../protocol/typescript/agent/AgentStatusList.ts")]
+pub struct AgentStatusList {
+    /// Every agent the runtime is currently tracking (running + not-yet-evicted).
+    pub agents: Vec<AgentStatusInfo>,
+}
+
 crate::action_command! {
     /// List every agent the runtime is tracking — each with its status, iteration,
     /// and file changes. Completed agents are evicted to free memory, so this shows
@@ -22,9 +31,11 @@ crate::action_command! {
     name: "agent/list",
     access: AiSafe,
     params: AgentListParams,
-    output: Vec<AgentStatusInfo>,
+    output: AgentStatusList,
     run(this, _ctx, _p) => {
-        Ok(this.service.list())
+        Ok(AgentStatusList {
+            agents: this.service.list(),
+        })
     }
 }
 
@@ -55,6 +66,6 @@ mod tests {
             .run(&Ctx::default(), AgentListParams {})
             .await
             .unwrap();
-        assert!(out.is_empty());
+        assert!(out.agents.is_empty());
     }
 }

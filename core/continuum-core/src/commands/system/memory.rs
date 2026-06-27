@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use crate::modules::system_resources::SystemResourceService;
 use crate::sdk_codegen::CommandError;
+use crate::system_resources::MemoryStats;
 
 use super::SystemQuery;
 
@@ -15,7 +16,7 @@ crate::action_command! {
     name: "system/memory",
     access: AiSafe,
     params: SystemQuery,
-    output: serde_json::Value,
+    output: MemoryStats,
     run(this, _ctx, _p) => {
         this.service.memory().map_err(CommandError::Internal)
     }
@@ -47,6 +48,6 @@ mod tests {
             ))),
         };
         let out = cmd.run(&Ctx::default(), SystemQuery {}).await.unwrap();
-        assert!(out["total_bytes"].as_u64().unwrap() > 0);
+        assert!(out.total_bytes > 0);
     }
 }

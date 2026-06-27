@@ -17,6 +17,19 @@ use crate::gpu::{EvictableEntry, GpuMemoryManager};
 )]
 pub struct GpuEvictionCandidatesParams {}
 
+/// Result of `gpu/eviction-candidates` — the evictable consumers, best-candidate
+/// first. A named wrapper so the wire type is a struct, not a bare `Array<T>`.
+#[derive(Debug, Clone, Serialize, TS)]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/gpu/GpuEvictionCandidates.ts"
+)]
+pub struct EvictionCandidates {
+    /// Tracked consumers that may be evicted, sorted highest-score (best to evict)
+    /// first. Realtime consumers are excluded.
+    pub candidates: Vec<EvictableEntry>,
+}
+
 crate::action_command! {
     /// List the GPU consumers that may be evicted to reclaim VRAM, best-candidate
     /// first. Realtime consumers (render targets, live audio) are never candidates,
@@ -25,9 +38,11 @@ crate::action_command! {
     name: "gpu/eviction-candidates",
     access: AiSafe,
     params: GpuEvictionCandidatesParams,
-    output: Vec<EvictableEntry>,
+    output: EvictionCandidates,
     run(this, _ctx, _p) => {
-        Ok(this.manager.eviction_registry.candidates())
+        Ok(EvictionCandidates {
+            candidates: this.manager.eviction_registry.candidates(),
+        })
     }
 }
 
@@ -68,10 +83,11 @@ mod tests {
         let cmd = GpuEvictionCandidates {
             manager: manager.clone(),
         };
-        let candidates = cmd
+        let out = cmd
             .run(&Ctx::default(), GpuEvictionCandidatesParams {})
             .await
             .unwrap();
+        let candidates = out.candidates;
         assert_eq!(candidates.len(), 1, "realtime must be excluded");
         assert_eq!(candidates[0].id, "candle:llama");
     }

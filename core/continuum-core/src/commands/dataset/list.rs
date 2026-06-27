@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use crate::modules::dataset::{DatasetService, ListDatasetsParams};
+use crate::modules::dataset::{DatasetListResult, DatasetService, ListDatasetsParams};
 use crate::sdk_codegen::CommandError;
 
 crate::action_command! {
@@ -13,7 +13,7 @@ crate::action_command! {
     name: "dataset/list",
     access: AiSafe,
     params: ListDatasetsParams,
-    output: serde_json::Value,
+    output: DatasetListResult,
     run(this, _ctx, p) => {
         this.service.list_datasets(&p).map_err(CommandError::Internal)
     }

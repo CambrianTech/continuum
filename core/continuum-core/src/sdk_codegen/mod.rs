@@ -269,10 +269,18 @@ impl CommandDescriptor {
     /// transitive ts-rs dependencies are collected as importable `TypeRef`s.
     pub fn of<C: CommandSpec>() -> Self {
         let cfg = Config::default();
-        let params_dep = Dependency::from_ty::<C::Params>(&cfg)
-            .expect("command Params must be a named TS type (struct/enum), not an inline primitive");
-        let result_dep = Dependency::from_ty::<C::Result>(&cfg)
-            .expect("command Result must be a named TS type (struct/enum), not an inline primitive");
+        let params_dep = Dependency::from_ty::<C::Params>(&cfg).unwrap_or_else(|| {
+            panic!(
+                "command '{}' Params must be a named TS type (struct/enum), not an inline primitive",
+                C::NAME
+            )
+        });
+        let result_dep = Dependency::from_ty::<C::Result>(&cfg).unwrap_or_else(|| {
+            panic!(
+                "command '{}' Result must be a named TS type (struct/enum), not an inline primitive",
+                C::NAME
+            )
+        });
         let params = TypeRef::from_dependency(&params_dep);
         let result = TypeRef::from_dependency(&result_dep);
 

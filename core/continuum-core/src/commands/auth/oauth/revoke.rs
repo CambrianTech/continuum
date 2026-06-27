@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use crate::modules::auth::ExternalWebviewAuthService;
+use crate::modules::auth::{ExternalWebviewAuthService, TokenRevoked};
 use crate::sdk_codegen::CommandError;
 
 use super::AuthProviderRef;
@@ -16,7 +16,7 @@ crate::action_command! {
     name: "auth/oauth/revoke",
     access: Privileged,
     params: AuthProviderRef,
-    output: serde_json::Value,
+    output: TokenRevoked,
     run(this, _ctx, p) => {
         this.service
             .revoke_tokens(&p.provider_id)

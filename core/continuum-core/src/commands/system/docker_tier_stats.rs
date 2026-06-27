@@ -3,6 +3,7 @@
 
 use std::sync::Arc;
 
+use crate::modules::docker_tier_pool::DockerTierStats;
 use crate::modules::system_resources::SystemResourceService;
 use crate::sdk_codegen::CommandError;
 
@@ -16,7 +17,7 @@ crate::action_command! {
     name: "system/docker-tier-stats",
     access: AiSafe,
     params: SystemQuery,
-    output: serde_json::Value,
+    output: DockerTierStats,
     run(this, _ctx, _p) => {
         this.service.docker_tier_stats().map_err(CommandError::Internal)
     }
@@ -48,9 +49,12 @@ mod tests {
             ))),
         };
         let out = cmd.run(&Ctx::default(), SystemQuery {}).await.unwrap();
-        assert!(out["capacityBytes"].is_number());
-        assert!(out["usedBytes"].is_number());
-        assert!(out["pressure"].is_number());
-        assert!(out["detected"].is_boolean());
+        // The full four-field shape is guaranteed by the type; on a Docker-less host
+        // (CI) the probe reports detected=false with zeroed capacity/usage.
+        if !out.detected {
+            assert_eq!(out.capacity_bytes, 0);
+            assert_eq!(out.used_bytes, 0);
+            assert_eq!(out.pressure, 0.0);
+        }
     }
 }

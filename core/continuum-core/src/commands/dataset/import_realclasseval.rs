@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use crate::modules::dataset::{DatasetService, ImportRealClassEvalParams};
+use crate::modules::dataset::{DatasetManifest, DatasetService, ImportRealClassEvalParams};
 use crate::sdk_codegen::CommandError;
 
 crate::action_command! {
@@ -15,7 +15,7 @@ crate::action_command! {
     name: "dataset/import-realclasseval",
     access: Privileged,
     params: ImportRealClassEvalParams,
-    output: serde_json::Value,
+    output: DatasetManifest,
     run(this, _ctx, p) => {
         this.service.import_realclasseval(&p).map_err(CommandError::Internal)
     }

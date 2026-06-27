@@ -16,6 +16,18 @@ use crate::events::{list_event_classes, ResolvedEventClassConfig};
 )]
 pub struct ListEventClassesParams {}
 
+/// Result of `events/list-classes` — every declared event class with its resolved
+/// config. A named wrapper so the wire type is a struct, not a bare `Array<T>`.
+#[derive(Debug, Clone, Serialize, TS)]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/events/EventClassList.ts"
+)]
+pub struct EventClassList {
+    /// Every declared event class's resolved transport-routing config.
+    pub classes: Vec<ResolvedEventClassConfig>,
+}
+
 crate::action_command! {
     /// Snapshot every declared event class with its resolved transport-routing
     /// config — the full wire-contract registry, for introspection and client-side
@@ -24,9 +36,11 @@ crate::action_command! {
     name: "events/list-classes",
     access: AiSafe,
     params: ListEventClassesParams,
-    output: Vec<ResolvedEventClassConfig>,
+    output: EventClassList,
     run(_this, _ctx, _p) => {
-        Ok(list_event_classes())
+        Ok(EventClassList {
+            classes: list_event_classes(),
+        })
     }
 }
 
@@ -68,6 +82,6 @@ mod tests {
             .run(&Ctx::default(), ListEventClassesParams {})
             .await
             .unwrap();
-        assert!(out.iter().any(|c| c.name == name));
+        assert!(out.classes.iter().any(|c| c.name == name));
     }
 }

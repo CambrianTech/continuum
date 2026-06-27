@@ -7,7 +7,7 @@
 
 use std::sync::Arc;
 
-use crate::modules::auth::{ExternalWebviewAuthService, OAuthClientConfig};
+use crate::modules::auth::{AuthRegistered, ExternalWebviewAuthService, OAuthClientConfig};
 
 crate::action_command! {
     /// Register a new OAuth provider configuration at runtime so it can be used by
@@ -17,10 +17,10 @@ crate::action_command! {
     name: "auth/oauth/register",
     access: Privileged,
     params: OAuthClientConfig,
-    output: serde_json::Value,
+    output: AuthRegistered,
     run(this, _ctx, p) => {
         this.service.register_provider(p).await;
-        Ok(serde_json::json!({ "registered": true }))
+        Ok(AuthRegistered { registered: true })
     }
 }
 
@@ -64,13 +64,12 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(out["registered"], true);
+        assert!(out.registered);
         let providers = service.list_providers().await;
-        let names: Vec<&str> = providers["providers"]
-            .as_array()
-            .unwrap()
+        let names: Vec<&str> = providers
+            .providers
             .iter()
-            .filter_map(|p| p["provider_id"].as_str())
+            .map(|p| p.provider_id.as_str())
             .collect();
         assert!(names.contains(&"acme"));
     }

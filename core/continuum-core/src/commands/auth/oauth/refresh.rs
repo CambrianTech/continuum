@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use crate::modules::auth::ExternalWebviewAuthService;
+use crate::modules::auth::{ExternalWebviewAuthService, TokenRefreshed};
 use crate::sdk_codegen::CommandError;
 
 use super::AuthProviderRef;
@@ -15,7 +15,7 @@ crate::action_command! {
     name: "auth/oauth/refresh",
     access: Privileged,
     params: AuthProviderRef,
-    output: serde_json::Value,
+    output: TokenRefreshed,
     run(this, _ctx, p) => {
         this.service
             .refresh_token(&p.provider_id)

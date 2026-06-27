@@ -4,7 +4,7 @@
 
 use std::sync::Arc;
 
-use crate::modules::auth::ExternalWebviewAuthService;
+use crate::modules::auth::{AuthFlowStarted, ExternalWebviewAuthService};
 use crate::sdk_codegen::CommandError;
 
 use super::AuthProviderRef;
@@ -18,7 +18,7 @@ crate::action_command! {
     name: "auth/oauth/start",
     access: Privileged,
     params: AuthProviderRef,
-    output: serde_json::Value,
+    output: AuthFlowStarted,
     run(this, _ctx, p) => {
         this.service
             .start_flow(&p.provider_id)

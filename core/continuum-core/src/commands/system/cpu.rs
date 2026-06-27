@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use crate::modules::system_resources::SystemResourceService;
 use crate::sdk_codegen::CommandError;
+use crate::system_resources::CpuStats;
 
 use super::SystemQuery;
 
@@ -14,7 +15,7 @@ crate::action_command! {
     name: "system/cpu",
     access: AiSafe,
     params: SystemQuery,
-    output: serde_json::Value,
+    output: CpuStats,
     run(this, _ctx, _p) => {
         this.service.cpu().map_err(CommandError::Internal)
     }
@@ -47,6 +48,6 @@ mod tests {
         };
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
         let out = cmd.run(&Ctx::default(), SystemQuery {}).await.unwrap();
-        assert!(out["physical_cores"].as_u64().unwrap() >= 1);
+        assert!(out.physical_cores >= 1);
     }
 }

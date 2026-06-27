@@ -7,7 +7,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use crate::modules::auth::ExternalWebviewAuthService;
+use crate::modules::auth::{ExternalWebviewAuthService, ProviderList};
 
 /// `auth/oauth/providers` takes no input.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, TS, JsonSchema)]
@@ -22,7 +22,7 @@ crate::action_command! {
     name: "auth/oauth/providers",
     access: AiSafe,
     params: AuthProvidersParams,
-    output: serde_json::Value,
+    output: ProviderList,
     run(this, _ctx, _p) => {
         Ok(this.service.list_providers().await)
     }
@@ -55,6 +55,6 @@ mod tests {
             .run(&Ctx::default(), AuthProvidersParams {})
             .await
             .unwrap();
-        assert_eq!(out["providers"].as_array().map(|a| a.len()), Some(0));
+        assert_eq!(out.providers.len(), 0);
     }
 }

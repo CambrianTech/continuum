@@ -30,7 +30,7 @@ use rand::RngCore;
 use reqwest::Client;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::Value;
 use sha2::{Digest, Sha256};
 use ts_rs::TS;
 use std::any::Any;
@@ -75,6 +75,108 @@ impl OAuthClientConfig {
     fn redirect_uri(&self) -> String {
         format!("http://localhost:{}/oauth/callback", self.redirect_port)
     }
+}
+
+/// Result of `auth/oauth/start` — the browser flow was initiated and the localhost
+/// redirect-catcher is listening. No secrets: just where the flow is happening.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../../protocol/typescript/auth/AuthFlowStarted.ts")]
+pub struct AuthFlowStarted {
+    /// Provider whose flow was started.
+    pub provider_id: String,
+    /// Authorization URL the system browser was opened to.
+    pub auth_url: String,
+    /// The localhost redirect URI the catcher is bound to.
+    pub redirect_uri: String,
+    /// The actual port the catcher bound (may differ from the configured port).
+    #[ts(type = "number")]
+    pub redirect_port: u16,
+    /// Opaque CSRF state echoed back on the redirect.
+    pub state: String,
+    /// Human-readable status line.
+    pub message: String,
+}
+
+/// Result of `auth/oauth/status` — token state for one provider. No secrets: presence
+/// and expiry only. The token-bearing fields are absent when unauthenticated.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../../protocol/typescript/auth/TokenStatus.ts")]
+pub struct TokenStatus {
+    /// Provider this status is for.
+    pub provider_id: String,
+    /// Whether a token set is stored for this provider.
+    pub authenticated: bool,
+    /// Whether the stored access token is expired. Absent when unauthenticated.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub expired: Option<bool>,
+    /// Whether a refresh_token is stored. Absent when unauthenticated.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub has_refresh_token: Option<bool>,
+    /// Unix timestamp (seconds) of access-token expiry (`0` = unknown). Absent when
+    /// unauthenticated.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    #[ts(type = "number")]
+    pub expires_at: Option<u64>,
+    /// Granted scope string, if the provider returned one. Absent when unauthenticated.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub scope: Option<String>,
+}
+
+/// Public summary of one registered provider (no client secret, no tokens).
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../../protocol/typescript/auth/ProviderSummary.ts")]
+pub struct ProviderSummary {
+    /// Unique provider identifier.
+    pub provider_id: String,
+    /// Authorization endpoint URL.
+    pub auth_url: String,
+    /// Space-separated OAuth scopes.
+    pub scopes: String,
+    /// localhost redirect-catcher port.
+    #[ts(type = "number")]
+    pub redirect_port: u16,
+    /// Whether a token revocation endpoint is configured for this provider.
+    pub has_revoke_url: bool,
+}
+
+/// Result of `auth/oauth/providers` — every registered provider's public config.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../../protocol/typescript/auth/ProviderList.ts")]
+pub struct ProviderList {
+    /// Registered providers, public config only.
+    pub providers: Vec<ProviderSummary>,
+}
+
+/// Result of `auth/oauth/register` — the provider config was registered.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../../protocol/typescript/auth/AuthRegistered.ts")]
+pub struct AuthRegistered {
+    /// Always `true` on success.
+    pub registered: bool,
+}
+
+/// Result of `auth/oauth/refresh` — the access token was refreshed and re-persisted.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../../protocol/typescript/auth/TokenRefreshed.ts")]
+pub struct TokenRefreshed {
+    /// Provider whose token was refreshed.
+    pub provider_id: String,
+    /// Always `true` on success.
+    pub refreshed: bool,
+}
+
+/// Result of `auth/oauth/revoke` — tokens were revoked and deleted from config.env.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../../protocol/typescript/auth/TokenRevoked.ts")]
+pub struct TokenRevoked {
+    /// Provider whose tokens were revoked.
+    pub provider_id: String,
+    /// Always `true` on success (idempotent: revoking with no tokens is still `true`).
+    pub revoked: bool,
 }
 
 // ============================================================================
@@ -220,7 +322,7 @@ impl ExternalWebviewAuthService {
     /// Opens the system browser and spins up a temporary redirect-catcher.
     /// Returns the authorization URL and metadata; the token exchange happens
     /// asynchronously when the browser redirects back.
-    pub async fn start_flow(&self, provider_id: &str) -> Result<Value, String> {
+    pub async fn start_flow(&self, provider_id: &str) -> Result<AuthFlowStarted, String> {
         let config = {
             let providers = self.providers.read().await;
             providers
@@ -271,58 +373,59 @@ impl ExternalWebviewAuthService {
 
         open_browser(&auth_url);
 
-        Ok(json!({
-            "provider_id": provider_id,
-            "auth_url": auth_url,
-            "redirect_uri": config.redirect_uri(),
-            "redirect_port": actual_port,
-            "state": state,
-            "message": format!(
-                "Browser opened for {} authentication. Listening on localhost:{} for callback.",
-                provider_id, actual_port
+        Ok(AuthFlowStarted {
+            provider_id: provider_id.to_string(),
+            auth_url,
+            redirect_uri: config.redirect_uri(),
+            redirect_port: actual_port,
+            state,
+            message: format!(
+                "Browser opened for {provider_id} authentication. Listening on localhost:{actual_port} for callback."
             ),
-        }))
+        })
     }
 
     /// Return the current token status for `provider_id`.
-    pub fn token_status(&self, provider_id: &str) -> Value {
+    pub fn token_status(&self, provider_id: &str) -> TokenStatus {
         match self.tokens.get(provider_id) {
-            None => json!({
-                "provider_id": provider_id,
-                "authenticated": false,
-            }),
-            Some(ts) => json!({
-                "provider_id": provider_id,
-                "authenticated": true,
-                "expired": ts.is_expired(),
-                "has_refresh_token": ts.refresh_token.is_some(),
-                "expires_at": ts.expires_at,
-                "scope": ts.scope,
-            }),
+            None => TokenStatus {
+                provider_id: provider_id.to_string(),
+                authenticated: false,
+                expired: None,
+                has_refresh_token: None,
+                expires_at: None,
+                scope: None,
+            },
+            Some(ts) => TokenStatus {
+                provider_id: provider_id.to_string(),
+                authenticated: true,
+                expired: Some(ts.is_expired()),
+                has_refresh_token: Some(ts.refresh_token.is_some()),
+                expires_at: Some(ts.expires_at),
+                scope: ts.scope.clone(),
+            },
         }
     }
 
     /// List all registered providers as a `{ providers: [...] }` summary. Public
     /// config only (auth_url, scopes, redirect_port) — no client secrets or tokens.
-    pub async fn list_providers(&self) -> Value {
+    pub async fn list_providers(&self) -> ProviderList {
         let providers = self.providers.read().await;
-        let list: Vec<Value> = providers
+        let list: Vec<ProviderSummary> = providers
             .values()
-            .map(|c| {
-                json!({
-                    "provider_id": c.provider_id,
-                    "auth_url": c.auth_url,
-                    "scopes": c.scopes,
-                    "redirect_port": c.redirect_port,
-                    "has_revoke_url": c.revoke_url.is_some(),
-                })
+            .map(|c| ProviderSummary {
+                provider_id: c.provider_id.clone(),
+                auth_url: c.auth_url.clone(),
+                scopes: c.scopes.clone(),
+                redirect_port: c.redirect_port,
+                has_revoke_url: c.revoke_url.is_some(),
             })
             .collect();
-        json!({ "providers": list })
+        ProviderList { providers: list }
     }
 
     /// Refresh the access token for `provider_id` using its stored refresh_token.
-    pub async fn refresh_token(&self, provider_id: &str) -> Result<Value, String> {
+    pub async fn refresh_token(&self, provider_id: &str) -> Result<TokenRefreshed, String> {
         let config = {
             let providers = self.providers.read().await;
             providers
@@ -375,12 +478,15 @@ impl ExternalWebviewAuthService {
         persist_tokens(provider_id, &token_set)?;
         self.tokens.insert(provider_id.to_string(), token_set);
 
-        Ok(json!({ "provider_id": provider_id, "refreshed": true }))
+        Ok(TokenRefreshed {
+            provider_id: provider_id.to_string(),
+            refreshed: true,
+        })
     }
 
     /// Revoke tokens server-side (if a revocation endpoint is configured) and
     /// delete them from config.env and the in-memory cache.
-    pub async fn revoke_tokens(&self, provider_id: &str) -> Result<Value, String> {
+    pub async fn revoke_tokens(&self, provider_id: &str) -> Result<TokenRevoked, String> {
         let config = {
             let providers = self.providers.read().await;
             providers
@@ -404,7 +510,10 @@ impl ExternalWebviewAuthService {
         self.tokens.remove(provider_id);
         delete_tokens_from_config(provider_id)?;
 
-        Ok(json!({ "provider_id": provider_id, "revoked": true }))
+        Ok(TokenRevoked {
+            provider_id: provider_id.to_string(),
+            revoked: true,
+        })
     }
 
     /// Load any tokens previously persisted to config.env into the in-memory cache.
@@ -940,7 +1049,7 @@ mod tests {
     async fn test_status_unauthenticated() {
         let svc = ExternalWebviewAuthService::new();
         let status = svc.token_status("github");
-        assert_eq!(status["authenticated"], false);
+        assert!(!status.authenticated);
     }
 
     #[test]

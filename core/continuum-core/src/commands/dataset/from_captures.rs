@@ -4,7 +4,7 @@
 
 use std::sync::Arc;
 
-use crate::modules::dataset::{DatasetService, FromCapturesParams};
+use crate::modules::dataset::{DatasetManifest, DatasetService, FromCapturesParams};
 use crate::sdk_codegen::CommandError;
 
 crate::action_command! {
@@ -17,7 +17,7 @@ crate::action_command! {
     name: "dataset/from-captures",
     access: Privileged,
     params: FromCapturesParams,
-    output: serde_json::Value,
+    output: DatasetManifest,
     run(this, _ctx, p) => {
         this.service.from_captures(&p).map_err(CommandError::Internal)
     }

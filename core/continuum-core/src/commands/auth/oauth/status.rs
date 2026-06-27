@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use crate::modules::auth::ExternalWebviewAuthService;
+use crate::modules::auth::{ExternalWebviewAuthService, TokenStatus};
 
 use super::AuthProviderRef;
 
@@ -14,7 +14,7 @@ crate::action_command! {
     name: "auth/oauth/status",
     access: AiSafe,
     params: AuthProviderRef,
-    output: serde_json::Value,
+    output: TokenStatus,
     run(this, _ctx, p) => {
         Ok(this.service.token_status(&p.provider_id))
     }
@@ -52,6 +52,7 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(out["authenticated"], false);
+        assert!(!out.authenticated);
+        assert_eq!(out.expired, None);
     }
 }

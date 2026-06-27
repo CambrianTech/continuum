@@ -19,17 +19,34 @@ pub struct GetEventClassParams {
     pub name: String,
 }
 
+/// Result of `events/get-class` — the resolved config when the class was declared,
+/// absent otherwise (preserving the legacy "no class → use default behavior"
+/// contract). A named wrapper so the wire type is a struct, not a bare `T | null`.
+#[derive(Debug, Clone, Serialize, TS)]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/events/EventClassLookup.ts"
+)]
+pub struct EventClassLookup {
+    /// The resolved config, or absent when the class was never declared.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub config: Option<ResolvedEventClassConfig>,
+}
+
 crate::action_command! {
     /// Look up the resolved config for a declared event class — its broadcast
-    /// policy, channel strategy, and schema version. Returns null when the class
-    /// was never declared.
+    /// policy, channel strategy, and schema version. The `config` field is absent
+    /// when the class was never declared.
     pub struct GetEventClass;
     name: "events/get-class",
     access: AiSafe,
     params: GetEventClassParams,
-    output: Option<ResolvedEventClassConfig>,
+    output: EventClassLookup,
     run(_this, _ctx, p) => {
-        Ok(lookup_event_class(&p.name))
+        Ok(EventClassLookup {
+            config: lookup_event_class(&p.name),
+        })
     }
 }
 
@@ -63,6 +80,6 @@ mod tests {
             )
             .await
             .unwrap();
-        assert!(out.is_none());
+        assert!(out.config.is_none());
     }
 }

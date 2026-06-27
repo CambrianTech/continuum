@@ -9,6 +9,7 @@ use ts_rs::TS;
 
 use crate::modules::system_resources::SystemResourceService;
 use crate::sdk_codegen::CommandError;
+use crate::system_resources::SystemResourceSnapshot;
 
 fn default_top_n() -> u32 {
     10
@@ -45,7 +46,7 @@ crate::action_command! {
     name: "system/resources",
     access: AiSafe,
     params: ResourcesParams,
-    output: serde_json::Value,
+    output: SystemResourceSnapshot,
     run(this, _ctx, p) => {
         this.service
             .resources(p.include_processes, p.top_n as usize)
@@ -85,8 +86,8 @@ mod tests {
             .run(&Ctx::default(), ResourcesParams::default())
             .await
             .unwrap();
-        assert!(out["cpu"]["physical_cores"].as_u64().unwrap() >= 1);
-        assert!(out["processes"].is_null(), "processes null by default");
+        assert!(out.cpu.physical_cores >= 1);
+        assert!(out.processes.is_none(), "processes omitted by default");
     }
 
     // what this catches: opting in materializes the process listings.
@@ -103,6 +104,6 @@ mod tests {
             )
             .await
             .unwrap();
-        assert!(out["processes"]["top_by_cpu"].is_array());
+        assert!(out.processes.is_some(), "opt-in materializes the listing");
     }
 }
