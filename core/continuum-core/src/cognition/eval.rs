@@ -51,6 +51,112 @@ const DEFAULT_MAX_ACTS: u32 = 8;
 /// only its constancy matters.
 const EVAL_EPOCH_MS: u64 = 1_700_000_000_000;
 
+/// Bounded context window for the EPHEMERAL gene-measurement lane. This is NOT the
+/// live-serving window — that comes host-fit from the serving plan (#46/#50) and
+/// must never handicap a capable model. This is a THROWAWAY second lane that has to
+/// coexist with the LIVING persona's lane while we score a copy (#59), so its KV is
+/// deliberately small: the coder-eval prompts are short and the deliberation faculty
+/// already bounds its offered tools to fit whatever window the fork carries. Always
+/// capped by the base model's own trained ceiling. Follow-up: pre-flight
+/// `plan_serving` against the live budget (thread the daemon's plan watch into this
+/// command, the way `serving/plan` does) so this lane's window is host-fit too,
+/// rather than a constant.
+const EVAL_LANE_CONTEXT: u32 = 16_384;
+
+/// Base port the ephemeral eval lane scans up from for a free one. Deliberately
+/// ABOVE the default serving port (58057) so the scan never lands on — or has to
+/// step over — the living persona's lane.
+const EVAL_LANE_BASE_PORT: u16 = 58_200;
+
+/// Stand up an EPHEMERAL serving lane on the gene's OWN forged base (with the gene
+/// loadable via `--lora`) plus an adapter pointed at it, so the genome A/B is scored
+/// on the base the gene was trained against — never the larger model the living
+/// persona happens to be served on. The living persona's lane is untouched (#59);
+/// the returned lane kills its server on drop. Fails loud (never a substitute base,
+/// never a silent skip) at every missing precondition: gene not in the manifest,
+/// base not in the registry, or the lane not coming up.
+async fn spawn_gene_eval_lane(
+    gene: &EvalGene,
+) -> Result<
+    (
+        crate::inference::llama_server::EphemeralServingLane,
+        std::sync::Arc<dyn crate::ai::adapter::AIProviderAdapter>,
+        u32,
+    ),
+    CommandError,
+> {
+    use crate::ai::adapter::AIProviderAdapter; // brings `initialize` into scope
+    use crate::inference::llama_server::{
+        AdapterEntry, EphemeralServingLane, ServingTarget, PROVIDER_ID,
+    };
+
+    // 1. The gene declares its forged base in the trained-adapter manifest.
+    let manifest = crate::forge::adapter_manifest::load()
+        .map_err(|e| CommandError::Internal(format!("trained-adapter manifest unreadable: {e}")))?;
+    let entry = manifest
+        .iter()
+        .find(|a| {
+            a.alias == gene.name
+                || (!gene.path.is_empty() && a.path.to_string_lossy() == gene.path)
+        })
+        .ok_or_else(|| {
+            CommandError::NotFound(format!(
+                "gene '{}' is not in the trained-adapter manifest — train and register it before measuring its lift",
+                gene.name
+            ))
+        })?;
+    let base_id = entry.base_model_id.clone();
+
+    // 2. Resolve that base from the model registry — fail loud, never serve a
+    //    substitute (a lift measured on the wrong base is a lie).
+    let base = crate::model_registry::try_global()
+        .and_then(|r| r.model(&base_id).cloned())
+        .ok_or_else(|| {
+            CommandError::NotFound(format!(
+                "gene '{}' targets base model '{base_id}', which is not in the model registry — cannot stand up its measurement lane",
+                gene.name
+            ))
+        })?;
+
+    // 3. Bounded, model-capped served window for the throwaway lane (see
+    //    EVAL_LANE_CONTEXT). One lane: a single measurement stream, no batching.
+    let served_ctx = base.context_window.min(EVAL_LANE_CONTEXT);
+
+    // 4. Bring the lane up: forged base + the gene loaded via `--lora` (loadable;
+    //    the per-request `lora` field decides per turn whether it actually pages in,
+    //    which is exactly the base-vs-gene A/B below).
+    let target = ServingTarget {
+        model: base.clone(),
+        context_window: served_ctx,
+        lanes: 1,
+        adapters: vec![AdapterEntry {
+            alias: gene.name.clone(),
+            path: entry.path.clone(),
+        }],
+    };
+    let lane = EphemeralServingLane::spawn(&target, EVAL_LANE_BASE_PORT)
+        .await
+        .map_err(|e| {
+            CommandError::Internal(format!(
+                "could not bring up the ephemeral eval lane for gene '{}' on base '{base_id}': {e}",
+                gene.name
+            ))
+        })?;
+
+    // 5. Point a fresh adapter at the lane (NOT the global serving root — this
+    //    override is what keeps the measurement off the living persona's lane).
+    let mut adapter =
+        crate::ai::openai_adapter::OpenAICompatibleAdapter::from_registry(PROVIDER_ID)
+            .with_runtime_base_url(lane.root().to_string())
+            .with_default_model(base.id.clone());
+    adapter
+        .initialize()
+        .await
+        .map_err(|e| CommandError::Internal(format!("eval-lane adapter failed to initialize: {e}")))?;
+
+    Ok((lane, std::sync::Arc::new(adapter), served_ctx))
+}
+
 /// One eval task. Both the JSONL rows and inline `tasks` deserialize into this;
 /// every field is optional so an authoring typo degrades to a benign empty rather
 /// than failing the whole run. A task is TEST-GRADED when it carries `test`, else
@@ -267,11 +373,31 @@ impl ActionCommand for CognitionEval {
         // hers. "Nurture even through training": measure a copy, never degrade the
         // being. See PersonaWorkspaceRegistry::fork_eval_cycle +
         // [[design-the-persona-as-a-being]].
-        let Some(cycle) = crate::cognition::persona_workspace::global().fork_eval_cycle(&persona_uuid)
-        else {
-            return Err(CommandError::NotFound(format!(
-                "no workspace template for persona {persona_uuid} — its mind was not assembled at spawn (register_from_cfg), so eval cannot fork a measurement copy without measuring her live mind"
-            )));
+        // When a gene is under test it targets its OWN forged base — not the
+        // (often larger) model the living persona is currently served on. Forking
+        // onto her live lane would score the gene on the WRONG base, so for a gene
+        // A/B we stand up an EphemeralServingLane on the gene's forged base (gene
+        // loadable via `--lora`) and fork the copy onto THAT lane. Her lane is never
+        // touched (#59). The lane is kept alive in `_eval_lane` for the whole run and
+        // dropped — its server killed — when `run` returns. No gene → fork onto her
+        // live lane as before (a plain coder number on whatever she's served on).
+        let mut _eval_lane: Option<crate::inference::llama_server::EphemeralServingLane> = None;
+        let cycle = match &p.gene {
+            Some(gene) => {
+                let (lane, adapter, served_ctx) = spawn_gene_eval_lane(gene).await?;
+                let cycle = crate::cognition::persona_workspace::global()
+                    .fork_eval_cycle_with_adapter(&persona_uuid, adapter, served_ctx)
+                    .ok_or_else(|| CommandError::NotFound(format!(
+                        "no workspace template for persona {persona_uuid} — its mind was not assembled at spawn (register_from_cfg), so eval cannot fork a measurement copy"
+                    )))?;
+                _eval_lane = Some(lane);
+                cycle
+            }
+            None => crate::cognition::persona_workspace::global()
+                .fork_eval_cycle(&persona_uuid)
+                .ok_or_else(|| CommandError::NotFound(format!(
+                    "no workspace template for persona {persona_uuid} — its mind was not assembled at spawn (register_from_cfg), so eval cannot fork a measurement copy without measuring her live mind"
+                )))?,
         };
 
         let max_acts = p.max_acts.unwrap_or(DEFAULT_MAX_ACTS) as usize;
