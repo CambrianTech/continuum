@@ -1,0 +1,449 @@
+//! `genome/teach` — the teacher-episode generator: grow the corpus that teaches
+//! the self-verify-and-correct ENGINEERING REFLEX, not raw coding skill.
+//!
+//! ## Why this exists (cold-start)
+//!
+//! The genome loop closes mechanically (recorder → dataset → `mlx_lm.lora` → GGUF
+//! → `:58057` page-in → `cognition/eval` A/B) but produced **inert** genes: the
+//! lever was never raw skill, it's the reflex of *writing code → reading the real
+//! compiler/test error → fixing → re-running → answering*. You cannot distill a
+//! reflex that isn't in the data — of one persona's 1761 captured turns only 5 ever
+//! used a tool. So we BOOTSTRAP it: a teacher model writes a solution, the gym
+//! grader (the SAME `test_grade` the A/B evaluator uses) actually compiles and runs
+//! it, the REAL error feeds back, and the teacher fixes — looping to green. The full
+//! validated write→error→fix→pass trajectory becomes a multi-turn ShareGPT example.
+//! Once the reflex exists in the genome, the persona's own successful corrections
+//! start appearing in captures and the loop goes self-feeding.
+//!
+//! ## The grader guarantees corpus quality; the teacher only affects YIELD
+//!
+//! Every example that ships is test-validated: it COMPILES and its asserts PASS
+//! (exit 0). A weak teacher solves fewer tasks (lower yield) but never injects an
+//! incorrect "lesson" — `test_grade` is the gate. This is the sanctioned way the
+//! genome loop fixes behavior: curate the LEARNING corpus by an objective scorer
+//! ([[no-hardcoded-heuristics-to-steer-cognition]] forbids puppeting LIVE output;
+//! curating training data by a validated scorer is explicitly allowed). The teacher
+//! defaults to the locally-served model so this RUNS with no external dep; point
+//! `teacher_model` at a stronger peer/gateway model for higher yield.
+//!
+//! ## Non-disruptive
+//!
+//! This generates a dataset on disk. It does NOT touch the living `:58057` lane's
+//! served genome, fork a persona, or train anything — it produces the corpus a
+//! later `genome/job-create` / native `mlx_lm.lora` run consumes. Procedure is never
+//! the artifact: the reflex is LEARNED from these trajectories, never hardcoded as a
+//! run-N-times loop in a class or prompt.
+//!
+//! Access: `Privileged` — it spends real inference compute and executes
+//! model-generated code through the grader, same tier as `cognition/eval`.
+
+use async_trait::async_trait;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
+use ts_rs::TS;
+
+use crate::ai::adapter::InferenceDevice;
+use crate::ai::types::TextGenerationResponse;
+use crate::ai::{ChatMessage, MessageContent, TextGenerationRequest};
+use crate::cognition::eval::EvalTask;
+use crate::cognition::gym_grader::test_grade;
+use crate::cognition::inference_session::resolve_model;
+use crate::inference::llama_server::PROVIDER_ID;
+use crate::modules::ai_provider::global_registry;
+use crate::modules::dataset::DatasetService;
+use crate::sdk_codegen::{AccessLevel, ActionCommand, CommandError, Ctx};
+
+/// Default write→fix→pass task set (one `EvalTask` JSONL row each — needs `test`).
+/// Authoring a harder battery = add lines, no recompile.
+const DEFAULT_TEACH_SET: &str = "docs/genome/coder-write-eval.jsonl";
+
+/// Default dataset name (subdirectory under the datasets root).
+const DEFAULT_DATASET_NAME: &str = "coder-reflex-teacher";
+
+/// How many fix attempts a single task gets before it's dropped as unsolved, when
+/// the caller doesn't set `max_fix_iters`. The first generation + this many fixes.
+const DEFAULT_MAX_FIX_ITERS: u32 = 4;
+
+/// Teacher decoding temperature default — low, because we want correct code, and a
+/// fix turn should converge on the error, not wander.
+const DEFAULT_TEMPERATURE: f32 = 0.2;
+
+/// The teacher's standing instruction — frames it as an engineer who reads errors
+/// and returns a complete corrected solution. This is the BEHAVIOR the trajectory
+/// teaches, captured once as the system turn of every example.
+const TEACHER_SYSTEM: &str = "You are an expert Rust engineer. Write correct, idiomatic Rust that \
+    COMPILES and passes its tests. Return ONLY the item(s) the task asks for (functions/types) in a \
+    single ```rust code block — a separate harness calls them, so do not write `fn main`. When you \
+    are shown a compiler or test error, read it carefully and return the COMPLETE corrected \
+    solution in a ```rust block.";
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
+#[ts(export, export_to = "../../../protocol/typescript/genome/GenomeTeachParams.ts")]
+#[serde(rename_all = "camelCase")]
+pub struct GenomeTeachParams {
+    /// Inline tasks. When set, takes precedence over `teach_set`. Each task SHOULD
+    /// carry a `test` — only test-validated trajectories become corpus.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub tasks: Option<Vec<EvalTask>>,
+    /// Path to a JSONL task set (one `EvalTask` per line). Defaults to the committed
+    /// `docs/genome/coder-write-eval.jsonl` when neither this nor `tasks` is given.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub teach_set: Option<String>,
+    /// Model that writes + fixes. Omit to use the locally-served model (runs with no
+    /// external dep); point at a stronger peer/gateway model for higher yield.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub teacher_model: Option<String>,
+    /// Max fix attempts per task before it's dropped as unsolved. Default 4.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional, type = "number")]
+    pub max_fix_iters: Option<u32>,
+    /// Teacher decoding temperature. Default 0.2 (we want correct, convergent code).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional, type = "number")]
+    pub temperature: Option<f32>,
+    /// Dataset name (subdirectory under the datasets root). Default
+    /// `coder-reflex-teacher`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub name: Option<String>,
+    /// Override the datasets root (default `~/.continuum/datasets`). The dataset is
+    /// written to `<root>/<name>/{train,eval}.jsonl` + `manifest.json`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub output_dir: Option<String>,
+    /// Fraction of validated examples placed in the train split. Default 0.8.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional, type = "number")]
+    pub split_ratio: Option<f64>,
+}
+
+/// Per-task outcome — so a low yield is diagnosable (which tasks the teacher never
+/// got to green, and why), not a silent shortfall.
+#[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
+#[ts(export, export_to = "../../../protocol/typescript/genome/GenomeTeachTaskOutcome.ts")]
+#[serde(rename_all = "camelCase")]
+pub struct GenomeTeachTaskOutcome {
+    /// The task id (echoed for traceability).
+    pub id: String,
+    /// True iff the teacher reached a test-passing solution within the fix budget.
+    pub solved: bool,
+    /// How many generations it took (1 = first-try; >1 = needed self-correction).
+    #[ts(type = "number")]
+    pub attempts: u32,
+    /// On failure, the last real grader message (compile error / panic / timeout).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub last_error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
+#[ts(export, export_to = "../../../protocol/typescript/genome/GenomeTeachResult.ts")]
+#[serde(rename_all = "camelCase")]
+pub struct GenomeTeachResult {
+    /// The dataset name written.
+    pub dataset: String,
+    /// The teacher model used (resolved, so the trend row is attributable).
+    pub teacher_model: String,
+    /// Absolute path to the dataset directory.
+    pub dataset_dir: String,
+    /// Total tasks attempted.
+    #[ts(type = "number")]
+    pub tasks_total: usize,
+    /// Tasks the teacher drove to a test-passing solution (became corpus).
+    #[ts(type = "number")]
+    pub tasks_solved: usize,
+    /// Tasks dropped (no `test` to validate, or never reached green in budget).
+    #[ts(type = "number")]
+    pub tasks_dropped: usize,
+    /// Of the solved tasks, how many needed at least one self-correction — the
+    /// reflex examples (the whole point), distinct from first-try passes.
+    #[ts(type = "number")]
+    pub trajectories_with_correction: usize,
+    /// Validated examples written (== tasks_solved).
+    #[ts(type = "number")]
+    pub examples: usize,
+    /// Examples in the train split.
+    #[ts(type = "number")]
+    pub train_examples: usize,
+    /// Examples in the eval split.
+    #[ts(type = "number")]
+    pub eval_examples: usize,
+    /// Per-task outcomes, so a low yield names which tasks failed and why.
+    pub outcomes: Vec<GenomeTeachTaskOutcome>,
+}
+
+/// Flatten a `ChatMessage`'s content to plain text for the ShareGPT row. We only
+/// ever build `Text` content here; `Parts` are joined defensively (text parts only).
+fn message_text(m: &ChatMessage) -> String {
+    match &m.content {
+        MessageContent::Text(s) => s.clone(),
+        MessageContent::Parts(parts) => parts
+            .iter()
+            .filter_map(|p| match p {
+                crate::ai::types::ContentPart::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
+    }
+}
+
+/// Convert a validated trajectory (the full write→error→fix→pass turn sequence) into
+/// the ShareGPT `{"messages":[{role,content},...]}` shape `dataset/*` + `mlx_lm.lora`
+/// consume. Order is preserved — that ordering IS the lesson (task → attempt →
+/// real error → correction → passing answer).
+fn build_sharegpt(messages: &[ChatMessage]) -> Value {
+    let msgs: Vec<Value> = messages
+        .iter()
+        .map(|m| json!({ "role": m.role, "content": message_text(m) }))
+        .collect();
+    json!({ "messages": msgs })
+}
+
+/// One teacher generation. Resolves the adapter the canonical way (no injected
+/// state — mirrors `cognition/generate_response`), acquiring + dropping the registry
+/// read guard within the call so it's never held across the multi-task loop.
+async fn teacher_generate(
+    model: &str,
+    messages: Vec<ChatMessage>,
+    temperature: f32,
+) -> Result<String, CommandError> {
+    let request = TextGenerationRequest {
+        messages,
+        system_prompt: None,
+        model: Some(model.to_string()),
+        provider: Some(PROVIDER_ID.to_string()),
+        temperature: Some(temperature),
+        // The model owns its length — no ceiling. A hard cap truncates code mid-fn.
+        max_tokens: None,
+        top_p: None,
+        top_k: None,
+        repeat_penalty: None,
+        stop_sequences: None,
+        tools: None,
+        tool_choice: None,
+        response_format: None,
+        active_adapters: None,
+        request_id: None,
+        user_id: None,
+        room_id: None,
+        purpose: Some("genome/teach".to_string()),
+        persona_id: None,
+    };
+
+    let registry_arc = global_registry();
+    let registry = registry_arc.read().await;
+    let (_provider_id, adapter) = registry
+        .select(Some(PROVIDER_ID), Some(model), InferenceDevice::Auto)
+        .ok_or_else(|| {
+            CommandError::Internal(format!("no adapter serves teacher model '{model}'"))
+        })?;
+    let response: TextGenerationResponse = adapter
+        .generate_text(request)
+        .await
+        .map_err(CommandError::Internal)?;
+    Ok(response.text)
+}
+
+/// Stateless — self-registers onto the ONE registry. Holds no module state; resolves
+/// inference + dataset packaging through their global/associated seams.
+#[derive(Default)]
+pub struct GenomeTeach;
+
+#[async_trait]
+impl ActionCommand for GenomeTeach {
+    const NAME: &'static str = "genome/teach";
+    const ACCESS: AccessLevel = AccessLevel::Privileged;
+    const DESCRIPTION: &'static str =
+        "Generate a test-VALIDATED write→error→fix→pass training corpus that teaches the \
+         self-verify-and-correct engineering reflex. A teacher model writes Rust, the gym grader \
+         compiles+runs it, the REAL error feeds back, and it loops to green — only test-passing \
+         trajectories become multi-turn ShareGPT examples. Non-disruptive: writes a dataset, never \
+         touches the live serving lane. Feed the dataset to genome/job-create to forge the gene.";
+    type Params = GenomeTeachParams;
+    type Output = GenomeTeachResult;
+
+    async fn run(&self, _ctx: &Ctx, p: GenomeTeachParams) -> Result<GenomeTeachResult, CommandError> {
+        // Task source: inline → teach_set JSONL → committed default. A missing
+        // explicit path is a loud error (don't silently teach an empty set).
+        let tasks: Vec<EvalTask> = if let Some(inline) = p.tasks {
+            inline
+        } else {
+            let path = p.teach_set.as_deref().unwrap_or(DEFAULT_TEACH_SET);
+            let text = std::fs::read_to_string(path).map_err(|e| {
+                CommandError::Invalid(format!("teach_set '{path}' could not be read: {e}"))
+            })?;
+            text.lines()
+                .map(str::trim)
+                .filter(|l| !l.is_empty())
+                .filter_map(|l| serde_json::from_str::<EvalTask>(l).ok())
+                .collect()
+        };
+        if tasks.is_empty() {
+            return Err(CommandError::Invalid(
+                "no tasks to teach (inline `tasks` empty and/or teach_set had no valid rows)".into(),
+            ));
+        }
+
+        // Resolve the teacher: explicit → the locally-served model. Fail loud if
+        // nothing serves (no silent skip).
+        let teacher_model = match p.teacher_model {
+            Some(m) => m,
+            None => resolve_model(None).await.map_err(|e| {
+                CommandError::Internal(format!("teacher model resolve failed: {e:?}"))
+            })?,
+        };
+        let temperature = p.temperature.unwrap_or(DEFAULT_TEMPERATURE);
+        let max_fix_iters = p.max_fix_iters.unwrap_or(DEFAULT_MAX_FIX_ITERS);
+
+        let mut examples: Vec<Value> = Vec::new();
+        let mut outcomes: Vec<GenomeTeachTaskOutcome> = Vec::new();
+        let mut with_correction = 0usize;
+
+        for task in &tasks {
+            // Only test-graded tasks can be validated → become corpus. A task with no
+            // `test` is dropped with a named reason, never silently passed.
+            let Some(test) = task.test.as_deref() else {
+                outcomes.push(GenomeTeachTaskOutcome {
+                    id: task.id.clone(),
+                    solved: false,
+                    attempts: 0,
+                    last_error: Some("task has no `test` — cannot validate, dropped".into()),
+                });
+                continue;
+            };
+            let lang = task.lang.as_deref().unwrap_or("rust");
+
+            // The trajectory we build turn-by-turn; on green it becomes the example.
+            let mut trajectory = vec![
+                ChatMessage::text("system", TEACHER_SYSTEM),
+                ChatMessage::text("user", &task.prompt),
+            ];
+
+            let mut attempts = 0u32;
+            let mut last_error: Option<String> = None;
+            let mut solved = false;
+
+            // First generation + up to `max_fix_iters` corrections.
+            for _ in 0..=max_fix_iters {
+                let answer = teacher_generate(&teacher_model, trajectory.clone(), temperature).await?;
+                attempts += 1;
+                trajectory.push(ChatMessage::text("assistant", &answer));
+
+                let (passed, grade) = test_grade(&answer, lang, test).await;
+                if passed {
+                    solved = true;
+                    break;
+                }
+                last_error = Some(grade.clone());
+                // Feed the REAL error back as the next turn — this is the reflex being
+                // taught: read the actual compiler/test output, then correct.
+                trajectory.push(ChatMessage::text(
+                    "user",
+                    format!(
+                        "Your solution failed:\n{grade}\n\nRead the error and return the COMPLETE \
+                         corrected solution in a ```rust block."
+                    ),
+                ));
+            }
+
+            if solved {
+                if attempts > 1 {
+                    with_correction += 1;
+                }
+                examples.push(build_sharegpt(&trajectory));
+            }
+            outcomes.push(GenomeTeachTaskOutcome {
+                id: task.id.clone(),
+                solved,
+                attempts,
+                last_error: if solved { None } else { last_error },
+            });
+        }
+
+        if examples.is_empty() {
+            return Err(CommandError::Internal(format!(
+                "teacher solved 0 of {} tasks within {max_fix_iters} fixes — no validated corpus to \
+                 write (try a stronger teacher_model or a higher max_fix_iters)",
+                tasks.len()
+            )));
+        }
+
+        // Package via the SAME writer the dataset/* verbs use — one train/eval/manifest
+        // shape, never a parallel emitter. Dataset goes to `<root>/<name>/`.
+        let name = p.name.unwrap_or_else(|| DEFAULT_DATASET_NAME.to_string());
+        let split_ratio = p.split_ratio.unwrap_or(0.8);
+        let root = match p.output_dir {
+            Some(d) => std::path::PathBuf::from(d),
+            None => {
+                let home = std::env::var("HOME").map_err(|_| {
+                    CommandError::Internal("HOME unset — cannot resolve datasets root".into())
+                })?;
+                std::path::PathBuf::from(home).join(".continuum").join("datasets")
+            }
+        };
+        let dataset_dir = root.join(&name);
+        let manifest =
+            DatasetService::split_and_write(&name, &dataset_dir, &examples, split_ratio, None)
+                .map_err(CommandError::Internal)?;
+
+        let tasks_solved = examples.len();
+        Ok(GenomeTeachResult {
+            dataset: name,
+            teacher_model,
+            dataset_dir: dataset_dir.display().to_string(),
+            tasks_total: tasks.len(),
+            tasks_solved,
+            tasks_dropped: tasks.len() - tasks_solved,
+            trajectories_with_correction: with_correction,
+            examples: tasks_solved,
+            train_examples: manifest.train_examples,
+            eval_examples: manifest.eval_examples,
+            outcomes,
+        })
+    }
+}
+
+// Stateless → self-register onto the ONE registry (descriptor + runtime object).
+crate::register_stateless_command!(GenomeTeach);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // what this catches: a validated trajectory flattens to the ShareGPT shape
+    // mlx_lm.lora/dataset consume — role+content per turn, ORDER preserved (the
+    // write→error→fix→pass ordering IS the lesson). Drift here silently corrupts
+    // every example the teacher emits.
+    #[test]
+    fn build_sharegpt_preserves_role_content_and_order() {
+        let traj = vec![
+            ChatMessage::text("system", "be an engineer"),
+            ChatMessage::text("user", "write add"),
+            ChatMessage::text("assistant", "```rust\nfn add(){}\n```"),
+            ChatMessage::text("user", "Your solution failed: compile error"),
+            ChatMessage::text("assistant", "```rust\nfn add(a:i32,b:i32)->i32{a+b}\n```"),
+        ];
+        let v = build_sharegpt(&traj);
+        let msgs = v["messages"].as_array().expect("messages array");
+        assert_eq!(msgs.len(), 5);
+        assert_eq!(msgs[0]["role"], "system");
+        assert_eq!(msgs[1]["content"], "write add");
+        assert_eq!(msgs[3]["role"], "user");
+        assert_eq!(msgs[4]["role"], "assistant");
+        assert!(msgs[4]["content"].as_str().unwrap().contains("a+b"));
+    }
+
+    // what this catches: the command's wire name mirrors its file path
+    // (commands/genome/teach.rs → "genome/teach"). The name keys cu, the persona
+    // tool surface, and the grid; drift breaks "file tree IS the namespace".
+    #[test]
+    fn teach_command_name_mirrors_path() {
+        assert_eq!(GenomeTeach::NAME, "genome/teach");
+        assert_eq!(GenomeTeach::ACCESS, AccessLevel::Privileged);
+    }
+}

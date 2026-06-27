@@ -42,6 +42,7 @@ use crate::sdk_codegen::DynCommand;
 pub mod job_cancel;
 pub mod job_create;
 pub mod job_status;
+pub mod teach;
 
 /// Wire shape for `genome/job-status` + `genome/job-cancel`. A single handle;
 /// adapter lookup keys on `handle.providerId`.

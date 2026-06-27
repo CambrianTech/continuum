@@ -342,7 +342,7 @@ impl DatasetService {
             return Err("No valid examples found in CSV".to_string());
         }
 
-        let manifest = self.split_and_write(&p.name, &output_dir, &examples, p.split_ratio, None)?;
+        let manifest = Self::split_and_write(&p.name, &output_dir, &examples, p.split_ratio, None)?;
         Ok(manifest)
     }
 
@@ -416,7 +416,7 @@ impl DatasetService {
             ));
         }
 
-        let manifest = self.split_and_write(&p.name, &output_dir, &examples, p.split_ratio, None)?;
+        let manifest = Self::split_and_write(&p.name, &output_dir, &examples, p.split_ratio, None)?;
         Ok(manifest)
     }
 
@@ -488,7 +488,7 @@ impl DatasetService {
             ));
         }
 
-        let manifest = self.split_and_write(&p.name, &output_dir, &examples, p.split_ratio, None)?;
+        let manifest = Self::split_and_write(&p.name, &output_dir, &examples, p.split_ratio, None)?;
         Ok(manifest)
     }
 
@@ -680,7 +680,7 @@ impl DatasetService {
             },
         };
 
-        let mut manifest = self.split_and_write(
+        let mut manifest = Self::split_and_write(
             "realclasseval",
             &output_dir,
             &all_examples,
@@ -757,9 +757,12 @@ impl DatasetService {
         Ok(manifest)
     }
 
-    /// Split examples into train/eval, write JSONL files and manifest.
-    fn split_and_write(
-        &self,
+    /// Split examples into train/eval, write JSONL files and manifest. An associated
+    /// fn (no `&self` — it touches no service state), `pub` so out-of-module producers
+    /// of validated ShareGPT examples (e.g. `genome/teach`) package to the SAME
+    /// train.jsonl/eval.jsonl/manifest.json shape rather than re-rolling a parallel
+    /// writer — one packaging path, one source of truth.
+    pub fn split_and_write(
         name: &str,
         output_dir: &Path,
         examples: &[Value],
