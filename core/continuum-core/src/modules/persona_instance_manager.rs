@@ -167,8 +167,12 @@ pub struct PersonaInstanceManagerModule {
     /// Substrate-wide command executor — installed by `start_server`
     /// after the executor is built (task #224 replaced the deleted
     /// `GLOBAL_EXECUTOR` panic accessor with this dependency-injected
-    /// `OnceLock`).
-    executor: LateBound<crate::runtime::CommandExecutor>,
+    /// `OnceLock`). Wrapped in an `Arc` so `commands()` can hand a shared
+    /// install-once handle to `persona/reassign-model` (which composes
+    /// `serving/pin` through it) without cloning the slot itself —
+    /// `LateBound` is install-once, so all holders observe the same
+    /// install that `start_server` performs after the executor is built.
+    executor: Arc<LateBound<crate::runtime::CommandExecutor>>,
 }
 
 impl PersonaInstanceManagerModule {
@@ -195,7 +199,7 @@ impl PersonaInstanceManagerModule {
             default_room,
             default_room_name,
             continuum_root,
-            executor: LateBound::new("persona-instance-manager::executor"),
+            executor: Arc::new(LateBound::new("persona-instance-manager::executor")),
         }
     }
 
@@ -361,14 +365,19 @@ impl ServiceModule for PersonaInstanceManagerModule {
         }
     }
 
-    /// Contribute the dep-holding `persona/instances/*` typed commands to the
-    /// kernel's object map: `list` + `get` (the read verbs) and `despawn` (the
-    /// deallocation counterpart of `bootstrap`), all sharing this module's live
-    /// `PersonaAircRuntimeRegistry` so they act on the same roster bootstrap
-    /// mutates. (bootstrap stays a legacy arm under task #62 until its full
-    /// bootstrap capability — socket, room, executor — is threaded here.)
+    /// Contribute the dep-holding `persona/*` typed commands to the kernel's object
+    /// map: the `instances/*` roster verbs (`list` + `get` + `despawn`, all sharing
+    /// this module's live `PersonaAircRuntimeRegistry`), plus `persona/reassign-model`
+    /// — which gets this module's `continuum_root` (to resolve persona homes) and a
+    /// shared handle to the late-bound `executor` (to compose `serving/pin`).
+    /// (bootstrap stays a legacy arm under task #62 until its full bootstrap
+    /// capability — socket, room, executor — is threaded here.)
     fn commands(&self) -> Vec<Arc<dyn crate::sdk_codegen::DynCommand>> {
-        crate::commands::persona::command_objects(self.registry.clone())
+        crate::commands::persona::command_objects(
+            self.registry.clone(),
+            self.continuum_root.clone(),
+            Arc::clone(&self.executor),
+        )
     }
 
     fn install_executor(&self, executor: std::sync::Arc<crate::runtime::CommandExecutor>) {
