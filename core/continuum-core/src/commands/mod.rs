@@ -12,7 +12,6 @@
 
 pub mod adapter;
 pub mod ai;
-pub mod cargo;
 pub mod catalog;
 pub mod code;
 pub mod command;
