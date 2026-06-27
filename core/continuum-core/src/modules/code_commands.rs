@@ -818,6 +818,79 @@ impl ActionCommand for CodeHistory {
     }
 }
 
+// ─────────────────── code/create-workspace ───────────────────
+
+/// Establish (or re-root) the caller's workspace sandbox at a specific path.
+pub struct CodeCreateWorkspace {
+    pub state: Arc<CodeState>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
+pub struct CodeCreateWorkspaceParams {
+    /// Absolute path to the workspace root — the read/write sandbox boundary. All
+    /// subsequent `code/*` file ops for this caller are confined to it.
+    pub workspace_root: String,
+    /// Additional read-only roots the caller may read from but not write to (e.g.
+    /// a shared dependency tree). Omit for a write-only-within-root sandbox.
+    #[serde(default)]
+    pub read_roots: Vec<String>,
+}
+
+/// What `code/create-workspace` established.
+#[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
+pub struct CreateWorkspaceResult {
+    /// Always `true` on success — the sandbox is now live for this caller.
+    pub created: bool,
+    /// The root the sandbox was bound to (echoed for confirmation).
+    pub workspace_root: String,
+    /// How many extra read-only roots were granted.
+    pub read_root_count: usize,
+}
+
+#[async_trait]
+impl ActionCommand for CodeCreateWorkspace {
+    const NAME: &'static str = "code/create-workspace";
+    // Privileged: this DEFINES the filesystem sandbox boundary (an arbitrary root +
+    // read-roots). Operations WITHIN an established sandbox (read/write/edit) are
+    // AiSafe; choosing where the sandbox is rooted is infrastructure, not a persona
+    // toolbelt action — letting a persona re-root itself to `/` would be an escape.
+    const ACCESS: AccessLevel = AccessLevel::Privileged;
+    const DESCRIPTION: &'static str =
+        "Establish or re-root the caller's workspace sandbox at a specific path, with optional \
+         read-only roots. Overrides the auto-provisioned default (repo cwd) for this caller.";
+    type Params = CodeCreateWorkspaceParams;
+    type Output = CreateWorkspaceResult;
+
+    async fn run(
+        &self,
+        ctx: &Ctx,
+        p: CodeCreateWorkspaceParams,
+    ) -> Result<CreateWorkspaceResult, CommandError> {
+        let who = caller_id(ctx);
+        let root = std::path::Path::new(&p.workspace_root);
+        let mut security = PathSecurity::new(root).map_err(|e| {
+            CommandError::Invalid(format!("invalid workspace root '{}': {e}", p.workspace_root))
+        })?;
+        for rr in &p.read_roots {
+            security
+                .add_read_root(std::path::Path::new(rr))
+                .map_err(|e| CommandError::Invalid(format!("invalid read root '{rr}': {e}")))?;
+        }
+        // An explicit create-workspace OVERRIDES any engine `ensure_engine` lazily
+        // provisioned for this caller (its doc reserves this override path). Keyed by
+        // caller, so each peer's change-DAG stays isolated — exactly like the migrated
+        // read/write/edit siblings, and never on a spoofable persona_id param.
+        self.state
+            .file_engines
+            .insert(who.clone(), FileEngine::new(&who, security));
+        Ok(CreateWorkspaceResult {
+            created: true,
+            workspace_root: p.workspace_root,
+            read_root_count: p.read_roots.len(),
+        })
+    }
+}
+
 // ─────────────────── one registry: descriptors + objects ─────────────────
 
 // Static descriptors → the ONE `command_registry()` the persona surface + grid
@@ -838,6 +911,7 @@ crate::register_command!(CodeDelete);
 crate::register_command!(CodeDiff);
 crate::register_command!(CodeUndo);
 crate::register_command!(CodeHistory);
+crate::register_command!(CodeCreateWorkspace);
 
 /// The dep-holding command objects the [`CodeModule`](super::code::CodeModule)
 /// contributes to the kernel's typed object map (via `ServiceModule::commands`),
@@ -859,7 +933,8 @@ pub fn command_objects(state: Arc<CodeState>) -> Vec<Arc<dyn DynCommand>> {
         Arc::new(CodeDelete { state: state.clone() }),
         Arc::new(CodeDiff { state: state.clone() }),
         Arc::new(CodeUndo { state: state.clone() }),
-        Arc::new(CodeHistory { state }),
+        Arc::new(CodeHistory { state: state.clone() }),
+        Arc::new(CodeCreateWorkspace { state }),
     ]
 }
 

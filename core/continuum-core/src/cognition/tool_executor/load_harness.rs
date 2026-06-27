@@ -104,11 +104,10 @@ async fn team(executor: &Arc<CommandExecutor>, root: &str) -> Vec<(Uuid, Command
     for _ in 0..PERSONAS {
         let id = Uuid::new_v4();
         let client = persona(executor.clone(), id);
-        let calls = vec![tool(
-            "ws",
-            "code/create-workspace",
-            json!({ "persona_id": id.to_string(), "workspace_root": root }),
-        )];
+        // Identity flows via the transport's CallerIdentity (caller-scoped), not a
+        // spoofable persona_id param — create-workspace keys on ctx.caller, same as
+        // every other migrated code/* op.
+        let calls = vec![tool("ws", "code/create-workspace", json!({ "workspace_root": root }))];
         let out = client
             .execute_native_batch(&calls, &ctx(id), 8000)
             .await
@@ -184,7 +183,7 @@ async fn team_of(executor: &Arc<CommandExecutor>, root: &str, n: usize) -> Vec<(
         let client = persona(executor.clone(), id);
         client
             .execute_native_batch(
-                &[tool("ws", "code/create-workspace", json!({ "persona_id": id.to_string(), "workspace_root": root }))],
+                &[tool("ws", "code/create-workspace", json!({ "workspace_root": root }))],
                 &ctx(id),
                 8000,
             )
