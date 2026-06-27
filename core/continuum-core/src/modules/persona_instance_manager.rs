@@ -53,8 +53,10 @@ use std::sync::Arc;
 
 use airc_core::RoomId;
 use async_trait::async_trait;
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use ts_rs::TS;
 use uuid::Uuid;
 
 use crate::persona::identity_provider::{PersonaIdentityIntent, PersonaIdentitySource};
@@ -85,12 +87,14 @@ use crate::runtime::{
 /// `supervisor::tests::fake_instance`, `service_loop` test fixture)
 /// honor this invariant by convention: `persona_id` and `peer_id`
 /// are set to the same Uuid even when the keypair is stubbed.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
 #[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../../protocol/typescript/persona/PersonaInstanceInfo.ts")]
 pub struct PersonaInstanceInfo {
     /// The persona's airc peer_id (Ed25519 keypair Uuid) — the
     /// substrate's universal actor identifier per Slice 1B of #142.
     /// Equals `peer_id` field by invariant.
+    #[ts(type = "string")]
     pub persona_id: Uuid,
     /// The persona's airc agent_name. NOTE: currently derived from
     /// the historical pre-bootstrap Uuid (before peer_id existed),
@@ -102,11 +106,14 @@ pub struct PersonaInstanceInfo {
     /// The persona's airc peer_id. Equals `persona_id` post-
     /// Slice-1B (same Uuid, named twice for API compatibility).
     /// The cryptographic identity airc routes on.
+    #[ts(type = "string")]
     pub peer_id: Uuid,
     /// Absolute path to the persona's airc home dir.
+    #[ts(type = "string")]
     pub home: PathBuf,
     /// The room the persona joined at bootstrap (currently always
     /// the continuum-core's discovered default_room).
+    #[ts(type = "string")]
     pub default_room: Uuid,
     /// Whether this citizen was resumed from disk or freshly
     /// minted. Telemetry honest per
@@ -117,7 +124,7 @@ pub struct PersonaInstanceInfo {
 }
 
 impl PersonaInstanceInfo {
-    fn from_runtime(runtime: &PersonaAircRuntime) -> Self {
+    pub(crate) fn from_runtime(runtime: &PersonaAircRuntime) -> Self {
         Self {
             persona_id: runtime.persona_id(),
             agent_name: runtime.agent_name().to_string(),
@@ -339,44 +346,27 @@ impl ServiceModule for PersonaInstanceManagerModule {
                 Ok(CommandResult::Json(json))
             }
 
-            "persona/instances/list" => {
-                let infos: Vec<PersonaInstanceInfo> = self
-                    .registry
-                    .iter()
-                    .map(|rt| PersonaInstanceInfo::from_runtime(&rt))
-                    .collect();
-                let json = serde_json::to_value(&infos)
-                    .map_err(|e| format!("serialize Vec<PersonaInstanceInfo>: {e}"))?;
-                Ok(CommandResult::Json(json))
-            }
-
-            "persona/instances/get" => {
-                let persona_id_str = params
-                    .get("personaId")
-                    .and_then(|v| v.as_str())
-                    .ok_or_else(|| "persona/instances/get requires personaId".to_string())?;
-                let persona_id = Uuid::parse_str(persona_id_str)
-                    .map_err(|e| format!("invalid personaId UUID: {e}"))?;
-                match self.registry.get(persona_id) {
-                    Some(rt) => {
-                        let info = PersonaInstanceInfo::from_runtime(&rt);
-                        let json = serde_json::to_value(&info)
-                            .map_err(|e| format!("serialize PersonaInstanceInfo: {e}"))?;
-                        Ok(CommandResult::Json(json))
-                    }
-                    None => Err(format!("no persona registered with id {persona_id}")),
-                }
-            }
+            // list + get migrated onto the typed DynCommand registry (#62):
+            // `commands/persona/instances/{list,get}.rs`, contributed via
+            // `commands()` below. They route through `route_object`, not here.
+            // Reaching this arm for them means the typed path failed to register —
+            // fail loud naming the cause rather than silently re-handling.
+            "persona/instances/list" | "persona/instances/get" => Err(format!(
+                "'{command}' is migrated to the typed registry \
+                 (commands/persona/instances/) — it must route via route_object, \
+                 not the legacy handle_command path"
+            )),
 
             _ => Err(format!("unknown persona/instances command: {command}")),
         }
     }
 
     /// Contribute the dep-holding `persona/instances/*` typed commands to the
-    /// kernel's object map. Today that is `persona/instances/despawn` — the
-    /// deallocation counterpart of `bootstrap`, sharing this module's live
-    /// `PersonaAircRuntimeRegistry` so it acts on the same roster the legacy
-    /// arms read. (bootstrap/list/get migrate onto this path under task #62.)
+    /// kernel's object map: `list` + `get` (the read verbs) and `despawn` (the
+    /// deallocation counterpart of `bootstrap`), all sharing this module's live
+    /// `PersonaAircRuntimeRegistry` so they act on the same roster bootstrap
+    /// mutates. (bootstrap stays a legacy arm under task #62 until its full
+    /// bootstrap capability — socket, room, executor — is threaded here.)
     fn commands(&self) -> Vec<Arc<dyn crate::sdk_codegen::DynCommand>> {
         crate::commands::persona::command_objects(self.registry.clone())
     }
@@ -431,42 +421,46 @@ mod tests {
         std::env::remove_var("CONTINUUM_ROOT");
     }
 
+    // what this catches: list + get are migrated to the typed registry (#62), so
+    // the legacy handle_command arms must FAIL LOUD naming the migration — never
+    // silently re-handle. A regression that re-adds an inline handler (re-forking
+    // the roster read away from the typed command) is caught here.
     #[tokio::test]
-    async fn get_returns_error_for_unknown_persona_id() {
-        let registry = PersonaAircRuntimeRegistry::new();
+    async fn migrated_list_and_get_arms_fail_loud() {
         let module = PersonaInstanceManagerModule::new(
-            registry,
+            PersonaAircRuntimeRegistry::new(),
             PathBuf::from("/nonexistent/socket"),
             RoomId::from_uuid(Uuid::nil()),
             None,
             PathBuf::from("/tmp/continuum-test"),
         );
-        let params = serde_json::json!({"personaId": Uuid::new_v4().to_string()});
-        let res = module.handle_command("persona/instances/get", params).await;
-        assert!(res.is_err());
-        assert!(res.unwrap_err().contains("no persona registered"));
+        for command in ["persona/instances/list", "persona/instances/get"] {
+            let err = module
+                .handle_command(command, Value::Null)
+                .await
+                .expect_err("migrated arm must fail loud");
+            assert!(err.contains("migrated"), "got {err}");
+            assert!(err.contains(command), "got {err}");
+        }
     }
 
-    #[tokio::test]
-    async fn list_returns_empty_array_when_no_instances() {
-        let registry = PersonaAircRuntimeRegistry::new();
+    // what this catches: the module contributes the typed read/dealloc verbs
+    // (list/get/despawn) to the kernel object map, all sharing its live registry.
+    // A regression that drops the `commands()` override — leaving the persona
+    // surface without the roster verbs — is caught.
+    #[test]
+    fn contributes_the_typed_instance_commands() {
         let module = PersonaInstanceManagerModule::new(
-            registry,
+            PersonaAircRuntimeRegistry::new(),
             PathBuf::from("/nonexistent/socket"),
             RoomId::from_uuid(Uuid::nil()),
             None,
             PathBuf::from("/tmp/continuum-test"),
         );
-        let res = module
-            .handle_command("persona/instances/list", Value::Null)
-            .await;
-        match res {
-            Ok(CommandResult::Json(v)) => {
-                let arr = v.as_array().expect("list returns array");
-                assert!(arr.is_empty());
-            }
-            other => panic!("expected Ok(Json), got {other:?}"),
-        }
+        let names: Vec<&str> = module.commands().iter().map(|c| c.name()).collect();
+        assert!(names.contains(&"persona/instances/list"), "got {names:?}");
+        assert!(names.contains(&"persona/instances/get"), "got {names:?}");
+        assert!(names.contains(&"persona/instances/despawn"), "got {names:?}");
     }
 
     #[tokio::test]

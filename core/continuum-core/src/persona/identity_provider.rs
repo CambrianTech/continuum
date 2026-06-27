@@ -50,7 +50,9 @@
 use std::path::PathBuf;
 
 use async_trait::async_trait;
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use ts_rs::TS;
 use uuid::Uuid;
 
 use crate::persona::seed::PersonaSeedError;
@@ -70,8 +72,9 @@ pub struct PersonaIdentityIntent {
 /// [[substrate-is-a-good-citizen-on-the-host]] — observability honest
 /// — the substrate distinguishes resumed vs newly-minted citizens so
 /// operators see what happened at boot.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS, JsonSchema)]
 #[serde(rename_all = "snake_case")]
+#[ts(export, export_to = "../../../protocol/typescript/persona/PersonaIdentitySource.ts")]
 pub enum PersonaIdentitySource {
     /// Existing persona found on disk + resumed. The airc-side
     /// keypair (identity.key) is loaded by airc-lib; the continuum-
