@@ -34,17 +34,22 @@ use tokio::sync::watch;
 use crate::cognition::serving_plan::ServingPlan;
 use crate::inference::llama_server::ServingSnapshot;
 use crate::model_registry::live::ModelCatalog;
+use crate::modules::serving_daemon::PinFitChecker;
 use crate::sdk_codegen::DynCommand;
 
 pub mod load;
+pub mod pin;
 pub mod plan;
 pub mod status;
 pub mod unload;
+pub mod unpin;
 
 use load::ServingLoad;
+use pin::ServingPin;
 use plan::ServingPlanQuery;
 use status::ServingStatus;
 use unload::ServingUnload;
+use unpin::ServingUnpin;
 
 /// The dep-holding `serving/*` family the
 /// [`ServingDaemonModule`](crate::modules::serving_daemon::ServingDaemonModule)
@@ -56,11 +61,19 @@ use unload::ServingUnload;
 ///   the live [`ModelCatalog`] (to fail loud on an unknown model id rather than pin
 ///   a typo that silently does nothing). The daemon's own plan + reconcile loop
 ///   turns the suppress-set edits into actual (un)loads.
+/// - **VRAM-axis force pair** (`serving/pin` ↔ `serving/unpin`): the promote/demote
+///   mechanism. Share the daemon's force-pin writer (intersect-to-one, the dual of
+///   the suppress-set's subtract) plus its [`PinFitChecker`] so `serving/pin` can
+///   refuse loud BEFORE pinning when the model won't fit a lane — never a silent
+///   best-fit fallback. The daemon's plan + reconcile loop turns a set pin into the
+///   actual swap.
 /// - **Read surfaces** (`serving/plan` + `serving/status`): cheap `watch` borrows of
 ///   the daemon's published plan (intent) and snapshot (reality), so personas and
 ///   operators inspect the decision without probing the process.
 pub fn command_objects(
     suppress: watch::Sender<Arc<HashSet<String>>>,
+    pin: watch::Sender<Option<String>>,
+    fit: PinFitChecker,
     serving: watch::Receiver<ServingSnapshot>,
     plan: watch::Receiver<Option<ServingPlan>>,
     catalog: Arc<ModelCatalog>,
@@ -74,8 +87,15 @@ pub fn command_objects(
         Arc::new(ServingLoad {
             suppress,
             serving: serving.clone(),
-            catalog,
+            catalog: catalog.clone(),
         }),
+        Arc::new(ServingPin {
+            pin: pin.clone(),
+            fit,
+            catalog,
+            serving: serving.clone(),
+        }),
+        Arc::new(ServingUnpin { pin }),
         Arc::new(ServingStatus { serving }),
         Arc::new(ServingPlanQuery { plan }),
     ]
@@ -86,23 +106,31 @@ mod tests {
     use super::*;
 
     // what this catches: the dep-holding family wires the full serving surface —
-    // the VRAM-axis deallocation pair (load↔unload symmetry the catalog requires)
-    // PLUS the two read surfaces (plan = intent, status = reality). A regression
-    // that drops any of the four is caught.
+    // the VRAM-axis deallocation pair (load↔unload), the force pair (pin↔unpin =
+    // promote/demote), PLUS the two read surfaces (plan = intent, status =
+    // reality). A regression that drops any of the six is caught.
     #[test]
     fn family_exposes_the_full_serving_surface() {
         let reg = crate::model_registry::catalog::registry().expect("Rust catalog must validate");
         let catalog = Arc::new(ModelCatalog::from_registry(&reg));
         let (suppress, _) = watch::channel(Arc::new(HashSet::new()));
+        let (pin, _) = watch::channel(None);
+        let fit: PinFitChecker = Arc::new(|_m| crate::modules::serving_daemon::PinFit {
+            plan: None,
+            weights_bytes: 0,
+            budget_bytes: 0,
+        });
         let (_tx, serving) = watch::channel(ServingSnapshot::empty());
         let (_ptx, plan) = watch::channel(None);
-        let objs = command_objects(suppress, serving, plan, catalog);
+        let objs = command_objects(suppress, pin, fit, serving, plan, catalog);
         let names: Vec<&str> = objs.iter().map(|o| o.name()).collect();
         assert!(names.contains(&"serving/unload"), "the VRAM-axis free verb");
         assert!(
             names.contains(&"serving/load"),
             "its inverse — re-loadable without reboot"
         );
+        assert!(names.contains(&"serving/pin"), "the force-serve verb (promote/demote)");
+        assert!(names.contains(&"serving/unpin"), "its inverse — release to autonomic");
         assert!(names.contains(&"serving/status"), "the reality read surface");
         assert!(names.contains(&"serving/plan"), "the intent read surface");
     }

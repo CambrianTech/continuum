@@ -75,6 +75,27 @@ const SERVING_SNAPSHOT_EVENT: &str = "serving.snapshot";
 /// — resolve once, pass the struct, never re-fetch ([[pass-the-model-struct-no-param-hell]]).
 type ModelResolver = Arc<dyn Fn(&str) -> Option<Model> + Send + Sync>;
 
+/// The verdict for force-serving one specific model on this host RIGHT NOW —
+/// what [`ServingDaemonModule::pin_fit_checker`] returns and `serving/pin` gates
+/// on. Carries the numbers so the command can fail loud with a NAMED shortfall
+/// ("needs ~XGB, host budget is ~YGB") rather than a bare refusal.
+pub struct PinFit {
+    /// The host-fit plan for the model alone. `None` when the model has no GGUF
+    /// on disk (not downloaded → not servable). `Some` with `fits_on_gpu = false`
+    /// when it is on disk but won't fit a lane in the current budget.
+    pub plan: Option<ServingPlan>,
+    /// The model's on-disk weight bytes (0 when not downloaded).
+    pub weights_bytes: u64,
+    /// The host's usable serving budget right now, in bytes.
+    pub budget_bytes: u64,
+}
+
+/// The cloneable synchronous fit-gate the `serving/pin` command holds — given a
+/// candidate [`Model`], can this host force-serve it right now. Built by
+/// [`ServingDaemonModule::pin_fit_checker`] over the live budget so it agrees
+/// with the autonomic planner by construction.
+pub type PinFitChecker = Arc<dyn Fn(&Model) -> PinFit + Send + Sync>;
+
 pub struct ServingDaemonModule {
     gpu: Arc<GpuMemoryManager>,
     /// Live system memory monitor — the budget comes from what's actually FREE
@@ -136,6 +157,19 @@ pub struct ServingDaemonModule {
     /// and the plan reads the same authority lock-free; the planner still owns
     /// the decision (this only ever EXCLUDES, never forces).
     suppressed: watch::Sender<Arc<HashSet<String>>>,
+    /// The operator/persona's explicit FORCE-serve pin — the "hard pin" the
+    /// `serving/load` doc names as the future verb, the mechanism behind
+    /// promote/demote (`serving/pin` ↔ `serving/unpin`). `None` = autonomic
+    /// best-fit (the planner picks the most-capable model that fits). `Some(id)`
+    /// = the planner's candidate set is INTERSECTED to just this model, so the
+    /// reconcile serves exactly it (or nothing, honestly, if it no longer fits).
+    /// The dual of `suppressed`: suppress SUBTRACTS from candidates, pin
+    /// INTERSECTS to one. Same lock-free `watch` seam; the daemon still owns the
+    /// reconcile. The fit-gate lives in `serving/pin` (it refuses loud BEFORE
+    /// pinning when the model won't fit a lane), so a set pin is always a model
+    /// that fit at pin time; budget can still shift under it, and then the plan
+    /// degrades honestly (`fits_on_gpu = false`) rather than over-committing.
+    pinned: watch::Sender<Option<String>>,
 }
 
 impl ServingDaemonModule {
@@ -169,6 +203,7 @@ impl ServingDaemonModule {
         let (plan_tx, _rx) = watch::channel(None);
         let (serving_tx, _srx) = watch::channel(ServingSnapshot::empty());
         let (suppressed, _urx) = watch::channel(Arc::new(HashSet::new()));
+        let (pinned, _prx) = watch::channel(None);
         Self {
             gpu,
             system,
@@ -186,6 +221,7 @@ impl ServingDaemonModule {
             }),
             catalog,
             suppressed,
+            pinned,
         }
     }
 
@@ -226,45 +262,27 @@ impl ServingDaemonModule {
     /// memory the monitor reports, capped at the device's physical VRAM. This
     /// is the organic signal: free memory drops under load, the budget shrinks,
     /// the plan picks fewer lanes / a smaller model; load clears, it flows back.
+    /// Delegates to the free [`live_host_budget`] so the autonomic tick and the
+    /// `serving/pin` fit-gate compute the budget from the ONE source.
     fn host_budget(&self) -> HostBudget {
-        let available = self.system.snapshot().memory.available_bytes;
-        // VRAM cap = GOVERNED headroom (net of Bevy/LiveKit + outstanding
-        // leases), NOT total VRAM — this is the OOM-bug fix (#56). When the
-        // governor has no live VRAM scan (no GpuMonitor adapter for this GPU),
-        // there is no honest ceiling, so we cap at 0 and serving refuses rather
-        // than over-committing blind. That fail-CLOSED direction is the safe
-        // one; the missing-adapter cause is named once at the boot site, not
-        // re-logged on every 5s tick.
-        let vram_ceiling = self.governed_vram_ceiling().unwrap_or(0);
-        host_budget_from(available, vram_ceiling, perf_cores())
-    }
-
-    /// The governed VRAM ceiling RIGHT NOW: the resource authority's
-    /// `available(Vram)` — capacity (free + ours − reserve, scanned live by the
-    /// GpuMonitor) minus what is already leased. `None` when VRAM is ungoverned
-    /// (no live monitor → the kind never appears on the board), which the
-    /// caller treats as fail-closed. A lock-free `watch` snapshot read, never
-    /// the governor's accounting lock — safe on the hot tick.
-    fn governed_vram_ceiling(&self) -> Option<u64> {
-        self.resource_daemon
-            .board()
-            .kinds
-            .iter()
-            .find(|k| k.kind == ResourceKind::Vram)
-            .map(|k| k.available_bytes)
+        live_host_budget(&self.system, &self.resource_daemon)
     }
 
     /// The servable candidates RIGHT NOW: the on-disk Ready models, MINUS any an
-    /// operator has explicitly unloaded (`serving/unload`). The single chokepoint
-    /// every plan flows through, so a suppressed model can never be planned, never
-    /// relaunched — its VRAM stays freed until `serving/load` permits it again.
-    /// The planner still owns the choice among what remains (suppress only ever
-    /// subtracts).
+    /// operator has explicitly unloaded (`serving/unload`), and — when a force-pin
+    /// is set (`serving/pin`) — INTERSECTED to just the pinned model. The single
+    /// chokepoint every plan flows through, so a suppressed model can never be
+    /// planned and a pin can never be escaped: pin set → the planner has exactly
+    /// one candidate, so the reconcile serves that model or (if it has dropped off
+    /// disk) nothing. Suppress subtracts; pin intersects; the planner still owns
+    /// the choice among whatever remains.
     fn live_candidates(&self) -> Vec<ModelFootprint> {
         let suppressed = self.suppressed.borrow();
+        let pinned = self.pinned.borrow();
         candidates_from_snapshot(&self.catalog.snapshot())
             .into_iter()
             .filter(|c| !suppressed.contains(&c.model_id))
+            .filter(|c| pinned.as_ref().is_none_or(|p| p == &c.model_id))
             .collect()
     }
 
@@ -274,6 +292,41 @@ impl ServingDaemonModule {
     /// plan + reconcile (owned here) turn that into an actual load/unload.
     pub fn suppress_sender(&self) -> watch::Sender<Arc<HashSet<String>>> {
         self.suppressed.clone()
+    }
+
+    /// A clone of the force-pin writer, for the `serving/pin` · `serving/unpin`
+    /// commands (the promote/demote mechanism). The daemon stays the authority:
+    /// the command sets/clears one model id; `live_candidates` intersects to it
+    /// and the plan + reconcile (owned here) turn that into the actual swap. Dual
+    /// of [`Self::suppress_sender`].
+    pub fn pin_sender(&self) -> watch::Sender<Option<String>> {
+        self.pinned.clone()
+    }
+
+    /// The synchronous fit-gate `serving/pin` holds: given a candidate model,
+    /// does it fit a serving lane on THIS host right now? Built from the same
+    /// [`live_host_budget`] + [`footprint_for`] + [`plan_serving`] the autonomic
+    /// tick uses, so the pin's "will it fit" verdict can never disagree with what
+    /// the next reconcile would actually do. The command refuses loud BEFORE
+    /// pinning when this says no — never a silent best-fit fallback.
+    pub fn pin_fit_checker(&self) -> PinFitChecker {
+        let system = self.system.clone();
+        let resource_daemon = self.resource_daemon.clone();
+        Arc::new(move |model: &Model| {
+            let budget = live_host_budget(&system, &resource_daemon);
+            let budget_bytes = budget.usable_bytes;
+            let footprint = footprint_for(model);
+            let weights_bytes = footprint.as_ref().map(|f| f.weights_bytes).unwrap_or(0);
+            // footprint None = no GGUF on disk → not servable at all (plan None).
+            // footprint Some but over budget → plan_serving degrades honestly
+            // with fits_on_gpu=false, which the command reads to refuse loud.
+            let plan = footprint.and_then(|f| plan_serving(budget, std::slice::from_ref(&f)));
+            PinFit {
+                plan,
+                weights_bytes,
+                budget_bytes,
+            }
+        })
     }
 
     /// Compute the current serving plan from the live host snapshot + on-disk
@@ -477,6 +530,35 @@ pub fn host_budget_from(available_bytes: u64, total_vram_bytes: u64, perf_cores:
     }
 }
 
+/// The live serving budget for this host RIGHT NOW: free memory (capped at
+/// physical VRAM, minus headroom) against the GOVERNED VRAM ceiling. A free
+/// function so BOTH the daemon's autonomic tick ([`ServingDaemonModule::host_budget`])
+/// and the `serving/pin` fit-gate derive the budget from the ONE source — a pin's
+/// "will it fit" can never disagree with what the next tick would actually do.
+pub fn live_host_budget(
+    system: &SystemResourceMonitor,
+    resource_daemon: &ResourceDaemon,
+) -> HostBudget {
+    let available = system.snapshot().memory.available_bytes;
+    let vram_ceiling = governed_vram_ceiling(resource_daemon).unwrap_or(0);
+    host_budget_from(available, vram_ceiling, perf_cores())
+}
+
+/// The governed VRAM ceiling RIGHT NOW: the resource authority's `available(Vram)`
+/// — capacity (free + ours − reserve, scanned live by the GpuMonitor) minus what
+/// is already leased. `None` when VRAM is ungoverned (no live monitor → the kind
+/// never appears on the board), which the caller treats as fail-closed (cap at 0,
+/// serving refuses rather than over-committing blind). A lock-free `watch`
+/// snapshot read, never the governor's accounting lock — safe on the hot tick.
+fn governed_vram_ceiling(resource_daemon: &ResourceDaemon) -> Option<u64> {
+    resource_daemon
+        .board()
+        .kinds
+        .iter()
+        .find(|k| k.kind == ResourceKind::Vram)
+        .map(|k| k.available_bytes)
+}
+
 /// Performance-core proxy for the lane cap. `num_cpus::get_physical()` is the
 /// portable floor; on Apple Silicon it over-counts (efficiency cores), but the
 /// `MAX_LANES` ceiling in the classifier is the binding cap on capable boxes,
@@ -678,6 +760,8 @@ impl ServiceModule for ServingDaemonModule {
     fn commands(&self) -> Vec<Arc<dyn crate::sdk_codegen::DynCommand>> {
         crate::commands::serving::command_objects(
             self.suppress_sender(),
+            self.pin_sender(),
+            self.pin_fit_checker(),
             self.subscribe_serving(),
             self.subscribe(),
             self.catalog.clone(),
