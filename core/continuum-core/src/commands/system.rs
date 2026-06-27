@@ -1,16 +1,65 @@
-//! `system/info` — substrate build + process identity, for compatibility checks.
+//! `system/*` — substrate identity (`system/info`, stateless below) plus the
+//! resource-monitoring reads (`system/cpu`, `system/memory`, `system/resources`,
+//! `system/pressure`, `system/memory-gate`, `system/memory-budget`,
+//! `system/docker-tier-stats`) in the sibling files under `system/`.
 //!
-//! A second worked example of the zero-ceremony stateless command (after
-//! `commands/list`): one file, one `run` body, `register_stateless_command!`, and
-//! it's instantly callable via `cu system/info`, the persona's tools, and every
-//! SDK — with a derived param schema and ACL gating, no wiring anywhere else. This
-//! is the "minimal code per command" the ported catalog will look like.
+//! `system/info` is the zero-ceremony stateless example (after `commands/list`): one
+//! file, one `run` body, `register_stateless_command!`, instantly callable via
+//! `cu system/info`, the persona's tools, and every SDK — derived param schema + ACL
+//! gating, no wiring anywhere else. The resource reads are the dep-holding shape: they
+//! capture the module's [`SystemResourceService`] and are assembled by
+//! [`command_objects`].
+
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use crate::sdk_codegen::{ActionCommand, CommandError, Ctx};
+use crate::modules::system_resources::SystemResourceService;
+use crate::sdk_codegen::{ActionCommand, CommandError, Ctx, DynCommand};
+
+pub mod cpu;
+pub mod docker_tier_stats;
+pub mod memory;
+pub mod memory_budget;
+pub mod memory_gate;
+pub mod pressure;
+pub mod resources;
+
+/// Shared params for the no-argument `system/*` reads (cpu, memory, pressure,
+/// memory-gate, memory-budget, docker-tier-stats). One empty contract reused across
+/// the six rather than six identical placeholder structs (compression principle).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, TS, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../../protocol/typescript/system/SystemQuery.ts")]
+pub struct SystemQuery {}
+
+/// Build the dep-holding `system/*` resource-read command objects over the shared
+/// [`SystemResourceService`]. Called from `SystemResourceModule::commands`.
+pub fn command_objects(service: Arc<SystemResourceService>) -> Vec<Arc<dyn DynCommand>> {
+    vec![
+        Arc::new(cpu::SystemCpu {
+            service: service.clone(),
+        }),
+        Arc::new(memory::SystemMemory {
+            service: service.clone(),
+        }),
+        Arc::new(resources::SystemResources {
+            service: service.clone(),
+        }),
+        Arc::new(pressure::SystemPressure {
+            service: service.clone(),
+        }),
+        Arc::new(memory_gate::SystemMemoryGate {
+            service: service.clone(),
+        }),
+        Arc::new(memory_budget::SystemMemoryBudget {
+            service: service.clone(),
+        }),
+        Arc::new(docker_tier_stats::SystemDockerTierStats { service }),
+    ]
+}
 
 /// Params for `system/info` — none today (a placeholder struct so the command has
 /// a canonical, schema-able params type like every other command).
