@@ -561,7 +561,15 @@ mod tests {
         };
         let env = ConvertEnv {
             llama_cpp_dir: PathBuf::from(repo).join("../vendor/llama.cpp"),
-            python: PathBuf::from(&home).join(".unsloth/studio/unsloth_studio/bin/python3"),
+            // The convert interpreter is a dir WE manage (`~/.continuum/genome/venv`),
+            // NOT the legacy unsloth studio venv — same managed venv the native
+            // mlx_lm.lora train resolves to (modules/forge.rs::resolve_mlx_python).
+            // Override via CONTINUUM_CONVERT_PYTHON for an alternate transformers-
+            // capable interpreter.
+            python: env_or(
+                "CONTINUUM_CONVERT_PYTHON",
+                PathBuf::from(&home).join(".continuum/genome/venv/bin/python3"),
+            ),
             base_config_dir: env_or(
                 "CONTINUUM_BASE_CONFIG_DIR",
                 PathBuf::from(&home).join(".continuum/forge/export/coder-4b-keystone/fused"),

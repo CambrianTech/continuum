@@ -70,6 +70,19 @@ pub struct MlxTrainSpec {
     pub dropout: f64,
     /// `--num-layers` to fine-tune; `-1` = all layers.
     pub num_layers: i32,
+    /// LoRA target module suffixes (`lora_parameters.keys`). EMPTY → mlx_lm's
+    /// own default target set, which for qwen3.5 includes the fused attention
+    /// projection (`attn_qkv`). That is the trap: a LoRA factor on the V slice of
+    /// a fused QKV cannot be reordered HF→GGUF by llama.cpp's lora converter
+    /// (`_reorder_v_heads` → `NotImplementedError` — the row size can't be
+    /// reshaped on a low-rank factor), so an attention-targeting gene trains fine
+    /// but is UNCONVERTIBLE → unservable. The genome loop therefore targets the
+    /// MLP projections only (`mlp.{gate,up,down}_proj`), which carry the bulk of
+    /// learnable skill and convert cleanly — the proven-good set the first
+    /// servable gene (`coder-4b-mlp`) used. When the converter learns to reorder
+    /// V-heads on a LoRA factor, this set can broaden; it is caller-supplied, not
+    /// a hardcoded substrate constant.
+    pub target_keys: Vec<String>,
     /// `--batch-size`.
     pub batch_size: u32,
     /// `--iters` (training steps).
@@ -135,10 +148,24 @@ pub struct MlxTrainOutput {
 pub fn build_lora_config_yaml(spec: &MlxTrainSpec) -> String {
     // Render scale/dropout as floats even when integral (`2` → `2.0`) so the YAML
     // is unambiguously numeric and self-documenting about being a scale, not a count.
-    format!(
+    let mut yaml = format!(
         "lora_parameters:\n  rank: {}\n  scale: {:.1}\n  dropout: {}\n",
         spec.rank, spec.scale, spec.dropout
-    )
+    );
+    // The convert-safe target set (see `MlxTrainSpec::target_keys`). EMPTY leaves
+    // mlx_lm on its default set — which produces unconvertible attention genes for
+    // qwen3.5; the genome-loop caller always supplies the MLP set. Rendered as a
+    // YAML flow list of quoted suffixes (mlx_lm matches them against module names).
+    if !spec.target_keys.is_empty() {
+        let quoted = spec
+            .target_keys
+            .iter()
+            .map(|k| format!("\"{k}\""))
+            .collect::<Vec<_>>()
+            .join(", ");
+        yaml.push_str(&format!("  keys: [{quoted}]\n"));
+    }
+    yaml
 }
 
 /// Build the `python -m mlx_lm lora …` argv. Pure + testable so the exact command
@@ -354,6 +381,11 @@ mod tests {
             scale: 2.0,
             dropout: 0.0,
             num_layers: -1,
+            target_keys: vec![
+                "mlp.gate_proj".into(),
+                "mlp.up_proj".into(),
+                "mlp.down_proj".into(),
+            ],
             batch_size: 1,
             iters: 100,
             learning_rate: 2e-4,
@@ -372,6 +404,36 @@ mod tests {
         assert!(y.contains("rank: 16"), "yaml: {y}");
         assert!(y.contains("scale: 2.0"), "yaml: {y}");
         assert!(y.contains("dropout: 0"), "yaml: {y}");
+    }
+
+    // what this catches: the convert-safe target set is carried into the mlx config
+    // as `lora_parameters.keys`. The genome loop MUST target MLP projections only —
+    // an attention (`attn_qkv`) LoRA trains but is unconvertible to GGUF-lora
+    // (llama.cpp's _reorder_v_heads NotImplementedError on a low-rank V factor), so
+    // a gene that omitted these keys would be a dead-end gene. If this regressed to
+    // not emitting keys, the loop would silently forge unservable attention genes.
+    #[test]
+    fn config_yaml_carries_convert_safe_mlp_keys() {
+        let y = build_lora_config_yaml(&spec());
+        assert!(y.contains("keys: ["), "yaml missing keys list: {y}");
+        assert!(y.contains("\"mlp.gate_proj\""), "yaml: {y}");
+        assert!(y.contains("\"mlp.up_proj\""), "yaml: {y}");
+        assert!(y.contains("\"mlp.down_proj\""), "yaml: {y}");
+        // The attention projection MUST NOT be a default target — that is the
+        // unconvertible trap this whole key-set exists to avoid.
+        assert!(!y.contains("attn_qkv"), "attention target leaked in: {y}");
+    }
+
+    // what this catches: an EMPTY target set leaves mlx_lm on its own default (no
+    // `keys:` line) — the explicit "let the trainer decide" escape hatch, distinct
+    // from the loop's convert-safe default. If this regressed to always emitting a
+    // (possibly empty) keys list, mlx_lm would target nothing and train a no-op gene.
+    #[test]
+    fn config_yaml_omits_keys_when_target_set_empty() {
+        let mut s = spec();
+        s.target_keys.clear();
+        let y = build_lora_config_yaml(&s);
+        assert!(!y.contains("keys:"), "empty target set must omit keys: {y}");
     }
 
     // what this catches: the argv mirrors the mlx_lm.lora CLI contract — train mode,
