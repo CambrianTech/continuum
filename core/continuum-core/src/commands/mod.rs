@@ -26,6 +26,7 @@ pub mod genome;
 pub mod gpu;
 pub mod help;
 pub mod inference;
+pub mod log;
 pub mod memory;
 pub mod migration;
 pub mod models;

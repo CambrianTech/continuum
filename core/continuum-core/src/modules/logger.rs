@@ -21,6 +21,7 @@
 //! Migration from: workers/logger (222 lines main.rs + 4 modules)
 
 use crate::runtime::{CommandResult, ModuleConfig, ModuleContext, ModulePriority, ServiceModule};
+use crate::sdk_codegen::DynCommand;
 use async_trait::async_trait;
 use chrono::{SecondsFormat, Utc};
 use serde::{Deserialize, Serialize};
@@ -72,7 +73,7 @@ pub fn queue_log(category: &str, level: LogLevel, component: &str, message: &str
 // ============================================================================
 
 /// Log levels matching TypeScript LogLevel type.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, TS, schemars::JsonSchema)]
 #[ts(export, export_to = "../../../protocol/typescript/logger/LogLevel.ts")]
 #[serde(rename_all = "lowercase")]
 pub enum LogLevel {
@@ -93,8 +94,9 @@ impl std::fmt::Display for LogLevel {
     }
 }
 
-/// Payload for log/write requests.
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+/// Payload for log/write requests. Shared between the `log/write` command
+/// (params) and the in-process `queue_log`/`clog_*` macro path.
+#[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[ts(
     export,
     export_to = "../../../protocol/typescript/logger/WriteLogPayload.ts"
@@ -110,44 +112,9 @@ pub struct WriteLogPayload {
     pub args: Option<Value>,
 }
 
-/// Result of log/write command.
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(
-    export,
-    export_to = "../../../protocol/typescript/logger/WriteLogResult.ts"
-)]
-#[serde(rename_all = "camelCase")]
-pub struct WriteLogResult {
-    pub bytes_written: usize,
-}
-
-/// Payload for log/write-batch requests (multiple entries in one IPC call).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct WriteLogBatchPayload {
-    pub entries: Vec<WriteLogPayload>,
-}
-
-/// Result of log/write-batch command.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct WriteLogBatchResult {
-    pub entries_queued: usize,
-}
-
-/// Result of log/ping command.
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(
-    export,
-    export_to = "../../../protocol/typescript/logger/LoggerPingResult.ts"
-)]
-#[serde(rename_all = "camelCase")]
-pub struct LoggerPingResult {
-    pub uptime_ms: u64,
-    pub requests_processed: u64,
-    pub active_categories: usize,
-    pub pending_writes: usize,
-}
+// The `log/*` result types (WriteLogResult, WriteLogBatchPayload/Result,
+// LoggerPingResult) live with their commands under `commands/log/` — they are
+// pure command wire types with no other consumer in the module.
 
 // ============================================================================
 // Rate Limiter (from legacy rate_limiter.rs)
@@ -482,15 +449,40 @@ fn flush_all(file_cache: &FileCache) {
 
 pub struct LoggerModule {
     log_dir: String,
-    #[allow(dead_code)] // Used by writer thread, but compiler doesn't see through thread::spawn
-    continuum_root: String,
-    file_cache: FileCache,
-    #[allow(dead_code)] // Used by writer thread, but compiler doesn't see through thread::spawn
-    headers_written: HeaderTracker,
-    log_tx: mpsc::SyncSender<WriteLogPayload>,
-    started_at: Instant,
-    requests_processed: AtomicU64,
-    pending_writes: Arc<AtomicU64>,
+    /// Shared state the `log/*` commands operate over (queue sender, open-file
+    /// cache, lifetime counters). The writer thread holds its own clones captured
+    /// at construction; this is the surface the commands read/write.
+    state: Arc<LoggerCommandState>,
+}
+
+/// State shared by every `log/*` command — the queue sender (writes), the
+/// open-file cache (ping's active-category count), and the lifetime counters.
+/// Built once in [`LoggerModule::new`] and handed to each command via
+/// [`crate::commands::log::command_objects`].
+pub struct LoggerCommandState {
+    pub log_tx: mpsc::SyncSender<WriteLogPayload>,
+    pub file_cache: FileCache,
+    pub started_at: Instant,
+    pub requests_processed: AtomicU64,
+    pub pending_writes: Arc<AtomicU64>,
+}
+
+#[cfg(test)]
+impl LoggerCommandState {
+    /// Build a standalone state backed by a throwaway bounded channel for
+    /// command-level tests. Returns the receiver so the test can assert what was
+    /// enqueued (and keeps it alive so `send` succeeds).
+    pub(crate) fn new_for_test() -> (Arc<Self>, mpsc::Receiver<WriteLogPayload>) {
+        let (log_tx, rx) = mpsc::sync_channel::<WriteLogPayload>(64);
+        let state = Arc::new(Self {
+            log_tx,
+            file_cache: Arc::new(Mutex::new(HashMap::new())),
+            started_at: Instant::now(),
+            requests_processed: AtomicU64::new(0),
+            pending_writes: Arc::new(AtomicU64::new(0)),
+        });
+        (state, rx)
+    }
 }
 
 impl LoggerModule {
@@ -622,78 +614,15 @@ impl LoggerModule {
             }
         });
 
-        Self {
-            log_dir,
-            continuum_root,
-            file_cache,
-            headers_written,
+        let state = Arc::new(LoggerCommandState {
             log_tx,
+            file_cache,
             started_at: Instant::now(),
             requests_processed: AtomicU64::new(0),
             pending_writes,
-        }
-    }
+        });
 
-    fn handle_write(&self, params: Value) -> Result<CommandResult, String> {
-        // WorkerClient sends data nested under "payload" field, extract it
-        // ORMRustClient sends data at top level - support both patterns
-        let payload_value = if let Some(nested) = params.get("payload") {
-            nested.clone()
-        } else {
-            params.clone()
-        };
-
-        let payload: WriteLogPayload =
-            serde_json::from_value(payload_value).map_err(|e| format!("Invalid payload: {e}"))?;
-
-        self.log_tx
-            .send(payload)
-            .map_err(|e| format!("Queue send failed: {e}"))?;
-
-        self.requests_processed.fetch_add(1, Ordering::Relaxed);
-
-        CommandResult::json(&WriteLogResult {
-            bytes_written: 0, // Actual write happens in background
-        })
-    }
-
-    fn handle_write_batch(&self, params: Value) -> Result<CommandResult, String> {
-        // Extract payload (WorkerClient nests under "payload", support both patterns)
-        let payload_value = if let Some(nested) = params.get("payload") {
-            nested.clone()
-        } else {
-            params.clone()
-        };
-
-        let batch: WriteLogBatchPayload = serde_json::from_value(payload_value)
-            .map_err(|e| format!("Invalid batch payload: {e}"))?;
-
-        let count = batch.entries.len();
-        for entry in batch.entries {
-            // Queue each entry through the existing channel (writer thread handles actual I/O)
-            let _ = self.log_tx.try_send(entry);
-        }
-
-        self.requests_processed.fetch_add(1, Ordering::Relaxed);
-
-        CommandResult::json(&WriteLogBatchResult {
-            entries_queued: count,
-        })
-    }
-
-    fn handle_ping(&self) -> Result<CommandResult, String> {
-        let active_categories = self
-            .file_cache
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .len();
-
-        CommandResult::json(&LoggerPingResult {
-            uptime_ms: self.started_at.elapsed().as_millis() as u64,
-            requests_processed: self.requests_processed.load(Ordering::Relaxed),
-            active_categories,
-            pending_writes: self.pending_writes.load(Ordering::Relaxed) as usize,
-        })
+        Self { log_dir, state }
     }
 }
 
@@ -723,18 +652,22 @@ impl ServiceModule for LoggerModule {
         Ok(())
     }
 
-    async fn handle_command(&self, command: &str, params: Value) -> Result<CommandResult, String> {
-        match command {
-            "log/write" => self.handle_write(params),
-            "log/write-batch" => self.handle_write_batch(params),
-            "log/ping" => self.handle_ping(),
-            _ => Err(format!("Unknown logger command: {command}")),
-        }
+    async fn handle_command(&self, command: &str, _params: Value) -> Result<CommandResult, String> {
+        // Migrated to the typed registry (`commands/log/{write,write_batch,ping}.rs`).
+        // The legacy string-match surface is retired; fail loud rather than silently
+        // route a stale name (per Joel's never-swallow rule).
+        Err(format!(
+            "logger command surface is migrated to the typed registry; '{command}' has no legacy handler"
+        ))
+    }
+
+    fn commands(&self) -> Vec<Arc<dyn DynCommand>> {
+        crate::commands::log::command_objects(self.state.clone())
     }
 
     async fn shutdown(&self) -> Result<(), String> {
         // Flush any pending writes
-        flush_all(&self.file_cache);
+        flush_all(&self.state.file_cache);
         Ok(())
     }
 
@@ -745,30 +678,43 @@ impl ServiceModule for LoggerModule {
 
 #[cfg(test)]
 mod tests {
+    //! The module now owns only config + the shared command state + the dep-holding
+    //! family. The write/ping behavior contracts are pinned in
+    //! `commands/log/{write,write_batch,ping}.rs`; these tests guard the module's
+    //! wiring.
     use super::*;
 
-    #[tokio::test]
-    async fn test_logger_ping() {
-        let module = LoggerModule::new();
-        let result = module.handle_command("log/ping", Value::Null).await;
-        assert!(result.is_ok());
-        if let Ok(CommandResult::Json(json)) = result {
-            assert!(json["uptimeMs"].is_number());
-            assert!(json["requestsProcessed"].is_number());
-        }
+    // what this catches: config exposes the canonical `log/` prefix + module name.
+    // If either drifts, the registry routes the command elsewhere.
+    #[test]
+    fn config_reports_name_and_prefix() {
+        let m = LoggerModule::new();
+        let cfg = m.config();
+        assert_eq!(cfg.name, "logger");
+        assert_eq!(cfg.command_prefixes, &["log/"]);
     }
 
+    // what this catches: the legacy string-match surface is retired — any
+    // handle_command call fails loud naming the command (never silently swallows
+    // or routes a stale name), per Joel's never-swallow rule.
     #[tokio::test]
-    async fn test_logger_write() {
-        let module = LoggerModule::new();
-        let params = serde_json::json!({
-            "category": "test/module",
-            "level": "info",
-            "component": "TestComponent",
-            "message": "Test message"
-        });
-        let result = module.handle_command("log/write", params).await;
-        assert!(result.is_ok());
+    async fn legacy_handle_command_fails_loud() {
+        let m = LoggerModule::new();
+        let err = m
+            .handle_command("log/ping", Value::Null)
+            .await
+            .expect_err("migrated surface must fail loud");
+        assert!(err.contains("migrated to the typed registry"));
+        assert!(err.contains("log/ping"));
+    }
+
+    // what this catches: the module contributes exactly the three dep-holding
+    // log verbs (each carrying the shared state) to the typed registry.
+    #[test]
+    fn contributes_the_three_log_commands() {
+        let m = LoggerModule::new();
+        let names: Vec<&str> = m.commands().iter().map(|c| c.name()).collect();
+        assert_eq!(names, vec!["log/write", "log/write-batch", "log/ping"]);
     }
 
     #[test]

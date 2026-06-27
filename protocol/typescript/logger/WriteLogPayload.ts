@@ -2,6 +2,7 @@
 import type { LogLevel } from "./LogLevel";
 
 /**
- * Payload for log/write requests.
+ * Payload for log/write requests. Shared between the `log/write` command
+ * (params) and the in-process `queue_log`/`clog_*` macro path.
  */
 export type WriteLogPayload = { category: string, level: LogLevel, component: string, message: string, args?: any, };
