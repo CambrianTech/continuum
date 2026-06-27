@@ -255,7 +255,13 @@ mod tests {
             "cross-grid inference must stay admitted (continuum#1649)"
         );
 
-        for privileged in ["data/delete", "grid/trust", "grid/pair", "gpu/stats"] {
+        // NOTE on the deny list: gpu/stats is deliberately NOT here. It declares
+        // `access: AiSafe` (read-only VRAM/pressure snapshot), and AiSafe →
+        // Provisional by the documented ACL design (acl.rs rule #2) — a remote
+        // grid peer leasing this node's GPU legitimately needs capacity
+        // visibility. The mutating tier is what stays out of reach: gpu/budget
+        // (`access: Privileged` → Trusted) must be denied a Provisional caller.
+        for privileged in ["data/delete", "grid/trust", "grid/pair", "gpu/budget"] {
             match policy.gate(&decision(privileged), Some(&airc)) {
                 Verdict::Forbidden {
                     reason: ForbiddenReason::NoPermissionForUri(uri),

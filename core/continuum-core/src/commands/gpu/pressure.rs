@@ -57,7 +57,7 @@ mod tests {
     #[tokio::test]
     async fn pressure_in_unit_range() {
         let cmd = GpuPressureCmd {
-            manager: Arc::new(GpuMemoryManager::detect()),
+            manager: Arc::new(GpuMemoryManager::simulated("Apple M5 Pro", 53_000_000_000)),
         };
         let r = cmd.run(&Ctx::default(), GpuPressureParams {}).await.unwrap();
         assert!(r.pressure >= 0.0 && r.pressure <= 1.0);

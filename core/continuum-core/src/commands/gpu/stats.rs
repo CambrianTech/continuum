@@ -35,7 +35,7 @@ mod tests {
 
     fn cmd() -> GpuStatsCmd {
         GpuStatsCmd {
-            manager: Arc::new(GpuMemoryManager::detect()),
+            manager: Arc::new(GpuMemoryManager::simulated("Apple M5 Pro", 53_000_000_000)),
         }
     }
 

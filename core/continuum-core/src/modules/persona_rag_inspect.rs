@@ -496,16 +496,22 @@ mod tests {
         }
     }
 
+    /// All events in these tests share ONE room. A real airc channel has a single
+    /// room_id, and the digest is room-scoped (filters events to the room derived
+    /// from the transcript, slice-2 #43). A per-event random room would model
+    /// nothing real and silently drop all-but-the-last event from the window.
+    static TEST_ROOM: std::sync::LazyLock<RoomId> = std::sync::LazyLock::new(RoomId::new);
+
     fn make_event(text: Option<&str>, lamport: u64, occurred_at_ms: u64) -> TranscriptEvent {
         TranscriptEvent {
             event_id: EventId::new(),
-            room_id: RoomId::new(),
+            room_id: *TEST_ROOM,
             peer_id: PeerId::new(),
             client_id: ClientId::new(),
             kind: TranscriptKind::Message,
             occurred_at_ms,
             lamport,
-            target: MentionTarget::Room(RoomId::new()),
+            target: MentionTarget::Room(*TEST_ROOM),
             headers: Headers::default(),
             body: text.map(Body::text),
             attachment: None,

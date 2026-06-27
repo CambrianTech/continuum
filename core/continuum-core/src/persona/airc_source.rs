@@ -140,6 +140,12 @@ impl AircRagSource {
                 "occurred_at_ms": ev.occurred_at_ms,
                 "lamport": ev.lamport,
                 "unread": unread,
+                // The digest is a chronological window, not a ranked retrieval, so
+                // "relevance" here IS the attention signal: an unread message the
+                // persona must attend to (1.0) vs. an older grounding element kept
+                // only for context (0.5). The glass box (rag_inspect) surfaces this
+                // as the item score; without it the inspect layer silently saw 0.0.
+                "score": if unread { 1.0 } else { 0.5 },
             }),
         }
     }

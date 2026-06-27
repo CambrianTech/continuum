@@ -50,7 +50,7 @@ mod tests {
     #[tokio::test]
     async fn registered_consumer_appears_in_snapshot() {
         use crate::gpu::{make_entry, GpuPriority};
-        let manager = Arc::new(GpuMemoryManager::detect());
+        let manager = Arc::new(GpuMemoryManager::simulated("Apple M5 Pro", 53_000_000_000));
         manager.eviction_registry.register(make_entry(
             "candle:llama",
             "Llama 3.2",

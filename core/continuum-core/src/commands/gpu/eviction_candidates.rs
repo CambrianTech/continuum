@@ -67,7 +67,7 @@ mod tests {
     #[tokio::test]
     async fn excludes_realtime_consumers() {
         use crate::gpu::{make_entry, GpuPriority};
-        let manager = Arc::new(GpuMemoryManager::detect());
+        let manager = Arc::new(GpuMemoryManager::simulated("Apple M5 Pro", 53_000_000_000));
         manager.eviction_registry.register(make_entry(
             "render:targets",
             "Render Targets",

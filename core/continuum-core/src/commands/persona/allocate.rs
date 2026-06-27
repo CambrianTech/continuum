@@ -59,7 +59,7 @@ mod tests {
 
     fn cmd() -> PersonaAllocate {
         PersonaAllocate {
-            gpu_manager: Arc::new(GpuMemoryManager::detect()),
+            gpu_manager: Arc::new(GpuMemoryManager::simulated("Apple M5 Pro", 53_000_000_000)),
         }
     }
 

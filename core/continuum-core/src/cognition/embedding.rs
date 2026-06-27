@@ -375,8 +375,16 @@ fn probe_indicates_usable(probe: &[f32]) -> bool {
 /// pass with NO HTTP hop — the chat adapter may be a remote gateway that doesn't
 /// serve `/v1/embeddings` at all. `None` when no embedding GGUF is on disk (→ the
 /// caller tries the chat adapter's embeddings, then the lexical floor).
+///
+/// Uses `try_global()`, never the panicking `global()`: the resolver's contract is
+/// "always returns a usable embedder, never panics" (faculties degrade, never panic
+/// — "solve for public users"). A box where the registry isn't up yet (early boot,
+/// a focused test) is just another flavor of "no in-process embed model available
+/// right now" → fall through to the chat adapter then the lexical floor. The
+/// resolution is still observable via the `recall.embedder.resolved` probe, so this
+/// is the resolver's explicit ladder, not a silent fallback.
 fn local_embed_adapter() -> Option<(Arc<dyn AIProviderAdapter>, String)> {
-    let reg = crate::model_registry::global();
+    let reg = crate::model_registry::try_global()?;
     let model = reg
         .models_for_provider(crate::inference::llamacpp_adapter::LLAMACPP_PROVIDER_ID)
         .find(|m| {

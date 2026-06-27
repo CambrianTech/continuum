@@ -894,7 +894,14 @@ mod tests {
         names.sort_unstable();
         assert_eq!(
             names,
-            vec!["serving/load", "serving/plan", "serving/status", "serving/unload"]
+            vec![
+                "serving/load",
+                "serving/pin",
+                "serving/plan",
+                "serving/status",
+                "serving/unload",
+                "serving/unpin"
+            ]
         );
     }
 

@@ -22,7 +22,7 @@
 //! that actually load a model verify the model + scheduler work as
 //! expected, which is a separate concern.
 
-use continuum_core::gpu::{CpuMonitor, GpuMonitor, MockMonitor};
+use continuum_core::gpu::{GpuMonitor, MockMonitor};
 use continuum_core::inference::kv_quant::{KvQuantPolicy, Residency};
 use continuum_core::inference::recipe_budget::{PersonaContextBudget, RecipeBudget, TaskKind};
 use continuum_core::memory::{ConversationSummary, RecallMode};
@@ -390,33 +390,9 @@ async fn concurrent_persona_pipelines_do_not_contend() {
     );
 }
 
-// ─── Composition test 7: CpuMonitor as proof the trait composes ──────
-
-/// What this catches: trait + concrete impl wired correctly. If the
-/// CpuMonitor's pressure→free-bytes derivation is wrong, scenarios
-/// that rely on this fallback (CI runners without GPUs, headless
-/// servers) silently report bad signals.
-///
-/// Validated 2026-04-21: changed CpuMonitor's free_bytes to return
-/// total ignoring pressure, test fails because the 0.9 pressure
-/// scenario reports too much free; reverted.
-#[test]
-fn cpu_fallback_monitor_round_trips_pressure_to_free_bytes() {
-    let monitor: Box<dyn GpuMonitor> = Box::new(CpuMonitor::new(M1_AIR_8GB_TOTAL));
-
-    // No pressure: all free
-    assert_eq!(monitor.free_bytes(), M1_AIR_8GB_TOTAL);
-
-    // Cast back to drive the pressure update — in real prod this
-    // happens via the FootprintRegistry pushing accounting deltas
-    let cpu = CpuMonitor::new(M1_AIR_8GB_TOTAL);
-    cpu.update_pressure(0.9);
-
-    // Snapshot reflects the pressure
-    let snap = cpu.snapshot();
-    assert!(snap.pressure > 0.85);
-    assert!(snap.free_bytes < M1_AIR_8GB_TOTAL / 5);
-
-    // Platform identifier matches expected
-    assert_eq!(snap.platform, "cpu");
-}
+// Composition test 7 (cpu_fallback_monitor_round_trips_pressure_to_free_bytes)
+// was DELETED: it asserted the pressure→free-bytes derivation of `CpuMonitor`,
+// which was removed by design (gpu/monitor.rs:122 — "there is deliberately NO
+// CpuMonitor; absent GPU → fail loud, never substitute"). The no-CPU-fallback
+// rule means there is no longer a CPU monitor to compose; MockMonitor is the
+// test double, exercised by the other composition tests above.

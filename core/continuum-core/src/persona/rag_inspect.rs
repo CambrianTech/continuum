@@ -734,16 +734,22 @@ mod tests {
         }
     }
 
+    /// All events in these tests share ONE room. A real airc channel has a single
+    /// room_id, and the digest is room-scoped (filters events to the room derived
+    /// from the transcript, slice-2 #43). A per-event random room would model
+    /// nothing real and silently drop all-but-the-last event from the window.
+    static TEST_ROOM: std::sync::LazyLock<RoomId> = std::sync::LazyLock::new(RoomId::new);
+
     fn make_event(text: Option<&str>, lamport: u64, occurred_at_ms: u64) -> TranscriptEvent {
         TranscriptEvent {
             event_id: EventId::new(),
-            room_id: RoomId::new(),
+            room_id: *TEST_ROOM,
             peer_id: PeerId::new(),
             client_id: ClientId::new(),
             kind: TranscriptKind::Message,
             occurred_at_ms,
             lamport,
-            target: MentionTarget::Room(RoomId::new()),
+            target: MentionTarget::Room(*TEST_ROOM),
             headers: Headers::default(),
             body: text.map(Body::text),
             attachment: None,
@@ -825,9 +831,16 @@ mod tests {
         assert!(it.tokens >= 250, "1000 chars should cost ~250 tokens, got {}", it.tokens);
     }
 
+    // what this catches: under the slice-2 #43 digest contract the window is
+    // bounded by budget alone — pack_digest walks newest-first and TRUNCATES
+    // when the budget is exhausted; there is NO continuation cursor (the digest
+    // IS the window — more history is a scrollback command, not a budget page).
+    // A regression that re-introduced a continuation cursor, or that stopped
+    // truncating, would break this.
     #[tokio::test]
-    async fn continuation_flag_set_when_budget_overflows() {
-        // 4 items × ~2 tokens each, but tight budget that forces continuation
+    async fn tight_budget_truncates_the_window_with_no_continuation_cursor() {
+        // 4 items × ~2 tokens each ("ddddd" = 5 chars → chars/4 + 1 = 2 tokens),
+        // budget of 4 tokens fits only the 2 newest.
         let reader = Arc::new(StubReader::new(vec![
             make_event(Some("aaaaa"), 1, 1_000_000),
             make_event(Some("bbbbb"), 2, 1_000_000),
@@ -839,8 +852,11 @@ mod tests {
         req.airc_max = 4;
         let result = inspect_persona_rag(&req, reader).await.unwrap();
         let d = &result.deliveries[0];
-        assert!(d.has_continuation, "tight budget should leave continuation");
-        assert!(d.items.len() < 4, "not all items should fit");
+        assert!(d.items.len() < 4, "tight budget truncates the window");
+        assert!(
+            !d.has_continuation,
+            "the digest carries no continuation cursor by design"
+        );
     }
 
     #[tokio::test]

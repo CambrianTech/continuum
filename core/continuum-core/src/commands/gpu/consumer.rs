@@ -169,7 +169,7 @@ mod tests {
     // authority's accounting doesn't leak a phantom consumer.
     #[tokio::test]
     async fn register_then_unregister_round_trips() {
-        let manager = Arc::new(GpuMemoryManager::detect());
+        let manager = Arc::new(GpuMemoryManager::simulated("Apple M5 Pro", 53_000_000_000));
         let reg = GpuRegisterConsumer {
             manager: manager.clone(),
         };
