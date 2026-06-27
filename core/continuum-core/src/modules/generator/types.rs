@@ -1,10 +1,16 @@
 //! Typed params + result for the generator's commands.
 
 use serde::{Deserialize, Serialize};
+use ts_rs::TS;
 
-/// Params for `generate/module`. Declared by the caller; deserialized
-/// via [`crate::runtime::CommandRequest`] in the generator's handler.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Params for `generate/module`. The named, schema-able contract for the
+/// `generate/module` typed command.
+#[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/generate/GenerateModuleParams.ts"
+)]
+#[serde(rename_all = "camelCase")]
 pub struct GenerateModuleParams {
     /// Lowercase module name. Must be a valid Rust identifier
     /// (letters, digits, `_`, `-` allowed; can't start with a digit).
@@ -67,7 +73,11 @@ pub struct GenerateModuleParams {
 /// Wire-friendly enum mirroring [`crate::runtime::ModulePriority`]'s
 /// public variants. Default is `Normal` to match the most common
 /// module class.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq, Eq, TS, schemars::JsonSchema)]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/generate/PrioritySpec.ts"
+)]
 #[serde(rename_all = "lowercase")]
 pub enum PrioritySpec {
     Realtime,
@@ -91,10 +101,14 @@ impl PrioritySpec {
     }
 }
 
-/// Result of `generate/module`. Serialized into the envelope by the
-/// handler; the caller sees these fields flattened alongside
-/// `success` / `error` in the wire JSON.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Result of `generate/module` — the new module directory, the files written,
+/// and the next manual wire-up step.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/generate/GenerateModuleResult.ts"
+)]
+#[serde(rename_all = "camelCase")]
 pub struct GenerateModuleResult {
     /// Absolute path to the newly created module directory.
     pub module_path: std::path::PathBuf,

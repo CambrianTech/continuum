@@ -21,6 +21,7 @@ pub mod command;
 pub mod data;
 pub mod dataset;
 pub mod events;
+pub mod generator;
 pub mod genome;
 pub mod gpu;
 pub mod help;

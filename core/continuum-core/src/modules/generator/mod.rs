@@ -54,18 +54,20 @@ use async_trait::async_trait;
 use dashmap::DashMap;
 use serde_json::Value;
 
-use crate::runtime::{
-    CommandRequest, CommandResponse, CommandResult, ModuleConfig, ModulePriority, ServiceModule,
-};
+use crate::runtime::{CommandResult, ModuleConfig, ModulePriority, ServiceModule};
 
 pub mod templates;
 pub mod types;
 
 use types::{GenerateModuleParams, GenerateModuleResult};
 
-/// Generator module — exposes `generate/module` (and future generator
-/// commands) as kernel commands. See module docs for the contract.
-pub struct GeneratorModule {
+/// The stateful generator engine — the workspace root + per-name locks + the
+/// scaffolding logic. `Arc`-shared between [`GeneratorModule`] (which exposes it
+/// as the `generate/module` command) and that command object, so concurrent
+/// callers serialize on the SAME `name_locks`. Constructing fresh state per call
+/// would silently break the same-name serialization guarantee, so the engine is
+/// shared, not rebuilt.
+pub struct GeneratorEngine {
     /// Optional override for the workspace root when generating into a
     /// non-default location. Tests use this to write into a tempdir;
     /// production runs leave it `None` and the generator targets
@@ -99,7 +101,7 @@ pub struct GeneratorModule {
     name_locks: DashMap<String, Arc<std::sync::Mutex<()>>>,
 }
 
-impl GeneratorModule {
+impl GeneratorEngine {
     pub fn new() -> Self {
         Self {
             workspace_root: None,
@@ -134,6 +136,35 @@ impl GeneratorModule {
     }
 }
 
+impl Default for GeneratorEngine {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Generator module — exposes `generate/module` (and future generator
+/// commands) as typed kernel commands. A thin holder over the `Arc`-shared
+/// [`GeneratorEngine`]; `commands()` hands the engine to the command object.
+pub struct GeneratorModule {
+    engine: Arc<GeneratorEngine>,
+}
+
+impl GeneratorModule {
+    pub fn new() -> Self {
+        Self {
+            engine: Arc::new(GeneratorEngine::new()),
+        }
+    }
+
+    /// Construct with a workspace root override. Tests use this to
+    /// generate into a tempdir without touching the live source tree.
+    pub fn with_workspace_root(root: std::path::PathBuf) -> Self {
+        Self {
+            engine: Arc::new(GeneratorEngine::with_workspace_root(root)),
+        }
+    }
+}
+
 impl Default for GeneratorModule {
     fn default() -> Self {
         Self::new()
@@ -161,14 +192,23 @@ impl ServiceModule for GeneratorModule {
     async fn handle_command(
         &self,
         command: &str,
-        params: Value,
+        _params: Value,
     ) -> Result<CommandResult, String> {
-        match command {
-            "generate/module" => self.handle_generate_module(params).await,
-            other => Err(format!(
-                "{other}: unknown generator command — supported: generate/module"
-            )),
-        }
+        // `generate/module` is migrated to the typed registry
+        // (`commands/generator/module.rs`, exposed via `commands()` below).
+        // Fail loud — no silent legacy fallback.
+        Err(format!(
+            "generator command surface is migrated to the typed registry; \
+             '{command}' has no legacy handler"
+        ))
+    }
+
+    fn commands(&self) -> Vec<std::sync::Arc<dyn crate::sdk_codegen::DynCommand>> {
+        vec![std::sync::Arc::new(
+            crate::commands::generator::module::GenerateModule {
+                engine: self.engine.clone(),
+            },
+        )]
     }
 
     fn as_any(&self) -> &dyn std::any::Any {
@@ -176,16 +216,7 @@ impl ServiceModule for GeneratorModule {
     }
 }
 
-impl GeneratorModule {
-    /// Handle `generate/module` — typed envelope in, typed envelope
-    /// out. The actual scaffold work is in
-    /// [`generate_module_inner`] so tests can exercise it directly.
-    async fn handle_generate_module(&self, params: Value) -> Result<CommandResult, String> {
-        let req = CommandRequest::<GenerateModuleParams>::from_value(params)?;
-        let result = self.generate_module_inner(&req.params)?;
-        CommandResponse::ok(result).into_command_result()
-    }
-
+impl GeneratorEngine {
     /// The actual scaffolding. Pure synchronous filesystem work — no
     /// network, no IPC, no `.await`. Easy to test.
     ///
@@ -347,7 +378,7 @@ mod tests {
     #[test]
     fn generate_module_creates_dir_and_files() {
         let root = tempdir();
-        let m = GeneratorModule::with_workspace_root(root.clone());
+        let m = GeneratorEngine::with_workspace_root(root.clone());
         let params = GenerateModuleParams {
             name: "demo".into(),
             description: "Demo module for generator tests".into(),
@@ -424,7 +455,7 @@ mod tests {
     #[test]
     fn stateful_multi_command_scaffold_has_consistent_cross_references() {
         let root = tempdir();
-        let m = GeneratorModule::with_workspace_root(root.clone());
+        let m = GeneratorEngine::with_workspace_root(root.clone());
         let params = GenerateModuleParams {
             name: "stateful_demo".into(),
             description: "Stateful module dogfood test".into(),
@@ -505,7 +536,7 @@ mod tests {
     #[test]
     fn generate_module_refuses_existing_dir_without_force() {
         let root = tempdir();
-        let m = GeneratorModule::with_workspace_root(root.clone());
+        let m = GeneratorEngine::with_workspace_root(root.clone());
         let params = GenerateModuleParams {
             name: "demo".into(),
             description: "first".into(),
@@ -535,7 +566,7 @@ mod tests {
     #[test]
     fn generate_module_overwrites_with_force() {
         let root = tempdir();
-        let m = GeneratorModule::with_workspace_root(root.clone());
+        let m = GeneratorEngine::with_workspace_root(root.clone());
         let mut params = GenerateModuleParams {
             name: "demo".into(),
             description: "first".into(),
@@ -562,7 +593,7 @@ mod tests {
     #[test]
     fn generate_module_rejects_invalid_names() {
         let root = tempdir();
-        let m = GeneratorModule::with_workspace_root(root);
+        let m = GeneratorEngine::with_workspace_root(root);
         for bad in ["", "Has Space", "has/slash", "../escape", "9starts-with-digit"] {
             let params = GenerateModuleParams {
                 name: bad.into(),
@@ -584,52 +615,20 @@ mod tests {
         }
     }
 
+    // what this catches: generate/module is migrated to the typed registry
+    // (commands/generator/module.rs), so the module's legacy handle_command must
+    // fail loud for any command name (no silent fallback). The typed-envelope
+    // round-trip is covered in the command file's own tests.
     #[tokio::test]
-    async fn handle_command_returns_typed_envelope() {
-        let root = tempdir();
-        let m = GeneratorModule::with_workspace_root(root.clone());
-        let params = serde_json::json!({
-            "name": "envelope_demo",
-            "description": "Verifies the full envelope round-trip",
-            "commands": ["envelope_demo/ping"],
-            "events_subscribed": [],
-            "events_published": [],
-            "priority": "normal",
-            "force": false
-        });
-        let result = m
-            .handle_command("generate/module", params)
-            .await
-            .expect("generate/module must succeed via the typed envelope");
-        let value = match result {
-            CommandResult::Json(v) => v,
-            other => panic!("expected Json variant, got {other:?}"),
-        };
-        assert_eq!(value["success"], true);
-        assert!(
-            value["module_path"].is_string(),
-            "envelope flattens the typed result fields: {value}"
-        );
-        assert!(
-            value["files_created"].is_array(),
-            "envelope carries the file list"
-        );
-        assert!(
-            value["next_step"].as_str().unwrap().contains("pub mod"),
-            "next_step prompts the caller to wire the new module"
-        );
-    }
-
-    #[tokio::test]
-    async fn handle_command_rejects_unknown_command_loud() {
+    async fn legacy_handle_command_fails_loud() {
         let m = GeneratorModule::new();
         let err = m
-            .handle_command("generate/nonexistent", serde_json::json!({}))
+            .handle_command("generate/module", serde_json::json!({}))
             .await
-            .expect_err("unknown sub-command must surface");
+            .expect_err("legacy handler must fail loud after migration");
         assert!(
-            err.contains("generate/nonexistent") && err.contains("unknown"),
-            "error must name the bad command + what's supported: {err}"
+            err.contains("migrated to the typed registry"),
+            "error must name the migration: {err}"
         );
     }
 
@@ -671,7 +670,7 @@ mod tests {
         const PARALLEL: usize = 8;
 
         let root = tempdir();
-        let module = Arc::new(GeneratorModule::with_workspace_root(root.clone()));
+        let module = Arc::new(GeneratorEngine::with_workspace_root(root.clone()));
 
         let mut tasks = Vec::with_capacity(PARALLEL);
         for i in 0..PARALLEL {
@@ -741,7 +740,7 @@ mod tests {
         const PARALLEL: usize = 8;
 
         let root = tempdir();
-        let module = Arc::new(GeneratorModule::with_workspace_root(root.clone()));
+        let module = Arc::new(GeneratorEngine::with_workspace_root(root.clone()));
 
         let mut tasks = Vec::with_capacity(PARALLEL);
         for i in 0..PARALLEL {
@@ -814,7 +813,7 @@ mod tests {
         const PARALLEL: usize = 12;
 
         let root = tempdir();
-        let module = Arc::new(GeneratorModule::with_workspace_root(root.clone()));
+        let module = Arc::new(GeneratorEngine::with_workspace_root(root.clone()));
 
         let mut tasks = Vec::with_capacity(PARALLEL);
         for i in 0..PARALLEL {
