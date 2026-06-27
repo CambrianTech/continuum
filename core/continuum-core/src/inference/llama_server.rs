@@ -77,12 +77,27 @@ const READY_POLL: Duration = Duration::from_millis(500);
 pub struct ServingTarget {
     /// The chosen base model — the grouped model info, resolved once.
     pub model: Model,
-    /// The host-fit served window the planner computed for this host. Sized to
-    /// fit the working set (tool schemas + framing + room burst + recalled
-    /// memory + completion reserve) within the budget, capped only by the
-    /// model's own trained ceiling. The deliberation faculty keeps its prompt
-    /// inside this so llama-server never 500s ("Context size has been exceeded").
+    /// The host-fit served window the planner computed for this host — the
+    /// PER-LANE window. Sized to fit the working set (tool schemas + framing +
+    /// room burst + recalled memory + completion reserve) within the budget,
+    /// capped only by the model's own trained ceiling. The deliberation faculty
+    /// keeps its prompt inside this so llama-server never 500s ("Context size
+    /// has been exceeded").
+    ///
+    /// CRUCIAL: this is per-lane, NOT the `-c` total. llama-server's `-c` is the
+    /// WHOLE KV cache, split evenly across `--parallel` slots — each request
+    /// only gets `-c / n_parallel` tokens. So to hand each of `lanes` slots a
+    /// full `context_window`, the spawn launches `-c (context_window * lanes)
+    /// --parallel lanes`. Launching `-c context_window` without `--parallel`
+    /// (the prior bug) let llama.cpp default to 4 slots and silently quartered
+    /// the per-request window, 500-ing every deliberation whose prompt fit the
+    /// planned window but overflowed the unplanned per-slot share.
     pub context_window: u32,
+    /// Continuous-batching lanes (`n_seq_max`) from the plan (≥ 1). Drives
+    /// llama-server's `--parallel`. The plan budgeted `kv_at(context_window) *
+    /// lanes` of KV against the host budget, so `-c (context_window * lanes)`
+    /// is memory-safe by the planner's own arithmetic.
+    pub lanes: u32,
     /// The trained LoRA genome layers to load into the serving catalog at spawn
     /// (`llama-server --lora <path>` per entry). This is the SET — which genes
     /// are *loadable*; the per-request `"lora":[{id,scale}]` body field decides
@@ -109,6 +124,24 @@ impl ServingTarget {
     /// relaunch is needed.
     pub fn model_id(&self) -> &str {
         &self.model.id
+    }
+
+    /// Lane count to hand llama-server's `--parallel`, floored at 1. The plan
+    /// guarantees ≥ 1; the floor is a defensive guard so a zero can never
+    /// collapse the KV cache to nothing.
+    pub fn parallel_lanes(&self) -> u32 {
+        self.lanes.max(1)
+    }
+
+    /// The `-c` value: the TOTAL KV cache to request = per-lane `context_window`
+    /// × `lanes`. llama-server splits this evenly across the `--parallel` slots,
+    /// so each slot ends up with one full `context_window`. Launching `-c
+    /// context_window` alone (no `--parallel`) was the prior bug: llama.cpp
+    /// defaulted to 4 slots and quartered the per-request window, 500-ing
+    /// deliberations whose prompt fit the planned window. `saturating_mul`
+    /// guards the (unreachable on real plans) overflow.
+    pub fn served_total_ctx(&self) -> u32 {
+        self.context_window.saturating_mul(self.parallel_lanes())
     }
 
     /// The adapter SET as a sorted list of path strings — the identity llama.cpp
@@ -572,6 +605,15 @@ impl LlamaServerControl for LlamaServerProcess {
         // One server at a time: kill the old child before binding the port.
         self.kill_child();
 
+        // llama-server's `-c` is the TOTAL KV cache, split evenly across the
+        // `--parallel` slots; each request only sees `-c / n_parallel` tokens.
+        // The plan's `context_window` is PER-LANE, so the total we must request
+        // is `context_window * lanes` — then each of `lanes` slots holds exactly
+        // one planned window. We pass `--parallel` EXPLICITLY (never inherit
+        // llama.cpp's default, which is 4 and silently quartered the window in
+        // the prior bug). See `served_total_ctx` / `parallel_lanes`.
+        let lanes = target.parallel_lanes();
+        let total_ctx = target.served_total_ctx();
         let mut cmd = tokio::process::Command::new(&self.bin);
         cmd.arg("-m")
             .arg(&gguf)
@@ -581,9 +623,13 @@ impl LlamaServerControl for LlamaServerProcess {
             .arg(host)
             .arg("--port")
             .arg(port.to_string())
-            // The host-fit served window from the plan — never a constant.
+            // Total KV = per-lane window × lanes; split back to one full window
+            // per slot by `--parallel` below. The plan budgeted this exact total
+            // (`kv_at(context_window) * lanes`) against the host, so it fits.
             .arg("-c")
-            .arg(target.context_window.to_string())
+            .arg(total_ctx.to_string())
+            .arg("--parallel")
+            .arg(lanes.to_string())
             // Serve embeddings from the same process so the embedder doesn't
             // need a second server. Personas' embedding adapter points here too.
             .arg("--embeddings");
@@ -727,6 +773,7 @@ mod tests {
                 mmproj_local_path: None,
             },
             context_window: 32768,
+            lanes: 1,
             adapters: Vec::new(),
         }
     }
@@ -743,6 +790,35 @@ mod tests {
             })
             .collect();
         t
+    }
+
+    // what this catches: the per-lane → total `-c` arithmetic. llama-server's
+    // `-c` is the WHOLE KV cache split across `--parallel` slots, so to give each
+    // of `lanes` slots a full per-lane `context_window` the spawn must request
+    // `context_window * lanes` and pass `--parallel lanes`. Launching `-c
+    // context_window` alone let llama.cpp default to 4 slots and quarter the
+    // per-request window, 500-ing live deliberations ("Context size exceeded").
+    // Regression here silently shrinks every persona's real prompt budget.
+    #[test]
+    fn served_total_ctx_is_per_lane_window_times_lanes() {
+        let mut t = target("coder-4b");
+        t.context_window = 16_384;
+        t.lanes = 4;
+        assert_eq!(t.parallel_lanes(), 4);
+        assert_eq!(
+            t.served_total_ctx(),
+            65_536,
+            "-c must be per-lane window × lanes so each slot holds one full window"
+        );
+
+        // lanes floored at 1: a single-lane plan serves the full window to one slot.
+        t.lanes = 1;
+        assert_eq!(t.served_total_ctx(), 16_384);
+
+        // defensive floor: a zero lane count never collapses the cache to nothing.
+        t.lanes = 0;
+        assert_eq!(t.parallel_lanes(), 1);
+        assert_eq!(t.served_total_ctx(), 16_384);
     }
 
     // what this catches: the desired model already being served is a NO-OP — we

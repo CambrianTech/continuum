@@ -362,12 +362,17 @@ impl ServingDaemonModule {
     /// Already serving the desired model & ready → no-op. A reconcile already
     /// in flight → skip (the gate). Otherwise spawn the reconcile.
     fn reconcile_to_plan(&self) -> Option<JoinHandle<()>> {
-        // Pull the desired model id AND the host-fit served window out of the
-        // plan in one borrow — the window is the planner's single source of
-        // truth (task #50); we carry it on the ServingTarget so llama-server's
-        // `-c` matches exactly what was planned.
-        let (desired, served_ctx) = match self.plan_tx.borrow().as_ref() {
-            Some(plan) => (plan.base_model_id.clone(), plan.served_context_window),
+        // Pull the desired model id, the host-fit PER-LANE served window, AND
+        // the lane count out of the plan in one borrow — both are the planner's
+        // single source of truth (task #50). We carry them on the ServingTarget
+        // so llama-server's `-c` (= window × lanes) and `--parallel` (= lanes)
+        // match exactly what was planned: each slot gets one full served window.
+        let (desired, served_ctx, lanes) = match self.plan_tx.borrow().as_ref() {
+            Some(plan) => (
+                plan.base_model_id.clone(),
+                plan.served_context_window,
+                plan.lanes,
+            ),
             None => {
                 // Nothing servable on disk → publish "nothing live" so readers
                 // (and a grid allocator) see the gap and route elsewhere.
@@ -445,6 +450,7 @@ impl ServingDaemonModule {
         let target = ServingTarget {
             model,
             context_window: served_ctx,
+            lanes,
             adapters: desired_adapters,
         };
 
