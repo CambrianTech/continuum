@@ -1,7 +1,11 @@
 //! VisionModule — Content-addressed cache + event notification for vision descriptions.
 //!
-//! Handles: vision/description-get, vision/description-put, vision/description-status,
-//!          vision/cache-stats, vision/cache-warm, vision/cache-evict
+//! The six `vision/*` verbs (description-get, description-put, description-status,
+//! cache-stats, cache-warm, cache-evict) are typed
+//! [`ActionCommand`](crate::sdk_codegen::ActionCommand)s under `commands/vision/`,
+//! capturing the shared [`VisionCache`] this module owns. The module shell wires the
+//! event bus into the cache on init and exposes the commands via
+//! [`ServiceModule::commands`]; its legacy `handle_command` fails loud.
 //!
 //! Architecture (OS-level thinking):
 //! - L1: In-process HashMap (RwLock, zero-copy reads, bounded by max entries)
@@ -16,19 +20,25 @@
 //!
 //! On server restart, TS warms L1 from L2 via vision/cache-warm.
 //! Descriptions survive across deploys. One LLaVA call per unique image, forever.
+//!
+//! Wire keys here are snake_case (`content_key`, `processing_time_ms`, `idle_ms`) —
+//! the typed params/results below carry snake_case field names with NO `rename_all`,
+//! so the contract matches the established wire exactly.
 
 use crate::log_info;
 use crate::runtime::MessageBus;
 use crate::runtime::{CommandResult, ModuleConfig, ModuleContext, ModulePriority, ServiceModule};
 use async_trait::async_trait;
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::json;
 use std::any::Any;
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
+use ts_rs::TS;
 
 // ============================================================================
-// Types
+// Internal cache entry
 // ============================================================================
 
 /// Cached vision description — the result of processing one image.
@@ -50,25 +60,187 @@ struct CachedDescription {
     last_accessed_at: u64,
 }
 
-/// Cache statistics for diagnostics
-#[derive(Debug, Serialize)]
-struct CacheStats {
-    entries: usize,
-    max_entries: usize,
-    hits: u64,
-    misses: u64,
-    hit_rate: f64,
-    evictions: u64,
+// ============================================================================
+// Command params — typed input contracts for the `vision/*` verbs.
+// snake_case field names, NO rename_all → wire keys preserved verbatim.
+// ============================================================================
+
+/// Params for `vision/description-get` and `vision/description-status` — both
+/// address one cache entry by its content key (compression: one shared type).
+#[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
+#[ts(export, export_to = "../../../protocol/typescript/vision/VisionKeyParams.ts")]
+pub struct VisionKeyParams {
+    /// Content-addressed key (e.g. SHA-256 of the image bytes).
+    pub content_key: String,
+}
+
+/// Params for `vision/description-put` — store one description under a content key.
+#[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
+#[ts(export, export_to = "../../../protocol/typescript/vision/VisionPutParams.ts")]
+pub struct VisionPutParams {
+    /// Content-addressed key the description is stored under.
+    pub content_key: String,
+    /// The description text.
+    pub description: String,
+    /// Model that generated it (default `unknown`).
+    #[serde(default)]
+    #[ts(optional)]
+    pub model: Option<String>,
+    /// Provider that generated it (default `unknown`).
+    #[serde(default)]
+    #[ts(optional)]
+    pub provider: Option<String>,
+    /// Inference time in ms (default 0).
+    #[serde(default)]
+    #[ts(optional, type = "number")]
+    pub processing_time_ms: Option<u64>,
+    /// Confidence score 0.0–1.0 (default 0.85).
+    #[serde(default)]
+    #[ts(optional)]
+    pub confidence: Option<f64>,
+}
+
+/// One persisted L2 row fed to `vision/cache-warm`. All fields optional except the
+/// two that identify a description — a row missing `content_key`/`description` is
+/// skipped (a corrupt row must not abort a bulk restore).
+#[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
+#[ts(export, export_to = "../../../protocol/typescript/vision/VisionWarmEntry.ts")]
+pub struct VisionWarmEntry {
+    #[serde(default)]
+    #[ts(optional)]
+    pub content_key: Option<String>,
+    #[serde(default)]
+    #[ts(optional)]
+    pub description: Option<String>,
+    #[serde(default)]
+    #[ts(optional)]
+    pub model: Option<String>,
+    #[serde(default)]
+    #[ts(optional)]
+    pub provider: Option<String>,
+    #[serde(default)]
+    #[ts(optional, type = "number")]
+    pub processing_time_ms: Option<u64>,
+    #[serde(default)]
+    #[ts(optional)]
+    pub confidence: Option<f64>,
+    #[serde(default)]
+    #[ts(optional, type = "number")]
+    pub cached_at: Option<u64>,
+}
+
+/// Params for `vision/cache-warm` — bulk-restore L1 from persisted L2 rows.
+#[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
+#[ts(export, export_to = "../../../protocol/typescript/vision/VisionWarmParams.ts")]
+pub struct VisionWarmParams {
+    /// Persisted description rows to load into L1.
+    pub entries: Vec<VisionWarmEntry>,
+}
+
+/// Params for `vision/cache-evict` — drop entries idle longer than `idle_ms`.
+#[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
+#[ts(export, export_to = "../../../protocol/typescript/vision/VisionEvictParams.ts")]
+pub struct VisionEvictParams {
+    /// Evict entries not accessed within this many ms (default 1,800,000 = 30 min).
+    #[serde(default)]
+    #[ts(optional, type = "number")]
+    pub idle_ms: Option<u64>,
+}
+
+/// Params for `vision/cache-stats` — no arguments.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, TS, JsonSchema)]
+#[ts(export, export_to = "../../../protocol/typescript/vision/VisionStatsParams.ts")]
+pub struct VisionStatsParams {}
+
+// ============================================================================
+// Command results — typed output contracts (named TS types, never inline `any`).
+// ============================================================================
+
+/// Result of `vision/description-get`. `found=false` → all other fields absent.
+#[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
+#[ts(export, export_to = "../../../protocol/typescript/vision/VisionGetResult.ts")]
+pub struct VisionGetResult {
+    pub found: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub provider: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional, type = "number")]
+    pub processing_time_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub confidence: Option<f64>,
+}
+
+/// Result of `vision/description-put`.
+#[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
+#[ts(export, export_to = "../../../protocol/typescript/vision/VisionPutResult.ts")]
+pub struct VisionPutResult {
+    pub stored: bool,
+}
+
+/// Result of `vision/description-status`: `cached` or `none`.
+#[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
+#[ts(export, export_to = "../../../protocol/typescript/vision/VisionStatusResult.ts")]
+pub struct VisionStatusResult {
+    pub status: String,
+}
+
+/// Result of `vision/cache-stats` — cache diagnostics.
+#[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
+#[ts(export, export_to = "../../../protocol/typescript/vision/VisionCacheStatsResult.ts")]
+pub struct VisionCacheStatsResult {
+    #[ts(type = "number")]
+    pub entries: usize,
+    #[ts(type = "number")]
+    pub max_entries: usize,
+    #[ts(type = "number")]
+    pub hits: u64,
+    #[ts(type = "number")]
+    pub misses: u64,
+    pub hit_rate: f64,
+    #[ts(type = "number")]
+    pub evictions: u64,
+}
+
+/// Result of `vision/cache-warm`.
+#[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
+#[ts(export, export_to = "../../../protocol/typescript/vision/VisionWarmResult.ts")]
+pub struct VisionWarmResult {
+    #[ts(type = "number")]
+    pub warmed: u64,
+    #[ts(type = "number")]
+    pub total: usize,
+}
+
+/// Result of `vision/cache-evict`.
+#[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
+#[ts(export, export_to = "../../../protocol/typescript/vision/VisionEvictResult.ts")]
+pub struct VisionEvictResult {
+    #[ts(type = "number")]
+    pub evicted: usize,
+    #[ts(type = "number")]
+    pub remaining: usize,
 }
 
 // ============================================================================
-// Module
+// VisionCache — the content-addressed cache the typed commands capture.
 // ============================================================================
 
 /// Max L1 cache entries. Each is ~1KB (description text + metadata).
 const MAX_CACHE_ENTRIES: usize = 2000;
 
-pub struct VisionModule {
+/// Owns the L1 content-addressed cache + hit/miss/eviction counters + the event bus.
+/// The `vision/*` commands hold an `Arc<VisionCache>` and are thin wrappers over these
+/// methods. Typed params enforce required keys at the boundary, so the methods are
+/// infallible (they return their typed result, never `Result`).
+pub struct VisionCache {
     /// Content-addressed cache: content_key → description
     cache: RwLock<HashMap<String, CachedDescription>>,
     /// Cache hit/miss counters
@@ -79,7 +251,7 @@ pub struct VisionModule {
     bus: RwLock<Option<Arc<MessageBus>>>,
 }
 
-impl Default for VisionModule {
+impl Default for VisionCache {
     fn default() -> Self {
         Self {
             cache: RwLock::new(HashMap::with_capacity(256)),
@@ -91,9 +263,14 @@ impl Default for VisionModule {
     }
 }
 
-impl VisionModule {
+impl VisionCache {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Wire the event bus in (called from `VisionModule::initialize`).
+    fn set_bus(&self, bus: Arc<MessageBus>) {
+        *self.bus.write().unwrap_or_else(|e| e.into_inner()) = Some(bus);
     }
 
     fn now_ms() -> u64 {
@@ -104,56 +281,44 @@ impl VisionModule {
     }
 
     /// Get a description by content key. Bumps last_accessed_at on hit.
-    fn handle_get(&self, params: Value) -> Result<CommandResult, String> {
-        let content_key = params["content_key"]
-            .as_str()
-            .ok_or("Missing content_key")?;
-
+    pub fn get(&self, content_key: &str) -> VisionGetResult {
         let mut cache = self.cache.write().unwrap_or_else(|e| e.into_inner());
 
         if let Some(entry) = cache.get_mut(content_key) {
             entry.last_accessed_at = Self::now_ms();
-            let result = json!({
-                "found": true,
-                "description": entry.description,
-                "model": entry.model,
-                "provider": entry.provider,
-                "processing_time_ms": entry.processing_time_ms,
-                "confidence": entry.confidence,
-            });
-
-            // Increment hits
-            let mut hits = self.hits.write().unwrap_or_else(|e| e.into_inner());
-            *hits += 1;
-
-            Ok(CommandResult::Json(result))
+            let result = VisionGetResult {
+                found: true,
+                description: Some(entry.description.clone()),
+                model: Some(entry.model.clone()),
+                provider: Some(entry.provider.clone()),
+                processing_time_ms: Some(entry.processing_time_ms),
+                confidence: Some(entry.confidence),
+            };
+            *self.hits.write().unwrap_or_else(|e| e.into_inner()) += 1;
+            result
         } else {
-            // Increment misses
-            let mut misses = self.misses.write().unwrap_or_else(|e| e.into_inner());
-            *misses += 1;
-
-            Ok(CommandResult::Json(json!({ "found": false })))
+            *self.misses.write().unwrap_or_else(|e| e.into_inner()) += 1;
+            VisionGetResult {
+                found: false,
+                description: None,
+                model: None,
+                provider: None,
+                processing_time_ms: None,
+                confidence: None,
+            }
         }
     }
 
     /// Store a description. Publishes vision:description:ready event.
-    fn handle_put(&self, params: Value) -> Result<CommandResult, String> {
-        let content_key = params["content_key"]
-            .as_str()
-            .ok_or("Missing content_key")?
-            .to_string();
-        let description = params["description"]
-            .as_str()
-            .ok_or("Missing description")?
-            .to_string();
-        let model = params["model"].as_str().unwrap_or("unknown").to_string();
-        let provider = params["provider"].as_str().unwrap_or("unknown").to_string();
-        let processing_time_ms = params["processing_time_ms"].as_u64().unwrap_or(0);
-        let confidence = params["confidence"].as_f64().unwrap_or(0.85);
+    pub fn put(&self, p: &VisionPutParams) -> VisionPutResult {
+        let model = p.model.clone().unwrap_or_else(|| "unknown".to_string());
+        let provider = p.provider.clone().unwrap_or_else(|| "unknown".to_string());
+        let processing_time_ms = p.processing_time_ms.unwrap_or(0);
+        let confidence = p.confidence.unwrap_or(0.85);
 
         let now = Self::now_ms();
         let entry = CachedDescription {
-            description: description.clone(),
+            description: p.description.clone(),
             model: model.clone(),
             provider: provider.clone(),
             processing_time_ms,
@@ -165,11 +330,11 @@ impl VisionModule {
         let mut cache = self.cache.write().unwrap_or_else(|e| e.into_inner());
 
         // LRU eviction if at capacity
-        if cache.len() >= MAX_CACHE_ENTRIES && !cache.contains_key(&content_key) {
+        if cache.len() >= MAX_CACHE_ENTRIES && !cache.contains_key(&p.content_key) {
             self.evict_lru(&mut cache);
         }
 
-        cache.insert(content_key.clone(), entry);
+        cache.insert(p.content_key.clone(), entry);
 
         // Publish event — any TS consumer watching for this key gets notified
         let bus_guard = self.bus.read().unwrap_or_else(|e| e.into_inner());
@@ -177,35 +342,32 @@ impl VisionModule {
             bus.publish_async_only(
                 "vision:description:ready",
                 json!({
-                    "content_key": content_key,
-                    "description": description,
+                    "content_key": p.content_key,
+                    "description": p.description,
                     "model": model,
                     "provider": provider,
                 }),
             );
         }
 
-        Ok(CommandResult::Json(json!({ "stored": true })))
+        VisionPutResult { stored: true }
     }
 
     /// Check status of a content key: "cached", "none"
-    fn handle_status(&self, params: Value) -> Result<CommandResult, String> {
-        let content_key = params["content_key"]
-            .as_str()
-            .ok_or("Missing content_key")?;
-
+    pub fn status(&self, content_key: &str) -> VisionStatusResult {
         let cache = self.cache.read().unwrap_or_else(|e| e.into_inner());
         let status = if cache.contains_key(content_key) {
             "cached"
         } else {
             "none"
         };
-
-        Ok(CommandResult::Json(json!({ "status": status })))
+        VisionStatusResult {
+            status: status.to_string(),
+        }
     }
 
     /// Cache statistics
-    fn handle_stats(&self) -> Result<CommandResult, String> {
+    pub fn stats(&self) -> VisionCacheStatsResult {
         let cache = self.cache.read().unwrap_or_else(|e| e.into_inner());
         let hits = *self.hits.read().unwrap_or_else(|e| e.into_inner());
         let misses = *self.misses.read().unwrap_or_else(|e| e.into_inner());
@@ -217,37 +379,29 @@ impl VisionModule {
             0.0
         };
 
-        let stats = CacheStats {
+        VisionCacheStatsResult {
             entries: cache.len(),
             max_entries: MAX_CACHE_ENTRIES,
             hits,
             misses,
             hit_rate,
             evictions,
-        };
-
-        CommandResult::json(&stats)
+        }
     }
 
     /// Bulk warm cache from persisted L2 data.
     /// Called by TS on startup to restore descriptions from ORM.
-    fn handle_warm(&self, params: Value) -> Result<CommandResult, String> {
-        let entries = params["entries"]
-            .as_array()
-            .ok_or("Missing entries array")?;
-
+    pub fn warm(&self, entries: &[VisionWarmEntry]) -> VisionWarmResult {
         let mut cache = self.cache.write().unwrap_or_else(|e| e.into_inner());
         let now = Self::now_ms();
         let mut loaded = 0u64;
 
         for entry in entries {
-            let content_key = match entry["content_key"].as_str() {
-                Some(k) => k.to_string(),
-                None => continue,
-            };
-            let description = match entry["description"].as_str() {
-                Some(d) => d.to_string(),
-                None => continue,
+            // Skip rows missing the two identifying fields — a corrupt row must not
+            // abort the bulk restore.
+            let (content_key, description) = match (&entry.content_key, &entry.description) {
+                (Some(k), Some(d)) => (k.clone(), d.clone()),
+                _ => continue,
             };
 
             if cache.len() >= MAX_CACHE_ENTRIES {
@@ -258,11 +412,14 @@ impl VisionModule {
                 content_key,
                 CachedDescription {
                     description,
-                    model: entry["model"].as_str().unwrap_or("unknown").to_string(),
-                    provider: entry["provider"].as_str().unwrap_or("unknown").to_string(),
-                    processing_time_ms: entry["processing_time_ms"].as_u64().unwrap_or(0),
-                    confidence: entry["confidence"].as_f64().unwrap_or(0.85),
-                    cached_at: entry["cached_at"].as_u64().unwrap_or(now),
+                    model: entry.model.clone().unwrap_or_else(|| "unknown".to_string()),
+                    provider: entry
+                        .provider
+                        .clone()
+                        .unwrap_or_else(|| "unknown".to_string()),
+                    processing_time_ms: entry.processing_time_ms.unwrap_or(0),
+                    confidence: entry.confidence.unwrap_or(0.85),
+                    cached_at: entry.cached_at.unwrap_or(now),
                     last_accessed_at: now,
                 },
             );
@@ -277,15 +434,14 @@ impl VisionModule {
             cache.len()
         );
 
-        Ok(CommandResult::Json(json!({
-            "warmed": loaded,
-            "total": cache.len(),
-        })))
+        VisionWarmResult {
+            warmed: loaded,
+            total: cache.len(),
+        }
     }
 
     /// Manual eviction — remove entries not accessed within idle_ms.
-    fn handle_evict(&self, params: Value) -> Result<CommandResult, String> {
-        let idle_ms = params["idle_ms"].as_u64().unwrap_or(30 * 60 * 1000); // 30 min default
+    pub fn evict(&self, idle_ms: u64) -> VisionEvictResult {
         let cutoff = Self::now_ms().saturating_sub(idle_ms);
 
         let mut cache = self.cache.write().unwrap_or_else(|e| e.into_inner());
@@ -295,8 +451,7 @@ impl VisionModule {
 
         let evicted = before - cache.len();
         if evicted > 0 {
-            let mut ev = self.evictions.write().unwrap_or_else(|e| e.into_inner());
-            *ev += evicted as u64;
+            *self.evictions.write().unwrap_or_else(|e| e.into_inner()) += evicted as u64;
         }
 
         log_info!(
@@ -308,10 +463,10 @@ impl VisionModule {
             cache.len()
         );
 
-        Ok(CommandResult::Json(json!({
-            "evicted": evicted,
-            "remaining": cache.len(),
-        })))
+        VisionEvictResult {
+            evicted,
+            remaining: cache.len(),
+        }
     }
 
     /// LRU eviction: remove the least recently accessed entry.
@@ -323,9 +478,32 @@ impl VisionModule {
 
         if let Some(key) = oldest_key {
             cache.remove(&key);
-            let mut ev = self.evictions.write().unwrap_or_else(|e| e.into_inner());
-            *ev += 1;
+            *self.evictions.write().unwrap_or_else(|e| e.into_inner()) += 1;
         }
+    }
+}
+
+// ============================================================================
+// Module shell
+// ============================================================================
+
+/// Thin `ServiceModule` shell owning the [`VisionCache`] the typed `vision/*`
+/// commands capture. Wires the event bus into the cache on init.
+pub struct VisionModule {
+    cache: Arc<VisionCache>,
+}
+
+impl Default for VisionModule {
+    fn default() -> Self {
+        Self {
+            cache: Arc::new(VisionCache::new()),
+        }
+    }
+}
+
+impl VisionModule {
+    pub fn new() -> Self {
+        Self::default()
     }
 }
 
@@ -344,8 +522,7 @@ impl ServiceModule for VisionModule {
     }
 
     async fn initialize(&self, ctx: &ModuleContext) -> Result<(), String> {
-        let mut bus = self.bus.write().unwrap_or_else(|e| e.into_inner());
-        *bus = Some(ctx.bus.clone());
+        self.cache.set_bus(ctx.bus.clone());
         log_info!(
             "vision",
             "init",
@@ -355,16 +532,19 @@ impl ServiceModule for VisionModule {
         Ok(())
     }
 
-    async fn handle_command(&self, command: &str, params: Value) -> Result<CommandResult, String> {
-        match command {
-            "vision/description-get" => self.handle_get(params),
-            "vision/description-put" => self.handle_put(params),
-            "vision/description-status" => self.handle_status(params),
-            "vision/cache-stats" => self.handle_stats(),
-            "vision/cache-warm" => self.handle_warm(params),
-            "vision/cache-evict" => self.handle_evict(params),
-            _ => Err(format!("Unknown vision command: {command}")),
-        }
+    async fn handle_command(
+        &self,
+        command: &str,
+        _params: serde_json::Value,
+    ) -> Result<CommandResult, String> {
+        Err(format!(
+            "vision command surface is migrated to the typed registry; \
+             '{command}' has no legacy handler"
+        ))
+    }
+
+    fn commands(&self) -> Vec<Arc<dyn crate::sdk_codegen::DynCommand>> {
+        crate::commands::vision::command_objects(self.cache.clone())
     }
 
     fn as_any(&self) -> &dyn Any {
@@ -376,126 +556,109 @@ impl ServiceModule for VisionModule {
 mod tests {
     use super::*;
 
-    #[tokio::test]
-    async fn test_put_and_get() {
-        let module = VisionModule::new();
+    // what this catches: put then get round-trips a description through the cache
+    // (the content-addressed store + hit path) via the typed service.
+    #[test]
+    fn put_and_get_round_trip() {
+        let cache = VisionCache::new();
+        cache.put(&VisionPutParams {
+            content_key: "abc123".to_string(),
+            description: "A cat sitting on a keyboard".to_string(),
+            model: Some("llava:7b".to_string()),
+            provider: Some("candle".to_string()),
+            processing_time_ms: Some(65000),
+            confidence: Some(0.85),
+        });
 
-        // Put a description
-        let put_result = module
-            .handle_command(
-                "vision/description-put",
-                json!({
-                    "content_key": "abc123",
-                    "description": "A cat sitting on a keyboard",
-                    "model": "llava:7b",
-                    "provider": "candle",
-                    "processing_time_ms": 65000,
-                    "confidence": 0.85,
-                }),
-            )
-            .await;
-        assert!(put_result.is_ok());
-
-        // Get it back
-        let get_result = module
-            .handle_command("vision/description-get", json!({ "content_key": "abc123" }))
-            .await;
-        assert!(get_result.is_ok());
-        if let Ok(CommandResult::Json(json)) = get_result {
-            assert_eq!(json["found"], true);
-            assert_eq!(json["description"], "A cat sitting on a keyboard");
-            assert_eq!(json["model"], "llava:7b");
-        }
+        let got = cache.get("abc123");
+        assert!(got.found);
+        assert_eq!(got.description.as_deref(), Some("A cat sitting on a keyboard"));
+        assert_eq!(got.model.as_deref(), Some("llava:7b"));
     }
 
-    #[tokio::test]
-    async fn test_miss() {
-        let module = VisionModule::new();
-        let result = module
-            .handle_command(
-                "vision/description-get",
-                json!({ "content_key": "nonexistent" }),
-            )
-            .await;
-        assert!(result.is_ok());
-        if let Ok(CommandResult::Json(json)) = result {
-            assert_eq!(json["found"], false);
-        }
+    // what this catches: a miss returns found=false and increments the miss counter.
+    #[test]
+    fn miss_returns_not_found() {
+        let cache = VisionCache::new();
+        let got = cache.get("nonexistent");
+        assert!(!got.found);
+        assert!(got.description.is_none());
     }
 
-    #[tokio::test]
-    async fn test_stats() {
-        let module = VisionModule::new();
+    // what this catches: stats reflect one entry, one hit, one miss → 0.5 hit rate.
+    #[test]
+    fn stats_track_hits_and_misses() {
+        let cache = VisionCache::new();
+        cache.put(&VisionPutParams {
+            content_key: "key1".to_string(),
+            description: "test".to_string(),
+            model: None,
+            provider: None,
+            processing_time_ms: None,
+            confidence: None,
+        });
+        cache.get("key1"); // hit
+        cache.get("key2"); // miss
 
-        // One put, one hit, one miss
-        let _ = module
-            .handle_command(
-                "vision/description-put",
-                json!({
-                    "content_key": "key1",
-                    "description": "test",
-                }),
-            )
-            .await;
-
-        let _ = module
-            .handle_command("vision/description-get", json!({ "content_key": "key1" }))
-            .await; // hit
-
-        let _ = module
-            .handle_command("vision/description-get", json!({ "content_key": "key2" }))
-            .await; // miss
-
-        let stats = module.handle_command("vision/cache-stats", json!({})).await;
-        assert!(stats.is_ok());
-        if let Ok(CommandResult::Json(json)) = stats {
-            assert_eq!(json["entries"], 1);
-            assert_eq!(json["hits"], 1);
-            assert_eq!(json["misses"], 1);
-            assert_eq!(json["hit_rate"], 0.5);
-        }
+        let stats = cache.stats();
+        assert_eq!(stats.entries, 1);
+        assert_eq!(stats.hits, 1);
+        assert_eq!(stats.misses, 1);
+        assert_eq!(stats.hit_rate, 0.5);
     }
 
-    #[tokio::test]
-    async fn test_warm() {
-        let module = VisionModule::new();
+    // what this catches: bulk warm loads multiple L2 rows into L1 and they become
+    // gettable; malformed rows (missing keys) are skipped, not fatal.
+    #[test]
+    fn warm_loads_entries() {
+        let cache = VisionCache::new();
+        let entries = vec![
+            VisionWarmEntry {
+                content_key: Some("a".to_string()),
+                description: Some("image a".to_string()),
+                model: Some("llava".to_string()),
+                provider: Some("candle".to_string()),
+                processing_time_ms: None,
+                confidence: None,
+                cached_at: None,
+            },
+            VisionWarmEntry {
+                content_key: Some("b".to_string()),
+                description: Some("image b".to_string()),
+                model: Some("llava".to_string()),
+                provider: Some("candle".to_string()),
+                processing_time_ms: None,
+                confidence: None,
+                cached_at: None,
+            },
+            // Malformed row: missing description → skipped, not fatal.
+            VisionWarmEntry {
+                content_key: Some("c".to_string()),
+                description: None,
+                model: None,
+                provider: None,
+                processing_time_ms: None,
+                confidence: None,
+                cached_at: None,
+            },
+        ];
+        let res = cache.warm(&entries);
+        assert_eq!(res.warmed, 2);
+        assert_eq!(res.total, 2);
 
-        let result = module
-            .handle_command(
-                "vision/cache-warm",
-                json!({
-                    "entries": [
-                        { "content_key": "a", "description": "image a", "model": "llava", "provider": "candle" },
-                        { "content_key": "b", "description": "image b", "model": "llava", "provider": "candle" },
-                        { "content_key": "c", "description": "image c", "model": "llava", "provider": "candle" },
-                    ]
-                }),
-            )
-            .await;
-        assert!(result.is_ok());
-        if let Ok(CommandResult::Json(json)) = result {
-            assert_eq!(json["warmed"], 3);
-            assert_eq!(json["total"], 3);
-        }
-
-        // Verify all three are accessible
-        let get = module
-            .handle_command("vision/description-get", json!({ "content_key": "b" }))
-            .await;
-        if let Ok(CommandResult::Json(json)) = get {
-            assert_eq!(json["found"], true);
-            assert_eq!(json["description"], "image b");
-        }
+        let got = cache.get("b");
+        assert!(got.found);
+        assert_eq!(got.description.as_deref(), Some("image b"));
     }
 
-    #[tokio::test]
-    async fn test_eviction() {
-        let module = VisionModule::new();
-
-        // Add an entry with old timestamp
+    // what this catches: idle-based eviction drops the old entry and keeps the fresh
+    // one (the LRU/idle reclaim path).
+    #[test]
+    fn eviction_drops_idle_entries() {
+        let cache = VisionCache::new();
         {
-            let mut cache = module.cache.write().unwrap();
-            cache.insert(
+            let mut c = cache.cache.write().unwrap();
+            c.insert(
                 "old_key".to_string(),
                 CachedDescription {
                     description: "old".to_string(),
@@ -507,7 +670,7 @@ mod tests {
                     last_accessed_at: 0, // Very old
                 },
             );
-            cache.insert(
+            c.insert(
                 "new_key".to_string(),
                 CachedDescription {
                     description: "new".to_string(),
@@ -515,44 +678,29 @@ mod tests {
                     provider: "test".to_string(),
                     processing_time_ms: 0,
                     confidence: 0.5,
-                    cached_at: VisionModule::now_ms(),
-                    last_accessed_at: VisionModule::now_ms(),
+                    cached_at: VisionCache::now_ms(),
+                    last_accessed_at: VisionCache::now_ms(),
                 },
             );
         }
 
-        // Evict entries idle for more than 1ms (the old one)
-        let result = module
-            .handle_command(
-                "vision/cache-evict",
-                json!({ "idle_ms": 1000 }), // 1 second
-            )
-            .await;
-        assert!(result.is_ok());
-        if let Ok(CommandResult::Json(json)) = result {
-            assert_eq!(json["evicted"], 1);
-            assert_eq!(json["remaining"], 1);
-        }
+        let res = cache.evict(1000);
+        assert_eq!(res.evicted, 1);
+        assert_eq!(res.remaining, 1);
 
-        // Old key gone, new key remains
-        let old = module
-            .handle_command(
-                "vision/description-get",
-                json!({ "content_key": "old_key" }),
-            )
-            .await;
-        if let Ok(CommandResult::Json(json)) = old {
-            assert_eq!(json["found"], false);
-        }
+        assert!(!cache.get("old_key").found);
+        assert!(cache.get("new_key").found);
+    }
 
-        let new = module
-            .handle_command(
-                "vision/description-get",
-                json!({ "content_key": "new_key" }),
-            )
-            .await;
-        if let Ok(CommandResult::Json(json)) = new {
-            assert_eq!(json["found"], true);
-        }
+    // what this catches: the legacy handle_command surface fails loud (the typed
+    // registry owns vision/* now) rather than silently dispatching.
+    #[tokio::test]
+    async fn legacy_handle_command_fails_loud() {
+        let module = VisionModule::new();
+        let err = module
+            .handle_command("vision/cache-stats", json!({}))
+            .await
+            .unwrap_err();
+        assert!(err.contains("migrated to the typed registry"), "got: {err}");
     }
 }

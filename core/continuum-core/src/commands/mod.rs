@@ -33,3 +33,4 @@ pub mod search;
 pub mod serving;
 pub mod system;
 pub mod vector;
+pub mod vision;
