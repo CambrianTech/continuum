@@ -887,42 +887,55 @@ pub fn start_server(
     // needs; the ceiling already nets out external *resident* usage, so this is a
     // small safety reserve, not a budget for the compositor.
     const GPU_SAFETY_RESERVE_BYTES: u64 = 512 * 1024 * 1024;
-    let mut capacity_sources: Vec<Arc<dyn crate::resources::CapacitySource>> = Vec::new();
-    match crate::gpu::monitor::detect() {
-        Some(monitor) => {
-            log_info!(
-                "ipc",
-                "server",
-                "ResourceGovernor: live VRAM scan via {} ({}) — VRAM is governed",
-                monitor.platform(),
-                monitor.device_name()
-            );
-            capacity_sources.push(Arc::new(crate::resources::GpuCapacitySource::new(
-                monitor,
-                GPU_SAFETY_RESERVE_BYTES,
-            )));
+    // `gpu::monitor::detect()` (→ `MetalMonitor::new`/`NvidiaMonitor::new`) and
+    // `ResourceDaemon::start()` each adopt the canonical Daemon base, which calls
+    // `tokio::spawn` from inside the constructor to own its interval task. But
+    // `start_server` runs on a plain `std::thread` (main spawns it OFF the runtime
+    // so its blocking accept-loop never steals a tokio worker — see main.rs), so
+    // there is no ambient reactor and those `tokio::spawn`s panic "no reactor
+    // running". Enter the runtime context for exactly this daemon-construction
+    // region. The guard is scoped so it drops here, well before the `block_on`
+    // regions further down — we never hold a runtime-context guard across a
+    // `block_on`.
+    let resource_daemon = {
+        let _rt_guard = rt_handle.enter();
+        let mut capacity_sources: Vec<Arc<dyn crate::resources::CapacitySource>> = Vec::new();
+        match crate::gpu::monitor::detect() {
+            Some(monitor) => {
+                log_info!(
+                    "ipc",
+                    "server",
+                    "ResourceGovernor: live VRAM scan via {} ({}) — VRAM is governed",
+                    monitor.platform(),
+                    monitor.device_name()
+                );
+                capacity_sources.push(Arc::new(crate::resources::GpuCapacitySource::new(
+                    monitor,
+                    GPU_SAFETY_RESERVE_BYTES,
+                )));
+            }
+            None => {
+                // GpuMemoryManager::detect() already panics on a truly GPU-less host,
+                // so reaching here means a GPU exists but has no live GpuMonitor
+                // adapter yet — the non-NVIDIA Vulkan (VK_EXT_memory_budget/ash) gap.
+                // Name it loudly: VRAM stays UNGOVERNED and serving fails closed
+                // (host_budget caps at 0) rather than over-committing against a
+                // fabricated number. Build the Vulkan adapter or run on Metal/NVIDIA.
+                log_error!(
+                    "ipc",
+                    "server",
+                    "ResourceGovernor: NO live GpuMonitor (nvidia-smi absent and the \
+                     non-NVIDIA Vulkan VK_EXT_memory_budget adapter is not built) — \
+                     VRAM is UNGOVERNED; serving will refuse until a live monitor exists"
+                );
+            }
         }
-        None => {
-            // GpuMemoryManager::detect() already panics on a truly GPU-less host,
-            // so reaching here means a GPU exists but has no live GpuMonitor
-            // adapter yet — the non-NVIDIA Vulkan (VK_EXT_memory_budget/ash) gap.
-            // Name it loudly: VRAM stays UNGOVERNED and serving fails closed
-            // (host_budget caps at 0) rather than over-committing against a
-            // fabricated number. Build the Vulkan adapter or run on Metal/NVIDIA.
-            log_error!(
-                "ipc",
-                "server",
-                "ResourceGovernor: NO live GpuMonitor (nvidia-smi absent and the \
-                 non-NVIDIA Vulkan VK_EXT_memory_budget adapter is not built) — \
-                 VRAM is UNGOVERNED; serving will refuse until a live monitor exists"
-            );
-        }
-    }
-    let resource_daemon = crate::resources::ResourceDaemon::start(
-        capacity_sources,
-        Vec::new(),
-        crate::resources::DaemonConfig::default(),
-    );
+        crate::resources::ResourceDaemon::start(
+            capacity_sources,
+            Vec::new(),
+            crate::resources::DaemonConfig::default(),
+        )
+    };
 
     let serving_daemon = Arc::new(crate::modules::serving_daemon::ServingDaemonModule::new(
         gpu_manager.clone(),
