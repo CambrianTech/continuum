@@ -25,6 +25,7 @@ pub mod memory;
 pub mod memory_budget;
 pub mod memory_gate;
 pub mod pressure;
+pub mod pressure_broker_state;
 pub mod resources;
 
 /// Shared params for the no-argument `system/*` reads (cpu, memory, pressure,
