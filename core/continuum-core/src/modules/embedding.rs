@@ -1,7 +1,13 @@
-//! EmbeddingModule — pure vector math service (similarity / clustering).
+//! EmbeddingModule — the pure vector-math kernels (similarity / clustering).
 //!
-//! Handles: embedding/similarity, embedding/similarity-matrix, embedding/top-k,
-//!          embedding/cluster
+//! The `embedding/*` commands themselves (similarity, similarity-matrix, top-k,
+//! cluster) are now typed stateless `ActionCommand`s under `commands/embedding/*`
+//! that call the kernels in this file. This module no longer carries legacy
+//! `handle_command` arms — its `handle_command` exists only to fail loud if a
+//! typed registration is ever missing. What it still owns is the SIMD/Rayon math
+//! (`cosine_similarity`, `pairwise_similarity_matrix`, `top_k_similar`,
+//! `detect_clusters`, the `Cluster` wire type) plus `build_adapter_embedder` — the
+//! single source of truth every embedding caller scores against.
 //!
 //! NOTE (task #40): embedding *generation* is async + adapter-routed
 //! (unsloth / llama-server `/v1/embeddings` via the `AIProviderAdapter`, see
@@ -18,13 +24,10 @@
 use crate::runtime::{CommandResult, ModuleConfig, ModuleContext, ModulePriority, ServiceModule};
 use async_trait::async_trait;
 use rayon::prelude::*;
-use serde::Serialize;
-use serde_json::{json, Value};
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::any::Any;
-use std::time::Instant;
-use tracing::info;
 
-use crate::utils::params::Params;
 use std::sync::Arc;
 use wide::f32x8;
 
@@ -290,7 +293,9 @@ pub fn top_k_similar(
 // ─── Clustering Functions ───────────────────────────────────────────────────
 
 /// Cluster result from connected components clustering.
-#[derive(Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../../protocol/typescript/embedding/Cluster.ts")]
 pub struct Cluster {
     /// Indices of items in this cluster
     pub indices: Vec<usize>,
@@ -410,194 +415,6 @@ impl EmbeddingModule {
     pub fn new() -> Self {
         Self
     }
-
-    /// Handle embedding/similarity - compute cosine similarity between two embeddings
-    fn handle_similarity(&self, params: &Value) -> Result<CommandResult, String> {
-        let p = Params::new(params);
-        let a: Vec<f32> = p.json("a")?;
-        let b: Vec<f32> = p.json("b")?;
-
-        if a.len() != b.len() {
-            return Err(format!("Dimension mismatch: {} vs {}", a.len(), b.len()));
-        }
-
-        let similarity = cosine_similarity(&a, &b);
-
-        Ok(CommandResult::Json(json!({
-            "similarity": similarity,
-            "dimensions": a.len()
-        })))
-    }
-
-    /// Handle embedding/similarity-matrix - compute pairwise similarities in parallel
-    ///
-    /// Takes an array of embeddings, returns lower-triangular similarity matrix.
-    /// For n embeddings, returns n*(n-1)/2 similarity values.
-    fn handle_similarity_matrix(&self, params: &Value) -> Result<CommandResult, String> {
-        let p = Params::new(params);
-        let embeddings: Vec<Vec<f32>> = p.json("embeddings")?;
-
-        let n = embeddings.len();
-        if n < 2 {
-            return Ok(CommandResult::Json(json!({
-                "similarities": [],
-                "count": n,
-                "pairs": 0
-            })));
-        }
-
-        // Verify all embeddings have same dimensions
-        let dim = embeddings[0].len();
-        for (i, emb) in embeddings.iter().enumerate() {
-            if emb.len() != dim {
-                return Err(format!(
-                    "Dimension mismatch at index {}: expected {}, got {}",
-                    i,
-                    dim,
-                    emb.len()
-                ));
-            }
-        }
-
-        let start = Instant::now();
-        let similarities = pairwise_similarity_matrix(&embeddings);
-        let duration_ms = start.elapsed().as_millis() as u64;
-
-        let num_pairs = similarities.len();
-        info!(
-            "Computed {} pairwise similarities ({} embeddings, {}d) in {}ms",
-            num_pairs, n, dim, duration_ms
-        );
-
-        // Return as binary for efficiency (avoid JSON number serialization overhead)
-        let bytes: Vec<u8> = similarities.iter().flat_map(|f| f.to_le_bytes()).collect();
-
-        Ok(CommandResult::Binary {
-            metadata: json!({
-                "type": "binary",
-                "length": bytes.len(),
-                "dtype": "f32",
-                "count": n,
-                "pairs": num_pairs,
-                "dimensions": dim,
-                "durationMs": duration_ms
-            }),
-            data: bytes,
-        })
-    }
-
-    /// Handle embedding/top-k - find top-k most similar embeddings to a query
-    ///
-    /// Takes a query embedding and array of target embeddings, returns indices
-    /// and similarities of top-k matches. Parallelized with Rayon.
-    fn handle_top_k(&self, params: &Value) -> Result<CommandResult, String> {
-        let p = Params::new(params);
-        let query: Vec<f32> = p.json("query")?;
-        let targets: Vec<Vec<f32>> = p.json("targets")?;
-        let k = p.u64_or("k", 10) as usize;
-        let threshold = p.f64_or("threshold", 0.0) as f32;
-
-        if targets.is_empty() {
-            return Ok(CommandResult::Json(json!({
-                "results": [],
-                "count": 0
-            })));
-        }
-
-        // Verify dimensions match
-        let dim = query.len();
-        for (i, target) in targets.iter().enumerate() {
-            if target.len() != dim {
-                return Err(format!(
-                    "Dimension mismatch at target index {}: expected {}, got {}",
-                    i,
-                    dim,
-                    target.len()
-                ));
-            }
-        }
-
-        let start = Instant::now();
-        let results = top_k_similar(&query, &targets, k, threshold);
-        let duration_ms = start.elapsed().as_millis() as u64;
-
-        info!(
-            "Found {} top-k matches from {} targets ({}d) in {}ms",
-            results.len(),
-            targets.len(),
-            dim,
-            duration_ms
-        );
-
-        // Return as array of {index, similarity} objects
-        let result_objects: Vec<Value> = results
-            .iter()
-            .map(|(idx, sim)| json!({ "index": idx, "similarity": sim }))
-            .collect();
-
-        Ok(CommandResult::Json(json!({
-            "results": result_objects,
-            "count": results.len(),
-            "totalTargets": targets.len(),
-            "k": k,
-            "threshold": threshold,
-            "dimensions": dim,
-            "durationMs": duration_ms
-        })))
-    }
-
-    /// Handle embedding/cluster - detect clusters via connected components
-    ///
-    /// Takes embeddings and clustering parameters, returns cluster assignments.
-    /// Full clustering algorithm in Rust (similarity matrix + connected components).
-    fn handle_cluster(&self, params: &Value) -> Result<CommandResult, String> {
-        let p = Params::new(params);
-        let embeddings: Vec<Vec<f32>> = p.json("embeddings")?;
-        let min_similarity = p.f64_or("minSimilarity", 0.7) as f32;
-        let min_cluster_size = p.u64_or("minClusterSize", 2) as usize;
-
-        let n = embeddings.len();
-        if n < min_cluster_size {
-            return Ok(CommandResult::Json(json!({
-                "clusters": [],
-                "count": n,
-                "clusterCount": 0
-            })));
-        }
-
-        // Verify all embeddings have same dimensions
-        let dim = embeddings[0].len();
-        for (i, emb) in embeddings.iter().enumerate() {
-            if emb.len() != dim {
-                return Err(format!(
-                    "Dimension mismatch at index {}: expected {}, got {}",
-                    i,
-                    dim,
-                    emb.len()
-                ));
-            }
-        }
-
-        let start = Instant::now();
-        let clusters = detect_clusters(&embeddings, min_similarity, min_cluster_size);
-        let duration_ms = start.elapsed().as_millis() as u64;
-
-        let cluster_count = clusters.len();
-        info!(
-            "Detected {} clusters from {} embeddings ({}d) in {}ms",
-            cluster_count, n, dim, duration_ms
-        );
-
-        Ok(CommandResult::Json(json!({
-            "clusters": clusters,
-            "count": n,
-            "clusterCount": cluster_count,
-            "dimensions": dim,
-            "minSimilarity": min_similarity,
-            "minClusterSize": min_cluster_size,
-            "durationMs": duration_ms
-        })))
-    }
 }
 
 impl Default for EmbeddingModule {
@@ -627,18 +444,19 @@ impl ServiceModule for EmbeddingModule {
         Ok(())
     }
 
-    async fn handle_command(&self, command: &str, params: Value) -> Result<CommandResult, String> {
-        match command {
-            "embedding/similarity" => self.handle_similarity(&params),
-            "embedding/similarity-matrix" => self.handle_similarity_matrix(&params),
-            "embedding/top-k" => self.handle_top_k(&params),
-            "embedding/cluster" => self.handle_cluster(&params),
-            _ => Err(format!(
-                "Unknown embedding command: {command}. Embedding generation is \
-                 adapter-routed (ai/* via /v1/embeddings), not served here; this \
-                 module only does vector math (similarity / matrix / top-k / cluster)."
-            )),
-        }
+    async fn handle_command(&self, command: &str, _params: Value) -> Result<CommandResult, String> {
+        // The vector-math commands (similarity / matrix / top-k / cluster) are now
+        // typed stateless ActionCommands under `commands/embedding/*` — the executor
+        // routes them via the typed path (`route_object`) before it ever reaches a
+        // module's legacy handler. If one lands here, the typed registration is
+        // missing: fail loud rather than silently re-implement it.
+        Err(format!(
+            "'{command}' did not resolve on the typed command registry. Embedding \
+             vector math is served by the stateless `commands/embedding/*` commands; \
+             embedding *generation* is adapter-routed (ai/* via /v1/embeddings). This \
+             module no longer carries a legacy handler — this error means the typed \
+             command failed to register, not that the command is unknown."
+        ))
     }
 
     fn as_any(&self) -> &dyn Any {
