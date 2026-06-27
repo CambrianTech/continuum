@@ -80,6 +80,41 @@ pub struct MlxTrainSpec {
     pub max_seq_length: u32,
     /// `--fine-tune-type` — "lora" (the genome layer) by default.
     pub fine_tune_type: String,
+    /// EXPLICIT normalizations a GGUF-published base's HF form may need before
+    /// mlx_lm can train it (see [`prepare_base_for_mlx`]). Never guessed — the
+    /// caller, who knows the served base, supplies them or the run fails loud.
+    pub base_prep: MlxBasePrep,
+}
+
+/// Normalizations a GGUF-published model's HF safetensors form needs before
+/// `mlx_lm.lora` can train it. Discovered live against
+/// `continuum-ai/qwen3.5-4b-code-forged` — a model published primarily as GGUF,
+/// whose HF form (the trainable serve-base) carries two mlx-incompatibilities:
+///
+///   1. **model_type dispatch.** mlx maps `config.json` `model_type` →
+///      `mlx_lm.models.<model_type>`. The forged base declares
+///      `qwen3_5_text` (the HF multimodal *text-tower* name), for which there is
+///      no mlx module — but the base architecture itself is `qwen3_5`, which mlx
+///      fully supports (hybrid linear/full attention included). So the type must
+///      be rewritten to the mlx module name.
+///   2. **chat_template.** The forged tokenizer ships no `chat_template`, so a
+///      chat-`{messages}` corpus can't be rendered. The served GGUF uses ChatML;
+///      the same template, supplied explicitly, lets mlx render the corpus.
+///
+/// Both are caller-supplied — the substrate NEVER infers an architecture nor
+/// invents a template ([[no-hardcoded-heuristics-to-steer-cognition]] / fail-loud
+/// doctrine). A `None` field means "leave it alone"; if mlx then can't dispatch
+/// or render, mlx itself fails loud. The right long-run home for these is the
+/// forge PUBLISH step (emit an already-mlx-trainable HF base); until then the
+/// train step normalizes its own input.
+#[derive(Debug, Clone, Default)]
+pub struct MlxBasePrep {
+    /// If set, force `config.json` `model_type` to this mlx module name (e.g.
+    /// rewrite `qwen3_5_text` → `qwen3_5`). Idempotent: a no-op when already set.
+    pub model_type_override: Option<String>,
+    /// If set AND the tokenizer has no `chat_template`, write this Jinja template
+    /// into `tokenizer_config.json`. Never overwrites an existing template.
+    pub chat_template: Option<String>,
 }
 
 /// What a completed train run produced — the inputs `mlx_to_gguf_lora` consumes.
@@ -138,10 +173,71 @@ pub fn build_train_args(spec: &MlxTrainSpec, config_path: &Path) -> Vec<String> 
     ]
 }
 
+/// Apply the EXPLICIT, caller-supplied [`MlxBasePrep`] normalizations to an HF
+/// base dir in place, idempotently. Returns the list of changes made (empty when
+/// the base was already mlx-ready) so the caller can log/inspect what it touched.
+/// Pure JSON edits — no Python, no inference, no guessing. Fails loud only on a
+/// genuinely malformed config (unreadable / unparseable JSON), never silently.
+pub fn prepare_base_for_mlx(
+    base_model_dir: &Path,
+    prep: &MlxBasePrep,
+) -> Result<Vec<String>, String> {
+    let mut changes = Vec::new();
+
+    // 1. model_type dispatch rewrite (e.g. qwen3_5_text → qwen3_5).
+    if let Some(want) = &prep.model_type_override {
+        let path = base_model_dir.join("config.json");
+        let text = std::fs::read_to_string(&path)
+            .map_err(|e| format!("read {}: {e}", path.display()))?;
+        let mut cfg: serde_json::Value = serde_json::from_str(&text)
+            .map_err(|e| format!("parse {}: {e}", path.display()))?;
+        let cur = cfg
+            .get("model_type")
+            .and_then(|v| v.as_str())
+            .map(str::to_owned);
+        if cur.as_deref() != Some(want.as_str()) {
+            cfg["model_type"] = serde_json::Value::String(want.clone());
+            let pretty = serde_json::to_string_pretty(&cfg)
+                .map_err(|e| format!("serialize config.json: {e}"))?;
+            std::fs::write(&path, pretty)
+                .map_err(|e| format!("write {}: {e}", path.display()))?;
+            changes.push(format!(
+                "config.json model_type {:?} → {:?}",
+                cur.as_deref().unwrap_or("(absent)"),
+                want
+            ));
+        }
+    }
+
+    // 2. chat_template — only ADD when absent (never overwrite a real template).
+    if let Some(template) = &prep.chat_template {
+        let path = base_model_dir.join("tokenizer_config.json");
+        let text = std::fs::read_to_string(&path)
+            .map_err(|e| format!("read {}: {e}", path.display()))?;
+        let mut cfg: serde_json::Value = serde_json::from_str(&text)
+            .map_err(|e| format!("parse {}: {e}", path.display()))?;
+        let has = cfg
+            .get("chat_template")
+            .map(|v| !v.is_null())
+            .unwrap_or(false);
+        if !has {
+            cfg["chat_template"] = serde_json::Value::String(template.clone());
+            let pretty = serde_json::to_string_pretty(&cfg)
+                .map_err(|e| format!("serialize tokenizer_config.json: {e}"))?;
+            std::fs::write(&path, pretty)
+                .map_err(|e| format!("write {}: {e}", path.display()))?;
+            changes.push("tokenizer_config.json: added chat_template".to_string());
+        }
+    }
+
+    Ok(changes)
+}
+
 /// Run the native MLX LoRA trainer end-to-end: validate the env + IO contract,
-/// write the LoRA config, spawn `mlx_lm.lora`, and verify the adapter landed.
-/// Fail-loud on every precondition and on a non-zero exit — never returns an
-/// `Ok` pointing at a partial/absent adapter.
+/// normalize the base for mlx ([`prepare_base_for_mlx`]), write the LoRA config,
+/// spawn `mlx_lm.lora`, and verify the adapter landed. Fail-loud on every
+/// precondition and on a non-zero exit — never returns an `Ok` pointing at a
+/// partial/absent adapter.
 pub fn run_mlx_train(
     spec: &MlxTrainSpec,
     env: &MlxTrainEnv,
@@ -161,6 +257,18 @@ pub fn run_mlx_train(
             spec.base_model_dir.display()
         ));
     }
+
+    // Normalize the base for mlx BEFORE spawning (model_type dispatch +
+    // chat_template). Caller-supplied + idempotent; a no-op when already ready.
+    let prep_changes = prepare_base_for_mlx(&spec.base_model_dir, &spec.base_prep)?;
+    for change in &prep_changes {
+        crate::probe!(
+            class = "forge.mlx_train.base_prep",
+            change = %change,
+            "normalized HF base for mlx_lm before training"
+        );
+    }
+
     let train_jsonl = spec.data_dir.join("train.jsonl");
     let valid_jsonl = spec.data_dir.join("valid.jsonl");
     if !train_jsonl.is_file() {
@@ -248,6 +356,7 @@ mod tests {
             learning_rate: 2e-4,
             max_seq_length: 2048,
             fine_tune_type: "lora".into(),
+            base_prep: MlxBasePrep::default(),
         }
     }
 
@@ -291,5 +400,54 @@ mod tests {
         };
         let err = run_mlx_train(&spec(), &env).unwrap_err();
         assert!(err.contains("interpreter"), "err: {err}");
+    }
+
+    // what this catches: the two real normalizations the forged GGUF-form base
+    // needed before mlx_lm could train it (proven live: model_type qwen3_5_text →
+    // qwen3_5 dispatch + an added chat_template). prepare_base_for_mlx must rewrite
+    // the model_type, ADD the missing template, report both changes, and be a no-op
+    // on a second pass (idempotent) while never clobbering an existing template.
+    #[test]
+    fn prepare_base_normalizes_model_type_and_adds_chat_template() {
+        let dir = std::env::temp_dir().join(format!(
+            "mlx_prep_test_{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("config.json"),
+            r#"{"model_type":"qwen3_5_text","hidden_size":2560}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("tokenizer_config.json"),
+            r#"{"eos_token":"<|im_end|>"}"#,
+        )
+        .unwrap();
+
+        let prep = MlxBasePrep {
+            model_type_override: Some("qwen3_5".into()),
+            chat_template: Some("{{ TEMPLATE }}".into()),
+        };
+        let changes = prepare_base_for_mlx(&dir, &prep).unwrap();
+        assert_eq!(changes.len(), 2, "expected both normalizations: {changes:?}");
+
+        let cfg: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.join("config.json")).unwrap())
+                .unwrap();
+        assert_eq!(cfg["model_type"], "qwen3_5");
+        // untouched fields survive the rewrite
+        assert_eq!(cfg["hidden_size"], 2560);
+        let tok: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(dir.join("tokenizer_config.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(tok["chat_template"], "{{ TEMPLATE }}");
+
+        // second pass is a no-op (idempotent) and does NOT clobber the template
+        let again = prepare_base_for_mlx(&dir, &prep).unwrap();
+        assert!(again.is_empty(), "second pass should be a no-op: {again:?}");
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 }
