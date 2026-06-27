@@ -41,6 +41,7 @@ pub mod eval;
 pub mod inference_session;
 pub mod generate_recipe;
 pub mod generate_response;
+pub mod gym_grader;
 pub mod host_capability_probe;
 pub mod introspect_commands;
 pub mod llm_deliberation_faculty;
