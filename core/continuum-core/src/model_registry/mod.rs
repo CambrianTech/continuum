@@ -25,7 +25,7 @@ pub mod singleton;
 pub mod types;
 
 pub use artifacts::{
-    find_first_local_gguf, resolve_gguf_for_model, resolve_gguf_for_model_id,
+    expand_user_path, find_first_local_gguf, resolve_gguf_for_model, resolve_gguf_for_model_id,
     resolve_local_model_dir_for_model_id,
 };
 pub use catalog::{models as catalog_models, providers as catalog_providers};
