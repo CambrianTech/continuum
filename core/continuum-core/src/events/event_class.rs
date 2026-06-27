@@ -5,6 +5,7 @@
 //!
 //! ts-rs generates the TS bindings at `protocol/typescript/events/`.
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use ts_rs::TS;
@@ -22,7 +23,7 @@ use ts_rs::TS;
 ///   (The resolver itself can't cross the wire — it's a per-process
 ///   function ref — so on the TS side the resolver is registered
 ///   separately from the Rust-canonical config.)
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 #[ts(
     export,
@@ -39,7 +40,7 @@ pub enum EventClassChannelStrategy {
 /// Behavior when a subscriber receives an event with a `schemaVersion`
 /// it doesn't recognize. Default `Fail` matches the standing project rule
 /// of never silently swallowing evidence.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, TS, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 #[ts(
     export,
@@ -53,7 +54,7 @@ pub enum EventClassUnknownSchemaPolicy {
 
 /// Caller-supplied event-class declaration. All optional fields fill with
 /// conservative defaults (no broadcast, no airc cost).
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 #[ts(
     export,
