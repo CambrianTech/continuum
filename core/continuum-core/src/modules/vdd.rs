@@ -29,16 +29,14 @@
 //!   the harness has already written; the live-emit path lands
 //!   when those PRs are bound.
 
-use crate::logging::TimingGuard;
+use crate::commands::vdd::command_objects;
 use crate::runtime::{CommandResult, ModuleConfig, ModuleContext, ModulePriority, ServiceModule};
-use crate::utils::params::Params;
-use crate::vdd::reader::{latest_per_scenario, read_records, VddReadOptions, VddRecordEntry};
-use crate::vdd::record::HarnessStatus;
+use crate::sdk_codegen::DynCommand;
 use async_trait::async_trait;
-use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::any::Any;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
+use std::sync::Arc;
 
 pub struct VddModule {
     /// Artifact root. In production this points at
@@ -99,47 +97,19 @@ impl ServiceModule for VddModule {
         Ok(())
     }
 
-    async fn handle_command(&self, command: &str, params: Value) -> Result<CommandResult, String> {
-        match command {
-            "vdd/report" => {
-                let _timer = TimingGuard::new("module", "vdd_report");
-                let p = Params::new(&params);
+    async fn handle_command(&self, command: &str, _params: Value) -> Result<CommandResult, String> {
+        // Migrated to the typed registry (`commands/vdd/{report,score}.rs`). The
+        // legacy string-match surface is retired; fail loud rather than silently
+        // route a stale name (per Joel's never-swallow rule).
+        Err(format!(
+            "vdd command surface is migrated to the typed registry; '{command}' has no legacy handler"
+        ))
+    }
 
-                let opts = VddReadOptions {
-                    git_sha: p.str_opt("git_sha").map(String::from),
-                    scenario: p.str_opt("scenario").map(String::from),
-                };
-                let latest_only = p.bool_or("latest_only", false);
-
-                let entries =
-                    read_records(&self.artifact_root, &opts).map_err(|e| e.to_string())?;
-
-                let report = if latest_only {
-                    let collapsed = latest_per_scenario(entries);
-                    build_report(
-                        collapsed.into_values().collect(),
-                        &self.artifact_root,
-                        &opts,
-                    )
-                } else {
-                    build_report(entries, &self.artifact_root, &opts)
-                };
-
-                Ok(CommandResult::Json(
-                    serde_json::to_value(&report)
-                        .map_err(|e| format!("Serialize VDD report: {e}"))?,
-                ))
-            }
-
-            "vdd/score" => {
-                let _timer = TimingGuard::new("module", "vdd_score");
-                let parsed: VddScoreParams = serde_json::from_value(params)
-                    .map_err(|e| format!("vdd/score: invalid params: {e}"))?;
-                Ok(CommandResult::Json(score_eval_set(&parsed)))
-            }
-
-            other => Err(format!("Unknown vdd command: {other}")),
-        }
+    fn commands(&self) -> Vec<Arc<dyn DynCommand>> {
+        // `vdd/report` is dep-holding (captures the artifact root). `vdd/score` is
+        // stateless and self-registers via the inventory, so it is NOT listed here.
+        command_objects(self.artifact_root.clone())
     }
 
     fn as_any(&self) -> &dyn Any {
@@ -147,271 +117,17 @@ impl ServiceModule for VddModule {
     }
 }
 
-// ============================================================================
-// vdd/score — the measurement core of the self-evolving-genome A/B harness
-// (slice 1). Score a model's answers against a held-out set → accuracy. The
-// A/B *lift* = score(base+LoRA) − score(base); run this twice and diff. The
-// generation half (run the set through the gateway) is the next brick; this is
-// the deterministic scorer it composes with. See docs/genome/SELF-EVOLVING-GENOME.md.
-// ============================================================================
-
-/// One held-out evaluation case: the model's `actual` answer vs the `expected`.
-#[derive(Debug, Clone, Deserialize)]
-struct ScoreCase {
-    #[serde(default)]
-    prompt: String,
-    expected: String,
-    actual: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct VddScoreParams {
-    /// The held-out cases to score.
-    cases: Vec<ScoreCase>,
-    /// Match method: "exact" (case-insensitive equality) or "contains"
-    /// (expected appears in actual, case-insensitive — the lenient default).
-    #[serde(default = "default_score_method")]
-    method: String,
-    /// What's being scored, e.g. "base" or "base+lora-rust" — so the A/B can
-    /// label the two runs it diffs.
-    #[serde(default)]
-    label: String,
-    /// Scenario tag for the record.
-    #[serde(default = "default_score_scenario")]
-    scenario: String,
-}
-
-fn default_score_method() -> String {
-    "contains".to_string()
-}
-fn default_score_scenario() -> String {
-    "genome-ab-eval".to_string()
-}
-
-/// Is one case correct under `method`? Pure — the unit of measurement.
-fn case_correct(method: &str, expected: &str, actual: &str) -> bool {
-    let e = expected.trim();
-    let a = actual.trim();
-    match method {
-        "exact" => a.eq_ignore_ascii_case(e),
-        // "contains" (default): the expected answer appears in the response.
-        _ => a.to_lowercase().contains(&e.to_lowercase()),
-    }
-}
-
-/// Score a set → (correct, total). Pure.
-fn score_cases(method: &str, cases: &[ScoreCase]) -> (u32, u32) {
-    let total = cases.len() as u32;
-    let correct = cases
-        .iter()
-        .filter(|c| case_correct(method, &c.expected, &c.actual))
-        .count() as u32;
-    (correct, total)
-}
-
-/// Score an eval set and return the measurement: accuracy + per-case verdicts.
-/// Deterministic — no model run, so the scorer is pinned independently of any
-/// provider. `score` ∈ [0,1] is the number the A/B's *lift* is a difference of.
-fn score_eval_set(p: &VddScoreParams) -> Value {
-    let (correct, total) = score_cases(&p.method, &p.cases);
-    let score = if total == 0 {
-        0.0
-    } else {
-        correct as f64 / total as f64
-    };
-    let per_case: Vec<Value> = p
-        .cases
-        .iter()
-        .map(|c| {
-            serde_json::json!({
-                "prompt": c.prompt,
-                "expected": c.expected,
-                "correct": case_correct(&p.method, &c.expected, &c.actual),
-            })
-        })
-        .collect();
-    serde_json::json!({
-        "scenario": p.scenario,
-        "label": p.label,
-        "method": p.method,
-        "total": total,
-        "correct": correct,
-        "score": score,
-        "cases": per_case,
-    })
-}
-
-/// On-the-wire shape returned by `vdd/report`. Stable, camelCase
-/// for the TS / CI-dashboard side that consumes it.
-#[derive(Debug, Clone, Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct VddReport {
-    /// Absolute path the records were read from. Surfaces "where
-    /// the harness is writing" to humans + LLM consumers — the
-    /// "where did this come from" answer is one field away.
-    pub artifact_root: String,
-    /// The filters applied. Empty fields are reported back as
-    /// null so the consumer's expectation matches what was asked.
-    pub filters: VddReportFilters,
-    /// Headline counts. Cheap to compute, surface in a banner /
-    /// PR-body snippet without iterating the full record list.
-    pub summary: VddReportSummary,
-    /// The matching records, sorted deterministically by
-    /// (git_sha, scenario). The detail layer for any consumer
-    /// that wants to drill in on a specific row.
-    pub records: Vec<VddReportEntry>,
-}
-
-#[derive(Debug, Clone, Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct VddReportFilters {
-    pub git_sha: Option<String>,
-    pub scenario: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct VddReportSummary {
-    pub total: usize,
-    pub passed: usize,
-    pub failed: usize,
-    pub prerequisite_missing: usize,
-}
-
-#[derive(Debug, Clone, Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct VddReportEntry {
-    pub git_sha: String,
-    pub scenario: String,
-    pub platform: String,
-    pub hardware: String,
-    pub backend: String,
-    pub status: HarnessStatus,
-    pub first_token_ms: Option<u64>,
-    pub tok_per_sec: Option<f64>,
-    pub responses_observed: u32,
-    pub responses_expected: u32,
-    pub degraded_reason: Option<String>,
-    pub silence_reasons: Vec<String>,
-    /// Path to the on-disk `record.jsonl` for this entry. Lets
-    /// the consumer fetch the FULL StandardVddRecord (not just
-    /// the headline fields surfaced here) on demand without the
-    /// report itself carrying every byte of every record.
-    pub source: String,
-}
-
-fn build_report(
-    entries: Vec<VddRecordEntry>,
-    artifact_root: &Path,
-    opts: &VddReadOptions,
-) -> VddReport {
-    let mut summary = VddReportSummary {
-        total: entries.len(),
-        passed: 0,
-        failed: 0,
-        prerequisite_missing: 0,
-    };
-    let mut records: Vec<VddReportEntry> = Vec::with_capacity(entries.len());
-    for e in entries {
-        match e.record.status {
-            HarnessStatus::Pass => summary.passed += 1,
-            HarnessStatus::Fail => summary.failed += 1,
-            HarnessStatus::PrerequisiteMissing => summary.prerequisite_missing += 1,
-        }
-        records.push(VddReportEntry {
-            git_sha: e.record.git_sha,
-            scenario: e.record.scenario,
-            platform: e.record.platform,
-            hardware: e.record.hardware,
-            backend: e.record.backend,
-            status: e.record.status,
-            first_token_ms: e.record.first_token_ms,
-            tok_per_sec: e.record.tok_per_sec,
-            responses_observed: e.record.responses_observed,
-            responses_expected: e.record.responses_expected,
-            degraded_reason: e.record.degraded_reason,
-            silence_reasons: e.record.silence_reasons,
-            source: e.source.to_string_lossy().into_owned(),
-        });
-    }
-    records.sort_by(|a, b| {
-        (a.git_sha.as_str(), a.scenario.as_str()).cmp(&(b.git_sha.as_str(), b.scenario.as_str()))
-    });
-    VddReport {
-        artifact_root: artifact_root.to_string_lossy().into_owned(),
-        filters: VddReportFilters {
-            git_sha: opts.git_sha.clone(),
-            scenario: opts.scenario.clone(),
-        },
-        summary,
-        records,
-    }
-}
 
 #[cfg(test)]
 mod tests {
-    //! Pin the IPC contract end-to-end: command name + param
-    //! parsing + filter passthrough + summary aggregation + JSON
-    //! wire shape. Each test seeds a temp artifact root via the
-    //! real `ArtifactWriter` so writer/reader/report drift fails
-    //! at unit-test time.
+    //! The module now owns only config + the artifact root + the dep-holding
+    //! family. The command contracts themselves are pinned in
+    //! `commands/vdd/{report,score}.rs`; these tests guard the module's wiring.
     use super::*;
-    use crate::vdd::artifacts::{ArtifactWriter, ReproducibilityManifest};
-    use crate::vdd::record::{HarnessStatus, StandardVddRecord};
+    use crate::sdk_codegen::DynCommand;
 
-    fn sample_record(git_sha: &str, scenario: &str, status: HarnessStatus) -> StandardVddRecord {
-        StandardVddRecord {
-            scenario: scenario.to_string(),
-            platform: "darwin".to_string(),
-            hardware: "m1-air-8gb".to_string(),
-            backend: "metal".to_string(),
-            git_sha: git_sha.to_string(),
-            command: "npm start".to_string(),
-            model: Some("qwen2-vl-7b-instruct".to_string()),
-            gpu_layers: Some(32),
-            unsupported_layers: Vec::new(),
-            cold_start_ms: Some(8_000),
-            first_token_ms: Some(450),
-            first_response_ms: Some(1_200),
-            all_responses_ms: Some(3_400),
-            responses_expected: 4,
-            responses_observed: if status == HarnessStatus::Pass { 4 } else { 1 },
-            silence_reasons: if status == HarnessStatus::Fail {
-                vec!["model_load_timeout".to_string()]
-            } else {
-                Vec::new()
-            },
-            tok_per_sec: Some(28.6),
-            cpu_pct_avg: Some(55.0),
-            cpu_pct_peak: Some(98.0),
-            rss_mb: Some(3_120),
-            gpu_util_pct_avg: Some(72.0),
-            gpu_memory_mb: Some(4_800),
-            queue_wait_ms: Some(12),
-            execution_ms: Some(820),
-            coalesced_count: 1,
-            deferred_count: 0,
-            stale_drop_count: 0,
-            error_count: 0,
-            degraded_reason: None,
-            log_refs: Vec::new(),
-            next_bottleneck: None,
-            policy_version: Some("v1".to_string()),
-            cascade_step: Some(2),
-            status,
-        }
-    }
-
-    fn write(tmp_root: &Path, sha: &str, scen: &str, status: HarnessStatus) {
-        let writer = ArtifactWriter::new(tmp_root);
-        let r = sample_record(sha, scen, status);
-        let m = ReproducibilityManifest::from_record(&r, &[]);
-        writer.write(&r, &m).unwrap();
-    }
-
-    /// What this catches: config exposes the canonical `vdd/`
-    /// prefix + module name. If either drifts, the registry routes
-    /// the command elsewhere.
+    /// What this catches: config exposes the canonical `vdd/` prefix + module
+    /// name. If either drifts, the registry routes the command elsewhere.
     #[test]
     fn config_reports_name_and_prefix() {
         let m = VddModule::new();
@@ -420,283 +136,28 @@ mod tests {
         assert_eq!(cfg.command_prefixes, &["vdd/"]);
     }
 
-    /// What this catches: with no artifact root + no records, the
-    /// command returns an empty report (not an error). Fresh dev
-    /// machine == valid state.
+    /// What this catches: the legacy string-match surface is retired — any
+    /// `handle_command` call fails loud naming the command (never silently
+    /// swallows or routes a stale name), per Joel's never-swallow rule.
     #[tokio::test]
-    async fn report_with_missing_root_returns_empty_report() {
-        let tmp = tempfile::tempdir().unwrap();
-        let nonexistent = tmp.path().join("never-created");
-        let module = VddModule::with_root(&nonexistent);
-
-        let result = module
+    async fn legacy_handle_command_fails_loud() {
+        let m = VddModule::new();
+        let err = m
             .handle_command("vdd/report", serde_json::json!({}))
             .await
-            .expect("empty root returns Ok");
-
-        match result {
-            CommandResult::Json(v) => {
-                let report: VddReport = serde_json::from_value(v).unwrap();
-                assert_eq!(report.summary.total, 0);
-                assert_eq!(report.summary.passed, 0);
-                assert!(report.records.is_empty());
-            }
-            _ => panic!("expected Json"),
-        }
+            .expect_err("migrated surface must fail loud");
+        assert!(err.contains("migrated to the typed registry"));
+        assert!(err.contains("vdd/report"));
     }
 
-    /// What this catches: end-to-end command path bundles the
-    /// reader's output into the wire report. Aggregates the
-    /// summary correctly across pass/fail/prerequisite_missing.
-    #[tokio::test]
-    async fn report_aggregates_summary_across_record_statuses() {
-        let tmp = tempfile::tempdir().unwrap();
-        // 2 pass on different shas.
-        write(
-            tmp.path(),
-            "sha-a",
-            "chat-roundtrip-live-harness",
-            HarnessStatus::Pass,
-        );
-        write(
-            tmp.path(),
-            "sha-b",
-            "chat-roundtrip-live-harness",
-            HarnessStatus::Pass,
-        );
-        // 1 fail.
-        write(
-            tmp.path(),
-            "sha-c",
-            "chat-roundtrip-live-harness",
-            HarnessStatus::Fail,
-        );
-        // 1 prerequisite_missing.
-        write(
-            tmp.path(),
-            "sha-d",
-            "chat-roundtrip-live-harness",
-            HarnessStatus::PrerequisiteMissing,
-        );
-
-        let module = VddModule::with_root(tmp.path());
-        let result = module
-            .handle_command("vdd/report", serde_json::json!({}))
-            .await
-            .unwrap();
-        let v = match result {
-            CommandResult::Json(v) => v,
-            _ => panic!("expected Json"),
-        };
-        let report: VddReport = serde_json::from_value(v).unwrap();
-        assert_eq!(report.summary.total, 4);
-        assert_eq!(report.summary.passed, 2);
-        assert_eq!(report.summary.failed, 1);
-        assert_eq!(report.summary.prerequisite_missing, 1);
-        assert_eq!(report.records.len(), 4);
-    }
-
-    /// What this catches: the `git_sha` filter narrows the result
-    /// to one commit's records + reports back the filter on the
-    /// wire so the consumer knows what query produced the report.
-    #[tokio::test]
-    async fn report_git_sha_filter_narrows_results_and_echoes_back() {
-        let tmp = tempfile::tempdir().unwrap();
-        for sha in ["sha-a", "sha-b", "sha-c"] {
-            write(
-                tmp.path(),
-                sha,
-                "chat-roundtrip-live-harness",
-                HarnessStatus::Pass,
-            );
-        }
-
-        let module = VddModule::with_root(tmp.path());
-        let result = module
-            .handle_command("vdd/report", serde_json::json!({"git_sha": "sha-b"}))
-            .await
-            .unwrap();
-        let v = match result {
-            CommandResult::Json(v) => v,
-            _ => panic!("expected Json"),
-        };
-        let report: VddReport = serde_json::from_value(v).unwrap();
-        assert_eq!(report.summary.total, 1);
-        assert_eq!(report.records[0].git_sha, "sha-b");
-        // Filter is echoed back so consumers can verify what they queried.
-        assert_eq!(report.filters.git_sha.as_deref(), Some("sha-b"));
-        assert_eq!(report.filters.scenario, None);
-    }
-
-    /// What this catches: `latest_only=true` collapses duplicate
-    /// (git_sha, scenario) entries to one row. Used by PR-body
-    /// snippets that want "the most recent result per scenario."
-    #[tokio::test]
-    async fn report_latest_only_collapses_duplicate_scenario_per_sha() {
-        let tmp = tempfile::tempdir().unwrap();
-        // Two writes to same (sha, scenario): writer overwrites
-        // in place, so reader sees the latest.
-        write(tmp.path(), "sha-x", "chat-roundtrip", HarnessStatus::Pass);
-        write(tmp.path(), "sha-x", "chat-roundtrip", HarnessStatus::Fail);
-        // Different scenario on the same sha — should NOT collapse.
-        write(tmp.path(), "sha-x", "vision-smoke", HarnessStatus::Pass);
-
-        let module = VddModule::with_root(tmp.path());
-        let result = module
-            .handle_command("vdd/report", serde_json::json!({"latest_only": true}))
-            .await
-            .unwrap();
-        let v = match result {
-            CommandResult::Json(v) => v,
-            _ => panic!("expected Json"),
-        };
-        let report: VddReport = serde_json::from_value(v).unwrap();
-        assert_eq!(report.summary.total, 2);
-        // (sha-x, chat-roundtrip) entry reports the latest = Fail.
-        let chat = report
-            .records
-            .iter()
-            .find(|r| r.scenario == "chat-roundtrip")
-            .expect("chat-roundtrip row present");
-        assert_eq!(chat.status, HarnessStatus::Fail);
-    }
-
-    /// What this catches: unknown vdd command returns a typed Err
-    /// per Joel's never-swallow rule. The error mentions the
-    /// unknown command so callers debug from the message.
-    #[tokio::test]
-    async fn unknown_command_returns_loud_error() {
-        let tmp = tempfile::tempdir().unwrap();
-        let module = VddModule::with_root(tmp.path());
-        let result = module
-            .handle_command("vdd/bogus", serde_json::json!({}))
-            .await;
-        match result {
-            Err(msg) => {
-                assert!(msg.contains("Unknown vdd command"));
-                assert!(msg.contains("vdd/bogus"));
-            }
-            Ok(_) => panic!("unknown command must Err"),
-        }
-    }
-
-    /// What this catches: wire-shape stability for the
-    /// VddReportEntry — surfaces the headline VDD fields (tokens/sec,
-    /// first_token_ms, status) AND the source path so consumers can
-    /// fetch the full record on demand. PR-body snippets read these
-    /// directly.
-    #[tokio::test]
-    async fn report_entry_carries_headline_fields_and_source_path() {
-        let tmp = tempfile::tempdir().unwrap();
-        write(
-            tmp.path(),
-            "sha-w",
-            "chat-roundtrip-live-harness",
-            HarnessStatus::Pass,
-        );
-
-        let module = VddModule::with_root(tmp.path());
-        let result = module
-            .handle_command("vdd/report", serde_json::json!({}))
-            .await
-            .unwrap();
-        let v = match result {
-            CommandResult::Json(v) => v,
-            _ => panic!("expected Json"),
-        };
-        let report: VddReport = serde_json::from_value(v).unwrap();
-        let entry = &report.records[0];
-        assert_eq!(entry.git_sha, "sha-w");
-        assert_eq!(entry.first_token_ms, Some(450));
-        assert_eq!(entry.tok_per_sec, Some(28.6));
-        assert_eq!(entry.status, HarnessStatus::Pass);
-        assert!(
-            entry.source.ends_with("record.jsonl"),
-            "source path points at the on-disk record file"
-        );
-        assert!(
-            report
-                .artifact_root
-                .contains(tmp.path().file_name().unwrap().to_str().unwrap()),
-            "artifact_root surfaces the resolved root path"
-        );
-    }
-
-    // ── vdd/score — slice 1 measurement core ──
-
-    fn case(expected: &str, actual: &str) -> ScoreCase {
-        ScoreCase {
-            prompt: String::new(),
-            expected: expected.to_string(),
-            actual: actual.to_string(),
-        }
-    }
-
-    // what this catches: the unit of measurement. "contains" is lenient +
-    // case-insensitive; "exact" is strict equality (trimmed, case-insensitive).
-    // Get this wrong and every downstream lift number is wrong.
+    /// What this catches: the module contributes exactly the dep-holding
+    /// `vdd/report` to the typed registry (carrying its artifact root). `vdd/score`
+    /// is stateless and self-registers, so it is NOT in this list — a regression
+    /// that double-registers it would trip the duplicate-name panic.
     #[test]
-    fn case_correct_methods() {
-        assert!(case_correct("contains", "Paris", "The capital is paris."));
-        assert!(!case_correct("contains", "Paris", "The capital is London."));
-        assert!(case_correct("exact", "4", " 4 "));
-        assert!(!case_correct("exact", "4", "the answer is 4"));
-    }
-
-    // what this catches: accuracy over a set — correct/total. This IS the score
-    // the A/B diffs.
-    #[test]
-    fn score_cases_counts_accuracy() {
-        let cases = vec![
-            case("4", "4"),                 // correct (contains)
-            case("Paris", "paris is it"),   // correct
-            case("blue", "the sky is red"), // wrong
-        ];
-        let (correct, total) = score_cases("contains", &cases);
-        assert_eq!((correct, total), (2, 3));
-    }
-
-    // what this catches: the vdd/score command end-to-end returns the accuracy
-    // measurement, AND that two labeled runs COMPOSE into a lift (the whole point
-    // of slice 1: lift = score(base+LoRA) − score(base)).
-    #[tokio::test]
-    async fn vdd_score_measures_and_composes_into_lift() {
-        let module = VddModule::default();
-
-        // "base" gets 1/2; "base+lora" gets 2/2 on the same held-out set.
-        let base = serde_json::json!({
-            "label": "base",
-            "method": "contains",
-            "cases": [
-                {"expected": "4", "actual": "4"},
-                {"expected": "spatial hash", "actual": "use a quadtree"},
-            ]
-        });
-        let lora = serde_json::json!({
-            "label": "base+lora",
-            "method": "contains",
-            "cases": [
-                {"expected": "4", "actual": "4"},
-                {"expected": "spatial hash", "actual": "use a spatial hash grid"},
-            ]
-        });
-
-        let v_base = match module.handle_command("vdd/score", base).await.unwrap() {
-            CommandResult::Json(v) => v,
-            _ => panic!("json"),
-        };
-        let v_lora = match module.handle_command("vdd/score", lora).await.unwrap() {
-            CommandResult::Json(v) => v,
-            _ => panic!("json"),
-        };
-
-        let s_base = v_base["score"].as_f64().unwrap();
-        let s_lora = v_lora["score"].as_f64().unwrap();
-        assert_eq!(s_base, 0.5);
-        assert_eq!(s_lora, 1.0);
-
-        // The keystone number: lift.
-        let lift = s_lora - s_base;
-        assert!((lift - 0.5).abs() < 1e-9, "lift = score(lora) − score(base) = 0.5");
+    fn contributes_the_report_command() {
+        let m = VddModule::with_root("/tmp/vdd-wiring-test");
+        let names: Vec<&str> = m.commands().iter().map(|c| c.name()).collect();
+        assert_eq!(names, vec!["vdd/report"]);
     }
 }
