@@ -10,6 +10,7 @@
 
 use std::path::PathBuf;
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 use uuid::Uuid;
@@ -25,7 +26,7 @@ use uuid::Uuid;
 /// genome-paged into THAT persona's working set, and the
 /// [[matrix-dojo-layer-loading-as-substrate-primitive]] mesh routes
 /// it by persona identity when other personas request the layer.
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
 #[ts(
     export,
     export_to = "../../../protocol/typescript/genome/fine_tuning/TrainingJobRequest.ts"
@@ -75,7 +76,7 @@ pub struct TrainingJobRequest {
 /// [[teacher-synthesizes-in-academy-like-dreaming]] doctrine —
 /// teacher-synthesized datasets carry a different reputation signal
 /// than raw-experience datasets.
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
 #[ts(
     export,
     export_to = "../../../protocol/typescript/genome/fine_tuning/TrainingDataset.ts"
@@ -96,7 +97,7 @@ pub struct TrainingDataset {
 /// pass-through (which engram this came from, what session, what
 /// noteworthy score). The substrate doesn't dispatch on it; it
 /// flows into telemetry + alloy provenance.
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
 #[ts(
     export,
     export_to = "../../../protocol/typescript/genome/fine_tuning/TrainingExample.ts"
@@ -113,7 +114,7 @@ pub struct TrainingExample {
 /// Where this dataset came from. The substrate's reputation signal
 /// for layers trained from teacher-synthesized data is distinct from
 /// layers trained from raw operator-supplied corpora.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS, JsonSchema)]
 #[ts(
     export,
     export_to = "../../../protocol/typescript/genome/fine_tuning/TrainingSource.ts"
@@ -146,7 +147,7 @@ pub enum TrainingSource {
 /// `PartialEq` (not `Eq`) because of the `dropout: f32` field. The
 /// training-trigger bucket-coherence check compares two
 /// `LoRAHyperparams` via `!=`, which requires the trait.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS, JsonSchema)]
 #[ts(
     export,
     export_to = "../../../protocol/typescript/genome/fine_tuning/LoRAHyperparams.ts"
@@ -175,7 +176,7 @@ pub struct LoRAHyperparams {
 /// `PartialEq` (not `Eq`) because of `learning_rate: f64`. Same
 /// motivation as `LoRAHyperparams` — the trigger module's bucket
 /// coherence check needs to compare two `ScheduleParams` values.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS, JsonSchema)]
 #[ts(
     export,
     export_to = "../../../protocol/typescript/genome/fine_tuning/ScheduleParams.ts"
@@ -193,7 +194,7 @@ pub struct ScheduleParams {
 /// What [`super::FineTuningAdapter::create_job`] returns. Acts as a
 /// correlation token across the substrate side (`local_id`) and the
 /// provider side (`provider_job_id`).
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
 #[ts(
     export,
     export_to = "../../../protocol/typescript/genome/fine_tuning/JobHandle.ts"
