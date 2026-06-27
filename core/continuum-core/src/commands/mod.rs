@@ -38,6 +38,7 @@ pub mod runtime;
 pub mod search;
 pub mod serving;
 pub mod system;
+pub mod tool_parsing;
 pub mod vdd;
 pub mod vector;
 pub mod vision;
