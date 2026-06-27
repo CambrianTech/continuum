@@ -872,7 +872,13 @@ pub const MODULES: &[ModuleSpec] = &[
     ModuleSpec::new("inference-llm", ServiceGroup::Inference, ModuleCategory::Core),
     ModuleSpec::new("ai_provider", ServiceGroup::Inference, ModuleCategory::Core),
     ModuleSpec::new("embedding", ServiceGroup::Inference, ModuleCategory::Core),
-    ModuleSpec::new("search", ServiceGroup::Inference, ModuleCategory::Core),
+    // (`search` was retired here: its commands migrated onto the DynCommand
+    // registry in 9d96bb51c (#62, Wave 1) — they now live as stateless
+    // self-routing commands under `commands/search/{vector,list,execute}`, so
+    // there is no `SearchModule` ServiceModule to register. Leaving the spec in
+    // made `required_modules()` demand a module that no longer registers, which
+    // hard-failed boot with "missing [search]" — the same trap as the retired
+    // `inference` shell above.)
     ModuleSpec::new("tool-parsing", ServiceGroup::Inference, ModuleCategory::Core),
     ModuleSpec::new("vision", ServiceGroup::Inference, ModuleCategory::Core),
     ModuleSpec::new("models", ServiceGroup::Inference, ModuleCategory::Core),
@@ -901,7 +907,11 @@ pub const MODULES: &[ModuleSpec] = &[
     ModuleSpec::new("plasticity", ServiceGroup::Forge, ModuleCategory::Core),
     ModuleSpec::new("dataset", ServiceGroup::Forge, ModuleCategory::Core),
     ModuleSpec::new("vdd", ServiceGroup::Forge, ModuleCategory::Core),
-    ModuleSpec::new("cargo", ServiceGroup::Forge, ModuleCategory::Core),
+    // (`cargo` was retired here: its commands migrated onto the DynCommand
+    // registry in 98645f3d1 (#62), and the duplicate top-level `cargo/*` was
+    // deleted in b19892b60 — `code/cargo/*` (carried by the `code` module below)
+    // is now canonical. There is no `CargoModule` ServiceModule to register;
+    // leaving the spec in hard-failed boot with "missing [cargo]".)
     ModuleSpec::new("code", ServiceGroup::Forge, ModuleCategory::Core),
     // GridTransport — the bus
     ModuleSpec::new("airc", ServiceGroup::GridTransport, ModuleCategory::Core),
