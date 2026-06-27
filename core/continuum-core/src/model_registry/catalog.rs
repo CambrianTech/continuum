@@ -401,6 +401,40 @@ pub fn models() -> Vec<Model> {
             stop_sequences: &["<|im_end|>", "<|endoftext|>"],
             ..ModelSpec::default()
         }),
+        // Teacher model for the genome cold-start loop ([[genome-loop-trains-on-own-mistakes]]).
+        // The forged 4B is too narrow a teacher — it solves easy gym tasks first-try
+        // (zero corrections) and never converges on hard ones (no corpus), so its
+        // fail-then-fix-to-green band (the only band that teaches the self-correct
+        // reflex) is too thin. Qwen2.5-Coder-14B is meaningfully stronger at the
+        // failure frontier: it fails harder tasks, reads the real rustc error, and
+        // fixes to green — exactly the correction trajectories `genome/teach` distils.
+        // Registered under "llama-server" so `genome/teach`'s
+        // `select(Some("llama-server"), Some(model), …)` can serve it on a lane;
+        // corpus generation is an offline batch (serving/pin it, generate, pin the
+        // 4B back) so the live personas resume on their base. ~9 GB at Q4_K_M.
+        model(ModelSpec {
+            id: "continuum-ai/qwen2.5-coder-14b-instruct-GGUF",
+            name: "Qwen2.5-Coder-14B-Instruct (teacher)",
+            provider: "llama-server",
+            arch: Arch::Qwen2,
+            context_window: 32_768,
+            max_output_tokens: 8192,
+            tokens_per_second: 12.0,
+            capabilities: &[
+                Capability::TextGeneration,
+                Capability::Chat,
+                Capability::ToolUse,
+                Capability::Streaming,
+            ],
+            gguf_hint: Some("huggingface.co/bartowski/Qwen2.5-Coder-14B-Instruct-GGUF"),
+            gguf_local_path: Some(
+                "~/.continuum/genome/models/qwen2.5-coder-14b-instruct/Qwen2.5-Coder-14B-Instruct-Q4_K_M.gguf",
+            ),
+            chat_template: Some(QWEN35_CHAT_TEMPLATE),
+            multi_party_strategy: MultiPartyChatStrategy::ProperChatMlSingleParty,
+            stop_sequences: &["<|im_end|>", "<|endoftext|>"],
+            ..ModelSpec::default()
+        }),
         model(ModelSpec {
             id: "qwen2-vl-7b-instruct",
             name: "Qwen2-VL-7B-Instruct (in-process)",
