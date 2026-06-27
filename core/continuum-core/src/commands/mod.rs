@@ -25,6 +25,7 @@ pub mod events;
 pub mod generator;
 pub mod genome;
 pub mod gpu;
+pub mod health;
 pub mod help;
 pub mod inference;
 pub mod log;

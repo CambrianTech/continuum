@@ -101,23 +101,24 @@ impl ServiceModule for HealthModule {
         Ok(())
     }
 
-    async fn handle_command(&self, command: &str, _params: Value) -> Result<CommandResult, String> {
-        match command {
-            "health-check" => {
-                let uptime_secs = self.started_at.elapsed().as_secs();
-                Ok(CommandResult::Json(serde_json::json!({
-                    "healthy": true,
-                    "uptime_seconds": uptime_secs,
-                    "version": env!("CARGO_PKG_VERSION"),
-                })))
-            }
+    /// Contribute the dep-holding `health-check` verb over this module's live boot
+    /// `Instant` (`get-stats` self-registers statelessly; `ping` likewise). All three
+    /// liveness verbs now live on the typed object map.
+    fn commands(&self) -> Vec<std::sync::Arc<dyn crate::sdk_codegen::DynCommand>> {
+        crate::commands::health::command_objects(self.started_at)
+    }
 
-            "get-stats" => {
-                // Stats tracking not yet implemented — stub matches legacy behavior
-                Ok(CommandResult::Json(serde_json::json!({
-                    "note": "Performance stats tracking not yet implemented"
-                })))
-            }
+    async fn handle_command(&self, command: &str, _params: Value) -> Result<CommandResult, String> {
+        // Both verbs are migrated to the typed registry (commands/health/). They
+        // route via `route_object` — `health-check` against THIS module's boot
+        // instant (contributed by `commands()`), `get-stats` as a stateless command.
+        // Reaching this arm means the typed path failed to register; fail loud
+        // naming the migration rather than silently re-handling.
+        match command {
+            "health-check" | "get-stats" => Err(format!(
+                "'{command}' is migrated to the typed registry (commands/health/) — \
+                 it must route via route_object, not the legacy handle_command path"
+            )),
 
             _ => Err(format!("Unknown health command: {command}")),
         }
@@ -132,15 +133,32 @@ impl ServiceModule for HealthModule {
 mod tests {
     use super::*;
 
+    // what this catches: health-check + get-stats are migrated to the typed registry
+    // (#62), so the legacy handle_command arms must FAIL LOUD naming the migration —
+    // never silently re-handle. A regression that re-adds an inline handler (forking
+    // liveness away from the typed command) is caught here.
     #[tokio::test]
-    async fn test_health_check() {
+    async fn migrated_arms_fail_loud() {
         let module = HealthModule::new();
-        let result = module.handle_command("health-check", Value::Null).await;
-        assert!(result.is_ok());
-        if let Ok(CommandResult::Json(json)) = result {
-            assert_eq!(json["healthy"], true);
-            assert!(json["uptime_seconds"].is_number());
+        for command in ["health-check", "get-stats"] {
+            let err = module
+                .handle_command(command, Value::Null)
+                .await
+                .expect_err("migrated arm must fail loud");
+            assert!(err.contains("migrated"), "got {err}");
+            assert!(err.contains(command), "got {err}");
         }
+    }
+
+    // what this catches: the module contributes the dep-holding `health-check` verb
+    // (bound to its live boot instant) to the kernel object map. A regression that
+    // drops the `commands()` override — leaving the persona surface without the
+    // uptime probe — is caught.
+    #[test]
+    fn contributes_the_typed_health_check_command() {
+        let module = HealthModule::new();
+        let names: Vec<&str> = module.commands().iter().map(|c| c.name()).collect();
+        assert!(names.contains(&"health-check"), "got {names:?}");
     }
 
     // what this catches: `ping` migrated to the TYPED PATH end-to-end — it is NOT
