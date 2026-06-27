@@ -306,6 +306,14 @@ struct ForgeTrainParams {
     /// lacks one. `None` leaves it alone (mlx fails loud if a chat corpus then
     /// can't render).
     chat_template: Option<String>,
+    /// LoRA target module suffixes (mlx `lora_parameters.keys`). Defaults to the
+    /// convert-safe MLP set (`mlp.{gate,up,down}_proj`) — the only modules whose
+    /// LoRA factors llama.cpp can convert to GGUF-lora for qwen3.5 (attention
+    /// `attn_qkv` factors hit `_reorder_v_heads` NotImplementedError). An EMPTY
+    /// list (override) hands targeting to mlx_lm's own default — useful only for a
+    /// base whose attention IS convertible. See `MlxTrainSpec::target_keys`.
+    #[serde(default = "default_lora_target_keys")]
+    lora_target_keys: Vec<String>,
 }
 
 fn default_format_type() -> String {
@@ -346,6 +354,19 @@ fn default_num_layers() -> i32 {
 }
 fn default_native_iters() -> u32 {
     300
+}
+/// The convert-safe LoRA target set for the genome loop: MLP projections only.
+/// Attention (`attn_qkv`) LoRA factors are unconvertible to GGUF-lora for qwen3.5
+/// (llama.cpp `_reorder_v_heads` NotImplementedError on a low-rank V factor), so a
+/// gene must target these to be servable. Proven by the first servable gene
+/// (`coder-4b-mlp`). Override with an empty list only for a convert-safe-attention
+/// base.
+fn default_lora_target_keys() -> Vec<String> {
+    vec![
+        "mlp.gate_proj".to_string(),
+        "mlp.up_proj".to_string(),
+        "mlp.down_proj".to_string(),
+    ]
 }
 
 /// Build the custodian train request from the params. Pure — unit-testable
@@ -531,6 +552,7 @@ fn run_train_native_mlx(p: ForgeTrainParams) -> Result<CommandResult, String> {
         scale,
         dropout: 0.0,
         num_layers: p.num_layers,
+        target_keys: p.lora_target_keys.clone(),
         batch_size: p.batch_size,
         iters: p.iters,
         learning_rate,
@@ -554,6 +576,7 @@ fn run_train_native_mlx(p: ForgeTrainParams) -> Result<CommandResult, String> {
             "num_layers": spec.num_layers,
             "iters": spec.iters,
             "fine_tune_type": spec.fine_tune_type,
+            "target_keys": spec.target_keys,
         })));
     }
 
@@ -1227,6 +1250,12 @@ mod tests {
         assert_eq!(v["base_model_dir"], format!("{home}/base-hf"));
         assert_eq!(v["data_dir"], format!("{home}/data-presplit"));
         assert_eq!(v["adapter_out"], format!("{home}/out-adapter"));
+        // The convert-safe MLP target set rides through by default — never the
+        // unconvertible attention projection. This is what makes every gene the
+        // native path forges servable by construction.
+        let keys = v["target_keys"].as_array().expect("target_keys array");
+        let keys: Vec<&str> = keys.iter().map(|k| k.as_str().unwrap()).collect();
+        assert_eq!(keys, vec!["mlp.gate_proj", "mlp.up_proj", "mlp.down_proj"]);
     }
 
     /// What this catches: the mlx engine REQUIRES train_base_dir and fails
