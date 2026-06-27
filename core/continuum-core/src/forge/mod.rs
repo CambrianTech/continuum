@@ -15,6 +15,7 @@ pub mod endpoint;
 pub mod gene_handle;
 pub mod grid_custodian;
 pub mod lora_convert;
+pub mod mlx_train;
 pub mod protocol;
 pub mod recipe;
 
