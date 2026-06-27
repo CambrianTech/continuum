@@ -11,6 +11,7 @@
 //! are exposed through that module's `commands()`.
 
 pub mod adapter;
+pub mod agent;
 pub mod ai;
 pub mod catalog;
 pub mod code;

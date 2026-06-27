@@ -22,11 +22,9 @@
 
 use crate::ai::adapter::{AIProviderAdapter, InferenceDevice};
 use crate::log_info;
-use crate::logging::TimingGuard;
 use crate::runtime::{
     CommandResult, MessageBus, ModuleConfig, ModuleContext, ModulePriority, ServiceModule,
 };
-use crate::utils::params::Params;
 use async_trait::async_trait;
 use dashmap::DashMap;
 use rayon::prelude::*;
@@ -113,6 +111,32 @@ pub struct AgentAction {
     pub thought: Option<String>,
 }
 
+/// A typed snapshot of an agent's progress — the wire output of `agent/status`,
+/// `agent/list`, and `agent/wait`. Replaces the old ad-hoc `to_status_json` Value
+/// so every reader gets a contracted shape + a ts-rs binding.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/agent/AgentStatusInfo.ts"
+)]
+pub struct AgentStatusInfo {
+    pub handle: String,
+    pub task: String,
+    pub working_dir: String,
+    pub status: AgentStatus,
+    pub iteration: u32,
+    pub max_iterations: u32,
+    #[ts(type = "number")]
+    pub elapsed_ms: u64,
+    pub actions_count: u32,
+    pub files_created: Vec<String>,
+    pub files_modified: Vec<String>,
+    #[ts(optional)]
+    pub summary: Option<String>,
+    #[ts(optional)]
+    pub error: Option<String>,
+}
+
 /// Full agent state
 #[derive(Debug)]
 pub struct AgentState {
@@ -160,21 +184,21 @@ impl AgentState {
         self.started_at.elapsed().as_millis() as u64
     }
 
-    pub fn to_status_json(&self) -> Value {
-        json!({
-            "handle": self.handle,
-            "task": self.task,
-            "working_dir": self.working_dir.to_string_lossy(),
-            "status": self.status,
-            "iteration": self.iteration,
-            "max_iterations": self.max_iterations,
-            "elapsed_ms": self.elapsed_ms(),
-            "actions_count": self.actions.len(),
-            "files_created": self.files_created,
-            "files_modified": self.files_modified,
-            "summary": self.summary,
-            "error": self.error,
-        })
+    pub fn to_status_info(&self) -> AgentStatusInfo {
+        AgentStatusInfo {
+            handle: self.handle.clone(),
+            task: self.task.clone(),
+            working_dir: self.working_dir.to_string_lossy().into_owned(),
+            status: self.status.clone(),
+            iteration: self.iteration,
+            max_iterations: self.max_iterations,
+            elapsed_ms: self.elapsed_ms(),
+            actions_count: self.actions.len() as u32,
+            files_created: self.files_created.clone(),
+            files_modified: self.files_modified.clone(),
+            summary: self.summary.clone(),
+            error: self.error.clone(),
+        }
     }
 }
 
@@ -182,7 +206,12 @@ impl AgentState {
 // MODULE
 // ============================================================================
 
-pub struct AgentModule {
+/// Shared agent-service state captured by the typed `agent/*` command objects and
+/// the host [`AgentModule`]. Holds the live agent map, the runtime handle used to
+/// spawn background loops, and the event bus (set at module init). Wrapped in `Arc`
+/// so every command + the module share ONE map: one caller's `agent/start` and
+/// another's `agent/status` see the same agents.
+pub struct AgentService {
     /// Active and completed agents
     agents: Arc<DashMap<String, std::sync::Mutex<AgentState>>>,
     /// Tokio runtime for spawning agent tasks
@@ -191,7 +220,7 @@ pub struct AgentModule {
     bus: std::sync::OnceLock<Arc<MessageBus>>,
 }
 
-impl AgentModule {
+impl AgentService {
     pub fn new(rt_handle: tokio::runtime::Handle) -> Self {
         Self {
             agents: Arc::new(DashMap::new()),
@@ -200,15 +229,83 @@ impl AgentModule {
         }
     }
 
-    /// Start agent background task
-    fn spawn_agent(
+    /// Set the event bus (called once from module init). Idempotent.
+    pub fn set_bus(&self, bus: Arc<MessageBus>) {
+        let _ = self.bus.set(bus);
+    }
+
+    /// Look up an agent's status snapshot, or `None` if no such handle.
+    pub fn status_of(&self, handle: &str) -> Option<AgentStatusInfo> {
+        self.agents
+            .get(handle)
+            .and_then(|entry| entry.lock().ok().map(|state| state.to_status_info()))
+    }
+
+    /// Snapshot every live agent.
+    pub fn list(&self) -> Vec<AgentStatusInfo> {
+        self.agents
+            .iter()
+            .filter_map(|entry| entry.lock().ok().map(|state| state.to_status_info()))
+            .collect()
+    }
+
+    /// Request a running agent stop. Returns `true` if the handle was found.
+    pub fn request_stop(&self, handle: &str) -> bool {
+        if let Some(entry) = self.agents.get(handle) {
+            if let Ok(mut state) = entry.lock() {
+                state.stop_requested = true;
+                log_info!("module", "agent", "Stop requested for agent {}", handle);
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Wait for an agent to finish, up to `timeout_ms`. `Ok(Some(_))` is the final
+    /// status, `Ok(None)` means the handle was unknown (or vanished post-completion,
+    /// since completed agents are evicted to free their conversation history), and
+    /// `Err` is a timeout.
+    pub async fn wait_for(
         &self,
-        handle: String,
+        handle: &str,
+        timeout_ms: u64,
+    ) -> Result<Option<AgentStatusInfo>, String> {
+        // Snapshot the completion-notify under the lock, releasing it before we await
+        // (never hold a Mutex guard across an await point). Already-finished agents
+        // return immediately.
+        let notify = {
+            match self.agents.get(handle) {
+                Some(entry) => match entry.lock() {
+                    Ok(state) => {
+                        if state.status != AgentStatus::Running {
+                            return Ok(Some(state.to_status_info()));
+                        }
+                        state.completion_notify.clone()
+                    }
+                    Err(_) => return Ok(None),
+                },
+                None => return Ok(None),
+            }
+        };
+
+        match tokio::time::timeout(Duration::from_millis(timeout_ms), notify.notified()).await {
+            // Completed: re-read the final state. May already be evicted (None).
+            Ok(_) => Ok(self.status_of(handle)),
+            Err(_) => Err("Timeout waiting for agent".to_string()),
+        }
+    }
+
+    /// Start an autonomous agent in the background. Generates a fresh handle,
+    /// inserts the initial state, spawns the agent loop, and returns the handle
+    /// immediately so the caller can poll `status`/`wait`.
+    pub fn spawn_agent(
+        &self,
         task: String,
         working_dir: PathBuf,
         max_iterations: u32,
         model: String,
-    ) {
+    ) -> String {
+        let handle = format!("agent-{}", &Uuid::new_v4().to_string()[..8]);
         let agents = self.agents.clone();
         let bus = self.bus.get().cloned();
 
@@ -221,6 +318,9 @@ impl AgentModule {
         );
         let completion_notify = state.completion_notify.clone();
         agents.insert(handle.clone(), std::sync::Mutex::new(state));
+
+        // The handle returned to the caller; `handle` itself is moved into the loop.
+        let returned = handle.clone();
 
         // Spawn background task
         self.rt_handle.spawn(async move {
@@ -268,6 +368,23 @@ impl AgentModule {
             // tool results, and all accumulated state.
             agents.remove(&handle);
         });
+
+        returned
+    }
+}
+
+/// The host shell for the `agent/*` surface. Holds the shared [`AgentService`]
+/// (the live agent map + runtime handle + bus) that the typed command objects
+/// capture; the verbs themselves are migrated to [`crate::commands::agent`].
+pub struct AgentModule {
+    service: Arc<AgentService>,
+}
+
+impl AgentModule {
+    pub fn new(rt_handle: tokio::runtime::Handle) -> Self {
+        Self {
+            service: Arc::new(AgentService::new(rt_handle)),
+        }
     }
 }
 
@@ -1233,151 +1350,32 @@ impl ServiceModule for AgentModule {
     }
 
     async fn initialize(&self, ctx: &ModuleContext) -> Result<(), String> {
-        let _ = self.bus.set(ctx.bus.clone());
+        self.service.set_bus(ctx.bus.clone());
         log_info!("module", "agent", "AgentModule initialized with event bus");
         Ok(())
     }
 
-    async fn handle_command(&self, command: &str, params: Value) -> Result<CommandResult, String> {
-        match command {
-            "agent/start" => {
-                let _timer = TimingGuard::new("module", "agent_start");
-                let p = Params::new(&params);
-                let task = p.str("task")?;
-                let working_dir = p.str("working_dir")?;
-                let max_iterations = p.u64_or("max_iterations", 50) as u32;
-                let model = p.str("model")
-                    .map_err(|_| "Missing required parameter: model. Use 'deepseek-chat', 'claude-sonnet-4-5-20250929', 'gpt-4', etc.".to_string())?
-                    .to_string();
+    async fn handle_command(
+        &self,
+        command: &str,
+        _params: Value,
+    ) -> Result<CommandResult, String> {
+        // MIGRATED: every `agent/*` verb is a typed command object (see
+        // `crate::commands::agent`), contributed via `commands()` below and winning
+        // at `route_object`. Nothing should reach here. Fail loud — this legacy
+        // `handle_command` retires entirely in Wave Z.
+        Err(format!(
+            "agent command surface is migrated to the typed registry; '{command}' has no legacy handler"
+        ))
+    }
 
-                // Generate handle
-                let handle = format!("agent-{}", &Uuid::new_v4().to_string()[..8]);
-
-                // Spawn agent in background
-                self.spawn_agent(
-                    handle.clone(),
-                    task.to_string(),
-                    PathBuf::from(working_dir),
-                    max_iterations,
-                    model,
-                );
-
-                log_info!(
-                    "module",
-                    "agent",
-                    "Started agent {} for task: {}",
-                    &handle,
-                    task
-                );
-
-                Ok(CommandResult::Json(json!({
-                    "success": true,
-                    "handle": handle,
-                    "message": "Agent started in background"
-                })))
-            }
-
-            "agent/status" => {
-                let _timer = TimingGuard::new("module", "agent_status");
-                let p = Params::new(&params);
-                let handle = p.str("handle")?;
-
-                if let Some(entry) = self.agents.get(handle) {
-                    if let Ok(state) = entry.lock() {
-                        return Ok(CommandResult::Json(state.to_status_json()));
-                    }
-                }
-
-                Ok(CommandResult::Json(json!({
-                    "success": false,
-                    "error": "Agent not found"
-                })))
-            }
-
-            "agent/stop" => {
-                let _timer = TimingGuard::new("module", "agent_stop");
-                let p = Params::new(&params);
-                let handle = p.str("handle")?;
-
-                if let Some(entry) = self.agents.get(handle) {
-                    if let Ok(mut state) = entry.lock() {
-                        state.stop_requested = true;
-                        log_info!("module", "agent", "Stop requested for agent {}", handle);
-                        return Ok(CommandResult::Json(json!({
-                            "success": true,
-                            "message": "Stop requested"
-                        })));
-                    }
-                }
-
-                Ok(CommandResult::Json(json!({
-                    "success": false,
-                    "error": "Agent not found"
-                })))
-            }
-
-            "agent/list" => {
-                let _timer = TimingGuard::new("module", "agent_list");
-
-                let agents: Vec<Value> = self
-                    .agents
-                    .iter()
-                    .filter_map(|entry| entry.lock().ok().map(|state| state.to_status_json()))
-                    .collect();
-
-                Ok(CommandResult::Json(json!({
-                    "success": true,
-                    "agents": agents,
-                    "count": agents.len()
-                })))
-            }
-
-            "agent/wait" => {
-                let _timer = TimingGuard::new("module", "agent_wait");
-                let p = Params::new(&params);
-                let handle = p.str("handle")?;
-                let timeout_ms = p.u64_or("timeout_ms", 300000);
-
-                // Get completion notify
-                let notify = {
-                    if let Some(entry) = self.agents.get(handle) {
-                        if let Ok(state) = entry.lock() {
-                            if state.status != AgentStatus::Running {
-                                // Already complete
-                                return Ok(CommandResult::Json(state.to_status_json()));
-                            }
-                            Some(state.completion_notify.clone())
-                        } else {
-                            None
-                        }
-                    } else {
-                        return Err("Agent not found".to_string());
-                    }
-                };
-
-                if let Some(n) = notify {
-                    // Wait for completion with timeout
-                    let timeout = Duration::from_millis(timeout_ms);
-                    match tokio::time::timeout(timeout, n.notified()).await {
-                        Ok(_) => {
-                            // Completed, return final state
-                            if let Some(entry) = self.agents.get(handle) {
-                                if let Ok(state) = entry.lock() {
-                                    return Ok(CommandResult::Json(state.to_status_json()));
-                                }
-                            }
-                        }
-                        Err(_) => {
-                            return Err("Timeout waiting for agent".to_string());
-                        }
-                    }
-                }
-
-                Err("Agent not found".to_string())
-            }
-
-            _ => Err(format!("Unknown agent command: {}", command)),
-        }
+    /// The migrated `agent/*` commands as typed self-routing objects on the ONE
+    /// registry, sharing the module's [`AgentService`]. The executor routes these
+    /// names directly here (winning over the dead legacy prefix arm), and their
+    /// descriptors flow into `command_registry()` → the persona tool surface + grid
+    /// ACL + codegen.
+    fn commands(&self) -> Vec<Arc<dyn crate::sdk_codegen::DynCommand>> {
+        crate::commands::agent::command_objects(self.service.clone())
     }
 
     fn as_any(&self) -> &dyn Any {
