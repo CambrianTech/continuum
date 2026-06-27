@@ -1,7 +1,16 @@
 name: Validate Continuum Config
 
+# The src/ Node+TS tree is the retiring shell; the Rust core under core/ is the
+# source of truth (Capability/ModelInfo etc. are generated FROM Rust, so a Rust-side
+# type change can drift the legacy Node consumers). This Node `build:ts` must therefore
+# NOT gate Rust-core PRs to canary on a compile of code we are removing — that blocks
+# validated substrate work on dead-shell drift. The Node compile is still enforced at
+# the main-promotion boundary (here on PRs to main, and by ci.yml's build:ts), and can
+# be run on demand. It is intentionally NOT a canary-PR gate.
 on:
+  workflow_dispatch:
   pull_request:
+    branches: [ main ]
     paths:
       - 'src/**'
 
