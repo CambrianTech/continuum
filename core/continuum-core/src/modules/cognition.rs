@@ -791,95 +791,6 @@ impl ServiceModule for CognitionModule {
             }
 
             // ================================================================
-            // Text Analysis (stateless pure compute + loop detector state)
-            // ================================================================
-            "cognition/text-similarity" => {
-                let _timer = TimingGuard::new("module", "cognition_text_similarity");
-                let text1 = p.str("text1")?;
-                let text2 = p.str("text2")?;
-                let start = std::time::Instant::now();
-
-                let result = text_analysis::TextSimilarityResult {
-                    ngram_similarity: text_analysis::jaccard_ngram_similarity(text1, text2),
-                    char_similarity: text_analysis::jaccard_char_bigram_similarity(text1, text2),
-                    compute_time_us: start.elapsed().as_micros() as u64,
-                };
-                Ok(CommandResult::Json(
-                    serde_json::to_value(&result).map_err(|e| format!("Serialize error: {e}"))?,
-                ))
-            }
-
-            "cognition/check-semantic-loop" => {
-                let _timer = TimingGuard::new("module", "cognition_check_semantic_loop");
-                let response_text = p.str("response_text")?;
-                let max_history = p.u64_or("max_history", 10) as usize;
-                let history = parse_conversation_history(&params, "history")?;
-
-                let result =
-                    text_analysis::check_semantic_loop(response_text, &history, max_history);
-                Ok(CommandResult::Json(
-                    serde_json::to_value(&result).map_err(|e| format!("Serialize error: {e}"))?,
-                ))
-            }
-
-            "cognition/validate-response" => {
-                let _timer = TimingGuard::new("module", "cognition_validate_response");
-                let persona_uuid = p.uuid("persona_id")?;
-                let response_text = p.str("response_text")?;
-                let has_tool_calls = p.bool_or("has_tool_calls", false);
-                let history = parse_conversation_history_optional(&params, "conversation_history");
-
-                let result = text_analysis::validate_response(
-                    response_text,
-                    persona_uuid,
-                    has_tool_calls,
-                    &history,
-                    &self.state.loop_detector,
-                );
-                Ok(CommandResult::Json(
-                    serde_json::to_value(&result).map_err(|e| format!("Serialize error: {e}"))?,
-                ))
-            }
-
-            "cognition/check-mentions" => {
-                let _timer = TimingGuard::new("module", "cognition_check_mentions");
-                let start = std::time::Instant::now();
-                let message_text = p.str("message_text")?;
-                let display_name = p.str("persona_display_name")?;
-                let unique_id = p.str_opt("persona_unique_id").unwrap_or("");
-
-                let result = text_analysis::MentionCheckResult {
-                    is_persona_mentioned: text_analysis::is_persona_mentioned(
-                        message_text,
-                        display_name,
-                        unique_id,
-                    ),
-                    has_directed_mention: text_analysis::has_directed_mention(message_text),
-                    compute_time_us: start.elapsed().as_micros() as u64,
-                };
-                Ok(CommandResult::Json(
-                    serde_json::to_value(&result).map_err(|e| format!("Serialize error: {e}"))?,
-                ))
-            }
-
-            "cognition/clean-response" => {
-                let _timer = TimingGuard::new("module", "cognition_clean_response");
-                let start = std::time::Instant::now();
-                let response_text = p.str("response_text")?;
-
-                let clean_result = text_analysis::clean_response(response_text);
-                let result = text_analysis::CleanedResponse {
-                    was_cleaned: clean_result.text != response_text.trim(),
-                    text: clean_result.text,
-                    thinking: clean_result.thinking,
-                    compute_time_us: start.elapsed().as_micros() as u64,
-                };
-                Ok(CommandResult::Json(
-                    serde_json::to_value(&result).map_err(|e| format!("Serialize error: {e}"))?,
-                ))
-            }
-
-            // ================================================================
             // Unified Evaluation (6-gate pipeline, single lock)
             // ================================================================
             "cognition/full-evaluate" => {
@@ -2133,42 +2044,6 @@ fn parse_sender_type(s: &str) -> Result<SenderType, String> {
         "system" => Ok(SenderType::System),
         _ => Err(format!("Invalid sender_type: {s}")),
     }
-}
-
-/// Parse ConversationMessage array from a required JSON field.
-fn parse_conversation_history(
-    params: &Value,
-    key: &str,
-) -> Result<Vec<text_analysis::ConversationMessage>, String> {
-    let arr = params
-        .get(key)
-        .and_then(|v| v.as_array())
-        .ok_or_else(|| format!("Missing {key} array"))?;
-    Ok(parse_messages(arr))
-}
-
-/// Parse ConversationMessage array from an optional JSON field.
-fn parse_conversation_history_optional(
-    params: &Value,
-    key: &str,
-) -> Vec<text_analysis::ConversationMessage> {
-    params
-        .get(key)
-        .and_then(|v| v.as_array())
-        .map(|arr| parse_messages(arr))
-        .unwrap_or_default()
-}
-
-fn parse_messages(arr: &[Value]) -> Vec<text_analysis::ConversationMessage> {
-    arr.iter()
-        .filter_map(|item| {
-            Some(text_analysis::ConversationMessage {
-                role: item.get("role")?.as_str()?.to_string(),
-                content: item.get("content")?.as_str()?.to_string(),
-                name: item.get("name").and_then(|n| n.as_str()).map(String::from),
-            })
-        })
-        .collect()
 }
 
 /// Outcome of the inline admission gate. Made testable by extracting
