@@ -38,6 +38,7 @@ use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::any::Any;
+use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub struct ForgeModule;
@@ -97,7 +98,14 @@ impl ServiceModule for ForgeModule {
             "forge/train" => {
                 let parsed: ForgeTrainParams = serde_json::from_value(params)
                     .map_err(|e| format!("forge/train: invalid params: {e}"))?;
-                run_train(&UnslothForgeHttp::from_config(), parsed).await
+                // Engine branch (#52): Apple Silicon owns the native mlx_lm.lora
+                // run; other platforms (and an explicit selector) delegate to the
+                // custodian. A deterministic platform branch, not a fallback.
+                if mlx_engine_selected(parsed.engine.as_deref())? {
+                    run_train_native_mlx(parsed)
+                } else {
+                    run_train(&UnslothForgeHttp::from_config(), parsed).await
+                }
             }
             "forge/train-status" => {
                 let status = UnslothForgeHttp::from_config()
@@ -229,7 +237,7 @@ fn synthesize_stub_artifact(
 /// `dry_run` resolves the custodian request body and returns it WITHOUT kicking a
 /// run — the wiring check, replacing the old engine `--dry-run` (the custodian
 /// picks the engine, materializes the split, and owns the output bytes).
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Default)]
 struct ForgeTrainParams {
     /// Local training dataset path (the `dataset/from-turns` JSONL). The
     /// custodian reads it and owns the train/valid split.
@@ -259,9 +267,45 @@ struct ForgeTrainParams {
     max_seq_length: u32,
     #[serde(default = "default_load_in_4bit")]
     load_in_4bit: bool,
-    /// Resolve the custodian request + return it WITHOUT kicking a run.
+    /// Resolve the request + return it WITHOUT kicking a run.
     #[serde(default)]
     dry_run: bool,
+
+    // --- native MLX path (#52, Apple Silicon) -------------------------------
+    // When the engine resolves to "mlx" the foundry owns the train subprocess
+    // (forge::mlx_train) instead of delegating to the unsloth custodian. These
+    // carry the bits the native contract needs that the custodian one doesn't.
+    /// "mlx" | "custodian". `None` → auto-detect by platform (Apple Silicon →
+    /// mlx, else custodian). Explicit value wins — never a silent fallback.
+    engine: Option<String>,
+    /// Local HF safetensors dir to train against — the train base. REQUIRED for
+    /// the mlx engine and asserted by the caller to be the SAME weights the
+    /// gateway serves ([[genome-loop-trains-on-own-mistakes]]: train-base ==
+    /// serve-base, or the LoRA washes out to ~0 lift). Fail loud if absent — the
+    /// substrate never guesses which on-disk dir is the served model's HF form.
+    train_base_dir: Option<String>,
+    /// Pre-split data dir holding `train.jsonl` + `valid.jsonl` (the mlx_lm
+    /// `--data` contract). Alternative to `dataset_path` auto-split; takes
+    /// precedence when set.
+    data_dir: Option<String>,
+    /// Where to write the adapter (default `~/.continuum/forge/lora/<name>`).
+    adapter_out: Option<String>,
+    /// Adapter name for the default output path + dataset split dir.
+    #[serde(default = "default_adapter_name")]
+    adapter_name: String,
+    /// mlx `--num-layers` (default -1 = all transformer blocks).
+    #[serde(default = "default_num_layers")]
+    num_layers: i32,
+    /// mlx `--iters` (the native trainer counts iterations, not epochs).
+    #[serde(default = "default_native_iters")]
+    iters: u32,
+    /// EXPLICIT base normalization: force `config.json` model_type to this mlx
+    /// module name (e.g. `qwen3_5`). `None` leaves it alone.
+    mlx_model_type: Option<String>,
+    /// EXPLICIT base normalization: add this chat_template when the tokenizer
+    /// lacks one. `None` leaves it alone (mlx fails loud if a chat corpus then
+    /// can't render).
+    chat_template: Option<String>,
 }
 
 fn default_format_type() -> String {
@@ -293,6 +337,15 @@ fn default_max_seq_length() -> u32 {
 }
 fn default_load_in_4bit() -> bool {
     true
+}
+fn default_adapter_name() -> String {
+    "genome-lora".to_string()
+}
+fn default_num_layers() -> i32 {
+    -1
+}
+fn default_native_iters() -> u32 {
+    300
 }
 
 /// Build the custodian train request from the params. Pure — unit-testable
@@ -339,6 +392,181 @@ async fn run_train(
         "job_id": handle.job_id,
         "message": handle.message,
         "status": serde_json::to_value(status).map_err(|e| e.to_string())?,
+    })))
+}
+
+/// True when the native MLX engine should own the train run for the given
+/// explicit selector. Explicit `engine` wins; `None` auto-detects by platform
+/// (Apple Silicon trains on mlx). This is a deterministic platform branch, not a
+/// fallback — if mlx is selected but its env is missing, [`run_mlx_train`] fails
+/// loud rather than silently delegating to the custodian.
+fn mlx_engine_selected(engine: Option<&str>) -> Result<bool, String> {
+    match engine {
+        Some("mlx") => Ok(true),
+        Some("custodian") => Ok(false),
+        Some(other) => Err(format!(
+            "forge/train: unknown engine {other:?} (expected \"mlx\" or \"custodian\")"
+        )),
+        None => Ok(cfg!(all(target_os = "macos", target_arch = "aarch64"))),
+    }
+}
+
+/// Resolve the interpreter that can `import mlx_lm` — a venv WE manage under
+/// `~/.continuum/genome/venv` (NOT the legacy unsloth studio venv). Override via
+/// `MLX_PYTHON` for a custom env. Existence + mlx_lm import are enforced loud by
+/// [`run_mlx_train`]; provision the managed venv once with
+/// `python3 -m venv ~/.continuum/genome/venv && ~/.continuum/genome/venv/bin/pip install mlx-lm`.
+fn resolve_mlx_python() -> PathBuf {
+    if let Ok(p) = std::env::var("MLX_PYTHON") {
+        return PathBuf::from(p);
+    }
+    let home = std::env::var("HOME").unwrap_or_default();
+    PathBuf::from(home).join(".continuum/genome/venv/bin/python3")
+}
+
+/// Read a JSONL file into one `Value` per non-blank line (fail loud on a
+/// malformed line, naming the line number — never silently drop rows).
+fn read_jsonl(path: &Path) -> Result<Vec<Value>, String> {
+    let text =
+        std::fs::read_to_string(path).map_err(|e| format!("read {}: {e}", path.display()))?;
+    let mut out = Vec::new();
+    for (i, line) in text.lines().enumerate() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let v: Value = serde_json::from_str(line)
+            .map_err(|e| format!("{}:{}: invalid JSONL: {e}", path.display(), i + 1))?;
+        out.push(v);
+    }
+    Ok(out)
+}
+
+/// `forge/train` on Apple Silicon — own the `mlx_lm.lora` subprocess instead of
+/// delegating to the unsloth custodian (#52, converges #32). Resolves the train
+/// base (asserted train-base==serve-base), materializes the `{train,valid}.jsonl`
+/// data dir mlx_lm expects, and runs [`run_mlx_train`] with scale derived from
+/// the LoRA geometry (`alpha/rank`) per [[genome-loop-trains-on-own-mistakes]].
+/// `dry_run` returns the resolved spec WITHOUT spawning — the wiring check.
+fn run_train_native_mlx(p: ForgeTrainParams) -> Result<CommandResult, String> {
+    use crate::forge::mlx_train::{run_mlx_train, MlxBasePrep, MlxTrainEnv, MlxTrainSpec};
+
+    // --- train base: explicit + asserted to equal the served weights ---
+    let base_model_dir = p
+        .train_base_dir
+        .as_ref()
+        .map(|s| PathBuf::from(crate::model_registry::expand_user_path(Path::new(s))))
+        .ok_or_else(|| {
+            format!(
+                "forge/train (mlx): train_base_dir is required — the local HF safetensors \
+                 form of the served base {:?} (train-base==serve-base or the LoRA washes out \
+                 to ~0 lift). The substrate will not guess which on-disk dir that is.",
+                p.base_model
+            )
+        })?;
+
+    // --- data dir: pre-split wins; else split dataset_path → {train,valid} ---
+    let data_dir = match &p.data_dir {
+        Some(d) => PathBuf::from(crate::model_registry::expand_user_path(Path::new(d))),
+        None => {
+            let examples = read_jsonl(Path::new(&p.dataset_path))?;
+            if examples.is_empty() {
+                return Err(format!(
+                    "forge/train (mlx): dataset {} is empty — nothing to train on",
+                    p.dataset_path
+                ));
+            }
+            let home = std::env::var("HOME").map_err(|_| "HOME unset".to_string())?;
+            let out = PathBuf::from(home)
+                .join(".continuum/datasets")
+                .join(format!("{}-mlx", p.adapter_name));
+            // ONE packaging path (DatasetService::split_and_write → train/eval),
+            // then materialize valid.jsonl mlx_lm wants from the eval split.
+            crate::modules::dataset::DatasetService::split_and_write(
+                &p.adapter_name,
+                &out,
+                &examples,
+                0.9,
+                None,
+            )?;
+            let eval = out.join("eval.jsonl");
+            let valid = out.join("valid.jsonl");
+            // mlx needs a NON-empty valid split; with tiny corpora the 0.9 split
+            // can round eval to 0 rows, so fall back to copying train as valid.
+            let eval_rows = read_jsonl(&eval).map(|r| r.len()).unwrap_or(0);
+            let src = if eval_rows > 0 { &eval } else { &out.join("train.jsonl") };
+            std::fs::copy(src, &valid)
+                .map_err(|e| format!("materialize valid.jsonl from {}: {e}", src.display()))?;
+            out
+        }
+    };
+
+    // --- adapter output dir ---
+    let adapter_out = match &p.adapter_out {
+        Some(a) => PathBuf::from(crate::model_registry::expand_user_path(Path::new(a))),
+        None => {
+            let home = std::env::var("HOME").map_err(|_| "HOME unset".to_string())?;
+            PathBuf::from(home)
+                .join(".continuum/forge/lora")
+                .join(&p.adapter_name)
+        }
+    };
+
+    // mlx scale == alpha/rank (lora_convert reads scale → alpha = rank*scale).
+    // ONE geometry contract: set lora_alpha = 2*lora_r for the proven scale~2.
+    if p.lora_r == 0 {
+        return Err("forge/train (mlx): lora_r must be > 0".to_string());
+    }
+    let scale = p.lora_alpha as f64 / p.lora_r as f64;
+    let learning_rate: f64 = p
+        .learning_rate
+        .parse()
+        .map_err(|e| format!("forge/train (mlx): learning_rate {:?}: {e}", p.learning_rate))?;
+
+    let spec = MlxTrainSpec {
+        base_model_dir,
+        data_dir,
+        adapter_out: adapter_out.clone(),
+        rank: p.lora_r,
+        scale,
+        dropout: 0.0,
+        num_layers: p.num_layers,
+        batch_size: p.batch_size,
+        iters: p.iters,
+        learning_rate,
+        max_seq_length: p.max_seq_length,
+        fine_tune_type: p.training_type.clone(),
+        base_prep: MlxBasePrep {
+            model_type_override: p.mlx_model_type.clone(),
+            chat_template: p.chat_template.clone(),
+        },
+    };
+
+    if p.dry_run {
+        return Ok(CommandResult::Json(json!({
+            "dry_run": true,
+            "engine": "mlx",
+            "base_model_dir": spec.base_model_dir.display().to_string(),
+            "data_dir": spec.data_dir.display().to_string(),
+            "adapter_out": spec.adapter_out.display().to_string(),
+            "rank": spec.rank,
+            "scale": spec.scale,
+            "num_layers": spec.num_layers,
+            "iters": spec.iters,
+            "fine_tune_type": spec.fine_tune_type,
+        })));
+    }
+
+    let env = MlxTrainEnv {
+        python: resolve_mlx_python(),
+    };
+    let out = run_mlx_train(&spec, &env)?;
+    Ok(CommandResult::Json(json!({
+        "dry_run": false,
+        "engine": "mlx",
+        "adapter_dir": out.adapter_dir.display().to_string(),
+        "adapters_safetensors": out.adapters_safetensors.display().to_string(),
+        "adapter_config": out.adapter_config.display().to_string(),
     })))
 }
 
@@ -900,6 +1128,7 @@ mod tests {
             max_seq_length: 2048,
             load_in_4bit: true,
             dry_run: true,
+            ..Default::default()
         };
         let req = build_train_request(&p);
         assert_eq!(req.model_name, "unsloth/Qwen3-0.6B");
@@ -929,8 +1158,91 @@ mod tests {
             max_seq_length: 2048,
             load_in_4bit: true,
             dry_run: true,
+            ..Default::default()
         };
         assert!(!build_train_request(&p).use_lora);
+    }
+
+    // ── native MLX engine selection + spec resolution (#52) ──
+
+    /// What this catches: engine selection is EXPLICIT-wins, never a silent
+    /// fallback — "mlx"/"custodian" map deterministically, an unknown value
+    /// fails loud (not silently treated as custodian), and `None` defers to
+    /// the platform branch. A regression that swallowed a typo'd engine into
+    /// the custodian path would be the exact "fallback hides the failure" bug.
+    #[test]
+    fn mlx_engine_selection_is_explicit_wins_fail_loud() {
+        assert_eq!(mlx_engine_selected(Some("mlx")).unwrap(), true);
+        assert_eq!(mlx_engine_selected(Some("custodian")).unwrap(), false);
+        assert!(mlx_engine_selected(Some("tensorflow")).is_err(), "unknown engine must fail loud");
+        // None → platform auto-detect; on this Apple-Silicon host that's mlx,
+        // and the fn must agree with the same cfg! the dispatch uses.
+        let want = cfg!(all(target_os = "macos", target_arch = "aarch64"));
+        assert_eq!(mlx_engine_selected(None).unwrap(), want);
+    }
+
+    /// What this catches: the managed-dir invariant Joel set — the native
+    /// trainer interpreter resolves under `~/.continuum/genome/venv`, NEVER
+    /// the legacy `~/.unsloth/...` venv. Read-only (only asserts when
+    /// MLX_PYTHON is unset, so it never races env-mutating tests).
+    #[test]
+    fn mlx_python_defaults_to_managed_venv_not_unsloth() {
+        if std::env::var("MLX_PYTHON").is_ok() {
+            return; // operator override in effect; nothing to assert
+        }
+        let p = resolve_mlx_python();
+        let s = p.display().to_string();
+        assert!(s.contains(".continuum/genome/venv"), "managed venv path, got {s}");
+        assert!(!s.contains(".unsloth"), "must not reference the legacy unsloth venv, got {s}");
+    }
+
+    /// What this catches: the native dry_run RESOLVES the full MlxTrainSpec
+    /// without spawning — proving (a) scale == lora_alpha/lora_r (the one
+    /// geometry contract lora_convert reads back), (b) ~/ paths expand, (c)
+    /// the defaults (num_layers=-1, engine=mlx) ride through. A drift in the
+    /// scale math would silently reintroduce the scale=20 destabilization.
+    #[test]
+    fn native_dry_run_resolves_spec_with_scale_from_alpha_over_rank() {
+        let home = std::env::var("HOME").unwrap_or_default();
+        let p: ForgeTrainParams = serde_json::from_value(json!({
+            "dataset_path": "/unused.jsonl",
+            "base_model": "qwen3.5-4b-code-forged",
+            "engine": "mlx",
+            "train_base_dir": "~/base-hf",
+            "data_dir": "~/data-presplit",
+            "adapter_out": "~/out-adapter",
+            "lora_r": 16,
+            "lora_alpha": 32,
+            "dry_run": true,
+        })).expect("params");
+        let v = match run_train_native_mlx(p).unwrap() {
+            CommandResult::Json(v) => v,
+            _ => panic!("json"),
+        };
+        assert_eq!(v["dry_run"], true);
+        assert_eq!(v["engine"], "mlx");
+        assert_eq!(v["scale"], 2.0, "scale must be alpha/rank = 32/16");
+        assert_eq!(v["rank"], 16);
+        assert_eq!(v["num_layers"], -1, "default = all transformer blocks");
+        assert_eq!(v["base_model_dir"], format!("{home}/base-hf"));
+        assert_eq!(v["data_dir"], format!("{home}/data-presplit"));
+        assert_eq!(v["adapter_out"], format!("{home}/out-adapter"));
+    }
+
+    /// What this catches: the mlx engine REQUIRES train_base_dir and fails
+    /// loud naming the train-base==serve-base reason — never guesses an
+    /// on-disk dir (a guess would produce a washed-out ~0-lift gene).
+    #[test]
+    fn native_train_without_base_dir_fails_loud() {
+        let p: ForgeTrainParams = serde_json::from_value(json!({
+            "dataset_path": "/unused.jsonl",
+            "base_model": "qwen3.5-4b-code-forged",
+            "engine": "mlx",
+            "dry_run": true,
+        })).expect("params");
+        let err = run_train_native_mlx(p).unwrap_err();
+        assert!(err.contains("train_base_dir is required"), "got: {err}");
+        assert!(err.contains("serve-base"), "must name the train==serve reason, got: {err}");
     }
 
     // what this catches: dry_run resolves the request WITHOUT contacting the
@@ -952,6 +1264,7 @@ mod tests {
             max_seq_length: 2048,
             load_in_4bit: true,
             dry_run: true,
+            ..Default::default()
         };
         let v = match run_train(&cust, p).await.unwrap() {
             CommandResult::Json(v) => v,
@@ -981,6 +1294,7 @@ mod tests {
             max_seq_length: 2048,
             load_in_4bit: true,
             dry_run: false,
+            ..Default::default()
         };
         let v = match run_train(&cust, p).await.unwrap() {
             CommandResult::Json(v) => v,

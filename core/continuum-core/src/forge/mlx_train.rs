@@ -245,7 +245,10 @@ pub fn run_mlx_train(
     // --- preconditions (fail AT the missing precondition, naming it) ---
     if !env.python.is_file() {
         return Err(format!(
-            "MLX trainer interpreter {} not found (need one that can `import mlx_lm`)",
+            "MLX trainer interpreter {} not found. Provision the continuum-managed venv: \
+             `python3 -m venv ~/.continuum/genome/venv && \
+             ~/.continuum/genome/venv/bin/pip install mlx-lm` (or set MLX_PYTHON to an env \
+             that can `import mlx_lm`).",
             env.python.display()
         ));
     }
