@@ -16,6 +16,7 @@ pub mod catalog;
 pub mod code;
 pub mod command;
 pub mod data;
+pub mod gpu;
 pub mod help;
 pub mod inference;
 pub mod memory;
