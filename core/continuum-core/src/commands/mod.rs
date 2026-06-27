@@ -18,6 +18,7 @@ pub mod catalog;
 pub mod code;
 pub mod command;
 pub mod data;
+pub mod dataset;
 pub mod events;
 pub mod gpu;
 pub mod help;

@@ -4,13 +4,20 @@
 //! happens here in Rust off the main thread. TypeScript is a thin API layer.
 //!
 //! Supports RealClassEval (arxiv:2510.26130) and generic CSV imports.
+//!
+//! The six `dataset/*` verbs are typed [`ActionCommand`](crate::sdk_codegen::ActionCommand)s
+//! living under `commands/dataset/`; this module owns the [`DatasetService`] they
+//! capture and exposes them via [`ServiceModule::commands`]. The legacy
+//! `handle_command` match is retired — it now fails loud.
 
 use crate::runtime::{CommandResult, ModuleConfig, ModuleContext, ModulePriority, ServiceModule};
 use async_trait::async_trait;
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::any::Any;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use ts_rs::TS;
 
 /// Manifest persisted alongside imported datasets.
@@ -59,60 +66,208 @@ pub struct DatasetMetrics {
     pub avg_lines_of_code: Option<f64>,
 }
 
-pub struct DatasetModule {
+// ============================================================================
+// Command params — the typed input contracts for the `dataset/*` verbs.
+// They live here with the service so the service methods take them directly;
+// the command files under `commands/dataset/` capture the `DatasetService` and
+// declare these as their `params:`.
+// ============================================================================
+
+fn default_split_ratio() -> f64 {
+    0.8
+}
+fn default_true() -> bool {
+    true
+}
+fn default_imported_name() -> String {
+    "imported".to_string()
+}
+fn default_persona_turns_name() -> String {
+    "persona-turns".to_string()
+}
+fn default_persona_captures_name() -> String {
+    "persona-captures".to_string()
+}
+fn default_user_column() -> String {
+    "input".to_string()
+}
+fn default_assistant_column() -> String {
+    "output".to_string()
+}
+
+/// Params for `dataset/import-csv`.
+#[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../../protocol/typescript/dataset/ImportCsvParams.ts")]
+pub struct ImportCsvParams {
+    /// Path to the CSV file to import.
+    pub csv_path: String,
+    /// Override the datasets root directory (default `~/.continuum/datasets`).
+    #[serde(default)]
+    #[ts(optional)]
+    pub output_dir: Option<String>,
+    /// Dataset name (subdirectory under the datasets root). Default `imported`.
+    #[serde(default = "default_imported_name")]
+    pub name: String,
+    /// Fraction of examples placed in the train split. Default `0.8`.
+    #[serde(default = "default_split_ratio")]
+    pub split_ratio: f64,
+    /// CSV column holding the user/input text. Default `input`.
+    #[serde(default = "default_user_column")]
+    pub user_column: String,
+    /// CSV column holding the assistant/output text. Default `output`.
+    #[serde(default = "default_assistant_column")]
+    pub assistant_column: String,
+}
+
+/// Params for `dataset/from-turns`.
+#[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../../protocol/typescript/dataset/FromTurnsParams.ts")]
+pub struct FromTurnsParams {
+    /// Directory of recorder per-turn JSON (default `~/.continuum/fixtures/persona-respond`).
+    #[serde(default)]
+    #[ts(optional)]
+    pub turns_dir: Option<String>,
+    /// Override the datasets root directory (default `~/.continuum/datasets`).
+    #[serde(default)]
+    #[ts(optional)]
+    pub output_dir: Option<String>,
+    /// Dataset name. Default `persona-turns`.
+    #[serde(default = "default_persona_turns_name")]
+    pub name: String,
+    /// Fraction of examples placed in the train split. Default `0.8`.
+    #[serde(default = "default_split_ratio")]
+    pub split_ratio: f64,
+    /// Include the system prompt as the first message. Default `true`.
+    #[serde(default = "default_true")]
+    pub include_system: bool,
+    /// Include the recent room history before the user turn. Default `false`.
+    #[serde(default)]
+    pub include_history: bool,
+    /// Only convert turns from this persona id.
+    #[serde(default)]
+    #[ts(optional)]
+    pub persona_id: Option<String>,
+    /// Only convert turns from this room id.
+    #[serde(default)]
+    #[ts(optional)]
+    pub room_id: Option<String>,
+}
+
+/// Params for `dataset/from-captures`.
+#[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../../protocol/typescript/dataset/FromCapturesParams.ts")]
+pub struct FromCapturesParams {
+    /// Directory of live prompt-captures (default `~/.continuum/fixtures/prompt-captures`).
+    #[serde(default)]
+    #[ts(optional)]
+    pub captures_dir: Option<String>,
+    /// Override the datasets root directory (default `~/.continuum/datasets`).
+    #[serde(default)]
+    #[ts(optional)]
+    pub output_dir: Option<String>,
+    /// Dataset name. Default `persona-captures`.
+    #[serde(default = "default_persona_captures_name")]
+    pub name: String,
+    /// Fraction of examples placed in the train split. Default `0.8`.
+    #[serde(default = "default_split_ratio")]
+    pub split_ratio: f64,
+    /// Include the system prompt as the first message. Default `true`.
+    #[serde(default = "default_true")]
+    pub include_system: bool,
+    /// Only convert captures from this persona id.
+    #[serde(default)]
+    #[ts(optional)]
+    pub persona_id: Option<String>,
+    /// Only convert captures from this room id.
+    #[serde(default)]
+    #[ts(optional)]
+    pub room_id: Option<String>,
+}
+
+/// Params for `dataset/import-realclasseval`.
+#[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/dataset/ImportRealClassEvalParams.ts"
+)]
+pub struct ImportRealClassEvalParams {
+    /// Path to a cloned RealClassEval repo root (auto-discovers CSVs + tests).
+    #[serde(default)]
+    #[ts(optional)]
+    pub repo_dir: Option<String>,
+    /// Legacy single-CSV mode: path to one RealClassEval CSV (requires `testsDir`).
+    #[serde(default)]
+    #[ts(optional)]
+    pub csv_path: Option<String>,
+    /// Legacy single-CSV mode: directory of PYNGUIN test files.
+    #[serde(default)]
+    #[ts(optional)]
+    pub tests_dir: Option<String>,
+    /// Override the output directory (default `<datasets root>/realclasseval`).
+    #[serde(default)]
+    #[ts(optional)]
+    pub output_dir: Option<String>,
+    /// Fraction of examples placed in the train split. Default `0.8`.
+    #[serde(default = "default_split_ratio")]
+    pub split_ratio: f64,
+}
+
+/// Params for `dataset/list`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, TS, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../../protocol/typescript/dataset/ListDatasetsParams.ts")]
+pub struct ListDatasetsParams {
+    /// Override the datasets root directory to list (default `~/.continuum/datasets`).
+    #[serde(default)]
+    #[ts(optional)]
+    pub output_dir: Option<String>,
+}
+
+/// Params for `dataset/info`.
+#[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../../protocol/typescript/dataset/DatasetInfoParams.ts")]
+pub struct DatasetInfoParams {
+    /// Dataset name (subdirectory under the datasets root).
+    pub name: String,
+    /// Override the datasets root directory (default `~/.continuum/datasets`).
+    #[serde(default)]
+    #[ts(optional)]
+    pub output_dir: Option<String>,
+}
+
+// ============================================================================
+// DatasetService — the dataset domain logic the typed commands capture.
+// ============================================================================
+
+/// Owns the datasets root and the import/convert/query logic. Heavy CSV/JSONL
+/// processing happens here (off the main thread). The `dataset/*` commands hold
+/// an `Arc<DatasetService>` and are thin wrappers over these methods.
+pub struct DatasetService {
     datasets_root: PathBuf,
 }
 
-impl Default for DatasetModule {
-    fn default() -> Self {
-        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-        let datasets_root = PathBuf::from(home).join(".continuum").join("datasets");
+impl DatasetService {
+    pub fn new(datasets_root: PathBuf) -> Self {
         Self { datasets_root }
     }
-}
 
-impl DatasetModule {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Resolve the datasets root directory, preferring param override.
-    fn resolve_datasets_root(&self, params: &Value) -> PathBuf {
-        params
-            .get("outputDir")
-            .and_then(|v| v.as_str())
+    /// Resolve the datasets root directory, preferring the per-call override.
+    fn resolve_root(&self, output_dir: Option<&str>) -> PathBuf {
+        output_dir
             .map(PathBuf::from)
             .unwrap_or_else(|| self.datasets_root.clone())
     }
 
     /// Import a generic CSV file as a JSONL training dataset.
-    async fn import_csv(&self, params: Value) -> Result<CommandResult, String> {
-        let csv_path = params
-            .get("csvPath")
-            .and_then(|v| v.as_str())
-            .ok_or("Missing required param: csvPath")?;
+    pub fn import_csv(&self, p: &ImportCsvParams) -> Result<Value, String> {
+        let output_dir = self.resolve_root(p.output_dir.as_deref());
 
-        let output_dir = self.resolve_datasets_root(&params);
-        let name = params
-            .get("name")
-            .and_then(|v| v.as_str())
-            .unwrap_or("imported");
-        let split_ratio = params
-            .get("splitRatio")
-            .and_then(|v| v.as_f64())
-            .unwrap_or(0.8);
-
-        let user_col = params
-            .get("userColumn")
-            .and_then(|v| v.as_str())
-            .unwrap_or("input");
-        let assistant_col = params
-            .get("assistantColumn")
-            .and_then(|v| v.as_str())
-            .unwrap_or("output");
-
-        // Parse CSV
-        let csv_path = PathBuf::from(csv_path);
+        let csv_path = PathBuf::from(&p.csv_path);
         if !csv_path.exists() {
             return Err(format!("CSV file not found: {}", csv_path.display()));
         }
@@ -128,18 +283,23 @@ impl DatasetModule {
             .map_err(|e| format!("Failed to read CSV headers: {e}"))?
             .clone();
 
-        let user_idx = headers.iter().position(|h| h == user_col).ok_or_else(|| {
-            format!(
-                "Column '{user_col}' not found in CSV. Available: {:?}",
-                headers.iter().collect::<Vec<_>>()
-            )
-        })?;
-        let assistant_idx = headers
+        let user_idx = headers
             .iter()
-            .position(|h| h == assistant_col)
+            .position(|h| h == p.user_column.as_str())
             .ok_or_else(|| {
                 format!(
-                    "Column '{assistant_col}' not found in CSV. Available: {:?}",
+                    "Column '{}' not found in CSV. Available: {:?}",
+                    p.user_column,
+                    headers.iter().collect::<Vec<_>>()
+                )
+            })?;
+        let assistant_idx = headers
+            .iter()
+            .position(|h| h == p.assistant_column.as_str())
+            .ok_or_else(|| {
+                format!(
+                    "Column '{}' not found in CSV. Available: {:?}",
+                    p.assistant_column,
                     headers.iter().collect::<Vec<_>>()
                 )
             })?;
@@ -166,9 +326,8 @@ impl DatasetModule {
             return Err("No valid examples found in CSV".to_string());
         }
 
-        // Split and write
-        let manifest = self.split_and_write(name, &output_dir, &examples, split_ratio, None)?;
-        CommandResult::json(&manifest)
+        let manifest = self.split_and_write(&p.name, &output_dir, &examples, p.split_ratio, None)?;
+        serde_json::to_value(&manifest).map_err(|e| format!("Failed to serialize manifest: {e}"))
     }
 
     /// Convert recorded persona turns into a ShareGPT/chat training dataset.
@@ -184,14 +343,10 @@ impl DatasetModule {
     /// `~/.continuum/fixtures/persona-respond`), NOT engrams — engrams are
     /// curated *recall* memory, not paired SFT turns. Only `spoke` turns yield a
     /// training pair; `silent` / errored / malformed turns are skipped.
-    ///
-    /// Params: `turnsDir` (default recorder dir), `name`, `splitRatio` (0.8),
-    /// `includeSystem` (true), `includeHistory` (false), `personaId`/`roomId`
-    /// filters, `outputDir`.
-    async fn from_turns(&self, params: Value) -> Result<CommandResult, String> {
-        let turns_dir = params
-            .get("turnsDir")
-            .and_then(|v| v.as_str())
+    pub fn from_turns(&self, p: &FromTurnsParams) -> Result<Value, String> {
+        let turns_dir = p
+            .turns_dir
+            .as_deref()
             .map(PathBuf::from)
             .unwrap_or_else(|| {
                 let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
@@ -205,25 +360,7 @@ impl DatasetModule {
             ));
         }
 
-        let output_dir = self.resolve_datasets_root(&params);
-        let name = params
-            .get("name")
-            .and_then(|v| v.as_str())
-            .unwrap_or("persona-turns");
-        let split_ratio = params
-            .get("splitRatio")
-            .and_then(|v| v.as_f64())
-            .unwrap_or(0.8);
-        let include_system = params
-            .get("includeSystem")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(true);
-        let include_history = params
-            .get("includeHistory")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
-        let persona_filter = params.get("personaId").and_then(|v| v.as_str());
-        let room_filter = params.get("roomId").and_then(|v| v.as_str());
+        let output_dir = self.resolve_root(p.output_dir.as_deref());
 
         let mut examples: Vec<Value> = Vec::new();
         let entries = std::fs::read_dir(&turns_dir)
@@ -240,18 +377,18 @@ impl DatasetModule {
                 continue;
             };
 
-            if let Some(pid) = persona_filter {
+            if let Some(pid) = p.persona_id.as_deref() {
                 if turn.get("personaId").and_then(|v| v.as_str()) != Some(pid) {
                     continue;
                 }
             }
-            if let Some(rid) = room_filter {
+            if let Some(rid) = p.room_id.as_deref() {
                 if turn.get("roomId").and_then(|v| v.as_str()) != Some(rid) {
                     continue;
                 }
             }
 
-            if let Some(example) = turn_to_example(&turn, include_system, include_history) {
+            if let Some(example) = turn_to_example(&turn, p.include_system, p.include_history) {
                 examples.push(example);
             }
         }
@@ -263,8 +400,8 @@ impl DatasetModule {
             ));
         }
 
-        let manifest = self.split_and_write(name, &output_dir, &examples, split_ratio, None)?;
-        CommandResult::json(&manifest)
+        let manifest = self.split_and_write(&p.name, &output_dir, &examples, p.split_ratio, None)?;
+        serde_json::to_value(&manifest).map_err(|e| format!("Failed to serialize manifest: {e}"))
     }
 
     /// Convert LIVE prompt-captures into a training dataset — the rooms→training
@@ -275,13 +412,10 @@ impl DatasetModule {
     /// the data" had quietly stopped being true for the live path. Same one output
     /// shape, same split/write/manifest — only the SOURCE differs, so the genome
     /// loop trains on what the persona actually does today.
-    ///
-    /// Params: `capturesDir` (default prompt-captures), `name`, `splitRatio` (0.8),
-    /// `includeSystem` (true), `personaId`/`roomId` filters, `outputDir`.
-    async fn from_captures(&self, params: Value) -> Result<CommandResult, String> {
-        let dir = params
-            .get("capturesDir")
-            .and_then(|v| v.as_str())
+    pub fn from_captures(&self, p: &FromCapturesParams) -> Result<Value, String> {
+        let dir = p
+            .captures_dir
+            .as_deref()
             .map(PathBuf::from)
             .unwrap_or_else(|| {
                 let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
@@ -294,21 +428,7 @@ impl DatasetModule {
             ));
         }
 
-        let output_dir = self.resolve_datasets_root(&params);
-        let name = params
-            .get("name")
-            .and_then(|v| v.as_str())
-            .unwrap_or("persona-captures");
-        let split_ratio = params
-            .get("splitRatio")
-            .and_then(|v| v.as_f64())
-            .unwrap_or(0.8);
-        let include_system = params
-            .get("includeSystem")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(true);
-        let persona_filter = params.get("personaId").and_then(|v| v.as_str());
-        let room_filter = params.get("roomId").and_then(|v| v.as_str());
+        let output_dir = self.resolve_root(p.output_dir.as_deref());
 
         let mut examples: Vec<Value> = Vec::new();
         let entries = std::fs::read_dir(&dir)
@@ -329,17 +449,17 @@ impl DatasetModule {
                 let Ok(cap) = serde_json::from_str::<Value>(line) else {
                     continue;
                 };
-                if let Some(pid) = persona_filter {
+                if let Some(pid) = p.persona_id.as_deref() {
                     if cap.get("persona_id").and_then(|v| v.as_str()) != Some(pid) {
                         continue;
                     }
                 }
-                if let Some(rid) = room_filter {
+                if let Some(rid) = p.room_id.as_deref() {
                     if cap.get("room_id").and_then(|v| v.as_str()) != Some(rid) {
                         continue;
                     }
                 }
-                if let Some(example) = capture_to_example(&cap, include_system) {
+                if let Some(example) = capture_to_example(&cap, p.include_system) {
                     examples.push(example);
                 }
             }
@@ -352,8 +472,8 @@ impl DatasetModule {
             ));
         }
 
-        let manifest = self.split_and_write(name, &output_dir, &examples, split_ratio, None)?;
-        CommandResult::json(&manifest)
+        let manifest = self.split_and_write(&p.name, &output_dir, &examples, p.split_ratio, None)?;
+        serde_json::to_value(&manifest).map_err(|e| format!("Failed to serialize manifest: {e}"))
     }
 
     /// Import RealClassEval dataset from cloned repo directory → structured JSONL + manifest.
@@ -366,22 +486,17 @@ impl DatasetModule {
     /// Accepts either:
     ///   - `repoDir`: path to cloned repo root (auto-discovers CSVs + tests)
     ///   - `csvPath` + `testsDir`: legacy single-CSV mode (backward compat)
-    async fn import_realclasseval(&self, params: Value) -> Result<CommandResult, String> {
-        let output_dir = params
-            .get("outputDir")
-            .and_then(|v| v.as_str())
+    pub fn import_realclasseval(&self, p: &ImportRealClassEvalParams) -> Result<Value, String> {
+        let output_dir = p
+            .output_dir
+            .as_deref()
             .map(PathBuf::from)
             .unwrap_or_else(|| self.datasets_root.join("realclasseval"));
 
-        let split_ratio = params
-            .get("splitRatio")
-            .and_then(|v| v.as_f64())
-            .unwrap_or(0.8);
+        let split_ratio = p.split_ratio;
 
         // Collect (csv_path, tests_dir, is_post_cutoff) pairs
-        let splits: Vec<(PathBuf, PathBuf, bool)> = if let Some(repo_dir) =
-            params.get("repoDir").and_then(|v| v.as_str())
-        {
+        let splits: Vec<(PathBuf, PathBuf, bool)> = if let Some(repo_dir) = p.repo_dir.as_deref() {
             // Auto-discover from repo directory structure
             let base = PathBuf::from(repo_dir)
                 .join("data")
@@ -421,11 +536,11 @@ impl DatasetModule {
                 ));
             }
             found
-        } else if let Some(csv_path) = params.get("csvPath").and_then(|v| v.as_str()) {
+        } else if let Some(csv_path) = p.csv_path.as_deref() {
             // Legacy single-CSV mode
-            let tests_dir = params
-                .get("testsDir")
-                .and_then(|v| v.as_str())
+            let tests_dir = p
+                .tests_dir
+                .as_deref()
                 .ok_or("Missing required param: testsDir (or use repoDir for auto-discovery)")?;
             vec![(PathBuf::from(csv_path), PathBuf::from(tests_dir), false)]
         } else {
@@ -565,12 +680,12 @@ impl DatasetModule {
         std::fs::write(&manifest_path, &manifest_json)
             .map_err(|e| format!("Failed to write manifest: {e}"))?;
 
-        CommandResult::json(&manifest)
+        serde_json::to_value(&manifest).map_err(|e| format!("Failed to serialize manifest: {e}"))
     }
 
     /// List datasets in the datasets root directory.
-    async fn list_datasets(&self, params: Value) -> Result<CommandResult, String> {
-        let root = self.resolve_datasets_root(&params);
+    pub fn list_datasets(&self, p: &ListDatasetsParams) -> Result<Value, String> {
+        let root = self.resolve_root(p.output_dir.as_deref());
 
         let mut datasets: Vec<DatasetManifest> = Vec::new();
 
@@ -585,8 +700,7 @@ impl DatasetModule {
                     let manifest_path = path.join("manifest.json");
                     if manifest_path.exists() {
                         if let Ok(content) = std::fs::read_to_string(&manifest_path) {
-                            if let Ok(manifest) = serde_json::from_str::<DatasetManifest>(&content)
-                            {
+                            if let Ok(manifest) = serde_json::from_str::<DatasetManifest>(&content) {
                                 datasets.push(manifest);
                             }
                         }
@@ -595,27 +709,22 @@ impl DatasetModule {
             }
         }
 
-        Ok(CommandResult::Json(json!({
+        Ok(json!({
             "datasets": datasets,
             "count": datasets.len(),
             "root": root.to_string_lossy(),
-        })))
+        }))
     }
 
     /// Read manifest for a specific dataset.
-    async fn dataset_info(&self, params: Value) -> Result<CommandResult, String> {
-        let name = params
-            .get("name")
-            .and_then(|v| v.as_str())
-            .ok_or("Missing required param: name")?;
-
-        let root = self.resolve_datasets_root(&params);
-        let manifest_path = root.join(name).join("manifest.json");
+    pub fn dataset_info(&self, p: &DatasetInfoParams) -> Result<Value, String> {
+        let root = self.resolve_root(p.output_dir.as_deref());
+        let manifest_path = root.join(&p.name).join("manifest.json");
 
         if !manifest_path.exists() {
             return Err(format!(
                 "Dataset '{}' not found at {}",
-                name,
+                p.name,
                 manifest_path.display()
             ));
         }
@@ -625,7 +734,7 @@ impl DatasetModule {
         let manifest: DatasetManifest =
             serde_json::from_str(&content).map_err(|e| format!("Failed to parse manifest: {e}"))?;
 
-        CommandResult::json(&manifest)
+        serde_json::to_value(&manifest).map_err(|e| format!("Failed to serialize manifest: {e}"))
     }
 
     /// Split examples into train/eval, write JSONL files and manifest.
@@ -674,6 +783,28 @@ impl DatasetModule {
     }
 }
 
+/// Thin `ServiceModule` shell owning the [`DatasetService`] the typed
+/// `dataset/*` commands capture.
+pub struct DatasetModule {
+    service: Arc<DatasetService>,
+}
+
+impl Default for DatasetModule {
+    fn default() -> Self {
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+        let datasets_root = PathBuf::from(home).join(".continuum").join("datasets");
+        Self {
+            service: Arc::new(DatasetService::new(datasets_root)),
+        }
+    }
+}
+
+impl DatasetModule {
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
 #[async_trait]
 impl ServiceModule for DatasetModule {
     fn config(&self) -> ModuleConfig {
@@ -692,16 +823,15 @@ impl ServiceModule for DatasetModule {
         Ok(())
     }
 
-    async fn handle_command(&self, command: &str, params: Value) -> Result<CommandResult, String> {
-        match command {
-            "dataset/import-csv" => self.import_csv(params).await,
-            "dataset/import-realclasseval" => self.import_realclasseval(params).await,
-            "dataset/from-turns" => self.from_turns(params).await,
-            "dataset/from-captures" => self.from_captures(params).await,
-            "dataset/list" => self.list_datasets(params).await,
-            "dataset/info" => self.dataset_info(params).await,
-            _ => Err(format!("Unknown dataset command: {command}")),
-        }
+    async fn handle_command(&self, command: &str, _params: Value) -> Result<CommandResult, String> {
+        Err(format!(
+            "dataset command surface is migrated to the typed registry; \
+             '{command}' has no legacy handler"
+        ))
+    }
+
+    fn commands(&self) -> Vec<Arc<dyn crate::sdk_codegen::DynCommand>> {
+        crate::commands::dataset::command_objects(self.service.clone())
     }
 
     fn as_any(&self) -> &dyn Any {
@@ -889,6 +1019,12 @@ mod tests {
     use std::io::Write;
     use tempfile::TempDir;
 
+    fn service() -> DatasetService {
+        // datasets_root is only used when a call omits outputDir; every test below
+        // passes outputDir explicitly, so a temp root is a safe default.
+        DatasetService::new(std::env::temp_dir().join("continuum-dataset-tests"))
+    }
+
     fn create_test_csv(dir: &Path, filename: &str, content: &str) -> PathBuf {
         let path = dir.join(filename);
         let mut file = std::fs::File::create(&path).unwrap();
@@ -896,8 +1032,11 @@ mod tests {
         path
     }
 
-    #[tokio::test]
-    async fn test_import_csv_basic() {
+    // what this catches: a generic CSV imports to a split JSONL dataset + manifest
+    // via the typed ImportCsvParams (the value the command returns is the manifest
+    // JSON directly, no CommandResult wrapper).
+    #[test]
+    fn import_csv_basic() {
         let tmp = TempDir::new().unwrap();
         let csv_path = create_test_csv(
             tmp.path(),
@@ -906,25 +1045,22 @@ mod tests {
         );
         let output_dir = tmp.path().join("out");
 
-        let module = DatasetModule::new();
-        let params = json!({
-            "csvPath": csv_path.to_str().unwrap(),
-            "outputDir": output_dir.to_str().unwrap(),
-            "name": "test-dataset",
-            "splitRatio": 0.5,
-        });
+        let v = service()
+            .import_csv(&ImportCsvParams {
+                csv_path: csv_path.to_str().unwrap().to_string(),
+                output_dir: Some(output_dir.to_str().unwrap().to_string()),
+                name: "test-dataset".to_string(),
+                split_ratio: 0.5,
+                user_column: default_user_column(),
+                assistant_column: default_assistant_column(),
+            })
+            .unwrap();
 
-        let result = module.import_csv(params).await.unwrap();
-        if let CommandResult::Json(v) = result {
-            assert_eq!(v["name"], "test-dataset");
-            assert_eq!(v["total_examples"], 2);
-            assert_eq!(v["train_examples"], 1);
-            assert_eq!(v["eval_examples"], 1);
-        } else {
-            panic!("Expected JSON result");
-        }
+        assert_eq!(v["name"], "test-dataset");
+        assert_eq!(v["total_examples"], 2);
+        assert_eq!(v["train_examples"], 1);
+        assert_eq!(v["eval_examples"], 1);
 
-        // Verify files exist
         assert!(output_dir.join("train.jsonl").exists());
         assert!(output_dir.join("eval.jsonl").exists());
         assert!(output_dir.join("manifest.json").exists());
@@ -960,7 +1096,10 @@ mod tests {
             "messages": [{ "role": "user", "content": "ping it" }],
             "response": { "text": "{\"tool_call\": {\"name\": \"ping\", \"arguments\": {}}}" }
         });
-        assert!(capture_to_example(&tool_json, true).is_none(), "tool-call JSON must be dropped");
+        assert!(
+            capture_to_example(&tool_json, true).is_none(),
+            "tool-call JSON must be dropped"
+        );
 
         // Empty response → dropped (no pair).
         let empty = json!({
@@ -968,7 +1107,10 @@ mod tests {
             "messages": [{ "role": "user", "content": "hi" }],
             "response": { "text": "   " }
         });
-        assert!(capture_to_example(&empty, true).is_none(), "empty response must be dropped");
+        assert!(
+            capture_to_example(&empty, true).is_none(),
+            "empty response must be dropped"
+        );
 
         // No burst (only system) → dropped (not a context→reply pair).
         let no_burst = json!({
@@ -976,15 +1118,18 @@ mod tests {
             "messages": [],
             "response": { "text": "hello" }
         });
-        assert!(capture_to_example(&no_burst, true).is_none(), "system-only must be dropped");
+        assert!(
+            capture_to_example(&no_burst, true).is_none(),
+            "system-only must be dropped"
+        );
     }
 
     // what this catches: the rooms→training-data bridge — recorded persona
     // turns (the recorder's per-turn JSON) convert to {messages:[{role,content}]}
     // SFT examples through the SAME split/write path as the CSV importer, and
     // only `spoke` turns become training pairs (silent turns are dropped).
-    #[tokio::test]
-    async fn test_from_turns_builds_sft_dataset_from_spoke_turns() {
+    #[test]
+    fn from_turns_builds_sft_dataset_from_spoke_turns() {
         let tmp = TempDir::new().unwrap();
         let turns_dir = tmp.path().join("turns");
         std::fs::create_dir_all(&turns_dir).unwrap();
@@ -1014,18 +1159,19 @@ mod tests {
         create_test_csv(&turns_dir, "b-rust.json", &silent.to_string());
 
         let output_dir = tmp.path().join("out");
-        let module = DatasetModule::new();
-        let params = json!({
-            "turnsDir": turns_dir.to_str().unwrap(),
-            "outputDir": output_dir.to_str().unwrap(),
-            "name": "gastro-turns",
-            "splitRatio": 1.0,
-        });
+        let v = service()
+            .from_turns(&FromTurnsParams {
+                turns_dir: Some(turns_dir.to_str().unwrap().to_string()),
+                output_dir: Some(output_dir.to_str().unwrap().to_string()),
+                name: "gastro-turns".to_string(),
+                split_ratio: 1.0,
+                include_system: true,
+                include_history: false,
+                persona_id: None,
+                room_id: None,
+            })
+            .unwrap();
 
-        let result = module.from_turns(params).await.unwrap();
-        let CommandResult::Json(v) = result else {
-            panic!("expected JSON manifest");
-        };
         assert_eq!(v["name"], "gastro-turns");
         assert_eq!(v["total_examples"], 1, "only the spoke turn is a pair");
 
@@ -1043,8 +1189,8 @@ mod tests {
 
     // what this catches: a turnsDir with no spoke turns is an explicit error
     // (nothing to train on), not a silent empty dataset.
-    #[tokio::test]
-    async fn test_from_turns_errors_when_no_spoke_turns() {
+    #[test]
+    fn from_turns_errors_when_no_spoke_turns() {
         let tmp = TempDir::new().unwrap();
         let turns_dir = tmp.path().join("turns");
         std::fs::create_dir_all(&turns_dir).unwrap();
@@ -1054,40 +1200,49 @@ mod tests {
         });
         create_test_csv(&turns_dir, "only-silent-rust.json", &silent.to_string());
 
-        let module = DatasetModule::new();
-        let params = json!({
-            "turnsDir": turns_dir.to_str().unwrap(),
-            "outputDir": tmp.path().join("out").to_str().unwrap(),
-        });
-        let err = module.from_turns(params).await.unwrap_err();
+        let err = service()
+            .from_turns(&FromTurnsParams {
+                turns_dir: Some(turns_dir.to_str().unwrap().to_string()),
+                output_dir: Some(tmp.path().join("out").to_str().unwrap().to_string()),
+                name: default_persona_turns_name(),
+                split_ratio: default_split_ratio(),
+                include_system: true,
+                include_history: false,
+                persona_id: None,
+                room_id: None,
+            })
+            .unwrap_err();
         assert!(err.contains("No spoke turns"), "got: {err}");
     }
 
-    #[tokio::test]
-    async fn test_import_csv_missing_file() {
-        let module = DatasetModule::new();
-        let params = json!({
-            "csvPath": "/nonexistent/path.csv",
-            "outputDir": "/tmp/test-out",
-        });
-
-        let result = module.import_csv(params).await;
-        assert!(result.is_err());
-        assert!(result.unwrap_err().contains("not found"));
+    // what this catches: a missing CSV is a loud error naming the path, not a panic.
+    #[test]
+    fn import_csv_missing_file() {
+        let err = service()
+            .import_csv(&ImportCsvParams {
+                csv_path: "/nonexistent/path.csv".to_string(),
+                output_dir: Some("/tmp/test-out".to_string()),
+                name: default_imported_name(),
+                split_ratio: default_split_ratio(),
+                user_column: default_user_column(),
+                assistant_column: default_assistant_column(),
+            })
+            .unwrap_err();
+        assert!(err.contains("not found"), "got: {err}");
     }
 
-    #[tokio::test]
-    async fn test_import_realclasseval_legacy_csv_mode() {
+    // what this catches: RealClassEval legacy single-CSV mode imports with metrics
+    // and the arxiv source stamp; all rows count as pre-cutoff (is_post=false).
+    #[test]
+    fn import_realclasseval_legacy_csv_mode() {
         let tmp = TempDir::new().unwrap();
 
-        // Create a minimal RealClassEval CSV
         let csv_content = r#"snippet_id,class_name,human_written_code,class_skeleton,cyclomatic_complexity,lines_of_code
 snippet_0,Calculator,"class Calculator:\n    def add(self, a, b):\n        return a + b","class Calculator:\n    def add(self, a, b):\n        pass",1,3
 snippet_200,Parser,"class Parser:\n    def parse(self, text):\n        return text.split()","class Parser:\n    def parse(self, text):\n        pass",2,5"#;
 
         let csv_path = create_test_csv(tmp.path(), "RealClassEval.csv", csv_content);
 
-        // Create test directory with test files
         let tests_dir = tmp.path().join("tests");
         std::fs::create_dir_all(&tests_dir).unwrap();
         create_test_csv(
@@ -1098,36 +1253,29 @@ snippet_200,Parser,"class Parser:\n    def parse(self, text):\n        return te
 
         let output_dir = tmp.path().join("out");
 
-        let module = DatasetModule::new();
-        let params = json!({
-            "csvPath": csv_path.to_str().unwrap(),
-            "testsDir": tests_dir.to_str().unwrap(),
-            "outputDir": output_dir.to_str().unwrap(),
-            "splitRatio": 0.5,
-        });
+        let v = service()
+            .import_realclasseval(&ImportRealClassEvalParams {
+                repo_dir: None,
+                csv_path: Some(csv_path.to_str().unwrap().to_string()),
+                tests_dir: Some(tests_dir.to_str().unwrap().to_string()),
+                output_dir: Some(output_dir.to_str().unwrap().to_string()),
+                split_ratio: 0.5,
+            })
+            .unwrap();
 
-        let result = module.import_realclasseval(params).await.unwrap();
-        if let CommandResult::Json(v) = result {
-            assert_eq!(v["name"], "realclasseval");
-            assert_eq!(v["total_examples"], 2);
-            assert_eq!(v["source"], "arxiv:2510.26130");
-            // Legacy mode: all counted as pre-cutoff (is_post=false)
-            assert_eq!(v["pre_cutoff"], 2);
-            assert!(v["metrics"]["avg_cyclomatic_complexity"].as_f64().unwrap() > 0.0);
-        } else {
-            panic!("Expected JSON result");
-        }
+        assert_eq!(v["name"], "realclasseval");
+        assert_eq!(v["total_examples"], 2);
+        assert_eq!(v["source"], "arxiv:2510.26130");
+        // Legacy mode: all counted as pre-cutoff (is_post=false)
+        assert_eq!(v["pre_cutoff"], 2);
+        assert!(v["metrics"]["avg_cyclomatic_complexity"].as_f64().unwrap() > 0.0);
     }
 
-    #[tokio::test]
-    async fn test_import_realclasseval_repo_dir_mode() {
+    // what this catches: RealClassEval repo-dir auto-discovery splits csn (pre) +
+    // post_cut-off (post) and labels the cutoff counts correctly.
+    #[test]
+    fn import_realclasseval_repo_dir_mode() {
         let tmp = TempDir::new().unwrap();
-
-        // Simulate RealClassEval repo directory structure:
-        //   data/functional_correctness_data/csn/dfs/no_docstr.csv
-        //   data/functional_correctness_data/csn/pynguin_generated_tests/full_docstr/test_snippet_10.py
-        //   data/functional_correctness_data/post_cut-off/dfs/no_docstr.csv
-        //   data/functional_correctness_data/post_cut-off/pynguin_generated_tests/full_docstr/test_snippet_300.py
 
         let base = tmp.path().join("data").join("functional_correctness_data");
 
@@ -1159,32 +1307,30 @@ snippet_200,Parser,"class Parser:\n    def parse(self, text):\n        return te
 
         let output_dir = tmp.path().join("out");
 
-        let module = DatasetModule::new();
-        let params = json!({
-            "repoDir": tmp.path().to_str().unwrap(),
-            "outputDir": output_dir.to_str().unwrap(),
-            "splitRatio": 0.5,
-        });
+        let v = service()
+            .import_realclasseval(&ImportRealClassEvalParams {
+                repo_dir: Some(tmp.path().to_str().unwrap().to_string()),
+                csv_path: None,
+                tests_dir: None,
+                output_dir: Some(output_dir.to_str().unwrap().to_string()),
+                split_ratio: 0.5,
+            })
+            .unwrap();
 
-        let result = module.import_realclasseval(params).await.unwrap();
-        if let CommandResult::Json(v) = result {
-            assert_eq!(v["name"], "realclasseval");
-            assert_eq!(v["total_examples"], 2);
-            assert_eq!(v["source"], "arxiv:2510.26130");
-            assert_eq!(v["pre_cutoff"], 1); // csn
-            assert_eq!(v["post_cutoff"], 1); // post_cut-off
-        } else {
-            panic!("Expected JSON result");
-        }
+        assert_eq!(v["name"], "realclasseval");
+        assert_eq!(v["total_examples"], 2);
+        assert_eq!(v["source"], "arxiv:2510.26130");
+        assert_eq!(v["pre_cutoff"], 1); // csn
+        assert_eq!(v["post_cutoff"], 1); // post_cut-off
 
-        // Verify output files
         assert!(output_dir.join("train.jsonl").exists());
         assert!(output_dir.join("eval.jsonl").exists());
         assert!(output_dir.join("manifest.json").exists());
     }
 
-    #[tokio::test]
-    async fn test_list_datasets() {
+    // what this catches: list returns the manifests under the root + a count.
+    #[test]
+    fn list_datasets_reads_manifests() {
         let tmp = TempDir::new().unwrap();
         let dataset_dir = tmp.path().join("my-dataset");
         std::fs::create_dir_all(&dataset_dir).unwrap();
@@ -1210,20 +1356,18 @@ snippet_200,Parser,"class Parser:\n    def parse(self, text):\n        return te
         )
         .unwrap();
 
-        let module = DatasetModule::new();
-        let params = json!({ "outputDir": tmp.path().to_str().unwrap() });
-
-        let result = module.list_datasets(params).await.unwrap();
-        if let CommandResult::Json(v) = result {
-            assert_eq!(v["count"], 1);
-            assert_eq!(v["datasets"][0]["name"], "my-dataset");
-        } else {
-            panic!("Expected JSON result");
-        }
+        let v = service()
+            .list_datasets(&ListDatasetsParams {
+                output_dir: Some(tmp.path().to_str().unwrap().to_string()),
+            })
+            .unwrap();
+        assert_eq!(v["count"], 1);
+        assert_eq!(v["datasets"][0]["name"], "my-dataset");
     }
 
-    #[tokio::test]
-    async fn test_dataset_info() {
+    // what this catches: info reads one named dataset's manifest.
+    #[test]
+    fn dataset_info_reads_manifest() {
         let tmp = TempDir::new().unwrap();
         let dataset_dir = tmp.path().join("test-ds");
         std::fs::create_dir_all(&dataset_dir).unwrap();
@@ -1249,32 +1393,38 @@ snippet_200,Parser,"class Parser:\n    def parse(self, text):\n        return te
         )
         .unwrap();
 
-        let module = DatasetModule::new();
-        let params = json!({
-            "name": "test-ds",
-            "outputDir": tmp.path().to_str().unwrap(),
-        });
-
-        let result = module.dataset_info(params).await.unwrap();
-        if let CommandResult::Json(v) = result {
-            assert_eq!(v["name"], "test-ds");
-            assert_eq!(v["total_examples"], 50);
-        } else {
-            panic!("Expected JSON result");
-        }
+        let v = service()
+            .dataset_info(&DatasetInfoParams {
+                name: "test-ds".to_string(),
+                output_dir: Some(tmp.path().to_str().unwrap().to_string()),
+            })
+            .unwrap();
+        assert_eq!(v["name"], "test-ds");
+        assert_eq!(v["total_examples"], 50);
     }
 
-    #[tokio::test]
-    async fn test_dataset_info_not_found() {
+    // what this catches: info on a missing dataset is a loud error, not an empty ok.
+    #[test]
+    fn dataset_info_not_found() {
         let tmp = TempDir::new().unwrap();
-        let module = DatasetModule::new();
-        let params = json!({
-            "name": "nonexistent",
-            "outputDir": tmp.path().to_str().unwrap(),
-        });
+        let err = service()
+            .dataset_info(&DatasetInfoParams {
+                name: "nonexistent".to_string(),
+                output_dir: Some(tmp.path().to_str().unwrap().to_string()),
+            })
+            .unwrap_err();
+        assert!(err.contains("not found"), "got: {err}");
+    }
 
-        let result = module.dataset_info(params).await;
-        assert!(result.is_err());
-        assert!(result.unwrap_err().contains("not found"));
+    // what this catches: the legacy handle_command surface fails loud (the typed
+    // registry owns dataset/* now) rather than silently dispatching.
+    #[tokio::test]
+    async fn legacy_handle_command_fails_loud() {
+        let module = DatasetModule::new();
+        let err = module
+            .handle_command("dataset/list", json!({}))
+            .await
+            .unwrap_err();
+        assert!(err.contains("migrated to the typed registry"), "got: {err}");
     }
 }
