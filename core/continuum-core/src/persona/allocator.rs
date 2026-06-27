@@ -22,7 +22,8 @@ use crate::gpu::GpuMemoryManager;
 // =============================================================================
 
 /// Model preference for a specific VRAM tier.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../../protocol/typescript/persona/ModelPreference.ts")]
 #[serde(rename_all = "camelCase")]
 pub struct ModelPreference {
     /// Minimum total VRAM (GB) for this preference to apply
@@ -36,7 +37,8 @@ pub struct ModelPreference {
 }
 
 /// A persona definition from the catalog (data, not code).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../../protocol/typescript/persona/PersonaCatalogEntry.ts")]
 #[serde(rename_all = "camelCase")]
 pub struct PersonaCatalogEntry {
     pub unique_id: String,
