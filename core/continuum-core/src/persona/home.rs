@@ -99,6 +99,21 @@ impl PersonaHome {
     pub fn seed_json(&self) -> PathBuf {
         self.root.join("seed.json")
     }
+
+    /// Path to the persona's runtime base-model override, owned by
+    /// [`PersonaModelOverride`](crate::persona::model_override::PersonaModelOverride).
+    /// Present ⇒ this persona is force-assigned to a specific base
+    /// model (operator or self via `persona/reassign-model`), taking
+    /// precedence over the catalog's tiered `model_preferences`.
+    /// Absent ⇒ the allocator resolves her model from the catalog as
+    /// usual. Lives under the home root so it rides the
+    /// [`PersonaHomeBundle`](crate::persona::portability::PersonaHomeBundle)
+    /// for free — move the home, keep the self (and her assignment).
+    ///
+    /// Path: `<home>/model_override.json`.
+    pub fn model_override_json(&self) -> PathBuf {
+        self.root.join("model_override.json")
+    }
 }
 
 #[cfg(test)]
@@ -142,6 +157,10 @@ mod tests {
         assert_eq!(
             home.seed_json(),
             Path::new("/tmp/continuum-test-root/personas/Niko/seed.json")
+        );
+        assert_eq!(
+            home.model_override_json(),
+            Path::new("/tmp/continuum-test-root/personas/Niko/model_override.json")
         );
     }
 

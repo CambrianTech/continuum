@@ -54,6 +54,7 @@ pub mod identity_provider;
 pub mod persona_identity;
 pub mod inbox;
 pub mod inference_profile;
+pub mod model_override;
 pub mod portability;
 pub mod profile_builder;
 pub mod service_loop;
@@ -105,6 +106,7 @@ pub use allocator::{
     allocate as allocate_personas, load_catalog, select_local_model, AllocationResult,
     PersonaAllocation, PersonaCatalogEntry,
 };
+pub use model_override::{PersonaModelOverride, PersonaModelOverrideError};
 pub use channel_items::{ChannelEnqueueRequest, MediaItemRequest};
 pub use channel_registry::ChannelRegistry;
 pub use channel_types::{ActivityDomain, ChannelRegistryStatus, ChannelStatus, ServiceCycleResult};

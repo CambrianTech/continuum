@@ -43,7 +43,12 @@ crate::action_command! {
     output: AllocationResult,
     run(this, _ctx, p) => {
         let catalog = load_catalog();
-        Ok(allocate_personas(&this.gpu_manager, &p.available_api_keys, &catalog))
+        // No per-persona overrides at the planning surface: `persona/allocate` is a
+        // stateless hardware-tier query with no persona homes in scope. The runtime
+        // assignment path (`persona/reassign-model`) is the caller that resolves each
+        // persona's home, loads her PersonaModelOverride, and passes the populated map.
+        let overrides = std::collections::HashMap::new();
+        Ok(allocate_personas(&this.gpu_manager, &p.available_api_keys, &catalog, &overrides))
     }
 }
 
