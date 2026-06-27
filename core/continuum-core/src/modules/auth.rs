@@ -21,17 +21,18 @@
 //! - auth/oauth/register  — Register a new provider at runtime
 
 use crate::runtime::{
-    CommandResult, CommandSchema, ModuleConfig, ModuleContext, ModulePriority, ParamSchema,
-    ServiceModule,
+    CommandResult, ModuleConfig, ModuleContext, ModulePriority, ServiceModule,
 };
 use async_trait::async_trait;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use dashmap::DashMap;
 use rand::RngCore;
 use reqwest::Client;
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
+use ts_rs::TS;
 use std::any::Any;
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -46,13 +47,15 @@ use tokio::sync::{oneshot, Mutex, RwLock};
 ///
 /// Each provider needs at minimum: `client_id`, `auth_url`, `token_url`, `scopes`,
 /// and a `redirect_port` for the temporary localhost callback server.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
+#[ts(export, export_to = "../../../protocol/typescript/auth/OAuthClientConfig.ts")]
 pub struct OAuthClientConfig {
     /// Unique provider identifier, e.g. `"github"`, `"google"`, `"huggingface"`.
     pub provider_id: String,
     /// OAuth application client ID.
     pub client_id: String,
     /// OAuth application client secret. `None` for public (PKCE-only) clients.
+    #[ts(optional)]
     pub client_secret: Option<String>,
     /// Authorization endpoint URL.
     pub auth_url: String,
@@ -61,8 +64,10 @@ pub struct OAuthClientConfig {
     /// Space-separated OAuth scopes.
     pub scopes: String,
     /// localhost port for the temporary redirect-URI catcher (e.g. `47200`).
+    #[ts(type = "number")]
     pub redirect_port: u16,
     /// Optional token revocation endpoint URL.
+    #[ts(optional)]
     pub revoke_url: Option<String>,
 }
 
@@ -295,6 +300,25 @@ impl ExternalWebviewAuthService {
                 "scope": ts.scope,
             }),
         }
+    }
+
+    /// List all registered providers as a `{ providers: [...] }` summary. Public
+    /// config only (auth_url, scopes, redirect_port) — no client secrets or tokens.
+    pub async fn list_providers(&self) -> Value {
+        let providers = self.providers.read().await;
+        let list: Vec<Value> = providers
+            .values()
+            .map(|c| {
+                json!({
+                    "provider_id": c.provider_id,
+                    "auth_url": c.auth_url,
+                    "scopes": c.scopes,
+                    "redirect_port": c.redirect_port,
+                    "has_revoke_url": c.revoke_url.is_some(),
+                })
+            })
+            .collect();
+        json!({ "providers": list })
     }
 
     /// Refresh the access token for `provider_id` using its stored refresh_token.
@@ -808,172 +832,24 @@ impl ServiceModule for ExternalWebviewAuthModule {
         Ok(())
     }
 
-    async fn handle_command(&self, command: &str, params: Value) -> Result<CommandResult, String> {
-        match command {
-            "auth/oauth/start" => {
-                let provider_id = params["provider_id"]
-                    .as_str()
-                    .ok_or("Missing required parameter: provider_id")?;
-                let result = self.service.start_flow(provider_id).await?;
-                Ok(CommandResult::Json(result))
-            }
-
-            "auth/oauth/status" => {
-                let provider_id = params["provider_id"]
-                    .as_str()
-                    .ok_or("Missing required parameter: provider_id")?;
-                Ok(CommandResult::Json(self.service.token_status(provider_id)))
-            }
-
-            "auth/oauth/refresh" => {
-                let provider_id = params["provider_id"]
-                    .as_str()
-                    .ok_or("Missing required parameter: provider_id")?;
-                let result = self.service.refresh_token(provider_id).await?;
-                Ok(CommandResult::Json(result))
-            }
-
-            "auth/oauth/revoke" => {
-                let provider_id = params["provider_id"]
-                    .as_str()
-                    .ok_or("Missing required parameter: provider_id")?;
-                let result = self.service.revoke_tokens(provider_id).await?;
-                Ok(CommandResult::Json(result))
-            }
-
-            "auth/oauth/providers" => {
-                let providers = self.service.providers.read().await;
-                let list: Vec<Value> = providers
-                    .values()
-                    .map(|c| {
-                        json!({
-                            "provider_id": c.provider_id,
-                            "auth_url": c.auth_url,
-                            "scopes": c.scopes,
-                            "redirect_port": c.redirect_port,
-                            "has_revoke_url": c.revoke_url.is_some(),
-                        })
-                    })
-                    .collect();
-                Ok(CommandResult::Json(json!({ "providers": list })))
-            }
-
-            "auth/oauth/register" => {
-                let config: OAuthClientConfig = serde_json::from_value(params)
-                    .map_err(|e| format!("Invalid OAuth provider config: {e}"))?;
-                self.service.register_provider(config).await;
-                Ok(CommandResult::Json(json!({ "registered": true })))
-            }
-
-            _ => Err(format!("Unknown auth command: {command}")),
-        }
+    async fn handle_command(
+        &self,
+        command: &str,
+        _params: Value,
+    ) -> Result<CommandResult, String> {
+        // MIGRATED: every `auth/oauth/*` verb is a typed command object (see
+        // `crate::commands::auth`), contributed via `commands()` below and winning at
+        // `route_object`. Nothing should reach here. Fail loud — this legacy
+        // `handle_command` retires entirely in Wave Z.
+        Err(format!(
+            "auth command surface is migrated to the typed registry; '{command}' has no legacy handler"
+        ))
     }
 
-    fn command_schemas(&self) -> Vec<CommandSchema> {
-        vec![
-            CommandSchema {
-                name: "auth/oauth/start",
-                description: "Begin OAuth 2.0 + PKCE flow. Opens system browser at the \
-                              authorization URL and spins up a temporary localhost redirect-catcher.",
-                params: vec![ParamSchema {
-                    name: "provider_id",
-                    param_type: "string",
-                    required: true,
-                    description: "Provider to authenticate with: 'github', 'huggingface', \
-                                  'google', or a custom registered provider.",
-                }],
-            },
-            CommandSchema {
-                name: "auth/oauth/status",
-                description: "Check whether tokens exist for a provider and if they are expired.",
-                params: vec![ParamSchema {
-                    name: "provider_id",
-                    param_type: "string",
-                    required: true,
-                    description: "Provider identifier to check.",
-                }],
-            },
-            CommandSchema {
-                name: "auth/oauth/refresh",
-                description: "Refresh the access token using the stored refresh_token.",
-                params: vec![ParamSchema {
-                    name: "provider_id",
-                    param_type: "string",
-                    required: true,
-                    description: "Provider identifier whose token to refresh.",
-                }],
-            },
-            CommandSchema {
-                name: "auth/oauth/revoke",
-                description: "Revoke tokens server-side (if a revocation endpoint is configured) \
-                              and delete them from config.env.",
-                params: vec![ParamSchema {
-                    name: "provider_id",
-                    param_type: "string",
-                    required: true,
-                    description: "Provider identifier whose tokens to revoke.",
-                }],
-            },
-            CommandSchema {
-                name: "auth/oauth/providers",
-                description: "List all registered OAuth providers.",
-                params: vec![],
-            },
-            CommandSchema {
-                name: "auth/oauth/register",
-                description: "Register a new OAuth provider configuration at runtime.",
-                params: vec![
-                    ParamSchema {
-                        name: "provider_id",
-                        param_type: "string",
-                        required: true,
-                        description: "Unique provider identifier.",
-                    },
-                    ParamSchema {
-                        name: "client_id",
-                        param_type: "string",
-                        required: true,
-                        description: "OAuth application client ID.",
-                    },
-                    ParamSchema {
-                        name: "client_secret",
-                        param_type: "string",
-                        required: false,
-                        description: "OAuth application client secret (omit for public/PKCE-only clients).",
-                    },
-                    ParamSchema {
-                        name: "auth_url",
-                        param_type: "string",
-                        required: true,
-                        description: "Authorization endpoint URL.",
-                    },
-                    ParamSchema {
-                        name: "token_url",
-                        param_type: "string",
-                        required: true,
-                        description: "Token endpoint URL.",
-                    },
-                    ParamSchema {
-                        name: "scopes",
-                        param_type: "string",
-                        required: true,
-                        description: "Space-separated OAuth scopes.",
-                    },
-                    ParamSchema {
-                        name: "redirect_port",
-                        param_type: "number",
-                        required: true,
-                        description: "localhost port for the OAuth redirect URI (e.g. 47200).",
-                    },
-                    ParamSchema {
-                        name: "revoke_url",
-                        param_type: "string",
-                        required: false,
-                        description: "Optional token revocation endpoint URL.",
-                    },
-                ],
-            },
-        ]
+    /// The migrated `auth/oauth/*` commands as typed self-routing objects on the ONE
+    /// registry, sharing this module's `Arc<ExternalWebviewAuthService>`.
+    fn commands(&self) -> Vec<Arc<dyn crate::sdk_codegen::DynCommand>> {
+        crate::commands::auth::command_objects(self.service.clone())
     }
 
     fn as_any(&self) -> &dyn Any {
