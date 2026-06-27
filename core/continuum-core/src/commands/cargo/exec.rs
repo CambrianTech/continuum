@@ -1,251 +1,144 @@
-//! CargoModule — `cargo/build` and `cargo/test` with structured output.
+//! Cargo subprocess orchestration + output parsers.
 //!
-//! Per [PERSONA-AS-DEVELOPER-GAP.md](../../../../../../docs/planning/PERSONA-AS-DEVELOPER-GAP.md)
-//! Priority 2: Rust toolchain wrappers with structured envelopes,
-//! closing the iteration-loop seam so a persona can build/test its
-//! own scaffolded modules with the same feedback density a human
-//! gets from `npm run build:ts` or `cargo test`.
+//! Free functions shared by `cargo/build` and `cargo/test`. The
+//! cargo invocations themselves are slow + environment-dependent;
+//! the parsers are pure functions that take captured cargo output
+//! and emit typed envelopes — that's where the substantive test
+//! coverage lives.
 //!
-//! # What this module does
-//!
-//! Wraps cargo invocations with `--message-format=json` (for builds)
-//! and parses the canonical JSON stream into typed
-//! [`CargoMessage`](types::CargoMessage) diagnostics. For tests,
-//! invokes cargo and parses libtest's human-readable output for
-//! pass/fail/ignored counts plus failing test names.
-//!
-//! # Composability with the grid
-//!
-//! Both result types serialize to flat camelCase JSON envelopes. A
-//! persona on machine A can call `cargo/test` against a module a
-//! persona on machine B just authored — the result envelope routes
-//! back over airc's grid without any cargo-specific protocol. The
-//! grid substrate already handles the routing; this module makes
-//! the wire shape grid-friendly. See
-//! [[alignment-via-substrate-economics]].
-//!
-//! # What this module does NOT do
-//!
-//! - **Does NOT manage per-persona workspaces.** Takes optional
-//!   `working_dir` (default: process cwd). The "self-improving
-//!   Continuum" scenario (persona modifies repo → builds repo →
-//!   tests repo) doesn't need per-persona workspaces; that's an
-//!   orthogonal layer added later when multiple personas work on
-//!   isolated worktrees.
-//! - **Does NOT stream output line-by-line.** Returns a single
-//!   envelope at the end. Streaming + `events/command-completed`
-//!   are PERSONA-AS-DEVELOPER-GAP.md priorities 3+4 — separate
-//!   PRs once the Stream cell shape implementation lands.
-//! - **Does NOT cap cargo's own concurrency.** cargo manages its
-//!   own target-dir lock; concurrent invocations against the same
-//!   target dir serialize at cargo's level. Different target dirs
-//!   stay fully parallel.
+//! No per-resource locks: cargo handles its own target-dir locking
+//! internally (multiple concurrent `cargo build` invocations against
+//! the same target dir serialize at cargo's level; different target
+//! dirs stay parallel). Per [field manual §4.1](../../../../../../docs/architecture/COMMAND-INFRASTRUCTURE-FIELD-MANUAL.md)
+//! — when correctness lives below the command (cargo itself), the
+//! command-level lock is unnecessary.
 
 use std::process::Stdio;
 use std::time::Duration;
 
-use async_trait::async_trait;
 use serde_json::Value;
 use tokio::io::AsyncReadExt;
 use tokio::process::Command;
 use tokio::time::Instant;
 
-use crate::runtime::{
-    CommandRequest, CommandResponse, CommandResult, ModuleConfig, ModuleContext, ModulePriority,
-    ServiceModule,
-};
-
-pub mod types;
-
-use types::{
+use super::types::{
     CargoBuildParams, CargoBuildResult, CargoMessage, CargoSpan, CargoTestParams, CargoTestResult,
     BUILD_DEFAULT_TIMEOUT_MS, BUILD_MAX_TIMEOUT_MS, TEST_DEFAULT_TIMEOUT_MS, TEST_MAX_TIMEOUT_MS,
 };
 
-/// The cargo module. Stateless — every invocation is independent.
+/// Run `cargo build` with `--message-format=json` and parse the JSON
+/// stream into structured diagnostics. Returns a typed envelope
+/// regardless of cargo's exit status — callers get errors/warnings
+/// even when the build fails. The envelope's `error` field carries
+/// substrate-level failures (timeout, spawn failure).
+pub async fn run_build(params: CargoBuildParams) -> CargoBuildResult {
+    let timeout = clamp_timeout(
+        params.timeout_ms,
+        BUILD_DEFAULT_TIMEOUT_MS,
+        BUILD_MAX_TIMEOUT_MS,
+    );
+    let start = Instant::now();
+
+    let mut cmd = Command::new("cargo");
+    cmd.arg("build").arg("--message-format=json");
+    if let Some(pkg) = &params.package {
+        cmd.arg("--package").arg(pkg);
+    }
+    if let Some(features) = &params.features {
+        cmd.arg("--features").arg(features);
+    }
+    if params.release {
+        cmd.arg("--release");
+    }
+    if let Some(dir) = &params.working_dir {
+        cmd.current_dir(dir);
+    }
+    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+
+    match run_with_timeout(cmd, timeout).await {
+        Ok((exit, stdout, _stderr)) => {
+            let (errors, warnings) = parse_build_messages(&stdout);
+            CargoBuildResult {
+                success: exit.map(|c| c == 0).unwrap_or(false) && errors.is_empty(),
+                errors,
+                warnings,
+                exit_code: exit,
+                duration_ms: start.elapsed().as_millis() as u64,
+                error: None,
+            }
+        }
+        Err(e) => CargoBuildResult {
+            success: false,
+            errors: vec![],
+            warnings: vec![],
+            exit_code: None,
+            duration_ms: start.elapsed().as_millis() as u64,
+            error: Some(e),
+        },
+    }
+}
+
+/// Run `cargo test` and parse libtest's human-readable output for
+/// pass/fail/ignored counts plus failing test names.
 ///
-/// No per-resource locks: cargo handles its own target-dir locking
-/// internally (multiple concurrent `cargo build` invocations against
-/// the same target dir serialize at cargo's level; different target
-/// dirs stay parallel). Per [field manual §4.1](../../../../../../docs/architecture/COMMAND-INFRASTRUCTURE-FIELD-MANUAL.md)
-/// — when correctness lives below the module (cargo itself), the
-/// module-level lock is unnecessary.
-pub struct CargoModule {}
+/// We use the cargo-level `--message-format=json` for compile errors
+/// (those land in `build_errors`), then parse the inner libtest
+/// output text-style. `libtest`'s structured JSON requires nightly +
+/// `-Z unstable-options`, which the substrate doesn't depend on —
+/// regex-free parsing of the stable human output is V1 sufficient.
+pub async fn run_test(params: CargoTestParams) -> CargoTestResult {
+    let timeout = clamp_timeout(params.timeout_ms, TEST_DEFAULT_TIMEOUT_MS, TEST_MAX_TIMEOUT_MS);
+    let start = Instant::now();
 
-impl CargoModule {
-    pub fn new() -> Self {
-        Self {}
+    let mut cmd = Command::new("cargo");
+    cmd.arg("test").arg("--message-format=json");
+    if let Some(pkg) = &params.package {
+        cmd.arg("--package").arg(pkg);
     }
-
-    /// Run `cargo build` with `--message-format=json` and parse the
-    /// JSON stream into structured diagnostics. Returns a typed
-    /// envelope regardless of cargo's exit status — callers get
-    /// errors/warnings even when build fails.
-    pub async fn build(&self, params: CargoBuildParams) -> CargoBuildResult {
-        let timeout = clamp_timeout(
-            params.timeout_ms,
-            BUILD_DEFAULT_TIMEOUT_MS,
-            BUILD_MAX_TIMEOUT_MS,
-        );
-        let start = Instant::now();
-
-        let mut cmd = Command::new("cargo");
-        cmd.arg("build").arg("--message-format=json");
-        if let Some(pkg) = &params.package {
-            cmd.arg("--package").arg(pkg);
-        }
-        if let Some(features) = &params.features {
-            cmd.arg("--features").arg(features);
-        }
-        if params.release {
-            cmd.arg("--release");
-        }
-        if let Some(dir) = &params.working_dir {
-            cmd.current_dir(dir);
-        }
-        cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
-
-        match run_with_timeout(cmd, timeout).await {
-            Ok((exit, stdout, _stderr)) => {
-                let (errors, warnings) = parse_build_messages(&stdout);
-                CargoBuildResult {
-                    success: exit.map(|c| c == 0).unwrap_or(false) && errors.is_empty(),
-                    errors,
-                    warnings,
-                    exit_code: exit,
-                    duration_ms: start.elapsed().as_millis() as u64,
-                    error: None,
-                }
-            }
-            Err(e) => CargoBuildResult {
-                success: false,
-                errors: vec![],
-                warnings: vec![],
-                exit_code: None,
-                duration_ms: start.elapsed().as_millis() as u64,
-                error: Some(e),
-            },
-        }
+    if params.lib_only {
+        cmd.arg("--lib");
     }
-
-    /// Run `cargo test` and parse libtest's human-readable output
-    /// for pass/fail/ignored counts plus failing test names.
-    ///
-    /// We use the cargo-level `--message-format=json` for compile
-    /// errors (those land in `build_errors`), then parse the inner
-    /// libtest output text-style. `libtest`'s structured JSON
-    /// requires nightly + `-Z unstable-options`, which the
-    /// substrate doesn't depend on — regex parsing the stable
-    /// human output is V1 sufficient.
-    pub async fn test(&self, params: CargoTestParams) -> CargoTestResult {
-        let timeout = clamp_timeout(
-            params.timeout_ms,
-            TEST_DEFAULT_TIMEOUT_MS,
-            TEST_MAX_TIMEOUT_MS,
-        );
-        let start = Instant::now();
-
-        let mut cmd = Command::new("cargo");
-        cmd.arg("test").arg("--message-format=json");
-        if let Some(pkg) = &params.package {
-            cmd.arg("--package").arg(pkg);
-        }
-        if params.lib_only {
-            cmd.arg("--lib");
-        }
-        if let Some(features) = &params.features {
-            cmd.arg("--features").arg(features);
-        }
-        if params.release {
-            cmd.arg("--release");
-        }
-        // Filter goes AFTER `--` so libtest sees it.
-        if let Some(filter) = &params.filter {
-            cmd.arg("--").arg(filter);
-        }
-        if let Some(dir) = &params.working_dir {
-            cmd.current_dir(dir);
-        }
-        cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
-
-        match run_with_timeout(cmd, timeout).await {
-            Ok((exit, stdout, stderr)) => {
-                let (build_errors, _build_warnings) = parse_build_messages(&stdout);
-                let mut result = parse_test_output(&stdout, &stderr);
-                result.build_errors = build_errors;
-                result.exit_code = exit;
-                result.duration_ms = start.elapsed().as_millis() as u64;
-                // libtest's verdict: success iff cargo exited 0 AND no failures.
-                // Build errors automatically give failed > 0 OR exit != 0.
-                result.success = result.failed == 0
-                    && result.build_errors.is_empty()
-                    && exit.map(|c| c == 0).unwrap_or(false);
-                result
-            }
-            Err(e) => CargoTestResult {
-                success: false,
-                duration_ms: start.elapsed().as_millis() as u64,
-                error: Some(e),
-                ..CargoTestResult::default()
-            },
-        }
+    if let Some(features) = &params.features {
+        cmd.arg("--features").arg(features);
     }
-}
-
-impl Default for CargoModule {
-    fn default() -> Self {
-        Self::new()
+    if params.release {
+        cmd.arg("--release");
     }
-}
+    // Filter goes AFTER `--` so libtest sees it.
+    if let Some(filter) = &params.filter {
+        cmd.arg("--").arg(filter);
+    }
+    if let Some(dir) = &params.working_dir {
+        cmd.current_dir(dir);
+    }
+    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
 
-#[async_trait]
-impl ServiceModule for CargoModule {
-    fn config(&self) -> ModuleConfig {
-        ModuleConfig {
-            name: "cargo",
-            priority: ModulePriority::Normal,
-            command_prefixes: &["cargo/"],
-            event_subscriptions: &[],
-            needs_dedicated_thread: false,
-            max_concurrency: 0,
-            tick_interval: None,
+    match run_with_timeout(cmd, timeout).await {
+        Ok((exit, stdout, stderr)) => {
+            let (build_errors, _build_warnings) = parse_build_messages(&stdout);
+            let mut result = parse_test_output(&stdout, &stderr);
+            result.build_errors = build_errors;
+            result.exit_code = exit;
+            result.duration_ms = start.elapsed().as_millis() as u64;
+            // libtest's verdict: success iff cargo exited 0 AND no failures.
+            // Build errors automatically give failed > 0 OR exit != 0.
+            result.success = result.failed == 0
+                && result.build_errors.is_empty()
+                && exit.map(|c| c == 0).unwrap_or(false);
+            result
         }
-    }
-
-    async fn initialize(&self, _ctx: &ModuleContext) -> Result<(), String> {
-        Ok(())
-    }
-
-    async fn handle_command(
-        &self,
-        command: &str,
-        params: Value,
-    ) -> Result<CommandResult, String> {
-        match command {
-            "cargo/build" => {
-                let req = CommandRequest::<CargoBuildParams>::from_value(params)?;
-                let result = self.build(req.params).await;
-                CommandResponse::ok(result).into_command_result()
-            }
-            "cargo/test" => {
-                let req = CommandRequest::<CargoTestParams>::from_value(params)?;
-                let result = self.test(req.params).await;
-                CommandResponse::ok(result).into_command_result()
-            }
-            other => Err(format!(
-                "{other}: not handled by cargo module — known commands are cargo/build, cargo/test"
-            )),
-        }
-    }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
+        Err(e) => CargoTestResult {
+            success: false,
+            duration_ms: start.elapsed().as_millis() as u64,
+            error: Some(e),
+            ..CargoTestResult::default()
+        },
     }
 }
 
 // ── helpers ──────────────────────────────────────────────────────────
 
-fn clamp_timeout(requested: Option<u64>, default: u64, max: u64) -> Duration {
+pub(crate) fn clamp_timeout(requested: Option<u64>, default: u64, max: u64) -> Duration {
     let ms = requested.unwrap_or(default).min(max);
     Duration::from_millis(ms)
 }
@@ -254,7 +147,7 @@ fn clamp_timeout(requested: Option<u64>, default: u64, max: u64) -> Duration {
 /// stderr_bytes)`. Kills the child on timeout. Returns Err on spawn
 /// failure or timeout — the typed envelope's `error` field surfaces
 /// these to the caller.
-async fn run_with_timeout(
+pub(crate) async fn run_with_timeout(
     mut cmd: Command,
     timeout: Duration,
 ) -> Result<(Option<i32>, String, String), String> {
@@ -286,10 +179,7 @@ async fn run_with_timeout(
         Err(_) => {
             // Timeout — kill and report.
             let _ = child.kill().await;
-            return Err(format!(
-                "cargo timed out after {}ms",
-                timeout.as_millis()
-            ));
+            return Err(format!("cargo timed out after {}ms", timeout.as_millis()));
         }
     };
 
@@ -379,22 +269,10 @@ fn parse_span(v: &Value) -> CargoSpan {
             .and_then(|f| f.as_str())
             .unwrap_or("")
             .to_string(),
-        line_start: v
-            .get("line_start")
-            .and_then(|n| n.as_u64())
-            .unwrap_or(0) as u32,
-        line_end: v
-            .get("line_end")
-            .and_then(|n| n.as_u64())
-            .unwrap_or(0) as u32,
-        column_start: v
-            .get("column_start")
-            .and_then(|n| n.as_u64())
-            .unwrap_or(0) as u32,
-        column_end: v
-            .get("column_end")
-            .and_then(|n| n.as_u64())
-            .unwrap_or(0) as u32,
+        line_start: v.get("line_start").and_then(|n| n.as_u64()).unwrap_or(0) as u32,
+        line_end: v.get("line_end").and_then(|n| n.as_u64()).unwrap_or(0) as u32,
+        column_start: v.get("column_start").and_then(|n| n.as_u64()).unwrap_or(0) as u32,
+        column_end: v.get("column_end").and_then(|n| n.as_u64()).unwrap_or(0) as u32,
     }
 }
 
@@ -551,7 +429,7 @@ fn parse_summary_counts(s: &str) -> (u32, u32, u32, u32) {
 // succeeds, fast) to verify the subprocess plumbing.
 //
 // The concurrency test fires N parallel `cargo --version`
-// invocations through the module and asserts every result is
+// invocations through run_with_timeout and asserts every result is
 // internally consistent. Per [field manual §4.2](../../../../../../docs/architecture/COMMAND-INFRASTRUCTURE-FIELD-MANUAL.md).
 
 #[cfg(test)]
@@ -561,9 +439,10 @@ mod tests {
 
     // ── parse_build_messages ────────────────────────────────────────
 
+    // what this catches: a real E0382 cargo JSON line lifts into a typed
+    // error with code + primary span + rendered text intact.
     #[test]
     fn parse_build_extracts_errors_with_codes_and_spans() {
-        // Realistic cargo --message-format=json line for an E0382.
         let line = json!({
             "reason": "compiler-message",
             "message": {
@@ -593,6 +472,7 @@ mod tests {
         assert!(e.rendered.as_ref().unwrap().contains("E0382"));
     }
 
+    // what this catches: warnings and errors split into the right buckets.
     #[test]
     fn parse_build_separates_warnings_from_errors() {
         let err = json!({
@@ -611,10 +491,9 @@ mod tests {
         assert_eq!(warnings[0].level, "warning");
     }
 
+    // what this catches: non-diagnostic cargo message reasons are ignored.
     #[test]
     fn parse_build_ignores_non_diagnostic_reasons() {
-        // cargo emits many message types — only compiler-message
-        // carries diagnostics.
         let stdout = r#"
 {"reason":"compiler-artifact","package_id":"foo"}
 {"reason":"build-script-executed","package_id":"bar"}
@@ -625,6 +504,7 @@ mod tests {
         assert!(warnings.is_empty());
     }
 
+    // what this catches: stray non-JSON lines from cargo don't crash the parser.
     #[test]
     fn parse_build_tolerates_non_json_lines() {
         let stdout = "warning: some non-json line from cargo\n\n";
@@ -633,9 +513,9 @@ mod tests {
         assert!(warnings.is_empty());
     }
 
+    // what this catches: a diagnostic with no primary span (linker error) still parses.
     #[test]
     fn parse_build_handles_diagnostic_without_primary_span() {
-        // Some diagnostics (linker errors) have no primary span.
         let line = json!({
             "reason": "compiler-message",
             "message": {
@@ -651,6 +531,7 @@ mod tests {
 
     // ── parse_test_output ───────────────────────────────────────────
 
+    // what this catches: a clean passing run reports the right passed count + success.
     #[test]
     fn parse_test_extracts_passing_counts_from_summary() {
         let stdout = r#"
@@ -671,6 +552,7 @@ test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
         assert!(r.failures.is_empty());
     }
 
+    // what this catches: failing test names are captured in report order.
     #[test]
     fn parse_test_captures_failure_names_in_order() {
         let stdout = r#"
@@ -692,10 +574,9 @@ test result: FAILED. 1 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out
         assert!(!r.success);
     }
 
+    // what this catches: counts aggregate across multiple test-binary summaries.
     #[test]
     fn parse_test_aggregates_across_multiple_test_binaries() {
-        // When cargo runs multiple test binaries, libtest prints
-        // one summary per binary. The aggregate is the sum.
         let stdout = r#"
 test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured
 
@@ -706,10 +587,9 @@ test result: ok. 7 passed; 0 failed; 1 ignored; 0 measured
         assert_eq!(r.ignored, 1);
     }
 
+    // what this catches: repeated failures blocks dedupe by name (first-seen order).
     #[test]
     fn parse_test_dedupes_failures_across_repeated_blocks() {
-        // Failures block sometimes appears twice (per-binary +
-        // global summary). Dedup preserves first-seen order.
         let stdout = r#"
 failures:
     foo::a
@@ -731,6 +611,7 @@ test result: FAILED. 0 passed; 2 failed; 0 ignored; 0 measured
         assert_eq!(r.failures, vec!["foo::a", "foo::b"]);
     }
 
+    // what this catches: empty output is zero counts + vacuous success, not an error.
     #[test]
     fn parse_test_empty_output_returns_zero_counts_not_error() {
         let r = parse_test_output("", "");
@@ -741,12 +622,15 @@ test result: FAILED. 0 passed; 2 failed; 0 ignored; 0 measured
 
     // ── parse_summary_counts (the inner parser) ─────────────────────
 
+    // what this catches: the trailing "filtered out" field doesn't get misread as a count.
     #[test]
     fn summary_counts_handles_filtered_out_field() {
-        let (p, f, i, m) = parse_summary_counts("ok. 5 passed; 0 failed; 0 ignored; 0 measured; 12 filtered out");
+        let (p, f, i, m) =
+            parse_summary_counts("ok. 5 passed; 0 failed; 0 ignored; 0 measured; 12 filtered out");
         assert_eq!((p, f, i, m), (5, 0, 0, 0));
     }
 
+    // what this catches: the "FAILED." verdict prefix doesn't shift the count parse.
     #[test]
     fn summary_counts_handles_failed_verdict() {
         let (p, f, i, m) =
@@ -756,12 +640,14 @@ test result: FAILED. 0 passed; 2 failed; 0 ignored; 0 measured
 
     // ── timeout clamping ────────────────────────────────────────────
 
+    // what this catches: None falls back to the default timeout.
     #[test]
     fn timeout_uses_default_when_none_provided() {
         let d = clamp_timeout(None, BUILD_DEFAULT_TIMEOUT_MS, BUILD_MAX_TIMEOUT_MS);
         assert_eq!(d.as_millis() as u64, BUILD_DEFAULT_TIMEOUT_MS);
     }
 
+    // what this catches: an over-large request is clamped to the max ceiling.
     #[test]
     fn timeout_clamps_to_max_when_request_exceeds_it() {
         let d = clamp_timeout(
@@ -772,38 +658,15 @@ test result: FAILED. 0 passed; 2 failed; 0 ignored; 0 measured
         assert_eq!(d.as_millis() as u64, BUILD_MAX_TIMEOUT_MS);
     }
 
-    // ── handle_command dispatch ─────────────────────────────────────
-
-    #[tokio::test]
-    async fn handle_command_rejects_unknown_command_loud() {
-        let m = CargoModule::new();
-        let err = m
-            .handle_command("cargo/run", json!({}))
-            .await
-            .expect_err("unknown cargo command must Err");
-        assert!(err.contains("not handled by cargo module"));
-        assert!(err.contains("cargo/build") && err.contains("cargo/test"));
-    }
-
-    #[test]
-    fn config_advertises_cargo_prefix() {
-        let m = CargoModule::new();
-        let cfg = m.config();
-        assert_eq!(cfg.name, "cargo");
-        assert_eq!(cfg.command_prefixes, &["cargo/"]);
-    }
-
-    // ── end-to-end smoke test (uses real cargo binary) ──────────────
+    // ── end-to-end subprocess pipeline (uses real cargo binary) ─────
     //
-    // `cargo --version` always succeeds in any reasonable
-    // environment + is fast. Use it to verify the subprocess
-    // plumbing (spawn, capture, exit code) without relying on a
-    // real Rust project being present.
+    // `cargo --version` always succeeds in any reasonable environment
+    // + is fast. Use it to verify the subprocess plumbing (spawn,
+    // capture, exit code) without relying on a real Rust project.
 
+    // what this catches: the spawn → capture → exit-code path works against real cargo.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn end_to_end_subprocess_pipeline_works() {
-        // Run `cargo --version` via the timeout helper directly,
-        // since the public handlers only do build/test.
         let mut cmd = Command::new("cargo");
         cmd.arg("--version")
             .stdout(Stdio::piped())
@@ -817,15 +680,7 @@ test result: FAILED. 0 passed; 2 failed; 0 ignored; 0 measured
         );
     }
 
-    // ── concurrency stress test ─────────────────────────────────────
-    //
-    // Multi-thread tokio fires N parallel cargo --version invocations
-    // through run_with_timeout (the production subprocess path).
-    // Asserts every one returns a consistent (exit_code, stdout)
-    // pair — no plumbing corruption under concurrent spawn/wait.
-    //
-    // Per [field manual §4.2](../../../../../../docs/architecture/COMMAND-INFRASTRUCTURE-FIELD-MANUAL.md).
-
+    // what this catches: concurrent subprocess spawn/wait doesn't corrupt the pipeline.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn concurrent_cargo_invocations_dont_corrupt_subprocess_pipeline() {
         const PARALLEL: usize = 8;

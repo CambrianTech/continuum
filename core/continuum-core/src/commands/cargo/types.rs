@@ -1,10 +1,13 @@
-//! Typed params + result for the cargo module's commands.
+//! Typed params + result for the cargo commands.
 //!
 //! Every wire type carries `#[derive(TS)]` and exports to
 //! `protocol/typescript/cargo/` so TS consumers get auto-generated
 //! bindings — no hand-written duplicate types across the
-//! Rust ↔ TS boundary.
+//! Rust ↔ TS boundary. The two param structs additionally derive
+//! `JsonSchema` so the command registry can project their input
+//! schema onto the persona tool surface + the `cu` CLI.
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
@@ -15,7 +18,7 @@ use ts_rs::TS;
 /// All fields optional. With no params, runs `cargo build` at the
 /// process cwd in debug mode. Typical persona usage:
 /// `{ package: "continuum-core", features: "metal,accelerate" }`.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, TS, JsonSchema)]
 #[ts(export, export_to = "../../../protocol/typescript/cargo/CargoBuildParams.ts")]
 #[serde(rename_all = "camelCase")]
 pub struct CargoBuildParams {
@@ -130,7 +133,7 @@ pub struct CargoSpan {
 /// process cwd in debug mode against the whole workspace. Typical
 /// persona usage when iterating: `{ package: "continuum-core",
 /// filter: "modules::chat::", features: "metal,accelerate" }`.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, TS, JsonSchema)]
 #[ts(export, export_to = "../../../protocol/typescript/cargo/CargoTestParams.ts")]
 #[serde(rename_all = "camelCase")]
 pub struct CargoTestParams {

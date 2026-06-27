@@ -5,7 +5,6 @@ use crate::modules::ai_provider::AIProviderModule;
 use crate::modules::airc::AircModule;
 use crate::modules::auth::ExternalWebviewAuthModule;
 use crate::modules::avatar::AvatarModule;
-use crate::modules::cargo::CargoModule;
 use crate::modules::channel::{ChannelModule, ChannelState};
 use crate::modules::code::{CodeModule, CodeState};
 use crate::modules::cognition::{CognitionModule, CognitionState};
@@ -843,13 +842,6 @@ pub fn start_server(
     // v1 returns a stub ForgeArtifact from a recipe; Phase 5+ wires the
     // real foundry executor.
     runtime.register(Arc::new(ForgeModule::new()));
-
-    // CargoModule (PERSONA-AS-DEVELOPER-GAP.md Priority 2 — Rust
-    // toolchain wrappers). Stateless; wraps cargo build/test
-    // subprocess invocations with --message-format=json parsing for
-    // structured errors/warnings + libtest output parsing for test
-    // counts + failure names.
-    runtime.register(Arc::new(CargoModule::new()));
 
     // EventsModule (L1-1 — event-class declaration registry).
     // Spec: GRID-BUS-ARCHITECTURE §2.2 (continuum#1439).
