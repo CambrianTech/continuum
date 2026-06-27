@@ -13,6 +13,7 @@
 pub mod adapter;
 pub mod agent;
 pub mod auth;
+pub mod avatar;
 pub mod ai;
 pub mod catalog;
 pub mod code;

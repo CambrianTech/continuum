@@ -10,7 +10,6 @@ use crate::live::avatar::render_loop::allocate_bevy_slot;
 use crate::live::avatar::selection::select_avatar_by_identity;
 use crate::log_info;
 use crate::runtime::{CommandResult, ModuleConfig, ModuleContext, ModulePriority, ServiceModule};
-use crate::utils::params::Params;
 use async_trait::async_trait;
 use serde_json::Value;
 use std::any::Any;
@@ -29,51 +28,12 @@ impl AvatarModule {
         Self
     }
 
-    async fn snapshot(&self, params: Value) -> Result<CommandResult, String> {
-        let p = Params::new(&params);
-        let identity = p.str("identity")?.to_string();
-        let width = p.u32_opt("width").unwrap_or(480);
-        let height = p.u32_opt("height").unwrap_or(480);
-
-        // Check if snapshot already exists on disk
-        let avatar_dir = dirs::home_dir()
-            .ok_or("Cannot determine home directory")?
-            .join(".continuum")
-            .join("avatars");
-
-        let png_path = avatar_dir.join(format!("{identity}.png"));
-        let force = p.bool_or("force", false);
-
-        if png_path.exists() && !force {
-            log_info!(
-                "module",
-                "avatar",
-                "Avatar snapshot already exists for '{}', returning cached",
-                identity
-            );
-            return Ok(CommandResult::Json(serde_json::json!({
-                "path": format!("/avatars/{identity}.png"),
-                "cached": true,
-            })));
-        }
-
-        // Run the blocking Bevy slot allocation + frame capture on a dedicated thread
-        let result = tokio::task::spawn_blocking(move || -> Result<String, String> {
-            Self::capture_snapshot(&identity, width, height, &avatar_dir)
-        })
-        .await
-        .map_err(|e| format!("Snapshot task panicked: {e}"))?;
-
-        let relative_path = result?;
-
-        Ok(CommandResult::Json(serde_json::json!({
-            "path": relative_path,
-            "cached": false,
-        })))
-    }
-
     /// Blocking snapshot capture — runs on spawn_blocking thread.
-    fn capture_snapshot(
+    ///
+    /// `pub(crate)`: both the `avatar/snapshot` command body (in `commands/avatar.rs`)
+    /// and the module's `tick()` auto-refresh drive it. The Bevy-render domain logic
+    /// stays here in the module; the command orchestrates the cache check + threading.
+    pub(crate) fn capture_snapshot(
         identity: &str,
         width: u32,
         height: u32,
@@ -239,11 +199,14 @@ impl ServiceModule for AvatarModule {
         Ok(())
     }
 
-    async fn handle_command(&self, command: &str, params: Value) -> Result<CommandResult, String> {
-        match command {
-            "avatar/snapshot" => self.snapshot(params).await,
-            _ => Err(format!("Unknown avatar command: {command}")),
-        }
+    async fn handle_command(&self, command: &str, _params: Value) -> Result<CommandResult, String> {
+        // `avatar/snapshot` is migrated to the typed registry
+        // (`commands/avatar.rs`); the module retains only its tick-driven
+        // auto-refresh. Fail loud — no silent legacy fallback.
+        Err(format!(
+            "avatar command surface is migrated to the typed registry; \
+             '{command}' has no legacy handler"
+        ))
     }
 
     async fn handle_event(&self, _event_name: &str, _payload: Value) -> Result<(), String> {
@@ -374,5 +337,17 @@ mod tests {
         let config = module.config();
         assert_eq!(config.name, "avatar");
         assert_eq!(config.command_prefixes, &["avatar/"]);
+    }
+
+    // what this catches: avatar/snapshot is migrated to the typed registry, so the
+    // legacy handle_command must fail loud (no silent fallback) for any command name.
+    #[tokio::test]
+    async fn legacy_handle_command_fails_loud() {
+        let module = AvatarModule::new();
+        let err = module
+            .handle_command("avatar/snapshot", serde_json::json!({}))
+            .await
+            .unwrap_err();
+        assert!(err.contains("migrated to the typed registry"));
     }
 }
