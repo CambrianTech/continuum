@@ -111,6 +111,18 @@ fn tool_input_schema_from(schema: &serde_json::Value) -> ToolInputSchema {
             definitions: None,
         };
     }
+    // llama.cpp's GBNF grammar generator rejects JSON-Schema *boolean* subschemas
+    // (`true`/`false`) with "Unrecognized schema: true" — but schemars emits `true`
+    // for any untyped field (a `serde_json::Value`, an open `HashMap<String,
+    // Value>`, or a default `additionalProperties`). A single such field anywhere
+    // in the offered tool set 400s the WHOLE deliberation turn (every tool schema
+    // rides one request), which is exactly what kept Asha/Solenne abstaining on
+    // every tick once the command-registry migration exposed ~200 real tool
+    // schemas. Rewrite boolean subschemas to their object equivalents at the
+    // schema positions JSON-Schema defines (`true` → `{}` = any value; `false` →
+    // `{"not": {}}` = no value), leaving keyword booleans (`nullable: true`,
+    // `deprecated: true`) untouched.
+    let schema = sanitize_schema_booleans(schema.clone());
     ToolInputSchema {
         schema_type: schema
             .get("type")
@@ -132,6 +144,83 @@ fn tool_input_schema_from(schema: &serde_json::Value) -> ToolInputSchema {
             .get("definitions")
             .or_else(|| schema.get("$defs"))
             .cloned(),
+    }
+}
+
+/// JSON-Schema keywords whose value IS a schema (so a boolean there is a boolean
+/// *subschema*). `items` may also be an array of schemas (draft-04 tuple form),
+/// handled at the call site.
+const SCHEMA_VALUED_KEYS: &[&str] = &[
+    "additionalProperties",
+    "items",
+    "additionalItems",
+    "contains",
+    "propertyNames",
+    "not",
+    "if",
+    "then",
+    "else",
+    "unevaluatedProperties",
+    "unevaluatedItems",
+];
+/// Keywords whose value is an OBJECT mapping names → schemas.
+const SCHEMA_MAP_KEYS: &[&str] = &[
+    "properties",
+    "patternProperties",
+    "definitions",
+    "$defs",
+    "dependentSchemas",
+];
+/// Keywords whose value is an ARRAY of schemas.
+const SCHEMA_ARRAY_KEYS: &[&str] = &["allOf", "anyOf", "oneOf", "prefixItems"];
+
+/// Recursively rewrite JSON-Schema *boolean* subschemas (`true`/`false`) — which
+/// llama.cpp's grammar generator rejects — into their object equivalents, walking
+/// only the positions JSON-Schema treats as schemas. `true` → `{}` (matches any
+/// value, same meaning as `true`); `false` → `{"not": {}}` (matches nothing).
+/// Keyword booleans like `nullable`/`deprecated`/`readOnly` are NOT schema
+/// positions and are left exactly as-is. See `tool_input_schema_from`.
+fn sanitize_schema_booleans(v: serde_json::Value) -> serde_json::Value {
+    use serde_json::Value;
+    match v {
+        Value::Bool(true) => json!({}),
+        Value::Bool(false) => json!({ "not": {} }),
+        Value::Object(map) => {
+            let mut out = serde_json::Map::with_capacity(map.len());
+            for (k, val) in map {
+                let nv = if SCHEMA_VALUED_KEYS.contains(&k.as_str()) {
+                    match val {
+                        // draft-04 tuple form: `items: [schema, schema, …]`
+                        Value::Array(items) => Value::Array(
+                            items.into_iter().map(sanitize_schema_booleans).collect(),
+                        ),
+                        other => sanitize_schema_booleans(other),
+                    }
+                } else if SCHEMA_MAP_KEYS.contains(&k.as_str()) {
+                    match val {
+                        Value::Object(inner) => Value::Object(
+                            inner
+                                .into_iter()
+                                .map(|(ik, iv)| (ik, sanitize_schema_booleans(iv)))
+                                .collect(),
+                        ),
+                        other => other,
+                    }
+                } else if SCHEMA_ARRAY_KEYS.contains(&k.as_str()) {
+                    match val {
+                        Value::Array(items) => Value::Array(
+                            items.into_iter().map(sanitize_schema_booleans).collect(),
+                        ),
+                        other => other,
+                    }
+                } else {
+                    val
+                };
+                out.insert(k, nv);
+            }
+            Value::Object(out)
+        }
+        other => other,
     }
 }
 
@@ -266,6 +355,103 @@ mod tests {
                 d.name,
                 name
             );
+        }
+    }
+
+    // what this catches: a boolean subschema (`true`/`false`) anywhere in a tool's
+    // params schema — which schemars emits for any untyped field (`serde_json::Value`,
+    // open `HashMap`, default `additionalProperties`) — survives projection unrewritten
+    // and 400s the WHOLE deliberation turn ("Unrecognized schema: true"), because every
+    // offered tool schema rides one llama-server request. This is the regression that
+    // kept Asha/Solenne abstaining on every tick after the registry migration exposed
+    // ~200 real schemas. We rewrite `true`→`{}` / `false`→`{"not":{}}` at schema
+    // positions only, leaving keyword booleans (`nullable`) untouched.
+    #[test]
+    fn boolean_subschemas_are_rewritten_but_keyword_booleans_survive() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "payload": true,                       // serde_json::Value field
+                "name": { "type": "string", "nullable": true },
+                "tags": { "type": "array", "items": true },
+                "blocked": false
+            },
+            "additionalProperties": true,
+            "definitions": { "Open": true }
+        });
+        let out = sanitize_schema_booleans(schema);
+
+        // schema positions rewritten to objects
+        assert_eq!(out["properties"]["payload"], json!({}), "true → {{}}");
+        assert_eq!(out["properties"]["blocked"], json!({ "not": {} }), "false → not-any");
+        assert_eq!(out["properties"]["tags"]["items"], json!({}), "items: true → {{}}");
+        assert_eq!(out["additionalProperties"], json!({}), "additionalProperties: true → {{}}");
+        assert_eq!(out["definitions"]["Open"], json!({}), "definition true → {{}}");
+
+        // keyword boolean is NOT a schema position — left exactly as-is
+        assert_eq!(out["properties"]["name"]["nullable"], json!(true), "nullable untouched");
+
+        // and there is no bare `true`/`false` left anywhere in the serialized schema
+        assert!(
+            !out.to_string().contains("true") || out["properties"]["name"]["nullable"] == json!(true),
+            "the only surviving `true` is the keyword boolean"
+        );
+    }
+
+    // what this catches: the projection over the LIVE registry must never emit a
+    // boolean subschema — i.e. no real compiled command's tool schema can carry the
+    // shape that 400s the turn. Guards every current and future AiSafe command at once.
+    #[test]
+    fn no_live_tool_schema_carries_a_boolean_subschema() {
+        fn has_bool_subschema(v: &serde_json::Value) -> bool {
+            use serde_json::Value;
+            match v {
+                Value::Object(map) => {
+                    for (k, val) in map {
+                        let is_schema_pos = SCHEMA_VALUED_KEYS.contains(&k.as_str())
+                            || SCHEMA_MAP_KEYS.contains(&k.as_str())
+                            || SCHEMA_ARRAY_KEYS.contains(&k.as_str());
+                        if is_schema_pos {
+                            match val {
+                                Value::Bool(_) => return true,
+                                Value::Object(inner) => {
+                                    if inner.values().any(|x| matches!(x, Value::Bool(_))) {
+                                        return true;
+                                    }
+                                }
+                                Value::Array(items) => {
+                                    if items.iter().any(|x| matches!(x, Value::Bool(_))) {
+                                        return true;
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+                        if has_bool_subschema(val) {
+                            return true;
+                        }
+                    }
+                    false
+                }
+                Value::Array(items) => items.iter().any(has_bool_subschema),
+                _ => false,
+            }
+        }
+
+        for spec in ai_safe_tool_specs() {
+            let props = &spec.input_schema.properties;
+            assert!(
+                !has_bool_subschema(props),
+                "tool {} emits a boolean subschema in properties — llama.cpp will 400 the turn",
+                spec.name
+            );
+            if let Some(defs) = &spec.input_schema.definitions {
+                assert!(
+                    !has_bool_subschema(defs),
+                    "tool {} emits a boolean subschema in definitions",
+                    spec.name
+                );
+            }
         }
     }
 }
