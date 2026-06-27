@@ -659,34 +659,27 @@ impl ServiceModule for ServingDaemonModule {
     }
 
     async fn handle_command(&self, command: &str, _params: Value) -> Result<CommandResult, String> {
-        match command {
-            "serving/plan" => {
-                // The current decision, for personas + operators to inspect.
-                // The `rationale` field explains the "why" in plain words.
-                let plan = self.plan_tx.borrow().clone();
-                CommandResult::json(&plan)
-            }
-            "serving/status" => {
-                // The live serving state — which model is actually up, ready,
-                // and on what url. The "did the plan become reality?" view.
-                let snapshot = self.serving_tx.borrow().clone();
-                CommandResult::json(&snapshot)
-            }
-            other => Err(format!("serving-daemon: unknown command '{other}'")),
-        }
+        // The full `serving/*` surface (plan · status · load · unload) is migrated to
+        // the typed registry (`commands/serving/*`, wired via `commands()`). Fail loud
+        // — no silent fallback.
+        Err(format!(
+            "serving-daemon command surface is migrated to the typed registry; \
+             '{command}' has no legacy handler"
+        ))
     }
 
-    /// The typed VRAM-axis deallocation pair — `serving/unload` (free a lane) and
-    /// `serving/load` (permit it again) — on the ONE command registry, so a
-    /// persona/operator/grid peer is OFFERED VRAM control as a real tool. They
-    /// share the daemon's suppress-set writer + serving snapshot; the daemon's
-    /// own plan/reconcile loop turns their edits into actual (un)loads. The
-    /// legacy `serving/plan` · `serving/status` queries stay on `handle_command`
-    /// until their own migration slice.
+    /// The typed `serving/*` family on the ONE command registry, so a persona /
+    /// operator / grid peer is OFFERED serving control + inspection as real tools:
+    /// the VRAM-axis deallocation pair (`serving/unload` frees a lane, `serving/load`
+    /// permits it again) and the two read surfaces (`serving/plan` = intent,
+    /// `serving/status` = reality). They share the daemon's suppress-set writer, its
+    /// published serving snapshot, and its serving-plan receiver; the daemon's own
+    /// plan/reconcile loop turns the suppress-set edits into actual (un)loads.
     fn commands(&self) -> Vec<Arc<dyn crate::sdk_codegen::DynCommand>> {
         crate::commands::serving::command_objects(
             self.suppress_sender(),
             self.subscribe_serving(),
+            self.subscribe(),
             self.catalog.clone(),
         )
     }
@@ -779,6 +772,40 @@ mod tests {
         // No candidates → None published (no silent serve).
         daemon.publish_plan(budget, &[]);
         assert!(rx.borrow().is_none(), "empty candidates → no plan");
+    }
+
+    // what this catches: the `serving/*` surface (plan · status · load · unload) is
+    // migrated to the typed registry; the legacy handle_command is gone, so for any
+    // command name it must fail loud — never silently fall back to an empty result.
+    #[tokio::test]
+    async fn legacy_handle_command_fails_loud() {
+        let gpu = Arc::new(GpuMemoryManager::simulated("Apple M5 Pro", 53 * GB));
+        let system = Arc::new(SystemResourceMonitor::new());
+        let daemon = ServingDaemonModule::new(gpu, system, test_resource_daemon(), test_catalog());
+        let err = daemon
+            .handle_command("serving/plan", serde_json::json!({}))
+            .await
+            .expect_err("legacy handler must fail loud after migration");
+        assert!(
+            err.contains("migrated to the typed registry"),
+            "error must name the migration: {err}"
+        );
+    }
+
+    // what this catches: the daemon contributes the full typed serving surface,
+    // sharing its OWN watch receivers + catalog (so the read surfaces report the
+    // daemon's live decision/snapshot). A regression that drops a verb is caught.
+    #[tokio::test]
+    async fn contributes_the_full_serving_surface() {
+        let gpu = Arc::new(GpuMemoryManager::simulated("Apple M5 Pro", 53 * GB));
+        let system = Arc::new(SystemResourceMonitor::new());
+        let daemon = ServingDaemonModule::new(gpu, system, test_resource_daemon(), test_catalog());
+        let mut names: Vec<&str> = daemon.commands().iter().map(|c| c.name()).collect();
+        names.sort_unstable();
+        assert_eq!(
+            names,
+            vec!["serving/load", "serving/plan", "serving/status", "serving/unload"]
+        );
     }
 
     use crate::inference::llama_server::LlamaServerError;

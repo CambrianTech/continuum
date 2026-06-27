@@ -102,7 +102,8 @@ impl ModelFootprint {
 }
 
 /// The serving decision for this host.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, ts_rs::TS)]
+#[ts(export, export_to = "../../../protocol/typescript/serving/ServingPlan.ts")]
 #[serde(rename_all = "camelCase")]
 pub struct ServingPlan {
     /// The base model to serve (shared across lanes).

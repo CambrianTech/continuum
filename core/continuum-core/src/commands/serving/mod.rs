@@ -31,27 +31,38 @@ use std::sync::Arc;
 
 use tokio::sync::watch;
 
+use crate::cognition::serving_plan::ServingPlan;
 use crate::inference::llama_server::ServingSnapshot;
 use crate::model_registry::live::ModelCatalog;
 use crate::sdk_codegen::DynCommand;
 
 pub mod load;
+pub mod plan;
+pub mod status;
 pub mod unload;
 
 use load::ServingLoad;
+use plan::ServingPlanQuery;
+use status::ServingStatus;
 use unload::ServingUnload;
 
-/// The dep-holding `serving/*` deallocation pair the
+/// The dep-holding `serving/*` family the
 /// [`ServingDaemonModule`](crate::modules::serving_daemon::ServingDaemonModule)
-/// contributes to the kernel's typed object map. Both share the daemon's
-/// suppress-set writer (the VRAM-axis allocation ledger), its published
-/// [`ServingSnapshot`] receiver (to observe the lane actually free / re-fill), and
-/// the live [`ModelCatalog`] (to fail loud on an unknown model id rather than pin
-/// a typo that silently does nothing). The daemon's own plan + reconcile loop
-/// turns the suppress-set edits into actual (un)loads.
+/// contributes to the kernel's typed object map. Two axes:
+///
+/// - **VRAM-axis deallocation pair** (`serving/unload` ↔ `serving/load`): share the
+///   daemon's suppress-set writer (the VRAM-axis allocation ledger), its published
+///   [`ServingSnapshot`] receiver (to observe the lane actually free / re-fill), and
+///   the live [`ModelCatalog`] (to fail loud on an unknown model id rather than pin
+///   a typo that silently does nothing). The daemon's own plan + reconcile loop
+///   turns the suppress-set edits into actual (un)loads.
+/// - **Read surfaces** (`serving/plan` + `serving/status`): cheap `watch` borrows of
+///   the daemon's published plan (intent) and snapshot (reality), so personas and
+///   operators inspect the decision without probing the process.
 pub fn command_objects(
     suppress: watch::Sender<Arc<HashSet<String>>>,
     serving: watch::Receiver<ServingSnapshot>,
+    plan: watch::Receiver<Option<ServingPlan>>,
     catalog: Arc<ModelCatalog>,
 ) -> Vec<Arc<dyn DynCommand>> {
     vec![
@@ -62,9 +73,11 @@ pub fn command_objects(
         }),
         Arc::new(ServingLoad {
             suppress,
-            serving,
+            serving: serving.clone(),
             catalog,
         }),
+        Arc::new(ServingStatus { serving }),
+        Arc::new(ServingPlanQuery { plan }),
     ]
 }
 
@@ -72,21 +85,25 @@ pub fn command_objects(
 mod tests {
     use super::*;
 
-    // what this catches: the dep-holding family wires exactly the VRAM-axis
-    // deallocation pair. A regression that drops one half (breaking the
-    // load↔unload symmetry the catalog requires) is caught.
+    // what this catches: the dep-holding family wires the full serving surface —
+    // the VRAM-axis deallocation pair (load↔unload symmetry the catalog requires)
+    // PLUS the two read surfaces (plan = intent, status = reality). A regression
+    // that drops any of the four is caught.
     #[test]
-    fn family_exposes_the_load_unload_pair() {
+    fn family_exposes_the_full_serving_surface() {
         let reg = crate::model_registry::catalog::registry().expect("Rust catalog must validate");
         let catalog = Arc::new(ModelCatalog::from_registry(&reg));
         let (suppress, _) = watch::channel(Arc::new(HashSet::new()));
         let (_tx, serving) = watch::channel(ServingSnapshot::empty());
-        let objs = command_objects(suppress, serving, catalog);
+        let (_ptx, plan) = watch::channel(None);
+        let objs = command_objects(suppress, serving, plan, catalog);
         let names: Vec<&str> = objs.iter().map(|o| o.name()).collect();
         assert!(names.contains(&"serving/unload"), "the VRAM-axis free verb");
         assert!(
             names.contains(&"serving/load"),
             "its inverse — re-loadable without reboot"
         );
+        assert!(names.contains(&"serving/status"), "the reality read surface");
+        assert!(names.contains(&"serving/plan"), "the intent read surface");
     }
 }
