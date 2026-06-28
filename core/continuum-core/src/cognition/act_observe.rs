@@ -25,7 +25,7 @@
 
 use uuid::Uuid;
 
-use super::workspace::{Decision, WorkspaceCycle};
+use super::workspace::{Decision, TurnMetrics, WorkspaceCycle};
 use crate::ai::types::ToolCall;
 use crate::persona::types::{InboxMessage, SenderType};
 
@@ -60,6 +60,12 @@ pub struct SettleOutcome {
     /// The final world-state, with each action's observation folded in — what the
     /// last tick perceived. Captured for replay/forensics.
     pub world_state: String,
+    /// The accumulated cost of settling this task: every act→observe deliberation
+    /// generation's latency + tokens, summed. `tokens_per_second()` re-derives
+    /// throughput from the totals. This is the speed/latency the eval reports next
+    /// to the accuracy grade — the same number a live turn could surface for the
+    /// serving governor.
+    pub metrics: TurnMetrics,
 }
 
 /// Execute ONE `Act` verdict: run its calls through the persona's hands, admit
@@ -207,6 +213,9 @@ pub async fn drive_to_settle(
 ) -> SettleOutcome {
     let world = world_state.into();
     let mut acts = 0usize;
+    // Fold each tick's deliberation cost in, so the settled outcome reports the
+    // task's TOTAL speed/latency (a multi-act task pays for every generation).
+    let mut metrics = TurnMetrics::default();
 
     loop {
         // ONE settlement step through the SHARED primitive the live heartbeat uses
@@ -214,13 +223,18 @@ pub async fn drive_to_settle(
         // eval room has no metronome, the grader re-perceives by calling step again.
         // `may_act = acts < max_acts` gates ACTING (not speaking): past the budget
         // she may still settle into a Speak, but a fresh Act is returned un-driven.
-        match settle_step(cycle, world.clone(), room_id, acts < max_acts).await {
+        let (step, step_metrics) = settle_step(cycle, world.clone(), room_id, acts < max_acts).await;
+        if let Some(m) = step_metrics {
+            metrics.accumulate(m);
+        }
+        match step {
             SettleStep::Spoke(text) => {
                 return SettleOutcome {
                     spoken: Some(text.clone()),
                     decision: Decision::Speak { text },
                     acts,
                     world_state: world,
+                    metrics,
                 };
             }
             SettleStep::Acted { .. } => {
@@ -245,6 +259,7 @@ pub async fn drive_to_settle(
                     spoken: None,
                     acts,
                     world_state: world,
+                    metrics,
                 };
             }
             SettleStep::Passed => {
@@ -253,6 +268,7 @@ pub async fn drive_to_settle(
                     spoken: None,
                     acts,
                     world_state: world,
+                    metrics,
                 };
             }
         }
@@ -299,23 +315,30 @@ pub async fn settle_step(
     world: String,
     room_id: Uuid,
     may_act: bool,
-) -> SettleStep {
+) -> (SettleStep, Option<TurnMetrics>) {
     let ws = cycle.run_in_room(world, room_id).await;
-    match ws.decision().cloned() {
+    // The cost of THIS tick's deliberation generation — latency + tokens of the
+    // model call behind the verdict. Carried out alongside the step so the caller
+    // (the eval driver, or the live heartbeat) can accumulate per-turn speed and
+    // latency without re-timing the brain. `None` when no verdict carried metrics.
+    let metrics = ws.metrics();
+    let step = match ws.decision().cloned() {
         Some(Decision::Act { calls, intent }) => {
             if !may_act {
-                return SettleStep::WouldAct { calls, intent };
-            }
-            match apply_act(cycle, &calls, &intent, room_id).await {
-                Some(_observation) => SettleStep::Acted { calls, intent },
-                None => SettleStep::ActUnfulfilled { calls, intent },
+                SettleStep::WouldAct { calls, intent }
+            } else {
+                match apply_act(cycle, &calls, &intent, room_id).await {
+                    Some(_observation) => SettleStep::Acted { calls, intent },
+                    None => SettleStep::ActUnfulfilled { calls, intent },
+                }
             }
         }
         Some(Decision::Speak { text }) | Some(Decision::RaiseUnprompted { text }) => {
             SettleStep::Spoke(text)
         }
         Some(Decision::Pass) | None => SettleStep::Passed,
-    }
+    };
+    (step, metrics)
 }
 
 /// Epoch-ms wall clock for stamping a self-observation. A real timestamp (not a
@@ -701,7 +724,7 @@ mod tests {
         let cycle = WorkspaceCycle::new(vec![Arc::new(AlwaysAct)], Arc::new(SalienceArbiter), 8)
             .with_acting(body(exec.clone(), adm.clone()));
 
-        let deferred = settle_step(&cycle, "go".into(), Uuid::new_v4(), false).await;
+        let (deferred, _) = settle_step(&cycle, "go".into(), Uuid::new_v4(), false).await;
         assert!(
             matches!(deferred, SettleStep::WouldAct { .. }),
             "may_act=false defers the act"
@@ -711,7 +734,7 @@ mod tests {
             "a deferred act NEVER touches the executor"
         );
 
-        let ran = settle_step(&cycle, "go".into(), Uuid::new_v4(), true).await;
+        let (ran, _) = settle_step(&cycle, "go".into(), Uuid::new_v4(), true).await;
         assert!(matches!(ran, SettleStep::Acted { .. }), "may_act=true runs it");
         assert!(
             exec.seen_context.lock().unwrap().is_some(),

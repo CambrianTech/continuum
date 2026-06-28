@@ -266,6 +266,18 @@ pub struct EvalTaskResult {
     /// The first 200 chars of what she SPOKE once settled (empty if she ran out of
     /// the act budget mid-action — an honest "did not finish", never fabricated).
     pub answer: String,
+    /// Wall-clock latency to SETTLE this task: the summed deliberation-generation
+    /// time across every act→observe tick (the model's own measured request time,
+    /// not the harness's). The latency axis of the scoreboard, per task.
+    #[ts(type = "number")]
+    pub latency_ms: u64,
+    /// Completion tokens the model emitted across the task's deliberation turns —
+    /// the work done, paired with `latency_ms` to derive throughput.
+    #[ts(type = "number")]
+    pub output_tokens: u32,
+    /// Decode throughput for this task: `output_tokens / (latency_ms / 1000)`. The
+    /// speed axis of the scoreboard, per task. 0 when the gateway omitted `usage`.
+    pub tokens_per_second: f64,
 }
 
 #[derive(Debug, Clone, Serialize, TS)]
@@ -287,6 +299,20 @@ pub struct CognitionEvalResult {
     /// verify reflex takes hold. Reality-anchored alongside `pass_rate`: a high
     /// pass_rate with a low self_verify_rate means she's guessing right, not knowing.
     pub self_verify_rate: f64,
+    /// Mean per-task settle latency across the set (ms). The headline LATENCY number
+    /// — the branch's namesake — reported next to `pass_rate` so accuracy and speed
+    /// move on the same scoreboard, never one traded silently for the other.
+    pub mean_latency_ms: f64,
+    /// 95th-percentile per-task settle latency (ms). The tail a mean hides: a model
+    /// that's fast-on-average but occasionally stalls shows it here.
+    #[ts(type = "number")]
+    pub p95_latency_ms: u64,
+    /// Mean decode throughput across the set (tokens/sec). The headline SPEED number.
+    pub mean_tokens_per_second: f64,
+    /// Total completion tokens emitted across the whole set — the gross work done,
+    /// for cost/throughput accounting against wall-clock.
+    #[ts(type = "number")]
+    pub total_output_tokens: u32,
     pub results: Vec<EvalTaskResult>,
     /// The gene measured (A/B mode only) — its name, echoed so a run is traceable.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -450,12 +476,19 @@ impl ActionCommand for CognitionEval {
             cycle.page_out();
 
             // Guard drops here: her memory frame + real persistence sink restored.
+            let verify = self_verify_rate(&gene_results);
+            let (mean_latency_ms, p95_latency_ms, mean_tokens_per_second, total_output_tokens) =
+                speed_latency_aggregates(&gene_results);
             let result = CognitionEvalResult {
                 persona_id: persona_uuid.to_string(),
                 score: gene_score,
                 total,
                 pass_rate: rate(gene_score),
-                self_verify_rate: self_verify_rate(&gene_results),
+                self_verify_rate: verify,
+                mean_latency_ms,
+                p95_latency_ms,
+                mean_tokens_per_second,
+                total_output_tokens,
                 results: gene_results,
                 gene_id: Some(gene.name.clone()),
                 base_pass_rate: Some(rate(base_score)),
@@ -470,12 +503,19 @@ impl ActionCommand for CognitionEval {
         // baseline run is reproducible and leaves her memory untouched.
         let (score, results) = run_pass(&cycle, &tasks, room, max_acts).await;
         drop(isolation);
+        let verify = self_verify_rate(&results);
+        let (mean_latency_ms, p95_latency_ms, mean_tokens_per_second, total_output_tokens) =
+            speed_latency_aggregates(&results);
         let result = CognitionEvalResult {
             persona_id: persona_uuid.to_string(),
             score,
             total,
             pass_rate: rate(score),
-            self_verify_rate: self_verify_rate(&results),
+            self_verify_rate: verify,
+            mean_latency_ms,
+            p95_latency_ms,
+            mean_tokens_per_second,
+            total_output_tokens,
             results,
             gene_id: None,
             base_pass_rate: None,
@@ -496,6 +536,32 @@ fn self_verify_rate(results: &[EvalTaskResult]) -> f64 {
     }
     let acted = results.iter().filter(|r| r.acts > 0).count();
     acted as f64 / results.len() as f64
+}
+
+/// Speed + latency aggregates over the per-task results — the SPEED and LATENCY
+/// axes of the scoreboard, summarised into the four headline numbers a trend row
+/// carries: `(mean_latency_ms, p95_latency_ms, mean_tokens_per_second,
+/// total_output_tokens)`. P95 is the honest tail (a mean hides an occasional
+/// stall); throughput is averaged per-task (not total_tokens/total_ms) so one
+/// slow task can't dominate the speed number. Empty set → all zero.
+fn speed_latency_aggregates(results: &[EvalTaskResult]) -> (f64, u64, f64, u32) {
+    if results.is_empty() {
+        return (0.0, 0, 0.0, 0);
+    }
+    let n = results.len() as f64;
+    let mean_latency = results.iter().map(|r| r.latency_ms as f64).sum::<f64>() / n;
+    let mean_tps = results.iter().map(|r| r.tokens_per_second).sum::<f64>() / n;
+    let total_out = results
+        .iter()
+        .fold(0u32, |acc, r| acc.saturating_add(r.output_tokens));
+    // P95: sort latencies, take the ceil(0.95 * n)-th (1-indexed) — the value at or
+    // below which 95% of tasks settled.
+    let mut lat: Vec<u64> = results.iter().map(|r| r.latency_ms).collect();
+    lat.sort_unstable();
+    let idx = (((lat.len() as f64) * 0.95).ceil() as usize)
+        .saturating_sub(1)
+        .min(lat.len() - 1);
+    (mean_latency, lat[idx], mean_tps, total_out)
 }
 
 /// Append one row to the per-persona progress ledger so a trend line accrues
@@ -522,6 +588,10 @@ fn append_progress_ledger(result: &CognitionEvalResult, note: Option<&str>, eval
         "total": result.total,
         "passRate": result.pass_rate,
         "selfVerifyRate": result.self_verify_rate,
+        "meanLatencyMs": result.mean_latency_ms,
+        "p95LatencyMs": result.p95_latency_ms,
+        "meanTokensPerSecond": result.mean_tokens_per_second,
+        "totalOutputTokens": result.total_output_tokens,
         "geneId": result.gene_id,
         "basePassRate": result.base_pass_rate,
         "lift": result.lift,
@@ -609,12 +679,19 @@ async fn run_pass(
         if ok {
             pass += 1;
         }
+        // Speed/latency of THIS task — the accumulated deliberation cost the settle
+        // loop folded across every act→observe tick (the model's own measured time
+        // + tokens). Reported next to the grade so accuracy and speed sit on one row.
+        let m = settled.metrics;
         results.push(EvalTaskResult {
             id: t.id.clone(),
             ok,
             grade,
             acts: settled.acts as u32,
             answer: answer.chars().take(200).collect(),
+            latency_ms: m.latency_ms,
+            output_tokens: m.output_tokens,
+            tokens_per_second: m.tokens_per_second(),
         });
     }
     (pass, results)
@@ -622,3 +699,62 @@ async fn run_pass(
 
 // Stateless → self-register onto the ONE registry (descriptor + runtime object).
 crate::register_stateless_command!(CognitionEval);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn task_result(latency_ms: u64, output_tokens: u32, tps: f64) -> EvalTaskResult {
+        EvalTaskResult {
+            id: "t".into(),
+            ok: true,
+            grade: "tests passed".into(),
+            acts: 0,
+            answer: String::new(),
+            latency_ms,
+            output_tokens,
+            tokens_per_second: tps,
+        }
+    }
+
+    // what this catches: the speed/latency aggregate math behind the scoreboard —
+    // specifically the P95 index (ceil(0.95*n)-1, clamped), which is the easy place
+    // to land off-by-one. For n=4, P95 is the max (idx 3); means average per-task
+    // (not total/total); total_output sums. An empty set must be all-zero, never a
+    // divide-by-zero. If this drifts, the latency/speed numbers a run reports — and
+    // the trend ledger — silently lie.
+    #[test]
+    fn speed_latency_aggregates_compute_mean_p95_and_totals() {
+        assert_eq!(speed_latency_aggregates(&[]), (0.0, 0, 0.0, 0));
+
+        let results = vec![
+            task_result(100, 10, 50.0),
+            task_result(200, 20, 40.0),
+            task_result(300, 30, 30.0),
+            task_result(400, 40, 20.0),
+        ];
+        let (mean_lat, p95_lat, mean_tps, total_out) = speed_latency_aggregates(&results);
+        assert_eq!(mean_lat, 250.0, "mean latency = (100+200+300+400)/4");
+        assert_eq!(p95_lat, 400, "P95 of 4 tasks is the slowest (idx ceil(3.8)-1=3)");
+        assert_eq!(mean_tps, 35.0, "mean throughput averages per-task, not total/total");
+        assert_eq!(total_out, 100, "total output tokens sum across the set");
+    }
+
+    // what this catches: TurnMetrics throughput + accumulation, the per-turn cost
+    // the settle loop folds. tokens_per_second guards div-by-zero (0ms → 0.0, never
+    // NaN/inf that would poison the mean); accumulate sums each field so a multi-act
+    // task reports the TOTAL generation cost, not just the last turn's.
+    #[test]
+    fn turn_metrics_throughput_and_accumulation() {
+        use crate::cognition::workspace::TurnMetrics;
+        let zero = TurnMetrics::default();
+        assert_eq!(zero.tokens_per_second(), 0.0, "0ms must not divide-by-zero");
+
+        let mut acc = TurnMetrics { input_tokens: 5, output_tokens: 20, latency_ms: 1000 };
+        assert_eq!(acc.tokens_per_second(), 20.0, "20 tokens / 1s = 20 tok/s");
+        acc.accumulate(TurnMetrics { input_tokens: 3, output_tokens: 10, latency_ms: 1000 });
+        assert_eq!(acc.output_tokens, 30, "accumulate sums completion tokens");
+        assert_eq!(acc.latency_ms, 2000, "accumulate sums latency across turns");
+        assert_eq!(acc.tokens_per_second(), 15.0, "30 tokens / 2s = 15 tok/s");
+    }
+}
