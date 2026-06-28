@@ -353,6 +353,24 @@ pub enum ApiStyle {
     Local,
 }
 
+/// A unit of generated output, delivered to the consumer the INSTANT the backend
+/// produces it — the streaming primitive. A token that exists now reaches the
+/// subscriber now: the same shape as an audio sample, a video frame, or a game
+/// state delta on the wire. Generation is a low-latency *stream*, not a `Future`
+/// you await for the whole result; [`AIProviderAdapter::generate_text`] is just
+/// the convenience drain over [`AIProviderAdapter::generate_stream`] for callers
+/// that don't need the tokens live.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GenerationChunk {
+    /// A fragment of the user-facing answer, emitted as the model decodes it.
+    Token(String),
+    /// A fragment of the model's private reasoning (`<think>` / `reasoning_content`).
+    /// Surfaced on its OWN variant so a consumer can show "thinking…" live without
+    /// ever leaking chain-of-thought into the room — the answer/reasoning split is
+    /// preserved on the stream, not just on the assembled response.
+    Reasoning(String),
+}
+
 /// The universal AI provider adapter trait
 ///
 /// All AI providers implement this trait. The AIProviderModule calls
@@ -435,12 +453,47 @@ pub trait AIProviderAdapter: Send + Sync {
 
     // ─── Text Generation ────────────────────────────────────────────────────
 
-    /// Generate text (main entry point)
+    /// Generate text (convenience drain over [`generate_stream`])
     /// Handles both plain text generation AND tool calling
     async fn generate_text(
         &self,
         request: TextGenerationRequest,
     ) -> Result<TextGenerationResponse, String>;
+
+    /// Generate, delivering each [`GenerationChunk`] to `sink` the INSTANT the
+    /// backend produces it, and returning the fully-assembled response when the
+    /// stream completes. This is the streaming primitive — low-latency, buffered,
+    /// the shape every UI / audio / video / live-cognition path wants. The
+    /// blocking [`generate_text`] is the drain over this: await the whole answer
+    /// when you don't need the tokens live.
+    ///
+    /// `sink` is an unbounded channel so a slow consumer never stalls token
+    /// decode; a consumer that only wants the final answer passes a sink it
+    /// drops/ignores (the chunks are cheap to discard).
+    ///
+    /// Default impl: a NON-incremental adapter (a cloud one-shot endpoint, the
+    /// heuristic test adapter) genuinely has nothing to stream — it produces the
+    /// whole answer at once. It honestly emits that as a single trailing chunk
+    /// then returns the same response. This is a capability statement, not a
+    /// fallback that hides a failure: there is no partial output to deliver.
+    /// Streaming backends (OpenAI-compatible / llama-server) override this with a
+    /// real token-by-token stream and reimplement `generate_text` on top of it.
+    async fn generate_stream(
+        &self,
+        request: TextGenerationRequest,
+        sink: tokio::sync::mpsc::UnboundedSender<GenerationChunk>,
+    ) -> Result<TextGenerationResponse, String> {
+        let response = self.generate_text(request).await?;
+        if let Some(reasoning) = response.reasoning.as_ref() {
+            if !reasoning.is_empty() {
+                let _ = sink.send(GenerationChunk::Reasoning(reasoning.clone()));
+            }
+        }
+        if !response.text.is_empty() {
+            let _ = sink.send(GenerationChunk::Token(response.text.clone()));
+        }
+        Ok(response)
+    }
 
     // ─── Embeddings (optional) ──────────────────────────────────────────────
 

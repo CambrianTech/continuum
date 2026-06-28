@@ -25,7 +25,9 @@ use crate::model_registry::{AuthKind, Capability};
 use crate::secrets::get_secret;
 use crate::{clog_info, clog_warn};
 
-use super::adapter::{AIProviderAdapter, AdapterCapabilities, ApiStyle, LoRACapabilities};
+use super::adapter::{
+    AIProviderAdapter, AdapterCapabilities, ApiStyle, GenerationChunk, LoRACapabilities,
+};
 use super::openai_endpoints::OpenAiBase;
 use super::registry_bridge::models_for_provider_via_registry;
 use super::types::{
@@ -187,6 +189,24 @@ pub struct OpenAICompatibleAdapter {
 }
 
 impl OpenAICompatibleAdapter {
+    /// Build the reqwest client for a STREAMING inference transport. There is
+    /// deliberately NO total-request timeout: generation is a long-running job
+    /// whose liveness is "is it still producing tokens?", not "did it finish
+    /// within N seconds." A wall-clock cap is the wrong model — it kills a
+    /// healthy-but-slow decode (a CPU-placed 4B mid-answer) at an arbitrary
+    /// cliff. Liveness is enforced per-token by the idle watchdog in
+    /// [`stream_completion`] (no token for [`STREAM_IDLE_TIMEOUT_SECS`] = the
+    /// backend went silent → fail loud). `connect_timeout` still bounds the
+    /// handshake to a dead loopback backend; `pool_idle_timeout` prevents stale
+    /// pooled sockets across backend restarts.
+    fn build_http_client() -> reqwest::Client {
+        reqwest::Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(3))
+            .pool_idle_timeout(std::time::Duration::from_secs(30))
+            .build()
+            .expect("Failed to create HTTP client")
+    }
+
     pub fn new(config: OpenAICompatibleConfig) -> Self {
         // 120s total timeout bounds long generations (qwen3.5 reasoning
         // can take ~60s to emit a full response). Connect timeout bounds
@@ -196,23 +216,17 @@ impl OpenAICompatibleAdapter {
         // the reqwest pool from holding onto dead sockets across DMR
         // restarts — a stale pooled connection to a killed server was
         // the reproducing cause of 120s "error sending request" stalls.
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(120))
-            .connect_timeout(std::time::Duration::from_secs(3))
-            .pool_idle_timeout(std::time::Duration::from_secs(30))
-            .build()
-            .expect("Failed to create HTTP client");
+        let client = Self::build_http_client();
 
         // Per-provider concurrency gate. A single-resident-model gateway
         // (DMR, llama-server) serves ONE model on ONE slot, so N personas
         // fanning out into concurrent POSTs must queue in this semaphore
-        // INSTEAD of stalling inside reqwest past its 120s client timeout —
-        // the specific failure mode where personas emitted "error sending
-        // request for url -> operation timed out" with connect=false (the
-        // request reached the gateway, but it was busy on the prior persona's
-        // forward pass when its 120s budget expired). Multi-model / cloud
-        // endpoints are effectively unbounded. Keyed on the TYPED capability
-        // (#55), never the provider id.
+        // INSTEAD of piling onto a gateway already busy on the prior persona's
+        // forward pass — which (before streaming) was the "error sending
+        // request -> operation timed out, connect=false" failure mode and is
+        // now just wasted contention. Multi-model / cloud endpoints are
+        // effectively unbounded. Keyed on the TYPED capability (#55), never the
+        // provider id.
         let slots = if config.single_resident_model { 1 } else { 64 };
         let concurrency = std::sync::Arc::new(tokio::sync::Semaphore::new(slots));
 
@@ -801,33 +815,6 @@ impl OpenAICompatibleAdapter {
     }
 }
 
-#[allow(dead_code)]
-#[derive(Debug, Deserialize)]
-struct OpenAIResponse {
-    id: String,
-    choices: Vec<OpenAIChoice>,
-    usage: Option<OpenAIUsage>,
-    model: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct OpenAIChoice {
-    message: OpenAIMessage,
-    finish_reason: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct OpenAIMessage {
-    content: Option<String>,
-    /// Server-separated reasoning (vLLM `--reasoning-parser`, future unsloth). When
-    /// present, `content` is already the clean answer and this is the chain-of-
-    /// thought. Most llama.cpp-backed gateways (today's unsloth) DON'T set this —
-    /// they emit `<think>…</think>` inline in `content` instead, which
-    /// [`extract_reasoning`] handles.
-    reasoning_content: Option<String>,
-    tool_calls: Option<Vec<OpenAIToolCall>>,
-}
-
 /// Separate a reasoning model's chain-of-thought from its user-facing answer at the
 /// ADAPTER boundary, so reasoning is captured (for the glass-box harness) but NEVER
 /// reaches the room. Precedence:
@@ -910,26 +897,103 @@ fn apply_no_think_switch(messages: &mut [Value]) {
     }
 }
 
-#[allow(dead_code)]
-#[derive(Debug, Deserialize)]
-struct OpenAIToolCall {
-    id: String,
-    #[serde(rename = "type")]
-    call_type: String,
-    function: OpenAIFunction,
-}
-
-#[derive(Debug, Deserialize)]
-struct OpenAIFunction {
-    name: String,
-    arguments: String,
-}
-
 #[derive(Debug, Deserialize)]
 struct OpenAIUsage {
     prompt_tokens: u32,
     completion_tokens: u32,
     total_tokens: Option<u32>,
+}
+
+/// How long the inference lane may stay SILENT mid-stream before we declare it
+/// dead. This is a LIVENESS watchdog, not a deadline: a slow-but-producing decode
+/// (a 4B model on CPU emitting a token every few hundred ms) stays alive
+/// indefinitely as long as it keeps streaming. Only true silence — the backend
+/// stuck, crashed, or the socket wedged — trips it, and then we fail loud naming
+/// the cause ([[fallbacks-are-illegal-fail-loud]]). Replaces the old wall-clock
+/// total-request timeout that killed legitimately-long generations.
+const STREAM_IDLE_TIMEOUT_SECS: u64 = 90;
+
+/// One streamed SSE frame from an OpenAI-compatible `/v1/chat/completions` with
+/// `stream: true`. Each frame carries an incremental `delta`; `usage` arrives only
+/// on the final frame (requires `stream_options.include_usage`).
+#[derive(Debug, Deserialize)]
+struct OpenAIStreamChunk {
+    #[serde(default)]
+    choices: Vec<OpenAIStreamChoice>,
+    #[serde(default)]
+    usage: Option<OpenAIUsage>,
+    #[serde(default)]
+    model: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAIStreamChoice {
+    #[serde(default)]
+    delta: Option<OpenAIStreamDelta>,
+    #[serde(default)]
+    finish_reason: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct OpenAIStreamDelta {
+    #[serde(default)]
+    content: Option<String>,
+    #[serde(default)]
+    reasoning_content: Option<String>,
+    #[serde(default)]
+    tool_calls: Option<Vec<OpenAIStreamToolCall>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAIStreamToolCall {
+    #[serde(default)]
+    index: Option<usize>,
+    #[serde(default)]
+    id: Option<String>,
+    #[serde(default)]
+    function: Option<OpenAIStreamFunction>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAIStreamFunction {
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    arguments: Option<String>,
+}
+
+/// A tool call assembled across many streamed `delta.tool_calls` fragments. The
+/// model emits the id + name once and then the JSON `arguments` arrive token by
+/// token; we accumulate by `index` until the stream ends.
+#[derive(Default)]
+struct StreamToolAccum {
+    id: String,
+    name: String,
+    arguments: String,
+}
+
+/// Fold one streamed tool-call fragment into the per-index accumulator.
+fn accumulate_stream_tool_call(acc: &mut Vec<StreamToolAccum>, tc: OpenAIStreamToolCall) {
+    let idx = tc.index.unwrap_or(0);
+    if acc.len() <= idx {
+        acc.resize_with(idx + 1, StreamToolAccum::default);
+    }
+    let slot = &mut acc[idx];
+    if let Some(id) = tc.id {
+        if !id.is_empty() {
+            slot.id = id;
+        }
+    }
+    if let Some(f) = tc.function {
+        if let Some(n) = f.name {
+            if !n.is_empty() {
+                slot.name = n;
+            }
+        }
+        if let Some(a) = f.arguments {
+            slot.arguments.push_str(&a);
+        }
+    }
 }
 
 #[async_trait]
@@ -1059,9 +1123,29 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
         Ok(())
     }
 
+    /// Convenience drain over [`generate_stream`]: when a caller wants the whole
+    /// answer (no live tokens), it streams into a throwaway channel and returns the
+    /// assembled response. The channel is unbounded so token decode never blocks on
+    /// a reader; the receiver is held to the end of the call and dropped (the
+    /// buffered chunks are cheap and discarded). Same SSE path, same liveness
+    /// watchdog — just without surfacing the tokens.
     async fn generate_text(
         &self,
         request: TextGenerationRequest,
+    ) -> Result<TextGenerationResponse, String> {
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel::<GenerationChunk>();
+        self.generate_stream(request, tx).await
+    }
+
+    /// Streaming-first generation: each token reaches `sink` the INSTANT the
+    /// backend decodes it (the low-latency primitive — same shape as audio samples
+    /// or video frames), and the fully-assembled [`TextGenerationResponse`] is
+    /// returned when the stream completes. Liveness is the per-token idle watchdog
+    /// ([`STREAM_IDLE_TIMEOUT_SECS`]), never a wall-clock total.
+    async fn generate_stream(
+        &self,
+        request: TextGenerationRequest,
+        sink: tokio::sync::mpsc::UnboundedSender<GenerationChunk>,
     ) -> Result<TextGenerationResponse, String> {
         // Only require API key for providers that need auth
         if self.config.requires_auth && self.api_key.is_none() {
@@ -1110,7 +1194,10 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
             "model": model,
             "messages": messages,
             "temperature": request.temperature.unwrap_or(0.7),
-            "stream": false
+            // Stream tokens the instant they're decoded. `include_usage` makes the
+            // backend emit a final usage-only frame so we still get token counts.
+            "stream": true,
+            "stream_options": { "include_usage": true }
         });
 
         // max_tokens — the MODEL owns its generation length, enforced server-side
@@ -1290,11 +1377,11 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
         );
 
         // Acquire concurrency slot. For DMR (1 slot) this serializes
-        // requests so the 120s client timeout measures actual request
-        // time, not "time waiting for the previous persona's forward
-        // pass." For non-DMR providers (64 slots) this is effectively
-        // a no-op. Acquire can't fail here — the semaphore is never
-        // closed over the adapter's lifetime.
+        // requests so the idle watchdog measures actual streaming liveness,
+        // not "time waiting for the previous persona's forward pass." For
+        // non-DMR providers (64 slots) this is effectively a no-op. Acquire
+        // can't fail here — the semaphore is never closed over the adapter's
+        // lifetime.
         let queue_start = Instant::now();
         let _permit = self
             .concurrency
@@ -1382,45 +1469,130 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
             ));
         }
 
-        let response_json: OpenAIResponse = response
-            .json()
-            .await
-            .map_err(|e| format!("Failed to parse {} response: {}", self.config.name, e))?;
+        // Consume the SSE stream: every token reaches `sink` the INSTANT it arrives.
+        // Liveness is the per-token idle watchdog ([`STREAM_IDLE_TIMEOUT_SECS`]) —
+        // silence means the backend died, NOT that generation is simply long.
+        use futures::StreamExt;
+        let mut byte_stream = response.bytes_stream();
+        let idle = std::time::Duration::from_secs(STREAM_IDLE_TIMEOUT_SECS);
+
+        let mut sse_buf: Vec<u8> = Vec::new();
+        let mut acc_content = String::new();
+        let mut acc_reasoning = String::new();
+        let mut acc_tools: Vec<StreamToolAccum> = Vec::new();
+        let mut finish_reason_str: Option<String> = None;
+        let mut stream_usage: Option<OpenAIUsage> = None;
+        let mut resp_model: Option<String> = None;
+
+        loop {
+            let next = tokio::time::timeout(idle, byte_stream.next())
+                .await
+                .map_err(|_| {
+                    format!(
+                        "{}: inference lane went silent for {}s mid-stream (no token \
+                         produced) — backend stuck or dead; refusing to wait on a dead \
+                         stream",
+                        self.config.name, STREAM_IDLE_TIMEOUT_SECS
+                    )
+                })?;
+            let Some(chunk) = next else {
+                break; // server closed the stream (EOF) — generation complete
+            };
+            let bytes =
+                chunk.map_err(|e| format!("{}: stream read error: {e}", self.config.name))?;
+
+            // Strip CR (0x0D) so event boundaries normalize to `\n\n`. CR never
+            // appears inside a UTF-8 multibyte sequence, so this is decode-safe; we
+            // buffer RAW bytes and only decode COMPLETE events (no mid-char split).
+            for b in bytes.iter() {
+                if *b != b'\r' {
+                    sse_buf.push(*b);
+                }
+            }
+
+            while let Some(pos) = sse_buf.windows(2).position(|w| w == b"\n\n") {
+                let event_bytes: Vec<u8> = sse_buf.drain(..pos + 2).collect();
+                let event = String::from_utf8_lossy(&event_bytes);
+                for line in event.lines() {
+                    let Some(data) = line.trim_start().strip_prefix("data:") else {
+                        continue;
+                    };
+                    let data = data.trim();
+                    if data.is_empty() || data == "[DONE]" {
+                        continue;
+                    }
+                    let parsed: OpenAIStreamChunk = match serde_json::from_str(data) {
+                        Ok(p) => p,
+                        Err(_) => continue, // keepalive / comment / non-JSON line
+                    };
+                    if resp_model.is_none() && !parsed.model.is_empty() {
+                        resp_model = Some(parsed.model.clone());
+                    }
+                    if let Some(u) = parsed.usage {
+                        stream_usage = Some(u);
+                    }
+                    if let Some(choice) = parsed.choices.into_iter().next() {
+                        if let Some(fr) = choice.finish_reason {
+                            finish_reason_str = Some(fr);
+                        }
+                        if let Some(delta) = choice.delta {
+                            if let Some(c) = delta.content {
+                                if !c.is_empty() {
+                                    acc_content.push_str(&c);
+                                    let _ = sink.send(GenerationChunk::Token(c));
+                                }
+                            }
+                            if let Some(r) = delta.reasoning_content {
+                                if !r.is_empty() {
+                                    acc_reasoning.push_str(&r);
+                                    let _ = sink.send(GenerationChunk::Reasoning(r));
+                                }
+                            }
+                            if let Some(tcs) = delta.tool_calls {
+                                for tc in tcs {
+                                    accumulate_stream_tool_call(&mut acc_tools, tc);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
 
         let response_time_ms = start.elapsed().as_millis() as u64;
-
-        // Parse response
-        let choice = response_json
-            .choices
-            .first()
-            .ok_or_else(|| "No completion in response".to_string())?;
 
         // Separate reasoning from the answer AT THE BOUNDARY: a reasoning model's
         // `<think>…</think>` (or a server `reasoning_content`) is captured for the
         // harness/memory and stripped from `text` so it can NEVER reach the room.
-        let raw_content = choice.message.content.clone().unwrap_or_default();
-        let (text, reasoning) =
-            extract_reasoning(&raw_content, choice.message.reasoning_content.as_deref());
-        let mut finish_reason = choice
-            .finish_reason
+        let raw_content = acc_content;
+        let (text, reasoning) = extract_reasoning(
+            &raw_content,
+            (!acc_reasoning.is_empty()).then_some(acc_reasoning.as_str()),
+        );
+        let mut finish_reason = finish_reason_str
             .as_deref()
             .map(|r| self.map_finish_reason(r))
             .unwrap_or(FinishReason::Stop);
 
-        // Parse native tool calls
-        let mut tool_calls: Option<Vec<ToolCall>> = choice.message.tool_calls.as_ref().map(|tcs| {
-            tcs.iter()
-                .map(|tc| {
-                    let input: Value = serde_json::from_str(&tc.function.arguments)
-                        .unwrap_or_else(|_| json!({ "_raw": tc.function.arguments }));
+        // Assemble native tool calls from the streamed fragments.
+        let mut tool_calls: Option<Vec<ToolCall>> = if acc_tools.is_empty() {
+            None
+        } else {
+            let calls: Vec<ToolCall> = acc_tools
+                .into_iter()
+                .filter(|t| !t.name.is_empty())
+                .map(|t| {
+                    let input: Value = serde_json::from_str(&t.arguments)
+                        .unwrap_or_else(|_| json!({ "_raw": t.arguments }));
                     ToolCall {
-                        id: tc.id.clone(),
-                        name: tc.function.name.clone(),
+                        id: t.id,
+                        name: t.name,
                         input,
                     }
                 })
-                .collect()
-        });
+                .collect();
+            (!calls.is_empty()).then_some(calls)
+        };
 
         // UNIVERSAL text-format tool-call fallback. When no NATIVE tool_calls came
         // back, scan the model's TEXT for `{"tool_call": {...}}` envelopes and lift
@@ -1454,8 +1626,7 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
             }
         }
 
-        let usage = response_json
-            .usage
+        let usage = stream_usage
             .map(|u| UsageMetrics {
                 input_tokens: u.prompt_tokens,
                 output_tokens: u.completion_tokens,
@@ -1469,7 +1640,7 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
         Ok(TextGenerationResponse {
             text,
             finish_reason,
-            model: response_json.model,
+            model: resp_model.unwrap_or_else(|| model.to_string()),
             provider: self.config.provider_id.to_string(),
             usage,
             response_time_ms,
