@@ -32,6 +32,7 @@ use async_trait::async_trait;
 use std::fmt::Write as _;
 use uuid::Uuid;
 
+use super::persona_tools;
 use super::workspace::{Contribution, Decision, Faculty, FacultyId, Workspace};
 use crate::ai::adapter::AIProviderAdapter;
 use crate::ai::types::{
@@ -134,30 +135,35 @@ pub struct LlmDeliberationFaculty {
     /// Which model to ask for (None → the adapter's default).
     model: Option<String>,
     temperature: f32,
-    /// The persona's authorized tool set. Empty → the persona can only SPEAK
-    /// (no `tools` passed to the model). Non-empty → the persona can ACT: the
-    /// model may emit tool_calls, which this faculty surfaces as a single
-    /// [`Decision::Act`] verdict. It does NOT run them — executing the calls,
-    /// remembering the result, and re-perceiving is the ORGANISM's job (the
-    /// act→observe driver, [`super::act_observe`]). The faculty is single-shot:
-    /// one generation → one verdict (`Act` xor `Speak` xor `Pass`) per tick.
+    /// The persona's authorized tool set, kept whole. Empty → the persona can only
+    /// SPEAK. Non-empty → the persona can ACT. This set is NOT dumped into the
+    /// prompt as full schemas (that flood — ~100 schemas, 4–5k tokens riding EVERY
+    /// turn — is what starved the conversation AND overflowed `n_ctx`). Instead it
+    /// feeds the compact CATALOG (`tool_catalog`, injected into the system prompt)
+    /// and lets the act→observe path recognise a call by NAME. The model loads any
+    /// one tool's full argument schema on demand via `tool/describe`
+    /// ([`describe_spec`](Self::describe_spec)) — progressive disclosure, the same
+    /// shape Claude Code uses (deferred tools + a describe/search tool). An emitted
+    /// call becomes a single [`Decision::Act`] verdict; the faculty does NOT run it
+    /// — the act→observe driver ([`super::act_observe`]) does. Single-shot: one
+    /// generation → one verdict (`Act` xor `Speak` xor `Pass`) per tick.
     tools: Vec<NativeToolSpec>,
-    /// Cached token cost of `tools` once the chat template injects them into the
-    /// prompt — computed ONCE when the tool set is assigned ([`Self::with_tools`]),
-    /// NOT per tick. Serializing ~47 schemas on every deliberation just to size a
-    /// budget is exactly the hot-path CPU we refuse to pay; `prompt_view` reads
-    /// this field by value instead. 0 when `tools` is empty (pure-chat persona).
-    tools_tokens: usize,
-    /// Per-tool injected token cost, parallel to `tools` (same index, same order),
-    /// computed ONCE alongside `tools_tokens` in [`Self::with_tools`]. This is what
-    /// lets the faculty BOUND the offered set to the served window: the full
-    /// authorized registry can inject more schema tokens than the whole serving
-    /// slot, so a flood of tools starved the conversation to zero AND still
-    /// overflowed `n_ctx` (the 400 "exceeds context size" that muted the persona).
-    /// [`Self::selected_tool_indices`] greedily keeps the tools that fit a tool
-    /// budget and drops the rest — fail-safe by construction. Summed, this equals
-    /// `tools_tokens`.
-    tool_costs: Vec<usize>,
+    /// The compact tool catalog injected into the system prompt — tool names plus
+    /// one-line summaries, grouped by category (see
+    /// [`persona_tools::render_tool_catalog`]). Rebuilt ONCE whenever the tool set
+    /// or the served window changes ([`Self::rebuild_tool_surface`]), never on the
+    /// per-tick path; `compose_system` reads this string by reference. Empty when
+    /// `tools` is empty (pure-chat persona). Two-tier (rich `name — summary`, or
+    /// terse `category: names` if the window is tiny) so it ALWAYS fits.
+    tool_catalog: String,
+    /// The single tool natively offered to the model each turn: `tool/describe`
+    /// (load one tool's full argument schema by name). `None` when the persona has
+    /// no tools. Every other tool is dispatched by NAME through the JSON-in-prose
+    /// path — `act_observe` maps any catalog name back to its command, so a tool not
+    /// in this native array still runs. This is what keeps the per-turn tool payload
+    /// at ONE tiny schema instead of the whole registry. Computed in
+    /// [`Self::rebuild_tool_surface`].
+    describe_spec: Option<NativeToolSpec>,
     /// Where this faculty records its chain-of-thought after a verdict, so the
     /// persona can resume its train of thought next turn (the
     /// [`WorkingMemory`](crate::cognition::working_memory::WorkingMemory)
@@ -211,8 +217,8 @@ impl LlmDeliberationFaculty {
             model: None,
             temperature: DEFAULT_TEMPERATURE,
             tools: Vec::new(),
-            tools_tokens: 0,
-            tool_costs: Vec::new(),
+            tool_catalog: String::new(),
+            describe_spec: None,
             working_memory: None,
             prompt_capture: None,
             genome: empty_genome(),
@@ -269,21 +275,34 @@ impl LlmDeliberationFaculty {
         self
     }
 
-    /// Authorize a tool set — the persona can now ACT, not just speak. The model
-    /// is offered these tools; an emitted tool_call becomes a [`Decision::Act`]
-    /// verdict the act→observe driver runs (the faculty itself never executes).
+    /// Authorize a tool set — the persona can now ACT, not just speak. The full
+    /// set is NOT dumped into the prompt; it feeds the compact catalog the persona
+    /// browses, and the model loads any one tool's schema on demand via
+    /// `tool/describe`. An emitted call becomes a [`Decision::Act`] verdict the
+    /// act→observe driver runs (the faculty itself never executes).
     pub fn with_tools(mut self, tools: Vec<NativeToolSpec>) -> Self {
-        // Size the injected-token cost ONCE, here, by reference, while we hold the
-        // set — never again on the hot path. The schemas don't change after this,
-        // so `prompt_view` reads the cached count each tick instead of paying the
-        // serialization. (The serialization itself stays by-reference: it borrows
-        // the slice, it does not clone the specs.) Per-tool costs (`tool_costs`)
-        // feed the window-bounded selection; their sum IS `tools_tokens` (one
-        // accounting, never two).
-        self.tool_costs = tools.iter().map(Self::estimate_one_tool_tokens).collect();
-        self.tools_tokens = self.tool_costs.iter().sum();
         self.tools = tools;
+        self.rebuild_tool_surface();
         self
+    }
+
+    /// Rebuild the prompt-facing tool surface — the compact catalog text and the
+    /// `tool/describe` native offering — from the authorized set + the served
+    /// window. Called ONCE whenever either changes (tool assignment, window
+    /// resize), NEVER on the per-tick path: `compose_system`/`prompt_view` read the
+    /// cached `tool_catalog`/`describe_spec` by reference. The catalog gets HALF the
+    /// window as its char budget (the other half is reserved for framing + burst +
+    /// enrichment), two-tier-rendered so it always fits even at `MIN_SERVE_CTX`.
+    fn rebuild_tool_surface(&mut self) {
+        if self.tools.is_empty() {
+            self.tool_catalog.clear();
+            self.describe_spec = None;
+            return;
+        }
+        let budget_chars =
+            (self.context_window as usize / 2).saturating_mul(GUARD_CHARS_PER_TOKEN);
+        self.tool_catalog = persona_tools::render_tool_catalog(&self.tools, budget_chars);
+        self.describe_spec = persona_tools::spec_for_command(persona_tools::TOOL_DESCRIBE_NAME);
     }
 
     /// Set the effective served context window (tokens) this faculty must keep its
@@ -294,6 +313,9 @@ impl LlmDeliberationFaculty {
     /// faculty constructed outside the spawn path (tests, non-served).
     pub fn with_context_window(mut self, context_window: u32) -> Self {
         self.context_window = context_window;
+        // The catalog's char budget scales with the window, so a window change can
+        // flip the two-tier render (rich ↔ terse) — rebuild it.
+        self.rebuild_tool_surface();
         self
     }
 
@@ -462,23 +484,37 @@ impl LlmDeliberationFaculty {
              have nothing worth adding, stay silent.",
             name = self.persona_name,
         );
-        // Act-don't-announce: when this persona HAS tools, small models tend to
-        // narrate a plan ("I'll use X", "let's start by…") as a chat turn instead
-        // of emitting the tool call — so nothing happens (observed: a multi-step
-        // challenge produced a `speak` verdict, the card never moved). This block
-        // steers the FIRST concrete action into an actual tool call. Only included
-        // when tools are offered; pure-chat turns keep the say-your-piece framing.
+        // Tools: a compact CATALOG (names + one-line summaries by category) plus
+        // how to use them. NOT the full schemas — those load on demand via
+        // `tool/describe` (progressive disclosure, the Claude Code shape). Only
+        // included when the persona has tools; pure-chat turns keep say-your-piece.
+        // The `[Acting]` framing here states the truth WITHOUT a false absolute:
+        // for many tasks the finished work IS the answer (write the function, the
+        // prose, the design) — produce it directly; reach for a tool when the task
+        // genuinely needs one (read a file, run code, search). Describing what you
+        // WOULD do is not doing it — but neither is calling a tool you don't need.
         if !self.tools.is_empty() {
             s.push_str(
-                "\n\n[Acting with your tools]\n\
-                 You have tools, and using them is how you get things done. When the \
-                 task needs a tool, CALL it THIS turn — emit the actual tool call. Do \
-                 NOT announce or describe it first (\"I'll use…\", \"let me…\", \"let's \
-                 start by…\"): narration does NOTHING; only a real tool call acts. Take \
-                 the FIRST concrete step now — you'll get the result back and can \
-                 continue (e.g. search → read → edit → run). If you catch yourself \
-                 writing what you are ABOUT to do, stop and do it instead. Speak only \
-                 to report what you actually did or found, after the tool calls.",
+                "\n\n[Your tools]\n\
+                 You can act, not just talk. Below is your tool catalog — tool names \
+                 grouped by category, each with a one-line summary. The catalog is \
+                 compact on purpose: it does NOT list each tool's arguments. When you \
+                 want to use a tool, first call `tool/describe` with its exact name to \
+                 get its full parameter schema, then call the tool itself. (You may \
+                 call any tool in the catalog by name; only `tool/describe` is offered \
+                 to you directly.)\n",
+            );
+            s.push_str(&self.tool_catalog);
+            s.push_str(
+                "\n[Acting]\n\
+                 Do the thing the task asks for. If the answer is something you can \
+                 produce directly — a function, a piece of writing, a design — write \
+                 the finished work now, in full. If it needs a tool — reading a file, \
+                 running code, searching — call the tool THIS turn rather than \
+                 describing what you would do; narrating a plan does not carry it out. \
+                 After a tool runs you get the result back and can continue \
+                 (e.g. describe → call → read → run). Don't call a tool you don't need, \
+                 and don't narrate one you do.",
             );
         }
         // Reuse the ONE silence contract — PASS = first-class choice to stay quiet.
@@ -505,20 +541,18 @@ impl LlmDeliberationFaculty {
     pub fn prompt_view(&self, ws: &Workspace) -> DeliberationPromptView {
         let completion_reserve = (self.context_window / 4).clamp(256, 2048) as usize;
 
-        // Tool schemas ride the served window too: when tools are offered the
-        // gateway injects each one (name + description + JSON parameter schema)
-        // into the prompt via the chat template. They are NOT part of
-        // `system`/`user`, so without counting them here the budget silently
-        // overshoots `n_ctx` and llama-server 400s ("exceeds context size") — the
-        // mute bug (task #50). Subtract the cost of the SELECTED (window-bounded)
-        // set, not the full authorized registry: the full set can exceed the whole
-        // slot, so it is trimmed to fit by `selected_tool_indices` (see there for
-        // why tools became droppable), and the text budget must agree with the
-        // tools actually offered in `contribute`. Same deterministic selection on
-        // both sides → identical arithmetic.
+        // The ONE natively-offered tool (`tool/describe`) rides the served window
+        // too: the gateway injects its function spec (name + description + schema)
+        // via the chat template, outside `system`/`user`. Without counting it the
+        // budget silently overshoots `n_ctx` and llama-server 400s ("exceeds context
+        // size"). It is a SINGLE tiny schema (progressive disclosure — the rest of
+        // the surface lives in the catalog inside `system`, already counted by
+        // `framing_tokens`), so this is a few dozen tokens, not the 4–5k the old
+        // full-registry dump cost. The catalog itself is part of `compose_system`,
+        // so it is sized into the framing below — one accounting, not two.
         let budget = (self.context_window as usize)
             .saturating_sub(completion_reserve)
-            .saturating_sub(self.selected_tools_tokens());
+            .saturating_sub(self.describe_tool_tokens());
 
         // The framing wrapper alone (no assembled context) — essential + small.
         let framing_tokens = est_tokens(&self.compose_system(""));
@@ -542,95 +576,22 @@ impl LlmDeliberationFaculty {
         }
     }
 
-    /// Conservative token estimate of the tool schemas the gateway injects into
-    /// the prompt via the chat template. Each [`NativeToolSpec`] serializes to
-    /// roughly its function-spec JSON (name + description + input_schema); we
-    /// count that JSON with the same conservative guard ratio used for the rest
-    /// of the prompt, plus a small per-tool template framing margin. Over-
-    /// counting only shrinks enrichment; under-counting risks the 500, so we
-    /// round UP. Returns 0 when no tools are offered (pure-chat turn).
-    ///
-    /// Pure + by-reference (borrows the slice, clones nothing) and called ONCE per
-    /// tool-set assignment, never on the per-tick deliberation path — the result
-    /// is cached in `tools_tokens`.
-    fn estimate_tool_tokens(tools: &[NativeToolSpec]) -> usize {
-        tools.iter().map(Self::estimate_one_tool_tokens).sum()
-    }
-
-    /// Injected token cost of ONE tool spec — its serialized function schema
-    /// (name + description + input_schema) plus a flat per-tool template framing
-    /// margin (delimiters, role markers, the "you have these tools" scaffolding
-    /// the chat template wraps around each entry). Conservative (`est_tokens`
-    /// over-counts dense JSON), which is the SAFE direction for the fit guarantee:
-    /// over-counting only drops a tool or two extra, never overflows `n_ctx`.
-    /// Summed over a set this equals [`Self::estimate_tool_tokens`] — one
-    /// accounting shared by the budget and the selection.
-    fn estimate_one_tool_tokens(tool: &NativeToolSpec) -> usize {
+    /// Conservative token estimate of the ONE natively-offered tool spec
+    /// (`tool/describe`) the gateway injects via the chat template — its serialized
+    /// function schema plus a small template framing margin. 0 when the persona has
+    /// no tools (`describe_spec` is `None`). Counted with the same conservative
+    /// guard ratio as the rest of the prompt (round UP — under-counting risks the
+    /// 500). Cheap and pure; `describe_spec` is a single tiny schema, so this is a
+    /// handful of tokens, not the old full-registry dump.
+    fn describe_tool_tokens(&self) -> usize {
         const PER_TOOL_TEMPLATE_MARGIN_TOKENS: usize = 8;
-        let serialized = serde_json::to_string(tool).unwrap_or_default();
-        est_tokens(&serialized) + PER_TOOL_TEMPLATE_MARGIN_TOKENS
-    }
-
-    /// Choose the tool subset whose injected schemas fit the served window while
-    /// GUARANTEEING the conversation itself a floor — returns the kept indices
-    /// (into `self.tools`) and their summed token cost.
-    ///
-    /// WHY tools became droppable (a deliberate priority change): the full
-    /// authorized command registry can inject MORE schema tokens than the entire
-    /// served slot. The prior code treated tools as non-negotiable ("off the
-    /// top"), so a flood of them drove the text budget to zero AND still
-    /// overflowed `n_ctx` → llama-server 400 → the persona abstained (muted) the
-    /// whole tick. A tool the model could name but whose schema crowded out the
-    /// room is worse than not offering it: she must always be able to SEE the
-    /// conversation. So we reserve a turn floor (framing + burst + a little
-    /// enrichment) and give tools only the remainder, dropping the lowest-priority
-    /// (tail) tools that don't fit — the same drop-WHOLE-in-priority discipline
-    /// `render_assembled_context_within` already uses for enrichment. This is a
-    /// resource-fit guarantee, NOT cognition steering
-    /// ([[no-hardcoded-heuristics-to-steer-cognition]]): it never reads or rewrites
-    /// the model's output. Relevance-ranked / genome skill-activation selection
-    /// (page in the tools the active domain needs) is the follow-up; this floor
-    /// keeps every turn runnable until then. Pure + deterministic (no `ws` input),
-    /// so `prompt_view` and `contribute` compute the SAME selection.
-    fn selected_tool_indices(&self) -> (Vec<usize>, usize) {
-        if self.tools.is_empty() {
-            return (Vec::new(), 0);
-        }
-        let reserve = (self.context_window / 4).clamp(256, 2048) as usize;
-        let framing = est_tokens(&self.compose_system(""));
-        // Guarantee at least half the window to framing + burst + enrichment, so a
-        // flood of tools can never blind the persona to the room she lives in.
-        let turn_floor = self.context_window as usize / 2;
-        let tool_budget = (self.context_window as usize)
-            .saturating_sub(reserve)
-            .saturating_sub(framing)
-            .saturating_sub(turn_floor);
-        let mut kept = Vec::new();
-        let mut used = 0usize;
-        for (i, cost) in self.tool_costs.iter().enumerate() {
-            // Drop this whole tool if it won't fit; a smaller lower-priority tool
-            // later in the set may still fit (drop-whole, not truncate).
-            if used + cost > tool_budget {
-                continue;
+        match &self.describe_spec {
+            None => 0,
+            Some(spec) => {
+                let serialized = serde_json::to_string(spec).unwrap_or_default();
+                est_tokens(&serialized) + PER_TOOL_TEMPLATE_MARGIN_TOKENS
             }
-            used += cost;
-            kept.push(i);
         }
-        (kept, used)
-    }
-
-    /// The window-bounded tool set actually offered to the model this turn (clones
-    /// only the kept specs). See [`Self::selected_tool_indices`].
-    fn selected_tools(&self) -> Vec<NativeToolSpec> {
-        let (kept, _) = self.selected_tool_indices();
-        kept.into_iter().map(|i| self.tools[i].clone()).collect()
-    }
-
-    /// Summed token cost of the window-bounded tool set — what `prompt_view`
-    /// subtracts from the budget, so the text it assembles and the tools it offers
-    /// always agree on the same window arithmetic.
-    fn selected_tools_tokens(&self) -> usize {
-        self.selected_tool_indices().1
     }
 }
 
@@ -710,28 +671,15 @@ impl Faculty for LlmDeliberationFaculty {
         // Speak/Pass across ticks — never a counter in here. See
         // docs/cognition/ACTING-ORGANISM.md §3.3.
         let messages = vec![ChatMessage::text("user", view.user)];
-        // Offer tools only when authorized. Whether she can actually act on them is
-        // gated by whether the cycle has an `ActingBody` (hands) — but offering
-        // them is what lets the model emit a tool_call to begin with. Bound the set
-        // to the served window: the full authorized registry can inject more schema
-        // tokens than the whole slot, overflowing `n_ctx` → 400 → mute. The
-        // selection is the SAME one `prompt_view` budgeted against (deterministic,
-        // no `ws` input), so the text and the tools agree on the window arithmetic.
-        let offered = self.selected_tools();
-        let dropped = self.tools.len().saturating_sub(offered.len());
-        if dropped > 0 {
-            tracing::info!(
-                target: "cognition::deliberation",
-                persona = %self.persona_name,
-                offered = offered.len(),
-                dropped,
-                total = self.tools.len(),
-                offered_tokens = self.selected_tools_tokens(),
-                window = self.context_window,
-                "tool set bounded to fit served window — dropped lowest-priority tools (relevance-ranked selection is the genome follow-up)"
-            );
-        }
-        let tools = (!offered.is_empty()).then_some(offered);
+        // Offer exactly ONE native tool — `tool/describe` — when the persona has a
+        // tool surface. The rest of the surface is the compact catalog inside the
+        // system prompt (progressive disclosure): the persona names a tool to load
+        // its schema via `tool/describe`, then calls it. A catalog tool not in the
+        // native array still DISPATCHES — `act_observe` resolves any call by name —
+        // and small models emit those calls as JSON-in-prose, which the parse path
+        // below handles. This keeps the per-turn tool payload at ONE tiny schema
+        // instead of the ~100-schema dump that overflowed `n_ctx` and muted her.
+        let tools = self.describe_spec.clone().map(|spec| vec![spec]);
 
         let request = self.build_request(messages.clone(), tools, view.system.clone());
         let resp = match self.adapter.generate_text(request).await {
@@ -962,111 +910,22 @@ mod tests {
         );
     }
 
-    // what this catches: the SECOND half of the mute bug — tool schemas ride the
-    // served window too (the gateway injects ~47 of them via the chat template),
-    // but they are NOT part of system/user, so prompt_view must reserve their
-    // token cost off the top or the *combined* prompt overshoots n_ctx and
-    // llama-server 500s even though system+user alone looked safe. Invariant:
-    // system + user + the cached tool-token cost all fit `window - reserve`.
-    // A regression here means a tools-equipped persona goes mute under burst
-    // pressure while a speak-only one survives — exactly task #50's failure. We
-    // also assert the cached count is non-zero (the by-reference estimate ran at
-    // `with_tools` time, not per tick) so the budget actually shrank.
+    // what this catches: progressive disclosure — the per-turn tool PAYLOAD is ONE
+    // tiny schema (`tool/describe`), not the whole authorized registry. The old
+    // dump injected ~100 full schemas (~4–5k tokens) into EVERY turn, overflowing
+    // n_ctx → 400 "exceeds context size" → mute. Now the surface is a compact
+    // CATALOG inside the system prompt + a single `tool/describe` native tool, so
+    // even a huge tool set leaves system + user + the offered tool well within the
+    // served window. Invariant: the catalog names appear in the system prompt, the
+    // native offering is exactly `tool/describe`, and the whole prompt + its one
+    // tool + reserve fit the window. A regression here means the dump came back.
     #[test]
-    fn prompt_view_reserves_tool_tokens_against_the_served_window() {
+    fn tool_surface_is_a_compact_catalog_plus_describe_only() {
         let persona = Uuid::new_v4();
         let adapter: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
-        // Large enough that the tool reservation still leaves a positive budget —
-        // the live 8192 window held ~47 tools; here 8 fat schemas (~870 tokens)
-        // against 4096 mirrors the same "tools take a real bite, prompt fits the
-        // rest" arithmetic without over-subscribing the window.
-        let window: u32 = 4096;
-
-        // A chunky tool set — several schemas with prose descriptions, the shape
-        // that ate ~8k tokens live. Built once; counted once at `with_tools`.
-        let tools: Vec<NativeToolSpec> = (0..8)
-            .map(|i| NativeToolSpec {
-                name: format!("code/tool_{i}"),
-                description:
-                    "A capability the persona may invoke with a structured argument payload."
-                        .to_string(),
-                input_schema: ToolInputSchema {
-                    schema_type: "object".to_string(),
-                    properties: json!({
-                        "path": { "type": "string", "description": "workspace-relative path" },
-                        "mode": { "type": "string", "enum": ["read", "write", "append"] }
-                    }),
-                    required: Some(vec!["path".to_string()]),
-                    definitions: None,
-                },
-            })
-            .collect();
-
-        let faculty = LlmDeliberationFaculty::new(
-            persona,
-            "Asha",
-            "You are Asha, a thoughtful engineer on the grid.",
-            adapter,
-        )
-        .with_context_window(window)
-        .with_tools(tools);
-
-        // The cached cost ran at with_tools time (by reference), not per tick.
-        assert!(
-            faculty.tools_tokens > 0,
-            "tool-token cost must be cached at with_tools time"
-        );
-
-        // Same overflow pressure as the speak-only test: a burst far bigger than
-        // the window plus oversized recall bids.
-        let mut burst = "old chatter line\n".repeat(2000);
-        burst.push_str("LATEST: did the deploy fix land?");
-        let mut ws = Workspace::new(&burst);
-        ws.broadcast.push(Contribution::context(
-            FacultyId::Recall,
-            &"deploy pipeline observation; ".repeat(2000),
-            0.9,
-            "recalled",
-        ));
-
-        let view = faculty.prompt_view(&ws);
-        let completion_reserve = (window / 4).clamp(256, 2048) as usize;
-        let prompt = est_tokens(&view.system) + est_tokens(&view.user);
-        // The OFFERED tools (the window-bounded subset — at this tight window the
-        // turn-floor may trim a few of the 8) PLUS the rendered prompt PLUS the
-        // held-back completion reserve must all fit the served window — the exact
-        // condition llama-server checks before it 400s. Without the reservation
-        // this sum overshot n_ctx and the persona went mute; with it, enrichment
-        // yields so the combined load fits. Budget and offer agree on the SELECTED
-        // cost (see `selected_tool_indices`), not the full registry.
-        assert!(
-            prompt + faculty.selected_tools_tokens() + completion_reserve <= window as usize,
-            "prompt ({prompt}) + offered tools ({}) + reserve ({completion_reserve}) must fit {window}",
-            faculty.selected_tools_tokens()
-        );
-        // Tools steal from enrichment, never from the essential framing.
-        assert!(
-            view.system.contains("Taking your turn"),
-            "framing survives even after tool reservation"
-        );
-    }
-
-    // what this catches: the THIRD and decisive form of the mute bug — the full
-    // authorized command registry injects MORE tool-schema tokens than the whole
-    // served slot (~39.7k tokens of tools vs a 38.9k slot live), so offering all
-    // of them drove the text budget to zero AND still overflowed n_ctx → 400
-    // "exceeds context size" → the persona abstained every tool_use tick. The fix
-    // BOUNDS the offered set to fit the window, dropping the lowest-priority tools.
-    // Invariant: with a tool set that cannot all fit, some are dropped, AND
-    // framing + the SELECTED tools + reserve + a guaranteed turn floor all fit the
-    // window — i.e. the prompt is runnable by construction. A regression here means
-    // a tools-equipped persona overflows the slot and goes mute again.
-    #[test]
-    fn tool_set_is_bounded_to_fit_the_served_window() {
-        let persona = Uuid::new_v4();
-        let adapter: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
-        // A modest window with a registry far too large to fit — the live shape
-        // (whole authorized set > whole slot), scaled down so the test is cheap.
+        // A tool set whose FULL schemas would dwarf the window — the live shape
+        // (whole authorized set ≫ whole slot), scaled down. With progressive
+        // disclosure it no longer matters: only names+summaries ride the prompt.
         let window: u32 = 4096;
         let tools: Vec<NativeToolSpec> = (0..60)
             .map(|i| NativeToolSpec {
@@ -1087,7 +946,6 @@ mod tests {
                 },
             })
             .collect();
-        let total = tools.len();
 
         let faculty = LlmDeliberationFaculty::new(
             persona,
@@ -1098,84 +956,88 @@ mod tests {
         .with_context_window(window)
         .with_tools(tools);
 
-        // The full set genuinely cannot fit — the precondition this guards.
+        // The native offering is exactly ONE tool — `tool/describe` — regardless of
+        // how many tools are authorized.
+        let describe = faculty
+            .describe_spec
+            .as_ref()
+            .expect("describe_spec present when tools are authorized");
+        assert_eq!(describe.name, persona_tools::TOOL_DESCRIBE_NAME);
+        // Its injected cost is a handful of tokens, NOT the whole registry.
         assert!(
-            faculty.tools_tokens > window as usize,
-            "test setup: the full tool set ({}) must exceed the window ({window}) to \
-             exercise the bound",
-            faculty.tools_tokens
+            faculty.describe_tool_tokens() < 256,
+            "the single describe tool must be tiny ({} tokens)",
+            faculty.describe_tool_tokens()
         );
 
-        let offered = faculty.selected_tools();
+        // The catalog rode into the system prompt — names are browsable there.
+        let framing = faculty.compose_system("");
         assert!(
-            offered.len() < total,
-            "an over-large registry must be trimmed: offered {} of {total}",
-            offered.len()
-        );
-        assert!(
-            !offered.is_empty(),
-            "the bound must still offer the tools that DO fit, not drop them all"
+            framing.contains("[Your tools]") && framing.contains("cat/command_0"),
+            "the compact catalog (tool names) must be in the system prompt"
         );
 
-        // The decisive invariant: framing + selected tools + reserve + the
-        // guaranteed turn floor all fit the served window — the exact condition
-        // llama-server checks before it 400s. This is what makes every turn
-        // runnable by construction.
-        let reserve = (window / 4).clamp(256, 2048) as usize;
-        let framing = est_tokens(&faculty.compose_system(""));
-        let turn_floor = window as usize / 2;
-        assert!(
-            framing + faculty.selected_tools_tokens() + reserve + turn_floor <= window as usize,
-            "framing ({framing}) + selected tools ({}) + reserve ({reserve}) + floor \
-             ({turn_floor}) must fit {window}",
-            faculty.selected_tools_tokens()
-        );
-
-        // A real burst still leaves system+user within the window with the bounded
-        // tools accounted for — the whole prompt is runnable.
+        // Under real burst pressure the whole prompt + the one tool + reserve fit
+        // the served window — the exact condition llama-server checks before 400.
         let mut burst = "old chatter line\n".repeat(2000);
         burst.push_str("LATEST: did the deploy fix land?");
-        let ws = Workspace::new(&burst);
+        let mut ws = Workspace::new(&burst);
+        ws.broadcast.push(Contribution::context(
+            FacultyId::Recall,
+            &"deploy pipeline observation; ".repeat(2000),
+            0.9,
+            "recalled",
+        ));
         let view = faculty.prompt_view(&ws);
+        let reserve = (window / 4).clamp(256, 2048) as usize;
         let prompt = est_tokens(&view.system) + est_tokens(&view.user);
         assert!(
-            prompt + faculty.selected_tools_tokens() + reserve <= window as usize,
-            "prompt ({prompt}) + selected tools ({}) + reserve ({reserve}) must fit {window}",
-            faculty.selected_tools_tokens()
+            prompt + faculty.describe_tool_tokens() + reserve <= window as usize,
+            "prompt ({prompt}) + describe tool ({}) + reserve ({reserve}) must fit {window}",
+            faculty.describe_tool_tokens()
         );
+        // The newest burst line survives, and the framing is intact.
+        assert!(view.user.contains("LATEST: did the deploy fix land?"));
+        assert!(view.system.contains("Taking your turn"));
     }
 
-    // what this catches: when the whole registry DOES fit, the bound must be a
-    // no-op — every authorized tool is offered. A regression here means the bound
-    // is over-aggressive and silently strips tools a persona is entitled to even
-    // when there is room, narrowing her capability for no reason.
+    // what this catches: the catalog ALWAYS fits, even at the 2048-token serving
+    // floor (MIN_SERVE_CTX). render_tool_catalog falls back from rich (name —
+    // summary) to terse (category: names) when rich would overflow the half-window
+    // char budget, so the catalog never alone blows the framing past the window. A
+    // regression means a large registry at a tiny window reintroduces the overflow.
     #[test]
-    fn tool_set_is_offered_whole_when_it_fits() {
+    fn catalog_fits_the_minimum_serving_window() {
         let persona = Uuid::new_v4();
         let adapter: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
-        // A roomy window and a small tool set — everything fits with margin.
-        let window: u32 = 32768;
-        let tools = vec![read_tool()];
-        let total = tools.len();
-        let faculty = LlmDeliberationFaculty::new(
-            persona,
-            "Asha",
-            "You are Asha, a thoughtful engineer on the grid.",
-            adapter,
-        )
-        .with_context_window(window)
-        .with_tools(tools);
+        let window = crate::cognition::serving_plan::MIN_SERVE_CTX; // 2048 floor
+        let tools: Vec<NativeToolSpec> = (0..120)
+            .map(|i| NativeToolSpec {
+                name: format!("cat{}/command_{i}", i % 8),
+                description: "A registry command with a one-line summary for the catalog."
+                    .to_string(),
+                input_schema: ToolInputSchema {
+                    schema_type: "object".to_string(),
+                    properties: json!({ "path": { "type": "string" } }),
+                    required: Some(vec!["path".to_string()]),
+                    definitions: None,
+                },
+            })
+            .collect();
+        let faculty = LlmDeliberationFaculty::new(persona, "Asha", "You are Asha.", adapter)
+            .with_context_window(window)
+            .with_tools(tools);
 
-        assert_eq!(
-            faculty.selected_tools().len(),
-            total,
-            "a fitting tool set must be offered whole — no tool dropped when there is room"
+        // The catalog (inside framing) plus the completion reserve must leave room
+        // for at least SOME burst — i.e. framing alone must not consume the window.
+        let framing = est_tokens(&faculty.compose_system(""));
+        let reserve = (window / 4).clamp(256, 2048) as usize;
+        assert!(
+            framing + reserve < window as usize,
+            "framing+catalog ({framing}) + reserve ({reserve}) must leave burst room in {window}"
         );
-        assert_eq!(
-            faculty.selected_tools_tokens(),
-            faculty.tools_tokens,
-            "selected cost must equal the full cached cost when nothing is dropped"
-        );
+        // Every tool name is still reachable — terse render keeps all names.
+        assert!(faculty.tool_catalog.contains("command_119"));
     }
 
     // ─── Acting path (single-shot) ──────────────────────────────────────────

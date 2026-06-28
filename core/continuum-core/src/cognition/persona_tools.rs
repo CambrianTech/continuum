@@ -27,10 +27,28 @@
 //! later, exactly where it belongs.
 
 use crate::ai::types::{NativeToolSpec, ToolInputSchema};
+use crate::cognition::tool_embedding::extract_category;
 use crate::modules::grid::acl::is_command_authorized;
 use crate::modules::grid::node::TrustLevel;
-use crate::sdk_codegen::{command_registry, AccessLevel, CommandDescriptor};
+use crate::sdk_codegen::{
+    command_registry, AccessLevel, ActionCommand, CommandDescriptor, CommandError, Ctx,
+};
+use async_trait::async_trait;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
+use std::collections::BTreeMap;
+use ts_rs::TS;
+
+/// The command name a persona calls to load a single tool's argument schema on
+/// demand. The ONE place this string is defined — the [`ToolDescribe`] command, the
+/// catalog instructions, and the faculty's native offering all reference it.
+pub const TOOL_DESCRIBE_NAME: &str = "tool/describe";
+
+/// Soft cap on a tool's one-line catalog summary (chars). A catalog lists ~100
+/// tools; an unbounded description per line would re-create the dump. One clause is
+/// enough to pick; the full schema arrives via [`TOOL_DESCRIBE_NAME`].
+const SUMMARY_MAX_CHARS: usize = 96;
 
 /// The persona's tool surface: every command it is AUTHORIZED to run at `trust`,
 /// projected to a tool spec. **Offer == authorized, by construction** — a persona
@@ -89,6 +107,233 @@ pub fn descriptor_to_tool_spec(d: &CommandDescriptor) -> NativeToolSpec {
         input_schema: tool_input_schema_from(&d.params_schema),
     }
 }
+
+// ─────────────────────────── progressive disclosure ──────────────────
+//
+// The persona's tool surface must be DISCOVERABLE without dumping every tool's
+// full JSON parameter schema into every deliberation turn. ~100 AiSafe commands ×
+// a full `input_schema` each ≈ 4–5k tokens riding EVERY turn — 5× the size of a
+// 90-token task, and the budgeter "fixed" the bloat by dropping the persona's
+// actual tools to fit the window (amputating her hands). The same shape every
+// capable agent runtime uses (Claude Code's deferred tools + a search/describe
+// tool): keep a COMPACT CATALOG (names + one-line summaries, grouped by category)
+// always in the prompt, and load a single tool's full schema ON DEMAND via
+// [`TOOL_DESCRIBE_NAME`]. Dispatch is by NAME (the executor maps any catalog name
+// straight back to its command), so a tool not in the natively-offered set still
+// runs — which is exactly what makes disclosure safe. The catalog is a pure,
+// data-driven projection of the registry (NOT output puppeteering): same single
+// source of truth as [`authorized_tool_specs`], just a leaner representation.
+
+/// One compact catalog line: a tool's name, a one-line summary, and the category
+/// it groups under (the first path segment, via [`extract_category`]).
+#[derive(Debug, Clone)]
+pub struct ToolCatalogEntry {
+    pub name: String,
+    pub summary: String,
+    pub category: String,
+}
+
+/// The persona's tool catalog at `trust`: the same authorized set as
+/// [`authorized_tool_specs`], projected to compact [`ToolCatalogEntry`] lines
+/// (name + one-line summary + category) instead of full schemas. This is what the
+/// persona browses; the full argument schema for any one tool comes from
+/// [`TOOL_DESCRIBE_NAME`] on demand.
+pub fn authorized_tool_catalog(trust: TrustLevel) -> Vec<ToolCatalogEntry> {
+    command_registry()
+        .iter()
+        .filter(|d| is_command_authorized(d.name, trust))
+        .map(|d| ToolCatalogEntry {
+            name: d.name.to_string(),
+            summary: tool_summary(d),
+            category: extract_category(d.name).to_string(),
+        })
+        .collect()
+}
+
+/// A tool's one-line summary for the catalog: the first sentence / first line of
+/// its declared description, hard-capped at [`SUMMARY_MAX_CHARS`]. Falls back to the
+/// param-type handle when the command declares no description (same fallback as
+/// [`descriptor_to_tool_spec`], kept consistent).
+fn tool_summary(d: &CommandDescriptor) -> String {
+    let raw = if d.description.is_empty() {
+        format!("params: {}", d.params.name)
+    } else {
+        // First line, then first sentence within it — whichever ends sooner.
+        let first_line = d.description.lines().next().unwrap_or("").trim();
+        match first_line.find(". ") {
+            Some(i) => first_line[..i].to_string(),
+            None => first_line.trim_end_matches('.').to_string(),
+        }
+    };
+    let raw = raw.split_whitespace().collect::<Vec<_>>().join(" ");
+    if raw.chars().count() <= SUMMARY_MAX_CHARS {
+        raw
+    } else {
+        let truncated: String = raw.chars().take(SUMMARY_MAX_CHARS - 1).collect();
+        format!("{}…", truncated.trim_end())
+    }
+}
+
+/// Render a tool catalog as the compact text block injected into the system
+/// prompt. Two tiers so the catalog ALWAYS fits — even the 2048-token floor
+/// ([`crate::cognition::serving_plan::MIN_SERVE_CTX`]):
+///   - **rich** (`name — summary`, grouped by category) when it fits `budget_chars`;
+///   - **terse** (`category: name1, name2, …`) names-only otherwise.
+/// Names are always the full command name (the persona uses them verbatim for
+/// `tool/describe` and for the call itself). Operates on the [`NativeToolSpec`]
+/// surface the faculty already holds, so it never re-queries the registry.
+pub fn render_tool_catalog(tools: &[NativeToolSpec], budget_chars: usize) -> String {
+    if tools.is_empty() {
+        return String::new();
+    }
+    // Group by category, stable (BTreeMap) ordering; tools sorted by name within.
+    let mut groups: BTreeMap<&str, Vec<&NativeToolSpec>> = BTreeMap::new();
+    for t in tools {
+        groups.entry(extract_category(&t.name)).or_default().push(t);
+    }
+    for v in groups.values_mut() {
+        v.sort_by(|a, b| a.name.cmp(&b.name));
+    }
+
+    let rich = render_rich(&groups);
+    if rich.len() <= budget_chars {
+        rich
+    } else {
+        render_terse(&groups)
+    }
+}
+
+/// Rich rendering: `category:` header, then `  name — summary` per tool. The
+/// summary is the first line of the spec's description (already one-line-shaped by
+/// [`tool_summary`] at catalog build, but specs may carry a fuller description, so
+/// re-clip here).
+fn render_rich(groups: &BTreeMap<&str, Vec<&NativeToolSpec>>) -> String {
+    let mut out = String::new();
+    for (cat, tools) in groups {
+        out.push_str(cat);
+        out.push_str(":\n");
+        for t in tools {
+            let summary = clip_one_line(&t.description);
+            out.push_str("  ");
+            out.push_str(&t.name);
+            if !summary.is_empty() {
+                out.push_str(" — ");
+                out.push_str(&summary);
+            }
+            out.push('\n');
+        }
+    }
+    out
+}
+
+/// Terse rendering (fallback for tiny windows): one line per category, just the
+/// names. Always emitted regardless of size — the names must stay visible so the
+/// persona can name a tool for `tool/describe`.
+fn render_terse(groups: &BTreeMap<&str, Vec<&NativeToolSpec>>) -> String {
+    let mut out = String::new();
+    for (cat, tools) in groups {
+        out.push_str(cat);
+        out.push_str(": ");
+        let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
+        out.push_str(&names.join(", "));
+        out.push('\n');
+    }
+    out
+}
+
+/// First line of a description, first sentence within it, capped — the rich-tier
+/// per-tool summary. Mirrors [`tool_summary`] for specs carrying a full description.
+fn clip_one_line(description: &str) -> String {
+    let first_line = description.lines().next().unwrap_or("").trim();
+    let sentence = match first_line.find(". ") {
+        Some(i) => &first_line[..i],
+        None => first_line.trim_end_matches('.'),
+    };
+    let sentence = sentence.split_whitespace().collect::<Vec<_>>().join(" ");
+    if sentence.chars().count() <= SUMMARY_MAX_CHARS {
+        sentence
+    } else {
+        let truncated: String = sentence.chars().take(SUMMARY_MAX_CHARS - 1).collect();
+        format!("{}…", truncated.trim_end())
+    }
+}
+
+/// Look up one command by name and project it to a full tool spec — the on-demand
+/// half of progressive disclosure (the catalog gives names; this gives the schema).
+/// `None` when no such command is registered (the caller reports that, never
+/// fabricates a schema — [[fallbacks-are-illegal-fail-loud]]).
+pub fn spec_for_command(name: &str) -> Option<NativeToolSpec> {
+    command_registry()
+        .iter()
+        .find(|d| d.name == name)
+        .map(descriptor_to_tool_spec)
+}
+
+// ─────────────────────────── tool/describe ───────────────────────────
+
+#[derive(Default)]
+pub struct ToolDescribe;
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
+pub struct ToolDescribeParams {
+    /// The exact tool (command) name to describe, e.g. `code/read` or `data/list`
+    /// — one of the names from the tool catalog in your context.
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Serialize, TS)]
+pub struct ToolDescribeResult {
+    /// The tool name queried (echoed back).
+    pub name: String,
+    /// Whether a command with this name exists in the registry. `false` names the
+    /// miss instead of inventing a schema.
+    pub found: bool,
+    /// The tool's full description (empty when not found).
+    pub description: String,
+    /// The tool's complete JSON parameter schema, pretty-printed — the exact fields,
+    /// types, and which are required. This is what you read before calling the tool.
+    /// Empty when not found.
+    pub schema_json: String,
+}
+
+#[async_trait]
+impl ActionCommand for ToolDescribe {
+    const NAME: &'static str = TOOL_DESCRIBE_NAME;
+    const ACCESS: AccessLevel = AccessLevel::AiSafe;
+    const DESCRIPTION: &'static str =
+        "Get the full argument schema for ONE tool by name. Your context lists the available \
+         tools as names grouped by category (without their arguments, to stay compact); call this \
+         with a tool's exact name to see its parameters — the fields, types, and which are \
+         required — right before you call that tool.";
+    type Params = ToolDescribeParams;
+    type Output = ToolDescribeResult;
+
+    async fn run(&self, _ctx: &Ctx, p: ToolDescribeParams) -> Result<ToolDescribeResult, CommandError> {
+        match spec_for_command(&p.name) {
+            Some(spec) => {
+                let schema_json = serde_json::to_string_pretty(&spec.input_schema)
+                    .map_err(|e| CommandError::Internal(format!("serialize schema: {e}")))?;
+                Ok(ToolDescribeResult {
+                    name: p.name,
+                    found: true,
+                    description: spec.description,
+                    schema_json,
+                })
+            }
+            None => Ok(ToolDescribeResult {
+                description: format!(
+                    "No tool named `{}` exists. Use a name exactly as listed in your tool catalog.",
+                    p.name
+                ),
+                name: p.name,
+                found: false,
+                schema_json: String::new(),
+            }),
+        }
+    }
+}
+
+crate::register_stateless_command!(ToolDescribe);
 
 /// Project a command's params JSON Schema into the LLM [`ToolInputSchema`]. A
 /// `Null` schema (command not yet on a base trait) → an open object. Otherwise
