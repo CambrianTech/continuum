@@ -1255,6 +1255,20 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
             let rp = request.repeat_penalty.unwrap_or(1.1);
             if let Some(obj) = body.as_object_mut() {
                 obj.insert("repeat_penalty".to_string(), json!(rp));
+                // KV-cache prefix reuse — the llama.cpp-server `cache_prompt`
+                // extension. Without it the server re-prefills the ENTIRE prompt
+                // from scratch every call. Our system prompt is a long, mostly
+                // static prefix (identity + doctrine + tool catalog + roster);
+                // re-prefilling it costs ~26-36s on the 14B (~216 tok/s prefill).
+                // Measured 2026-06-23, Mac Metal: cache_prompt=false → 36s EVERY
+                // call; cache_prompt=true → 36s cold then 0.48s warm (75×), because
+                // warm calls prefill only the NEW tail tokens and reuse the matched
+                // prefix from the slot's KV cache. The win is only as large as the
+                // STABLE prefix — see render_assembled_context_within, which orders
+                // static grounding before volatile recall so the cached prefix is
+                // maximal. Same typed capability gate as repeat_penalty/lora: cloud
+                // OpenAI-compat providers reject the non-standard field.
+                obj.insert("cache_prompt".to_string(), json!(true));
             }
         }
 
