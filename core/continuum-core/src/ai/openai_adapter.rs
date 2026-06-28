@@ -897,6 +897,24 @@ fn apply_no_think_switch(messages: &mut [Value]) {
     }
 }
 
+/// Set `chat_template_kwargs.enable_thinking = false` on a built request body — the
+/// ROBUST thinking-suppression lever for qwen3-family chat templates. Where
+/// `apply_no_think_switch` appends a soft text token (which a forged template may
+/// ignore entirely), this drives the template's own `enable_thinking` branch so it
+/// emits an empty `<think></think>` and the model goes straight to content. Inserting
+/// at the body's top level (not inside an existing kwargs map) is correct for the
+/// llama.cpp/unsloth servers we target; idempotent — overwrites its own prior value.
+/// Harmless where unsupported: cloud providers ignore unknown body fields and a
+/// template without `enable_thinking` ignores the kwarg.
+fn apply_enable_thinking_false(body: &mut Value) {
+    if let Some(obj) = body.as_object_mut() {
+        obj.insert(
+            "chat_template_kwargs".to_string(),
+            json!({ "enable_thinking": false }),
+        );
+    }
+}
+
 #[derive(Debug, Deserialize)]
 struct OpenAIUsage {
     prompt_tokens: u32,
@@ -1260,6 +1278,27 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
             }
         }
 
+        // Thinking suppression — the REAL lever for qwen3-family forged templates.
+        // When this gateway suppresses reasoning, the adapter already appends the
+        // `/no_think` soft-switch to the last user turn (build path above). But the
+        // forged qwen3.5 chat template implements `enable_thinking`, NOT the
+        // `/no_think` text token — so the soft-switch is a NO-OP for it, and absent
+        // the kwarg the template's default branch OPENS `<think>` itself, forcing the
+        // model to reason. Verified empirically 2026-06-27 on the CPU eval lane: the
+        // 4B forged model spent its whole ~90-token budget in the `reasoning` channel
+        // and emitted EMPTY `content` (`finish_reason: stop`), so every settled answer
+        // was blank and base/gene/lift were all 0.0 — a broken measurement, not a real
+        // null result. The chat-template hatch `enable_thinking=false` makes the
+        // template emit an empty `<think></think>` so the model goes straight to
+        // content. Set it for ALL turns under suppression (not only the JSON branch
+        // below, which is where it used to be misgated). Harmless where unsupported:
+        // cloud providers ignore unknown body fields; a template without
+        // `enable_thinking` ignores the kwarg. The `/no_think` switch is left in place
+        // for any template that DOES honor the soft token.
+        if self.config.thinking == ThinkingMode::Suppress {
+            apply_enable_thinking_false(&mut body);
+        }
+
         // Forward response_format when set. Llama.cpp/DMR DO grammar-constrain
         // JSON output, but for qwen3.5 reasoning models the model still
         // emits its <think> reasoning BEFORE the constrained JSON region,
@@ -1271,20 +1310,13 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
                 body["response_format"] = value;
 
                 // qwen3-family-specific kicker: when caller asks for JSON,
-                // ALSO disable thinking via the chat_template_kwargs
-                // hatch. Verified the same model returns
-                // "<think></think>\n\n{...JSON...}" in 434ms with this
-                // flag set — empty think block, clean JSON, parser-friendly.
-                // Cloud providers ignore unknown fields, so this is safe to
-                // set unconditionally when we want JSON.
-                // Insert chat_template_kwargs.enable_thinking=false in two
-                // sequential mutable borrows so each Map ref is short-lived.
-                if let Some(obj) = body.as_object_mut() {
-                    obj.insert(
-                        "chat_template_kwargs".to_string(),
-                        json!({ "enable_thinking": false }),
-                    );
-                }
+                // ALSO disable thinking via the chat_template_kwargs hatch.
+                // Verified the same model returns "<think></think>\n\n{...JSON...}"
+                // in 434ms with this flag set — empty think block, clean JSON,
+                // parser-friendly. Same lever the suppression path above uses, so
+                // it routes through the same helper (one place sets the kwarg).
+                // Idempotent if suppression already set it.
+                apply_enable_thinking_false(&mut body);
             }
             // Diagnostic — print the request body exactly as serialized so we
             // can see which fields actually reach DMR. Helps catch silent
@@ -1988,6 +2020,27 @@ mod tests {
         let mut msgs = vec![json!({"role": "system", "content": "be helpful"})];
         apply_no_think_switch(&mut msgs);
         assert_eq!(msgs[0]["content"], json!("be helpful"), "no user turn → unchanged");
+    }
+
+    // what this catches: the ROBUST thinking-suppression lever — under
+    // ThinkingMode::Suppress the request body must carry
+    // `chat_template_kwargs.enable_thinking=false` on EVERY turn, not only JSON
+    // (response_format) turns. Regresses the 2026-06-27 misgating where the kwarg
+    // lived solely in the response_format branch, so free-form act/speak turns let
+    // the forged qwen3.5 template open `<think>` and emit empty content (all eval
+    // answers blank, lift=0.0). Idempotent: a second apply leaves the same value.
+    #[test]
+    fn apply_enable_thinking_false_sets_kwarg_idempotently() {
+        let mut body = json!({ "model": "m", "messages": [], "stream": true });
+        apply_enable_thinking_false(&mut body);
+        assert_eq!(
+            body["chat_template_kwargs"],
+            json!({ "enable_thinking": false }),
+            "suppression must set the template hatch the forged template honors"
+        );
+        // second apply is a no-op on the value (overwrites identically)
+        apply_enable_thinking_false(&mut body);
+        assert_eq!(body["chat_template_kwargs"], json!({ "enable_thinking": false }));
     }
 
     // what this catches: a single string input serializes as a JSON string (not
