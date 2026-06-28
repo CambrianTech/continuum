@@ -790,6 +790,19 @@ impl WorkspaceCycle {
         }
         out
     }
+
+    /// Whether the faculty with this id reads the assembled `broadcast` (a
+    /// deliberation-tier faculty) rather than raw `world_state`. `None` if no
+    /// such faculty is in this cycle. `cognition/replay` uses this to REFUSE
+    /// replaying a broadcast-reading faculty against an un-reconstructed (empty)
+    /// broadcast — a blind run would produce a confident-but-wrong verdict, the
+    /// silent lie the no-fallback doctrine forbids.
+    pub fn reacts_to_broadcast(&self, id: &FacultyId) -> Option<bool> {
+        self.faculties
+            .iter()
+            .find(|f| &f.id() == id)
+            .map(|f| f.reacts_to_broadcast())
+    }
 }
 
 #[cfg(test)]
@@ -917,6 +930,34 @@ mod tests {
         // no filter: every faculty re-runs over the same workspace.
         let all = c.replay(&ws, None).await;
         assert_eq!(all.len(), 2, "None replays every faculty");
+    }
+
+    // what this catches: `from_kebab` is the SINGLE inverse of `as_str` — if a
+    // new FacultyId variant is added to `as_str` but not `from_kebab`, its tag
+    // would silently degrade to `Custom`, splitting the one-place mapping. This
+    // round-trip over every non-Custom variant fails loud on that drift.
+    #[test]
+    fn faculty_id_kebab_round_trips_every_variant() {
+        for id in [
+            FacultyId::Recall,
+            FacultyId::WorldModel,
+            FacultyId::Affect,
+            FacultyId::Volition,
+            FacultyId::Deliberation,
+            FacultyId::Salience,
+        ] {
+            let tag = id.as_str();
+            assert_eq!(
+                FacultyId::from_kebab(tag),
+                id,
+                "tag '{tag}' must round-trip; from_kebab drifted from as_str"
+            );
+        }
+        // Custom tags pass through untouched (sentinel-forged faculties).
+        assert_eq!(
+            FacultyId::from_kebab("sentinel-x"),
+            FacultyId::Custom("sentinel-x".to_string())
+        );
     }
 
     // what this catches: attention is a competition over ML-derived salience —

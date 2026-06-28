@@ -32,7 +32,7 @@ use ts_rs::TS;
 use uuid::Uuid;
 
 use crate::cognition::persona_workspace;
-use crate::cognition::workspace::{FacultyId, Workspace};
+use crate::cognition::workspace::{Contribution, FacultyId, Workspace};
 use crate::sdk_codegen::{AccessLevel, ActionCommand, CommandError, Ctx};
 
 /// Where the live cycle writes its per-persona workspace traces (mirror of
@@ -43,15 +43,35 @@ fn traces_dir() -> Option<std::path::PathBuf> {
         .map(|h| std::path::Path::new(&h).join(".continuum/fixtures/workspace-traces"))
 }
 
+/// One captured bid from the assembled `context` (the broadcast the decider saw).
+/// Read mirror of the writer's `BidRecord` — we only deserialize the fields a
+/// deliberation faculty CONSUMES from the broadcast (faculty / content /
+/// salience / reasoning). The verdict's `Decision` payload and `is_decision`
+/// are irrelevant here: context bids carry no decision, and a replayed
+/// deliberation faculty reads the assembled context, not a prior verdict.
+#[derive(Debug, Deserialize)]
+struct ContextBid {
+    faculty: String,
+    salience: f32,
+    reasoning: String,
+    content: String,
+}
+
 /// The fields of an on-disk workspace-trace line we need to RECONSTRUCT the
 /// workspace. The writer's record type ([`super::workspace_capture`]) is
-/// `Serialize`-only (it owns the wire format); this is the read mirror, and it
-/// deliberately reads ONLY the lossless fields a perception replay depends on.
+/// `Serialize`-only (it owns the wire format); this is the read mirror. Both the
+/// raw `world_state` (perception input) AND the assembled `context` (the
+/// broadcast deliberation reads) are captured, so a deliberation faculty can be
+/// replayed against the SAME context it actually saw — not a blinded empty one.
 #[derive(Debug, Deserialize)]
 struct TraceLine {
     captured_at_ms: u64,
     room_id: String,
     world_state: String,
+    /// The assembled broadcast that reached the decider this tick. Absent on
+    /// older traces (pre-context-replay) → empty, handled as "no broadcast".
+    #[serde(default)]
+    context: Vec<ContextBid>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
@@ -118,20 +138,42 @@ pub struct CognitionReplayResult {
     /// The exact burst replayed — echoed back so the result is self-explaining.
     pub world_state: String,
     pub room_id: String,
+    /// What context the deliberation-tier faculties saw — so a replayed verdict
+    /// is NEVER mistaken for a live one. `"reconstructed (N ctx)"` when the
+    /// broadcast was rebuilt from the captured turn; `"empty"` when none was
+    /// available (a supplied bare burst, or an old trace without context).
+    pub broadcast_source: String,
     /// One entry per faculty that ran (just the isolated one, or all).
     pub bids: Vec<ReplayBidOut>,
 }
 
-/// Resolve the burst (+ room + provenance) to replay: a supplied `world_state`
-/// wins; otherwise read the chosen captured turn. Fails loud — never an empty
-/// burst — naming exactly what was missing.
+/// What `resolve_burst` hands back: the burst to reason over, the room scope, a
+/// human-readable provenance string, and the reconstructed broadcast (the
+/// assembled context a deliberation faculty reads — empty for a supplied burst).
+#[derive(Debug)]
+struct ResolvedBurst {
+    world_state: String,
+    room: String,
+    source: String,
+    broadcast: Vec<Contribution>,
+}
+
+/// Resolve the burst (+ room + provenance + broadcast) to replay: a supplied
+/// `world_state` wins (with no broadcast — a bare perception probe); otherwise
+/// read the chosen captured turn and rebuild the broadcast from its captured
+/// `context`. Fails loud — never an empty burst — naming exactly what was missing.
 fn resolve_burst(
     p: &CognitionReplayParams,
     persona_id: &Uuid,
-) -> Result<(String, String, String), CommandError> {
+) -> Result<ResolvedBurst, CommandError> {
     if let Some(ws) = &p.world_state {
         let room = p.room_id.clone().unwrap_or_else(|| Uuid::nil().to_string());
-        return Ok((ws.clone(), room, "supplied".to_string()));
+        return Ok(ResolvedBurst {
+            world_state: ws.clone(),
+            room,
+            source: "supplied".to_string(),
+            broadcast: Vec::new(),
+        });
     }
 
     let dir = traces_dir()
@@ -168,11 +210,26 @@ fn resolve_burst(
     }
     let line = &lines[idx as usize];
     let room = p.room_id.clone().unwrap_or_else(|| line.room_id.clone());
-    Ok((
-        line.world_state.clone(),
+    // Rebuild the broadcast the decider actually saw from the captured context,
+    // so a deliberation faculty replays against its REAL input — not a blind one.
+    let broadcast = line
+        .context
+        .iter()
+        .map(|c| {
+            Contribution::context(
+                FacultyId::from_kebab(&c.faculty),
+                c.content.clone(),
+                c.salience,
+                c.reasoning.clone(),
+            )
+        })
+        .collect();
+    Ok(ResolvedBurst {
+        world_state: line.world_state.clone(),
         room,
-        format!("capture@{turn} ({}ms)", line.captured_at_ms),
-    ))
+        source: format!("capture@{turn} ({}ms)", line.captured_at_ms),
+        broadcast,
+    })
 }
 
 #[derive(Default)]
@@ -203,9 +260,10 @@ impl ActionCommand for CognitionReplay {
             CommandError::Invalid(format!("persona_id '{}' is not a valid UUID", p.persona_id))
         })?;
 
-        let (world_state, room_str, source) = resolve_burst(&p, &persona_uuid)?;
-        let room = Uuid::parse_str(&room_str)
-            .map_err(|_| CommandError::Invalid(format!("room_id '{room_str}' is not a valid UUID")))?;
+        let burst = resolve_burst(&p, &persona_uuid)?;
+        let room = Uuid::parse_str(&burst.room).map_err(|_| {
+            CommandError::Invalid(format!("room_id '{}' is not a valid UUID", burst.room))
+        })?;
 
         // Fork the LIVE cycle the humane way: a measured copy, isolated for the
         // duration, paged back out after — her real mind is never touched.
@@ -219,7 +277,37 @@ impl ActionCommand for CognitionReplay {
         let isolation = cycle.isolate_for_eval();
 
         let only = p.faculty.as_deref().map(FacultyId::from_kebab);
-        let ws = Workspace::in_room(world_state.clone(), room);
+
+        // Refuse to replay a broadcast-reading (deliberation-tier) faculty against
+        // an empty broadcast: it wouldn't abstain, it would emit a CONFIDENT verdict
+        // computed from blinded cognition — the silent lie the doctrine forbids.
+        // Fail loud, name the cause, point at the fix.
+        if let Some(id) = &only {
+            if cycle.reacts_to_broadcast(id) == Some(true) && burst.broadcast.is_empty() {
+                cycle.page_out();
+                return Err(CommandError::Invalid(format!(
+                    "faculty '{}' reads the assembled broadcast, but none could be reconstructed \
+                     ({}). Replaying it against an empty broadcast would produce a confident-but-wrong \
+                     verdict. Replay from a captured turn that has context, or isolate a perception \
+                     faculty (recall/salience/world-model).",
+                    id.as_str(),
+                    if p.world_state.is_some() {
+                        "a supplied bare world_state carries no broadcast"
+                    } else {
+                        "the captured turn has no recorded context"
+                    }
+                )));
+            }
+        }
+
+        let broadcast_source = if burst.broadcast.is_empty() {
+            "empty".to_string()
+        } else {
+            format!("reconstructed ({} ctx)", burst.broadcast.len())
+        };
+
+        let mut ws = Workspace::in_room(burst.world_state.clone(), room);
+        ws.broadcast = burst.broadcast;
         let bids = cycle.replay(&ws, only.as_ref()).await;
 
         drop(isolation);
@@ -262,9 +350,10 @@ impl ActionCommand for CognitionReplay {
 
         Ok(CognitionReplayResult {
             persona_id: persona_uuid.to_string(),
-            source,
-            world_state,
+            source: burst.source,
+            world_state: burst.world_state,
             room_id: room.to_string(),
+            broadcast_source,
             bids,
         })
     }
@@ -311,9 +400,15 @@ mod tests {
             turn: None,
             room_id: None,
         };
-        let (ws, room, source) = resolve_burst(&p, &persona).unwrap();
-        assert_eq!(ws, "what was the auth migration codename?");
-        assert_eq!(source, "supplied");
-        assert_eq!(room, Uuid::nil().to_string());
+        let b = resolve_burst(&p, &persona).unwrap();
+        assert_eq!(b.world_state, "what was the auth migration codename?");
+        assert_eq!(b.source, "supplied");
+        assert_eq!(b.room, Uuid::nil().to_string());
+        // A bare supplied burst carries NO broadcast — this is the invariant the
+        // run() guard relies on to refuse a blind deliberation replay.
+        assert!(
+            b.broadcast.is_empty(),
+            "supplied world_state must reconstruct no broadcast"
+        );
     }
 }
