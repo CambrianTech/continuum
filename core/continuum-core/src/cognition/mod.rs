@@ -73,6 +73,7 @@ pub mod vision_describe;
 pub mod working_memory;
 pub mod workspace;
 pub mod workspace_capture;
+pub mod workspace_dashboard;
 
 pub use adaptive_throughput::*;
 pub use model_resolver::*;
