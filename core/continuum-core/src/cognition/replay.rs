@@ -32,6 +32,7 @@ use ts_rs::TS;
 use uuid::Uuid;
 
 use crate::cognition::persona_workspace;
+use crate::cognition::token_budget::estimate_prompt_tokens;
 use crate::cognition::workspace::{Contribution, FacultyId, Workspace};
 use crate::sdk_codegen::{AccessLevel, ActionCommand, CommandError, Ctx};
 
@@ -130,6 +131,45 @@ pub struct ReplayBidOut {
     pub elapsed_us: u64,
 }
 
+/// One line of the prompt-budget ledger: a single layer she saw, costed in
+/// tokens and as a share of the assembled prompt. This is the "take no prompt
+/// layer for granted" instrument — every layer line-itemed, sorted by cost, so
+/// "recall ate 4000 of 8000 tokens" is a number you read, not a thing you fear.
+#[derive(Debug, Clone, Serialize, TS)]
+pub struct BudgetLayer {
+    /// The layer's faculty (kebab tag) — `recall`, `roster`, `doctrine`, …
+    pub faculty: String,
+    /// Estimated prompt-token cost of this layer (the unit the RAG sources budget
+    /// against — see `cognition::token_budget`).
+    #[ts(type = "number")]
+    pub tokens: u32,
+    /// This layer's share of the total assembled prompt, 0–100.
+    #[ts(type = "number")]
+    pub share_pct: f32,
+}
+
+/// The prompt-budget ledger for the replayed turn: what each layer of her prompt
+/// cost, totalled. `total_tokens = world_state_tokens + context_tokens`, and
+/// `layers` accounts the reconstructed broadcast (the RAG layers she actually
+/// saw), sorted most-expensive first. Honest about scope: this accounts the
+/// load-bearing CONTENT layers (world_state + broadcast), not the fixed system
+/// framing — those are the layers you tune, the ones a bad RAG step bloats.
+#[derive(Debug, Clone, Serialize, TS)]
+pub struct PromptBudget {
+    /// Tokens spent on the burst itself (the message/event she's reasoning over).
+    #[ts(type = "number")]
+    pub world_state_tokens: u32,
+    /// Tokens spent across all reconstructed context layers (the broadcast).
+    #[ts(type = "number")]
+    pub context_tokens: u32,
+    /// `world_state_tokens + context_tokens` — the accountable prompt mass.
+    #[ts(type = "number")]
+    pub total_tokens: u32,
+    /// Per-layer ledger of the broadcast, sorted by cost (most expensive first).
+    /// Empty when no broadcast was reconstructed (a bare supplied burst).
+    pub layers: Vec<BudgetLayer>,
+}
+
 #[derive(Debug, Clone, Serialize, TS)]
 pub struct CognitionReplayResult {
     pub persona_id: String,
@@ -143,6 +183,8 @@ pub struct CognitionReplayResult {
     /// broadcast was rebuilt from the captured turn; `"empty"` when none was
     /// available (a supplied bare burst, or an old trace without context).
     pub broadcast_source: String,
+    /// The prompt-budget ledger — every layer she saw, costed (see `PromptBudget`).
+    pub budget: PromptBudget,
     /// One entry per faculty that ran (just the isolated one, or all).
     pub bids: Vec<ReplayBidOut>,
 }
@@ -156,6 +198,36 @@ struct ResolvedBurst {
     room: String,
     source: String,
     broadcast: Vec<Contribution>,
+}
+
+/// Build the prompt-budget ledger from the burst + the reconstructed broadcast.
+/// Every layer line-itemed in the SAME token unit the RAG sources budget against,
+/// sorted most-expensive first — the "obsess over every prompt layer" instrument.
+fn build_budget(world_state: &str, broadcast: &[Contribution]) -> PromptBudget {
+    let world_state_tokens = estimate_prompt_tokens(world_state);
+    let mut layers: Vec<BudgetLayer> = broadcast
+        .iter()
+        .map(|c| BudgetLayer {
+            faculty: c.faculty.as_str().to_string(),
+            tokens: estimate_prompt_tokens(&c.content),
+            share_pct: 0.0, // filled once we know the total
+        })
+        .collect();
+    let context_tokens: u32 = layers.iter().map(|l| l.tokens).sum();
+    let total_tokens = world_state_tokens.saturating_add(context_tokens);
+    if total_tokens > 0 {
+        for l in &mut layers {
+            l.share_pct = (l.tokens as f32 / total_tokens as f32) * 100.0;
+        }
+    }
+    // Most expensive layer first — the one to interrogate when the prompt bloats.
+    layers.sort_by(|a, b| b.tokens.cmp(&a.tokens));
+    PromptBudget {
+        world_state_tokens,
+        context_tokens,
+        total_tokens,
+        layers,
+    }
 }
 
 /// Resolve the burst (+ room + provenance + broadcast) to replay: a supplied
@@ -246,8 +318,9 @@ impl ActionCommand for CognitionReplay {
          cycle (never degrades the living persona), and re-runs the faculties. \
          Isolate one with `faculty` (recall/salience/world-model/deliberation/…) \
          or replay all. Returns each faculty's bid (content, salience, reasoning) \
-         plus its wall-clock — the glass-box probe for 'what did this step do, and \
-         how long did it take?'.";
+         plus its wall-clock, AND a prompt-budget ledger (`budget`) costing every \
+         layer she saw in tokens and share — the glass-box probe for 'what did this \
+         step do, how long did it take, and what did each prompt layer cost?'.";
     type Params = CognitionReplayParams;
     type Output = CognitionReplayResult;
 
@@ -306,6 +379,10 @@ impl ActionCommand for CognitionReplay {
             format!("reconstructed ({} ctx)", burst.broadcast.len())
         };
 
+        // Cost the prompt BEFORE the broadcast moves into the workspace — the
+        // ledger of every layer she saw, in the RAG sources' own token unit.
+        let budget = build_budget(&burst.world_state, &burst.broadcast);
+
         let mut ws = Workspace::in_room(burst.world_state.clone(), room);
         ws.broadcast = burst.broadcast;
         let bids = cycle.replay(&ws, only.as_ref()).await;
@@ -354,6 +431,7 @@ impl ActionCommand for CognitionReplay {
             world_state: burst.world_state,
             room_id: room.to_string(),
             broadcast_source,
+            budget,
             bids,
         })
     }
@@ -410,5 +488,37 @@ mod tests {
             b.broadcast.is_empty(),
             "supplied world_state must reconstruct no broadcast"
         );
+    }
+
+    // what this catches: the budget ledger must line-item every broadcast layer,
+    // sort most-expensive-first, total = world_state + context, and shares sum to
+    // ~100% — the "obsess over every prompt layer" instrument reporting honestly.
+    #[test]
+    fn budget_ledger_costs_and_ranks_every_layer() {
+        let broadcast = vec![
+            Contribution::context(
+                FacultyId::Recall,
+                "x".repeat(400), // ~101 tokens — the expensive layer
+                0.3,
+                "r",
+            ),
+            Contribution::context(
+                FacultyId::Custom("roster".to_string()),
+                "y".repeat(40), // ~11 tokens
+                0.2,
+                "r",
+            ),
+        ];
+        let b = build_budget("hello there", &broadcast);
+        assert_eq!(b.world_state_tokens, estimate_prompt_tokens("hello there"));
+        assert_eq!(b.context_tokens, b.layers.iter().map(|l| l.tokens).sum::<u32>());
+        assert_eq!(b.total_tokens, b.world_state_tokens + b.context_tokens);
+        // sorted most-expensive first → recall (400 chars) leads roster (40).
+        assert_eq!(b.layers[0].faculty, "recall");
+        assert!(b.layers[0].tokens > b.layers[1].tokens);
+        // shares are computed against the total (sum ≈ context share of 100%).
+        let layer_share: f32 = b.layers.iter().map(|l| l.share_pct).sum();
+        let ws_share = b.world_state_tokens as f32 / b.total_tokens as f32 * 100.0;
+        assert!((layer_share + ws_share - 100.0).abs() < 0.5, "shares must sum to ~100%");
     }
 }

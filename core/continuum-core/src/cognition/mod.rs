@@ -62,6 +62,7 @@ pub mod should_respond;
 pub mod should_respond_module;
 pub mod threat_detector;
 pub mod throughput_lease;
+pub mod token_budget;
 pub mod tool_embedding;
 pub mod tool_executor;
 pub mod turn_batch;
