@@ -705,6 +705,13 @@ pub async fn materialize_adapters(
                 // deliberation faculty keeps its prompt inside it so llama-server
                 // never 500s ("Context size has been exceeded").
                 context_window: profile.context_length,
+                // LIVE mind: recall runs as a speculative prefetch off the hot
+                // path (Joel's CPU branch-prediction analogy). Turns here are
+                // seconds apart, so the background worker always catches up and
+                // the per-turn output reads a warm last-good instead of waiting on
+                // a neural-embed + vector-search round-trip. Eval forks override
+                // this to false (faithful synchronous measurement).
+                defer_recall: true,
             },
         );
 

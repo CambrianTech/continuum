@@ -161,6 +161,8 @@ mod tests {
             embedder: None,
             tool_executor: None,
             context_window: crate::cognition::serving_plan::MIN_SERVE_CTX,
+            // Harness: synchronous recall (deferral is a live-path concern).
+            defer_recall: false,
         });
         registry
     }
