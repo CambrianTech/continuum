@@ -524,6 +524,18 @@ impl Drop for EvalIsolation {
     }
 }
 
+/// One faculty's replayed bid: its output against a GIVEN workspace plus the
+/// wall-clock it took. The factory's per-station reading — deterministic for the
+/// same workspace + backend, so a one-variable workspace mutation isolates
+/// exactly what moved the faculty's mind. `contribution == None` ⇒ the faculty
+/// abstained this run.
+#[derive(Debug, Clone)]
+pub struct ReplayBid {
+    pub faculty: FacultyId,
+    pub contribution: Option<Contribution>,
+    pub elapsed_us: u128,
+}
+
 impl WorkspaceCycle {
     pub fn new(
         faculties: Vec<Arc<dyn Faculty>>,
@@ -727,6 +739,40 @@ impl WorkspaceCycle {
         });
         ws
     }
+
+    /// **Factory seam — isolate and repeat one cognition phase.** Re-run faculties
+    /// against a GIVEN [`Workspace`] (reconstructed from a capture, or hand-built)
+    /// instead of assembling one live. `only = Some(id)` isolates a single faculty
+    /// ("what did *recall* surface for this burst?"); `None` re-runs every faculty
+    /// over the same `ws`. Each bid is timed individually — faculties run
+    /// sequentially here precisely so per-faculty wall-clock is attributable; this
+    /// is the measurement path, not the live concurrent cycle. Deterministic for
+    /// the same `ws` + the same faculty backends, so mutating ONE field of `ws`
+    /// between two calls isolates its causal effect on a faculty's output. This is
+    /// the glass box that makes a turn repeatable instead of a guess.
+    ///
+    /// Phase honesty is the caller's contract: perception faculties read
+    /// `ws.world_state` with an empty `ws.broadcast`; the deliberation faculty
+    /// reads `ws.broadcast` (the assembled context). Build `ws` to match the
+    /// station you are probing — `replay` runs the faculty exactly as the live
+    /// cycle would, it does not re-stage the phases for you.
+    pub async fn replay(&self, ws: &Workspace, only: Option<&FacultyId>) -> Vec<ReplayBid> {
+        let mut out = Vec::new();
+        for f in self
+            .faculties
+            .iter()
+            .filter(|f| only.map_or(true, |id| &f.id() == id))
+        {
+            let t0 = std::time::Instant::now();
+            let contribution = f.contribute(ws).await;
+            out.push(ReplayBid {
+                faculty: f.id(),
+                contribution,
+                elapsed_us: t0.elapsed().as_micros(),
+            });
+        }
+        out
+    }
 }
 
 #[cfg(test)]
@@ -818,6 +864,42 @@ mod tests {
 
         c.page_out();
         assert!(c.genome().is_empty(), "page_out reverts to the clean base");
+    }
+
+    // what this catches: the factory's faculty-isolation seam (#14 ReplayFaculty).
+    // `replay(ws, Some(id))` must re-run EXACTLY that faculty against the given
+    // workspace, return its contribution, and stamp a timing — never leak other
+    // faculties; `replay(ws, None)` runs them all. If isolation leaks or timing is
+    // dropped, the glass box can't answer "what did recall surface for this burst?"
+    // in isolation, and the harness degrades back to replaying only the final call.
+    #[tokio::test]
+    async fn replay_isolates_one_faculty_and_times_it() {
+        let faculties: Vec<Arc<dyn Faculty>> = vec![
+            Arc::new(FixedFaculty(Contribution::context(
+                FacultyId::Recall,
+                "engram: the auth migration broke the deploy",
+                0.8,
+                "relevant past engram",
+            ))),
+            Arc::new(ConditionalDeliberation),
+        ];
+        let c = cycle(faculties, 4);
+        let ws = Workspace::new("teammate: the deploy is red, what happened?");
+
+        // isolate recall: exactly one bid, its engram content, a real timing.
+        let recall_only = c.replay(&ws, Some(&FacultyId::Recall)).await;
+        assert_eq!(recall_only.len(), 1, "only the requested faculty runs");
+        assert_eq!(recall_only[0].faculty, FacultyId::Recall);
+        assert!(recall_only[0]
+            .contribution
+            .as_ref()
+            .expect("recall bid present")
+            .content
+            .contains("auth migration"));
+
+        // no filter: every faculty re-runs over the same workspace.
+        let all = c.replay(&ws, None).await;
+        assert_eq!(all.len(), 2, "None replays every faculty");
     }
 
     // what this catches: attention is a competition over ML-derived salience —
