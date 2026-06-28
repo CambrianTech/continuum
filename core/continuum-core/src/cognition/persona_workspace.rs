@@ -102,23 +102,68 @@ pub struct PersonaBrainConfig {
     ///
     /// [`DeferredFaculty`]: super::deferred_faculty::DeferredFaculty
     pub defer_recall: bool,
+    /// Push the [`Deferrability::DeferTolerant`] grounding sources off the hot path
+    /// too (same speculative-prefetch rationale as `defer_recall`: the enriching
+    /// framing — roster, active_work, workspace_map — runs in the bg and the turn
+    /// reads a reprojected last-good). `ColdStartCritical` sources (doctrine, the
+    /// participation gate) stay synchronous regardless. `true` on the LIVE paths;
+    /// `false` for eval forks + harnesses whose tight settle-loops never yield to
+    /// the worker (they'd measure a grounding-starved mind). Reproject-to-now is
+    /// what makes this safe — without it a deferred source would serve stale
+    /// verbatim. See [`DeferredFaculty`] and [`reproject_to_now`].
+    ///
+    /// [`reproject_to_now`]: super::deferred_faculty::reproject_to_now
+    pub defer_grounding: bool,
+}
+
+/// Whether a grounding source must run synchronously on the inference loop, or
+/// can run in the background and serve a reprojected last-good. **Orthogonal to
+/// [`SaliencePolicy`]** — a source can be `StandingFraming` (high salience floor)
+/// AND `DeferTolerant` at the same time; the two axes are independent (salience =
+/// how hard it bids when present; deferrability = whether it must be present on
+/// the very first tick). This is the "async is a percentage, not a binary"
+/// classification made concrete: almost every concern is defer-tolerant; the
+/// exception is the one whose cold-start miss is unacceptable.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Deferrability {
+    /// Must run on the loop. A first-tick `None` (the cold-start miss every
+    /// deferred faculty has) would be *wrong*, not merely unenriched — this is the
+    /// participation gate (doctrine: "speaks when it shouldn't" is worse than a
+    /// missed enrichment), so it pays the synchronous cost to be correct turn one.
+    ColdStartCritical,
+    /// May run in the background ([`DeferredFaculty`]) and serve a reprojected
+    /// last-good. Enriching framing (roster, active_work, workspace_map) whose
+    /// cold-start miss only costs ONE under-grounded first tick, then warm
+    /// thereafter — the 90%-async win, made safe by reproject-to-now.
+    ///
+    /// [`DeferredFaculty`]: super::deferred_faculty::DeferredFaculty
+    DeferTolerant,
 }
 
 /// A grounding [`RagSource`] plus the [`SaliencePolicy`] under which it competes
-/// for attention once bridged into a faculty. Classified by whoever assembles the
-/// cycle (the spawn path), keeping `RagSource` itself salience-free.
+/// for attention and the [`Deferrability`] that decides whether it runs on or off
+/// the loop. Classified by whoever assembles the cycle (the spawn path), keeping
+/// `RagSource` itself salience- and schedule-free.
 #[derive(Clone)]
 pub struct GroundingSource {
     pub source: Arc<dyn RagSource>,
     pub policy: SaliencePolicy,
+    /// Defaults to [`Deferrability::ColdStartCritical`] (the safe direction: a new
+    /// source runs synchronously until its assembler deliberately opts it into the
+    /// bg via [`GroundingSource::defer_tolerant`], having decided its first-tick
+    /// miss is tolerable).
+    pub deferrability: Deferrability,
 }
 
 impl GroundingSource {
     /// Standing framing (roster, doctrine) — always-present structural context.
+    /// Cold-start-critical by default; call [`Self::defer_tolerant`] to move an
+    /// enriching framing source off the loop.
     pub fn framing(source: Arc<dyn RagSource>) -> Self {
         Self {
             source,
             policy: SaliencePolicy::StandingFraming,
+            deferrability: Deferrability::ColdStartCritical,
         }
     }
 
@@ -127,7 +172,18 @@ impl GroundingSource {
         Self {
             source,
             policy: SaliencePolicy::Retrieved,
+            deferrability: Deferrability::ColdStartCritical,
         }
+    }
+
+    /// Opt this source off the critical path: it runs in the background and serves
+    /// a reprojected last-good. Orthogonal to the salience policy — a `framing()`
+    /// source stays `StandingFraming` and *also* becomes defer-tolerant. Use only
+    /// when a first-tick `None` is an acceptable under-grounding (NOT for the
+    /// participation gate).
+    pub fn defer_tolerant(mut self) -> Self {
+        self.deferrability = Deferrability::DeferTolerant;
+        self
     }
 }
 
@@ -205,12 +261,22 @@ pub fn build_workspace_cycle(cfg: PersonaBrainConfig) -> WorkspaceCycle {
     // Bridge each grounding source into a perception-tier faculty under its
     // salience policy. Standing-framing (roster, doctrine) bids at a high floor so
     // the top-k arbiter never evicts the room's rules under attention pressure.
+    //
+    // Deferrability is the ORTHOGONAL second axis: a DeferTolerant source (the
+    // enriching framing — roster, active_work, workspace_map) runs off the hot path
+    // on the live paths, exactly like recall, and the turn reads its reprojected
+    // last-good. A ColdStartCritical source (doctrine, the participation gate) stays
+    // synchronous so it's never `None` on the first tick. Eval/harness keep
+    // everything synchronous (`defer_grounding == false`) — their tight settle-loops
+    // never yield to the worker, so deferral there would measure a starved mind.
     for g in cfg.grounding_sources {
-        faculties.push(Arc::new(RagSourceFaculty::new(
-            cfg.persona_id,
-            g.source,
-            g.policy,
-        )));
+        let faculty = RagSourceFaculty::new(cfg.persona_id, g.source, g.policy);
+        match g.deferrability {
+            Deferrability::DeferTolerant if cfg.defer_grounding => {
+                faculties.push(Arc::new(DeferredFaculty::spawn(Arc::new(faculty))));
+            }
+            _ => faculties.push(Arc::new(faculty)),
+        }
     }
 
     // The reasoner runs in phase 2 over everything the perception tier surfaced.
@@ -407,10 +473,11 @@ impl PersonaWorkspaceRegistry {
     pub fn fork_eval_cycle(&self, persona_id: &Uuid) -> Option<WorkspaceCycle> {
         let mut cfg = self.templates.lock().unwrap().get(persona_id)?.clone();
         cfg.admission = Arc::new(cfg.admission.fork_detached());
-        // The eval fork runs recall SYNCHRONOUSLY: drive_to_settle's tight loop
-        // never yields to a background prefetch worker, so deferral would measure
-        // a recall-starved copy. Faithful eval = synchronous recall here.
+        // The eval fork runs recall + grounding SYNCHRONOUSLY: drive_to_settle's
+        // tight loop never yields to a background prefetch worker, so deferral would
+        // measure a starved copy. Faithful eval = synchronous perception here.
         cfg.defer_recall = false;
+        cfg.defer_grounding = false;
         Some(build_workspace_cycle(cfg))
     }
 
@@ -442,8 +509,9 @@ impl PersonaWorkspaceRegistry {
         cfg.admission = Arc::new(cfg.admission.fork_detached());
         cfg.adapter = adapter;
         cfg.context_window = context_window;
-        // Synchronous recall on the eval copy (see `fork_eval_cycle`).
+        // Synchronous perception on the eval copy (see `fork_eval_cycle`).
         cfg.defer_recall = false;
+        cfg.defer_grounding = false;
         Some(build_workspace_cycle(cfg))
     }
 
@@ -542,6 +610,7 @@ mod tests {
             // phase 1 on the same tick, which a deferred (cold-start) worker can't
             // satisfy. Deferral is a live-path concern, tested in deferred_faculty.rs.
             defer_recall: false,
+            defer_grounding: false,
         }
     }
 
@@ -734,5 +803,75 @@ mod tests {
             ws.decision().is_some(),
             "the persona's mind must reach a decision through the real model"
         );
+    }
+
+    // A constructible RagSource whose delivery is never exercised — these tests
+    // assert the deferrability CLASSIFICATION on GroundingSource, not delivery.
+    struct ClassifyStub;
+    #[async_trait::async_trait]
+    impl RagSource for ClassifyStub {
+        fn source_id(&self) -> &'static str {
+            "classify-stub"
+        }
+        async fn deliver(
+            &self,
+            _ctx: &crate::persona::rag_budget::RagContext,
+            _budget: u32,
+            resolution: crate::persona::rag_budget::ResolutionPreference,
+        ) -> crate::persona::rag_budget::RagDelivery {
+            crate::persona::rag_budget::RagDelivery {
+                source_id: "classify-stub".to_string(),
+                items: Vec::new(),
+                tokens_used: 0,
+                continuation: None,
+                resolution_used: resolution,
+            }
+        }
+        async fn deliver_continuation(
+            &self,
+            _ctx: &crate::persona::rag_budget::RagContext,
+            _cursor: crate::persona::rag_budget::ContinuationCursor,
+            _budget: u32,
+        ) -> Option<crate::persona::rag_budget::RagDelivery> {
+            None
+        }
+    }
+
+    // what this catches: deferrability is ORTHOGONAL to salience, and the SAFE
+    // DEFAULT is synchronous. framing() is ColdStartCritical — a fresh grounding
+    // source runs ON the loop until deliberately opted off, so doctrine (the
+    // participation gate) can never silently start serving a cold-start `None`
+    // (speaking in a room it shouldn't on turn one). `.defer_tolerant()` flips
+    // ONLY the schedule axis, leaving StandingFraming salience untouched. If a
+    // future edit folds salience into the deferrability builder, or flips the
+    // default to DeferTolerant, this fails — guarding the two-independent-axes
+    // invariant the live supervisor wiring depends on.
+    #[test]
+    fn deferrability_is_orthogonal_to_salience_and_defaults_to_synchronous() {
+        let s: Arc<dyn RagSource> = Arc::new(ClassifyStub);
+
+        let critical = GroundingSource::framing(Arc::clone(&s));
+        assert_eq!(
+            critical.deferrability,
+            Deferrability::ColdStartCritical,
+            "safe default: a framing source runs synchronously until opted off"
+        );
+        assert_eq!(critical.policy, SaliencePolicy::StandingFraming);
+
+        let tolerant = GroundingSource::framing(Arc::clone(&s)).defer_tolerant();
+        assert_eq!(
+            tolerant.deferrability,
+            Deferrability::DeferTolerant,
+            "opt-in flips ONLY the schedule axis"
+        );
+        assert_eq!(
+            tolerant.policy,
+            SaliencePolicy::StandingFraming,
+            "orthogonal: deferrability must not touch the salience policy"
+        );
+
+        // retrieved() (the other constructor) also defaults to the safe side.
+        let retrieved = GroundingSource::retrieved(Arc::clone(&s));
+        assert_eq!(retrieved.deferrability, Deferrability::ColdStartCritical);
     }
 }
