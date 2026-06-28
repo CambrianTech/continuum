@@ -66,6 +66,23 @@ impl FacultyId {
             FacultyId::Custom(s) => s,
         }
     }
+
+    /// Inverse of [`as_str`]: parse a kebab tag back into a `FacultyId`. Total —
+    /// an unknown tag becomes `Custom(tag)`, so a sentinel-forged faculty (or a
+    /// `cognition/replay` caller naming a faculty by string) round-trips without
+    /// an enum edit. This is the ONE place the tag→variant mapping lives; keep it
+    /// the mirror of `as_str` so the two never drift.
+    pub fn from_kebab(tag: &str) -> FacultyId {
+        match tag {
+            "recall" => FacultyId::Recall,
+            "world-model" => FacultyId::WorldModel,
+            "affect" => FacultyId::Affect,
+            "volition" => FacultyId::Volition,
+            "deliberation" => FacultyId::Deliberation,
+            "salience" => FacultyId::Salience,
+            other => FacultyId::Custom(other.to_string()),
+        }
+    }
 }
 
 /// The persona's participation decision — the OUTPUT of the deliberation
