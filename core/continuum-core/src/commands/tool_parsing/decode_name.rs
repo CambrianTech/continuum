@@ -37,7 +37,9 @@ crate::action_command! {
         codec: Arc<ToolNameCodec>,
     }
     name: "tool-parsing/decode-name",
-    access: AiSafe,
+    // Internal: the tool-name codec is substrate machinery for interpreting a
+    // model's emitted tool names — never a citizen-facing task tool.
+    access: Internal,
     params: ToolNameParams,
     output: DecodedToolName,
     run(this, _ctx, p) => {
@@ -52,14 +54,14 @@ mod tests {
     use super::*;
     use crate::sdk_codegen::{AccessLevel, ActionCommand, Ctx};
 
-    // what this catches: name/access wiring — decode is a read-only codec lookup,
-    // so it is AiSafe.
+    // what this catches: name/access wiring — the name codec is substrate machinery,
+    // gated Internal so it never reaches the persona AiSafe tool surface.
     #[test]
     fn name_and_access_wired() {
         assert_eq!(ToolParsingDecodeName::NAME, "tool-parsing/decode-name");
         assert!(matches!(
             ToolParsingDecodeName::ACCESS,
-            AccessLevel::AiSafe
+            AccessLevel::Internal
         ));
     }
 
