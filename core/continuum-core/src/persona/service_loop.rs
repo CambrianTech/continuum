@@ -638,7 +638,7 @@ async fn serve_persona_loop_inner(
                 // forever is a fitness gap to train, never a substrate cap, §4). The
                 // eval driver wraps this SAME step in a grader-paced loop; live and
                 // eval thus make a turn identically (ACTING-ORGANISM.md §3.3).
-                let step = crate::cognition::act_observe::settle_step(
+                let (step, turn_metrics) = crate::cognition::act_observe::settle_step(
                     &cycle,
                     workspace_burst,
                     ctx.identity.default_room,
@@ -646,6 +646,22 @@ async fn serve_persona_loop_inner(
                 )
                 .await;
                 phase_timings.respond_ms = respond_started.elapsed().as_millis() as u64;
+                // Live speed/latency on the probe stream — the model's own measured
+                // generation cost for THIS turn (decode tok/s + latency), the same
+                // numbers the eval gym accumulates per task. Observability only; the
+                // turn proceeds identically whether or not anyone is watching.
+                if let Some(m) = turn_metrics {
+                    crate::probe!(
+                        class = "persona.turn.metrics",
+                        persona = %ctx.identity.agent_name,
+                        lamport = msg.lamport,
+                        input_tokens = m.input_tokens,
+                        output_tokens = m.output_tokens,
+                        latency_ms = m.latency_ms,
+                        tokens_per_second = m.tokens_per_second(),
+                        "deliberation generation cost"
+                    );
+                }
                 match step {
                     crate::cognition::act_observe::SettleStep::Spoke(text) => text,
                     crate::cognition::act_observe::SettleStep::Acted { calls, intent } => {
@@ -996,7 +1012,7 @@ async fn run_self_cycle(
     // synchronous loop, no narration of the intermediate step into the room. She
     // speaks only when she has something worth the others' attention
     // (ACTING-ORGANISM.md §4).
-    let step = crate::cognition::act_observe::settle_step(
+    let (step, _turn_metrics) = crate::cognition::act_observe::settle_step(
         &cycle,
         framed,
         ctx.identity.default_room,

@@ -157,6 +157,7 @@ mod tests {
             salience: 0.8,
             reasoning: "relevant past engram".to_string(),
             decision: None,
+            metrics: None,
         };
         let verdict = Contribution {
             faculty: FacultyId::Deliberation,
@@ -166,6 +167,7 @@ mod tests {
             decision: Some(Decision::Speak {
                 text: "Let's roll back the migration.".to_string(),
             }),
+            metrics: None,
         };
         let trace = WorkspaceTrace {
             world_state: "teammate: what should we do about the red deploy?".to_string(),

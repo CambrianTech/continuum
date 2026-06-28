@@ -104,6 +104,47 @@ pub enum Decision {
     Pass,
 }
 
+/// The cost of producing ONE deliberation verdict: how long the model took and
+/// how many tokens it moved. Stamped by the deliberation faculty onto the verdict
+/// [`Contribution`] from the adapter's `TextGenerationResponse` (`response_time_ms`
+/// + `usage`), so latency and throughput ride out of the brain on the SAME path as
+/// the decision — never inferred after the fact. Accumulates across the act→observe
+/// settle loop (sum tokens, sum latency) so a multi-act task reports its total cost.
+/// `Copy` + `Default` so the live heartbeat can ignore it for free and the eval can
+/// fold it without ceremony. This is the speed/latency half of the four-axis
+/// scoreboard (the other half — accuracy + lift — is the gym grade).
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct TurnMetrics {
+    /// Prompt tokens the model conditioned on (the perception bid's size).
+    pub input_tokens: u32,
+    /// Tokens the model generated (the verdict's length).
+    pub output_tokens: u32,
+    /// Wall-clock the generation took, end to end (the adapter's measured
+    /// `response_time_ms` — request send to full response).
+    pub latency_ms: u64,
+}
+
+impl TurnMetrics {
+    /// Decode throughput in tokens/sec — `output_tokens / latency`. The headline
+    /// speed number. Zero when no time elapsed (avoids a divide-by-zero NaN that
+    /// would poison the aggregate).
+    pub fn tokens_per_second(&self) -> f64 {
+        if self.latency_ms == 0 {
+            return 0.0;
+        }
+        self.output_tokens as f64 / (self.latency_ms as f64 / 1000.0)
+    }
+
+    /// Fold another turn's cost in (the settle loop accumulates each act→observe
+    /// generation into the task's total). Tokens and latency are additive; tok/s is
+    /// always re-derived from the totals, never averaged (averaging rates lies).
+    pub fn accumulate(&mut self, other: TurnMetrics) {
+        self.input_tokens = self.input_tokens.saturating_add(other.input_tokens);
+        self.output_tokens = self.output_tokens.saturating_add(other.output_tokens);
+        self.latency_ms = self.latency_ms.saturating_add(other.latency_ms);
+    }
+}
+
 /// What a faculty surfaces into the workspace this service tick.
 #[derive(Debug, Clone)]
 pub struct Contribution {
@@ -120,6 +161,10 @@ pub struct Contribution {
     /// Set by the deliberation faculty: the participation decision. Other
     /// faculties leave this `None` (they contribute context, not the verdict).
     pub decision: Option<Decision>,
+    /// The cost of producing this contribution, when it came from a model call
+    /// (the deliberation verdict). `None` for context contributions (recall,
+    /// affect) that did no generation. Surfaced via [`Workspace::metrics`].
+    pub metrics: Option<TurnMetrics>,
 }
 
 impl Contribution {
@@ -136,6 +181,7 @@ impl Contribution {
             salience: salience.clamp(0.0, 1.0),
             reasoning: reasoning.into(),
             decision: None,
+            metrics: None,
         }
     }
 
@@ -154,7 +200,15 @@ impl Contribution {
             salience: salience.clamp(0.0, 1.0),
             reasoning: reasoning.into(),
             decision: Some(decision),
+            metrics: None,
         }
+    }
+
+    /// Stamp the model-call cost onto this contribution (builder form, so the
+    /// deliberation faculty can do `self.verdict(...).with_metrics(m)`).
+    pub fn with_metrics(mut self, metrics: TurnMetrics) -> Self {
+        self.metrics = Some(metrics);
+        self
     }
 }
 
@@ -218,6 +272,21 @@ impl Workspace {
     /// the highest-salience contribution that carries a [`Decision`] — i.e. the
     /// deliberation faculty's verdict, if it made it into the bounded workspace.
     pub fn decision(&self) -> Option<&Decision> {
+        self.winning_verdict().and_then(|c| c.decision.as_ref())
+    }
+
+    /// The cost of the verdict that won attention this tick — latency + tokens of
+    /// the deliberation model call behind the decision. `None` when no verdict
+    /// carried metrics (a context-only tick, or a faculty stand-in that did no
+    /// generation). Read by the settle loop to accumulate per-task speed/latency.
+    pub fn metrics(&self) -> Option<TurnMetrics> {
+        self.winning_verdict().and_then(|c| c.metrics)
+    }
+
+    /// The single decision-carrying contribution that won attention — the shared
+    /// selection both [`decision`](Self::decision) and [`metrics`](Self::metrics)
+    /// read from, so they can never disagree about WHICH verdict won.
+    fn winning_verdict(&self) -> Option<&Contribution> {
         self.broadcast
             .iter()
             .filter(|c| c.decision.is_some())
@@ -226,7 +295,6 @@ impl Workspace {
                     .partial_cmp(&b.salience)
                     .unwrap_or(std::cmp::Ordering::Equal)
             })
-            .and_then(|c| c.decision.as_ref())
     }
 }
 

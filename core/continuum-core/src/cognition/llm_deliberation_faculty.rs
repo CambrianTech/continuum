@@ -386,14 +386,15 @@ impl LlmDeliberationFaculty {
             0.9,
             format!("{} chose to act", self.persona_name),
         )
+        .with_metrics(metrics_from(resp))
     }
 
     /// Turn the model's final text into a participation verdict. `salience` is
     /// the faculty's own confidence in its verdict — a placeholder for a model-
     /// derived signal (logprob / uncertainty), NOT a caste weight; it's how sure
     /// THIS mind is, which the arbiter integrates.
-    fn verdict(&self, text: &str) -> Contribution {
-        let decision = decision_from_response(text);
+    fn verdict(&self, resp: &TextGenerationResponse) -> Contribution {
+        let decision = decision_from_response(&resp.text);
         let (salience, reasoning) = match &decision {
             Decision::Pass => (0.5, format!("{} chose silence (PASS)", self.persona_name)),
             _ => (
@@ -404,7 +405,7 @@ impl LlmDeliberationFaculty {
                 ),
             ),
         };
-        Contribution::verdict(decision, salience, reasoning)
+        Contribution::verdict(decision, salience, reasoning).with_metrics(metrics_from(resp))
     }
 
     /// Render the assembled context (the phase-1 winners that hold the workspace)
@@ -752,7 +753,21 @@ impl Faculty for LlmDeliberationFaculty {
 
         // No action chosen → the prose IS the verdict (PASS token → silence, else
         // Speak). The organism settles here.
-        Some(self.verdict(&resp.text))
+        Some(self.verdict(&resp))
+    }
+}
+
+/// Lift the speed/latency cost of one generation off the adapter response — the
+/// measured wall-clock + the prompt/completion token counts. The brain stamps this
+/// onto its verdict [`Contribution`] so latency and throughput leave the mind on
+/// the same path as the decision, and the settle loop folds it into the per-task
+/// total. Token counts are 0 when the gateway omitted `usage` (older endpoints);
+/// `latency_ms` is always present (the adapter times every request).
+fn metrics_from(resp: &TextGenerationResponse) -> crate::cognition::workspace::TurnMetrics {
+    crate::cognition::workspace::TurnMetrics {
+        input_tokens: resp.usage.input_tokens,
+        output_tokens: resp.usage.output_tokens,
+        latency_ms: resp.response_time_ms,
     }
 }
 
