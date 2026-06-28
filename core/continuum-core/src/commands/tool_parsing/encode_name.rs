@@ -33,7 +33,9 @@ crate::action_command! {
         codec: Arc<ToolNameCodec>,
     }
     name: "tool-parsing/encode-name",
-    access: AiSafe,
+    // Internal: the tool-name codec is substrate machinery for the wire form of a
+    // model's tool names — never a citizen-facing task tool.
+    access: Internal,
     params: ToolNameParams,
     output: EncodedToolName,
     run(this, _ctx, p) => {
@@ -48,13 +50,14 @@ mod tests {
     use super::*;
     use crate::sdk_codegen::{AccessLevel, ActionCommand, Ctx};
 
-    // what this catches: name/access wiring — encode is a pure transform, AiSafe.
+    // what this catches: name/access wiring — the name codec is substrate machinery,
+    // gated Internal so it never reaches the persona AiSafe tool surface.
     #[test]
     fn name_and_access_wired() {
         assert_eq!(ToolParsingEncodeName::NAME, "tool-parsing/encode-name");
         assert!(matches!(
             ToolParsingEncodeName::ACCESS,
-            AccessLevel::AiSafe
+            AccessLevel::Internal
         ));
     }
 

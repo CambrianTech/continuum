@@ -36,7 +36,11 @@ crate::action_command! {
     /// recovery.
     pub struct ToolParsingParse;
     name: "tool-parsing/parse",
-    access: AiSafe,
+    // Internal: this is the substrate's OWN machinery for turning a model's raw
+    // output into structured calls — it operates ON a persona's text, so it must
+    // never be offered back to that persona as a callable tool (a category error,
+    // like handing Claude Code a "parse your tool call" tool). Not a citizen task.
+    access: Internal,
     params: ToolParseParams,
     output: ToolParseResult,
     run(_this, _ctx, p) => {
@@ -52,11 +56,12 @@ mod tests {
     use super::*;
     use crate::sdk_codegen::{AccessLevel, ActionCommand, Ctx};
 
-    // what this catches: name/access wiring — pure text transform is AiSafe.
+    // what this catches: name/access wiring — the tool-call parser is substrate
+    // machinery, gated Internal so it never reaches the persona AiSafe tool surface.
     #[test]
     fn name_and_access_wired() {
         assert_eq!(ToolParsingParse::NAME, "tool-parsing/parse");
-        assert!(matches!(ToolParsingParse::ACCESS, AccessLevel::AiSafe));
+        assert!(matches!(ToolParsingParse::ACCESS, AccessLevel::Internal));
     }
 
     // what this catches: a single XML tool-call block is parsed to one corrected

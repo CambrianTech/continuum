@@ -36,7 +36,9 @@ crate::action_command! {
     /// and the list of parameter corrections applied.
     pub struct ToolParsingCorrect;
     name: "tool-parsing/correct",
-    access: AiSafe,
+    // Internal: substrate machinery that fixes up a model's emitted tool call —
+    // it operates ON a persona's output, so it is never a citizen-facing task tool.
+    access: Internal,
     params: ToolCorrectParams,
     output: CorrectedToolCall,
     run(_this, _ctx, p) => {
@@ -49,11 +51,12 @@ mod tests {
     use super::*;
     use crate::sdk_codegen::{AccessLevel, ActionCommand, Ctx};
 
-    // what this catches: name/access wiring — pure transform is AiSafe.
+    // what this catches: name/access wiring — tool-call correction is substrate
+    // machinery, gated Internal so it never reaches the persona AiSafe tool surface.
     #[test]
     fn name_and_access_wired() {
         assert_eq!(ToolParsingCorrect::NAME, "tool-parsing/correct");
-        assert!(matches!(ToolParsingCorrect::ACCESS, AccessLevel::AiSafe));
+        assert!(matches!(ToolParsingCorrect::ACCESS, AccessLevel::Internal));
     }
 
     // what this catches: a mis-namespaced name + mistaken param key are both
