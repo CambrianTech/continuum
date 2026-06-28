@@ -49,6 +49,7 @@ pub mod model_resolver;
 pub mod persona_tools;
 pub mod persona_workspace;
 pub mod prompt_capture;
+pub mod replay;
 pub mod rag_source_faculty;
 pub mod rate_proposals;
 pub mod recall_faculty;
