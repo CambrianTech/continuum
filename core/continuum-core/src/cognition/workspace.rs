@@ -388,14 +388,59 @@ pub trait Faculty: Send + Sync {
     }
 }
 
-/// Attention: selects which contributions enter the bounded workspace.
-/// Pluggable so a *learned* arbiter (itself a faculty) can replace the
-/// bootstrap. The bootstrap is a top-k over the faculties' OWN ML-derived
+/// What the FOCUS LAYER knows about THIS tick beyond the raw bids — the ask, and
+/// the situation it's in — so it can streamline the assembled context *for the
+/// given ask* instead of dumping everything. This is the "REALLY good hints"
+/// seam ([[persona-brain-reactive-cognition]], `docs/cognition/REALLY-GOOD-HINTS.md`):
+/// the focuser curates the INPUT context the model reasons over (legitimate
+/// attention, exactly what every brain does), it NEVER reads or filters the
+/// model's OUTPUT ([[no-hardcoded-heuristics-to-steer-cognition]] — the forbidden
+/// move). Borrows the tick's world-state so the hot path copies a pointer, not a
+/// string.
+pub struct FocusContext<'a> {
+    /// The consolidated burst / ask this tick reasoned over (the world-state).
+    pub world_state: &'a str,
+    /// The situation this tick is in — see [`Situation`].
+    pub situation: Situation,
+}
+
+/// The situation a tick is in, as a TYPED signal — never inferred by reading the
+/// burst text back (that brittle string-matching is the heuristic we forbid). It
+/// tells a situation-aware focuser how much context the ask actually needs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Situation {
+    /// A fresh ask / new burst: the persona may need fuller standing grounding
+    /// (who's here, what the room is for) to decide well. The safe default — when
+    /// in doubt, ground more, never less.
+    #[default]
+    FreshContext,
+    /// The last externalized act was a tool run and this tick re-perceives its
+    /// result. The persona doesn't need the standing grounding re-dumped — it
+    /// needs the result + the affordances for "what next" — so a focuser can drop
+    /// re-grounding and tighten the context. Carried from the act→observe loop.
+    PostAction,
+}
+
+/// Attention / FOCUS: selects AND consolidates which contributions enter the
+/// bounded workspace, given the situation. Pluggable so a *learned* focuser
+/// (itself a faculty) can replace the bootstrap. The bootstrap
+/// ([`SalienceArbiter`]) is a blind top-k over the faculties' OWN ML-derived
 /// salience — mechanical integration of ML scores (like attention's softmax
-/// top-k), NOT a hand-coded cognition rule. The intelligence lives in the
-/// faculties; the arbiter only integrates it.
+/// top-k), NOT a hand-coded cognition rule. A situation-aware [`FocusArbiter`]
+/// consolidates *for the given ask* (post-action → minimal; fresh → fuller),
+/// dedups overlap, and respects a token budget rather than a raw count. The
+/// intelligence lives in the faculties (and, later, a learned focuser); the
+/// arbiter only integrates and focuses it.
 pub trait Arbiter: Send + Sync {
-    fn select(&self, candidates: Vec<Contribution>, capacity: usize) -> Vec<Contribution>;
+    /// Focus `candidates` down to what should enter the bounded workspace for
+    /// THIS tick's `ctx`. INPUT-side attention only — curates the context the
+    /// model attends to, never the model's output.
+    fn focus(
+        &self,
+        candidates: Vec<Contribution>,
+        capacity: usize,
+        ctx: &FocusContext<'_>,
+    ) -> Vec<Contribution>;
 }
 
 /// Top-k by ML salience within the workspace's bounded capacity.
@@ -413,7 +458,15 @@ pub trait Arbiter: Send + Sync {
 pub struct SalienceArbiter;
 
 impl Arbiter for SalienceArbiter {
-    fn select(&self, mut candidates: Vec<Contribution>, capacity: usize) -> Vec<Contribution> {
+    /// Blind top-k by ML salience — ignores the situation (`_ctx`). It is the
+    /// floor (outlier A): every richer, situation-aware focuser must beat THIS on
+    /// the scoreboard to earn its latency.
+    fn focus(
+        &self,
+        mut candidates: Vec<Contribution>,
+        capacity: usize,
+        _ctx: &FocusContext<'_>,
+    ) -> Vec<Contribution> {
         candidates.sort_by(|a, b| {
             b.salience
                 .partial_cmp(&a.salience)
@@ -830,9 +883,21 @@ impl WorkspaceCycle {
             bid.cycle = cycle;
         }
         // Route the salient subset into the bounded workspace — the arbiter is the
-        // attention ROUTER over information flow, not a gate. The winners are the
-        // assembled context the deliberation faculty reasons over.
-        ws.broadcast = self.arbiter.select(context_bids.clone(), self.capacity);
+        // attention/FOCUS layer over information flow, not a gate. The winners are
+        // the assembled context the deliberation faculty reasons over. The focuser
+        // is handed the situation so a situation-aware impl can streamline context
+        // FOR the ask (the "really good hints" seam); the bootstrap ignores it.
+        // TODO(focus): thread the real `Situation` from the act→observe loop
+        // (PostAction after a tool run) in the FocusArbiter slice — never inferred
+        // by reading the burst text. FreshContext is the safe default until then.
+        let focus_ctx = FocusContext {
+            world_state: &ws.world_state,
+            situation: Situation::FreshContext,
+        };
+        let focused = self
+            .arbiter
+            .focus(context_bids.clone(), self.capacity, &focus_ctx);
+        ws.broadcast = focused;
         let context_broadcast = ws.broadcast.clone();
 
         // --- Phase 2: deliberation. Reacts to the assembled broadcast (it can now
