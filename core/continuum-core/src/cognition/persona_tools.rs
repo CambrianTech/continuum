@@ -30,24 +30,22 @@ use crate::ai::types::{NativeToolSpec, ToolInputSchema};
 use crate::cognition::tool_embedding::extract_category;
 use crate::modules::grid::acl::is_command_authorized;
 use crate::modules::grid::node::TrustLevel;
-use crate::sdk_codegen::{
-    command_registry, AccessLevel, ActionCommand, CommandDescriptor, CommandError, Ctx,
-};
-use async_trait::async_trait;
-use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
+use crate::commands::help::CommandsHelp;
+use crate::sdk_codegen::{command_registry, AccessLevel, ActionCommand, CommandDescriptor};
 use serde_json::json;
 use std::collections::BTreeMap;
-use ts_rs::TS;
 
-/// The command name a persona calls to load a single tool's argument schema on
-/// demand. The ONE place this string is defined — the [`ToolDescribe`] command, the
-/// catalog instructions, and the faculty's native offering all reference it.
-pub const TOOL_DESCRIBE_NAME: &str = "tool/describe";
+/// The command a persona calls to learn HOW to invoke one tool — the on-demand half
+/// of progressive disclosure (the catalog gives names; this gives the call format).
+/// This is the EXISTING [`CommandsHelp`] (`commands/help`), which renders a
+/// fill-in-the-blanks tool-call envelope with typed argument docs — strictly better
+/// for a small model than raw JSON Schema. We do NOT define a parallel describe tool:
+/// one source of truth for "how do I call this?" [[command-infra-self-routing-schema-adapters]]
+pub const TOOL_HELP_NAME: &str = CommandsHelp::NAME;
 
 /// Soft cap on a tool's one-line catalog summary (chars). A catalog lists ~100
 /// tools; an unbounded description per line would re-create the dump. One clause is
-/// enough to pick; the full schema arrives via [`TOOL_DESCRIBE_NAME`].
+/// enough to pick; the full call format arrives via [`TOOL_HELP_NAME`].
 const SUMMARY_MAX_CHARS: usize = 96;
 
 /// The persona's tool surface: every command it is AUTHORIZED to run at `trust`,
@@ -117,8 +115,8 @@ pub fn descriptor_to_tool_spec(d: &CommandDescriptor) -> NativeToolSpec {
 // actual tools to fit the window (amputating her hands). The same shape every
 // capable agent runtime uses (Claude Code's deferred tools + a search/describe
 // tool): keep a COMPACT CATALOG (names + one-line summaries, grouped by category)
-// always in the prompt, and load a single tool's full schema ON DEMAND via
-// [`TOOL_DESCRIBE_NAME`]. Dispatch is by NAME (the executor maps any catalog name
+// always in the prompt, and load a single tool's full call format ON DEMAND via
+// the existing [`TOOL_HELP_NAME`] (`commands/help`). Dispatch is by NAME (the executor maps any catalog name
 // straight back to its command), so a tool not in the natively-offered set still
 // runs — which is exactly what makes disclosure safe. The catalog is a pure,
 // data-driven projection of the registry (NOT output puppeteering): same single
@@ -136,8 +134,8 @@ pub struct ToolCatalogEntry {
 /// The persona's tool catalog at `trust`: the same authorized set as
 /// [`authorized_tool_specs`], projected to compact [`ToolCatalogEntry`] lines
 /// (name + one-line summary + category) instead of full schemas. This is what the
-/// persona browses; the full argument schema for any one tool comes from
-/// [`TOOL_DESCRIBE_NAME`] on demand.
+/// persona browses; the full call format for any one tool comes from
+/// [`TOOL_HELP_NAME`] on demand.
 pub fn authorized_tool_catalog(trust: TrustLevel) -> Vec<ToolCatalogEntry> {
     command_registry()
         .iter()
@@ -180,7 +178,7 @@ fn tool_summary(d: &CommandDescriptor) -> String {
 ///   - **rich** (`name — summary`, grouped by category) when it fits `budget_chars`;
 ///   - **terse** (`category: name1, name2, …`) names-only otherwise.
 /// Names are always the full command name (the persona uses them verbatim for
-/// `tool/describe` and for the call itself). Operates on the [`NativeToolSpec`]
+/// `commands/help` and for the call itself). Operates on the [`NativeToolSpec`]
 /// surface the faculty already holds, so it never re-queries the registry.
 pub fn render_tool_catalog(tools: &[NativeToolSpec], budget_chars: usize) -> String {
     if tools.is_empty() {
@@ -228,7 +226,7 @@ fn render_rich(groups: &BTreeMap<&str, Vec<&NativeToolSpec>>) -> String {
 
 /// Terse rendering (fallback for tiny windows): one line per category, just the
 /// names. Always emitted regardless of size — the names must stay visible so the
-/// persona can name a tool for `tool/describe`.
+/// persona can name a tool for `commands/help`.
 fn render_terse(groups: &BTreeMap<&str, Vec<&NativeToolSpec>>) -> String {
     let mut out = String::new();
     for (cat, tools) in groups {
@@ -269,71 +267,13 @@ pub fn spec_for_command(name: &str) -> Option<NativeToolSpec> {
         .map(descriptor_to_tool_spec)
 }
 
-// ─────────────────────────── tool/describe ───────────────────────────
-
-#[derive(Default)]
-pub struct ToolDescribe;
-
-#[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
-pub struct ToolDescribeParams {
-    /// The exact tool (command) name to describe, e.g. `code/read` or `data/list`
-    /// — one of the names from the tool catalog in your context.
-    pub name: String,
-}
-
-#[derive(Debug, Clone, Serialize, TS)]
-pub struct ToolDescribeResult {
-    /// The tool name queried (echoed back).
-    pub name: String,
-    /// Whether a command with this name exists in the registry. `false` names the
-    /// miss instead of inventing a schema.
-    pub found: bool,
-    /// The tool's full description (empty when not found).
-    pub description: String,
-    /// The tool's complete JSON parameter schema, pretty-printed — the exact fields,
-    /// types, and which are required. This is what you read before calling the tool.
-    /// Empty when not found.
-    pub schema_json: String,
-}
-
-#[async_trait]
-impl ActionCommand for ToolDescribe {
-    const NAME: &'static str = TOOL_DESCRIBE_NAME;
-    const ACCESS: AccessLevel = AccessLevel::AiSafe;
-    const DESCRIPTION: &'static str =
-        "Get the full argument schema for ONE tool by name. Your context lists the available \
-         tools as names grouped by category (without their arguments, to stay compact); call this \
-         with a tool's exact name to see its parameters — the fields, types, and which are \
-         required — right before you call that tool.";
-    type Params = ToolDescribeParams;
-    type Output = ToolDescribeResult;
-
-    async fn run(&self, _ctx: &Ctx, p: ToolDescribeParams) -> Result<ToolDescribeResult, CommandError> {
-        match spec_for_command(&p.name) {
-            Some(spec) => {
-                let schema_json = serde_json::to_string_pretty(&spec.input_schema)
-                    .map_err(|e| CommandError::Internal(format!("serialize schema: {e}")))?;
-                Ok(ToolDescribeResult {
-                    name: p.name,
-                    found: true,
-                    description: spec.description,
-                    schema_json,
-                })
-            }
-            None => Ok(ToolDescribeResult {
-                description: format!(
-                    "No tool named `{}` exists. Use a name exactly as listed in your tool catalog.",
-                    p.name
-                ),
-                name: p.name,
-                found: false,
-                schema_json: String::new(),
-            }),
-        }
-    }
-}
-
-crate::register_stateless_command!(ToolDescribe);
+// The on-demand "how do I call this?" tool is the EXISTING `commands/help`
+// ([`CommandsHelp`] in `crate::commands::help`), referenced by [`TOOL_HELP_NAME`].
+// We deliberately do NOT define a parallel describe command here — `commands/help`
+// renders a fill-in-the-blanks tool-call envelope with typed argument docs (better
+// for a small model than raw JSON Schema), and one source of truth for the call
+// format is the compression principle. The faculty offers `commands/help` as the
+// single native tool alongside the compact catalog.
 
 /// Project a command's params JSON Schema into the LLM [`ToolInputSchema`]. A
 /// `Null` schema (command not yet on a base trait) → an open object. Otherwise

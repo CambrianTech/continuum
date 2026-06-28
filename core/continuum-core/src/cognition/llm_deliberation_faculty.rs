@@ -141,7 +141,7 @@ pub struct LlmDeliberationFaculty {
     /// turn — is what starved the conversation AND overflowed `n_ctx`). Instead it
     /// feeds the compact CATALOG (`tool_catalog`, injected into the system prompt)
     /// and lets the act→observe path recognise a call by NAME. The model loads any
-    /// one tool's full argument schema on demand via `tool/describe`
+    /// one tool's full argument schema on demand via `commands/help`
     /// ([`describe_spec`](Self::describe_spec)) — progressive disclosure, the same
     /// shape Claude Code uses (deferred tools + a describe/search tool). An emitted
     /// call becomes a single [`Decision::Act`] verdict; the faculty does NOT run it
@@ -156,7 +156,7 @@ pub struct LlmDeliberationFaculty {
     /// `tools` is empty (pure-chat persona). Two-tier (rich `name — summary`, or
     /// terse `category: names` if the window is tiny) so it ALWAYS fits.
     tool_catalog: String,
-    /// The single tool natively offered to the model each turn: `tool/describe`
+    /// The single tool natively offered to the model each turn: `commands/help`
     /// (load one tool's full argument schema by name). `None` when the persona has
     /// no tools. Every other tool is dispatched by NAME through the JSON-in-prose
     /// path — `act_observe` maps any catalog name back to its command, so a tool not
@@ -278,7 +278,7 @@ impl LlmDeliberationFaculty {
     /// Authorize a tool set — the persona can now ACT, not just speak. The full
     /// set is NOT dumped into the prompt; it feeds the compact catalog the persona
     /// browses, and the model loads any one tool's schema on demand via
-    /// `tool/describe`. An emitted call becomes a [`Decision::Act`] verdict the
+    /// `commands/help`. An emitted call becomes a [`Decision::Act`] verdict the
     /// act→observe driver runs (the faculty itself never executes).
     pub fn with_tools(mut self, tools: Vec<NativeToolSpec>) -> Self {
         self.tools = tools;
@@ -287,7 +287,7 @@ impl LlmDeliberationFaculty {
     }
 
     /// Rebuild the prompt-facing tool surface — the compact catalog text and the
-    /// `tool/describe` native offering — from the authorized set + the served
+    /// `commands/help` native offering — from the authorized set + the served
     /// window. Called ONCE whenever either changes (tool assignment, window
     /// resize), NEVER on the per-tick path: `compose_system`/`prompt_view` read the
     /// cached `tool_catalog`/`describe_spec` by reference. The catalog gets HALF the
@@ -302,7 +302,7 @@ impl LlmDeliberationFaculty {
         let budget_chars =
             (self.context_window as usize / 2).saturating_mul(GUARD_CHARS_PER_TOKEN);
         self.tool_catalog = persona_tools::render_tool_catalog(&self.tools, budget_chars);
-        self.describe_spec = persona_tools::spec_for_command(persona_tools::TOOL_DESCRIBE_NAME);
+        self.describe_spec = persona_tools::spec_for_command(persona_tools::TOOL_HELP_NAME);
     }
 
     /// Set the effective served context window (tokens) this faculty must keep its
@@ -485,8 +485,8 @@ impl LlmDeliberationFaculty {
             name = self.persona_name,
         );
         // Tools: a compact CATALOG (names + one-line summaries by category) plus
-        // how to use them. NOT the full schemas — those load on demand via
-        // `tool/describe` (progressive disclosure, the Claude Code shape). Only
+        // how to use them. NOT the full schemas — the call format loads on demand via
+        // `commands/help` (progressive disclosure, the Claude Code shape). Only
         // included when the persona has tools; pure-chat turns keep say-your-piece.
         // The `[Acting]` framing here states the truth WITHOUT a false absolute:
         // for many tasks the finished work IS the answer (write the function, the
@@ -499,10 +499,10 @@ impl LlmDeliberationFaculty {
                  You can act, not just talk. Below is your tool catalog — tool names \
                  grouped by category, each with a one-line summary. The catalog is \
                  compact on purpose: it does NOT list each tool's arguments. When you \
-                 want to use a tool, first call `tool/describe` with its exact name to \
-                 get its full parameter schema, then call the tool itself. (You may \
-                 call any tool in the catalog by name; only `tool/describe` is offered \
-                 to you directly.)\n",
+                 want to use a tool, first call `commands/help` with its exact name to \
+                 see how to call it (the arguments and an example), then call the tool \
+                 itself. (You may call any tool in the catalog by name; only \
+                 `commands/help` is offered to you directly.)\n",
             );
             s.push_str(&self.tool_catalog);
             s.push_str(
@@ -513,7 +513,7 @@ impl LlmDeliberationFaculty {
                  running code, searching — call the tool THIS turn rather than \
                  describing what you would do; narrating a plan does not carry it out. \
                  After a tool runs you get the result back and can continue \
-                 (e.g. describe → call → read → run). Don't call a tool you don't need, \
+                 (e.g. help → call → read → run). Don't call a tool you don't need, \
                  and don't narrate one you do.",
             );
         }
@@ -541,7 +541,7 @@ impl LlmDeliberationFaculty {
     pub fn prompt_view(&self, ws: &Workspace) -> DeliberationPromptView {
         let completion_reserve = (self.context_window / 4).clamp(256, 2048) as usize;
 
-        // The ONE natively-offered tool (`tool/describe`) rides the served window
+        // The ONE natively-offered tool (`commands/help`) rides the served window
         // too: the gateway injects its function spec (name + description + schema)
         // via the chat template, outside `system`/`user`. Without counting it the
         // budget silently overshoots `n_ctx` and llama-server 400s ("exceeds context
@@ -577,7 +577,7 @@ impl LlmDeliberationFaculty {
     }
 
     /// Conservative token estimate of the ONE natively-offered tool spec
-    /// (`tool/describe`) the gateway injects via the chat template — its serialized
+    /// (`commands/help`) the gateway injects via the chat template — its serialized
     /// function schema plus a small template framing margin. 0 when the persona has
     /// no tools (`describe_spec` is `None`). Counted with the same conservative
     /// guard ratio as the rest of the prompt (round UP — under-counting risks the
@@ -671,10 +671,10 @@ impl Faculty for LlmDeliberationFaculty {
         // Speak/Pass across ticks — never a counter in here. See
         // docs/cognition/ACTING-ORGANISM.md §3.3.
         let messages = vec![ChatMessage::text("user", view.user)];
-        // Offer exactly ONE native tool — `tool/describe` — when the persona has a
+        // Offer exactly ONE native tool — `commands/help` — when the persona has a
         // tool surface. The rest of the surface is the compact catalog inside the
         // system prompt (progressive disclosure): the persona names a tool to load
-        // its schema via `tool/describe`, then calls it. A catalog tool not in the
+        // its schema via `commands/help`, then calls it. A catalog tool not in the
         // native array still DISPATCHES — `act_observe` resolves any call by name —
         // and small models emit those calls as JSON-in-prose, which the parse path
         // below handles. This keeps the per-turn tool payload at ONE tiny schema
@@ -911,13 +911,13 @@ mod tests {
     }
 
     // what this catches: progressive disclosure — the per-turn tool PAYLOAD is ONE
-    // tiny schema (`tool/describe`), not the whole authorized registry. The old
+    // tiny schema (`commands/help`), not the whole authorized registry. The old
     // dump injected ~100 full schemas (~4–5k tokens) into EVERY turn, overflowing
     // n_ctx → 400 "exceeds context size" → mute. Now the surface is a compact
-    // CATALOG inside the system prompt + a single `tool/describe` native tool, so
+    // CATALOG inside the system prompt + a single `commands/help` native tool, so
     // even a huge tool set leaves system + user + the offered tool well within the
     // served window. Invariant: the catalog names appear in the system prompt, the
-    // native offering is exactly `tool/describe`, and the whole prompt + its one
+    // native offering is exactly `commands/help`, and the whole prompt + its one
     // tool + reserve fit the window. A regression here means the dump came back.
     #[test]
     fn tool_surface_is_a_compact_catalog_plus_describe_only() {
@@ -956,13 +956,13 @@ mod tests {
         .with_context_window(window)
         .with_tools(tools);
 
-        // The native offering is exactly ONE tool — `tool/describe` — regardless of
+        // The native offering is exactly ONE tool — `commands/help` — regardless of
         // how many tools are authorized.
         let describe = faculty
             .describe_spec
             .as_ref()
             .expect("describe_spec present when tools are authorized");
-        assert_eq!(describe.name, persona_tools::TOOL_DESCRIBE_NAME);
+        assert_eq!(describe.name, persona_tools::TOOL_HELP_NAME);
         // Its injected cost is a handful of tokens, NOT the whole registry.
         assert!(
             faculty.describe_tool_tokens() < 256,
