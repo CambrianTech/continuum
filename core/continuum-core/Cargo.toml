@@ -62,7 +62,7 @@ continuum-airc-protocol = { path = "../continuum-airc-protocol" }
 # use clients ([[persona-is-a-client]]). No cycle: continuum-client does not
 # depend on continuum-core.
 continuum-client = { path = "../../client/continuum-client" }
-reqwest = { version = "0.12", features = ["json", "multipart"] }
+reqwest = { version = "0.12", features = ["json", "multipart", "stream"] }
 thiserror.workspace = true
 dashmap = "6.1"  # Lock-free concurrent HashMap
 # Distributed compile-time registration: each `CommandSpec` self-registers at its
