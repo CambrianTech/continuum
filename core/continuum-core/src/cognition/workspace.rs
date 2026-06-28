@@ -449,6 +449,12 @@ pub struct WorkspaceTrace {
     pub broadcast: Vec<Contribution>,
     /// The participation decision that emerged, if any.
     pub decision: Option<Decision>,
+    /// Per-faculty wall-clock for THIS tick — every faculty across both phases,
+    /// winners/losers/abstainers alike. The speed axis of the four-axis scoreboard
+    /// and the dashboard's primary feed: it answers "where did this turn's latency
+    /// actually go?" After deferral, the perception tier should read ~0µs and the
+    /// deliberation LLM call should visibly dominate. See [`FacultyTiming`].
+    pub timings: Vec<FacultyTiming>,
 }
 
 /// Sink for workspace traces — the replay/logging seam. Default is `Noop`
@@ -594,6 +600,28 @@ pub struct ReplayBid {
     pub faculty: FacultyId,
     pub contribution: Option<Contribution>,
     pub elapsed_us: u128,
+}
+
+/// Per-faculty wall-clock for ONE **live** tick — the live analog of
+/// [`ReplayBid`]'s timing, captured for EVERY faculty (winners, losers, AND
+/// abstainers) so the glass box shows where a turn's latency actually went.
+/// This is the speed scoreboard at faculty granularity and the dashboard's
+/// primary feed: after deferring recall + the grounding sources, every
+/// perception faculty should read ~0µs (a warm last-good cache read) while the
+/// deliberation LLM call visibly dominates — the proof, per tick, that the only
+/// thing left on the critical path is inference. An abstaining faculty is still
+/// timed: a slow abstainer is exactly the latency you need to see.
+#[derive(Debug, Clone)]
+pub struct FacultyTiming {
+    pub faculty: FacultyId,
+    /// Wall-clock this faculty's `contribute()` took on the live concurrent
+    /// barrier — includes scheduling waits, which is honest: it's the latency the
+    /// barrier actually saw, not an isolated micro-benchmark.
+    pub elapsed_us: u128,
+    /// `false` = perception tier (phase 1); `true` = deliberation tier (phase 2).
+    pub deliberation: bool,
+    /// Whether the faculty produced a [`Contribution`] (vs abstained).
+    pub bid: bool,
 }
 
 impl WorkspaceCycle {
@@ -765,12 +793,36 @@ impl WorkspaceCycle {
             .iter()
             .filter(|f| !f.reacts_to_broadcast())
             .collect();
-        let mut context_bids: Vec<Contribution> =
-            join_all(perception.iter().map(|f| f.contribute(&ws)))
-                .await
-                .into_iter()
-                .flatten()
-                .collect();
+        // Time every faculty individually on the live concurrent barrier — winners,
+        // losers, AND abstainers — so the glass box / dashboard sees exactly where a
+        // tick's latency went. `let ws = &ws` rebinds to a shared reference so each
+        // `async move` future copies the POINTER (concurrent immutable borrow), never
+        // moving the Workspace.
+        let mut timings: Vec<FacultyTiming> = Vec::with_capacity(self.faculties.len());
+        let perception_timed: Vec<(FacultyId, u128, Option<Contribution>)> =
+            join_all(perception.iter().map(|f| {
+                let f = *f;
+                let ws = &ws;
+                async move {
+                    let id = f.id();
+                    let t0 = std::time::Instant::now();
+                    let bid = f.contribute(ws).await;
+                    (id, t0.elapsed().as_micros(), bid)
+                }
+            }))
+            .await;
+        let mut context_bids: Vec<Contribution> = Vec::with_capacity(perception_timed.len());
+        for (id, us, bid) in perception_timed {
+            timings.push(FacultyTiming {
+                faculty: id,
+                elapsed_us: us,
+                deliberation: false,
+                bid: bid.is_some(),
+            });
+            if let Some(c) = bid {
+                context_bids.push(c);
+            }
+        }
         // Stamp each finding with the cycle it reasoned against. Immediate faculties
         // all saw THIS workspace, so the stamp is `ws.cycle`; a future deferred lane
         // will stamp its own (older) cycle and reconcile forward.
@@ -790,12 +842,30 @@ impl WorkspaceCycle {
             .iter()
             .filter(|f| f.reacts_to_broadcast())
             .collect();
-        let mut decision_bids: Vec<Contribution> =
-            join_all(deliberation.iter().map(|f| f.contribute(&ws)))
-                .await
-                .into_iter()
-                .flatten()
-                .collect();
+        let deliberation_timed: Vec<(FacultyId, u128, Option<Contribution>)> =
+            join_all(deliberation.iter().map(|f| {
+                let f = *f;
+                let ws = &ws;
+                async move {
+                    let id = f.id();
+                    let t0 = std::time::Instant::now();
+                    let bid = f.contribute(ws).await;
+                    (id, t0.elapsed().as_micros(), bid)
+                }
+            }))
+            .await;
+        let mut decision_bids: Vec<Contribution> = Vec::with_capacity(deliberation_timed.len());
+        for (id, us, bid) in deliberation_timed {
+            timings.push(FacultyTiming {
+                faculty: id,
+                elapsed_us: us,
+                deliberation: true,
+                bid: bid.is_some(),
+            });
+            if let Some(c) = bid {
+                decision_bids.push(c);
+            }
+        }
         for bid in &mut decision_bids {
             bid.cycle = cycle;
         }
@@ -815,6 +885,7 @@ impl WorkspaceCycle {
             context_broadcast,
             broadcast: ws.broadcast.clone(),
             decision: ws.decision().cloned(),
+            timings,
         });
         ws
     }

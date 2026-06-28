@@ -24,10 +24,13 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde::Serialize;
 use uuid::Uuid;
 
-use super::workspace::{Contribution, Decision, WorkspaceCaptureSink, WorkspaceTrace};
+use super::workspace::{
+    Contribution, Decision, FacultyTiming, WorkspaceCaptureSink, WorkspaceTrace,
+};
 
 /// Bumped when the on-disk record shape changes (replay readers gate on it).
-const SCHEMA_VERSION: u32 = 1;
+/// v2 added per-faculty `timings` (the speed axis / dashboard feed).
+const SCHEMA_VERSION: u32 = 2;
 
 /// One faculty's bid, projected to a serializable shape. The internal
 /// [`Contribution`] is intentionally NOT `Serialize` (it's a live cognition
@@ -60,6 +63,32 @@ impl From<&Contribution> for BidRecord {
     }
 }
 
+/// One faculty's wall-clock for this tick, projected to the wire — the speed
+/// axis. Reading these back across a fixture's lines is how "did deferral push
+/// the perception tier to ~0µs and leave only the LLM on the critical path?"
+/// becomes a measured fact, not a hope.
+#[derive(Debug, Serialize)]
+struct TimingRecord {
+    faculty: String,
+    elapsed_us: u128,
+    /// `false` = perception tier, `true` = deliberation tier.
+    deliberation: bool,
+    /// Whether the faculty produced a bid (vs abstained) — a slow abstainer is
+    /// still latency you need to see.
+    bid: bool,
+}
+
+impl From<&FacultyTiming> for TimingRecord {
+    fn from(t: &FacultyTiming) -> Self {
+        Self {
+            faculty: t.faculty.as_str().to_string(),
+            elapsed_us: t.elapsed_us,
+            deliberation: t.deliberation,
+            bid: t.bid,
+        }
+    }
+}
+
 /// One serialized workspace tick — the full mechanic's view of one turn's mind.
 #[derive(Debug, Serialize)]
 struct WorkspaceTraceRecord {
@@ -75,6 +104,8 @@ struct WorkspaceTraceRecord {
     context: Vec<BidRecord>,
     /// The participation decision that emerged, if any (kebab-tagged).
     decision: Option<Decision>,
+    /// Per-faculty wall-clock for this tick (the speed axis / dashboard feed).
+    timings: Vec<TimingRecord>,
 }
 
 /// Appends one JSON line per workspace tick to a per-persona JSONL file
@@ -117,6 +148,7 @@ impl WorkspaceCaptureSink for JsonlWorkspaceCaptureSink {
             bids: trace.bids.iter().map(BidRecord::from).collect(),
             context: trace.context_broadcast.iter().map(BidRecord::from).collect(),
             decision: trace.decision.clone(),
+            timings: trace.timings.iter().map(TimingRecord::from).collect(),
         };
         let line = match serde_json::to_string(&rec) {
             Ok(s) => s,
@@ -137,7 +169,9 @@ impl WorkspaceCaptureSink for JsonlWorkspaceCaptureSink {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cognition::workspace::{Contribution, CycleId, Decision, FacultyId};
+    use crate::cognition::workspace::{
+        Contribution, CycleId, Decision, FacultyId, FacultyTiming,
+    };
 
     // what this catches: THE core VDD property — a captured tick must round-trip
     // to disk with every faculty's bid CONTENT intact (so "was the recalled engram
@@ -180,6 +214,20 @@ mod tests {
             decision: Some(Decision::Speak {
                 text: "Let's roll back the migration.".to_string(),
             }),
+            timings: vec![
+                FacultyTiming {
+                    faculty: FacultyId::Recall,
+                    elapsed_us: 12,
+                    deliberation: false,
+                    bid: true,
+                },
+                FacultyTiming {
+                    faculty: FacultyId::Deliberation,
+                    elapsed_us: 4200,
+                    deliberation: true,
+                    bid: true,
+                },
+            ],
         };
         sink.record(&trace);
 
@@ -205,6 +253,15 @@ mod tests {
         assert_eq!(v["context"].as_array().unwrap().len(), 1);
         // The decision round-trips with its kebab tag.
         assert_eq!(v["decision"]["kind"], "speak");
+        // Per-faculty timing (the speed axis) round-trips: the deliberation tier is
+        // captured and flagged, so "where did the turn's latency go?" is answerable.
+        let timings = v["timings"].as_array().unwrap();
+        assert!(
+            timings.iter().any(|t| t["faculty"] == "deliberation"
+                && t["deliberation"] == true
+                && t["elapsed_us"].as_u64().unwrap() == 4200),
+            "deliberation timing must be captured: {timings:?}"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -223,6 +280,7 @@ mod tests {
             context_broadcast: vec![],
             broadcast: vec![],
             decision: None,
+            timings: vec![],
         };
         sink.record(&mk(Uuid::new_v4()));
         sink.record(&mk(Uuid::new_v4()));
