@@ -155,7 +155,12 @@ pub fn build_workspace_cycle(cfg: PersonaBrainConfig) -> WorkspaceCycle {
         )))
     });
     faculties.push(Arc::new(
-        RecallFaculty::new(cfg.persona_id, cfg.admission).with_embedder(embedder),
+        RecallFaculty::new(cfg.persona_id, cfg.admission)
+            .with_embedder(embedder)
+            // Budget recall by the served model's capability: a tight 4B window
+            // gets fewer memories (and a closest-match floor drops topically-
+            // irrelevant high-salience nags) so attention isn't spent on noise.
+            .with_context_window(cfg.context_window),
     ));
 
     // Working memory: the persona's recent chain-of-thought, carried forward across
