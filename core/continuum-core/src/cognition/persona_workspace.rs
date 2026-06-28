@@ -17,6 +17,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use uuid::Uuid;
 
+use super::deferred_faculty::DeferredFaculty;
 use super::embedding::{CachingEmbeddingProvider, EmbeddingProvider, LexicalEmbedder};
 use super::llm_deliberation_faculty::LlmDeliberationFaculty;
 use super::rag_source_faculty::{RagSourceFaculty, SaliencePolicy};
@@ -87,6 +88,20 @@ pub struct PersonaBrainConfig {
     /// where the window invariant is enforced. Without it the faculty's prompt
     /// overflows `-c` and llama-server 500s ("Context size has been exceeded").
     pub context_window: u32,
+    /// Run recall as a SPECULATIVE PREFETCH off the hot path (Joel's CPU analogy:
+    /// recall is the prefetch — always run it speculatively in idle time between
+    /// turns, so the turn reads a warm last-good instead of paying the
+    /// neural-embed + vector-search latency on the critical path). `true` on the
+    /// LIVE paths (turns are seconds apart, so the background worker always
+    /// catches up → warm recall). `false` for eval forks and harnesses, whose
+    /// tight settle-loops never yield to the worker, so they'd measure a
+    /// recall-STARVED mind — they keep synchronous recall (faithful, the safe
+    /// direction: eval never under-reports capability). Wrapping is
+    /// [`DeferredFaculty`]; the cold-start (first tick in a room) is a guaranteed
+    /// prefetch miss, exactly like a cold branch predictor, then warm thereafter.
+    ///
+    /// [`DeferredFaculty`]: super::deferred_faculty::DeferredFaculty
+    pub defer_recall: bool,
 }
 
 /// A grounding [`RagSource`] plus the [`SaliencePolicy`] under which it competes
@@ -154,14 +169,27 @@ pub fn build_workspace_cycle(cfg: PersonaBrainConfig) -> WorkspaceCycle {
             LexicalEmbedder::new(),
         )))
     });
-    faculties.push(Arc::new(
-        RecallFaculty::new(cfg.persona_id, cfg.admission)
-            .with_embedder(embedder)
-            // Budget recall by the served model's capability: a tight 4B window
-            // gets fewer memories (and a closest-match floor drops topically-
-            // irrelevant high-salience nags) so attention isn't spent on noise.
-            .with_context_window(cfg.context_window),
-    ));
+    let recall = RecallFaculty::new(cfg.persona_id, cfg.admission)
+        .with_embedder(embedder)
+        // Budget recall by the served model's capability: a tight 4B window
+        // gets fewer memories (and a closest-match floor drops topically-
+        // irrelevant high-salience nags) so attention isn't spent on noise.
+        .with_context_window(cfg.context_window);
+    // Recall is speculative prefetch (Joel's CPU branch-prediction analogy): on
+    // the live paths we run it OFF the hot path so the per-turn output never
+    // waits on a neural-embed + vector-search round-trip. The worker computes
+    // "what memories might this burst need?" between turns (idle time, like a
+    // CPU's speculative execution); the turn reads the warm last-good. Cold-start
+    // is a guaranteed miss (None on the first tick in a room), warm thereafter;
+    // the slice-2.1 room guard ensures a prefetch computed for one room is never
+    // served into another. Eval forks + harnesses keep recall SYNCHRONOUS
+    // (`defer_recall == false`): their tight settle-loops never yield to the
+    // worker, so deferral there would measure a recall-starved mind.
+    if cfg.defer_recall {
+        faculties.push(Arc::new(DeferredFaculty::spawn(Arc::new(recall))));
+    } else {
+        faculties.push(Arc::new(recall));
+    }
 
     // Working memory: the persona's recent chain-of-thought, carried forward across
     // turns. The deliberator WRITES its reasoning here after each verdict; this
@@ -379,6 +407,10 @@ impl PersonaWorkspaceRegistry {
     pub fn fork_eval_cycle(&self, persona_id: &Uuid) -> Option<WorkspaceCycle> {
         let mut cfg = self.templates.lock().unwrap().get(persona_id)?.clone();
         cfg.admission = Arc::new(cfg.admission.fork_detached());
+        // The eval fork runs recall SYNCHRONOUSLY: drive_to_settle's tight loop
+        // never yields to a background prefetch worker, so deferral would measure
+        // a recall-starved copy. Faithful eval = synchronous recall here.
+        cfg.defer_recall = false;
         Some(build_workspace_cycle(cfg))
     }
 
@@ -410,6 +442,8 @@ impl PersonaWorkspaceRegistry {
         cfg.admission = Arc::new(cfg.admission.fork_detached());
         cfg.adapter = adapter;
         cfg.context_window = context_window;
+        // Synchronous recall on the eval copy (see `fork_eval_cycle`).
+        cfg.defer_recall = false;
         Some(build_workspace_cycle(cfg))
     }
 
@@ -504,6 +538,10 @@ mod tests {
             embedder: None,
             tool_executor: None,
             context_window: crate::cognition::serving_plan::MIN_SERVE_CTX,
+            // Synchronous recall in the harness: these tests assert recall bids in
+            // phase 1 on the same tick, which a deferred (cold-start) worker can't
+            // satisfy. Deferral is a live-path concern, tested in deferred_faculty.rs.
+            defer_recall: false,
         }
     }
 
