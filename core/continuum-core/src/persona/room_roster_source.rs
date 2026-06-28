@@ -75,11 +75,10 @@ const PRESENCE_WINDOW: Duration = Duration::from_secs(120);
 /// full scrollback. Passed straight to `Airc::room_roster`.
 const ROSTER_SCAN: usize = 200;
 
-/// Rough chars/token estimate — same heuristic `AircRagSource` /
-/// `EngramSource` use. Real tokenizer integration lands in slice 12+.
-fn estimate_tokens(content: &str) -> u32 {
-    ((content.chars().count() / 4) as u32).saturating_add(1)
-}
+/// Token estimate — the ONE canonical chars/4 estimator (`cognition::token_budget`),
+/// shared by every RAG source so the replay ledger's numbers match. (Was a private
+/// copy — converged.)
+use crate::cognition::token_budget::estimate_prompt_tokens as estimate_tokens;
 
 /// Abstract reader over airc room membership. Production impl rides on
 /// `airc_lib::Airc::room_roster`; tests use a stub that returns canned

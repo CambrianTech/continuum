@@ -58,10 +58,10 @@ use crate::persona::rag_budget::{
 /// `room-roster` / `room-doctrine` in the brain path).
 const SOURCE_ID: &str = "workspace-map";
 
-/// Rough chars/token estimate — same heuristic the sibling RAG sources use.
-fn estimate_tokens(content: &str) -> u32 {
-    ((content.chars().count() / 4) as u32).saturating_add(1)
-}
+/// Token estimate — the ONE canonical chars/4 estimator (`cognition::token_budget`),
+/// shared by every RAG source so the replay ledger's numbers match. (Was a private
+/// copy — converged.)
+use crate::cognition::token_budget::estimate_prompt_tokens as estimate_tokens;
 
 /// The real shape of the workspace: the root the tools act in, plus its
 /// top-level directory names (the navigation structure a persona globs against).

@@ -64,13 +64,10 @@ const RECENCY_WINDOW_MS: u64 = 24 * 60 * 60 * 1000;
 /// continuation cursor scope check.
 const SOURCE_ID: &str = "engrams";
 
-/// Rough char → token estimate. Real tokenizer integration is
-/// slice 12+ when prompt assembly needs accurate counts per
-/// model. For slice 10's scoring + packing, 4 chars/token is a
-/// reasonable approximation for English text.
-fn estimate_tokens(content: &str) -> u32 {
-    ((content.chars().count() / 4) as u32).saturating_add(1)
-}
+/// Token estimate — the ONE canonical chars/4 estimator (`cognition::token_budget`),
+/// shared by every RAG source so the replay ledger's numbers match. (Was a private
+/// copy — converged.)
+use crate::cognition::token_budget::estimate_prompt_tokens as estimate_tokens;
 
 /// Linear recency over `RECENCY_WINDOW_MS`. Returns 1.0 for
 /// engrams admitted right at `now_ms`, 0.0 for engrams admitted
