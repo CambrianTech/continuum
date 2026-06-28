@@ -133,6 +133,11 @@ async fn spawn_gene_eval_lane(
             alias: gene.name.clone(),
             path: entry.path.clone(),
         }],
+        // CPU-resident: the living persona lane holds the GPU. Two resident models
+        // OOM the single Metal device at decode time (the all-empty eval); pinning
+        // this throwaway lane to CPU RAM honors #59 (don't degrade the living lane)
+        // and the single-GPU budget (#56). [[LanePlacement]].
+        placement: crate::inference::llama_server::LanePlacement::Cpu,
     };
     let lane = EphemeralServingLane::spawn(&target, EVAL_LANE_BASE_PORT)
         .await
@@ -148,7 +153,12 @@ async fn spawn_gene_eval_lane(
     let mut adapter =
         crate::ai::openai_adapter::OpenAICompatibleAdapter::from_registry(PROVIDER_ID)
             .with_runtime_base_url(lane.root().to_string())
-            .with_default_model(base.id.clone());
+            .with_default_model(base.id.clone())
+            // This adapter owns the ephemeral lane it points at — readiness is
+            // guaranteed at spawn. Trust this lane, not the global serving snapshot
+            // (which only knows the living 14B persona lane and would otherwise
+            // refuse every generation against the forged-4b copy). [[#59]].
+            .with_dedicated_lane();
     adapter
         .initialize()
         .await

@@ -106,6 +106,31 @@ pub struct ServingTarget {
     /// page-in/out within a loaded set never relaunches. Empty = base model only
     /// (the legitimate no-genes-trained state, NOT a fallback).
     pub adapters: Vec<AdapterEntry>,
+    /// Where this lane's weights run. The live persona lane runs on the GPU
+    /// (`Gpu` — every offloadable layer) for throughput; a throwaway measurement
+    /// lane that must COEXIST with the living GPU lane runs on the CPU (`Cpu` —
+    /// `--n-gpu-layers 0`) so it never contends for the VRAM the living persona
+    /// already holds. On a single GPU two resident models OOM the Metal command
+    /// buffer at decode time (`kIOGPUCommandBufferCallbackErrorOutOfMemory`),
+    /// which surfaced as a silent all-empty eval; pinning the eval lane to CPU
+    /// honors humane-eval (#59 — never degrade the living lane) AND the
+    /// single-GPU budget (#56) by using the free CPU RAM (the misfit-toy
+    /// resource). This is an explicit placement the CALLER chooses, NOT a silent
+    /// fallback — when the `ResourceGovernor` (#56) lands it owns this decision
+    /// (tier the live lane down, route to a grid peer with free GPU, or pin CPU).
+    pub placement: LanePlacement,
+}
+
+/// Where a serving lane's model weights are resident — see [`ServingTarget::placement`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum LanePlacement {
+    /// Offload every layer llama-server can to the GPU — its default, so we omit
+    /// the flag. The throughput placement for the living persona lane.
+    #[default]
+    Gpu,
+    /// Pin all layers to CPU RAM (`--n-gpu-layers 0`). Zero VRAM contention — for
+    /// a measurement lane coexisting with a GPU-resident living lane.
+    Cpu,
 }
 
 /// One LoRA genome layer to load into the serving catalog at spawn. The `path`
@@ -708,6 +733,13 @@ impl LlamaServerControl for LlamaServerProcess {
             // Serve embeddings from the same process so the embedder doesn't
             // need a second server. Personas' embedding adapter points here too.
             .arg("--embeddings");
+        // Placement: CPU lanes pin every layer to RAM so they never contend for
+        // the GPU VRAM a living lane already holds (the Metal decode-time OOM that
+        // muted the eval). GPU lanes omit the flag — llama-server offloads all it
+        // can by default. [[ServingTarget::placement]] / #59 / #56.
+        if target.placement == LanePlacement::Cpu {
+            cmd.arg("--n-gpu-layers").arg("0");
+        }
         // Native tool-calling needs the model's TOOL-CAPABLE chat template. The
         // mlx→gguf conversion can strip the embedded template down to a bare
         // ChatML loop (no `<tools>`/`<tool_call>` rendering) — which silently
@@ -850,6 +882,7 @@ mod tests {
             context_window: 32768,
             lanes: 1,
             adapters: Vec::new(),
+            placement: LanePlacement::Gpu,
         }
     }
 

@@ -452,6 +452,9 @@ impl ServingDaemonModule {
             context_window: served_ctx,
             lanes,
             adapters: desired_adapters,
+            // The living persona lane: GPU-resident for throughput (every
+            // offloadable layer). [[LanePlacement]].
+            placement: crate::inference::llama_server::LanePlacement::Gpu,
         };
 
         // One reconcile at a time. If the swap finds `true`, another is already

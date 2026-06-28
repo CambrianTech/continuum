@@ -143,6 +143,17 @@ pub struct OpenAICompatibleAdapter {
     /// Used when DMR reaches us at `model-runner.docker.internal` instead
     /// of `localhost:12434` (detected by `probe_dmr`).
     runtime_base_url: Option<String>,
+    /// This adapter OWNS a dedicated, single-purpose serving lane (an
+    /// `EphemeralServingLane` the eval spawned) rather than sharing the global
+    /// gateway. Set via [`with_dedicated_lane`]. When true, the single-resident
+    /// pre-flight guard trusts THIS lane (readiness was guaranteed at spawn — the
+    /// lane was launched with exactly this model and `EphemeralServingLane::spawn`
+    /// blocks until HTTP-ready) instead of consulting the GLOBAL serving snapshot,
+    /// which only ever knows the living persona lane's model. Without this, a
+    /// humane eval (#59) on a forged-4b copy is refused because the global snapshot
+    /// reports the live 14B — the wrong authority for a lane the eval owns.
+    /// Slot behavior is unchanged: a dedicated lane is still single-resident.
+    dedicated_lane: bool,
     client: reqwest::Client,
     initialized: bool,
     /// Live model catalog, populated from the server's /v1/models endpoint
@@ -209,6 +220,7 @@ impl OpenAICompatibleAdapter {
             config,
             api_key: None,
             runtime_base_url: None,
+            dedicated_lane: false,
             client,
             initialized: false,
             runtime_models: std::sync::Arc::new(std::sync::RwLock::new(None)),
@@ -222,6 +234,17 @@ impl OpenAICompatibleAdapter {
     /// instead of localhost:12434). Called post-construction, before init.
     pub fn with_runtime_base_url(mut self, url: String) -> Self {
         self.runtime_base_url = Some(url);
+        self
+    }
+
+    /// Mark this adapter as owning a dedicated, single-purpose serving lane (an
+    /// `EphemeralServingLane`) rather than sharing the global gateway. The
+    /// single-resident pre-flight guard then trusts THIS lane (readiness
+    /// guaranteed at spawn) instead of the global serving snapshot. See
+    /// [`OpenAICompatibleAdapter::dedicated_lane`]. Called post-construction,
+    /// before init, paired with [`with_runtime_base_url`] pointing at the lane.
+    pub fn with_dedicated_lane(mut self) -> Self {
+        self.dedicated_lane = true;
         self
     }
 
@@ -1305,7 +1328,11 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
         // ([[fallbacks-are-illegal-fail-loud]]). Bringing the right model up — and
         // cross-persona residency arbitration on the shared gateway — is the
         // serving layer's job (#109), not this gate.
-        if self.config.single_resident_model {
+        // A dedicated lane (eval's EphemeralServingLane) is its OWN authority:
+        // launched with exactly this model and confirmed HTTP-ready at spawn, so
+        // the GLOBAL serving snapshot (which only knows the living persona lane) is
+        // the wrong thing to consult. Skip the guard for a lane we own.
+        if self.config.single_resident_model && !self.dedicated_lane {
             let snap = crate::inference::llama_server::current_serving();
             if !snap.ready || snap.active_model.as_deref() != Some(model) {
                 return Err(format!(
