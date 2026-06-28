@@ -45,10 +45,83 @@ use super::workspace::{Contribution, Faculty, FacultyId, Workspace};
 use crate::persona::admission_state::AdmissionState;
 use crate::persona::engram::Engram;
 
-/// How many top engrams the faculty surfaces into the workspace per tick. A
-/// bounded "spotlight" on memory — the arbiter further bounds what reaches the
-/// decider.
-const DEFAULT_RECALL_LIMIT: usize = 5;
+/// Hard safety ceiling on memories surfaced per tick, regardless of model size —
+/// the [`RecallBudget`] picks the ACTUAL count (smaller) within this. `with_limit`
+/// can lower it for tests/bench. Generous: the budget, not this, is the real
+/// limiter on a live persona.
+const DEFAULT_RECALL_LIMIT: usize = 16;
+
+/// Minimum cosine relevance (vs the focused query) for a memory to be surfaced at
+/// all. The closest-match gate the recall budget enforces: a memory the
+/// hippocampus holds at high SALIENCE but that is topically UNRELATED to what's
+/// happening now (cosine ≈ 0) is junk in the prompt — it spends the small model's
+/// attention on noise. Gates on the relevance COMPONENT, never the blended score:
+/// a salience-1.0 nag blends to `0.5·0 + 0.5·1.0 = 0.5` and would sail over any
+/// blended floor, yet its cosine is ~0 and it must be dropped. Only meaningful
+/// when an embedder is present (lexical or neural); the no-embedder path has no
+/// relevance signal and is never floor-filtered. Tunable; the replay A/B bench can
+/// sweep it alongside [`DEFAULT_RELEVANCE_WEIGHT`].
+const RECALL_RELEVANCE_FLOOR: f32 = 0.15;
+
+/// Fraction of the served context window recall may spend, in tokens. Recall is
+/// ONE perception faculty among many (roster, doctrine, working memory) plus the
+/// room transcript and the identity prompt — it must never crowd them out. 10%
+/// keeps the live message dominant while still carrying the relevant past.
+const RECALL_WINDOW_FRACTION: f32 = 0.10;
+
+/// Recall count budgeted by the served model's capability, proxied by its context
+/// window (the metric the registry reliably carries today; param-size feeds in via
+/// #74 when the Model row hydrates it). A small model juggles fewer working items,
+/// so it gets fewer memories — burying a 4B under a dozen recalls is what collapsed
+/// its coding (clean 22/30 → wrapped 4/30, 2026-06-27). `0` = window unknown
+/// (harness) → the historical default of 5, unchanged.
+fn recall_count_for_window(context_window: u32) -> usize {
+    match context_window {
+        0 => 5,
+        1..=8_191 => 3,           // ~4B served tight (e.g. 4096)
+        8_192..=32_767 => 5,      // mid (8–32k)
+        32_768..=131_071 => 8,    // large local (e.g. 14B @ 32k+)
+        _ => 12,                  // cloud-class windows
+    }
+}
+
+/// The per-tick recall budget: how many memories may surface, the closest-match
+/// floor below which a candidate is dropped as topically-irrelevant noise, and the
+/// token ceiling recall may not exceed in the served window. Derived from the
+/// model's served capability — a small model is not buried under memory it cannot
+/// hold, and recall never eats the window. See [`recall_count_for_window`],
+/// [`RECALL_RELEVANCE_FLOOR`], [`RECALL_WINDOW_FRACTION`].
+struct RecallBudget {
+    max_count: usize,
+    relevance_floor: f32,
+    token_ceiling: usize,
+}
+
+impl RecallBudget {
+    fn for_window(context_window: u32) -> Self {
+        let token_ceiling = if context_window == 0 {
+            usize::MAX // window unknown → don't token-gate (count + floor still apply)
+        } else {
+            (((context_window as f32) * RECALL_WINDOW_FRACTION) as usize).max(MIN_RECALL_TOKENS)
+        };
+        Self {
+            max_count: recall_count_for_window(context_window),
+            relevance_floor: RECALL_RELEVANCE_FLOOR,
+            token_ceiling,
+        }
+    }
+}
+
+/// Floor on the recall token ceiling so even a tiny served window fits at least a
+/// memory or two — below this, recall would be silently empty.
+const MIN_RECALL_TOKENS: usize = 256;
+
+/// Cheap token estimate for one surfaced memory: the body plus the
+/// `- … (salience X.XX)\n` framing, at the ~4-chars-per-token rule of thumb. Used
+/// only to keep recall within its window budget — an estimate, not a tokenizer.
+fn estimate_recall_tokens(content: &str) -> usize {
+    (content.chars().count() + 24) / 4 + 1
+}
 
 /// When relevance re-ranking is active, over-fetch this many × the surface limit
 /// as candidates, then narrow by relevance. Over-fetch so a topically-relevant
@@ -129,6 +202,12 @@ pub struct RecallFaculty {
     /// relevance). Only used when `embedder` is set. Configurable so the replay
     /// A/B bench can sweep it; defaults to [`DEFAULT_RELEVANCE_WEIGHT`].
     relevance_weight: f32,
+    /// The served model's context window in tokens — the capability metric the
+    /// [`RecallBudget`] scales the recall count + token ceiling by (a 4B served
+    /// tight gets fewer memories than a cloud-class window). `0` → window unknown
+    /// (harness) → the historical default count, no token gate. Threaded from
+    /// [`PersonaBrainConfig::context_window`] via `with_context_window`.
+    context_window: u32,
 }
 
 impl RecallFaculty {
@@ -141,12 +220,24 @@ impl RecallFaculty {
             clock: wall_clock(),
             embedder: None,
             relevance_weight: DEFAULT_RELEVANCE_WEIGHT,
+            context_window: 0,
         }
     }
 
-    /// Override how many memories are surfaced per tick.
+    /// Override the hard safety ceiling on memories surfaced per tick. The
+    /// [`RecallBudget`] still picks the actual count within this — `with_limit`
+    /// only lowers the cap (tests / bench).
     pub fn with_limit(mut self, limit: usize) -> Self {
         self.limit = limit.max(1);
+        self
+    }
+
+    /// Thread the served model's context window (tokens) so the [`RecallBudget`]
+    /// scales the recall count + token ceiling by the model's capability. The
+    /// live/eval spawn path sets this from [`PersonaBrainConfig::context_window`]
+    /// (single-sourced, task #50). Unset → `0` → historical default count.
+    pub fn with_context_window(mut self, context_window: u32) -> Self {
+        self.context_window = context_window;
         self
     }
 
@@ -194,25 +285,37 @@ impl Faculty for RecallFaculty {
     async fn contribute(&self, ws: &Workspace) -> Option<Contribution> {
         let now = (self.clock)();
 
+        // The per-tick recall budget, scaled by the served model's capability
+        // (context window). Computed BEFORE the fetch so the over-fetch covers the
+        // budget's count, not a flat constant — a cloud-class window can surface
+        // more than the historical 5, a tight 4B fewer.
+        let budget = RecallBudget::for_window(self.context_window);
+        let surface_count = budget.max_count.min(self.limit);
+
         // Fetch candidates WITHOUT recording hits — we record the hit on what we
         // actually SURFACE (below), not on candidates that lose the re-rank.
         // Over-fetch when re-ranking so a relevant-but-lower-salience memory can
         // still win.
         let fetch_n = if self.embedder.is_some() {
-            self.limit.saturating_mul(RERANK_CANDIDATE_MULTIPLIER).max(self.limit)
+            surface_count.saturating_mul(RERANK_CANDIDATE_MULTIPLIER).max(surface_count)
         } else {
-            self.limit
+            surface_count
         };
         let candidates = self.admission_state.recall_candidates(now, fetch_n);
         if candidates.is_empty() {
             return None;
         }
 
-        // Score: (final_score, engram, salience). With an embedder, final_score
-        // blends cosine-relevance-to-the-burst with salience — so recall surfaces
-        // the RELEVANT memory, not just the salient/recent one. Without one,
-        // final_score IS salience (candidates already in that order).
-        let mut scored: Vec<(f32, Engram, f32)> = match &self.embedder {
+        // Score: (blended_score, engram, salience, relevance). With an embedder,
+        // blended_score mixes cosine-relevance-to-the-burst with salience — so
+        // recall ORDERS by the RELEVANT memory, not just the salient/recent one —
+        // and `relevance` is retained SEPARATELY so the closest-match floor can
+        // gate on it (a high-salience but topically-unrelated nag blends well above
+        // any sane blended floor, yet its cosine is ~0 and must be dropped).
+        // Without an embedder there is no relevance signal: blended_score IS
+        // salience (candidates already in that order) and relevance is 1.0 so the
+        // floor never fires (pure salience×recency, backward-compatible).
+        let mut scored: Vec<(f32, Engram, f32, f32)> = match &self.embedder {
             Some(embedder) => {
                 // Embed the query AND every candidate CONCURRENTLY. Each embed is an
                 // independent IO future on the neural/grid backend; awaiting them in
@@ -225,12 +328,12 @@ impl Faculty for RecallFaculty {
                 let query_fut = embedder.embed(focused_query(&ws.world_state));
                 let cand_futs = join_all(candidates.iter().map(|(e, _)| embedder.embed(&e.content)));
                 let (query, cand_embeds) = join(query_fut, cand_futs).await;
-                let mut s: Vec<(f32, Engram, f32)> = candidates
+                let mut s: Vec<(f32, Engram, f32, f32)> = candidates
                     .into_iter()
                     .zip(cand_embeds)
                     .map(|((engram, salience), emb)| {
                         let rel = cosine_similarity(&query, &emb);
-                        (blend(salience, rel, self.relevance_weight), engram, salience)
+                        (blend(salience, rel, self.relevance_weight), engram, salience, rel)
                     })
                     .collect();
                 s.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
@@ -238,10 +341,52 @@ impl Faculty for RecallFaculty {
             }
             None => candidates
                 .into_iter()
-                .map(|(engram, salience)| (salience, engram, salience))
+                .map(|(engram, salience)| (salience, engram, salience, 1.0))
                 .collect(),
         };
-        scored.truncate(self.limit);
+
+        // Apply the budget: closest-match floor (drop topically-irrelevant junk),
+        // capability-scaled count, and a context-window token ceiling. Ordered by
+        // blended score, so we take the most relevant+salient first; the floor uses
+        // `continue` (not `break`) because a low-relevance high-salience nag can
+        // rank above a genuinely relevant memory under the blend, and we want to
+        // skip the nag and keep scanning for the relevant one.
+        //
+        // The floor belongs to the relevance machinery: it gates only when
+        // relevance actually has a voice (`relevance_weight > 0`). At weight 0.0
+        // (pure salience×recency — the A/B-sweep extreme and the no-embedder path,
+        // where `rel` is 1.0) there is no relevance gate, preserving that mode.
+        let relevance_floor = if self.relevance_weight > 0.0 {
+            budget.relevance_floor
+        } else {
+            f32::NEG_INFINITY
+        };
+        let mut surfaced: Vec<(f32, Engram, f32)> = Vec::with_capacity(surface_count);
+        let mut used_tokens = 0usize;
+        for (blended, engram, salience, rel) in scored.into_iter() {
+            if surfaced.len() >= surface_count {
+                break;
+            }
+            if rel < relevance_floor {
+                continue; // topically irrelevant — junk in the prompt
+            }
+            let est = estimate_recall_tokens(&engram.content);
+            // Always admit the first qualifying memory (don't starve recall on a
+            // tiny window); after that, stop before the token ceiling is breached.
+            if !surfaced.is_empty() && used_tokens + est > budget.token_ceiling {
+                break;
+            }
+            used_tokens += est;
+            surfaced.push((blended, engram, salience));
+        }
+        let scored = surfaced;
+
+        // Nothing cleared the closest-match floor — surface nothing rather than
+        // pad the prompt with irrelevant memory (the bug this fixes: 5 salience-1.0
+        // but cosine-~0 nags polluting every turn).
+        if scored.is_empty() {
+            return None;
+        }
 
         // Close the loop on what we ACTUALLY surface — Hebbian rehearsal on the
         // memories the persona truly used this tick (uplift + persistence).
@@ -875,6 +1020,162 @@ mod tests {
                 .content
                 .contains("feature flag"),
             "weight 1.0 = pure relevance → topically-relevant memory"
+        );
+    }
+
+    // what this catches: THE CAESAR-PROMPT CONTAMINATION BUG (2026-06-27). Live,
+    // 5 memories rehearsed to salience 1.0 by the recall-hit loop but topically
+    // UNRELATED to the task ("caesar cipher") polluted every prompt — blending to
+    // ~0.5 (0.5·0 rel + 0.5·1.0 sal), well above any blended floor, so they slipped
+    // through. The closest-match floor gates on the RELEVANCE component, not the
+    // blend, so a cosine-~0 nag is dropped no matter how salient. RED before the
+    // floor: the nags surface and crowd out / dilute the one relevant memory.
+    #[tokio::test]
+    async fn recall_drops_topically_irrelevant_high_salience_nags() {
+        use crate::cognition::embedding::LexicalEmbedder;
+        let now = 1_000_000_000u64;
+        let query = "write a caesar cipher function";
+
+        let recall_meta = Arc::new(RecallMetadataRegistry::new());
+        let state = Arc::new(AdmissionState::new(recall_meta.clone()));
+        let mut mk = |content: &str, salience: f32| {
+            let id = Uuid::new_v4();
+            state.push_for_test(Engram {
+                context_id: None,
+                id,
+                kind: EngramKind::Episodic,
+                content: content.to_string(),
+                origin: EngramOrigin::Chat(ChatMessageRef {
+                    message_id: Uuid::new_v4(),
+                    room_id: Uuid::new_v4(),
+                    sender_id: Uuid::new_v4(),
+                    posted_at_ms: now,
+                    content_hash: "h".to_string(),
+                }),
+                recall_keys: Vec::new(),
+                admitted_at_ms: now,
+                trust_state_at_admission: TrustState::ApprovedPeer,
+                admission_trace_id: None,
+            });
+            recall_meta.admit(
+                id,
+                RecallMetadata {
+                    salience,
+                    access_count: 0,
+                    last_accessed_ms: 0,
+                    protected_until_ms: 0,
+                    last_decayed_ms: now,
+                },
+            );
+        };
+        // The one RELEVANT memory, modest salience.
+        mk("caesar cipher shifts each letter by fixed amount", 0.4);
+        // Five high-salience nags, each topically orthogonal (no shared tokens with
+        // the task) — mirrors the live contamination: code prompts ("nth prime",
+        // "fibonacci") rehearsed to salience 1.0 but unrelated to the caesar task.
+        mk("lunchtime sandwiches arrived early", 1.0);
+        mk("soccer scores updated overnight", 1.0);
+        mk("espresso machine needs descaling", 1.0);
+        mk("office ferns require watering", 1.0);
+        mk("garage shutters lock midnight", 1.0);
+
+        let recall = RecallFaculty::new(Uuid::new_v4(), state)
+            .with_clock(Arc::new(move || now))
+            .with_embedder(Arc::new(LexicalEmbedder::new()))
+            .with_context_window(8192);
+        let c = recall
+            .contribute(&Workspace::new(query))
+            .await
+            .expect("the relevant memory should surface");
+        assert!(
+            c.content.contains("caesar cipher shifts"),
+            "the topically-relevant memory must surface; got: {}",
+            c.content
+        );
+        for nag in ["lunch", "game", "coffee", "plants", "parking"] {
+            assert!(
+                !c.content.contains(nag),
+                "the irrelevant high-salience nag '{nag}' must be dropped by the closest-match floor; got: {}",
+                c.content
+            );
+        }
+    }
+
+    // what this catches: the recall COUNT scales with the served model's
+    // capability (proxied by context window) — a tight 4B window surfaces fewer
+    // memories than a cloud-class one, so a small model isn't buried under memory
+    // it can't juggle. `0` (window unknown) keeps the historical default of 5.
+    #[test]
+    fn recall_count_scales_with_context_window() {
+        assert_eq!(recall_count_for_window(0), 5, "unknown window → historical default");
+        assert_eq!(recall_count_for_window(4096), 3, "tight 4B window → fewer memories");
+        assert_eq!(recall_count_for_window(16384), 5);
+        assert_eq!(recall_count_for_window(65536), 8);
+        assert_eq!(recall_count_for_window(262144), 12, "cloud-class window → more memories");
+        // Monotonic non-decreasing across KNOWN windows (0 is the unknown sentinel,
+        // excluded — it deliberately returns the historical default, not the floor).
+        let windows = [4096u32, 8192, 32768, 131072, 262144];
+        for pair in windows.windows(2) {
+            assert!(
+                recall_count_for_window(pair[1]) >= recall_count_for_window(pair[0]),
+                "count must not shrink as the window grows: {pair:?}"
+            );
+        }
+    }
+
+    // what this catches: the capability count BOUNDS how many memories surface even
+    // when many are relevant — a tight 4B window (4096) caps recall at 3 though 10
+    // equally-relevant memories qualify. This is the "limited to a reasonable
+    // number by the model metric" half of the budget.
+    #[tokio::test]
+    async fn recall_count_is_bounded_by_a_tight_window() {
+        use crate::cognition::embedding::LexicalEmbedder;
+        let now = 1_000_000_000u64;
+        let recall_meta = Arc::new(RecallMetadataRegistry::new());
+        let state = Arc::new(AdmissionState::new(recall_meta.clone()));
+        for i in 0..10 {
+            let id = Uuid::new_v4();
+            state.push_for_test(Engram {
+                context_id: None,
+                id,
+                kind: EngramKind::Episodic,
+                content: format!("auth flow rollout note {i}"),
+                origin: EngramOrigin::Chat(ChatMessageRef {
+                    message_id: Uuid::new_v4(),
+                    room_id: Uuid::new_v4(),
+                    sender_id: Uuid::new_v4(),
+                    posted_at_ms: now,
+                    content_hash: format!("h{i}"),
+                }),
+                recall_keys: Vec::new(),
+                admitted_at_ms: now,
+                trust_state_at_admission: TrustState::ApprovedPeer,
+                admission_trace_id: None,
+            });
+            recall_meta.admit(
+                id,
+                RecallMetadata {
+                    salience: 0.5,
+                    access_count: 0,
+                    last_accessed_ms: 0,
+                    protected_until_ms: 0,
+                    last_decayed_ms: now,
+                },
+            );
+        }
+        let recall = RecallFaculty::new(Uuid::new_v4(), state)
+            .with_clock(Arc::new(move || now))
+            .with_embedder(Arc::new(LexicalEmbedder::new()))
+            .with_context_window(4096);
+        let c = recall
+            .contribute(&Workspace::new("auth flow rollout"))
+            .await
+            .expect("relevant memories should surface");
+        assert_eq!(
+            c.content.lines().count(),
+            3,
+            "a 4096-token window caps recall at 3 memories; got:\n{}",
+            c.content
         );
     }
 }
