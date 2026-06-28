@@ -249,7 +249,7 @@ impl Faculty for DeferredFaculty {
 /// folds the full turn-history, not just the current burst. This is input-side
 /// attention (re-weighting a faculty's own bid by honest current-relevance), never
 /// output-puppeteering — it does not read the deliberator's generated words.
-fn reproject_to_now(found: &StampedFinding, now: &Workspace) -> Contribution {
+pub(crate) fn reproject_to_now(found: &StampedFinding, now: &Workspace) -> Contribution {
     let mut c = found.contribution.clone();
     let relevance = lexical_relevance(&c.content, &now.world_state);
     let age = now.cycle.0.saturating_sub(c.cycle.0);

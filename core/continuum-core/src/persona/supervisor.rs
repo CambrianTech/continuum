@@ -682,20 +682,31 @@ pub async fn materialize_adapters(
                 // #1650/#1651 grounding silently falls out of the live path —
                 // the persona forgets who is present / what the room is for.
                 grounding_sources: vec![
-                    crate::cognition::persona_workspace::GroundingSource::framing(roster_source),
+                    // Roster — WHO is present. Enriching framing: a first-tick miss
+                    // costs one under-grounded turn, not a wrong one. Defer-tolerant
+                    // (runs off the hot path, served reprojected) once warm.
+                    crate::cognition::persona_workspace::GroundingSource::framing(roster_source)
+                        .defer_tolerant(),
+                    // Doctrine — WHAT the room is for: the PARTICIPATION GATE. This
+                    // one stays SYNCHRONOUS (ColdStartCritical): a cold-start `None`
+                    // would let the persona speak in a room it shouldn't on turn one,
+                    // which is wrong, not merely unenriched. The lone exception to
+                    // "defer almost everything."
                     crate::cognition::persona_workspace::GroundingSource::framing(doctrine_source),
-                    // The persona's own live work across rooms — standing framing
-                    // so it always knows what it's working on (cross-activity,
-                    // dynamic, no hardcoded card state).
+                    // The persona's own live work across rooms — enriching framing so
+                    // it knows what it's working on (cross-activity, dynamic, no
+                    // hardcoded card state). Defer-tolerant.
                     crate::cognition::persona_workspace::GroundingSource::framing(
                         active_work_source,
-                    ),
-                    // WHERE code lives — the real workspace layout as standing
-                    // framing, so a reasoner can avoid blind globs like
-                    // `src/**/*.rs` from the prompt alone.
+                    )
+                    .defer_tolerant(),
+                    // WHERE code lives — the real workspace layout as enriching
+                    // framing, so a reasoner can avoid blind globs like `src/**/*.rs`
+                    // from the prompt alone. Defer-tolerant.
                     crate::cognition::persona_workspace::GroundingSource::framing(
                         workspace_map_source,
-                    ),
+                    )
+                    .defer_tolerant(),
                 ],
                 // The persona's HANDS — built by the caller for THIS persona's
                 // identity (None → speak-only). What turns "talks" into "acts".
@@ -712,6 +723,11 @@ pub async fn materialize_adapters(
                 // a neural-embed + vector-search round-trip. Eval forks override
                 // this to false (faithful synchronous measurement).
                 defer_recall: true,
+                // LIVE mind: push the defer-tolerant grounding (roster, active_work,
+                // workspace_map) off the hot path too — the 90%-async win for the
+                // enriching framing. Doctrine (ColdStartCritical) stays synchronous
+                // regardless. Eval/harness override to false.
+                defer_grounding: true,
             },
         );
 
