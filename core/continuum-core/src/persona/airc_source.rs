@@ -49,10 +49,10 @@ const SOURCE_ID: &str = "airc";
 /// region's). The recipe-defined grounding window slices within this.
 const FETCH_LIMIT: usize = 100;
 
-/// Rough chars/token estimate — same heuristic the rest of the budget layer uses.
-fn estimate_tokens(content: &str) -> u32 {
-    ((content.chars().count() / 4) as u32).saturating_add(1)
-}
+/// Token estimate — the ONE canonical chars/4 estimator (`cognition::token_budget`),
+/// shared by every RAG source so the replay ledger's numbers match. (Was a private
+/// copy — converged.)
+use crate::cognition::token_budget::estimate_prompt_tokens as estimate_tokens;
 
 /// Abstract reader over airc transcript events. Production impl rides on
 /// `airc_lib::Airc`; tests use a stub that returns canned events without a daemon.

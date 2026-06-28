@@ -45,11 +45,10 @@ use crate::persona::rag_budget::{
 /// into system-prompt grounding (a `[Room operating doctrine]` block).
 const SOURCE_ID: &str = "room-doctrine";
 
-/// Rough chars/token estimate — same heuristic the other RAG sources
-/// use. Real tokenizer integration lands in slice 12+.
-fn estimate_tokens(content: &str) -> u32 {
-    ((content.chars().count() / 4) as u32).saturating_add(1)
-}
+/// Token estimate — the ONE canonical chars/4 estimator (`cognition::token_budget`),
+/// shared by every RAG source so the replay ledger's numbers match. (Was a private
+/// copy — converged.)
+use crate::cognition::token_budget::estimate_prompt_tokens as estimate_tokens;
 
 /// Abstract reader over the airc room operating doctrine. Production
 /// rides on `airc_lib::Airc::room_doctrine`; tests stub it without a

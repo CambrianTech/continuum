@@ -39,10 +39,10 @@ pub trait AircWorkReader: Send + Sync {
     async fn active_claims(&self) -> Result<Vec<WorkCard>, AircError>;
 }
 
-/// Cheap token estimate (≈4 chars/token) — grounding lines are short.
-fn estimate_tokens(content: &str) -> u32 {
-    ((content.len() / 4) as u32).max(1)
-}
+/// Token estimate — the ONE canonical chars/4 estimator (`cognition::token_budget`),
+/// so every grounding layer's number is in the same unit the replay ledger reports.
+/// (Was a private byte-length copy that drifted — converged.)
+use crate::cognition::token_budget::estimate_prompt_tokens as estimate_tokens;
 
 /// Persona-bound source reading the persona's own claimed work.
 pub struct ActiveWorkSource {
