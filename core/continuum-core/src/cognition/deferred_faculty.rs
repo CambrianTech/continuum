@@ -69,12 +69,25 @@ impl DeferredInput {
     }
 }
 
+/// A finding the worker has computed, tagged with the room it reasoned about so
+/// the hot path can refuse to serve it into a DIFFERENT room. This is the
+/// "assuming it didn't context-switch to where it's irrelevant" guard: a recall
+/// computed against room A's burst must not be injected into room B's turn just
+/// because it happens to be the last thing the worker finished.
+#[derive(Debug, Clone)]
+struct StampedFinding {
+    /// The room the inner faculty reasoned about.
+    room_id: Uuid,
+    /// The finding itself (already carrying the cycle it was computed against).
+    contribution: Contribution,
+}
+
 /// A faculty whose inner work is taken off the cognition hot path (see module
 /// docs). Drops the background task when dropped.
 pub struct DeferredFaculty {
     id: FacultyId,
     /// Hot path reads the inner faculty's last-good finding here, lock-free.
-    latest: watch::Receiver<Option<Contribution>>,
+    latest: watch::Receiver<Option<StampedFinding>>,
     /// Hot path pushes the current world here for the worker to recompute against.
     world_tx: watch::Sender<DeferredInput>,
     /// Owns the worker task so it's aborted when this faculty is dropped — no
@@ -106,7 +119,7 @@ impl DeferredFaculty {
     pub fn spawn(inner: Arc<dyn Faculty>) -> Self {
         let id = inner.id();
         let (world_tx, mut world_rx) = watch::channel(DeferredInput::sentinel());
-        let (latest_tx, latest) = watch::channel::<Option<Contribution>>(None);
+        let (latest_tx, latest) = watch::channel::<Option<StampedFinding>>(None);
 
         let worker = tokio::spawn(async move {
             let mut consecutive_panics: u32 = 0;
@@ -123,7 +136,8 @@ impl DeferredFaculty {
                 if input.cycle == CycleId::UNSTAMPED {
                     continue; // sentinel / not a real burst
                 }
-                let ws = Workspace::in_room(input.world_state, input.room_id)
+                let room_id = input.room_id;
+                let ws = Workspace::in_room(input.world_state, room_id)
                     .with_cycle(input.cycle);
 
                 // The inner faculty's contribute is async (real inference/IPC).
@@ -136,11 +150,16 @@ impl DeferredFaculty {
                 match outcome {
                     Ok(finding) => {
                         consecutive_panics = 0;
-                        // Stamp with the cycle it reasoned against — the late
-                        // finding carries its own moment, not "now".
+                        // Stamp with the cycle it reasoned against AND the room it
+                        // reasoned about — the late finding carries its own moment
+                        // (cycle) and its own place (room), so the hot path can
+                        // refuse to serve it into a different context.
                         let stamped = finding.map(|mut c| {
                             c.cycle = input.cycle;
-                            c
+                            StampedFinding {
+                                room_id,
+                                contribution: c,
+                            }
                         });
                         // Ignore send error: no receivers left = faculty dropped.
                         let _ = latest_tx.send(stamped);
@@ -178,7 +197,16 @@ impl Faculty for DeferredFaculty {
             room_id: ws.room_id,
             cycle: ws.cycle,
         });
-        self.latest.borrow().clone()
+        // Context guard: serve the last-good ONLY if it was computed for the room
+        // the mind is in NOW. A finding from another room is "context-switched to
+        // where it's irrelevant" — withhold it rather than inject a cross-context
+        // memory into this turn. (Slice 3 will REPROJECT a same-room-but-stale
+        // finding forward; a different-room finding is simply not ours to serve.)
+        let guard = self.latest.borrow();
+        match guard.as_ref() {
+            Some(found) if found.room_id == ws.room_id => Some(found.contribution.clone()),
+            _ => None,
+        }
     }
 
     /// A deferred faculty is perception-tier (see [`DeferredFaculty::spawn`]): it
@@ -269,5 +297,40 @@ mod tests {
             "the late finding must carry the cycle it reasoned against, not the current tick"
         );
         assert_eq!(late.faculty, FacultyId::Recall);
+    }
+
+    // what this catches: the context guard — a finding computed against room A
+    // must NOT be served into room B's turn. This is Joel's "assuming it didn't
+    // context-switch to something where it was irrelevant": a deferred recall
+    // that lands a minute late is only useful if the mind is still in the room it
+    // was reasoned for; in a different room it's withheld, never injected as a
+    // cross-context memory. (Same-room-but-stale is slice-3 reproject; this test
+    // covers different-room = simply not ours to serve.)
+    #[tokio::test]
+    async fn deferred_finding_is_withheld_when_the_mind_changed_rooms() {
+        let deferred = DeferredFaculty::spawn(Arc::new(SlowRecall));
+        let room_a = Uuid::new_v4();
+        let room_b = Uuid::new_v4();
+
+        // Tick against room A — kicks the worker to compute for room A.
+        let ws_a = Workspace::in_room("burst in A", room_a).with_cycle(CycleId(1));
+        let _ = deferred.contribute(&ws_a).await;
+
+        // Let the worker finish computing against room A.
+        tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+
+        // Now the mind is in room B. The room-A finding must be withheld.
+        let ws_b = Workspace::in_room("burst in B", room_b).with_cycle(CycleId(2));
+        let in_b = deferred.contribute(&ws_b).await;
+        assert!(
+            in_b.is_none(),
+            "a room-A finding must not be injected into room B's turn"
+        );
+
+        // Back in room A: the finding is relevant again and IS served.
+        let ws_a2 = Workspace::in_room("back in A", room_a).with_cycle(CycleId(3));
+        let in_a = deferred.contribute(&ws_a2).await;
+        let found = in_a.expect("the room-A finding is ours to serve back in room A");
+        assert_eq!(found.cycle, CycleId(1), "still stamped with its original cycle");
     }
 }
