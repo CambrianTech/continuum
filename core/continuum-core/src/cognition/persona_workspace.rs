@@ -874,4 +874,121 @@ mod tests {
         let retrieved = GroundingSource::retrieved(Arc::clone(&s));
         assert_eq!(retrieved.deferrability, Deferrability::ColdStartCritical);
     }
+
+    /// A grounding RagSource whose deliver is deliberately slow — models the real
+    /// I/O cost (roster query / workspace-map scan) the slice moves off the hot
+    /// path. Exercised through the LIVE grounding path (GroundingSource →
+    /// RagSourceFaculty → DeferredFaculty), not a hand-built faculty.
+    struct SlowGrounding {
+        delay_ms: u64,
+    }
+    #[async_trait::async_trait]
+    impl RagSource for SlowGrounding {
+        fn source_id(&self) -> &'static str {
+            "slow-grounding"
+        }
+        async fn deliver(
+            &self,
+            _ctx: &crate::persona::rag_budget::RagContext,
+            _budget: u32,
+            resolution: crate::persona::rag_budget::ResolutionPreference,
+        ) -> crate::persona::rag_budget::RagDelivery {
+            tokio::time::sleep(std::time::Duration::from_millis(self.delay_ms)).await;
+            crate::persona::rag_budget::RagDelivery {
+                source_id: "slow-grounding".to_string(),
+                items: vec![crate::persona::rag_budget::RagItem {
+                    content: "roster: Ivar [persona], win-claude [claude]".to_string(),
+                    tokens: 12,
+                    metadata: serde_json::Value::Null,
+                }],
+                tokens_used: 12,
+                continuation: None,
+                resolution_used: resolution,
+            }
+        }
+        async fn deliver_continuation(
+            &self,
+            _ctx: &crate::persona::rag_budget::RagContext,
+            _cursor: crate::persona::rag_budget::ContinuationCursor,
+            _budget: u32,
+        ) -> Option<crate::persona::rag_budget::RagDelivery> {
+            None
+        }
+    }
+
+    // what this catches: the SPEED the grounding-deferral slice buys, measured on
+    // the live critical path. Model LOCKED (same HeuristicInferenceAdapter both
+    // forks), ONE variable changed (defer_grounding) — the glass-box controlled
+    // experiment. A slow grounding source (60ms deliver, modeling roster/
+    // workspace-map I/O) sits ON the perception barrier when synchronous; when
+    // deferred it runs in the bg and the WARM tick serves reprojected last-good,
+    // so it LEAVES the barrier. critical_path_us = max(perception)+max(delib);
+    // the model (delib) is identical across forks, so the delta isolates exactly
+    // the grounding cost removed from the loop. If a regression puts the deferred
+    // source back on the barrier, the delta collapses and this fails.
+    #[tokio::test]
+    async fn deferring_grounding_removes_its_deliver_cost_from_the_critical_path() {
+        use crate::cognition::workspace_dashboard::DashboardCaptureSink;
+        const DELAY_MS: u64 = 60;
+
+        // Build a cycle with ONE slow grounding source, run a cold tick + a warm
+        // tick in the same room, and return the WARM tick's critical path.
+        async fn warm_critical_path(defer_grounding: bool) -> u128 {
+            let persona = Uuid::new_v4();
+            let room = Uuid::new_v4();
+            let slow: Arc<dyn RagSource> = Arc::new(SlowGrounding { delay_ms: DELAY_MS });
+            let mut cfg = cfg_for(persona);
+            cfg.grounding_sources = vec![GroundingSource::framing(slow).defer_tolerant()];
+            cfg.defer_grounding = defer_grounding;
+
+            let sink = Arc::new(DashboardCaptureSink::new(persona));
+            let rx = sink.subscribe();
+            let cycle = build_workspace_cycle(cfg).with_capture(sink.clone());
+
+            // Tick 1: cold-start for the deferred fork (kicks the bg worker, serves
+            // None); the sync fork pays the full deliver here too.
+            let _ = cycle
+                .run_in_room("teammate: where are we on the deploy?", room)
+                .await;
+            // Let the bg worker land its finding so the warm tick serves last-good.
+            tokio::time::sleep(std::time::Duration::from_millis(DELAY_MS * 2)).await;
+            // Tick 2 (warm): the steady-state the live persona actually runs at.
+            let _ = cycle
+                .run_in_room("teammate: and the rollback plan?", room)
+                .await;
+            // record() ran synchronously inside run_in_room → the watch holds tick 2.
+            let cp = rx.borrow().critical_path_us;
+            cp
+        }
+
+        let sync_cp = warm_critical_path(false).await;
+        let deferred_cp = warm_critical_path(true).await;
+
+        eprintln!("\n=== grounding-deferral speed delta (model locked) ===");
+        eprintln!("defer_grounding=false  critical_path = {sync_cp} µs");
+        eprintln!("defer_grounding=true   critical_path = {deferred_cp} µs");
+        eprintln!(
+            "removed from the loop  = {} µs (~{} ms)",
+            sync_cp.saturating_sub(deferred_cp),
+            sync_cp.saturating_sub(deferred_cp) / 1000
+        );
+        eprintln!("====================================================\n");
+
+        let delay_us = (DELAY_MS as u128) * 1000;
+        assert!(
+            sync_cp >= delay_us - 10_000,
+            "sync fork must pay ~the deliver cost on the barrier: {sync_cp}µs < {}µs",
+            delay_us - 10_000
+        );
+        assert!(
+            deferred_cp < delay_us / 2,
+            "deferred fork's warm tick must NOT pay the deliver cost: {deferred_cp}µs"
+        );
+        assert!(
+            sync_cp.saturating_sub(deferred_cp) >= 40_000,
+            "deferral must remove ~the grounding deliver from the critical path; \
+             delta was only {}µs",
+            sync_cp.saturating_sub(deferred_cp)
+        );
+    }
 }
