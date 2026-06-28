@@ -162,10 +162,30 @@ impl TurnMetrics {
     }
 }
 
+/// Which service tick (cycle) a finding was computed against — the cognition
+/// analog of cbar's per-finding `frameIndex`. A faculty reasons against a
+/// [`Workspace`] that IS a particular cycle; its [`Contribution`] is stamped
+/// with that cycle so a *late* finding (a slow/deferred faculty that lands a
+/// tick or three after it reasoned) knows its own time and can be reconciled
+/// forward against the moved-on world instead of silently pretending to be
+/// current — the decoupling primitive: a finding can only land late safely once
+/// it knows its own time. `UNSTAMPED` (0) = built but not yet attached to a live
+/// cycle (the constructor default; the cycle loop stamps the real value).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, PartialOrd, Ord)]
+pub struct CycleId(pub u64);
+
+impl CycleId {
+    /// A contribution built but not yet attached to a live cycle.
+    pub const UNSTAMPED: CycleId = CycleId(0);
+}
+
 /// What a faculty surfaces into the workspace this service tick.
 #[derive(Debug, Clone)]
 pub struct Contribution {
     pub faculty: FacultyId,
+    /// The cycle this finding was computed against (cbar `frameIndex` analog).
+    /// Stamped by the cycle loop at collection; [`CycleId::UNSTAMPED`] until then.
+    pub cycle: CycleId,
     /// Human/LLM-readable content the faculty surfaces (recalled memory, a
     /// predicted world-state, an affect signal, a proposed utterance).
     pub content: String,
@@ -194,6 +214,7 @@ impl Contribution {
     ) -> Self {
         Self {
             faculty,
+            cycle: CycleId::UNSTAMPED,
             content: content.into(),
             salience: salience.clamp(0.0, 1.0),
             reasoning: reasoning.into(),
@@ -213,6 +234,7 @@ impl Contribution {
         };
         Self {
             faculty: FacultyId::Deliberation,
+            cycle: CycleId::UNSTAMPED,
             content,
             salience: salience.clamp(0.0, 1.0),
             reasoning: reasoning.into(),
@@ -247,6 +269,11 @@ pub struct Workspace {
     /// don't run in a room. NEVER a session id — context is durable, session is
     /// ephemeral and never load-bearing for where an action lands.
     pub room_id: Uuid,
+    /// Which service tick this workspace IS — the frame index every finding
+    /// computed against it gets stamped with. [`CycleId::UNSTAMPED`] for
+    /// hand-built / replay-reconstructed workspaces; the cycle loop sets the
+    /// live value via [`with_cycle`](Self::with_cycle).
+    pub cycle: CycleId,
     /// What entered the bounded workspace and is broadcast (the persona's "now").
     pub broadcast: Vec<Contribution>,
 }
@@ -263,8 +290,18 @@ impl Workspace {
         Self {
             world_state: world_state.into(),
             room_id,
+            cycle: CycleId::UNSTAMPED,
             broadcast: Vec::new(),
         }
+    }
+
+    /// Stamp this workspace with the cycle it represents (builder form). The
+    /// cycle loop calls this so every finding collected against it inherits the
+    /// frame index — the seam a deferred faculty later reads to know how stale
+    /// its own finding is.
+    pub fn with_cycle(mut self, cycle: CycleId) -> Self {
+        self.cycle = cycle;
+        self
     }
 
     /// The assembled perception a phase-2 (deliberation) faculty conditions on:
@@ -488,6 +525,12 @@ pub struct WorkspaceCycle {
     /// is reproducible, and restores it on the guard's drop. Mirrors `genome`: one
     /// handle, two holders (cycle + faculty).
     decoding: DecodingHandle,
+    /// Monotonic service-tick counter — the source of each [`Workspace::cycle`]
+    /// frame index. Interior-mutable because `run` takes `&self` (the living
+    /// mind is shared, not owned per tick); bumped once per `run_in_room`.
+    /// Starts at 0 so the first live cycle is `CycleId(1)` and `CycleId(0)`
+    /// stays the UNSTAMPED sentinel.
+    cycle_counter: std::sync::atomic::AtomicU64,
 }
 
 /// RAII guard for a memory-isolated measurement window over a cycle's
@@ -567,6 +610,7 @@ impl WorkspaceCycle {
             acting: None,
             genome: empty_genome(),
             decoding: relaxed_decoding(),
+            cycle_counter: std::sync::atomic::AtomicU64::new(0),
         }
     }
 
@@ -704,7 +748,16 @@ impl WorkspaceCycle {
     /// faculty stamps tool calls with the real room — `run` is the nil-room
     /// shorthand for tests that aren't room-scoped.
     pub async fn run_in_room(&self, world_state: impl Into<String>, room_id: Uuid) -> Workspace {
-        let mut ws = Workspace::in_room(world_state, room_id);
+        // Bump the service tick: this workspace IS cycle N, and every finding
+        // collected against it is stamped N (the cbar `frameIndex`). 1-based so
+        // `CycleId(0)` stays the UNSTAMPED sentinel — the seam a deferred faculty
+        // later reads to know how stale its own finding is.
+        let cycle = CycleId(
+            self.cycle_counter
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                .wrapping_add(1),
+        );
+        let mut ws = Workspace::in_room(world_state, room_id).with_cycle(cycle);
 
         // --- Phase 1: perception. Context faculties react to the raw world-state. ---
         let perception: Vec<&Arc<dyn Faculty>> = self
@@ -712,12 +765,18 @@ impl WorkspaceCycle {
             .iter()
             .filter(|f| !f.reacts_to_broadcast())
             .collect();
-        let context_bids: Vec<Contribution> =
+        let mut context_bids: Vec<Contribution> =
             join_all(perception.iter().map(|f| f.contribute(&ws)))
                 .await
                 .into_iter()
                 .flatten()
                 .collect();
+        // Stamp each finding with the cycle it reasoned against. Immediate faculties
+        // all saw THIS workspace, so the stamp is `ws.cycle`; a future deferred lane
+        // will stamp its own (older) cycle and reconcile forward.
+        for bid in &mut context_bids {
+            bid.cycle = cycle;
+        }
         // Route the salient subset into the bounded workspace — the arbiter is the
         // attention ROUTER over information flow, not a gate. The winners are the
         // assembled context the deliberation faculty reasons over.
@@ -731,12 +790,15 @@ impl WorkspaceCycle {
             .iter()
             .filter(|f| f.reacts_to_broadcast())
             .collect();
-        let decision_bids: Vec<Contribution> =
+        let mut decision_bids: Vec<Contribution> =
             join_all(deliberation.iter().map(|f| f.contribute(&ws)))
                 .await
                 .into_iter()
                 .flatten()
                 .collect();
+        for bid in &mut decision_bids {
+            bid.cycle = cycle;
+        }
         // The deliberation output is the RESULT of attending to the context, not a
         // competitor for the bounded context spotlight — append it to the broadcast.
         ws.broadcast.extend(decision_bids.iter().cloned());
@@ -894,6 +956,52 @@ mod tests {
 
         c.page_out();
         assert!(c.genome().is_empty(), "page_out reverts to the clean base");
+    }
+
+    // what this catches: every finding is stamped with the cycle it was computed
+    // against (the cbar frameIndex) — the decoupling precondition. Without the
+    // stamp a late/deferred finding can't know how stale it is, so the arbiter
+    // can't merge or reproject it correctly. Asserts a fresh construction is
+    // UNSTAMPED, both phases inherit `ws.cycle`, and the counter advances per tick
+    // (so two findings from different ticks are never confused for one moment).
+    #[tokio::test]
+    async fn contributions_carry_the_cycle_they_were_born_in() {
+        // A fresh contribution is UNSTAMPED until a live cycle stamps it.
+        let raw = Contribution::context(FacultyId::Recall, "engram", 0.8, "r");
+        assert_eq!(raw.cycle, CycleId::UNSTAMPED);
+
+        let faculties: Vec<Arc<dyn Faculty>> = vec![
+            Arc::new(FixedFaculty(Contribution::context(
+                FacultyId::Recall,
+                "engram: prior context",
+                0.8,
+                "perception finding",
+            ))),
+            Arc::new(ConditionalDeliberation),
+        ];
+        let c = cycle(faculties, 4);
+
+        // First tick → CycleId(1); both the perception (Recall) and deliberation
+        // (verdict) findings must carry it.
+        let ws1 = c.run("burst one").await;
+        assert_eq!(ws1.cycle, CycleId(1), "first live cycle is 1, not the 0 sentinel");
+        assert!(ws1.broadcast.len() >= 2, "both faculties contributed this tick");
+        for bid in &ws1.broadcast {
+            assert_eq!(
+                bid.cycle,
+                CycleId(1),
+                "finding from {:?} must be stamped with the cycle it reasoned against",
+                bid.faculty
+            );
+        }
+
+        // Second tick → the counter advances to CycleId(2): findings from
+        // different ticks can never be mistaken for the same moment.
+        let ws2 = c.run("burst two").await;
+        assert_eq!(ws2.cycle, CycleId(2), "the service tick advances each run");
+        for bid in &ws2.broadcast {
+            assert_eq!(bid.cycle, CycleId(2));
+        }
     }
 
     // what this catches: the factory's faculty-isolation seam (#14 ReplayFaculty).

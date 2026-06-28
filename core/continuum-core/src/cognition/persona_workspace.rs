@@ -673,6 +673,7 @@ mod tests {
         let context_ws = Workspace {
             world_state: burst.to_string(),
             room_id: trace.room_id,
+            cycle: crate::cognition::workspace::CycleId::UNSTAMPED,
             broadcast: trace.context_broadcast.clone(),
         };
         let view = delib.prompt_view(&context_ws);

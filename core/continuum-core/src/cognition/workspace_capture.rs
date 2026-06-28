@@ -137,7 +137,7 @@ impl WorkspaceCaptureSink for JsonlWorkspaceCaptureSink {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cognition::workspace::{Contribution, Decision, FacultyId};
+    use crate::cognition::workspace::{Contribution, CycleId, Decision, FacultyId};
 
     // what this catches: THE core VDD property — a captured tick must round-trip
     // to disk with every faculty's bid CONTENT intact (so "was the recalled engram
@@ -153,6 +153,7 @@ mod tests {
 
         let recall = Contribution {
             faculty: FacultyId::Recall,
+            cycle: CycleId::UNSTAMPED,
             content: "the deploy went red after the auth migration".to_string(),
             salience: 0.8,
             reasoning: "relevant past engram".to_string(),
@@ -161,6 +162,7 @@ mod tests {
         };
         let verdict = Contribution {
             faculty: FacultyId::Deliberation,
+            cycle: CycleId::UNSTAMPED,
             content: "Let's roll back the migration.".to_string(),
             salience: 0.9,
             reasoning: "decider".to_string(),
