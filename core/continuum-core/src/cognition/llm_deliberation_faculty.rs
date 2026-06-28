@@ -156,14 +156,16 @@ pub struct LlmDeliberationFaculty {
     /// `tools` is empty (pure-chat persona). Two-tier (rich `name — summary`, or
     /// terse `category: names` if the window is tiny) so it ALWAYS fits.
     tool_catalog: String,
-    /// The single tool natively offered to the model each turn: `commands/help`
-    /// (load one tool's full argument schema by name). `None` when the persona has
-    /// no tools. Every other tool is dispatched by NAME through the JSON-in-prose
-    /// path — `act_observe` maps any catalog name back to its command, so a tool not
-    /// in this native array still runs. This is what keeps the per-turn tool payload
-    /// at ONE tiny schema instead of the whole registry. Computed in
+    /// The tools natively offered to the model each turn: the DISCOVERY PAIR —
+    /// `commands/list` (filter/search the authorized surface → a small list of
+    /// matching tools) + `commands/help` (load one named tool's full argument
+    /// schema). Empty when the persona has no tools. Every other tool is dispatched
+    /// by NAME through the JSON-in-prose path — `act_observe` maps any name back to
+    /// its command, so a tool reached via `commands/list` still runs without being in
+    /// this native array. This is what keeps the per-turn tool payload at TWO tiny
+    /// schemas instead of the whole ~150-tool registry. Computed in
     /// [`Self::rebuild_tool_surface`].
-    describe_spec: Option<NativeToolSpec>,
+    native_specs: Vec<NativeToolSpec>,
     /// Where this faculty records its chain-of-thought after a verdict, so the
     /// persona can resume its train of thought next turn (the
     /// [`WorkingMemory`](crate::cognition::working_memory::WorkingMemory)
@@ -218,7 +220,7 @@ impl LlmDeliberationFaculty {
             temperature: DEFAULT_TEMPERATURE,
             tools: Vec::new(),
             tool_catalog: String::new(),
-            describe_spec: None,
+            native_specs: Vec::new(),
             working_memory: None,
             prompt_capture: None,
             genome: empty_genome(),
@@ -296,13 +298,13 @@ impl LlmDeliberationFaculty {
     fn rebuild_tool_surface(&mut self) {
         if self.tools.is_empty() {
             self.tool_catalog.clear();
-            self.describe_spec = None;
+            self.native_specs.clear();
             return;
         }
         let budget_chars =
             (self.context_window as usize / 2).saturating_mul(GUARD_CHARS_PER_TOKEN);
         self.tool_catalog = persona_tools::render_tool_catalog(&self.tools, budget_chars);
-        self.describe_spec = persona_tools::spec_for_command(persona_tools::TOOL_HELP_NAME);
+        self.native_specs = persona_tools::native_tool_specs();
     }
 
     /// Set the effective served context window (tokens) this faculty must keep its
@@ -455,16 +457,17 @@ impl LlmDeliberationFaculty {
     fn compose_system(&self, context: &str) -> String {
         let mut s = String::with_capacity(self.system_prompt.len() + context.len() + 768);
         s.push_str(&self.system_prompt);
-        if !context.is_empty() {
-            s.push_str(
-                "\n\n[What you are working with right now]\n\
-                 The following is the context your mind assembled this moment — \
-                 recalled memory, who is present, the room's nature, your read of \
-                 the situation. Ground your contribution in it; you need not cite \
-                 every line:\n",
-            );
-            s.push_str(context);
-        }
+        // NOTE ON ORDERING (KV-cache prefix reuse, measured 2026-06-23):
+        // Everything pushed BEFORE the volatile `context` below forms a
+        // byte-identical prefix across turns (identity + how-to-take-your-turn +
+        // the 18.5KB tool catalog + silence affordance — all static). The
+        // llama.cpp server caches that prefix and re-prefills only the changed
+        // tail, so the static ~5k tokens prefill ONCE per session instead of
+        // ~27s every turn. The assembled `context` (recall + live situation) is
+        // the ONLY volatile part, so it is appended LAST — which also puts the
+        // live situation closest to the generation point (recency favors
+        // instruction-following). Do NOT move volatile content above the catalog:
+        // it breaks the cached prefix and every turn pays the full re-prefill.
         // Tell the reasoner it is taking a TURN in this activity, not analyzing a
         // transcript — otherwise small models outline the situation instead of
         // participating. The activity is NOT hardcoded (it is recipe-defined): the
@@ -485,25 +488,27 @@ impl LlmDeliberationFaculty {
              have nothing worth adding, stay silent.",
             name = self.persona_name,
         );
-        // Tools: a compact CATALOG (names + one-line summaries by category) plus
-        // how to use them. NOT the full schemas — the call format loads on demand via
-        // `commands/help` (progressive disclosure, the Claude Code shape). Only
-        // included when the persona has tools; pure-chat turns keep say-your-piece.
-        // The `[Acting]` framing here states the truth WITHOUT a false absolute:
-        // for many tasks the finished work IS the answer (write the function, the
-        // prose, the design) — produce it directly; reach for a tool when the task
+        // Tools: a compact CATEGORY INDEX (category names + counts) plus how to
+        // discover and use them. NOT every tool, NOT the schemas — both load on
+        // demand: `commands/list` to search a category for tools, then `commands/help`
+        // for one tool's call format (progressive disclosure, the Claude Code shape).
+        // Only included when the persona has tools; pure-chat turns keep
+        // say-your-piece. The `[Acting]` framing here states the truth WITHOUT a false
+        // absolute: for many tasks the finished work IS the answer (write the function,
+        // the prose, the design) — produce it directly; reach for a tool when the task
         // genuinely needs one (read a file, run code, search). Describing what you
         // WOULD do is not doing it — but neither is calling a tool you don't need.
         if !self.tools.is_empty() {
             s.push_str(
                 "\n\n[Your tools]\n\
-                 You can act, not just talk. Below is your tool catalog — tool names \
-                 grouped by category, each with a one-line summary. The catalog is \
-                 compact on purpose: it does NOT list each tool's arguments. When you \
-                 want to use a tool, first call `commands/help` with its exact name to \
-                 see how to call it (the arguments and an example), then call the tool \
-                 itself. (You may call any tool in the catalog by name; only \
-                 `commands/help` is offered to you directly.)\n",
+                 You can act, not just talk. Below is an INDEX of your tool \
+                 categories with how many tools each holds — not the tools \
+                 themselves. To find a tool: call `commands/list` with a `filter` \
+                 (e.g. a category name or a keyword) to get the matching tools. To \
+                 call one: first call `commands/help` with its exact name to see its \
+                 arguments and an example, then call the tool. (`commands/list` and \
+                 `commands/help` are offered to you directly; every other tool is \
+                 called by name once you've found it.)\n",
             );
             s.push_str(&self.tool_catalog);
             s.push_str(
@@ -520,6 +525,21 @@ impl LlmDeliberationFaculty {
         }
         // Reuse the ONE silence contract — PASS = first-class choice to stay quiet.
         s.push_str(SILENCE_AFFORDANCE_BLOCK);
+        // VOLATILE TAIL — appended last so the static blocks above stay a stable,
+        // cacheable prefix (see ORDERING note at the top of this fn). This is the
+        // context the mind assembled THIS tick (recall + who's present + the
+        // situation); it changes every turn, so it must come after all static
+        // content or it poisons the KV-cache prefix.
+        if !context.is_empty() {
+            s.push_str(
+                "\n\n[What you are working with right now]\n\
+                 The following is the context your mind assembled this moment — \
+                 recalled memory, who is present, the room's nature, your read of \
+                 the situation. Ground your contribution in it; you need not cite \
+                 every line:\n",
+            );
+            s.push_str(context);
+        }
         s
     }
 
@@ -586,13 +606,13 @@ impl LlmDeliberationFaculty {
     /// handful of tokens, not the old full-registry dump.
     fn describe_tool_tokens(&self) -> usize {
         const PER_TOOL_TEMPLATE_MARGIN_TOKENS: usize = 8;
-        match &self.describe_spec {
-            None => 0,
-            Some(spec) => {
+        self.native_specs
+            .iter()
+            .map(|spec| {
                 let serialized = serde_json::to_string(spec).unwrap_or_default();
                 est_tokens(&serialized) + PER_TOOL_TEMPLATE_MARGIN_TOKENS
-            }
-        }
+            })
+            .sum()
     }
 }
 
@@ -672,15 +692,21 @@ impl Faculty for LlmDeliberationFaculty {
         // Speak/Pass across ticks — never a counter in here. See
         // docs/cognition/ACTING-ORGANISM.md §3.3.
         let messages = vec![ChatMessage::text("user", view.user)];
-        // Offer exactly ONE native tool — `commands/help` — when the persona has a
-        // tool surface. The rest of the surface is the compact catalog inside the
-        // system prompt (progressive disclosure): the persona names a tool to load
-        // its schema via `commands/help`, then calls it. A catalog tool not in the
-        // native array still DISPATCHES — `act_observe` resolves any call by name —
-        // and small models emit those calls as JSON-in-prose, which the parse path
-        // below handles. This keeps the per-turn tool payload at ONE tiny schema
-        // instead of the ~100-schema dump that overflowed `n_ctx` and muted her.
-        let tools = self.describe_spec.clone().map(|spec| vec![spec]);
+        // Offer the DISCOVERY PAIR natively — `commands/list` (search/filter the
+        // authorized surface → a small list) + `commands/help` (one named tool's call
+        // format) — when the persona has a tool surface. The rest of the surface is
+        // the compact CATEGORY INDEX inside the system prompt (progressive
+        // disclosure): the persona searches a category with `commands/list`, loads a
+        // tool's schema via `commands/help`, then calls it. A tool not in this native
+        // array still DISPATCHES — `act_observe` resolves any call by name — and small
+        // models emit those calls as JSON-in-prose, which the parse path below
+        // handles. This keeps the per-turn tool payload at TWO tiny schemas instead of
+        // the ~150-schema dump that overflowed `n_ctx` and muted her.
+        let tools = if self.native_specs.is_empty() {
+            None
+        } else {
+            Some(self.native_specs.clone())
+        };
 
         let request = self.build_request(messages.clone(), tools, view.system.clone());
         let resp = match self.adapter.generate_text(request).await {
@@ -925,17 +951,19 @@ mod tests {
         );
     }
 
-    // what this catches: progressive disclosure — the per-turn tool PAYLOAD is ONE
-    // tiny schema (`commands/help`), not the whole authorized registry. The old
-    // dump injected ~100 full schemas (~4–5k tokens) into EVERY turn, overflowing
-    // n_ctx → 400 "exceeds context size" → mute. Now the surface is a compact
-    // CATALOG inside the system prompt + a single `commands/help` native tool, so
-    // even a huge tool set leaves system + user + the offered tool well within the
-    // served window. Invariant: the catalog names appear in the system prompt, the
-    // native offering is exactly `commands/help`, and the whole prompt + its one
-    // tool + reserve fit the window. A regression here means the dump came back.
+    // what this catches: progressive disclosure — the per-turn tool PAYLOAD is the
+    // two-tool DISCOVERY PAIR (`commands/list` + `commands/help`), not the whole
+    // authorized registry, and the system prompt carries only a CATEGORY INDEX, not
+    // every tool. The old dump injected ~150 full schemas / one-liners (~4–5k tokens)
+    // into EVERY turn, overflowing n_ctx → 400 "exceeds context size" → mute. Now the
+    // surface is a tiny category index inside the system prompt + the two-tool native
+    // offering, so even a huge tool set leaves system + user + the offered tools well
+    // within the served window. Invariant: the category index (not tool names) rides
+    // the system prompt, the native offering is exactly the discovery pair, and the
+    // whole prompt + its tools + reserve fit the window. A regression means the dump
+    // came back.
     #[test]
-    fn tool_surface_is_a_compact_catalog_plus_describe_only() {
+    fn tool_surface_is_a_category_index_plus_discovery_pair() {
         let persona = Uuid::new_v4();
         let adapter: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
         // A tool set whose FULL schemas would dwarf the window — the live shape
@@ -971,25 +999,36 @@ mod tests {
         .with_context_window(window)
         .with_tools(tools);
 
-        // The native offering is exactly ONE tool — `commands/help` — regardless of
-        // how many tools are authorized.
-        let describe = faculty
-            .describe_spec
-            .as_ref()
-            .expect("describe_spec present when tools are authorized");
-        assert_eq!(describe.name, persona_tools::TOOL_HELP_NAME);
+        // The native offering is exactly the DISCOVERY PAIR — `commands/list` (search)
+        // + `commands/help` (call format) — regardless of how many tools are
+        // authorized. Both resolve from the registry compiled into this build.
+        let native: Vec<&str> = faculty.native_specs.iter().map(|s| s.name.as_str()).collect();
+        assert!(
+            native.contains(&persona_tools::TOOL_HELP_NAME),
+            "commands/help must be offered natively: {native:?}"
+        );
+        assert!(
+            native.contains(&"commands/list"),
+            "commands/list (search) must be offered natively: {native:?}"
+        );
         // Its injected cost is a handful of tokens, NOT the whole registry.
         assert!(
-            faculty.describe_tool_tokens() < 256,
-            "the single describe tool must be tiny ({} tokens)",
+            faculty.describe_tool_tokens() < 512,
+            "the discovery-pair tools must be tiny ({} tokens)",
             faculty.describe_tool_tokens()
         );
 
-        // The catalog rode into the system prompt — names are browsable there.
+        // The CATEGORY INDEX rode into the system prompt — the persona drills in via
+        // `commands/list` from there. The 60 tools all share category `cat`, so the
+        // index is the single line `cat (60)` — NOT 60 tool names.
         let framing = faculty.compose_system("");
         assert!(
-            framing.contains("[Your tools]") && framing.contains("cat/command_0"),
-            "the compact catalog (tool names) must be in the system prompt"
+            framing.contains("[Your tools]") && framing.contains("cat (60)"),
+            "the compact category index must be in the system prompt: {framing}"
+        );
+        assert!(
+            !framing.contains("cat/command_0"),
+            "individual tool names must NOT be dumped into the prompt (that was the bloat)"
         );
 
         // Under real burst pressure the whole prompt + the one tool + reserve fit
@@ -1016,11 +1055,11 @@ mod tests {
         assert!(view.system.contains("Taking your turn"));
     }
 
-    // what this catches: the catalog ALWAYS fits, even at the 2048-token serving
-    // floor (MIN_SERVE_CTX). render_tool_catalog falls back from rich (name —
-    // summary) to terse (category: names) when rich would overflow the half-window
-    // char budget, so the catalog never alone blows the framing past the window. A
-    // regression means a large registry at a tiny window reintroduces the overflow.
+    // what this catches: the category index is small BY CONSTRUCTION — even a
+    // 120-tool registry at the 2048-token serving floor (MIN_SERVE_CTX) renders to a
+    // handful of `category (N)` entries, so the framing never alone blows past the
+    // window and always leaves burst room. A regression (e.g. dumping tool names back
+    // into the index) reintroduces the overflow at a tiny window.
     #[test]
     fn catalog_fits_the_minimum_serving_window() {
         let persona = Uuid::new_v4();
@@ -1051,8 +1090,17 @@ mod tests {
             framing + reserve < window as usize,
             "framing+catalog ({framing}) + reserve ({reserve}) must leave burst room in {window}"
         );
-        // Every tool name is still reachable — terse render keeps all names.
-        assert!(faculty.tool_catalog.contains("command_119"));
+        // The index shows the 8 categories with their counts, NOT the 120 tool names
+        // (tool names are reached via `commands/list`, not dumped into the prompt).
+        assert!(
+            faculty.tool_catalog.contains("cat0 (15)"),
+            "category index must list categories with counts: {}",
+            faculty.tool_catalog
+        );
+        assert!(
+            !faculty.tool_catalog.contains("command_119"),
+            "individual tool names must NOT be in the index (that was the bloat)"
+        );
     }
 
     // ─── Acting path (single-shot) ──────────────────────────────────────────

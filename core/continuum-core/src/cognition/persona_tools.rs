@@ -172,88 +172,51 @@ fn tool_summary(d: &CommandDescriptor) -> String {
     }
 }
 
-/// Render a tool catalog as the compact text block injected into the system
-/// prompt. Two tiers so the catalog ALWAYS fits — even the 2048-token floor
-/// ([`crate::cognition::serving_plan::MIN_SERVE_CTX`]):
-///   - **rich** (`name — summary`, grouped by category) when it fits `budget_chars`;
-///   - **terse** (`category: name1, name2, …`) names-only otherwise.
-/// Names are always the full command name (the persona uses them verbatim for
-/// `commands/help` and for the call itself). Operates on the [`NativeToolSpec`]
-/// surface the faculty already holds, so it never re-queries the registry.
-pub fn render_tool_catalog(tools: &[NativeToolSpec], budget_chars: usize) -> String {
+/// Render the persona's tool surface as a COMPACT CATEGORY INDEX — the categories
+/// she has and how many tools each holds — NOT every tool inline.
+///
+/// Why: dumping all ~150 authorized tools (name + one-line summary, grouped) cost
+/// ~18KB / ~4.6k tokens EVERY turn — 79% of the whole system prompt (measured
+/// 2026-06-23). That both drowned a small model in irrelevant options and forced the
+/// server to re-prefill 4.6k tokens of static catalog each turn. The index is a few
+/// hundred chars. She DRILLS IN on demand: `commands/list` with a `filter` returns
+/// the small list of tools in a category (search → small list), then `commands/help`
+/// gives one tool's exact call format. Progressive disclosure — the same shape a
+/// capable agent runtime uses (a handful of always-on tools + a search), and the
+/// SAME single source of truth (the authorized set), just indexed instead of dumped.
+/// Dispatch is still by NAME, so any tool she names from a `commands/list` result
+/// runs. `_budget_chars` retained for call-site compatibility; the index is small by
+/// construction so it never needs a fallback tier.
+pub fn render_tool_catalog(tools: &[NativeToolSpec], _budget_chars: usize) -> String {
     if tools.is_empty() {
         return String::new();
     }
-    // Group by category, stable (BTreeMap) ordering; tools sorted by name within.
-    let mut groups: BTreeMap<&str, Vec<&NativeToolSpec>> = BTreeMap::new();
+    // Count tools per category, stable (BTreeMap) ordering.
+    let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
     for t in tools {
-        groups.entry(extract_category(&t.name)).or_default().push(t);
+        *counts.entry(extract_category(&t.name)).or_default() += 1;
     }
-    for v in groups.values_mut() {
-        v.sort_by(|a, b| a.name.cmp(&b.name));
-    }
-
-    let rich = render_rich(&groups);
-    if rich.len() <= budget_chars {
-        rich
-    } else {
-        render_terse(&groups)
-    }
-}
-
-/// Rich rendering: `category:` header, then `  name — summary` per tool. The
-/// summary is the first line of the spec's description (already one-line-shaped by
-/// [`tool_summary`] at catalog build, but specs may carry a fuller description, so
-/// re-clip here).
-fn render_rich(groups: &BTreeMap<&str, Vec<&NativeToolSpec>>) -> String {
-    let mut out = String::new();
-    for (cat, tools) in groups {
-        out.push_str(cat);
-        out.push_str(":\n");
-        for t in tools {
-            let summary = clip_one_line(&t.description);
-            out.push_str("  ");
-            out.push_str(&t.name);
-            if !summary.is_empty() {
-                out.push_str(" — ");
-                out.push_str(&summary);
-            }
-            out.push('\n');
-        }
-    }
+    let mut out: String = counts
+        .iter()
+        .map(|(cat, n)| format!("{cat} ({n})"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    out.push('\n');
     out
 }
 
-/// Terse rendering (fallback for tiny windows): one line per category, just the
-/// names. Always emitted regardless of size — the names must stay visible so the
-/// persona can name a tool for `commands/help`.
-fn render_terse(groups: &BTreeMap<&str, Vec<&NativeToolSpec>>) -> String {
-    let mut out = String::new();
-    for (cat, tools) in groups {
-        out.push_str(cat);
-        out.push_str(": ");
-        let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
-        out.push_str(&names.join(", "));
-        out.push('\n');
-    }
-    out
-}
-
-/// First line of a description, first sentence within it, capped — the rich-tier
-/// per-tool summary. Mirrors [`tool_summary`] for specs carrying a full description.
-fn clip_one_line(description: &str) -> String {
-    let first_line = description.lines().next().unwrap_or("").trim();
-    let sentence = match first_line.find(". ") {
-        Some(i) => &first_line[..i],
-        None => first_line.trim_end_matches('.'),
-    };
-    let sentence = sentence.split_whitespace().collect::<Vec<_>>().join(" ");
-    if sentence.chars().count() <= SUMMARY_MAX_CHARS {
-        sentence
-    } else {
-        let truncated: String = sentence.chars().take(SUMMARY_MAX_CHARS - 1).collect();
-        format!("{}…", truncated.trim_end())
-    }
+/// The tools offered NATIVELY (as function specs) every turn: the discovery pair.
+/// `commands/list` (filter/search the authorized surface → a small list of matching
+/// tools) + `commands/help` (the exact call format for one named tool). Everything
+/// else is reached BY NAME through these two, so the per-turn native payload stays
+/// two tiny schemas — never the ~150-tool dump that overflowed the window and muted
+/// her. Only includes a spec that actually resolves in the registry (fail-closed:
+/// a missing command is omitted, never fabricated — [[fallbacks-are-illegal-fail-loud]]).
+pub fn native_tool_specs() -> Vec<NativeToolSpec> {
+    ["commands/list", TOOL_HELP_NAME]
+        .iter()
+        .filter_map(|n| spec_for_command(n))
+        .collect()
 }
 
 /// Look up one command by name and project it to a full tool spec — the on-demand
