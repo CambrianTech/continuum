@@ -20,9 +20,12 @@
 //! So a slow faculty sits in the SAME `faculties` Vec as the fast ones and the
 //! per-tick `join_all` barrier in [`WorkspaceCycle::run_in_room`] never waits on
 //! it: the barrier stays, but nothing slow is ON it. The late finding lands a
-//! tick or three later carrying its own cycle — ready for slice-3
-//! reconcile-forward (fold a turn-N finding onto turn-N+3's world via
-//! turn-history, the cbar reprojection).
+//! tick or three later carrying its own cycle, and the hot path **reprojects it
+//! forward** ([`reproject_to_now`], slice 3) — re-anchoring a turn-N finding onto
+//! turn-N+3's world via current-relevance, the cbar reprojection. This is the
+//! cheap synchronous "bring it up to speed" step that lets a 90%-async concern
+//! behave as if it were synchronous: the expensive compute ran off-loop; the only
+//! on-loop cost is the warp.
 //!
 //! This is the "scary-fast reflexes in a slow brain": the immediate lane answers
 //! every tick; the slow lane lands late, honestly stamped, and is merged in
@@ -200,11 +203,11 @@ impl Faculty for DeferredFaculty {
         // Context guard: serve the last-good ONLY if it was computed for the room
         // the mind is in NOW. A finding from another room is "context-switched to
         // where it's irrelevant" — withhold it rather than inject a cross-context
-        // memory into this turn. (Slice 3 will REPROJECT a same-room-but-stale
-        // finding forward; a different-room finding is simply not ours to serve.)
+        // memory into this turn. A same-room-but-stale finding is REPROJECTED
+        // forward (slice 3, below); a different-room finding is simply not ours.
         let guard = self.latest.borrow();
         match guard.as_ref() {
-            Some(found) if found.room_id == ws.room_id => Some(found.contribution.clone()),
+            Some(found) if found.room_id == ws.room_id => Some(reproject_to_now(found, ws)),
             _ => None,
         }
     }
@@ -215,6 +218,74 @@ impl Faculty for DeferredFaculty {
     fn reacts_to_broadcast(&self) -> bool {
         false
     }
+}
+
+/// **Reconcile-forward (slice 3) — the cheap synchronous "bring it up to speed"
+/// step that lets a 90%-async concern behave AS IF it were synchronous.**
+///
+/// The cbar lesson stated as a rule: almost nothing needs to run synchronously in
+/// the hot loop; the only synchronous cost is warping a stale last-good finding to
+/// approximately where it belongs in the NOW, using history. For geometry that
+/// warp is a pose transform (`getWorldTransform(frameIndex)`); for RAG it is
+/// **re-anchoring the finding against the current burst** — the text analog of
+/// "warp to where it's now, and if it's no longer in view it falls out."
+///
+/// Why relevance and not blind age-decay: reproject semantics are faculty-
+/// dependent. A *memory* doesn't become false with conversation age — only less
+/// *relevant* if the topic moved on; a *world-model prediction* about an old state
+/// genuinely goes stale. Re-anchoring against the current burst captures both with
+/// one rule: a still-on-topic memory keeps its salience, an off-topic stale
+/// finding decays toward zero. Age rides along only as audit metadata.
+///
+/// This NEVER hard-withholds a same-room finding — eviction stays the arbiter's
+/// single job (a near-zero bid simply loses the capacity competition). The faculty
+/// reports an honest, reprojected salience; it does not decide what survives.
+///
+/// v1 is the **algorithmic-first** reprojector: a cheap lexical overlap, faculty-
+/// agnostic (a `DeferredFaculty` wraps ANY perception faculty, so it can't assume
+/// an embedder). The ladder, same shape as `SalienceArbiter → LlmFocusArbiter`:
+/// v2 = a `Faculty::reproject` hook so a faculty re-anchors with its OWN model
+/// (recall via its cached neural embedder); endgame = a learned reprojector that
+/// folds the full turn-history, not just the current burst. This is input-side
+/// attention (re-weighting a faculty's own bid by honest current-relevance), never
+/// output-puppeteering — it does not read the deliberator's generated words.
+fn reproject_to_now(found: &StampedFinding, now: &Workspace) -> Contribution {
+    let mut c = found.contribution.clone();
+    let relevance = lexical_relevance(&c.content, &now.world_state);
+    let age = now.cycle.0.saturating_sub(c.cycle.0);
+    let original = c.salience;
+    c.salience = (original * relevance).clamp(0.0, 1.0);
+    // Keep the cycle stamp (it carries the moment it reasoned about) and append the
+    // reprojection to the reasoning so the warp is observable in audit/replay.
+    c.reasoning = format!(
+        "{} [reprojected: {age} cycles stale, relevance {relevance:.2}, salience {original:.2}→{:.2}]",
+        c.reasoning, c.salience
+    );
+    c
+}
+
+/// Cheap, faculty-agnostic current-relevance for the v1 reprojector: the fraction
+/// of the finding's tokens that still appear in the current burst. Asymmetric on
+/// purpose — "how much of this finding is still on-topic," not symmetric overlap.
+///
+/// Returns `1.0` (no decay) when either side has no tokens: an empty finding has
+/// nothing to fade, and an empty/contentless current burst gives no signal to
+/// reproject against, so we must not penalize the finding for our own blindness
+/// (fail toward serving last-good, not toward silently dropping it).
+fn lexical_relevance(finding: &str, current: &str) -> f32 {
+    fn tokens(s: &str) -> std::collections::HashSet<String> {
+        s.split(|ch: char| !ch.is_alphanumeric())
+            .filter(|t| !t.is_empty())
+            .map(|t| t.to_lowercase())
+            .collect()
+    }
+    let f = tokens(finding);
+    let c = tokens(current);
+    if f.is_empty() || c.is_empty() {
+        return 1.0;
+    }
+    let hits = f.iter().filter(|t| c.contains(*t)).count();
+    hits as f32 / f.len() as f32
 }
 
 /// `Future` adapter that asserts unwind-safety so an async body can be
@@ -265,7 +336,7 @@ mod tests {
     // first compute lands), and when the late finding arrives it carries the
     // OLDER cycle it was computed against, not the current tick. This is the
     // immediate-vs-deferred split: the per-tick join_all barrier stays harmless
-    // because nothing slow is ON it, and slice-3 reconcile can fold the late
+    // because nothing slow is ON it, and reproject (slice 3) folds the late
     // finding forward precisely because it knows its own moment.
     #[tokio::test]
     async fn deferred_faculty_never_blocks_and_lands_late_with_its_own_cycle() {
@@ -332,5 +403,62 @@ mod tests {
         let in_a = deferred.contribute(&ws_a2).await;
         let found = in_a.expect("the room-A finding is ours to serve back in room A");
         assert_eq!(found.cycle, CycleId(1), "still stamped with its original cycle");
+    }
+
+    // what this catches: reproject-to-now (slice 3) — the cheap synchronous "bring
+    // it up to speed" warp that lets a 90%-async concern behave as if synchronous.
+    // A same-room stale finding is re-anchored against the CURRENT burst: when the
+    // burst is still on-topic the finding keeps its salience; when the topic has
+    // moved on the same finding decays toward zero — WITHOUT being withheld (the
+    // cycle stamp survives; eviction stays the arbiter's job, a near-zero bid just
+    // loses the capacity competition). Faculty-dependence is handled by one rule:
+    // a memory only fades when it stops being RELEVANT, never merely because it
+    // aged. If this regresses to serve-verbatim, async-by-default serves stale
+    // garbage (the skeptic's win) instead of behaving synchronous.
+    #[tokio::test]
+    async fn reproject_reanchors_stale_finding_against_the_current_burst() {
+        // SlowRecall surfaces "a slow, late recall finding" at salience 0.8.
+        let deferred = DeferredFaculty::spawn(Arc::new(SlowRecall));
+        let room = Uuid::new_v4();
+
+        // Kick the worker and let it land its finding (stamped cycle 1).
+        let ws1 = Workspace::in_room("kickoff", room).with_cycle(CycleId(1));
+        let _ = deferred.contribute(&ws1).await;
+        tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+
+        // On-topic burst (shares "slow late recall finding") → high relevance, the
+        // finding keeps most of its salience and is served, cycle preserved.
+        let on_topic =
+            Workspace::in_room("the slow late recall finding is relevant", room).with_cycle(CycleId(4));
+        let kept = deferred
+            .contribute(&on_topic)
+            .await
+            .expect("same-room finding is served");
+        assert_eq!(kept.cycle, CycleId(1), "reproject preserves the original cycle stamp");
+        assert!(
+            kept.salience > 0.4,
+            "on-topic reproject keeps salience high, got {}",
+            kept.salience
+        );
+
+        // Off-topic burst (no shared tokens) → relevance ~0, the SAME finding
+        // decays toward zero but is still served (not withheld) — the arbiter, not
+        // the faculty, decides it loses the competition.
+        let off_topic =
+            Workspace::in_room("tomorrow's weather forecast outlook", room).with_cycle(CycleId(5));
+        let faded = deferred
+            .contribute(&off_topic)
+            .await
+            .expect("a decayed finding is still served, not withheld");
+        assert_eq!(faded.cycle, CycleId(1), "still its own moment");
+        assert!(
+            faded.salience < 0.05,
+            "off-topic reproject decays salience toward zero, got {}",
+            faded.salience
+        );
+        assert!(
+            kept.salience > faded.salience,
+            "on-topic must out-bid off-topic for the same stale finding"
+        );
     }
 }
