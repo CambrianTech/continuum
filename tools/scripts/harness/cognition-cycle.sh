@@ -84,12 +84,18 @@ export CONTINUUM_CORE_SOCKET="$SOCKET"
 
 # cu_json CMD [ARGS...] — run a cu command, return stdout. Fail loud if the
 # substrate refused (cu prints to stderr + still exits 0, so we sniff the text).
+# A genuine result is always valid JSON; a refusal is plain stderr text. So the
+# refusal sniff runs ONLY when the output does not parse as JSON — otherwise a
+# legitimate eval payload whose answer text happens to contain "FAIL"/"error:"
+# would false-positive into a die() (intermittent, answer-content-dependent).
 cu_json() {
   local out
   out="$("$CU" "$@" 2>&1)" || true
-  if grep -qiE "substrate refused|Unknown command|FAIL|error:" <<<"$out"; then
-    die "cu $* refused:
+  if ! jq -e . >/dev/null 2>&1 <<<"$out"; then
+    if grep -qiE "substrate refused|Unknown command|FAIL|error:" <<<"$out"; then
+      die "cu $* refused:
 $out"
+    fi
   fi
   printf '%s' "$out"
 }
@@ -165,6 +171,14 @@ NEW_LEDGER=$(( $(linecount "$LEDGER") - PRE_LEDGER ))
 
 # ---- 7. headline VDD-shaped record + report.md -------------------------------
 j() { jq -r "$1 // \"null\"" <<<"$RESULT"; }
+# prefill_share — fraction of LANE time (prefill+decode) spent prefilling. This is
+# the headline "where the time goes" number the instrumentation exists to surface;
+# the lever (KV-prefix reuse) is what drives it down. "n/a" when the lane gave no
+# timings (cloud / older endpoint).
+prefill_share() {
+  jq -r '(.total_prefill_ms // 0) as $p | (.total_decode_ms // 0) as $d
+         | if ($p + $d) > 0 then "\((($p*100)/($p+$d))|floor)%" else "n/a" end' <<<"$RESULT"
+}
 REPORT="$RUN_DIR/report.md"
 {
   echo "# Cognition harness cycle — $PNAME — $STAMP"
@@ -185,7 +199,12 @@ REPORT="$RUN_DIR/report.md"
   echo "| self_verify_rate | $(j .self_verify_rate) |"
   echo "| mean_latency_ms | $(j .mean_latency_ms) |"
   echo "| p95_latency_ms | $(j .p95_latency_ms) |"
-  echo "| mean_tokens_per_second | $(j .mean_tokens_per_second) |"
+  echo "| mean_tokens_per_second (wall-clock, diluted) | $(j .mean_tokens_per_second) |"
+  echo "| **mean_decode_tokens_per_second (real lane rate)** | **$(j .mean_decode_tokens_per_second)** |"
+  echo "| **mean_cache_hit_rate** (→1.0 = prefix stayed resident) | **$(j .mean_cache_hit_rate)** |"
+  echo "| total_prefill_ms (the re-rasterization tax) | $(j .total_prefill_ms) |"
+  echo "| total_decode_ms (actual generation) | $(j .total_decode_ms) |"
+  echo "| prefill share of lane time | $(prefill_share) |"
   echo "| total_output_tokens | $(j .total_output_tokens) |"
   echo "| **lane_placement** | **$(j .lane_placement)** — $(j .lane_placement_reason) |"
   echo "| lane_free_vram_bytes | $(j .lane_free_vram_bytes) |"
@@ -200,15 +219,16 @@ REPORT="$RUN_DIR/report.md"
   echo
   echo "## Per-task"
   echo
-  echo "| task | ok | acts | latency_ms | tok/s | grade |"
-  echo "|---|---|---|---|---|---|"
-  jq -r '.results[]? | "| \(.id) | \(if .ok then "✅" else "❌" end) | \(.acts) | \(.latency_ms) | \(.tokens_per_second|floor) | \(.grade) |"' <<<"$RESULT"
+  echo "| task | ok | acts | latency_ms | wall tok/s | decode tok/s | cache_hit | grade |"
+  echo "|---|---|---|---|---|---|---|---|"
+  jq -r '.results[]? | "| \(.id) | \(if .ok then "✅" else "❌" end) | \(.acts) | \(.latency_ms) | \(.tokens_per_second|floor) | \((.decode_tokens_per_second // 0)|floor) | \(((.cache_hit_rate // 0)*100|floor))% | \(.grade) |"' <<<"$RESULT"
 } >"$REPORT"
 
 echo
 echo "════════════════════════════════════════════════════════════════"
 echo " pass_rate $(j .pass_rate)  ($(j .score)/$(j .total))   lift $(j .lift)"
 echo " device    $(j .lane_placement)  —  $(j .lane_placement_reason)"
-echo " latency   mean $(j .mean_latency_ms)ms  p95 $(j .p95_latency_ms)ms   throughput $(j .mean_tokens_per_second) tok/s"
+echo " latency   mean $(j .mean_latency_ms)ms  p95 $(j .p95_latency_ms)ms   wall $(j .mean_tokens_per_second) tok/s"
+echo " speed     decode $(j .mean_decode_tokens_per_second) tok/s (real)   cache_hit $(j .mean_cache_hit_rate)   prefill $(prefill_share) of lane time"
 echo "════════════════════════════════════════════════════════════════"
 echo "harness: full report → $REPORT"
