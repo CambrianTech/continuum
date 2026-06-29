@@ -1031,14 +1031,22 @@ async fn run_self_cycle(
     // synchronous loop, no narration of the intermediate step into the room. She
     // speaks only when she has something worth the others' attention
     // (ACTING-ORGANISM.md §4).
-    // `directed = false`: a spontaneous self-prompted turn is inherently ambient
-    // (no one addressed her) — silence stays first-class here by construction.
+    // `directed = addressed`: a self-tick fires on ANY external change, INCLUDING a
+    // message that named her — the `addressed` perception above captures exactly that.
+    // When she was addressed, the turn IS directed: the bare-PASS escape is withheld so
+    // a question put to her by name isn't ghosted. This is the SAME structural-addressing
+    // fact the message path feeds to `directed` (service_loop ~658), now also honored on
+    // the digest-perceived path (ordinary room chat reaches her here, not via the inbound
+    // settle_step). When `addressed` is false the turn is genuinely ambient and silence
+    // stays first-class. Framing over a structural fact, never an output filter
+    // ([[no-hardcoded-heuristics-to-steer-cognition]]): she can still decline in her own
+    // words, she just isn't handed the silent hatch when named.
     let (step, _turn_metrics) = crate::cognition::act_observe::settle_step(
         &cycle,
         framed,
         ctx.identity.default_room,
         true,
-        false,
+        addressed,
     )
     .await;
     match step {
