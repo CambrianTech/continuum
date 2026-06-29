@@ -53,6 +53,27 @@ const DMR_TICK_INTERVAL: Duration = Duration::from_secs(5);
 /// uses for "loud failure, never silent."
 const DMR_DOWN_WARN_THRESHOLD_TICKS: u64 = 6;
 
+/// Inline wait at boot for the serving snapshot to report a READY model before
+/// registering the gateway adapter on the spot. Sized for the warm path — a
+/// core restart over an already-resident model, or an adoption of a healthy
+/// server — where the daemon's snapshot is ready within a couple of ticks, so
+/// boot reports `✓ inference` cleanly with zero window where `select()` misses
+/// the gateway. Deliberately SHORT: a cold large GGUF will not finish loading
+/// in this window, and we do NOT want boot to block on it — that case hands off
+/// to the reactive watcher below ([[fallbacks-are-illegal-fail-loud]], task #71).
+const GATEWAY_FAST_PATH_WAIT: Duration = Duration::from_secs(8);
+
+/// Overall cap the reactive watcher waits for the daemon to bring up a ready
+/// model when the cold load overruns the fast-path window. `await_ready_serving`
+/// resolves the INSTANT the snapshot goes ready, so this is a safety net (it
+/// bounds a genuinely wedged serving plan into a loud failure), NOT a tuning
+/// knob: a 14B at `-c 78128 --parallel 4` can warm its slot graphs well past the
+/// 120s `DEFAULT_SERVING_WAIT`, and the old one-shot registration timed out and
+/// NEVER retried — leaving the core permanently gatewayless even though the model
+/// became ready seconds later. Ten minutes is far beyond any real cold load on
+/// the hardware we serve, while still surfacing a truly broken plan eventually.
+const GATEWAY_REACTIVE_CAP: Duration = Duration::from_secs(600);
+
 /// One DMR endpoint discovered by `probe_dmr`. The base_url is None for
 /// localhost — the adapter's default constructor already points at
 /// `localhost:12434`. A `Some(url)` means the in-container variant
@@ -220,6 +241,18 @@ pub(crate) fn select_failure_message(
     )
 }
 
+/// Build + initialize the llama-server gateway adapter pointed at a ready
+/// serving snapshot's `base_url`. ONE construction site shared by the inline
+/// fast-path and the reactive watcher (compression — the adapter is wired the
+/// same way whether it registers at boot or seconds later). Returns the
+/// initialized adapter ready to register, or a Display error on init failure.
+async fn build_gateway_adapter(base_url: String) -> Result<OpenAICompatibleAdapter, String> {
+    let mut a = OpenAICompatibleAdapter::from_registry(crate::inference::llama_server::PROVIDER_ID)
+        .with_runtime_base_url(base_url);
+    a.initialize().await.map_err(|e| e.to_string())?;
+    Ok(a)
+}
+
 // Re-open the AIProviderModule impl block so the rest of the methods
 // (parse_request, response_to_json, etc.) stay where they were.
 impl AIProviderModule {
@@ -371,19 +404,27 @@ impl AIProviderModule {
         // gateway the *preferred* route is a separate routing-policy change.
         // No served model → no registration → the boot-status block below fails
         // loud (no local fallback), per the no-fallback rule.
+        // Gateway registration is REACTIVE, not one-shot (task #71). A cold large
+        // GGUF can take longer than any fixed boot bound to finish warming its slot
+        // graphs; the old `await_ready_serving(DEFAULT_SERVING_WAIT)` here timed out
+        // and NEVER registered, leaving the core permanently gatewayless even though
+        // the daemon brought the model up moments later. Now: a SHORT inline wait
+        // registers on the spot for the warm-restart / adoption case; if the model
+        // is still loading, a detached watcher registers the instant the daemon's
+        // snapshot reports ready — however long the cold load takes. This is NOT a
+        // fallback: there is still exactly one inference path (the gateway); it
+        // simply registers when its backend is actually ready. The serving daemon
+        // remains the loud-failure owner if it can never bring a model up, and an
+        // inference call arriving before registration fails loud at `select()` (no
+        // stand-in). [[fallbacks-are-illegal-fail-loud]]
         let mut gateway_registered = false;
-        if let Some(snap) = crate::inference::llama_server::await_ready_serving(
-            crate::inference::llama_server::DEFAULT_SERVING_WAIT,
-        )
-        .await
+        let mut gateway_pending = false;
+        if let Some(snap) =
+            crate::inference::llama_server::await_ready_serving(GATEWAY_FAST_PATH_WAIT).await
         {
             self.log().info("Registering llama-server gateway adapter");
-            let mut a = OpenAICompatibleAdapter::from_registry(
-                crate::inference::llama_server::PROVIDER_ID,
-            )
-            .with_runtime_base_url(snap.base_url);
-            match a.initialize().await {
-                Ok(()) => {
+            match build_gateway_adapter(snap.base_url).await {
+                Ok(a) => {
                     registry.register(Arc::new(a), 9);
                     gateway_registered = true;
                 }
@@ -391,6 +432,54 @@ impl AIProviderModule {
                     .log()
                     .warn(&format!("llama-server initialize failed: {e} — not registered")),
             }
+        } else {
+            // Model still cold-loading. Hand off to a detached watcher that acquires
+            // the registry lock ONLY at the moment of registration — never across
+            // the wait — so the long cold load never holds the lock open.
+            gateway_pending = true;
+            let registry_arc = self.registry.clone();
+            tokio::spawn(async move {
+                use crate::runtime::boot_status::{boot_status, BootStatusKind};
+                match crate::inference::llama_server::await_ready_serving(GATEWAY_REACTIVE_CAP)
+                    .await
+                {
+                    Some(snap) => {
+                        let base = snap.base_url.clone();
+                        let model = snap.active_model.clone();
+                        match build_gateway_adapter(base.clone()).await {
+                            Ok(a) => {
+                                registry_arc.write().await.register(Arc::new(a), 9);
+                                let short = model
+                                    .as_deref()
+                                    .map(|m| m.rsplit('/').next().unwrap_or(m))
+                                    .unwrap_or("(unknown)");
+                                boot_status(
+                                    "inference",
+                                    BootStatusKind::Ok,
+                                    &format!(
+                                        "inference gateway registered (reactive) — serving \
+                                         {short} @ {base}"
+                                    ),
+                                );
+                            }
+                            Err(e) => boot_status(
+                                "inference",
+                                BootStatusKind::Failed,
+                                &format!(
+                                    "serving model became ready but the gateway adapter failed \
+                                     to initialize: {e} — gateway NOT registered. No local fallback."
+                                ),
+                            ),
+                        }
+                    }
+                    None => boot_status(
+                        "inference",
+                        BootStatusKind::Failed,
+                        "serving daemon brought up NO ready model within the cold-load budget — \
+                         inference gateway never registered. Inference REQUIRED; no local fallback.",
+                    ),
+                }
+            });
         }
 
         // In-process llama.cpp adapter — bypasses DMR's container Metal toolchain,
@@ -658,7 +747,19 @@ impl AIProviderModule {
             } else {
                 " — sole inference path"
             };
-            if !gateway_registered {
+            if gateway_pending {
+                // The model is still cold-loading; the reactive watcher spawned
+                // above will register the gateway the instant the daemon reports
+                // ready (and emit its own ✓/✗ then). This boot line is honest about
+                // the in-progress state — NOT a false ✓, NOT a premature ✗.
+                boot_status(
+                    "inference",
+                    BootStatusKind::Degraded,
+                    "serving model still loading — inference gateway will register REACTIVELY when \
+                     the daemon reports ready (task #71). The gateway is the sole inference path; \
+                     calls before it registers fail loud at select(). No local fallback.",
+                );
+            } else if !gateway_registered {
                 boot_status(
                     "inference",
                     BootStatusKind::Failed,
