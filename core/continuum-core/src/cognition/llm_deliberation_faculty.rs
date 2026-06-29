@@ -431,7 +431,10 @@ impl LlmDeliberationFaculty {
                 .partial_cmp(&a.salience)
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
-        let mut block = String::new();
+        // SELECTION (by salience): walk highest-salience-first and keep whole items
+        // that fit the budget — a half-truncated engram is noise, so a smaller
+        // lower-salience item that still fits is preferred over a mangled high one.
+        let mut selected: Vec<&Contribution> = Vec::with_capacity(ctx.len());
         let mut used = 0usize;
         for c in ctx {
             // "\n[faculty]\n<content>\n" — count the framing chars too (~2 tokens).
@@ -440,12 +443,25 @@ impl LlmDeliberationFaculty {
                 // Drop this whole item; a smaller lower-salience one may still fit.
                 continue;
             }
+            selected.push(c);
+            used += piece;
+        }
+        // SERIALIZATION (by volatility): stable standing-framing FIRST (roster,
+        // doctrine, map) so it lands in the cacheable KV-prefix region adjacent to
+        // the static system prompt it resembles; volatile grounding (recall, working
+        // memory) LAST, nearest the generation point. A stable sort preserves the
+        // salience order WITHIN each tier, so attention ranking is untouched — this
+        // is a pure emit-order choice that maximizes cross-turn prefix reuse AND puts
+        // the live, actionable context closest to where the model writes. `false`
+        // (stable) sorts before `true` (volatile). See [`Contribution::stable`].
+        selected.sort_by_key(|c| u8::from(!c.stable));
+        let mut block = String::new();
+        for c in selected {
             block.push_str("\n[");
             block.push_str(c.faculty.as_str());
             block.push_str("]\n");
             block.push_str(&c.content);
             block.push('\n');
-            used += piece;
         }
         block
     }
@@ -986,6 +1002,49 @@ mod tests {
         assert!(
             view.system.contains("Taking your turn"),
             "the how-to-participate framing must never be dropped"
+        );
+    }
+
+    // what this catches: KV-prefix cache locality — session-stable standing framing
+    // (roster/doctrine/map) must serialize BEFORE volatile grounding (recall) even
+    // when the volatile bid scores HIGHER salience, so the stable sections sit in the
+    // cacheable prefix region and don't re-prefill every turn. Without the stable-tier
+    // sort, recall (0.9) would lead the block and push the roster (0.5) below it,
+    // breaking the cross-turn prefix at the very first section. Regression for the
+    // append-only/volatility-ordering speed work (commit 47c65891a + this one).
+    #[test]
+    fn stable_framing_serializes_before_higher_salience_volatile_grounding() {
+        let persona = Uuid::new_v4();
+        let adapter: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
+        let faculty = LlmDeliberationFaculty::new(persona, "Ivar", "You are Ivar.", adapter);
+
+        let mut ws = Workspace::new("teammate: what's the plan?");
+        // Volatile recall bids HIGH salience — would lead a pure salience-desc block.
+        ws.broadcast.push(Contribution::context(
+            FacultyId::Recall,
+            "VOLATILE_RECALL: deploy was red, fixed 4pm",
+            0.9,
+            "recalled",
+        ));
+        // Stable standing-framing bids LOWER salience but is session-stable.
+        ws.broadcast.push(
+            Contribution::context(
+                FacultyId::Custom("room-roster".to_string()),
+                "STABLE_ROSTER: alice, bob, carol present",
+                0.5,
+                "framing",
+            )
+            .session_stable(),
+        );
+
+        // Generous budget so BOTH fit — this isolates ORDER, not truncation.
+        let block = faculty.render_assembled_context_within(&ws, 4096);
+        let roster_at = block.find("[room-roster]").expect("roster present");
+        let recall_at = block.find("[recall]").expect("recall present");
+        assert!(
+            roster_at < recall_at,
+            "stable framing must serialize before higher-salience volatile recall \
+             (roster@{roster_at} should precede recall@{recall_at})\n{block}"
         );
     }
 

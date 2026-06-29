@@ -193,6 +193,7 @@ mod tests {
             reasoning: "engram".to_string(),
             decision: None,
             metrics: None,
+            stable: false,
         };
         let verdict = Contribution {
             faculty: FacultyId::Deliberation,
@@ -208,6 +209,7 @@ mod tests {
                 output_tokens: 40,
                 ..Default::default()
             }),
+            stable: false,
         };
         let trace = WorkspaceTrace {
             world_state: "what's the call?".to_string(),
