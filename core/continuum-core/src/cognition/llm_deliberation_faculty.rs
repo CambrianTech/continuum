@@ -25,7 +25,9 @@
 //! `LlamaCppAdapter` (a live local model). The faculty does not care which — the
 //! brain is unchanged when the backend swaps.
 
+use std::collections::HashSet;
 use std::sync::Arc;
+use std::sync::Mutex;
 
 use arc_swap::ArcSwap;
 use async_trait::async_trait;
@@ -202,6 +204,24 @@ pub struct LlmDeliberationFaculty {
     /// that one allocator; until then this is THE allocator for the deliberation
     /// path (the missing one — there was no budget before), not a parallel one.
     context_window: u32,
+    /// Tools the persona has DEMANDED — looked up via `commands/help{name: X}` —
+    /// and which are therefore offered NATIVELY (as callable function specs) on
+    /// every subsequent turn, alongside the discovery pair. This is the missing
+    /// "…then call it" half of progressive disclosure: native function-calling
+    /// grammar-constrains an emitted tool-call to the OFFERED specs, so a tool the
+    /// persona never saw natively is unreachable — she would loop forever asking
+    /// `commands/help` for `code/run`, learn its schema, intend to run it ("Let me
+    /// run this with code/run to verify"), and then be unable to emit the call
+    /// (the glass box showed exactly this: 66 `commands/help{code/run}` lookups,
+    /// 163 prose mentions of `code/run`, zero acts). Arming the looked-up tool is
+    /// NOT output-steering — it makes the persona's OWN expressed intent
+    /// executable; she still chooses whether to call it. Demand-driven and bounded
+    /// (only tools she actually looks up), so the per-turn native payload stays
+    /// small — never the ~150-schema dump that overflowed `n_ctx` and muted her.
+    /// Interior-mutable because `deliberate(&self)` arms on the help turn and reads
+    /// on the next; the lock is held briefly with no await across it.
+    /// ([[persona-tool-loop-act-then-report]], [[no-hardcoded-heuristics-to-steer-cognition]])
+    armed_tools: Mutex<HashSet<String>>,
 }
 
 impl LlmDeliberationFaculty {
@@ -226,6 +246,7 @@ impl LlmDeliberationFaculty {
             genome: empty_genome(),
             decoding: relaxed_decoding(),
             context_window: crate::cognition::serving_plan::MIN_SERVE_CTX,
+            armed_tools: Mutex::new(HashSet::new()),
         }
     }
 
@@ -389,6 +410,37 @@ impl LlmDeliberationFaculty {
             format!("{} chose to act", self.persona_name),
         )
         .with_metrics(metrics_from(resp))
+    }
+
+    /// Inspect the emitted calls for a `commands/help{name: X}` lookup and ARM `X`
+    /// — record it so the NEXT turn's offered native specs include `X`, making it
+    /// callable. This is the demand-driven "…then call it" step: the persona has
+    /// asked how to call a tool, which is the strongest possible signal she intends
+    /// to use it; arming makes that intent emittable instead of silently dropped by
+    /// the native-grammar lock. Pure plumbing — it changes WHAT she can call, never
+    /// WHETHER she calls it. The help param is `name` (see [`CommandsHelp`]).
+    fn arm_helped_tools(&self, calls: &[crate::ai::types::ToolCall]) {
+        let mut newly = Vec::new();
+        for c in calls {
+            if c.name != super::persona_tools::TOOL_HELP_NAME {
+                continue;
+            }
+            if let Some(target) = c.input.get("name").and_then(|v| v.as_str()) {
+                let target = target.trim();
+                // Don't re-arm the discovery pair itself, and never an empty name.
+                if target.is_empty() || target == super::persona_tools::TOOL_HELP_NAME {
+                    continue;
+                }
+                newly.push(target.to_string());
+            }
+        }
+        if newly.is_empty() {
+            return;
+        }
+        let mut armed = self.armed_tools.lock().unwrap();
+        for t in newly {
+            armed.insert(t);
+        }
     }
 
     /// Turn the model's final text into a participation verdict. `salience` is
@@ -747,10 +799,32 @@ impl Faculty for LlmDeliberationFaculty {
         // models emit those calls as JSON-in-prose, which the parse path below
         // handles. This keeps the per-turn tool payload at TWO tiny schemas instead of
         // the ~150-schema dump that overflowed `n_ctx` and muted her.
-        let tools = if self.native_specs.is_empty() {
-            None
-        } else {
-            Some(self.native_specs.clone())
+        // Offer the discovery pair PLUS any tool the persona has DEMANDED via
+        // `commands/help` (armed below). Without the armed union she can look up
+        // `code/run`, intend to call it, and be silently blocked by the native
+        // grammar lock — the "…then call it" gap the glass box exposed. The union
+        // is deduped (a tool already in the discovery pair is not re-added) and
+        // bounded (only tools she actually looked up).
+        let tools = {
+            let mut offered = self.native_specs.clone();
+            if !offered.is_empty() {
+                let armed = self.armed_tools.lock().unwrap();
+                for name in armed.iter() {
+                    if offered.iter().any(|s| &s.name == name) {
+                        continue;
+                    }
+                    // Fail-closed: only arm a tool that actually resolves in the
+                    // registry (never fabricate a schema — [[fallbacks-are-illegal-fail-loud]]).
+                    if let Some(spec) = persona_tools::spec_for_command(name) {
+                        offered.push(spec);
+                    }
+                }
+            }
+            if offered.is_empty() {
+                None
+            } else {
+                Some(offered)
+            }
         };
 
         let request = self.build_request(messages.clone(), tools, view.system.clone());
@@ -814,10 +888,16 @@ impl Faculty for LlmDeliberationFaculty {
             if matches!(resp.finish_reason, FinishReason::ToolUse) {
                 let calls = resp.tool_calls.clone().unwrap_or_default();
                 if !calls.is_empty() {
+                    // ARM any tool she just looked up via `commands/help{name: X}`,
+                    // so the NEXT turn offers X natively and her stated intent to
+                    // call it can actually be emitted (the broken "…then call it"
+                    // half of progressive disclosure).
+                    self.arm_helped_tools(&calls);
                     return Some(self.act_verdict(calls, &resp));
                 }
             }
             if let Some(call) = crate::ai::json_in_prompt_tools::parse_tool_call(&resp.text) {
+                self.arm_helped_tools(std::slice::from_ref(&call));
                 return Some(self.act_verdict(vec![call], &resp));
             }
         }
@@ -1330,6 +1410,66 @@ mod tests {
         }
         // SINGLE SHOT — the faculty never re-generated (no in-faculty loop).
         assert_eq!(adapter.call_count(), 1, "one generation, one verdict");
+    }
+
+    // what this catches: the broken "…then call it" half of progressive disclosure.
+    // When the persona looks up a tool via `commands/help{name: X}`, X must be ARMED
+    // — offered NATIVELY on the next turn — or the native function-calling grammar
+    // (locked to the discovery pair) makes X permanently uncallable. The glass box
+    // showed exactly this failure: 66 `commands/help{code/run}` lookups, 163 prose
+    // mentions of running it, zero acts. Regression here = `acts=0` returns: she can
+    // discover a hand but never use it. Asserts (a) the lookup arms the tool, and
+    // (b) the NEXT generation request actually carries the armed tool's spec.
+    #[tokio::test]
+    async fn looking_up_a_tool_arms_it_for_native_calling() {
+        let persona = Uuid::new_v4();
+        // The tool she demands MUST resolve in the registry for arming to offer its
+        // real schema — `code/run` (her verify hand) is the canonical case.
+        let demanded = "code/run";
+        assert!(
+            super::persona_tools::spec_for_command(demanded).is_some(),
+            "precondition: {demanded} is a registered command"
+        );
+        let help_call = ToolCall {
+            id: "h1".to_string(),
+            name: super::persona_tools::TOOL_HELP_NAME.to_string(),
+            input: json!({ "name": demanded }),
+        };
+        let adapter = Arc::new(ScriptedAdapter::new(vec![
+            // Turn 1: she asks how to call code/run (native tool_use).
+            make_response(FinishReason::ToolUse, "", Some(vec![help_call])),
+            // Turn 2: a plain settle — we only inspect what tools turn 2 was OFFERED.
+            make_response(FinishReason::Stop, "done", None),
+        ]));
+        // `with_tools(non-empty)` makes `native_specs` the discovery pair.
+        let faculty = LlmDeliberationFaculty::new(persona, "Asha", "You are Asha.", adapter.clone())
+            .with_tools(vec![read_tool()]);
+
+        let ws = Workspace::new("solve: write add(a,b) in rust");
+        let _ = faculty.contribute(&ws).await.expect("verdict");
+
+        // (a) the lookup armed the demanded tool.
+        assert!(
+            faculty.armed_tools.lock().unwrap().contains(demanded),
+            "looking up {demanded} via commands/help must arm it"
+        );
+
+        // (b) the NEXT turn offers it natively, so the grammar now permits the call.
+        let _ = faculty.contribute(&ws).await.expect("verdict");
+        let seen = adapter.seen.lock().unwrap();
+        let turn2_tools = seen[1].tools.as_ref().expect("turn 2 offered tools");
+        assert!(
+            turn2_tools.iter().any(|s| s.name == demanded),
+            "armed tool {demanded} must ride the next request's native specs (got: {:?})",
+            turn2_tools.iter().map(|s| &s.name).collect::<Vec<_>>()
+        );
+        // The discovery pair is still there — arming UNIONS, never replaces.
+        assert!(
+            turn2_tools
+                .iter()
+                .any(|s| s.name == super::persona_tools::TOOL_HELP_NAME),
+            "discovery pair survives the union"
+        );
     }
 
     // what this catches: paging a gene into the shared genome handle flows into the
