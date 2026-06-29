@@ -191,6 +191,44 @@ command is denied regardless of sender. Installed on the production executor at
 boot. When the airc↔grid trust bridge lands, the hardcoded ceiling becomes the
 peer's resolved `TrustLevel` (a same-account Owner peer regains full access).
 
+**Slice 4 — Wall grounding (DONE + measured).** A **`WallSource`** RAG source
+(`source_id = "room-board"`, same shape as roster/doctrine: a `WallReader`
+trait over airc, persona-scoped, fails-safe-empty, test stub) reads
+`Airc::wall_posts` — the room's currently-pinned shared documents after the
+supersede chain — and packages them into a `[room-board]` system-prompt block,
+one `[category]` header per post. These are the **exact airc rows a human edits
+on the room wall and a widget renders**: one shared data layer, two faces, no
+continuum-side copy of mutable widget-edited state. The WRITE face is
+`persona/wall/pin` (publishes through the persona's live citizen).
+
+*The split-brain bug it had to clear (airc-lib, fixed in `17b238c`):*
+a daemon-attached persona's `publish_wall_post` routed through `emit_lifecycle`,
+which writes only the client-local store — the post never reached the canonical
+daemon store every reader pages from (WRITE side); and the daemon read path
+flattened every non-`Message` kind to `System`, so the kind-based `wall_posts`
+filter returned 0 (READ side). Fix: pin routes through `daemon_publish` when
+daemon-attached (canonical persist + wire fan-out), and `wall_posts`
+discriminates on each event's self-describing `DoctrineEvent` body, not its
+flattened transcript kind.
+
+*Measured A/B (live, on Asha's real `WorkspaceCycle` via `cognition/eval`, a
+neutral codename to avoid the coder-model refusal confound):* one
+substring-graded task, "What is the project codename pinned on the room board?",
+`expect: "GOLDFINCH"`.
+
+| Arm | Board state | `pass_rate` | Answer | Acts |
+|---|---|---|---|---|
+| CONTROL | empty | **0.0** | "Continuum" | 3 (searched, found nothing) |
+| TREATMENT | `[decision] …GOLDFINCH` pinned | **1.0** | "GOLDFINCH" | 0 (answered straight from grounding) |
+
+**Lift = +1.0.** The glass-box capture
+(`~/.continuum/fixtures/prompt-captures/<persona>.jsonl`) shows the TREATMENT
+prompt carrying the literal `[room-board]\n[decision]\nProject codename … is
+GOLDFINCH.` block — the exact grounding that was absent before the fix (why the
+first attempt produced zero lift). Logged dated + test-anchored to the progress
+ledger (`~/.continuum/progress/<persona>.jsonl`, notes `wall-AB CONTROL` /
+`wall-AB TREATMENT`). Rides `capture_sink` like the roster and doctrine.
+
 **Later (not now) — Node/web unified clients.** Rewrite the legacy UI on a
 proper reactive framework, mobile/positron-aware, every activity opened by a
 single airc `RoomId`, every client authenticating as its airc identity. Borrow
