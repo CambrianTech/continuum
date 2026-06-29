@@ -476,7 +476,7 @@ impl LlmDeliberationFaculty {
         // NOTE ON ORDERING (KV-cache prefix reuse, measured 2026-06-23):
         // Everything pushed BEFORE the volatile `context` below forms a
         // byte-identical prefix across turns of the SAME directedness (identity +
-        // how-to-take-your-turn + the 18.5KB tool catalog + silence affordance). The
+        // how-to-take-your-turn + the named tool catalog + silence affordance). The
         // silence affordance is the ONLY directedness-gated segment, and it sits LAST
         // among the static blocks — so toggling it (directed vs ambient) invalidates
         // only its own tail tokens, never the heavy identity/catalog prefix; and
@@ -530,14 +530,15 @@ impl LlmDeliberationFaculty {
         if !self.tools.is_empty() {
             s.push_str(
                 "\n\n[Your tools]\n\
-                 You can act, not just talk. Below is an INDEX of your tool \
-                 categories with how many tools each holds — not the tools \
-                 themselves. To find a tool: call `commands/list` with a `filter` \
-                 (e.g. a category name or a keyword) to get the matching tools. To \
-                 call one: first call `commands/help` with its exact name to see its \
-                 arguments and an example, then call the tool. (`commands/list` and \
-                 `commands/help` are offered to you directly; every other tool is \
-                 called by name once you've found it.)\n",
+                 You can act, not just talk. Below are your tools, grouped by \
+                 category as `category: verb, verb, …` — each line is one category \
+                 and the verbs are the tools in it (so `code: run` means the tool \
+                 `code/run`). To call one: first call `commands/help` with its exact \
+                 full name (e.g. `code/run`) to see its arguments and an example, \
+                 then call the tool. (`commands/help` and `commands/list` are offered \
+                 to you directly — `commands/list` with a `filter` searches by keyword \
+                 if you need more than the names below; every other tool is called by \
+                 its full name.)\n",
             );
             s.push_str(&self.tool_catalog);
             s.push_str(
@@ -1187,16 +1188,24 @@ mod tests {
             framing + reserve < window as usize,
             "framing+catalog ({framing}) + reserve ({reserve}) must leave burst room in {window}"
         );
-        // The index shows the 8 categories with their counts, NOT the 120 tool names
-        // (tool names are reached via `commands/list`, not dumped into the prompt).
+        // The named catalog DOES list tool names (the verb under its category) — that
+        // is the fix: she must SEE that a tool exists to call it (glass-box: hidden
+        // names → 909 code-fences / 3 native runs). What it must NOT carry is the
+        // per-tool SUMMARY — that one-line description × ~150 tools was the 18KB bloat.
+        // Names are ~2-3KB and still fit the window (asserted above).
         assert!(
-            faculty.tool_catalog.contains("cat0 (15)"),
-            "category index must list categories with counts: {}",
+            faculty.tool_catalog.contains("command_0"),
+            "named catalog must list tool verbs so she can see them: {}",
             faculty.tool_catalog
         );
         assert!(
-            !faculty.tool_catalog.contains("command_119"),
-            "individual tool names must NOT be in the index (that was the bloat)"
+            faculty.tool_catalog.contains("cat0:"),
+            "named catalog groups verbs under their category header: {}",
+            faculty.tool_catalog
+        );
+        assert!(
+            !faculty.tool_catalog.contains("one-line summary for the catalog"),
+            "per-tool SUMMARIES must NOT be in the catalog (that was the 18KB bloat)"
         );
     }
 

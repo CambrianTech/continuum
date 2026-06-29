@@ -34,6 +34,7 @@ use crate::commands::help::CommandsHelp;
 use crate::sdk_codegen::{command_registry, AccessLevel, ActionCommand, CommandDescriptor};
 use serde_json::json;
 use std::collections::BTreeMap;
+use std::fmt::Write as _;
 
 /// The command a persona calls to learn HOW to invoke one tool — the on-demand half
 /// of progressive disclosure (the catalog gives names; this gives the call format).
@@ -172,36 +173,50 @@ fn tool_summary(d: &CommandDescriptor) -> String {
     }
 }
 
-/// Render the persona's tool surface as a COMPACT CATEGORY INDEX — the categories
-/// she has and how many tools each holds — NOT every tool inline.
+/// Render the persona's tool surface as a NAMED CATALOG GROUPED BY CATEGORY — one
+/// line per category listing the verb of every tool it holds (`code: run, read,
+/// edit, write, search, …`), NOT each tool's full schema.
 ///
-/// Why: dumping all ~150 authorized tools (name + one-line summary, grouped) cost
-/// ~18KB / ~4.6k tokens EVERY turn — 79% of the whole system prompt (measured
-/// 2026-06-23). That both drowned a small model in irrelevant options and forced the
-/// server to re-prefill 4.6k tokens of static catalog each turn. The index is a few
-/// hundred chars. She DRILLS IN on demand: `commands/list` with a `filter` returns
-/// the small list of tools in a category (search → small list), then `commands/help`
-/// gives one tool's exact call format. Progressive disclosure — the same shape a
-/// capable agent runtime uses (a handful of always-on tools + a search), and the
-/// SAME single source of truth (the authorized set), just indexed instead of dumped.
-/// Dispatch is still by NAME, so any tool she names from a `commands/list` result
-/// runs. `_budget_chars` retained for call-site compatibility; the index is small by
-/// construction so it never needs a fallback tier.
+/// ## Why names, not just counts (measured 2026-06-29)
+/// Two extremes were tried and both failed. (1) Dumping all ~150 tools with a
+/// one-line SUMMARY each cost ~18KB / ~4.6k tokens every turn — 79% of the system
+/// prompt — drowning a small model and re-prefilling 4.6k static tokens per turn.
+/// (2) Collapsing to a bare category INDEX (`code (25)`) was tiny but hid every tool
+/// NAME: to run code she had to guess the category, `commands/list` it (25 results),
+/// find `code/run`, `commands/help` it, then call — a 5-hop gauntlet. Glass-box over
+/// 3351 captured turns showed the cost: native `code/run` 3×, markdown code-fences
+/// 909×, `commands/help` lookups 166× — she SHOWED code instead of RUNNING it because
+/// she couldn't SEE the tool existed. Names alone are the 80/20: most verbs
+/// (`run`, `read`, `list`, `search`) are self-evident, so seeing the name collapses
+/// discovery to 2 hops (read name → `commands/help` for args → call). The SUMMARY was
+/// the 18KB; names without summaries are ~2–3KB — small enough to ride every turn.
+///
+/// Still progressive disclosure (no full schemas inline; `commands/help` gives the
+/// call format on demand), still a pure data-driven projection of the authorized set
+/// (NOT a hardcoded list, NOT coding-specific — every category renders its verbs
+/// uniformly), still cacheable (the authorized set is stable within a session, so the
+/// catalog is a byte-stable prefix). Dispatch is by NAME, so any verb she reads here
+/// runs. `_budget_chars` retained for call-site compatibility; the named catalog is
+/// small by construction (names, not summaries) so it never needs a fallback tier.
 pub fn render_tool_catalog(tools: &[NativeToolSpec], _budget_chars: usize) -> String {
     if tools.is_empty() {
         return String::new();
     }
-    // Count tools per category, stable (BTreeMap) ordering.
-    let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
+    // Group tool VERBS (the name minus its leading category segment) under each
+    // category, stable (BTreeMap) ordering for a byte-stable cacheable prefix.
+    let mut by_cat: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
     for t in tools {
-        *counts.entry(extract_category(&t.name)).or_default() += 1;
+        let cat = extract_category(&t.name);
+        // The verb is everything after the first `/` (so `persona/instances/list`
+        // shows as `instances/list`); a name with no `/` lists under itself.
+        let verb = t.name.strip_prefix(cat).and_then(|r| r.strip_prefix('/')).unwrap_or(&t.name);
+        by_cat.entry(cat).or_default().push(verb);
     }
-    let mut out: String = counts
-        .iter()
-        .map(|(cat, n)| format!("{cat} ({n})"))
-        .collect::<Vec<_>>()
-        .join(", ");
-    out.push('\n');
+    let mut out = String::new();
+    for (cat, mut verbs) in by_cat {
+        verbs.sort_unstable();
+        let _ = writeln!(out, "{cat}: {}", verbs.join(", "));
+    }
     out
 }
 
