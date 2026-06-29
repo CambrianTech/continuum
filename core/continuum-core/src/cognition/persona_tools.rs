@@ -220,6 +220,49 @@ pub fn render_tool_catalog(tools: &[NativeToolSpec], _budget_chars: usize) -> St
     out
 }
 
+/// Render the tool surface as an EXPANDABLE BOOKMARKED MENU: every category HEADER
+/// is shown (the stable spine — the menu never changes shape turn to turn), but only
+/// the `expanded` categories list their verbs inline; the rest render as collapsed
+/// bookmarks (`gpu (4 — commands/list --filter gpu)`) she opens on demand.
+///
+/// This is the adaptive-but-coherent middle path (Joel 2026-06-29,
+/// [[adaptive-tool-surface-meets-you-in-the-middle]]): the spine gives her the full
+/// map every turn (never a confusing reshuffle), while [`tool_relevance`] decides
+/// which categories open for what she's doing now + the sticky "where you were"
+/// cursor (per-(user, room) state owned by airc, threaded in by slice 2). Sibling to
+/// [`render_tool_catalog`] (the open-everything render).
+///
+/// [`tool_relevance`]: crate::cognition::tool_relevance
+pub fn render_tool_menu(
+    tools: &[NativeToolSpec],
+    expanded: &std::collections::BTreeSet<String>,
+) -> String {
+    if tools.is_empty() {
+        return String::new();
+    }
+    // Same grouping as render_tool_catalog — stable (BTreeMap) order so the spine is
+    // a byte-stable prefix; only the per-category expansion differs.
+    let mut by_cat: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+    for t in tools {
+        let cat = extract_category(&t.name);
+        let verb = t.name.strip_prefix(cat).and_then(|r| r.strip_prefix('/')).unwrap_or(&t.name);
+        by_cat.entry(cat).or_default().push(verb);
+    }
+    let mut out = String::new();
+    for (cat, mut verbs) in by_cat {
+        verbs.sort_unstable();
+        if expanded.contains(cat) {
+            let _ = writeln!(out, "{cat}: {}", verbs.join(", "));
+        } else if verbs.len() == 1 {
+            // A singleton category isn't worth collapsing — its one verb IS the name.
+            let _ = writeln!(out, "{cat}: {} (+ commands/list --filter {cat})", verbs[0]);
+        } else {
+            let _ = writeln!(out, "{cat} ({} — commands/list --filter {cat})", verbs.len());
+        }
+    }
+    out
+}
+
 /// The tools offered NATIVELY (as function specs) every turn: the discovery pair.
 /// `commands/list` (filter/search the authorized surface → a small list of matching
 /// tools) + `commands/help` (the exact call format for one named tool). Everything
@@ -417,6 +460,45 @@ pub struct ToolSurfaceReport {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn spec(name: &str) -> NativeToolSpec {
+        NativeToolSpec {
+            name: name.to_string(),
+            description: String::new(),
+            input_schema: ToolInputSchema {
+                schema_type: "object".to_string(),
+                properties: json!({}),
+                required: None,
+                definitions: None,
+            },
+        }
+    }
+
+    // what this catches: the menu render is an expandable bookmarked menu — EVERY
+    // category appears (the stable spine), an expanded category lists its verbs
+    // inline, and a collapsed one shows only a depth + how to open it. Regression
+    // here = the menu degrading back into either a full dump or a blind index.
+    #[test]
+    fn render_tool_menu_expands_only_selected_categories() {
+        let tools = [
+            spec("code/run"),
+            spec("code/read"),
+            spec("code/edit"),
+            spec("gpu/stats"),
+            spec("gpu/pressure"),
+        ];
+        let expanded: std::collections::BTreeSet<String> = ["code".to_string()].into_iter().collect();
+        let out = render_tool_menu(&tools, &expanded);
+
+        // Spine: both categories present every turn.
+        assert!(out.contains("code"), "code header missing: {out}");
+        assert!(out.contains("gpu"), "gpu header missing (spine broken): {out}");
+        // Expanded code lists its verbs inline.
+        assert!(out.contains("code: edit, read, run"), "code not expanded: {out}");
+        // Collapsed gpu shows depth + how to open, NOT its verbs.
+        assert!(out.contains("gpu (2 — commands/list --filter gpu)"), "gpu not collapsed: {out}");
+        assert!(!out.contains("stats"), "collapsed gpu leaked verbs: {out}");
+    }
 
     // what this catches: the tool surface is DYNAMIC and consistent — it is
     // exactly the AiSafe slice of command_registry, nothing hardcoded. If a

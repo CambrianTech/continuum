@@ -65,6 +65,7 @@ pub mod threat_detector;
 pub mod throughput_lease;
 pub mod token_budget;
 pub mod tool_embedding;
+pub mod tool_relevance;
 pub mod tool_executor;
 pub mod turn_batch;
 pub mod types;
