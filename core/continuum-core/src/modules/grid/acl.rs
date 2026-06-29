@@ -60,6 +60,50 @@ fn default_rules() -> &'static Vec<AccessRule> {
                 prefix: commands::TRUST,
                 access: CommandAccess::Owner,
             },
+            // Owner-only DESTRUCTIVE / shared-resource operations.
+            //
+            // This is the AUTHORIZATION axis (can a caller run it), distinct from the
+            // VISIBILITY axis (is it shown in the persona's default tool catalog —
+            // handled at the render layer, not here). Most commands are persona-
+            // callable by design; the 100+ obscure "internal" verbs are a clutter /
+            // discoverability problem (hide from the default surface, keep callable),
+            // NOT an authorization problem. So this list stays SMALL and reserved for
+            // acts that are irreversible or pull a resource out from under every other
+            // persona — the same class as data/delete: a persona must never be able to
+            // autonomously delete a model from disk, kill herself or a peer, rewrite a
+            // peer's brain, yank the shared inference lane, or seize the GPU budget.
+            // The owner, at `Owner` trust via cu/grid, keeps full access (Owner >=
+            // every tier). Deliberately NOT locked (persona will/should call these —
+            // the self-improvement + author-your-own-tools vision): command/new+migrate,
+            // genome/* training, models/pull, serving/load+pin, persona/allocate. Those
+            // are creative/non-destructive; they belong on the visibility axis, hidden-
+            // not-locked. `AccessLevel` has no `Owner` variant (AiSafe/Privileged/
+            // Internal only), so the prefix rule is the canonical way to express Owner-
+            // tier, exactly as data/delete does.
+            AccessRule {
+                prefix: "persona/instances/despawn",
+                access: CommandAccess::Owner,
+            },
+            AccessRule {
+                prefix: "persona/reassign-model",
+                access: CommandAccess::Owner,
+            },
+            AccessRule {
+                prefix: "serving/unload",
+                access: CommandAccess::Owner,
+            },
+            AccessRule {
+                prefix: "serving/unpin",
+                access: CommandAccess::Owner,
+            },
+            AccessRule {
+                prefix: "models/remove",
+                access: CommandAccess::Owner,
+            },
+            AccessRule {
+                prefix: "gpu/set-budget",
+                access: CommandAccess::Owner,
+            },
             // Owner nodes get everything else too (via the wildcard below).
             // When we add untrusted-node support, we'll add Trusted/Provisional rules here.
 
@@ -267,6 +311,53 @@ mod tests {
             assert!(
                 is_command_authorized(cmd, TrustLevel::Owner),
                 "{cmd} stays runnable by the local owner"
+            );
+        }
+    }
+
+    // what this catches: irreversible / shared-resource ops must NOT sit on a local
+    // persona's (Trusted) tool surface. These were declared `Privileged` → mapped to
+    // `Trusted` → silently OFFERED to every local persona (glass-box, 2026-06-29: the
+    // catalog held persona/instances/despawn, serving/unload, models/remove, …). A
+    // persona must never autonomously delete a model from disk, kill herself or a
+    // peer, rewrite a peer's brain, yank the shared inference lane, or seize the GPU
+    // budget — the data/delete class. The owner (Owner trust, via cu/grid) keeps them.
+    // NOTE: this is the AUTHORIZATION boundary only. Hiding the OTHER ~100 obscure-but-
+    // callable verbs from the default catalog is the separate VISIBILITY axis (render
+    // layer), NOT this gate — those stay authorized (persona will call them eventually).
+    #[test]
+    fn destructive_lifecycle_commands_stay_owner_only() {
+        for cmd in [
+            "persona/instances/despawn",
+            "persona/reassign-model",
+            "serving/unload",
+            "serving/unpin",
+            "models/remove",
+            "gpu/set-budget",
+        ] {
+            assert!(
+                !is_command_authorized(cmd, TrustLevel::Trusted),
+                "{cmd} must NOT be reachable at Trusted — a local persona must never \
+                 autonomously run an irreversible / shared-resource op (data/delete class)"
+            );
+            assert!(
+                is_command_authorized(cmd, TrustLevel::Owner),
+                "{cmd} stays runnable by the local owner"
+            );
+        }
+        // The deliberately-NOT-locked siblings stay persona-callable (visibility, not
+        // authorization): the self-improvement + author-your-own-tools surface.
+        for cmd in [
+            "command/new",
+            "command/migrate",
+            "genome/training-trigger/submit",
+            "models/pull",
+            "serving/load",
+        ] {
+            assert!(
+                is_command_authorized(cmd, TrustLevel::Trusted),
+                "{cmd} must STAY persona-callable — it's creative/non-destructive; \
+                 declutter it on the visibility axis, never lock it here"
             );
         }
     }
