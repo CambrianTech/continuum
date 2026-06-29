@@ -39,19 +39,29 @@ use ts_rs::TS;
 /// Default root the core serves from when nothing overrides it. llama-server's
 /// OpenAI surface lives under `/v1`; `/health` and `/props` are at the root.
 const DEFAULT_HOST: &str = "127.0.0.1";
-/// Preferred local serving port. Deliberately chosen (not random) so a healthy
-/// boot always lands here and operators have a stable default to expect — but
-/// it is a PREFERENCE, not an assumption: [`chosen_port`] scans up from it for
-/// the first free port. "Pick a port, but always scan — never hardcode" (Joel).
+/// The CANONICAL local serving port. The live persona lane PINS this — it never
+/// scans away from it ([`chosen_port`]). Pinning is what makes a crashed core's
+/// orphan reclaimable: the fresh core looks for its predecessor exactly here,
+/// adopts it if healthy or reaps it via [`crate::inference::lane_pidfile`] if not,
+/// and binds the same port. The old "scan up to the first free port" behavior was
+/// the bug, not the resilience: scanning PAST a held canonical port both spawned a
+/// SECOND model on the one GPU (Metal decode-time OOM → silent persona abstain)
+/// AND pointed the daemon's own `/v1` probe at the empty scanned port, blinding it
+/// to the perfectly-good server it could have adopted. A foreign squatter on this
+/// port now fails the bind LOUD ([[fallbacks-are-illegal-fail-loud]]) instead of
+/// fleeing to a competitor — the operator relocates it or sets
+/// `LLAMA_SERVER_BASE_URL`. (Throwaway measurement lanes are different: they WANT
+/// a distinct port and keep scanning — see [`EphemeralServingLane`].)
 const DEFAULT_PORT: u16 = 58057;
 
-/// How many ports above [`DEFAULT_PORT`] we scan for a free one before giving up
-/// and binding the base (letting the spawn fail loud rather than serving
-/// somewhere unexpected). A small window: if 64 consecutive ports are taken the
-/// machine has a real problem worth surfacing. The idealized single registry of
-/// every port in the system (Joel: "a singular place that keeps track of ports")
-/// is deferred as over-engineering for now; this is the scan-don't-hardcode
-/// floor of it.
+/// How many ports above a base an EPHEMERAL measurement lane scans for a free one
+/// ([`first_free_port`], used only by [`EphemeralServingLane`]) before giving up
+/// and binding the base (letting the spawn fail loud rather than serving somewhere
+/// unexpected). A small window: if 64 consecutive ports are taken the machine has
+/// a real problem worth surfacing. The live lane does NOT scan — it pins
+/// [`DEFAULT_PORT`]. The idealized single registry of every port in the system
+/// (Joel: "a singular place that keeps track of ports") is deferred as
+/// over-engineering for now.
 const PORT_SCAN_WINDOW: u16 = 64;
 
 /// How long we wait for a freshly-spawned server to answer `/health` with 200
@@ -204,15 +214,20 @@ pub fn serving_root() -> String {
     format!("http://{DEFAULT_HOST}:{}", chosen_port())
 }
 
-/// The local serving port chosen for this run: the first bindable port at or
-/// above [`DEFAULT_PORT`], decided ONCE and memoized for the process lifetime so
-/// the launch args, the `/health` probe, and the published snapshot's `base_url`
-/// all agree (they all derive from [`serving_root`]). Scanning — never assuming
-/// the preferred port is free — means a stale holder of the default never wedges
-/// our bind: we move up, and the snapshot carries the real port to every
-/// consumer, which already reads `base_url` from the snapshot rather than a const.
+/// The live lane's serving port: the PINNED canonical [`DEFAULT_PORT`]. We do NOT
+/// scan for the live lane — pinning is what makes a crashed predecessor's orphan
+/// reclaimable (the fresh core looks here, adopts-or-reaps, binds the same port)
+/// and keeps the launch args, the `/health` probe, and the published snapshot's
+/// `base_url` trivially in agreement. The orphan-reap that frees this port from a
+/// SIGKILLed core runs lazily on the live lane's first fresh claim, inside
+/// [`LlamaServerControl::serve`] (gated on not already owning a child →
+/// [`crate::inference::lane_pidfile::reclaim`]), so a healthy orphan serving the
+/// right model is adopted for free upstream before any reap is considered; a
+/// foreign squatter we can't reclaim fails the bind loud rather than fleeing to a
+/// GPU-competing port. (Ephemeral measurement lanes still scan via
+/// [`first_free_port`].)
 fn chosen_port() -> u16 {
-    *CHOSEN_PORT.get_or_init(|| first_free_port(DEFAULT_PORT))
+    DEFAULT_PORT
 }
 
 /// Scan `[base, base + PORT_SCAN_WINDOW)` for a port we can bind right now. A
@@ -306,11 +321,6 @@ impl ServingSnapshot {
 /// truth — the daemon's own reconcile — fanned out to every reader, modules
 /// and free functions alike.
 static SERVING_STATE: OnceLock<watch::Receiver<ServingSnapshot>> = OnceLock::new();
-
-/// The local serving port chosen for this run (see [`chosen_port`]). Memoized on
-/// first access; the free-port scan happens exactly once. Process-wide so the
-/// launch, the probe, and every published snapshot agree on one port.
-static CHOSEN_PORT: OnceLock<u16> = OnceLock::new();
 
 /// Install the daemon's serving-state receiver as the process-wide readable
 /// seam. The daemon is a singleton so this is set-once; a second call (e.g. a
@@ -505,6 +515,13 @@ pub struct LlamaServerProcess {
     /// re-establishes the genome (core owns the lifecycle, so this is truthful in
     /// the steady state).
     served_adapters: Arc<StdMutex<Vec<String>>>,
+    /// True for THE host's live persona lane (pins the canonical port, writes the
+    /// reclaim pidfile, reaps a crashed predecessor's orphan). False for an
+    /// [`EphemeralServingLane`]'s `with_root` process, which owns its own scanned
+    /// port and must NEVER write the canonical pidfile or reclaim the live port —
+    /// it would reap the living persona's own server. This boolean is the seam
+    /// that keeps the reclaim machinery bound to exactly one process.
+    is_live_lane: bool,
 }
 
 impl LlamaServerProcess {
@@ -520,6 +537,9 @@ impl LlamaServerProcess {
             client,
             child: Arc::new(StdMutex::new(None)),
             served_adapters: Arc::new(StdMutex::new(Vec::new())),
+            // THE host's live lane — pins the canonical port, owns the reclaim
+            // pidfile. `new()`/`with_client()` are the live constructors.
+            is_live_lane: true,
         }
     }
 
@@ -540,6 +560,9 @@ impl LlamaServerProcess {
             client: reqwest::Client::new(),
             child: Arc::new(StdMutex::new(None)),
             served_adapters: Arc::new(StdMutex::new(Vec::new())),
+            // Ephemeral lane on its OWN scanned port: NOT the canonical live lane.
+            // It must never write the canonical pidfile or reclaim the live port.
+            is_live_lane: false,
         }
     }
 
@@ -583,6 +606,15 @@ impl Default for LlamaServerProcess {
 impl Drop for LlamaServerProcess {
     fn drop(&mut self) {
         self.kill_child();
+        // Graceful teardown of the live lane: drop the reclaim pidfile so the next
+        // boot doesn't try to reap a child we just killed. (A SIGKILL/crash skips
+        // Drop entirely — that is exactly the case the pidfile survives for, and
+        // the next boot's identity-verified reclaim handles it.) A relaunch goes
+        // through `serve()`, which rewrites the pidfile with the new child's pid,
+        // so this clear is only the genuine end-of-life path.
+        if self.is_live_lane {
+            crate::inference::lane_pidfile::clear();
+        }
     }
 }
 
@@ -703,7 +735,33 @@ impl LlamaServerControl for LlamaServerProcess {
         let (host, port) = split_host_port(&self.root);
 
         // One server at a time: kill the old child before binding the port.
+        // Whether we already OWN a child decides if a stale-orphan reap is needed:
+        // a relaunch (we own one) frees the port via `kill_child` and must NOT pay
+        // the reclaim wait; a fresh claim (we own none) is where a crashed
+        // predecessor's orphan may still hold the canonical port.
+        let had_own_child = self.child.lock().unwrap().is_some();
         self.kill_child();
+
+        // Fresh claim on the live lane: reap a crashed predecessor's orphaned
+        // llama-server if its pidfile still names one holding our port, so the
+        // bind below succeeds instead of failing loud against it. This is reached
+        // ONLY when reconcile decided NOT to adopt (wrong model/genome, or the
+        // port is unreachable) — a HEALTHY orphan serving the right model is
+        // adopted for free upstream (`ensure_model_serving` → `AlreadyServing`,
+        // zero reload) and never reaches `serve`. The reap is identity-verified
+        // (never a reused pid) and a no-op when there is nothing to reclaim; if a
+        // FOREIGN squatter we can't reclaim holds the port, the spawn's bind fails
+        // loud rather than fleeing to a GPU-competing port
+        // ([[fallbacks-are-illegal-fail-loud]]).
+        if self.is_live_lane && !had_own_child {
+            let outcome = crate::inference::lane_pidfile::reclaim(port).await;
+            crate::probe!(
+                class = "serving.lane_reclaim",
+                port = port,
+                outcome = format!("{outcome:?}").as_str(),
+                "fresh-claim reclaim of canonical serving port before spawn",
+            );
+        }
 
         // llama-server's `-c` is the TOTAL KV cache, split evenly across the
         // `--parallel` slots; each request only sees `-c / n_parallel` tokens.
@@ -785,6 +843,32 @@ impl LlamaServerControl for LlamaServerProcess {
             .stderr(Stdio::null())
             .spawn()
             .map_err(|e| LlamaServerError::Spawn(format!("{}: {e}", self.bin)))?;
+
+        // Record the child pid so a SIGKILLed core's successor can reclaim THIS
+        // port instead of fleeing to a GPU-competing one. Live lane only — the
+        // ephemeral lane owns its own scanned port and must not touch the canonical
+        // pidfile. A write failure DISARMS future reclaim but must NOT fail the
+        // serve: the server is up and serving; the pidfile is a recovery aid, not a
+        // serving precondition. Surface it loud (probe) without aborting.
+        if self.is_live_lane {
+            match child.id() {
+                Some(pid) => {
+                    if let Err(e) = crate::inference::lane_pidfile::write(pid) {
+                        crate::probe!(
+                            class = "serving.lane_pidfile",
+                            port = port,
+                            error = e.to_string().as_str(),
+                            "lane pidfile write failed — orphan reclaim disarmed for this run",
+                        );
+                    }
+                }
+                None => crate::probe!(
+                    class = "serving.lane_pidfile",
+                    port = port,
+                    "spawned child has no pid — orphan reclaim disarmed for this run",
+                ),
+            }
+        }
 
         *self.child.lock().unwrap() = Some(child);
         // Remember the genome set this child was launched with — the truthful
@@ -1070,6 +1154,44 @@ mod tests {
         // a trailing slash on the root must not yield `//v1`.
         let proc = LlamaServerProcess::with_root("http://127.0.0.1:59123/".to_string());
         assert_eq!(proc.v1_url, "http://127.0.0.1:59123/v1");
+    }
+
+    // what this catches: THE seam that binds the orphan-reclaim machinery to
+    // exactly one process. The live constructors (`new`/`with_client`) must mark
+    // `is_live_lane` so they pin the canonical port + own the reclaim pidfile;
+    // `with_root` (the EphemeralServingLane seam) must NOT — an ephemeral lane that
+    // wrote the canonical pidfile or reaped the live port would kill the living
+    // persona's own server. A regression flipping either default reintroduces the
+    // two-servers-on-one-GPU OOM (live not pinning) or self-reaping (ephemeral
+    // claiming the live role).
+    #[test]
+    fn live_constructors_are_live_lane_ephemeral_is_not() {
+        assert!(
+            LlamaServerProcess::new().is_live_lane,
+            "new() is THE live lane — must pin the canonical port + own the pidfile"
+        );
+        assert!(
+            LlamaServerProcess::with_client(reqwest::Client::new()).is_live_lane,
+            "with_client() is a live constructor"
+        );
+        assert!(
+            !LlamaServerProcess::with_root("http://127.0.0.1:59123".to_string()).is_live_lane,
+            "with_root() is ephemeral — must never write the canonical pidfile or reclaim the live port"
+        );
+    }
+
+    // what this catches: the live lane PINS the canonical port — it must never
+    // scan away from DEFAULT_PORT. Scanning past a held canonical port was the bug
+    // (spawned a GPU competitor AND blinded the daemon's own probe). The pin is
+    // what makes a crashed predecessor's orphan reclaimable on a known port. The
+    // ephemeral scan (first_free_port) is tested separately above and stays.
+    #[test]
+    fn live_lane_pins_the_canonical_port() {
+        assert_eq!(
+            chosen_port(),
+            DEFAULT_PORT,
+            "the live lane must bind the canonical port, never a scanned one"
+        );
     }
 
     // what this catches: the readiness gate `await_ready_serving` waits on must
