@@ -436,6 +436,7 @@ impl AIProviderAdapter for HeuristicInferenceAdapter {
             reasoning: None,
             routing: None,
             error: None,
+            timing: None,
         })
     }
 

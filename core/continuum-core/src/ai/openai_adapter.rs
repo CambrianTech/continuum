@@ -32,8 +32,8 @@ use super::openai_endpoints::OpenAiBase;
 use super::registry_bridge::models_for_provider_via_registry;
 use super::types::{
     ActiveAdapterRequest, ChatMessage, ContentPart, EmbeddingInput, EmbeddingRequest,
-    EmbeddingResponse, FinishReason, HealthState, HealthStatus, MessageContent, ModelInfo,
-    TextGenerationRequest, TextGenerationResponse, ToolCall, ToolChoice, UsageMetrics,
+    EmbeddingResponse, FinishReason, GenerationTiming, HealthState, HealthStatus, MessageContent,
+    ModelInfo, TextGenerationRequest, TextGenerationResponse, ToolCall, ToolChoice, UsageMetrics,
 };
 
 /// Runtime-resolved config carried by each `OpenAICompatibleAdapter`
@@ -922,6 +922,31 @@ struct OpenAIUsage {
     total_tokens: Option<u32>,
 }
 
+/// llama-server's per-request `timings` object, present on the final stream frame.
+/// These are the fields we surface into [`GenerationTiming`] so the harness can
+/// separate PREFILL cost from DECODE cost; llama emits more (`*_per_token_ms`
+/// variants) we don't need. All `#[serde(default)]` so a provider that omits any
+/// field (or the whole object) degrades to zeros, never a parse failure.
+#[derive(Debug, Deserialize)]
+struct OpenAITimings {
+    /// Prefix tokens served from KV cache (no recompute).
+    #[serde(default)]
+    cache_n: u32,
+    /// NEW tokens prefilled this call (the re-rasterization tax).
+    #[serde(default)]
+    prompt_n: u32,
+    #[serde(default)]
+    prompt_ms: f64,
+    #[serde(default)]
+    prompt_per_second: f64,
+    #[serde(default)]
+    predicted_n: u32,
+    #[serde(default)]
+    predicted_ms: f64,
+    #[serde(default)]
+    predicted_per_second: f64,
+}
+
 /// How long the inference lane may stay SILENT mid-stream before we declare it
 /// dead. This is a LIVENESS watchdog, not a deadline: a slow-but-producing decode
 /// (a 4B model on CPU emitting a token every few hundred ms) stays alive
@@ -940,6 +965,10 @@ struct OpenAIStreamChunk {
     choices: Vec<OpenAIStreamChoice>,
     #[serde(default)]
     usage: Option<OpenAIUsage>,
+    /// Per-request lane timings (cache_n / prompt_ms / predicted_per_second …);
+    /// arrives on the final frame alongside `usage`.
+    #[serde(default)]
+    timings: Option<OpenAITimings>,
     #[serde(default)]
     model: String,
 }
@@ -1528,6 +1557,7 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
         let mut acc_tools: Vec<StreamToolAccum> = Vec::new();
         let mut finish_reason_str: Option<String> = None;
         let mut stream_usage: Option<OpenAIUsage> = None;
+        let mut stream_timings: Option<OpenAITimings> = None;
         let mut resp_model: Option<String> = None;
 
         loop {
@@ -1576,6 +1606,9 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
                     }
                     if let Some(u) = parsed.usage {
                         stream_usage = Some(u);
+                    }
+                    if let Some(t) = parsed.timings {
+                        stream_timings = Some(t);
                     }
                     if let Some(choice) = parsed.choices.into_iter().next() {
                         if let Some(fr) = choice.finish_reason {
@@ -1683,6 +1716,18 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
             })
             .unwrap_or_default();
 
+        // Per-call PREFILL-vs-DECODE split for the speed harness. cache_n vs
+        // prompt_n is the KV-cache hit/miss that dominates Metal wall-clock.
+        let timing = stream_timings.map(|t| GenerationTiming {
+            cached_tokens: t.cache_n,
+            prefill_tokens: t.prompt_n,
+            prefill_ms: t.prompt_ms,
+            prefill_tokens_per_second: t.prompt_per_second,
+            decode_tokens: t.predicted_n,
+            decode_ms: t.predicted_ms,
+            decode_tokens_per_second: t.predicted_per_second,
+        });
+
         Ok(TextGenerationResponse {
             text,
             finish_reason,
@@ -1700,6 +1745,7 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
             reasoning,
             routing: None,
             error: None,
+            timing,
         })
     }
 

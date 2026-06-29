@@ -819,10 +819,19 @@ impl Faculty for LlmDeliberationFaculty {
 /// total. Token counts are 0 when the gateway omitted `usage` (older endpoints);
 /// `latency_ms` is always present (the adapter times every request).
 fn metrics_from(resp: &TextGenerationResponse) -> crate::cognition::workspace::TurnMetrics {
+    // The lane's PREFILL-vs-DECODE split (llama-server `timings`), when present:
+    // cache_n/prompt_n is the KV-cache hit/miss, prompt_ms/predicted_ms the
+    // wall-clock split that lets the harness see where Metal time actually goes.
+    // Absent (cloud / older endpoints) → 0, and the breakdown rows read "n/a".
+    let t = resp.timing.as_ref();
     crate::cognition::workspace::TurnMetrics {
         input_tokens: resp.usage.input_tokens,
         output_tokens: resp.usage.output_tokens,
         latency_ms: resp.response_time_ms,
+        cached_tokens: t.map(|t| t.cached_tokens).unwrap_or(0),
+        prefill_tokens: t.map(|t| t.prefill_tokens).unwrap_or(0),
+        prefill_ms: t.map(|t| t.prefill_ms.round() as u64).unwrap_or(0),
+        decode_ms: t.map(|t| t.decode_ms.round() as u64).unwrap_or(0),
     }
 }
 
@@ -1164,6 +1173,7 @@ mod tests {
             reasoning: None,
             routing: None,
             error: None,
+            timing: None,
         }
     }
 
