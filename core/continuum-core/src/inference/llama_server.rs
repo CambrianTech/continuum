@@ -730,6 +730,20 @@ impl LlamaServerControl for LlamaServerProcess {
             .arg(total_ctx.to_string())
             .arg("--parallel")
             .arg(lanes.to_string())
+            // KV PREFIX REUSE across a persona's turns. `cache_prompt:true` (sent
+            // per-request) only reuses a slot's prior content when the *exact*
+            // prefix still sits in that slot; with the volatile grounding tail
+            // changing every turn and embedding requests sharing these same slots,
+            // measured cross-turn reuse was ZERO (`cachedTokens: 0` over every
+            // captured live turn, forcing a full re-prefill of the ~720-token
+            // static identity/doctrine/tool prefix each turn). `--cache-reuse`
+            // lets llama.cpp reuse cached chunks ≥ N tokens via KV shifting even
+            // when a later span differs — so the stable prefix is kept, not
+            // recomputed. 256 is the llama.cpp-recommended min chunk. This is a
+            // pure optimization flag: absent it we just re-prefill (correct, slow);
+            // present it we reuse (correct, fast) — no fallback, no behavior change.
+            .arg("--cache-reuse")
+            .arg("256")
             // Serve embeddings from the same process so the embedder doesn't
             // need a second server. Personas' embedding adapter points here too.
             .arg("--embeddings");
