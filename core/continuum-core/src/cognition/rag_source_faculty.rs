@@ -130,6 +130,12 @@ pub struct RagSourceFaculty {
     source: Arc<dyn RagSource>,
     faculty_id: FacultyId,
     salience: f32,
+    /// `true` for [`SaliencePolicy::StandingFraming`] sources (roster, doctrine,
+    /// map) — propagated onto the [`Contribution`] so the deliberation serializer
+    /// hoists this grounding into the cacheable KV-prefix region (standing framing
+    /// is "like the system prompt"; it belongs adjacent to it). Volatile retrieved
+    /// sources stay `false` and serialize last, nearest the generation point.
+    stable: bool,
     budget: u32,
     clock: Clock,
 }
@@ -146,6 +152,8 @@ impl RagSourceFaculty {
             source,
             faculty_id,
             salience: policy.salience(),
+            // Standing framing is session-stable; retrieved grounding is volatile.
+            stable: matches!(policy, SaliencePolicy::StandingFraming),
             budget: DEFAULT_GROUNDING_BUDGET,
             clock: wall_clock(),
         }
@@ -212,12 +220,8 @@ impl Faculty for RagSourceFaculty {
             delivery.tokens_used
         );
 
-        Some(Contribution::context(
-            self.faculty_id.clone(),
-            content,
-            self.salience,
-            reasoning,
-        ))
+        let c = Contribution::context(self.faculty_id.clone(), content, self.salience, reasoning);
+        Some(if self.stable { c.session_stable() } else { c })
     }
 }
 

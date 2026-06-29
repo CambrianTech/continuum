@@ -245,6 +245,17 @@ pub struct Contribution {
     /// (the deliberation verdict). `None` for context contributions (recall,
     /// affect) that did no generation. Surfaced via [`Workspace::metrics`].
     pub metrics: Option<TurnMetrics>,
+    /// **Session-stable** content — standing framing that rarely changes within a
+    /// session (the room roster, the room's operating doctrine, the workspace map),
+    /// as opposed to volatile per-turn grounding (recall, working memory). The
+    /// serializer emits stable contributions FIRST so they sit in the cacheable
+    /// KV-prefix region adjacent to the static system prompt (which is what they
+    /// are — standing framing is "like the system prompt"), while volatile content
+    /// lands LAST, nearest the generation point (best instruction-following AND
+    /// minimal re-prefill). Defaults `false` (volatile); set via [`session_stable`].
+    /// This is a SERIALIZATION-order property, not an attention one — salience still
+    /// governs which contributions are included and truncated.
+    pub stable: bool,
 }
 
 impl Contribution {
@@ -263,6 +274,7 @@ impl Contribution {
             reasoning: reasoning.into(),
             decision: None,
             metrics: None,
+            stable: false,
         }
     }
 
@@ -283,6 +295,8 @@ impl Contribution {
             reasoning: reasoning.into(),
             decision: Some(decision),
             metrics: None,
+            // A verdict is the volatile output of THIS turn; never standing framing.
+            stable: false,
         }
     }
 
@@ -290,6 +304,15 @@ impl Contribution {
     /// deliberation faculty can do `self.verdict(...).with_metrics(m)`).
     pub fn with_metrics(mut self, metrics: TurnMetrics) -> Self {
         self.metrics = Some(metrics);
+        self
+    }
+
+    /// Mark this contribution as **session-stable** standing framing (roster,
+    /// doctrine, workspace map) — builder form so a faculty can do
+    /// `Contribution::context(...).session_stable()`. The serializer hoists stable
+    /// contributions into the cacheable KV-prefix region (see [`Contribution::stable`]).
+    pub fn session_stable(mut self) -> Self {
+        self.stable = true;
         self
     }
 }
