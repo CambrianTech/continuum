@@ -88,11 +88,23 @@ members = [
 # the issuance half: an owner node signs a CapabilityGrant with its own key (key
 # never leaves airc) so a grantee can present it. Powers grid/grant/issue + the
 # end-to-end contracted-grid loop. Additive.
-airc-core = { git = "https://github.com/CambrianTech/airc", rev = "55790e1" }
-airc-protocol = { git = "https://github.com/CambrianTech/airc", rev = "55790e1" }
-airc-ipc = { git = "https://github.com/CambrianTech/airc", rev = "55790e1" }
-airc-lib = { git = "https://github.com/CambrianTech/airc", rev = "55790e1" }
-airc-wire = { git = "https://github.com/CambrianTech/airc", rev = "55790e1" }
+#
+# 2026-06-29 bump 55790e1 → 17b238c (feat/airc-scoped-state, task #89): adopts
+# the generic scoped-state store (airc-store `scoped_state` key→JSON +
+# `ScopeRef` domain layer + `Airc::{get,set,list,delete}_scoped_state` facade +
+# `airc state` CLI) — the private/local sibling of the room wall — AND the wall
+# split-brain fix: `publish_wall_post` routes through the daemon when attached
+# (was client-local only, invisible to the daemon-backed read) and `wall_posts`
+# discriminates on the self-describing body, not the coarse bus kind the daemon
+# read path flattens to `System`. This unblocks the WallSource `[room-board]`
+# grounding A/B. Additive to the API surface continuum uses. NOTE: this SHA is
+# on the scoped-state working branch, not canary — reconcile to the canary SHA
+# when the airc PR lands; re-validate persona attach + wall publish on bump.
+airc-core = { git = "https://github.com/CambrianTech/airc", rev = "17b238c" }
+airc-protocol = { git = "https://github.com/CambrianTech/airc", rev = "17b238c" }
+airc-ipc = { git = "https://github.com/CambrianTech/airc", rev = "17b238c" }
+airc-lib = { git = "https://github.com/CambrianTech/airc", rev = "17b238c" }
+airc-wire = { git = "https://github.com/CambrianTech/airc", rev = "17b238c" }
 
 # Candle ML framework — patched via [patch.crates-io] below.
 # Fixes: Metal buffer pool leak (#2271), RoPE NEOX convention (#3410)
