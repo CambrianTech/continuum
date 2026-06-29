@@ -73,6 +73,22 @@ const READY_TIMEOUT: Duration = Duration::from_secs(90);
 /// Poll cadence while waiting for `/health`. 503 → still loading, keep waiting.
 const READY_POLL: Duration = Duration::from_millis(500);
 
+/// Bounded per-request timeout for control-plane probes (`/v1/models` in
+/// [`active_model`], `/health` in [`wait_ready`]). A healthy llama-server answers
+/// these in well under a second even mid-generation — they are served off the HTTP
+/// layer, not queued behind the inference slots. A WEDGED server, though — a GPU
+/// hang, OOM-thrash, deadlock, or a frozen orphan inherited from a crashed
+/// predecessor — holds the listening socket open so the TCP connect SUCCEEDS, then
+/// never answers the read. Without a bound the probe blocks forever: in
+/// [`active_model`] that means `ensure_model_serving` never returns, so the
+/// reconcile that would reclaim the sick lane never runs (the lane stays wedged and
+/// the gateway never registers); in [`wait_ready`] an unbounded `send` silently
+/// defeats the [`READY_TIMEOUT`] deadline, which is only checked AFTER `send`
+/// returns. Bounding each probe converts "wedged" into a fast `Unreachable` — the
+/// exact signal `ensure_model_serving` turns into serve()+reclaim. Kept under the
+/// serving daemon's reconcile cadence so a probe never overruns its own tick.
+const PROBE_TIMEOUT: Duration = Duration::from_secs(4);
+
 /// Everything the launcher needs to bring a model up, GROUPED so adding a new
 /// serving knob is a field here — never a new param threaded down the call chain
 /// ([[pass-the-model-struct-no-param-hell]]). The [`Model`] carries its own id,
@@ -584,7 +600,7 @@ impl LlamaServerProcess {
         let deadline = Instant::now() + READY_TIMEOUT;
         let mut last = String::from("no response");
         loop {
-            match self.client.get(&health).send().await {
+            match self.client.get(&health).timeout(PROBE_TIMEOUT).send().await {
                 Ok(resp) if resp.status().is_success() => return Ok(()),
                 Ok(resp) => last = format!("status {}", resp.status()),
                 Err(e) => last = e.to_string(),
@@ -605,14 +621,20 @@ impl Default for LlamaServerProcess {
 
 impl Drop for LlamaServerProcess {
     fn drop(&mut self) {
+        // Did we OWN the child we're about to kill? Capture before `kill_child`
+        // takes it. This is the difference between a core that SPAWNED its server
+        // and one that ADOPTED a persisting one (`AlreadyServing` → never spawned →
+        // no child). Only the spawner kills the server on the way out.
+        let owned_child = self.child.lock().unwrap().is_some();
         self.kill_child();
-        // Graceful teardown of the live lane: drop the reclaim pidfile so the next
-        // boot doesn't try to reap a child we just killed. (A SIGKILL/crash skips
-        // Drop entirely — that is exactly the case the pidfile survives for, and
-        // the next boot's identity-verified reclaim handles it.) A relaunch goes
-        // through `serve()`, which rewrites the pidfile with the new child's pid,
-        // so this clear is only the genuine end-of-life path.
-        if self.is_live_lane {
+        // Clear the reclaim pidfile ONLY if we owned the child we just killed — the
+        // server is now dead, so there is nothing for the next boot to reclaim. If
+        // we ADOPTED a persisting server (no child of our own), it keeps running
+        // after we exit, so we LEAVE the pidfile naming it so the successor can
+        // reclaim that still-live server if it later goes sick. (A SIGKILL/crash
+        // skips Drop entirely — that is exactly the case the pidfile survives for,
+        // and the next boot's identity-verified reclaim handles it.)
+        if self.is_live_lane && owned_child {
             crate::inference::lane_pidfile::clear();
         }
     }
@@ -683,6 +705,7 @@ impl LlamaServerControl for LlamaServerProcess {
         let resp = self
             .client
             .get(&url)
+            .timeout(PROBE_TIMEOUT)
             .send()
             .await
             .map_err(|e| LlamaServerError::Unreachable(e.to_string()))?;
@@ -1234,5 +1257,49 @@ mod tests {
             .expect("should not time out")
             .expect("sender live");
         assert_eq!(got.active_model.as_deref(), Some("coder"));
+    }
+
+    // what this catches: a WEDGED server (port held open, never answers HTTP — a
+    // GPU hang, OOM-thrash, deadlock, or a SIGSTOP'd orphan from a crashed
+    // predecessor) must not hang `active_model` forever. Without the per-request
+    // PROBE_TIMEOUT the probe blocks indefinitely: the TCP connect succeeds against
+    // the held socket, then the read never returns, so `ensure_model_serving` never
+    // returns and the reconcile that would reclaim the sick lane never runs — the
+    // exact silent-hang that wedged a successor core. The bound converts "wedged"
+    // into a fast `Unreachable`, which serve()+reclaim acts on. We assert it
+    // returns (Err) well under an unbounded "forever" — if the timeout regressed to
+    // unbounded this test would hang and the runner would kill it. Regression for
+    // the unbounded control-plane probe (#90 reliability follow-up).
+    #[tokio::test]
+    async fn wedged_server_probe_times_out_instead_of_hanging() {
+        use tokio::io::AsyncReadExt;
+        use tokio::net::TcpListener;
+
+        // A listener that ACCEPTS then holds the socket silent — the precise wedge a
+        // frozen llama-server produces (connect ok, read never answered).
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let port = listener.local_addr().expect("addr").port();
+        let _holder = tokio::spawn(async move {
+            if let Ok((mut sock, _)) = listener.accept().await {
+                // Drain quietly and never reply; hold the conn open past the probe.
+                let mut buf = [0u8; 1024];
+                let _ = sock.read(&mut buf).await;
+                tokio::time::sleep(Duration::from_secs(30)).await;
+            }
+        });
+
+        let proc = LlamaServerProcess::with_root(format!("http://127.0.0.1:{port}"));
+        let started = Instant::now();
+        let result = proc.active_model().await;
+        let elapsed = started.elapsed();
+
+        assert!(
+            matches!(result, Err(LlamaServerError::Unreachable(_))),
+            "wedged server must surface as Unreachable, got {result:?}"
+        );
+        assert!(
+            elapsed < PROBE_TIMEOUT + Duration::from_secs(4),
+            "probe must be bounded by PROBE_TIMEOUT, took {elapsed:?}"
+        );
     }
 }
