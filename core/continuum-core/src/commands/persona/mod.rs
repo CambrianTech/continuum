@@ -22,6 +22,7 @@ pub mod allocate;
 pub mod catalog;
 pub mod instances;
 pub mod reassign_model;
+pub mod wall;
 
 use reassign_model::PersonaReassignModel;
 
@@ -36,7 +37,8 @@ pub fn command_objects(
     continuum_root: PathBuf,
     executor: Arc<LateBound<CommandExecutor>>,
 ) -> Vec<Arc<dyn DynCommand>> {
-    let mut objects = instances::command_objects(registry);
+    let mut objects = instances::command_objects(registry.clone());
+    objects.extend(wall::command_objects(registry));
     objects.push(Arc::new(PersonaReassignModel {
         continuum_root,
         executor,
