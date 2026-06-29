@@ -37,9 +37,21 @@ use crate::inference::llama_server::LanePlacement;
 use crate::sdk_codegen::{AccessLevel, ActionCommand, CommandError, Ctx};
 
 /// The committed, discriminating coder set used when the caller passes neither
-/// inline `tasks` nor an explicit `eval_set` path. Authoring a harder/specialized
-/// eval = add lines to the JSONL, no recompile.
+/// inline `tasks` nor an explicit `eval_set` path. Label only (reporting); the
+/// bytes are embedded below.
 const DEFAULT_EVAL_SET: &str = "docs/genome/coder-eval.jsonl";
+
+/// The default set's BYTES, embedded at compile time. The default eval MUST be
+/// CWD-independent: the old `std::fs::read_to_string("docs/genome/coder-eval.jsonl")`
+/// resolved against the core's working directory, which differs between a
+/// manually-launched core (repo root → 13 tasks) and `cu reboot`'s start script
+/// (some other cwd → file-not-found → a silent 1-task smoke fallback that graded
+/// 1/13 as if it were the whole gym). Embedding kills that whole class: the default
+/// is always the full committed set, no read, no cwd dependence, no silent degrade.
+/// Iterating on a *custom* set still uses `--eval_set <path>` (read from disk, fails
+/// loud if unreadable) with no recompile; only changing the *baked default* needs a
+/// rebuild — the right trade, since the default must be reliable.
+const DEFAULT_EVAL_SET_BYTES: &str = include_str!("../../../../docs/genome/coder-eval.jsonl");
 
 /// How many act→observe cycles a single task may take before it counts as
 /// unfinished, when the caller doesn't set `max_acts`.
@@ -567,34 +579,25 @@ impl ActionCommand for CognitionEval {
                 .unwrap_or_else(|| DEFAULT_EVAL_SET.to_string())
         };
 
-        // Task source: inline → eval_set JSONL → committed default. A missing file
-        // is a loud error (don't silently grade an empty set) UNLESS it's the
-        // default path run from a non-repo cwd, where a one-task smoke set keeps the
-        // command usable.
+        // Task source: inline → explicit `eval_set` JSONL (read from disk, fail loud
+        // if unreadable — no silent degrade) → the compile-time-embedded committed
+        // default (CWD-independent, can never be "missing"). One JSONL line = one task.
+        let parse_jsonl = |text: &str| -> Vec<EvalTask> {
+            text.lines()
+                .map(str::trim)
+                .filter(|l| !l.is_empty())
+                .filter_map(|l| serde_json::from_str::<EvalTask>(l).ok())
+                .collect()
+        };
         let tasks: Vec<EvalTask> = if let Some(inline) = p.tasks {
             inline
+        } else if let Some(path) = p.eval_set.as_deref() {
+            let text = std::fs::read_to_string(path).map_err(|e| {
+                CommandError::Invalid(format!("eval_set '{path}' could not be read: {e}"))
+            })?;
+            parse_jsonl(&text)
         } else {
-            let path = p.eval_set.as_deref().unwrap_or(DEFAULT_EVAL_SET);
-            match std::fs::read_to_string(path) {
-                Ok(text) => text
-                    .lines()
-                    .map(str::trim)
-                    .filter(|l| !l.is_empty())
-                    .filter_map(|l| serde_json::from_str::<EvalTask>(l).ok())
-                    .collect(),
-                Err(_) if p.eval_set.is_none() => vec![EvalTask {
-                    id: "render_ai_help".into(),
-                    prompt: "Which file defines `fn render_ai_help`? Reply with just the path."
-                        .into(),
-                    expect: "help.rs".into(),
-                    ..Default::default()
-                }],
-                Err(e) => {
-                    return Err(CommandError::Invalid(format!(
-                        "eval_set '{path}' could not be read: {e}"
-                    )))
-                }
-            }
+            parse_jsonl(DEFAULT_EVAL_SET_BYTES)
         };
 
         // Fork an EPHEMERAL measurement copy of her mind — the exam runs on the
@@ -712,6 +715,29 @@ impl ActionCommand for CognitionEval {
             };
             append_progress_ledger(&result, p.note.as_deref(), &eval_set_label);
             return Ok(result);
+        }
+
+        // Readiness gate (single-pass on her LIVE lane): refuse to grade a COLD
+        // serving lane. After a core/llama-server relaunch the model is not resident
+        // for ~tens of seconds; firing tasks at it returns empty generations that the
+        // grader would silently record as 0-token "no match" failures — a phantom
+        // score produced in an invisible degraded mode. Wait (bounded) for the lane to
+        // actually be able to generate; fail loud if it never is, naming the cause.
+        // (The gene A/B path above stands up its own EphemeralServingLane and waits on
+        // spawn, so this guards only the live-lane single pass.)
+        {
+            const LANE_WARMUP: std::time::Duration = std::time::Duration::from_secs(90);
+            if crate::inference::llama_server::await_ready_serving(LANE_WARMUP)
+                .await
+                .is_none()
+            {
+                return Err(CommandError::Invalid(format!(
+                    "inference lane not serving-ready after {}s — refusing to grade a cold lane \
+                     (would record phantom 0-token failures). The lane warms after a \
+                     core/llama-server relaunch; retry once `/health` returns 200.",
+                    LANE_WARMUP.as_secs()
+                )));
+            }
         }
 
         // Single pass: measure whatever genome is currently paged in (base by
