@@ -840,8 +840,18 @@ async fn run_pass(
             "",
             "",
         );
+        // `directed = true`: an exam question is put TO the persona — it is not
+        // ambient room chatter she may let pass. This withholds the bare-PASS silence
+        // escape (the [Silence Option] block) for the eval turn, the same kind of
+        // measurement control as the greedy-temperature pin: it isolates the coding
+        // *capability* signal from the *participation* decision. Without it a coder
+        // model takes the "reply PASS, nothing reaches the room" exit on a directed
+        // question (reproduced via glass-box replay — 0/13 on the gym). She can still
+        // decline in her own words; she just isn't handed the silent hatch. The live
+        // path computes directedness from real addressing (TODO #9); pinning it here
+        // is the eval's exam-is-directed control. See `Workspace::directed_at_self`.
         let settled =
-            crate::cognition::act_observe::drive_to_settle(cycle, burst, room, max_acts).await;
+            crate::cognition::act_observe::drive_to_settle(cycle, burst, room, max_acts, true).await;
         let answer = settled.spoken.unwrap_or_default();
         let (ok, grade) = if let Some(test) = &t.test {
             let lang = t.lang.as_deref().unwrap_or("rust");

@@ -210,6 +210,7 @@ pub async fn drive_to_settle(
     world_state: impl Into<String>,
     room_id: Uuid,
     max_acts: usize,
+    directed: bool,
 ) -> SettleOutcome {
     let world = world_state.into();
     let mut acts = 0usize;
@@ -223,7 +224,8 @@ pub async fn drive_to_settle(
         // eval room has no metronome, the grader re-perceives by calling step again.
         // `may_act = acts < max_acts` gates ACTING (not speaking): past the budget
         // she may still settle into a Speak, but a fresh Act is returned un-driven.
-        let (step, step_metrics) = settle_step(cycle, world.clone(), room_id, acts < max_acts).await;
+        let (step, step_metrics) =
+            settle_step(cycle, world.clone(), room_id, acts < max_acts, directed).await;
         if let Some(m) = step_metrics {
             metrics.accumulate(m);
         }
@@ -310,13 +312,20 @@ pub enum SettleStep {
 /// always) runs the act; `false` (eval, past its act budget) returns [`SettleStep::
 /// WouldAct`] without executing, so the budget gates acting while still letting a
 /// later step settle into a Speak.
+///
+/// `directed` says whether this turn is addressed TO the persona (a question put to
+/// her — the eval exam, a direct @mention, a DM). It only reframes the silence
+/// affordance (see [`Workspace::directed_at_self`]): a directed turn withholds the
+/// bare-PASS escape so she does not ghost a question, while ambient turns keep
+/// silence first-class. The per-step motion is otherwise identical.
 pub async fn settle_step(
     cycle: &WorkspaceCycle,
     world: String,
     room_id: Uuid,
     may_act: bool,
+    directed: bool,
 ) -> (SettleStep, Option<TurnMetrics>) {
-    let ws = cycle.run_in_room(world, room_id).await;
+    let ws = cycle.run_directed(world, room_id, directed).await;
     // The cost of THIS tick's deliberation generation — latency + tokens of the
     // model call behind the verdict. Carried out alongside the step so the caller
     // (the eval driver, or the live heartbeat) can accumulate per-turn speed and
@@ -674,7 +683,7 @@ mod tests {
         .with_acting(body_with_wm(exec.clone(), adm.clone(), Arc::clone(&wm)));
 
         let outcome =
-            drive_to_settle(&cycle, "[eval]\npeer: what is 2+2?", Uuid::new_v4(), 8).await;
+            drive_to_settle(&cycle, "[eval]\npeer: what is 2+2?", Uuid::new_v4(), 8, false).await;
 
         assert_eq!(outcome.acts, 1, "acted exactly once before settling");
         assert_eq!(outcome.spoken.as_deref(), Some("the answer is 4"));
@@ -695,7 +704,7 @@ mod tests {
         let cycle = WorkspaceCycle::new(vec![Arc::new(AlwaysAct)], Arc::new(SalienceArbiter), 8)
             .with_acting(body(exec.clone(), adm.clone()));
 
-        let outcome = drive_to_settle(&cycle, "go", Uuid::new_v4(), 2).await;
+        let outcome = drive_to_settle(&cycle, "go", Uuid::new_v4(), 2, false).await;
 
         assert_eq!(outcome.acts, 2, "spent exactly the observer's budget");
         assert!(
@@ -724,7 +733,7 @@ mod tests {
         let cycle = WorkspaceCycle::new(vec![Arc::new(AlwaysAct)], Arc::new(SalienceArbiter), 8)
             .with_acting(body(exec.clone(), adm.clone()));
 
-        let (deferred, _) = settle_step(&cycle, "go".into(), Uuid::new_v4(), false).await;
+        let (deferred, _) = settle_step(&cycle, "go".into(), Uuid::new_v4(), false, false).await;
         assert!(
             matches!(deferred, SettleStep::WouldAct { .. }),
             "may_act=false defers the act"
@@ -734,7 +743,7 @@ mod tests {
             "a deferred act NEVER touches the executor"
         );
 
-        let (ran, _) = settle_step(&cycle, "go".into(), Uuid::new_v4(), true).await;
+        let (ran, _) = settle_step(&cycle, "go".into(), Uuid::new_v4(), true, false).await;
         assert!(matches!(ran, SettleStep::Acted { .. }), "may_act=true runs it");
         assert!(
             exec.seen_context.lock().unwrap().is_some(),
@@ -904,6 +913,7 @@ mod tests {
             "[eval]\npeer: where does the program start and what does it call?",
             Uuid::new_v4(),
             8,
+            false,
         )
         .await;
 
@@ -961,13 +971,13 @@ mod tests {
         let room = Uuid::new_v4();
 
         // Concern A: act → observe → settle on a Speak.
-        let a = drive_to_settle(&cycle, "[eval]\npeer: concern A?", room, 8).await;
+        let a = drive_to_settle(&cycle, "[eval]\npeer: concern A?", room, 8, false).await;
         assert_eq!(a.acts, 1, "settled concern A after one act→observe");
         assert!(a.spoken.is_some(), "concern A got a spoken answer");
         assert_eq!(adm.engram_count(), 1, "concern A left exactly one memory");
 
         // Concern B on the SAME living mind — it must wake again, not stay halted.
-        let b = drive_to_settle(&cycle, "[eval]\npeer: a totally different concern B?", room, 8).await;
+        let b = drive_to_settle(&cycle, "[eval]\npeer: a totally different concern B?", room, 8, false).await;
         assert_eq!(
             b.acts, 1,
             "the mind RE-AWAKENED and acted on the new concern — not stuck post-settle"

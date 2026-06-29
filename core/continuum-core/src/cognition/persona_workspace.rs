@@ -782,6 +782,10 @@ mod tests {
             room_id: trace.room_id,
             cycle: crate::cognition::workspace::CycleId::UNSTAMPED,
             broadcast: trace.context_broadcast.clone(),
+            // The trace does not yet record the turn's directedness; reconstruct as
+            // ambient (the live default). TODO(#9): carry directedness on the trace so
+            // a replayed directed turn shows the silence escape withheld as it was.
+            directed_at_self: false,
         };
         let view = delib.prompt_view(&context_ws);
         eprintln!("\n--------------- WHAT THE LLM WAS FED ---------------");

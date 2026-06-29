@@ -276,6 +276,15 @@ pub struct Workspace {
     pub cycle: CycleId,
     /// What entered the bounded workspace and is broadcast (the persona's "now").
     pub broadcast: Vec<Contribution>,
+    /// Is this turn DIRECTED at this persona — a direct @mention, a DM, or (in the
+    /// eval fork) an examiner's question put TO her? When `true`, declining the turn
+    /// by emitting the bare PASS token is NOT a legitimate option: the [Silence
+    /// Option] affordance is for *ambient* participation (room chatter she is free to
+    /// let pass), never for ghosting a question asked of her. The deliberation
+    /// faculty reads this to decide whether to OFFER the silence escape — a framing
+    /// decision over a structural addressing fact (like ACL/routing), NOT a filter on
+    /// her output. `false` (the default) = ambient: silence stays first-class.
+    pub directed_at_self: bool,
 }
 
 impl Workspace {
@@ -292,7 +301,17 @@ impl Workspace {
             room_id,
             cycle: CycleId::UNSTAMPED,
             broadcast: Vec::new(),
+            directed_at_self: false,
         }
+    }
+
+    /// Mark whether this turn is directed AT the persona (builder form). See
+    /// [`directed_at_self`](Self::directed_at_self) — `true` suppresses the silence
+    /// escape so a question put to her is not ghosted; `false` keeps silence
+    /// first-class for ambient participation.
+    pub fn directed(mut self, directed: bool) -> Self {
+        self.directed_at_self = directed;
+        self
     }
 
     /// Stamp this workspace with the cycle it represents (builder form). The
@@ -824,11 +843,40 @@ impl WorkspaceCycle {
         self.run_in_room(world_state, Uuid::nil()).await
     }
 
+    /// Same as [`run_in_room`](Self::run_in_room) but for a turn DIRECTED at the
+    /// persona (a direct @mention / DM / examiner question) — the silence escape is
+    /// suppressed so a question asked of her is not ghosted. `run_in_room` is the
+    /// ambient default (silence first-class). See [`Workspace::directed_at_self`].
+    pub async fn run_directed(
+        &self,
+        world_state: impl Into<String>,
+        room_id: Uuid,
+        directed: bool,
+    ) -> Workspace {
+        self.run_in_room_inner(world_state, room_id, directed).await
+    }
+
     /// Same as [`run`](Self::run) but scoped to a room/context (the contextId the
     /// turn acts within). The live persona path uses THIS so the deliberation
     /// faculty stamps tool calls with the real room — `run` is the nil-room
     /// shorthand for tests that aren't room-scoped.
     pub async fn run_in_room(&self, world_state: impl Into<String>, room_id: Uuid) -> Workspace {
+        // Ambient default: silence stays first-class (`directed = false`). A turn put
+        // TO the persona uses [`run_directed`](Self::run_directed) so the silence
+        // escape is suppressed.
+        self.run_in_room_inner(world_state, room_id, false).await
+    }
+
+    /// The full cognitive tick. `directed` is set on the [`Workspace`] so the
+    /// deliberation faculty knows whether to offer the silence escape (see
+    /// [`Workspace::directed_at_self`]); everything else is identical for an ambient
+    /// or a directed turn — directedness only reframes the silence affordance.
+    async fn run_in_room_inner(
+        &self,
+        world_state: impl Into<String>,
+        room_id: Uuid,
+        directed: bool,
+    ) -> Workspace {
         // Bump the service tick: this workspace IS cycle N, and every finding
         // collected against it is stamped N (the cbar `frameIndex`). 1-based so
         // `CycleId(0)` stays the UNSTAMPED sentinel — the seam a deferred faculty
@@ -838,7 +886,9 @@ impl WorkspaceCycle {
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
                 .wrapping_add(1),
         );
-        let mut ws = Workspace::in_room(world_state, room_id).with_cycle(cycle);
+        let mut ws = Workspace::in_room(world_state, room_id)
+            .with_cycle(cycle)
+            .directed(directed);
 
         // --- Phase 1: perception. Context faculties react to the raw world-state. ---
         let perception: Vec<&Arc<dyn Faculty>> = self

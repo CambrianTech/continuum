@@ -454,13 +454,18 @@ impl LlmDeliberationFaculty {
     /// Splitting the assembly this way lets `prompt_view` size the context to the
     /// served window before it is embedded (the framing wrapper is essential and
     /// small; the context is the variable part that must fit the remainder).
-    fn compose_system(&self, context: &str) -> String {
+    fn compose_system(&self, context: &str, directed: bool) -> String {
         let mut s = String::with_capacity(self.system_prompt.len() + context.len() + 768);
         s.push_str(&self.system_prompt);
         // NOTE ON ORDERING (KV-cache prefix reuse, measured 2026-06-23):
         // Everything pushed BEFORE the volatile `context` below forms a
-        // byte-identical prefix across turns (identity + how-to-take-your-turn +
-        // the 18.5KB tool catalog + silence affordance — all static). The
+        // byte-identical prefix across turns of the SAME directedness (identity +
+        // how-to-take-your-turn + the 18.5KB tool catalog + silence affordance). The
+        // silence affordance is the ONLY directedness-gated segment, and it sits LAST
+        // among the static blocks — so toggling it (directed vs ambient) invalidates
+        // only its own tail tokens, never the heavy identity/catalog prefix; and
+        // within a run directedness is stable (the eval is always directed, live
+        // ambient turns always undirected), so the cache holds in practice. The
         // llama.cpp server caches that prefix and re-prefills only the changed
         // tail, so the static ~5k tokens prefill ONCE per session instead of
         // ~27s every turn. The assembled `context` (recall + live situation) is
@@ -484,9 +489,17 @@ impl LlmDeliberationFaculty {
              NOT continue or replay the transcript, do NOT prefix your message with \
              your name, do NOT write an outline, analysis, or narration of what you \
              are doing — just say your piece. Let the context above (including the \
-             room's operating doctrine, if any) shape how you participate. If you \
-             have nothing worth adding, stay silent.",
+             room's operating doctrine, if any) shape how you participate.{silence_tail}",
             name = self.persona_name,
+            // Ambient turns carry the "you may stay silent" nudge; a turn DIRECTED at
+            // her (a question put to her — eval exam, @mention, DM) drops it: silence
+            // is for chatter she may let pass, not for ghosting a question asked of
+            // her. See `Workspace::directed_at_self`.
+            silence_tail = if directed {
+                ""
+            } else {
+                " If you have nothing worth adding, stay silent."
+            },
         );
         // Tools: a compact CATEGORY INDEX (category names + counts) plus how to
         // discover and use them. NOT every tool, NOT the schemas — both load on
@@ -523,8 +536,21 @@ impl LlmDeliberationFaculty {
                  and don't narrate one you do.",
             );
         }
-        // Reuse the ONE silence contract — PASS = first-class choice to stay quiet.
-        s.push_str(SILENCE_AFFORDANCE_BLOCK);
+        // Reuse the ONE silence contract — PASS = first-class choice to stay quiet —
+        // but ONLY for an AMBIENT turn. When the turn is DIRECTED at her (a question
+        // put to her: the eval exam, an @mention, a DM), the PASS escape is withheld:
+        // a coder model offered "reply PASS and nothing reaches the room" takes that
+        // exit even on a direct question (reproduced via glass-box replay — 0/13 on
+        // the coder gym), and ghosting a question asked of you is not the same as
+        // letting ambient chatter pass. She can still decline in her own words; she
+        // just isn't handed the silent-PASS hatch. Withholding it is a FRAMING choice
+        // over a structural addressing fact (`directed_at_self`), not a filter reading
+        // her output (see [[no-hardcoded-heuristics-to-steer-cognition]]). The block
+        // is the LAST static prefix segment, so toggling it costs only its own tokens
+        // in KV-prefix terms — the identity/tools prefix above stays cacheable.
+        if !directed {
+            s.push_str(SILENCE_AFFORDANCE_BLOCK);
+        }
         // VOLATILE TAIL — appended last so the static blocks above stay a stable,
         // cacheable prefix (see ORDERING note at the top of this fn). This is the
         // context the mind assembled THIS tick (recall + who's present + the
@@ -576,7 +602,10 @@ impl LlmDeliberationFaculty {
             .saturating_sub(self.describe_tool_tokens());
 
         // The framing wrapper alone (no assembled context) — essential + small.
-        let framing_tokens = est_tokens(&self.compose_system(""));
+        // Pass the SAME `directed` as the final compose below so the framing-token
+        // estimate matches the prompt actually sent (directedness toggles the silence
+        // block, which is a few dozen tokens).
+        let framing_tokens = est_tokens(&self.compose_system("", ws.directed_at_self));
 
         // The burst — keep the most-recent tail when it would overflow.
         let mut user = ws.world_state.clone();
@@ -592,7 +621,7 @@ impl LlmDeliberationFaculty {
         let context = self.render_assembled_context_within(ws, ctx_budget);
 
         DeliberationPromptView {
-            system: self.compose_system(&context),
+            system: self.compose_system(&context, ws.directed_at_self),
             user,
         }
     }
@@ -1021,7 +1050,7 @@ mod tests {
         // The CATEGORY INDEX rode into the system prompt — the persona drills in via
         // `commands/list` from there. The 60 tools all share category `cat`, so the
         // index is the single line `cat (60)` — NOT 60 tool names.
-        let framing = faculty.compose_system("");
+        let framing = faculty.compose_system("", false);
         assert!(
             framing.contains("[Your tools]") && framing.contains("cat (60)"),
             "the compact category index must be in the system prompt: {framing}"
@@ -1084,7 +1113,7 @@ mod tests {
 
         // The catalog (inside framing) plus the completion reserve must leave room
         // for at least SOME burst — i.e. framing alone must not consume the window.
-        let framing = est_tokens(&faculty.compose_system(""));
+        let framing = est_tokens(&faculty.compose_system("", false));
         let reserve = (window / 4).clamp(256, 2048) as usize;
         assert!(
             framing + reserve < window as usize,
@@ -1313,6 +1342,41 @@ mod tests {
             }
             other => panic!("expected Act from a text-emitted tool call, got {other:?}"),
         }
+    }
+
+    // what this catches: the directedness gate on the silence affordance
+    // (`Workspace::directed_at_self`). A DIRECTED turn — the eval exam, an @mention, a
+    // DM — withholds the bare-PASS [Silence Option] escape so the persona does not
+    // ghost a question put to her (the 0/13 coder-gym failure: a coder model takes the
+    // "reply PASS, nothing reaches the room" exit on a directed question). An AMBIENT
+    // turn keeps silence first-class. This is a FRAMING decision over a structural
+    // addressing fact — her output is never filtered.
+    #[test]
+    fn directed_turn_withholds_the_silence_escape() {
+        let adapter = Arc::new(ScriptedAdapter::new(vec![]));
+        let faculty =
+            LlmDeliberationFaculty::new(Uuid::new_v4(), "Asha", "You are Asha.", adapter);
+
+        let ambient = faculty.prompt_view(&Workspace::new("just some room chatter"));
+        assert!(
+            ambient.system.contains("[Silence Option]"),
+            "an ambient turn keeps the silence escape on the table"
+        );
+        assert!(
+            ambient.system.contains("stay silent"),
+            "an ambient turn keeps the soft 'stay silent' nudge"
+        );
+
+        let directed =
+            faculty.prompt_view(&Workspace::new("answer me: what is 2+2?").directed(true));
+        assert!(
+            !directed.system.contains("[Silence Option]"),
+            "a directed turn withholds the bare-PASS escape so a question is not ghosted"
+        );
+        assert!(
+            !directed.system.contains("stay silent"),
+            "and drops the soft 'stay silent' nudge on a directed turn too"
+        );
     }
 
     // what this catches: the tools gate. With NO tools authorized, a tool-call
