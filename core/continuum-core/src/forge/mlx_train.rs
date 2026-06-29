@@ -91,6 +91,15 @@ pub struct MlxTrainSpec {
     pub learning_rate: f64,
     /// `--max-seq-length`.
     pub max_seq_length: u32,
+    /// `--grad-checkpoint`: recompute layer activations in the backward pass
+    /// instead of holding them all in memory. Output-EQUIVALENT (same gradients,
+    /// recomputed not stored) — it trades ~20-30% compute for a large drop in
+    /// peak working-set. On Apple-Silicon unified memory the binding constraint
+    /// is the Metal command-buffer working set (peak ∝ num_layers × seq_len at
+    /// the backward step), NOT total RAM — so all-layer LoRA at a useful seq_len
+    /// OOMs without this even with most of system RAM free. Default ON for the
+    /// genome loop (memory is the constraint, the weights are identical).
+    pub grad_checkpoint: bool,
     /// `--fine-tune-type` — "lora" (the genome layer) by default.
     pub fine_tune_type: String,
     /// EXPLICIT normalizations a GGUF-published base's HF form may need before
@@ -172,7 +181,7 @@ pub fn build_lora_config_yaml(spec: &MlxTrainSpec) -> String {
 /// continuum runs is pinned without spawning a trainer. `config_path` is the YAML
 /// from [`build_lora_config_yaml`].
 pub fn build_train_args(spec: &MlxTrainSpec, config_path: &Path) -> Vec<String> {
-    vec![
+    let mut args = vec![
         "-m".into(),
         "mlx_lm".into(),
         "lora".into(),
@@ -197,7 +206,13 @@ pub fn build_train_args(spec: &MlxTrainSpec, config_path: &Path) -> Vec<String> 
         spec.adapter_out.to_string_lossy().into_owned(),
         "-c".into(),
         config_path.to_string_lossy().into_owned(),
-    ]
+    ];
+    // `--grad-checkpoint` is a presence flag (no value). Appended last so the
+    // ordered-prefix assertions in the arg tests stay stable.
+    if spec.grad_checkpoint {
+        args.push("--grad-checkpoint".into());
+    }
+    args
 }
 
 /// Apply the EXPLICIT, caller-supplied [`MlxBasePrep`] normalizations to an HF
@@ -390,6 +405,7 @@ mod tests {
             iters: 100,
             learning_rate: 2e-4,
             max_seq_length: 2048,
+            grad_checkpoint: true,
             fine_tune_type: "lora".into(),
             base_prep: MlxBasePrep::default(),
         }
@@ -453,6 +469,26 @@ mod tests {
         assert!(joined.contains("--adapter-path /out"));
         assert!(joined.contains("-c /out/mlx_train_config.yaml"));
         assert!(joined.contains("--num-layers -1"));
+        // spec() defaults grad_checkpoint = true → the presence flag is appended.
+        assert!(joined.contains("--grad-checkpoint"));
+    }
+
+    // what this catches: --grad-checkpoint is a PRESENCE flag gated on the spec bool —
+    // emitted when on, absent when off (mlx_lm rejects `--grad-checkpoint false`, so it
+    // must never appear with a value). The OOM fix depends on it being passed; turning it
+    // off must drop it entirely, not pass a falsey value.
+    #[test]
+    fn grad_checkpoint_is_a_gated_presence_flag() {
+        let cfg = PathBuf::from("/out/mlx_train_config.yaml");
+        let mut off = spec();
+        off.grad_checkpoint = false;
+        assert!(!build_train_args(&off, &cfg).iter().any(|a| a == "--grad-checkpoint"));
+        let mut on = spec();
+        on.grad_checkpoint = true;
+        let on_args = build_train_args(&on, &cfg);
+        assert!(on_args.iter().any(|a| a == "--grad-checkpoint"));
+        // never paired with a value token
+        assert!(!on_args.iter().any(|a| a == "false" || a == "true"));
     }
 
     // what this catches: run_mlx_train fails loud (not silently) when the train base

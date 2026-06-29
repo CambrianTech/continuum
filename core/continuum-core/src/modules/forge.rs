@@ -314,6 +314,14 @@ struct ForgeTrainParams {
     /// base whose attention IS convertible. See `MlxTrainSpec::target_keys`.
     #[serde(default = "default_lora_target_keys")]
     lora_target_keys: Vec<String>,
+    /// mlx `--grad-checkpoint`: recompute activations in the backward pass rather
+    /// than holding them all resident. Output-equivalent (identical gradients);
+    /// trades ~20-30% compute for a large drop in peak Metal working-set. Default
+    /// ON because on Apple-Silicon unified memory the working-set (∝ num_layers ×
+    /// seq_len at backward), not total RAM, is the binding constraint — all-layer
+    /// LoRA at a useful seq_len OOMs without it. See `MlxTrainSpec::grad_checkpoint`.
+    #[serde(default = "default_grad_checkpoint")]
+    grad_checkpoint: bool,
 }
 
 fn default_format_type() -> String {
@@ -351,6 +359,9 @@ fn default_adapter_name() -> String {
 }
 fn default_num_layers() -> i32 {
     -1
+}
+fn default_grad_checkpoint() -> bool {
+    true
 }
 fn default_native_iters() -> u32 {
     300
@@ -557,6 +568,7 @@ fn run_train_native_mlx(p: ForgeTrainParams) -> Result<CommandResult, String> {
         iters: p.iters,
         learning_rate,
         max_seq_length: p.max_seq_length,
+        grad_checkpoint: p.grad_checkpoint,
         fine_tune_type: p.training_type.clone(),
         base_prep: MlxBasePrep {
             model_type_override: p.mlx_model_type.clone(),
@@ -575,6 +587,8 @@ fn run_train_native_mlx(p: ForgeTrainParams) -> Result<CommandResult, String> {
             "scale": spec.scale,
             "num_layers": spec.num_layers,
             "iters": spec.iters,
+            "max_seq_length": spec.max_seq_length,
+            "grad_checkpoint": spec.grad_checkpoint,
             "fine_tune_type": spec.fine_tune_type,
             "target_keys": spec.target_keys,
         })));
