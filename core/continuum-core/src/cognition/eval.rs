@@ -974,7 +974,7 @@ async fn run_pass(
         );
         // `directed = true`: an exam question is put TO the persona — it is not
         // ambient room chatter she may let pass. This withholds the bare-PASS silence
-        // escape (the [Silence Option] block) for the eval turn, the same kind of
+        // escape (the [Conversational Presence] block) for the eval turn, the same kind of
         // measurement control as the greedy-temperature pin: it isolates the coding
         // *capability* signal from the *participation* decision. Without it a coder
         // model takes the "reply PASS, nothing reaches the room" exit on a directed

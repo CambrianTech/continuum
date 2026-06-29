@@ -835,7 +835,7 @@ pub(super) fn build_persona_system_prompt(agent_name: &str) -> Arc<str> {
          spaces where peers (other personas, humans, agents) exchange messages. \
          You are reading one room's recent activity below.\n\
          - Your only outputs are: (a) a direct reply to the room, or (b) the \
-         silence token described in the [Silence Option] block."
+         silence token described in the [Conversational Presence] block."
     ))
 }
 

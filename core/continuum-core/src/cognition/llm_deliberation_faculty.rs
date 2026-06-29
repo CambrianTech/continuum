@@ -507,15 +507,16 @@ impl LlmDeliberationFaculty {
              are doing — just say your piece. Let the context above (including the \
              room's operating doctrine, if any) shape how you participate.{silence_tail}",
             name = self.persona_name,
-            // Ambient turns carry the "you may stay silent" nudge; a turn DIRECTED at
-            // her (a question put to her — eval exam, @mention, DM) drops it: silence
-            // is for chatter she may let pass, not for ghosting a question asked of
-            // her. See `Workspace::directed_at_self`.
-            silence_tail = if directed {
-                ""
-            } else {
-                " If you have nothing worth adding, stay silent."
-            },
+            // The turn-taking block stays posture-NEUTRAL: the ambient participation
+            // default + the silence affordance both live in the ONE appended
+            // [Conversational Presence] block (`SILENCE_AFFORDANCE_BLOCK`, !directed
+            // only), so a SINGLE place frames presence — no double-nudge toward silence.
+            // The old " If you have nothing worth adding, stay silent." tail here pulled
+            // directly against the participation default (Joel 2026-06-29: "shouldn't
+            // need to be directly addressed — it's a chat system") and is gone. A turn
+            // DIRECTED at her still drops the appended block below (she is not handed the
+            // silent-PASS hatch when a question names her). See `Workspace::directed_at_self`.
+            silence_tail = "",
         );
         // Tools: a compact CATEGORY INDEX (category names + counts) plus how to
         // discover and use them. NOT every tool, NOT the schemas — both load on
@@ -1423,12 +1424,16 @@ mod tests {
     }
 
     // what this catches: the directedness gate on the silence affordance
-    // (`Workspace::directed_at_self`). A DIRECTED turn — the eval exam, an @mention, a
-    // DM — withholds the bare-PASS [Silence Option] escape so the persona does not
-    // ghost a question put to her (the 0/13 coder-gym failure: a coder model takes the
-    // "reply PASS, nothing reaches the room" exit on a directed question). An AMBIENT
-    // turn keeps silence first-class. This is a FRAMING decision over a structural
-    // addressing fact — her output is never filtered.
+    // (`Workspace::directed_at_self`). The ambient participation default AND the
+    // bare-PASS escape both live in the ONE appended [Conversational Presence] block.
+    // A DIRECTED turn — the eval exam, an @mention, a DM — withholds that block so the
+    // persona is not handed a "reply PASS, nothing reaches the room" exit on a question
+    // put to her (the 0/13 coder-gym failure: a coder model takes that exit on a
+    // directed question). An AMBIENT turn includes it (silence stays first-class, the
+    // considered exception). The turn-taking block itself is posture-NEUTRAL — the old
+    // " If you have nothing worth adding, stay silent." nudge is gone, so neither turn
+    // carries it. This is a FRAMING decision over a structural addressing fact — her
+    // output is never filtered.
     #[test]
     fn directed_turn_withholds_the_silence_escape() {
         let adapter = Arc::new(ScriptedAdapter::new(vec![]));
@@ -1437,23 +1442,23 @@ mod tests {
 
         let ambient = faculty.prompt_view(&Workspace::new("just some room chatter"));
         assert!(
-            ambient.system.contains("[Silence Option]"),
-            "an ambient turn keeps the silence escape on the table"
+            ambient.system.contains("[Conversational Presence]"),
+            "an ambient turn carries the presence/PASS affordance block"
         );
         assert!(
-            ambient.system.contains("stay silent"),
-            "an ambient turn keeps the soft 'stay silent' nudge"
+            !ambient.system.contains("stay silent"),
+            "the turn-taking block is posture-neutral — no 'stay silent' nudge"
         );
 
         let directed =
             faculty.prompt_view(&Workspace::new("answer me: what is 2+2?").directed(true));
         assert!(
-            !directed.system.contains("[Silence Option]"),
+            !directed.system.contains("[Conversational Presence]"),
             "a directed turn withholds the bare-PASS escape so a question is not ghosted"
         );
         assert!(
             !directed.system.contains("stay silent"),
-            "and drops the soft 'stay silent' nudge on a directed turn too"
+            "and carries no 'stay silent' nudge on a directed turn either"
         );
     }
 

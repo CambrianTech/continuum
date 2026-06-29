@@ -638,19 +638,30 @@ async fn serve_persona_loop_inner(
                 // forever is a fitness gap to train, never a substrate cap, §4). The
                 // eval driver wraps this SAME step in a grader-paced loop; live and
                 // eval thus make a turn identically (ACTING-ORGANISM.md §3.3).
-                // `directed = false`: live turns currently keep silence first-class
-                // (no live-behavior change in this wave). TODO(#9): compute real
-                // directedness from the burst — is the persona @mentioned / DM'd? —
-                // via `utils::str_case::contains_ascii_case_insensitive` over the
-                // external items (the same addressing primitive `is_mentioned` uses),
-                // so a directly-asked persona stops ghosting just as the eval does.
-                // Until then the live ghost-a-direct-question gap is NAMED, not masked.
+                // Directedness (closes TODO #9 — the live ghost-a-direct-question gap).
+                // Per Joel 2026-06-29 ("shouldn't need to be directly addressed — it's
+                // a chat system"): ambient participation is now the DEFAULT posture,
+                // carried by the rebalanced [Conversational Presence] framing, NOT by
+                // `directed`. So `directed` is reserved for its one job — withholding
+                // the silent-PASS hatch when a message actually NAMES her, so she cannot
+                // ghost a question put to her. Glass-box proved the gap: a cleanly-woken
+                // MSG-turn PASSed a direct question while eval turns SPOKE 36/38 (the
+                // model is capable; the live framing was the lever). We DERIVE it from
+                // the trigger text via the SAME word-boundary, identity-aware `mentions`
+                // primitive the self-tick uses (line ~1000) — a structural addressing
+                // FACT fed to the mind, never a filter reading her output
+                // ([[no-hardcoded-heuristics-to-steer-cognition]]). The wider
+                // per-channel focus/priority that will ALSO modulate this (a learned or
+                // self-set attention weight — never a hard mute except self-chosen or
+                // flooding) is substrate-blocked on the airc per-(persona,room) state
+                // store (#89); this is the addressing half, unblocked today.
+                let directed = ctx.identity.persona_identity().mentions(&msg.text);
                 let (step, turn_metrics) = crate::cognition::act_observe::settle_step(
                     &cycle,
                     workspace_burst,
                     ctx.identity.default_room,
                     true,
-                    false,
+                    directed,
                 )
                 .await;
                 phase_timings.respond_ms = respond_started.elapsed().as_millis() as u64;
@@ -1458,8 +1469,8 @@ mod tests {
         );
         // Couples to the silence affordance.
         assert!(
-            s.contains("[Silence Option]") || s.contains("silence"),
-            "silence-option reference missing — identity prompt should hint at the affordance assembled downstream. Got: {s}"
+            s.contains("[Conversational Presence]") || s.contains("silence"),
+            "silence-affordance reference missing — identity prompt should hint at the affordance assembled downstream. Got: {s}"
         );
     }
 
