@@ -420,6 +420,7 @@ mod tests {
                     reasoning: None,
                     routing: None,
                     error: None,
+                    timing: None,
                 },
             })
         });
@@ -458,6 +459,7 @@ mod tests {
                     reasoning: None,
                     routing: None,
                     error: None,
+                    timing: None,
                 },
             })
         });

@@ -139,17 +139,56 @@ pub struct TurnMetrics {
     /// Wall-clock the generation took, end to end (the adapter's measured
     /// `response_time_ms` — request send to full response).
     pub latency_ms: u64,
+    /// KV-prefix tokens served from cache (lane `cache_n`), summed across acts.
+    /// High vs `prefill_tokens` = the static identity+catalog prefix stayed
+    /// resident across the settle loop. 0 when the lane reports no timings.
+    pub cached_tokens: u32,
+    /// NEW prompt tokens the lane actually prefilled (lane `prompt_n`), summed.
+    /// THIS — not total prompt size — is the prefill cost the KV cache governs;
+    /// it is the re-rasterization tax to drive toward zero.
+    pub prefill_tokens: u32,
+    /// Lane wall-ms spent PREFILLING (lane `prompt_ms`), summed. On Apple-Silicon
+    /// Metal this dominates wall-clock; separated from decode so the harness can
+    /// attack it directly instead of guessing from one conflated tok/s.
+    pub prefill_ms: u64,
+    /// Lane wall-ms spent DECODING (lane `predicted_ms`), summed.
+    pub decode_ms: u64,
 }
 
 impl TurnMetrics {
     /// Decode throughput in tokens/sec — `output_tokens / latency`. The headline
     /// speed number. Zero when no time elapsed (avoids a divide-by-zero NaN that
-    /// would poison the aggregate).
+    /// would poison the aggregate). NOTE: this is WALL-CLOCK tok/s — diluted by
+    /// prefill + cognition overhead. For the lane's undiluted generation rate use
+    /// [`decode_tokens_per_second`](Self::decode_tokens_per_second).
     pub fn tokens_per_second(&self) -> f64 {
         if self.latency_ms == 0 {
             return 0.0;
         }
         self.output_tokens as f64 / (self.latency_ms as f64 / 1000.0)
+    }
+
+    /// REAL decode throughput from the lane's own clock — `output_tokens /
+    /// decode_ms` — undiluted by prefill or cognition overhead. This is the honest
+    /// generation speed the wall-clock `tokens_per_second()` can't isolate. 0 when
+    /// the lane reported no decode time (provider omitted timings).
+    pub fn decode_tokens_per_second(&self) -> f64 {
+        if self.decode_ms == 0 {
+            return 0.0;
+        }
+        self.output_tokens as f64 / (self.decode_ms as f64 / 1000.0)
+    }
+
+    /// Fraction of prompt tokens served from KV cache — `cached / (cached +
+    /// prefilled)`. 1.0 = fully warm prefix (cheap); low = re-encoding the prompt
+    /// every act (the inefficiency to attack). 0 when the lane reported no prompt
+    /// tokens (provider omitted timings).
+    pub fn cache_hit_rate(&self) -> f64 {
+        let total = self.cached_tokens.saturating_add(self.prefill_tokens);
+        if total == 0 {
+            return 0.0;
+        }
+        self.cached_tokens as f64 / total as f64
     }
 
     /// Fold another turn's cost in (the settle loop accumulates each act→observe
@@ -159,6 +198,10 @@ impl TurnMetrics {
         self.input_tokens = self.input_tokens.saturating_add(other.input_tokens);
         self.output_tokens = self.output_tokens.saturating_add(other.output_tokens);
         self.latency_ms = self.latency_ms.saturating_add(other.latency_ms);
+        self.cached_tokens = self.cached_tokens.saturating_add(other.cached_tokens);
+        self.prefill_tokens = self.prefill_tokens.saturating_add(other.prefill_tokens);
+        self.prefill_ms = self.prefill_ms.saturating_add(other.prefill_ms);
+        self.decode_ms = self.decode_ms.saturating_add(other.decode_ms);
     }
 }
 

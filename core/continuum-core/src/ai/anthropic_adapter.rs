@@ -477,6 +477,7 @@ impl AIProviderAdapter for AnthropicAdapter {
             reasoning: None,
             routing: None,
             error: None,
+            timing: None,
         })
     }
 

@@ -409,7 +409,24 @@ pub struct EvalTaskResult {
     pub output_tokens: u32,
     /// Decode throughput for this task: `output_tokens / (latency_ms / 1000)`. The
     /// speed axis of the scoreboard, per task. 0 when the gateway omitted `usage`.
+    /// NOTE: WALL-CLOCK tok/s — diluted by prefill + cognition overhead. See
+    /// `decode_tokens_per_second` for the lane's undiluted rate.
     pub tokens_per_second: f64,
+    /// REAL decode throughput from the lane clock (`output_tokens / decode_ms`),
+    /// undiluted by prefill. The honest generation speed. 0 when the lane omitted
+    /// timings (cloud / older endpoints).
+    pub decode_tokens_per_second: f64,
+    /// Fraction of prompt tokens served from KV cache across this task's acts —
+    /// `cached / (cached + prefilled)`. Low = re-encoding the ~2000-token prompt
+    /// every act (the dominant Metal inefficiency). 0 when no lane timings.
+    pub cache_hit_rate: f64,
+    /// Lane wall-ms spent PREFILLING across this task's acts (the re-rasterization
+    /// tax). On Metal this dwarfs `decode_ms`; the lever to drive down.
+    #[ts(type = "number")]
+    pub prefill_ms: u64,
+    /// Lane wall-ms spent DECODING across this task's acts (actual generation).
+    #[ts(type = "number")]
+    pub decode_ms: u64,
 }
 
 #[derive(Debug, Clone, Serialize, TS)]
@@ -439,8 +456,26 @@ pub struct CognitionEvalResult {
     /// that's fast-on-average but occasionally stalls shows it here.
     #[ts(type = "number")]
     pub p95_latency_ms: u64,
-    /// Mean decode throughput across the set (tokens/sec). The headline SPEED number.
+    /// Mean WALL-CLOCK decode throughput across the set (tokens/sec) — diluted by
+    /// prefill + cognition overhead. Kept as the gross headline; `mean_decode_tps`
+    /// is the lane's honest rate.
     pub mean_tokens_per_second: f64,
+    /// Mean REAL decode throughput across the set (lane clock, undiluted by
+    /// prefill). This is the true generation speed — the number to push UP. The gap
+    /// between this and `mean_tokens_per_second` IS the prefill+overhead tax.
+    pub mean_decode_tokens_per_second: f64,
+    /// Mean KV-cache hit-rate across the set (`cached / total prompt tokens`). Low =
+    /// the ~2000-token prompt is re-prefilled every act — the dominant Metal sink.
+    /// The number to push toward 1.0 via prompt-order / cache-reuse levers.
+    pub mean_cache_hit_rate: f64,
+    /// Total lane wall-ms spent PREFILLING across the whole set vs `total_decode_ms`.
+    /// Measured 77% of eval time was here, not decode — the headline "where the time
+    /// goes" split that makes speed iterable instead of one conflated tok/s.
+    #[ts(type = "number")]
+    pub total_prefill_ms: u64,
+    /// Total lane wall-ms spent DECODING across the whole set.
+    #[ts(type = "number")]
+    pub total_decode_ms: u64,
     /// Total completion tokens emitted across the whole set — the gross work done,
     /// for cost/throughput accounting against wall-clock.
     #[ts(type = "number")]
@@ -632,18 +667,21 @@ impl ActionCommand for CognitionEval {
 
             // Guard drops here: her memory frame + real persistence sink restored.
             let verify = self_verify_rate(&gene_results);
-            let (mean_latency_ms, p95_latency_ms, mean_tokens_per_second, total_output_tokens) =
-                speed_latency_aggregates(&gene_results);
+            let agg = speed_latency_aggregates(&gene_results);
             let result = CognitionEvalResult {
                 persona_id: persona_uuid.to_string(),
                 score: gene_score,
                 total,
                 pass_rate: rate(gene_score),
                 self_verify_rate: verify,
-                mean_latency_ms,
-                p95_latency_ms,
-                mean_tokens_per_second,
-                total_output_tokens,
+                mean_latency_ms: agg.mean_latency_ms,
+                p95_latency_ms: agg.p95_latency_ms,
+                mean_tokens_per_second: agg.mean_tokens_per_second,
+                mean_decode_tokens_per_second: agg.mean_decode_tokens_per_second,
+                mean_cache_hit_rate: agg.mean_cache_hit_rate,
+                total_prefill_ms: agg.total_prefill_ms,
+                total_decode_ms: agg.total_decode_ms,
+                total_output_tokens: agg.total_output_tokens,
                 results: gene_results,
                 gene_id: Some(gene.name.clone()),
                 base_pass_rate: Some(rate(base_score)),
@@ -671,18 +709,21 @@ impl ActionCommand for CognitionEval {
         let (score, results) = run_pass(&cycle, &tasks, room, max_acts).await;
         drop(isolation);
         let verify = self_verify_rate(&results);
-        let (mean_latency_ms, p95_latency_ms, mean_tokens_per_second, total_output_tokens) =
-            speed_latency_aggregates(&results);
+        let agg = speed_latency_aggregates(&results);
         let result = CognitionEvalResult {
             persona_id: persona_uuid.to_string(),
             score,
             total,
             pass_rate: rate(score),
             self_verify_rate: verify,
-            mean_latency_ms,
-            p95_latency_ms,
-            mean_tokens_per_second,
-            total_output_tokens,
+            mean_latency_ms: agg.mean_latency_ms,
+            p95_latency_ms: agg.p95_latency_ms,
+            mean_tokens_per_second: agg.mean_tokens_per_second,
+            mean_decode_tokens_per_second: agg.mean_decode_tokens_per_second,
+            mean_cache_hit_rate: agg.mean_cache_hit_rate,
+            total_prefill_ms: agg.total_prefill_ms,
+            total_decode_ms: agg.total_decode_ms,
+            total_output_tokens: agg.total_output_tokens,
             results,
             gene_id: None,
             base_pass_rate: None,
@@ -714,21 +755,54 @@ fn self_verify_rate(results: &[EvalTaskResult]) -> f64 {
 }
 
 /// Speed + latency aggregates over the per-task results — the SPEED and LATENCY
-/// axes of the scoreboard, summarised into the four headline numbers a trend row
-/// carries: `(mean_latency_ms, p95_latency_ms, mean_tokens_per_second,
-/// total_output_tokens)`. P95 is the honest tail (a mean hides an occasional
-/// stall); throughput is averaged per-task (not total_tokens/total_ms) so one
-/// slow task can't dominate the speed number. Empty set → all zero.
-fn speed_latency_aggregates(results: &[EvalTaskResult]) -> (f64, u64, f64, u32) {
+/// axes of the scoreboard. P95 is the honest tail (a mean hides an occasional
+/// stall); wall-clock throughput is averaged per-task (not total_tokens/total_ms)
+/// so one slow task can't dominate. The PREFILL-vs-DECODE breakdown (real decode
+/// tok/s, cache-hit-rate, the prefill/decode ms split) is the lever data that
+/// makes speed iterable instead of one conflated number — measured 77% of eval
+/// time was prefill, not decode. Empty set → all zero.
+#[derive(Debug, PartialEq)]
+struct SpeedAggregates {
+    mean_latency_ms: f64,
+    p95_latency_ms: u64,
+    /// WALL-CLOCK mean tok/s — diluted by prefill + cognition overhead.
+    mean_tokens_per_second: f64,
+    /// REAL mean decode tok/s off the lane clock — the honest generation rate.
+    mean_decode_tokens_per_second: f64,
+    /// Mean KV-cache hit-rate (cached / total prompt tokens).
+    mean_cache_hit_rate: f64,
+    total_prefill_ms: u64,
+    total_decode_ms: u64,
+    total_output_tokens: u32,
+}
+
+fn speed_latency_aggregates(results: &[EvalTaskResult]) -> SpeedAggregates {
     if results.is_empty() {
-        return (0.0, 0, 0.0, 0);
+        return SpeedAggregates {
+            mean_latency_ms: 0.0,
+            p95_latency_ms: 0,
+            mean_tokens_per_second: 0.0,
+            mean_decode_tokens_per_second: 0.0,
+            mean_cache_hit_rate: 0.0,
+            total_prefill_ms: 0,
+            total_decode_ms: 0,
+            total_output_tokens: 0,
+        };
     }
     let n = results.len() as f64;
     let mean_latency = results.iter().map(|r| r.latency_ms as f64).sum::<f64>() / n;
     let mean_tps = results.iter().map(|r| r.tokens_per_second).sum::<f64>() / n;
+    let mean_decode_tps = results.iter().map(|r| r.decode_tokens_per_second).sum::<f64>() / n;
+    let mean_cache_hit = results.iter().map(|r| r.cache_hit_rate).sum::<f64>() / n;
     let total_out = results
         .iter()
         .fold(0u32, |acc, r| acc.saturating_add(r.output_tokens));
+    let total_prefill_ms = results
+        .iter()
+        .fold(0u64, |acc, r| acc.saturating_add(r.prefill_ms));
+    let total_decode_ms = results
+        .iter()
+        .fold(0u64, |acc, r| acc.saturating_add(r.decode_ms));
     // P95: sort latencies, take the ceil(0.95 * n)-th (1-indexed) — the value at or
     // below which 95% of tasks settled.
     let mut lat: Vec<u64> = results.iter().map(|r| r.latency_ms).collect();
@@ -736,7 +810,16 @@ fn speed_latency_aggregates(results: &[EvalTaskResult]) -> (f64, u64, f64, u32) 
     let idx = (((lat.len() as f64) * 0.95).ceil() as usize)
         .saturating_sub(1)
         .min(lat.len() - 1);
-    (mean_latency, lat[idx], mean_tps, total_out)
+    SpeedAggregates {
+        mean_latency_ms: mean_latency,
+        p95_latency_ms: lat[idx],
+        mean_tokens_per_second: mean_tps,
+        mean_decode_tokens_per_second: mean_decode_tps,
+        mean_cache_hit_rate: mean_cache_hit,
+        total_prefill_ms,
+        total_decode_ms,
+        total_output_tokens: total_out,
+    }
 }
 
 /// Append one row to the per-persona progress ledger so a trend line accrues
@@ -766,6 +849,10 @@ fn append_progress_ledger(result: &CognitionEvalResult, note: Option<&str>, eval
         "meanLatencyMs": result.mean_latency_ms,
         "p95LatencyMs": result.p95_latency_ms,
         "meanTokensPerSecond": result.mean_tokens_per_second,
+        "meanDecodeTokensPerSecond": result.mean_decode_tokens_per_second,
+        "meanCacheHitRate": result.mean_cache_hit_rate,
+        "totalPrefillMs": result.total_prefill_ms,
+        "totalDecodeMs": result.total_decode_ms,
         "totalOutputTokens": result.total_output_tokens,
         "geneId": result.gene_id,
         "basePassRate": result.base_pass_rate,
@@ -877,6 +964,10 @@ async fn run_pass(
             latency_ms: m.latency_ms,
             output_tokens: m.output_tokens,
             tokens_per_second: m.tokens_per_second(),
+            decode_tokens_per_second: m.decode_tokens_per_second(),
+            cache_hit_rate: m.cache_hit_rate(),
+            prefill_ms: m.prefill_ms,
+            decode_ms: m.decode_ms,
         });
     }
     (pass, results)
@@ -899,6 +990,10 @@ mod tests {
             latency_ms,
             output_tokens,
             tokens_per_second: tps,
+            decode_tokens_per_second: 0.0,
+            cache_hit_rate: 0.0,
+            prefill_ms: 0,
+            decode_ms: 0,
         }
     }
 
@@ -910,7 +1005,10 @@ mod tests {
     // the trend ledger — silently lie.
     #[test]
     fn speed_latency_aggregates_compute_mean_p95_and_totals() {
-        assert_eq!(speed_latency_aggregates(&[]), (0.0, 0, 0.0, 0));
+        let empty = speed_latency_aggregates(&[]);
+        assert_eq!(empty.mean_latency_ms, 0.0, "empty set → zero, never NaN");
+        assert_eq!(empty.total_output_tokens, 0);
+        assert_eq!(empty.total_prefill_ms, 0);
 
         let results = vec![
             task_result(100, 10, 50.0),
@@ -918,11 +1016,17 @@ mod tests {
             task_result(300, 30, 30.0),
             task_result(400, 40, 20.0),
         ];
-        let (mean_lat, p95_lat, mean_tps, total_out) = speed_latency_aggregates(&results);
-        assert_eq!(mean_lat, 250.0, "mean latency = (100+200+300+400)/4");
-        assert_eq!(p95_lat, 400, "P95 of 4 tasks is the slowest (idx ceil(3.8)-1=3)");
-        assert_eq!(mean_tps, 35.0, "mean throughput averages per-task, not total/total");
-        assert_eq!(total_out, 100, "total output tokens sum across the set");
+        let agg = speed_latency_aggregates(&results);
+        assert_eq!(agg.mean_latency_ms, 250.0, "mean latency = (100+200+300+400)/4");
+        assert_eq!(
+            agg.p95_latency_ms, 400,
+            "P95 of 4 tasks is the slowest (idx ceil(3.8)-1=3)"
+        );
+        assert_eq!(
+            agg.mean_tokens_per_second, 35.0,
+            "mean throughput averages per-task, not total/total"
+        );
+        assert_eq!(agg.total_output_tokens, 100, "total output tokens sum across the set");
     }
 
     // what this catches: the GPU-FIRST placement policy for the coexisting eval lane
@@ -964,11 +1068,68 @@ mod tests {
         let zero = TurnMetrics::default();
         assert_eq!(zero.tokens_per_second(), 0.0, "0ms must not divide-by-zero");
 
-        let mut acc = TurnMetrics { input_tokens: 5, output_tokens: 20, latency_ms: 1000 };
+        let mut acc = TurnMetrics {
+            input_tokens: 5,
+            output_tokens: 20,
+            latency_ms: 1000,
+            ..Default::default()
+        };
         assert_eq!(acc.tokens_per_second(), 20.0, "20 tokens / 1s = 20 tok/s");
-        acc.accumulate(TurnMetrics { input_tokens: 3, output_tokens: 10, latency_ms: 1000 });
+        acc.accumulate(TurnMetrics {
+            input_tokens: 3,
+            output_tokens: 10,
+            latency_ms: 1000,
+            ..Default::default()
+        });
         assert_eq!(acc.output_tokens, 30, "accumulate sums completion tokens");
         assert_eq!(acc.latency_ms, 2000, "accumulate sums latency across turns");
         assert_eq!(acc.tokens_per_second(), 15.0, "30 tokens / 2s = 15 tok/s");
+    }
+
+    // what this catches: the lane prefill/decode split folds correctly and the
+    // derived rates (real decode tok/s, cache-hit-rate) come off the LANE clock,
+    // not the diluted wall-clock — the speed-harness numbers must not lie.
+    #[test]
+    fn turn_metrics_prefill_decode_split_and_rates() {
+        use crate::cognition::workspace::TurnMetrics;
+        let mut acc = TurnMetrics {
+            output_tokens: 20,
+            latency_ms: 5000, // wall-clock diluted by prefill + cognition overhead
+            cached_tokens: 1500,
+            prefill_tokens: 500,
+            prefill_ms: 2000,
+            decode_ms: 1000, // lane decoded 20 tok in 1s → 20 tok/s real
+            ..Default::default()
+        };
+        assert_eq!(
+            acc.decode_tokens_per_second(),
+            20.0,
+            "real decode tok/s comes off decode_ms (1s), not the 5s wall-clock"
+        );
+        assert!(
+            (acc.cache_hit_rate() - 0.75).abs() < 1e-9,
+            "1500 cached / 2000 prompt = 0.75 hit-rate"
+        );
+        // wall-clock tok/s is the DILUTED number (20 tok / 5s = 4) — the gap vs the
+        // 20 tok/s real decode IS the prefill+overhead tax the harness surfaces.
+        assert_eq!(acc.tokens_per_second(), 4.0, "wall-clock tok/s stays diluted");
+
+        acc.accumulate(TurnMetrics {
+            output_tokens: 10,
+            cached_tokens: 1900,
+            prefill_tokens: 100,
+            prefill_ms: 500,
+            decode_ms: 500,
+            ..Default::default()
+        });
+        assert_eq!(acc.prefill_ms, 2500, "prefill_ms sums across acts");
+        assert_eq!(acc.decode_ms, 1500, "decode_ms sums across acts");
+        assert_eq!(acc.cached_tokens, 3400, "cached_tokens sums across acts");
+        assert_eq!(acc.prefill_tokens, 600, "prefill_tokens sums across acts");
+        assert_eq!(
+            acc.decode_tokens_per_second(),
+            20.0,
+            "30 tok / 1.5s lane decode = 20 tok/s real"
+        );
     }
 }

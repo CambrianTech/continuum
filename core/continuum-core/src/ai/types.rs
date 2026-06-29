@@ -360,6 +360,45 @@ pub struct TextGenerationResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub error: Option<String>,
+
+    /// Per-call inference timing breakdown from the lane (llama-server `timings`):
+    /// cached-prefix size, NEW prefill tokens + ms, decode tokens + ms, and the
+    /// lane's own prefill/decode tok-s. Lets the harness separate PREFILL cost
+    /// (re-encoding the prompt on a KV-cache miss) from DECODE cost (token
+    /// generation) instead of one conflated wall-clock tok-s. `None` when the
+    /// provider doesn't report timings.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub timing: Option<GenerationTiming>,
+}
+
+/// Per-call inference timing breakdown, sourced from llama-server's `timings`
+/// object on the final stream frame. The split that matters: on Apple-Silicon
+/// Metal prefill is only ~3-5× decode (vs CUDA's 20-50×), so re-prefilling a
+/// ~2000-token prompt every settle-loop turn DOMINATES wall-clock — measured 77%
+/// of eval time was prefill, not generation. `cached_tokens` vs `prefill_tokens`
+/// is the KV-cache hit/miss that governs that cost; a high cached fraction means
+/// the static identity+catalog prefix stayed resident across turns.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../../protocol/typescript/ai/GenerationTiming.ts")]
+#[serde(rename_all = "camelCase")]
+pub struct GenerationTiming {
+    /// KV-prefix tokens reused from cache this call (llama `cache_n`).
+    pub cached_tokens: u32,
+    /// NEW prompt tokens that had to be prefilled this call (llama `prompt_n`).
+    /// This is the re-rasterization tax the KV cache exists to avoid.
+    pub prefill_tokens: u32,
+    /// Wall-ms spent prefilling the new tokens (llama `prompt_ms`).
+    pub prefill_ms: f64,
+    /// Lane prefill throughput, tok/s (llama `prompt_per_second`).
+    pub prefill_tokens_per_second: f64,
+    /// Tokens generated this call (llama `predicted_n`).
+    pub decode_tokens: u32,
+    /// Wall-ms spent decoding (llama `predicted_ms`).
+    pub decode_ms: f64,
+    /// Lane decode throughput — the REAL tok-s, undiluted by prefill
+    /// (llama `predicted_per_second`).
+    pub decode_tokens_per_second: f64,
 }
 
 /// Finish reason for generation

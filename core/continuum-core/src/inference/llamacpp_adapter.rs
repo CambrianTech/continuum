@@ -1144,6 +1144,7 @@ impl AIProviderAdapter for LlamaCppAdapter {
             reasoning: None,
             routing: None,
             error: None,
+            timing: None,
         })
     }
 
