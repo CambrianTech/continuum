@@ -86,6 +86,7 @@ pub mod service_module;
 pub mod text_analysis;
 pub mod trace;
 pub mod turn_context;
+pub mod wall_source;
 pub mod workspace_map_source;
 pub mod turn_frame;
 pub mod types;

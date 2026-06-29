@@ -79,6 +79,7 @@ pub trait AircCitizen:
     + crate::persona::room_roster_source::AircRosterReader
     + crate::persona::room_doctrine_source::AircDoctrineReader
     + crate::persona::active_work_source::AircWorkReader
+    + crate::persona::wall_source::WallReader
 {
     /// The airc-side peer identity (Ed25519 pubkey, formatted as Uuid).
     /// Cognition uses this for self-loop filtering; the supervisor uses
@@ -179,6 +180,17 @@ impl crate::persona::active_work_source::AircWorkReader for StubAircCitizen {
     async fn active_claims(&self) -> Result<Vec<airc_lib::WorkCard>, AircError> {
         // No daemon in tests → no claimed work. Cognition runs through cleanly
         // with no [active-work] grounding block.
+        Ok(vec![])
+    }
+}
+
+#[async_trait]
+impl crate::persona::wall_source::WallReader for StubAircCitizen {
+    async fn wall_posts(
+        &self,
+    ) -> Result<Vec<airc_core::doctrine::WallPostPublished>, AircError> {
+        // No daemon in tests → no pinned wall posts. Cognition runs through
+        // cleanly with no [room-board] grounding block.
         Ok(vec![])
     }
 }

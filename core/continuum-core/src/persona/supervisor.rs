@@ -611,6 +611,23 @@ pub async fn materialize_adapters(
                 identity.persona_id,
             ));
 
+        // Wall source: grounds the persona in the room's LIVING SHARED
+        // DOCUMENTS — the airc-pinned plan, coding instructions, agenda,
+        // principles, recipe. These are the SAME airc rows a human edits on
+        // the room wall (`airc publish --room …`) and a widget renders: one
+        // shared data layer, two faces, no continuum-side copy. Reads the
+        // persona's own airc handle (upcasts to `WallReader`, a supertrait of
+        // AircCitizen). Enriching framing, NOT a participation gate (that is
+        // doctrine) — bound brain-only and defer-tolerant below, like the
+        // active-work + workspace-map sources. See
+        // docs/grid/AIRC-NATIVE-IDENTITY-ROOMS-SECURITY.md §5 and
+        // [[airc-generic-per-user-room-state]].
+        let wall_source: Arc<dyn crate::persona::rag_budget::RagSource> =
+            Arc::new(crate::persona::wall_source::WallSource::new(
+                identity.persona_id,
+                runtime.clone(),
+            ));
+
         // Disk-backed, per-persona memory: open <home>/engrams.sqlite and
         // rehydrate prior engrams + recall metadata, so memory SURVIVES restart.
         // Without this, admission is in-memory only (NoopSink) and the persona is
@@ -707,6 +724,14 @@ pub async fn materialize_adapters(
                         workspace_map_source,
                     )
                     .defer_tolerant(),
+                    // The room's pinned shared documents (airc wall) as
+                    // enriching framing — the plan/instructions/recipe that
+                    // shape HOW the persona works here, read from the exact
+                    // rows a teammate or widget pins. Defer-tolerant: a
+                    // first-tick miss costs one under-grounded turn, not a
+                    // wrong one.
+                    crate::cognition::persona_workspace::GroundingSource::framing(wall_source)
+                        .defer_tolerant(),
                 ],
                 // The persona's HANDS — built by the caller for THIS persona's
                 // identity (None → speak-only). What turns "talks" into "acts".
