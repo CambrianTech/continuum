@@ -638,11 +638,19 @@ async fn serve_persona_loop_inner(
                 // forever is a fitness gap to train, never a substrate cap, §4). The
                 // eval driver wraps this SAME step in a grader-paced loop; live and
                 // eval thus make a turn identically (ACTING-ORGANISM.md §3.3).
+                // `directed = false`: live turns currently keep silence first-class
+                // (no live-behavior change in this wave). TODO(#9): compute real
+                // directedness from the burst — is the persona @mentioned / DM'd? —
+                // via `utils::str_case::contains_ascii_case_insensitive` over the
+                // external items (the same addressing primitive `is_mentioned` uses),
+                // so a directly-asked persona stops ghosting just as the eval does.
+                // Until then the live ghost-a-direct-question gap is NAMED, not masked.
                 let (step, turn_metrics) = crate::cognition::act_observe::settle_step(
                     &cycle,
                     workspace_burst,
                     ctx.identity.default_room,
                     true,
+                    false,
                 )
                 .await;
                 phase_timings.respond_ms = respond_started.elapsed().as_millis() as u64;
@@ -1012,11 +1020,14 @@ async fn run_self_cycle(
     // synchronous loop, no narration of the intermediate step into the room. She
     // speaks only when she has something worth the others' attention
     // (ACTING-ORGANISM.md §4).
+    // `directed = false`: a spontaneous self-prompted turn is inherently ambient
+    // (no one addressed her) — silence stays first-class here by construction.
     let (step, _turn_metrics) = crate::cognition::act_observe::settle_step(
         &cycle,
         framed,
         ctx.identity.default_room,
         true,
+        false,
     )
     .await;
     match step {
