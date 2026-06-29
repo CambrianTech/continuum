@@ -582,11 +582,19 @@ impl ActionCommand for CognitionEval {
         // Task source: inline → explicit `eval_set` JSONL (read from disk, fail loud
         // if unreadable — no silent degrade) → the compile-time-embedded committed
         // default (CWD-independent, can never be "missing"). One JSONL line = one task.
-        let parse_jsonl = |text: &str| -> Vec<EvalTask> {
+        // A malformed line FAILS LOUD with its line number — never silently dropped.
+        // A vanished task would shrink the gym and report a clean score over fewer
+        // tasks than intended: the same invisible-degraded-mode as a fallback.
+        let parse_jsonl = |text: &str, origin: &str| -> Result<Vec<EvalTask>, CommandError> {
             text.lines()
-                .map(str::trim)
-                .filter(|l| !l.is_empty())
-                .filter_map(|l| serde_json::from_str::<EvalTask>(l).ok())
+                .enumerate()
+                .map(|(i, l)| (i + 1, l.trim()))
+                .filter(|(_, l)| !l.is_empty())
+                .map(|(n, l)| {
+                    serde_json::from_str::<EvalTask>(l).map_err(|e| {
+                        CommandError::Invalid(format!("{origin} line {n}: malformed EvalTask: {e}"))
+                    })
+                })
                 .collect()
         };
         let tasks: Vec<EvalTask> = if let Some(inline) = p.tasks {
@@ -595,9 +603,9 @@ impl ActionCommand for CognitionEval {
             let text = std::fs::read_to_string(path).map_err(|e| {
                 CommandError::Invalid(format!("eval_set '{path}' could not be read: {e}"))
             })?;
-            parse_jsonl(&text)
+            parse_jsonl(&text, path)?
         } else {
-            parse_jsonl(DEFAULT_EVAL_SET_BYTES)
+            parse_jsonl(DEFAULT_EVAL_SET_BYTES, "embedded default eval set")?
         };
 
         // Fork an EPHEMERAL measurement copy of her mind — the exam runs on the
