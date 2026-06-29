@@ -291,6 +291,17 @@ async fn spawn_gene_eval_lane(
         .await
         .map_err(|e| CommandError::Internal(format!("eval-lane adapter failed to initialize: {e}")))?;
 
+    // The lane was launched with the gene loaded via `--lora`; probe the catalog
+    // NOW so (a) the BASE arm can neutralize it — an empty genome must serve true
+    // base, but llama.cpp applies a loaded adapter at 1.0 for any request that
+    // omits the `lora` field, so the base arm must emit an explicit 0.0 and that
+    // needs the catalog populated before the first (base) pass — and (b) a gene
+    // that failed to load fails loud HERE, not as a silent no-op mid-measurement.
+    adapter
+        .probe_lora_catalog()
+        .await
+        .map_err(|e| CommandError::Internal(format!("eval-lane LoRA catalog probe failed: {e}")))?;
+
     Ok((
         lane,
         std::sync::Arc::new(adapter),

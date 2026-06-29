@@ -405,7 +405,7 @@ impl OpenAICompatibleAdapter {
     /// and NOT cached — a momentarily-dead server is not a server without LoRA
     /// support. llama.cpp `llama-server` returns the array of adapters it
     /// loaded at launch, each `{ "id": N, "path": "...", "scale": S }`.
-    async fn probe_lora_catalog(&self) -> Result<(), String> {
+    pub(crate) async fn probe_lora_catalog(&self) -> Result<(), String> {
         let url = self.endpoints().lora_adapters();
         let mut req = self.client.get(&url);
         if let Some(ref key) = self.api_key {
@@ -482,40 +482,73 @@ impl OpenAICompatibleAdapter {
             .map(|(id, _)| *id)
     }
 
-    /// Resolve each requested adapter to the `{ "id": N, "scale": S }` entries
-    /// the llama.cpp `lora` request-body field wants. Discovers capability on
-    /// demand (probes if `Unknown`), then:
-    /// - `Unsupported` → **fail loud** (never silently drop the page-in — that
-    ///   was the original no-op behind the LIFT=0 measurement); the caller asked
-    ///   to page a LoRA into a backend that can't, so serve a fused model or
-    ///   route to a llama.cpp backend.
-    /// - `Supported` but the adapter isn't loaded → **fail loud**: the CUSTODIAN
-    ///   hasn't registered it with the serving backend yet. We re-probe once in
-    ///   case it was loaded after our last probe.
-    async fn resolve_lora_entries(
+    /// Project the genome onto the wire as the complete llama.cpp `lora`
+    /// request-body field: an `{ "id": N, "scale": S }` entry for EVERY loaded
+    /// adapter — the requested scale when the genome names it, else `0.0`.
+    ///
+    /// Why an entry per LOADED adapter and not just per REQUESTED one: llama.cpp
+    /// applies every loaded adapter at scale 1.0 for any request that OMITS the
+    /// `lora` field. So once the custodian has loaded an adapter, an empty genome
+    /// can NOT be expressed by omission — omitting silently serves the adapter at
+    /// full strength. That was the no-op behind the LIFT=0 A/B: the base arm sent
+    /// no `lora` field and unknowingly ran WITH the gene, so base==gene, lift 0.
+    /// The genome handle is the single source of truth for what's active; emitting
+    /// explicit `0.0` for loaded-but-unrequested adapters makes "empty genome ==
+    /// base" true at the wire.
+    ///
+    /// Returns `None` only when nothing is loaded (omitting the field is then
+    /// correct, and a non-LoRA backend with an empty request never probes — no
+    /// per-request penalty). Capability is DISCOVERED: a non-empty request probes
+    /// `/lora-adapters` and FAILS LOUD if the backend can't page LoRA
+    /// (`Unsupported`) or the adapter isn't loaded (re-probing once first).
+    async fn lora_scale_vector(
         &self,
         reqs: &[ActiveAdapterRequest],
-    ) -> Result<Vec<Value>, String> {
-        if matches!(&*self.lora_support.read().unwrap(), LoraSupport::Unknown) {
-            self.probe_lora_catalog().await?;
+    ) -> Result<Option<Vec<Value>>, String> {
+        // Resolve each requested adapter to its loaded `(id, scale)` (probe +
+        // fail loud on miss). Explicit requested scales override the 0.0 neutral.
+        let mut requested: Vec<(i64, f64)> = Vec::with_capacity(reqs.len());
+        if !reqs.is_empty() {
+            if matches!(&*self.lora_support.read().unwrap(), LoraSupport::Unknown) {
+                self.probe_lora_catalog().await?;
+            }
+            for req in reqs {
+                let id = match self.lookup_lora_index(&req.name, &req.path) {
+                    Some(id) => id,
+                    None => {
+                        // Miss — re-probe once (it may have just been registered),
+                        // then resolve or fail loud with what IS loaded.
+                        self.probe_lora_catalog().await?;
+                        self.lookup_lora_index(&req.name, &req.path)
+                            .ok_or_else(|| self.lora_miss_error(&req.name, &req.path))?
+                    }
+                };
+                requested.push((id, req.scale));
+            }
         }
 
-        let mut entries = Vec::with_capacity(reqs.len());
-        for req in reqs {
-            let id = self.lookup_lora_index(&req.name, &req.path);
-            let id = match id {
-                Some(id) => id,
-                None => {
-                    // Miss — re-probe once (it may have just been registered),
-                    // then resolve or fail loud with what IS loaded.
-                    self.probe_lora_catalog().await?;
-                    self.lookup_lora_index(&req.name, &req.path)
-                        .ok_or_else(|| self.lora_miss_error(&req.name, &req.path))?
-                }
-            };
-            entries.push(json!({ "id": id, "scale": req.scale }));
+        // Neutralize every loaded-but-unrequested adapter. Unknown/Unsupported with
+        // an EMPTY request → nothing known to neutralize → omit the field (the eval
+        // probes at lane spawn so its base arm already has the catalog here).
+        let loaded_ids: Vec<i64> = match &*self.lora_support.read().unwrap() {
+            LoraSupport::Supported(catalog) => catalog.iter().map(|(id, _)| *id).collect(),
+            _ => Vec::new(),
+        };
+        if loaded_ids.is_empty() {
+            return Ok(None);
         }
-        Ok(entries)
+        let entries = loaded_ids
+            .into_iter()
+            .map(|id| {
+                let scale = requested
+                    .iter()
+                    .find(|(rid, _)| *rid == id)
+                    .map(|(_, s)| *s)
+                    .unwrap_or(0.0);
+                json!({ "id": id, "scale": scale })
+            })
+            .collect();
+        Ok(Some(entries))
     }
 
     /// Local lookup against the discovered catalog. `None` when unsupported,
@@ -1301,23 +1334,23 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
             }
         }
 
-        // LoRA page-in: forward the persona's active adapters to the serving
-        // backend as the llama.cpp `lora` request-body extension — the SAME
-        // backend-extension mechanism as `repeat_penalty` above. The integer
-        // `id` is the server-side load-index (discovered via GET /lora-adapters),
-        // which the CUSTODIAN assigns when it loads the adapter; we only RESOLVE
-        // name→id here and reference it. Until this block, `active_adapters`
-        // reached the adapter and was silently dropped at exactly this point —
-        // the LoRA page-in no-op behind the LIFT=0 measurement. Capability is
-        // discovered, not declared: `resolve_lora_entries` probes the endpoint
-        // and FAILS LOUD if the backend can't page LoRA or the adapter isn't
-        // loaded (never a silent drop).
-        if let Some(adapters) = request.active_adapters.as_ref() {
-            if !adapters.is_empty() {
-                let entries = self.resolve_lora_entries(adapters).await?;
-                if let Some(obj) = body.as_object_mut() {
-                    obj.insert("lora".to_string(), json!(entries));
-                }
+        // LoRA page-in: project the persona's genome onto the serving backend as
+        // the llama.cpp `lora` request-body extension — the SAME backend-extension
+        // mechanism as `repeat_penalty` above. The integer `id` is the server-side
+        // load-index (discovered via GET /lora-adapters), which the CUSTODIAN
+        // assigns when it loads the adapter. `lora_scale_vector` emits an explicit
+        // scale for EVERY loaded adapter (requested scale, else 0.0) so an EMPTY
+        // genome serves true base: llama.cpp applies a loaded adapter at 1.0 for
+        // any request that omits the field, so omission cannot mean "off" once one
+        // is loaded — that omission was the no-op behind the LIFT=0 measurement
+        // (base arm sent no field → silently ran WITH the gene). Capability is
+        // discovered, not declared: it probes the endpoint and FAILS LOUD if the
+        // backend can't page LoRA or a requested adapter isn't loaded. `None` only
+        // when nothing is loaded (omit the field, no probe penalty for non-LoRA).
+        let active = request.active_adapters.as_deref().unwrap_or(&[]);
+        if let Some(entries) = self.lora_scale_vector(active).await? {
+            if let Some(obj) = body.as_object_mut() {
+                obj.insert("lora".to_string(), json!(entries));
             }
         }
 
