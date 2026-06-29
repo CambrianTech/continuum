@@ -544,10 +544,11 @@ async fn serve_persona_loop_inner(
             &ctx.identity.peer_id.to_string(),
             &ctx.identity.agent_name,
         );
-        // Mark external state as just-deliberated so the next heartbeat tick doesn't
-        // re-run the same world (the message path and the self-tick share the gate;
-        // external-only so the persona's own reply here can't re-trigger a self-tick).
-        last_burst_fp = external_fingerprint(&composed, &ctx.identity.peer_id.to_string());
+        // Mark this world-state as just-deliberated so the next heartbeat tick doesn't
+        // re-run the same burst (the message path and the self-tick share the gate;
+        // own chat is excluded so this reply can't re-trigger a self-tick, while her
+        // own active work is folded in so the tick advances it — see burst_fingerprint).
+        last_burst_fp = burst_fingerprint(&composed.deliveries, &ctx.identity.peer_id.to_string());
         // Project the room-roster delivery into TWO consumers from the
         // ONE source of truth (the roster delivery), routed by source_id:
         //   • `room_roster` — the formatted `name [runtime] — avail`
@@ -917,20 +918,42 @@ pub(crate) fn build_workspace_burst(
     b
 }
 
-/// The "is anything new in my queue?" MECHANISM for the heartbeat: a fingerprint
-/// of the EXTERNAL airc deliveries only — items NOT authored by this persona. A
-/// concern must not subscribe to its OWN output (the cbar rule): if own posts
-/// counted, the act of speaking would change the world, re-trigger the next slice,
-/// and the persona would talk to itself forever (observed live, 2026-06-22 — 19
-/// self-talk cycles flooding the room). Hashing external-only means: wake on
-/// others' activity, act, and once spoken go back to sleep because nothing
-/// EXTERNAL changed. NOT a judgment — pure change-detection over the subscription
-/// queue. [[organic-substrate-continuous-concern-scheduler]].
-fn external_fingerprint(composed: &crate::persona::unified::ComposedTurn, own_peer: &str) -> u64 {
+/// The "is there anything for me to attend to?" MECHANISM for the heartbeat: a
+/// fingerprint of the burst the deliberation will reason over, combining the TWO
+/// concerns the never-stop loop serves —
+///
+/// 1. **EXTERNAL airc chat** — items NOT authored by this persona. A concern must
+///    not subscribe to its OWN chat output (the cbar rule): if own posts counted,
+///    the act of speaking would change the world, re-trigger the next slice, and
+///    the persona would talk to itself forever (observed live, 2026-06-22 — 19
+///    self-talk cycles flooding the room). So own chat posts are excluded: wake on
+///    others' activity, act, and once spoken go back to sleep because nothing
+///    EXTERNAL changed.
+///
+/// 2. **The persona's OWN active work** — its claimed `WorkCard`s (the `active-work`
+///    source). This is the interior DRIVE: a persona is not a request→response
+///    handler that only wakes when others poke it — it carries its own work and the
+///    heartbeat advances it ([[alignment-through-mutual-self-interest]]: provide
+///    compute, let her pursue her own thread; AUTONOMOUS-PROJECT-LOOP). Folding
+///    work-card state in is FLOOD-SAFE precisely because it is cards, not chat:
+///    speaking does not change her cards, so speech still cannot re-trigger the
+///    loop; only real progress (a card's state changing as she works it) re-fires
+///    the next slice — so the loop continues exactly as long as she is making
+///    progress on her own work, and goes quiet when she is not. (Grinding an
+///    unchanged card every tick — deliberating across ticks before any state change
+///    — is a later slice with its own cadence; this slice gives her work the power
+///    to WAKE her, symmetric to external content.)
+///
+/// NOT a judgment — the `WorkspaceCycle` LLM still decides what to do; this is pure
+/// change-detection over what she should be attending to.
+/// [[organic-substrate-continuous-concern-scheduler]].
+fn burst_fingerprint(
+    deliveries: &[crate::persona::rag_budget::RagDelivery],
+    own_peer: &str,
+) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
-    for item in composed
-        .deliveries
+    for item in deliveries
         .iter()
         .filter(|d| d.source_id == "airc")
         .flat_map(|d| d.items.iter())
@@ -941,8 +964,18 @@ fn external_fingerprint(composed: &crate::persona::unified::ComposedTurn, own_pe
             .and_then(|v| v.as_str())
             .unwrap_or("peer");
         if who == own_peer {
-            continue; // don't subscribe to my own output
+            continue; // don't subscribe to my own chat output
         }
+        item.content.hash(&mut h);
+    }
+    // The interior drive: her own claimed work. Cards, not chat — so this adds
+    // self-origination without reopening the self-talk flood (see doc above). The
+    // source_id literal mirrors the "airc" literal above; `ActiveWorkSource` owns it.
+    for item in deliveries
+        .iter()
+        .filter(|d| d.source_id == "active-work")
+        .flat_map(|d| d.items.iter())
+    {
         item.content.hash(&mut h);
     }
     h.finish()
@@ -966,11 +999,12 @@ async fn run_self_cycle(
         let cognition = ctx.cognition.lock().await;
         cognition.compose_for_turn(&ctx.profile, now_ms).await
     };
-    // Gate on EXTERNAL change only (cbar: don't subscribe to my own output), so my
-    // own speech can't re-trigger my next slice and spiral into self-talk.
-    let fp = external_fingerprint(&composed, &ctx.identity.peer_id.to_string());
+    // Wake on a CHANGE to what I should attend to — others' chat (own chat excluded
+    // so my speech can't spiral into self-talk) OR my own active work (so the
+    // heartbeat advances my thread, not just reacts to pokes). See burst_fingerprint.
+    let fp = burst_fingerprint(&composed.deliveries, &ctx.identity.peer_id.to_string());
     if fp == *last_burst_fp {
-        return; // nothing NEW from others → back to sleep
+        return; // nothing NEW to attend to (no external change, no work progress) → sleep
     }
     *last_burst_fp = fp;
     let burst = build_workspace_burst(
@@ -1116,6 +1150,91 @@ mod tests {
     use crate::persona::scripted_conversation::ScriptedConversation;
     use crate::persona::supervisor::HostedPersona;
     use std::path::PathBuf;
+
+    /// Drive-coupling guard for the never-stop heartbeat's wake gate.
+    /// what this catches: `burst_fingerprint` must treat the persona's OWN active
+    /// work as interior DRIVE — a new/changed work card moves the fingerprint so the
+    /// tick fires to advance it — WITHOUT reopening the self-talk flood (own CHAT
+    /// posts stay excluded; observed live 2026-06-22 as 19 self-talk cycles). This
+    /// is the AUTONOMOUS-PROJECT-LOOP fix: the external-only gate was backwards for
+    /// thought. [[alignment-through-mutual-self-interest]].
+    mod burst_fingerprint_drive {
+        use super::super::burst_fingerprint;
+        use crate::persona::rag_budget::{RagDelivery, RagItem, ResolutionPreference};
+        use serde_json::json;
+
+        const ME: &str = "me-peer";
+
+        fn delivery(source_id: &str, items: Vec<RagItem>) -> RagDelivery {
+            RagDelivery {
+                source_id: source_id.to_string(),
+                items,
+                tokens_used: 0,
+                continuation: None,
+                resolution_used: ResolutionPreference::Raw,
+            }
+        }
+        fn chat(peer_id: &str, content: &str) -> RagItem {
+            RagItem {
+                content: content.to_string(),
+                tokens: 0,
+                metadata: json!({ "peer_id": peer_id }),
+            }
+        }
+        fn card(content: &str) -> RagItem {
+            RagItem {
+                content: content.to_string(),
+                tokens: 0,
+                metadata: json!({}),
+            }
+        }
+
+        #[test]
+        fn own_chat_inert_but_own_work_wakes_the_heartbeat() {
+            let base = vec![delivery("airc", vec![chat("other", "hi")])];
+            let fp0 = burst_fingerprint(&base, ME);
+
+            // My own chat post → excluded → fingerprint unchanged (no self-talk spiral).
+            let with_my_chat = vec![delivery(
+                "airc",
+                vec![chat("other", "hi"), chat(ME, "I'll look into it")],
+            )];
+            assert_eq!(
+                fp0,
+                burst_fingerprint(&with_my_chat, ME),
+                "own chat must not move the fingerprint (else speech re-triggers self-talk)"
+            );
+
+            // My active work card appears → fingerprint MUST change (interior drive).
+            let with_my_work = vec![
+                delivery("airc", vec![chat("other", "hi")]),
+                delivery("active-work", vec![card("card abc [InProgress] \"impl X\"")]),
+            ];
+            assert_ne!(
+                fp0,
+                burst_fingerprint(&with_my_work, ME),
+                "own active work must wake the heartbeat to advance it"
+            );
+        }
+
+        #[test]
+        fn work_progress_refires_the_next_slice() {
+            // A card's state change is real progress → must re-fire so she continues.
+            let in_progress = vec![delivery(
+                "active-work",
+                vec![card("card abc [InProgress] \"impl X\"")],
+            )];
+            let done = vec![delivery(
+                "active-work",
+                vec![card("card abc [Done] \"impl X\"")],
+            )];
+            assert_ne!(
+                burst_fingerprint(&in_progress, ME),
+                burst_fingerprint(&done, ME),
+                "card state change (progress) must move the fingerprint to continue the loop"
+            );
+        }
+    }
 
     // Bespoke `StubConversation` / `CannedAdapter` / `EmptyReader` /
     // `fake_hosted` / `fake_hosted_with_delay` deleted per
