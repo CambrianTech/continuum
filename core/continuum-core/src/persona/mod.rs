@@ -46,6 +46,7 @@ pub mod engram;
 pub mod engram_graph;
 pub mod engram_source;
 pub mod evaluator;
+pub mod focus;
 pub mod genome_paging;
 pub mod home;
 pub mod host;

@@ -1,0 +1,256 @@
+//! Self-determined attention allocation — the persona's steering wheel.
+//!
+//! Distinct from [`PersonaState`](super::types::PersonaState)'s `attention`,
+//! which is *capacity* (depletes with work, recovers with rest — an economy the
+//! substrate computes). `FocusState` is *allocation*: HOW the persona chooses to
+//! spend the attention she has. A single self-set scalar of focus, a sticky
+//! thread cursor, and time-boxed mutes. She tunes it sparsely ("choose your own
+//! adventure" — not every turn); the substrate rides the chosen level between her
+//! choices. It is never computed FOR her and never reads her output to steer her
+//! ([[no-hardcoded-heuristics-to-steer-cognition]]); it only honors choices she
+//! has made, and guarantees she is never blind to a direct address
+//! ([[focus-is-self-allocation-not-siloing]]).
+//!
+//! ONE scalar feeds THREE surfaces — the interpretation lives in each *consumer*,
+//! not here:
+//!   1. RAG cross-thread breadth (`build_workspace_burst` / `compose_for_turn`),
+//!   2. tool-catalog expansion (`render_tool_catalog`),
+//!   3. servicing / wake cadence (`burst_fingerprint`).
+//! Recipes PRESET the posture (e.g. a coding recipe ships a high focus, code-biased
+//! cursor); she inherits the default and keeps the wheel.
+//!
+//! Persistence lives in airc per-(persona,room) state (#89); this is the in-memory
+//! primitive + its honoring semantics, which are not blocked on that store.
+
+use serde::{Deserialize, Serialize};
+use uuid::Uuid;
+
+/// How hard a mute silences a lane — and whether the no-blindness interrupt floor
+/// still cuts through it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum MuteLevel {
+    /// Silence the lane's ambient / backlog chatter, but a direct address still
+    /// wakes her: "mute the chatter, not the alarm." The interrupt floor holds.
+    Soft,
+    /// Silence everything for this lane, including the interrupt floor — the one
+    /// place she may choose *actual* blindness. Safe only because a mute can be
+    /// duration-bounded: a hard mute that auto-expires is deliberate and never
+    /// permanent-by-accident.
+    Hard,
+}
+
+/// One muted lane. `expires_at_ms == None` = held until she un-mutes; `Some(t)` =
+/// a snooze that auto-restores awareness at unix-ms `t` so she never has to
+/// remember to un-mute (the substrate reasserts "never blind" on lapse).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Mute {
+    pub lane: Uuid,
+    pub level: MuteLevel,
+    pub expires_at_ms: Option<u64>,
+}
+
+impl Mute {
+    /// Active at `now_ms`? A snooze whose deadline has passed is NOT active.
+    pub fn is_active(&self, now_ms: u64) -> bool {
+        match self.expires_at_ms {
+            None => true,
+            Some(t) => now_ms < t,
+        }
+    }
+}
+
+/// The persona's self-determined attention allocation. Held state, tuned sparsely.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FocusState {
+    /// The focus scalar, clamped to `0.0..=1.0`. HIGH = tight / this-thread-deep
+    /// (narrow breadth, fewer cross-thread items, deeper single tool category,
+    /// rare backlog reminders); LOW = associative (wide cross-thread mixing,
+    /// broad catalog, ambient awareness). One dial — each surface reads it.
+    focus: f32,
+    /// The sticky thread/room cursor — the lane currently in focus. `None` until
+    /// she settles on one. The breadth gradient is measured *relative* to this lane.
+    cursor: Option<Uuid>,
+    /// Time-boxed (or held) per-lane mutes; at most one entry per lane.
+    mutes: Vec<Mute>,
+}
+
+impl Default for FocusState {
+    fn default() -> Self {
+        // Balanced posture: neither heads-down nor maximally associative, no lane
+        // chosen yet, nothing muted. A recipe may PRESET a different default; she
+        // overrides from there.
+        Self {
+            focus: 0.5,
+            cursor: None,
+            mutes: Vec::new(),
+        }
+    }
+}
+
+impl FocusState {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// The current focus scalar (`0.0..=1.0`).
+    pub fn focus(&self) -> f32 {
+        self.focus
+    }
+
+    /// Set the focus scalar; clamped to `0.0..=1.0` (a value outside the range is
+    /// her intent saturated, not an error — clamping is the contract, not a
+    /// silent fallback over a missing precondition).
+    pub fn set_focus(&mut self, focus: f32) {
+        self.focus = focus.clamp(0.0, 1.0);
+    }
+
+    /// The lane currently in focus, if she has settled on one.
+    pub fn cursor(&self) -> Option<Uuid> {
+        self.cursor
+    }
+
+    /// Move the sticky cursor to `lane`.
+    pub fn set_cursor(&mut self, lane: Uuid) {
+        self.cursor = Some(lane);
+    }
+
+    /// Drop the cursor (back to no single lane in focus).
+    pub fn clear_cursor(&mut self) {
+        self.cursor = None;
+    }
+
+    /// Mute `lane` at `level`, optionally as a snooze expiring at `expires_at_ms`.
+    /// Replaces any existing mute for the same lane (one mute per lane — re-muting
+    /// updates level/duration rather than stacking; [[compression-principle]]).
+    pub fn mute(&mut self, lane: Uuid, level: MuteLevel, expires_at_ms: Option<u64>) {
+        self.mutes.retain(|m| m.lane != lane);
+        self.mutes.push(Mute {
+            lane,
+            level,
+            expires_at_ms,
+        });
+    }
+
+    /// Un-mute `lane` immediately (regardless of any remaining snooze).
+    pub fn unmute(&mut self, lane: Uuid) {
+        self.mutes.retain(|m| m.lane != lane);
+    }
+
+    /// Drop expired snoozes — housekeeping so the mute list stays bounded. Pure
+    /// effect on inactive entries; active mutes are untouched.
+    pub fn prune_expired(&mut self, now_ms: u64) {
+        self.mutes.retain(|m| m.is_active(now_ms));
+    }
+
+    /// The currently-active mute level for `lane` at `now_ms` (`None` if unmuted
+    /// or the snooze has lapsed).
+    pub fn active_mute(&self, lane: Uuid, now_ms: u64) -> Option<MuteLevel> {
+        self.mutes
+            .iter()
+            .find(|m| m.lane == lane && m.is_active(now_ms))
+            .map(|m| m.level)
+    }
+
+    /// THE wake floor: should a *change* on `lane` wake her this slice?
+    ///
+    /// This honors a choice SHE made (the mute) plus a structural fact (`addressed`
+    /// — derived elsewhere from the actual content via the identity-aware `mentions`
+    /// primitive). It gates scheduling, not her decision, and never reads her output
+    /// ([[no-hardcoded-heuristics-to-steer-cognition]]):
+    ///   * **Hard** mute → never wakes (deliberate, duration-bounded blindness).
+    ///   * **Soft** mute → wakes ONLY on a direct address (the interrupt floor —
+    ///     "mute the chatter, not the alarm").
+    ///   * **No active mute** → always wakes on change (unchanged from prior behavior).
+    pub fn wakes_on(&self, lane: Uuid, addressed: bool, now_ms: u64) -> bool {
+        match self.active_mute(lane, now_ms) {
+            Some(MuteLevel::Hard) => false,
+            Some(MuteLevel::Soft) => addressed,
+            None => true,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn lane() -> Uuid {
+        Uuid::from_u128(0x1111_2222_3333_4444_5555_6666_7777_8888)
+    }
+
+    // what this catches: a focus value outside [0,1] saturates to the range
+    // (her intent clamped — the contract), never escapes it to corrupt a consumer.
+    #[test]
+    fn focus_clamps_to_unit_range() {
+        let mut f = FocusState::new();
+        f.set_focus(2.5);
+        assert_eq!(f.focus(), 1.0);
+        f.set_focus(-0.3);
+        assert_eq!(f.focus(), 0.0);
+        f.set_focus(0.7);
+        assert!((f.focus() - 0.7).abs() < f32::EPSILON);
+    }
+
+    // what this catches: re-muting a lane REPLACES rather than stacks (one mute
+    // per lane), and unmute clears it.
+    #[test]
+    fn one_mute_per_lane_replace_then_clear() {
+        let mut f = FocusState::new();
+        f.mute(lane(), MuteLevel::Soft, None);
+        f.mute(lane(), MuteLevel::Hard, Some(1_000));
+        assert_eq!(f.mutes.len(), 1);
+        assert_eq!(f.active_mute(lane(), 0), Some(MuteLevel::Hard));
+        f.unmute(lane());
+        assert_eq!(f.active_mute(lane(), 0), None);
+    }
+
+    // what this catches: a snooze auto-restores awareness once its deadline passes
+    // — the substrate reasserts "never blind" without her un-muting by hand.
+    #[test]
+    fn snooze_auto_expires() {
+        let mut f = FocusState::new();
+        f.mute(lane(), MuteLevel::Hard, Some(1_000));
+        assert_eq!(f.active_mute(lane(), 999), Some(MuteLevel::Hard));
+        assert_eq!(f.active_mute(lane(), 1_000), None); // boundary: deadline reached
+        assert_eq!(f.active_mute(lane(), 5_000), None);
+    }
+
+    // what this catches: the interrupt floor — hard mute blinds even a direct
+    // address; soft mute lets the address through but drops ambient; an expired or
+    // absent mute always wakes. This is the load-bearing "steer without going
+    // blind" invariant.
+    #[test]
+    fn wake_floor_honors_mute_level_and_address() {
+        let mut f = FocusState::new();
+        // unmuted: always wakes
+        assert!(f.wakes_on(lane(), false, 0));
+        assert!(f.wakes_on(lane(), true, 0));
+        // soft: ambient suppressed, address cuts through
+        f.mute(lane(), MuteLevel::Soft, None);
+        assert!(!f.wakes_on(lane(), false, 0));
+        assert!(f.wakes_on(lane(), true, 0));
+        // hard: blind even to a direct address (deliberate)
+        f.mute(lane(), MuteLevel::Hard, Some(1_000));
+        assert!(!f.wakes_on(lane(), true, 0));
+        // ...but the snooze restores full awareness on lapse
+        assert!(f.wakes_on(lane(), false, 1_000));
+    }
+
+    // what this catches: prune drops only lapsed snoozes, leaving held + still-live
+    // mutes intact (bounded list, no accidental un-mute of an active lane).
+    #[test]
+    fn prune_drops_only_expired() {
+        let mut f = FocusState::new();
+        let held = Uuid::from_u128(1);
+        let live = Uuid::from_u128(2);
+        let dead = Uuid::from_u128(3);
+        f.mute(held, MuteLevel::Soft, None);
+        f.mute(live, MuteLevel::Soft, Some(10_000));
+        f.mute(dead, MuteLevel::Soft, Some(100));
+        f.prune_expired(5_000);
+        assert_eq!(f.mutes.len(), 2);
+        assert!(f.active_mute(held, 5_000).is_some());
+        assert!(f.active_mute(live, 5_000).is_some());
+        assert!(f.active_mute(dead, 5_000).is_none());
+    }
+}
