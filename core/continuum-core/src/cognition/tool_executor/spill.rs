@@ -48,7 +48,11 @@ pub struct SpillRef {
 /// convention. Fails loud when there is no home directory — we genuinely cannot
 /// spill without one, and a silent fallback to `.` would scatter logs into the
 /// cwd (the repo) [[fallbacks-are-illegal-fail-loud]].
-fn spill_root() -> std::io::Result<PathBuf> {
+///
+/// Public so the boot path can register this exact directory with the
+/// `PressureBroker` for space-pressure eviction (single source for the path — no
+/// re-typed string to drift against).
+pub fn spill_root() -> std::io::Result<PathBuf> {
     let home = dirs::home_dir().ok_or_else(|| {
         std::io::Error::new(
             std::io::ErrorKind::NotFound,

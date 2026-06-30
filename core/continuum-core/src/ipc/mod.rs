@@ -1045,6 +1045,43 @@ pub fn start_server(
             );
         }
 
+        // Register a `FilesystemTierPool` for the tool-output spill dir — the
+        // space-pressure axis of tier-2 flood protection. When a build/test/read
+        // tool overflows the context budget, the executor spills the WHOLE result
+        // to `~/.continuum/tool-output/<persona_id>/<handle>.log` so the persona
+        // can grep it back with `tool/output`. Those artifacts accrete with no
+        // intrinsic bound; this pool lets the broker delete the oldest spills
+        // (recursively across persona dirs) when disk goes hot — exactly the
+        // probe-jsonl pattern above, against the spill root.
+        //
+        // Soft cap = 1 GB. Larger than the probe pool because a single Xcode /
+        // cargo build log can be tens of MB and many personas spill in parallel,
+        // but bounded so a runaway tool can't fill the disk before the broker acts.
+        // Path comes from `spill::spill_root()` — single source, no re-typed string.
+        const SPILL_POOL_SOFT_CAP_BYTES: u64 = 1024 * 1024 * 1024;
+        match crate::cognition::tool_executor::spill::spill_root() {
+            Ok(spill_dir) => {
+                broker.register(Arc::new(crate::paging::FilesystemTierPool::new(
+                    "tool-output-spill",
+                    spill_dir,
+                    SPILL_POOL_SOFT_CAP_BYTES,
+                ))
+                    as Arc<dyn crate::paging::pool::ResourcePool>);
+                log_info!(
+                    "ipc",
+                    "server",
+                    "FilesystemTierPool 'tool-output-spill' registered with PressureBroker (soft cap 1 GB)"
+                );
+            }
+            Err(e) => {
+                log_error!(
+                    "ipc",
+                    "server",
+                    "no HOME — tool-output-spill FilesystemTierPool not registered: {e}"
+                );
+            }
+        }
+
         log_info!(
             "ipc",
             "server",
