@@ -272,6 +272,70 @@ degrading (no-fallback doctrine).
 
 ---
 
+## 5.1 Placement negotiation — score, then CLAIM (the half that's still open)
+
+> "the daemons need to negotiate together on the grid over forge alloy placements"
+> — and: "training is more intensive and off-computer, especially for slow
+> machines, into grid, which for some people might contain GPU rigs. I have two.
+> Toby has a couple. We link together."
+
+Everything above this section is the *observation* half: each custodian probes
+its own `/health`, announces a `ForgeEndpoint` row (`capacity`, `health`,
+`contract_version`, `trust_scope`) as `NodeCapability::Forge`, and the
+`NodeRegistry` on every node aggregates the table (Pass 5b, landed). That table
+IS the bid sheet — it already carries honest, bounded inputs (R3/R4), not
+self-declared ones. What's missing is the *decision* half, and it is exactly two
+steps, in order:
+
+**Step 1 — SCORE (pure, already specified, not yet coded).** A placement request
+for a forge need ranks the candidate rows. The gates are hard filters first
+(`can_accept_gguf_lora`: routable + contract match + capability + **trust floor**
+— Toby's rigs and my two rigs are *different* `trust_scope`s, and a private
+dataset, `[[medical-field-first-trial]]`, never even enters the candidate set
+outside its boundary). Then a score over the survivors, in priority order:
+1. **Data locality (cheapest wins).** R6 makes `job_id =
+   sha256(weights ⊕ adapter_config ⊕ base ⊕ outtype)` content-addressed, so a
+   node that **already produced this exact gene** short-circuits to a handle with
+   zero GPU work — the highest-value "bid." Next: a node that already has the
+   `base_model` + calibration corpus resident (no multi-GB pull). This is the
+   same insight as Pass 7's market: *query before you train, locate before you
+   move bytes.*
+2. **Free capacity.** `slots_available` from the bounded semaphore — honest
+   because it's a real reservation count, not a guess.
+3. **Capability fit / cost.** a 5090 rig outbids a MacBook Air for a real train;
+   the Air keeps the lightweight convert it can do locally.
+
+**Step 2 — CLAIM (the genuinely new primitive).** Scoring alone is not
+negotiation — two requesters reading the same snapshot both pick the same idle
+5090 and collide. Negotiation = score **then reserve before dispatch**: the
+winner sends a `forge/claim` (reserve a slot, TTL-bounded) and only on the
+claim's ack does the checkpoint cross. A claim is just an at-least-once
+idempotent grid message keyed on `job_id` (R6 already makes re-delivery safe), so
+the reservation reuses the same content-addressing that makes the convert
+idempotent. A losing/expired claim heals to the next candidate (R2/R6) — never a
+silent local fallback. This is the forge twin of the inference
+`ThroughputLeaseRegistry`: a lease over a scarce node resource, granted by the
+holder, not assumed by the requester.
+
+**Where it plugs in (no consumer churn).** The scorer + claim live *beneath* the
+`ForgeCustodian` trait, inside the Pass-6 `GridForgeCustodian` — it picks the
+node, claims the slot, then routes the existing `forge/export` over
+`GridDispatch`. The sentinel I wired in L3 (`resolve_pageable_gene_path`) and
+`modules/forge.rs` call the trait and never learn placement happened. A slow Air
+running the L3 loop offloads the heavy convert/train to a claimed grid rig *by
+construction*.
+
+**Honest blocker.** Placement negotiation cannot be validated with one node — it
+needs the two-node fixture (TwoAircLoopback, #187) and the real
+`GridStateDispatch` (Pass 6b), which also forces the typed-error-recovery
+decision (`dispatch_to_node`'s `Result<_, String>` must regain the
+`Unreachable`/`Remote` split so claim-failure heals correctly). Score is pure and
+unit-testable today against fixture `ForgeEndpoint` rows; claim + heal land with
+6b. Until then the local `ForgeCustodianHttp` is the correct single-node
+degenerate case — score-of-one, no claim needed.
+
+---
+
 ## 6. Two demand types, one shape — the "sum of all the parts"
 
 Grid negotiation is the same trait-over-transport move for both leasable scarce
