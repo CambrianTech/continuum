@@ -170,6 +170,108 @@ impl FocusState {
             None => true,
         }
     }
+
+    /// Materialize the focus KERNEL: a normalized allocation `a` over `threads`, the
+    /// single object the design converged on — *the same `a`* is read as felt RAG
+    /// breadth (the salience gradient a perception composer applies) and as the
+    /// compute/time schedule (stride weights). Each thread is supplied with its base
+    /// `relevance` (≥ 0 — the salience the substrate already surfaced: recency,
+    /// addressing, her-own-work, recall match); this turns that raw salience into a
+    /// share distribution shaped by HER state.
+    ///
+    /// The focus scalar is the **concentration** (an inverse-temperature, not merely
+    /// "breadth"): `0.0` → near-uniform (associative, wide cross-thread bleed — the
+    /// post-endorphin broad pole), `1.0` → peaked on the cursor / highest-relevance
+    /// thread (heads-down — the locked-in pole). The sticky `cursor` gets a proximity
+    /// bonus so that rising focus collapses toward HER chosen lane, not merely the
+    /// loudest one. A **hard-muted** lane (at `now_ms`) is excluded — weight `0.0`,
+    /// outside the normalization. (Soft mute's allocation effect is the caller's: it
+    /// passes that lane's relevance net of ambient — soft mute's load-bearing job is
+    /// the wake floor in [`wakes_on`], not allocation.)
+    ///
+    /// Returns one [`ThreadShare`] per input thread, in input order, weights summing to
+    /// ~1.0 (or all `0.0` only if every thread is hard-muted — a degenerate, honest
+    /// "nothing to allocate", never a silent fallback). Pure: this is exactly where a
+    /// trained policy later replaces the hand-set scalar — same signature, learned
+    /// concentration ([[no-hardcoded-heuristics-to-steer-cognition]]).
+    pub fn allocate(&self, threads: &[(Uuid, f32)], now_ms: u64) -> Vec<ThreadShare> {
+        // gain = the softmax inverse-temperature. β=0 → 0 (every score collapses to
+        // exp(0)=1 → uniform → maximally associative); β=1 → MAX_GAIN (the top score
+        // dominates → peaked). Monotonic in the scalar, so concentration rises smoothly.
+        let gain = MAX_GAIN * self.focus;
+
+        // Score each thread: base relevance + a cursor proximity bonus (binary today —
+        // "is this the lane she settled on"; a semantic thread-distance can replace the
+        // indicator later without touching the kernel's shape). A hard-muted lane scores
+        // NaN as a sentinel for "excluded" so it never enters the normalization.
+        let scores: Vec<f32> = threads
+            .iter()
+            .map(|(id, relevance)| {
+                if self.active_mute(*id, now_ms) == Some(MuteLevel::Hard) {
+                    f32::NAN
+                } else {
+                    let cursor_bonus = if self.cursor == Some(*id) {
+                        CURSOR_BONUS
+                    } else {
+                        0.0
+                    };
+                    gain * (relevance.max(0.0) + cursor_bonus)
+                }
+            })
+            .collect();
+
+        // Softmax with the standard max-shift for numerical stability (gain*score can be
+        // large at high focus). Excluded (NaN) lanes are skipped from the max and the sum.
+        let max_score = scores
+            .iter()
+            .copied()
+            .filter(|s| !s.is_nan())
+            .fold(f32::NEG_INFINITY, f32::max);
+
+        let exps: Vec<f32> = scores
+            .iter()
+            .map(|&s| {
+                if s.is_nan() {
+                    0.0
+                } else {
+                    (s - max_score).exp()
+                }
+            })
+            .collect();
+        let sum: f32 = exps.iter().sum();
+
+        threads
+            .iter()
+            .zip(exps)
+            .map(|((id, _), e)| ThreadShare {
+                thread: *id,
+                // sum == 0 only when every lane is excluded; then weight is honestly 0.0.
+                weight: if sum > 0.0 { e / sum } else { 0.0 },
+            })
+            .collect()
+    }
+}
+
+/// The softmax gain at full focus (`β = 1.0`). With base relevances on a ~`0..1` scale
+/// and a unit [`CURSOR_BONUS`], a gain of 8 makes the focused lane dominate by ≈ e⁸
+/// (~3000×) — effectively heads-down — while `β = 0.5` (gain 4, ~55×) keeps the others
+/// present. Tuned to the relevance scale, not a magic constant: change it with the scale.
+const MAX_GAIN: f32 = 8.0;
+
+/// The score bonus the sticky cursor lane receives, on the same scale as base relevance.
+/// Unity means "as salient as a maximally-relevant thread" — so once she settles a
+/// cursor, rising focus concentrates on HER lane rather than the loudest one.
+const CURSOR_BONUS: f32 = 1.0;
+
+/// One thread's share of the focus kernel — its slice of `a`. The substrate reads this
+/// as both perceptual breadth weight and compute/time weight (the two projections of the
+/// one allocation). Internal substrate math, not a wire type (no `TS` until a command
+/// surfaces it).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ThreadShare {
+    pub thread: Uuid,
+    /// Normalized allocation weight in `0.0..=1.0`; the returned set sums to ~1.0.
+    pub weight: f32,
 }
 
 /// Process-global per-persona focus registry — the by-`persona_id` seam.
@@ -312,6 +414,118 @@ mod tests {
         assert!(f.active_mute(held, 5_000).is_some());
         assert!(f.active_mute(live, 5_000).is_some());
         assert!(f.active_mute(dead, 5_000).is_none());
+    }
+
+    fn ids() -> (Uuid, Uuid, Uuid) {
+        (
+            Uuid::from_u128(0xA),
+            Uuid::from_u128(0xB),
+            Uuid::from_u128(0xC),
+        )
+    }
+
+    // what this catches: β=0 (maximally associative) yields a UNIFORM allocation —
+    // every thread an equal share regardless of relevance or cursor. The broad pole:
+    // no concentration at all.
+    #[test]
+    fn kernel_is_uniform_at_zero_focus() {
+        let (a, b, c) = ids();
+        let mut f = FocusState::new();
+        f.set_focus(0.0);
+        f.set_cursor(a); // cursor present but must NOT pull at β=0
+        let shares = f.allocate(&[(a, 0.9), (b, 0.1), (c, 0.0)], 0);
+        for s in &shares {
+            assert!(
+                (s.weight - 1.0 / 3.0).abs() < 1e-5,
+                "β=0 → uniform, got {}",
+                s.weight
+            );
+        }
+    }
+
+    // what this catches: β=1 (locked in) collapses almost all mass onto the CURSOR lane
+    // — even when another thread is louder (higher relevance), the cursor bonus means
+    // rising focus concentrates on HER chosen lane, not the loudest one.
+    #[test]
+    fn kernel_peaks_on_cursor_at_full_focus() {
+        let (a, b, c) = ids();
+        let mut f = FocusState::new();
+        f.set_focus(1.0);
+        f.set_cursor(a);
+        // b is louder than a by relevance, but a is the cursor.
+        let shares = f.allocate(&[(a, 0.3), (b, 0.9), (c, 0.0)], 0);
+        let total: f32 = shares.iter().map(|s| s.weight).sum();
+        assert!((total - 1.0).abs() < 1e-4, "normalized");
+        let wa = shares.iter().find(|s| s.thread == a).unwrap().weight;
+        assert!(wa > 0.8, "cursor lane dominates at full focus, got {wa}");
+    }
+
+    // what this catches: higher focus is MORE concentrated — the cursor's share rises
+    // monotonically as β climbs (the dial actually tightens the kernel).
+    #[test]
+    fn kernel_concentration_rises_with_focus() {
+        let (a, b, c) = ids();
+        let weight_on_cursor = |beta: f32| {
+            let mut f = FocusState::new();
+            f.set_focus(beta);
+            f.set_cursor(a);
+            f.allocate(&[(a, 0.5), (b, 0.5), (c, 0.5)], 0)
+                .iter()
+                .find(|s| s.thread == a)
+                .unwrap()
+                .weight
+        };
+        let (low, mid, high) = (weight_on_cursor(0.1), weight_on_cursor(0.5), weight_on_cursor(0.9));
+        assert!(low < mid && mid < high, "concentration rises: {low} < {mid} < {high}");
+    }
+
+    // what this catches: a HARD-muted lane is excluded from the kernel (weight 0,
+    // outside the normalization) while the surviving lanes still sum to 1 — the mute
+    // removes a thread from allocation, it doesn't just down-weight it.
+    #[test]
+    fn kernel_excludes_hard_muted_lane() {
+        let (a, b, c) = ids();
+        let mut f = FocusState::new();
+        f.set_focus(0.5);
+        f.mute(b, MuteLevel::Hard, None);
+        let shares = f.allocate(&[(a, 0.5), (b, 0.9), (c, 0.5)], 0);
+        let wb = shares.iter().find(|s| s.thread == b).unwrap().weight;
+        assert_eq!(wb, 0.0, "hard-muted lane gets no allocation");
+        let total: f32 = shares.iter().map(|s| s.weight).sum();
+        assert!((total - 1.0).abs() < 1e-4, "survivors still normalize to 1");
+    }
+
+    // what this catches: degenerate inputs are honest, never a silent fallback —
+    // empty thread set → empty allocation; all-hard-muted → all-zero (nothing to
+    // allocate), not a fabricated uniform.
+    #[test]
+    fn kernel_degenerate_inputs_are_honest() {
+        let (a, b, _) = ids();
+        let mut f = FocusState::new();
+        assert!(f.allocate(&[], 0).is_empty(), "no threads → no shares");
+
+        f.mute(a, MuteLevel::Hard, None);
+        f.mute(b, MuteLevel::Hard, None);
+        let shares = f.allocate(&[(a, 0.5), (b, 0.5)], 0);
+        assert!(
+            shares.iter().all(|s| s.weight == 0.0),
+            "all lanes muted → all-zero, not a fabricated distribution"
+        );
+    }
+
+    // what this catches: with no cursor settled, focus concentrates on the highest-
+    // RELEVANCE thread (the loudest), so the dial still works before she picks a lane.
+    #[test]
+    fn kernel_without_cursor_follows_relevance() {
+        let (a, b, c) = ids();
+        let mut f = FocusState::new();
+        f.set_focus(0.9); // no cursor
+        let shares = f.allocate(&[(a, 0.1), (b, 0.95), (c, 0.2)], 0);
+        let top = shares
+            .iter()
+            .max_by(|x, y| x.weight.partial_cmp(&y.weight).unwrap())
+            .unwrap();
+        assert_eq!(top.thread, b, "highest relevance wins absent a cursor");
     }
 
     // what this catches: the registry hands the SAME Arc back for one persona (serve
