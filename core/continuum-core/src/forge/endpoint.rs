@@ -39,7 +39,7 @@ use super::custodian_client::{
     custodian_base_url, ForgeCustodian, ForgeCustodianError, ForgeCustodianHttp,
 };
 use super::protocol::{HealthResponse, CAPABILITY_GGUF_LORA};
-use crate::genome::recall::PeerId;
+use crate::identity::PeerId;
 use crate::modules::grid::node::TrustLevel;
 
 /// How to reach a forge custodian *service* (distinct from gene byte-custody —
@@ -56,7 +56,11 @@ pub enum ForgeLocator {
     /// Reach the custodian over HTTP at this base URL (this machine).
     Local { base_url: String },
     /// Reach the custodian over the grid transport to this peer.
-    Node { node: PeerId },
+    Node {
+        // Canonical airc PeerId (serde-transparent Uuid, no ts-rs derive) → string.
+        #[ts(type = "string")]
+        node: PeerId,
+    },
 }
 
 /// The custodian's routable health, as the fabric's scorer reads it. Derived from
@@ -370,7 +374,7 @@ mod tests {
     fn endpoint_round_trips_both_locators() {
         let remote = ForgeEndpoint {
             locator: ForgeLocator::Node {
-                node: PeerId::new(uuid::Uuid::from_u128(7)),
+                node: PeerId::from_uuid(uuid::Uuid::from_u128(7)),
             },
             capabilities: vec![CAPABILITY_GGUF_LORA.into()],
             contract_version: CONTRACT_VERSION,

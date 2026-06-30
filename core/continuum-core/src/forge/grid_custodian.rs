@@ -230,7 +230,7 @@ mod tests {
     fn routable_endpoint(trust_scope: TrustLevel) -> ForgeEndpoint {
         ForgeEndpoint {
             locator: ForgeLocator::Node {
-                node: crate::genome::recall::PeerId::new(uuid::Uuid::from_u128(42)),
+                node: crate::identity::PeerId::from_uuid(uuid::Uuid::from_u128(42)),
             },
             capabilities: vec![CAPABILITY_GGUF_LORA.to_string()],
             contract_version: CONTRACT_VERSION,

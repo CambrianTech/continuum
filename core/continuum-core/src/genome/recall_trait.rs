@@ -39,10 +39,12 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use super::recall::{
-    FreshnessTarget, PeerId, RecallError, RecallScope, RecallScore, ResidencyHint, TaskKind,
-    TrustClass,
+    FreshnessTarget, RecallError, RecallScope, RecallScore, ResidencyHint, TaskKind, TrustClass,
 };
 use super::working_set::ArtifactId;
+// Canonical actor id — same `PeerId` for a persona and a federation peer
+// ([[identity-one-canonical-newtype-not-bare-uuid]]).
+use crate::identity::PeerId;
 
 // ─── Reference newtypes ─────────────────────────────────────────
 
@@ -201,7 +203,7 @@ pub struct CompositionRef(pub ArtifactId);
 )]
 pub struct RecallContext {
     #[ts(type = "string")]
-    pub persona: crate::identity::PeerId,
+    pub persona: PeerId,
     /// What composition is already hot for this persona. `None`
     /// means the persona is starting fresh (cold composition).
     #[ts(optional)]
@@ -211,6 +213,9 @@ pub struct RecallContext {
     /// Per-peer trust adjustments from the persona's identity state.
     /// Recall composes these with the artifact's `provenance_trust`
     /// during scoring.
+    // PeerId is the canonical airc actor id (serde-transparent over a Uuid, no
+    // ts-rs derive), so each tuple's first element is a string on the wire.
+    #[ts(type = "Array<[string, TrustClass]>")]
     pub trust_overrides: Vec<(PeerId, TrustClass)>,
 }
 
@@ -218,7 +223,7 @@ impl RecallContext {
     /// Cold-start RecallContext: no current composition, no
     /// outcome window, no trajectory, no trust overrides. Used by
     /// tests + first-turn recall calls.
-    pub fn cold_start(persona: crate::identity::PeerId) -> Self {
+    pub fn cold_start(persona: PeerId) -> Self {
         Self {
             persona,
             current_composition: None,
@@ -450,8 +455,8 @@ mod tests {
         ArtifactId::new(Uuid::nil())
     }
 
-    fn sample_persona() -> crate::identity::PeerId {
-        crate::identity::PeerId::from_uuid(Uuid::from_u128(1))
+    fn sample_persona() -> PeerId {
+        PeerId::from_uuid(Uuid::from_u128(1))
     }
 
     /// Minimal stub implementor: always returns an empty pool on

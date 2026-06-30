@@ -48,7 +48,7 @@ use std::path::PathBuf;
 use ts_rs::TS;
 
 use super::adapter_manifest::TrainedAdapter;
-use crate::genome::recall::PeerId;
+use crate::identity::PeerId;
 use crate::modules::grid::node::TrustLevel;
 
 /// Content-addressed provenance of a gene — the forge-alloy `sha256:…` hash of
@@ -88,7 +88,12 @@ pub enum GeneLocator {
     /// Bytes on this node's filesystem — no remote fetch needed.
     Local { path: PathBuf },
     /// Bytes held by a remote forge node, at a custody-relative path.
-    Node { node: PeerId, path: String },
+    Node {
+        // Canonical airc PeerId (serde-transparent Uuid, no ts-rs derive) → string.
+        #[ts(type = "string")]
+        node: PeerId,
+        path: String,
+    },
 }
 
 /// The node-aware gene handle — `TrainedAdapter` plus what it takes to locate,
@@ -201,7 +206,7 @@ mod tests {
             serde_json::from_value(serde_json::to_value(&local).unwrap()).unwrap();
         assert_eq!(local, back);
 
-        let peer = PeerId::new(Uuid::from_u128(0x42));
+        let peer = PeerId::from_uuid(Uuid::from_u128(0x42));
         let remote = GeneHandle {
             alias: "vision".into(),
             base_model_id: "b2".into(),

@@ -82,8 +82,8 @@ pub use eviction::rank_pages_for_eviction;
 pub use local_manager::LocalWorkingSetManager;
 pub use manager::WorkingSetManager;
 pub use recall::{
-    AcquireSource, FreshnessTarget, PeerId, RecallError, RecallScope, RecallScore, ResidencyHint,
-    TaskKind, TrustClass,
+    AcquireSource, FreshnessTarget, RecallError, RecallScope, RecallScore, ResidencyHint, TaskKind,
+    TrustClass,
 };
 pub use residency::GenomeResidencyModule;
 pub use recall_trait::{
