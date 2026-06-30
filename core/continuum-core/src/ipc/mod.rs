@@ -1408,10 +1408,17 @@ pub fn start_server(
                 crate::cognition::channel_substrate::global_channel_digest_buffer(),
             ),
         );
-        runtime.register(Arc::new(crate::runtime::SubstrateGovernor::new(
-            vec![digest_region],
-            registry.clone(),
-        )));
+        // Wire the live memory-pressure feed (R4 slice 3): each pass sizes its slice
+        // budget to the host's current memory band so a society of inference-bearing
+        // background regions can't stampede the model backend under load. A homeostatic
+        // protection, not cognition steering — and on a healthy host the band is Normal
+        // → budget None → behavior is identical to the uncapped default the digest
+        // region runs under today (the digest runs no inference, so this is the safe
+        // floor that lets the dark consolidation region go LIVE next).
+        runtime.register(Arc::new(
+            crate::runtime::SubstrateGovernor::new(vec![digest_region], registry.clone())
+                .with_pressure_gate(pressure_monitor.subscribe()),
+        ));
         let instance_manager = Arc::new(
             crate::modules::persona_instance_manager::PersonaInstanceManagerModule::new(
                 registry,
