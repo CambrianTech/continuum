@@ -71,8 +71,15 @@
 //! `None` → the budget lies dormant and behavior is unchanged. See [`pressure_budget`].
 //!
 //! ## Not yet (next slices)
-//! - VRAM / inference-queue-depth pressure (the [`PressureSignalKind`] taxonomy reserves both)
-//!   as a second gate input once a live producer exists — memory pressure is the wired floor.
+//! - **Holistic per-machine pressure as the gate input.** The wired floor is system memory,
+//!   which is already whole-machine RAM — but the gate must ultimately read the per-machine
+//!   `ResourceGovernor`'s AGGREGATE snapshot (#56), not any continuum-inference-only number.
+//!   Scarcity is everything on the box: the rest of the machine's processes PLUS all of our
+//!   own consumers contending for the same VRAM/RAM — persona base models, LoRA adapters,
+//!   Bevy rendering, LiveKit video encode/decode. VRAM-across-all-consumers is the key missing
+//!   dimension (`PressureSignalKind::VramHigh` reserves it); a narrow `InferenceQueueDepth`
+//!   metric is the wrong frame. The budget backs off when the *whole system* is starved, by
+//!   whoever is using it, never just when inference is busy.
 //! - `PersonaCognitionRegion` + the multi-tower inference router (command→handle→event).
 //! - R5: the speciation (sleep-phase consolidation / genome-learning) region.
 
