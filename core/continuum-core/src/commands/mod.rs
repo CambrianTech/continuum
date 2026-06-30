@@ -31,6 +31,7 @@ pub mod health;
 pub mod help;
 pub mod hf;
 pub mod inference;
+pub mod interface;
 pub mod log;
 pub mod memory;
 pub mod migration;
