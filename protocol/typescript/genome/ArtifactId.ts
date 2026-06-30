@@ -4,6 +4,6 @@
  * Stable per-artifact identifier. Content-addressed (the value IS
  * the SHA-256-derived UUID of the artifact bytes), so two callers
  * computing the ID independently arrive at the same value. Typed
- * wrapper distinct from `PersonaId`.
+ * wrapper distinct from `crate::identity::PeerId`.
  */
 export type ArtifactId = string;

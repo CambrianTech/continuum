@@ -5,28 +5,24 @@ import type { PersonaIdentitySource } from "./PersonaIdentitySource";
  * Compact info about a registered persona — what the IPC surface
  * returns for list/get/bootstrap responses.
  *
- * ## INVARIANT (Slice 1B of #142)
+ * ## Identity (Slice 1B of #142, collapsed in Step 4b)
  *
- * `persona_id == peer_id`. Both fields hold the airc Ed25519
- * keypair's Uuid; the runtime constructor collapses them per
- * [[persona-identity-derives-from-source-id]] (the cryptographic
- * keypair IS the substrate identity). The two fields exist
- * side-by-side for API back-compat; a future cleanup may collapse
- * to a single `peer_id` field once external consumers no longer
- * reference `persona_id`.
+ * `peer_id` is the canonical [`crate::identity::PeerId`] — the airc
+ * Ed25519 keypair's id, the substrate's one universal actor
+ * identifier. Previously this struct carried a SECOND `persona_id:
+ * Uuid` field holding the same value ("named twice for API
+ * compatibility"); the runtime already collapses `persona_id :=
+ * peer_id` ([`PersonaAircRuntime::from_attached`] /`bootstrap`
+ * reseat it to `airc.peer_id()`), so the twin was pure redundancy —
+ * one logical identity in two fields, exactly the divergence-prone
+ * shape [[identity-one-canonical-newtype-not-bare-uuid]] warns
+ * against. Collapsed to the single canonical field.
  *
- * Test fixtures that bypass `from_runtime` (e.g.
- * `supervisor::tests::fake_instance`, `service_loop` test fixture)
- * honor this invariant by convention: `persona_id` and `peer_id`
- * are set to the same Uuid even when the keypair is stubbed.
+ * Serde-transparent → the wire shape is unchanged (a string), so TS
+ * consumers see the same `peerId` they always did; the dropped
+ * `personaId` was a duplicate of it.
  */
 export type PersonaInstanceInfo = { 
-/**
- * The persona's airc peer_id (Ed25519 keypair Uuid) — the
- * substrate's universal actor identifier per Slice 1B of #142.
- * Equals `peer_id` field by invariant.
- */
-personaId: string, 
 /**
  * The persona's airc agent_name. NOTE: currently derived from
  * the historical pre-bootstrap Uuid (before peer_id existed),
@@ -37,9 +33,14 @@ personaId: string,
  */
 agentName: string, 
 /**
- * The persona's airc peer_id. Equals `persona_id` post-
- * Slice-1B (same Uuid, named twice for API compatibility).
- * The cryptographic identity airc routes on.
+ * The persona's airc peer_id — the canonical
+ * [`crate::identity::PeerId`], the cryptographic identity airc
+ * routes on and the substrate's universal actor id.
+ *
+ * `PeerId` is serde-transparent over its `Uuid` (a string on the
+ * wire) but derives neither ts-rs `TS` nor `schemars::JsonSchema`,
+ * so both projections are pinned to `string` explicitly — the same
+ * shape the field has always had.
  */
 peerId: string, 
 /**

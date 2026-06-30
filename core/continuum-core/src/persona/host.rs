@@ -108,7 +108,7 @@ pub async fn spawn_persona_service(
     // task wraps its body in `AssertUnwindSafe(...).catch_unwind()`
     // and surfaces panics through `probe!` + per-module logger.
     let persona_name = ctx.identity.agent_name.to_string();
-    let persona_id = ctx.identity.persona_id;
+    let persona_id = ctx.identity.peer_id.as_uuid();
     Ok(rt_handle.spawn(async move {
         use futures::FutureExt;
         let outcome = std::panic::AssertUnwindSafe(serve_persona_loop(
@@ -385,7 +385,7 @@ impl PersonaSpawnSupervisor {
         ctx: PersonaContext,
         summary: &mut BootSummary,
     ) {
-        let persona_id = ctx.identity.persona_id;
+        let persona_id = ctx.identity.peer_id.as_uuid();
         let agent_name = ctx.identity.agent_name.clone();
         let role = ctx.role;
         let handle = match spawn_persona_service(

@@ -309,7 +309,7 @@ impl PersonaContext {
     /// Construct a tracing `Span` tagged with this persona's identity
     /// + role + tier. Every log line emitted inside the span's scope
     /// inherits these fields automatically — no more
-    /// `tracing::warn!(persona_id = %ctx.identity.persona_id, ...)`
+    /// `tracing::warn!(persona_id = %ctx.identity.peer_id.as_uuid(), ...)`
     /// at every call site.
     ///
     /// Per the `&ctx` doctrine: the span derives from the context,
@@ -318,7 +318,7 @@ impl PersonaContext {
     pub fn span(&self) -> tracing::Span {
         tracing::info_span!(
             "persona",
-            persona_id = %self.identity.persona_id,
+            persona_id = %self.identity.peer_id.as_uuid(),
             agent_name = %self.identity.agent_name,
             peer_id = %self.identity.peer_id,
             role = ?self.role,
@@ -349,14 +349,15 @@ impl PersonaContext {
 // [[substrate-overhead-is-1to3ms-LLM-dominates-latency]] — Uuid copy
 // + String clones are not the substrate's latency bottleneck.
 //
-// ## Identity Uuid — `ctx.identity().id` IS the registry key (Slice 1B)
+// ## Identity Uuid — `ctx.identity().id` IS the registry key
 //
-// Slice 1B of #142 collapsed `PersonaInstanceInfo.persona_id ==
-// peer_id` at the runtime boundary (`PersonaAircRuntime::bootstrap`
-// + `from_attached` reseat the field from `airc.peer_id().as_uuid()`).
-// Callers may now safely use `ctx.identity().id` as a registry key
-// — it is the same Uuid as `ctx.identity.persona_id` and the same
-// Uuid as `airc.peer_id().as_uuid()`, per
+// Slice 1B of #142 reseated `PersonaInstanceInfo.persona_id := peer_id`
+// at the runtime boundary; Step 4b of the identity-newtype wave then
+// DELETED the redundant `persona_id` twin entirely, leaving the single
+// canonical [`crate::identity::PeerId`] field `peer_id`. Callers use
+// `ctx.identity().id` as a registry key — it is the `.as_uuid()`
+// projection of that one `peer_id`, the same Uuid as
+// `airc.peer_id().as_uuid()`, per
 // [[persona-identity-derives-from-source-id]] (the cryptographic
 // keypair Uuid IS the substrate identity).
 impl crate::context::Context for PersonaContext {
@@ -369,12 +370,11 @@ impl crate::context::Context for PersonaContext {
             PersonaIdentitySource::FreshlyMinted => IdentitySource::FreshlyMinted,
         };
 
-        // `self.identity.peer_id == self.identity.persona_id` post-
-        // Slice-1B. Either field can be used as the source; we read
-        // `peer_id` because it names the cryptographic ground truth
-        // explicitly.
+        // Post-Step-4b there is one canonical identity field — `peer_id`,
+        // the airc cryptographic ground truth — so the dispatch
+        // `Identity.id` (a bare Uuid ORM key) is its `.as_uuid()` projection.
         std::borrow::Cow::Owned(Identity {
-            id: self.identity.peer_id,
+            id: self.identity.peer_id.as_uuid(),
             kind: IdentityKind::Persona,
             agent_name: self.identity.agent_name.clone(),
             home_path: self.identity.home.to_string_lossy().into_owned(),
@@ -491,13 +491,13 @@ pub async fn materialize_adapters(
             }
         };
         let identity = plan.instance;
-        let runtime = match runtime_lookup(identity.persona_id) {
+        let runtime = match runtime_lookup(identity.peer_id.as_uuid()) {
             Some(r) => r,
             None => {
                 out.push(Err(SupervisorError::RuntimeMissing {
                     slot_index,
                     role: plan.role,
-                    persona_id: identity.persona_id,
+                    persona_id: identity.peer_id.as_uuid(),
                 }));
                 continue;
             }
@@ -548,13 +548,13 @@ pub async fn materialize_adapters(
         // The runtime IS an AircTranscriptReader by trait bound.
         let rag_engine = Arc::new(crate::rag::RagEngine::new());
         let mut cognition = crate::persona::unified::PersonaCognition::new(
-            identity.persona_id,
+            identity.peer_id.as_uuid(),
             identity.agent_name.clone(),
             rag_engine,
         );
         let airc_source: Arc<dyn crate::persona::rag_budget::RagSource> = Arc::new(
             crate::persona::airc_source::AircRagSource::new(
-                identity.persona_id,
+                identity.peer_id.as_uuid(),
                 runtime.clone(),
             ),
         );
@@ -568,7 +568,7 @@ pub async fn materialize_adapters(
         // §5 slice 1.
         let roster_source: Arc<dyn crate::persona::rag_budget::RagSource> =
             Arc::new(crate::persona::room_roster_source::RoomRosterSource::new(
-                identity.persona_id,
+                identity.peer_id.as_uuid(),
                 runtime.clone(),
             ));
         // Clone the Arc: the SAME source feeds both the legacy compose path
@@ -582,7 +582,7 @@ pub async fn materialize_adapters(
         // — the airc-published operating contract. Slice 2.
         let doctrine_source: Arc<dyn crate::persona::rag_budget::RagSource> =
             Arc::new(crate::persona::room_doctrine_source::RoomDoctrineSource::new(
-                identity.persona_id,
+                identity.peer_id.as_uuid(),
                 runtime.clone(),
             ));
         // Same dual-wire as the roster: one Arc, legacy path + brain faculty.
@@ -594,7 +594,7 @@ pub async fn materialize_adapters(
         // it. Reads the persona's own airc handle (acts as itself).
         let active_work_source: Arc<dyn crate::persona::rag_budget::RagSource> =
             Arc::new(crate::persona::active_work_source::ActiveWorkSource::new(
-                identity.persona_id,
+                identity.peer_id.as_uuid(),
                 runtime.clone(),
             ));
 
@@ -608,7 +608,7 @@ pub async fn materialize_adapters(
         // the answer. Swaps to the airc-leased root when #49 lands.
         let workspace_map_source: Arc<dyn crate::persona::rag_budget::RagSource> =
             Arc::new(crate::persona::workspace_map_source::WorkspaceMapSource::from_cwd(
-                identity.persona_id,
+                identity.peer_id.as_uuid(),
             ));
 
         // Wall source: grounds the persona in the room's LIVING SHARED
@@ -624,7 +624,7 @@ pub async fn materialize_adapters(
         // [[airc-generic-per-user-room-state]].
         let wall_source: Arc<dyn crate::persona::rag_budget::RagSource> =
             Arc::new(crate::persona::wall_source::WallSource::new(
-                identity.persona_id,
+                identity.peer_id.as_uuid(),
                 runtime.clone(),
             ));
 
@@ -645,7 +645,7 @@ pub async fn materialize_adapters(
         {
             Ok(persisted) => {
                 cognition.attach_persistent_admission(
-                    identity.persona_id,
+                    identity.peer_id.as_uuid(),
                     std::sync::Arc::new(persisted),
                 );
             }
@@ -680,7 +680,7 @@ pub async fn materialize_adapters(
         // touching this living mind (PersonaWorkspaceRegistry::fork_eval_cycle).
         crate::cognition::persona_workspace::global().register_from_cfg(
             crate::cognition::persona_workspace::PersonaBrainConfig {
-                persona_id: identity.persona_id,
+                persona_id: identity.peer_id.as_uuid(),
                 persona_name: identity.agent_name.to_string(),
                 system_prompt: system_prompt.to_string(),
                 admission: cognition.admission.clone(),
@@ -735,7 +735,7 @@ pub async fn materialize_adapters(
                 ],
                 // The persona's HANDS — built by the caller for THIS persona's
                 // identity (None → speak-only). What turns "talks" into "acts".
-                tool_executor: tool_executor_for(identity.persona_id),
+                tool_executor: tool_executor_for(identity.peer_id.as_uuid()),
                 // The window the gateway actually serves this persona (task #50:
                 // single-sourced; Local → ServingPlan.served_context_window). The
                 // deliberation faculty keeps its prompt inside it so llama-server
@@ -870,43 +870,33 @@ mod tests {
         // exercise the same identity shape production sees. Per the
         // PersonaInstanceInfo doc: fixtures that bypass the runtime
         // constructor MUST keep both fields equal.
-        let peer_id = Uuid::new_v4();
         PersonaInstanceInfo {
-            persona_id: peer_id,
             agent_name: name.to_string(),
-            peer_id,
+            peer_id: crate::identity::PeerId::new(),
             home: PathBuf::from(format!("/tmp/fake-supervisor-test/{name}")),
             default_room: Uuid::nil(),
             source: PersonaIdentitySource::FreshlyMinted,
         }
     }
 
-    /// Pins the Slice 1B invariant: `ctx.identity().id ==
-    /// ctx.identity.persona_id == ctx.identity.peer_id` for any
-    /// `PersonaContext` constructed through the canonical path. If
-    /// a future edit reintroduces the pre-Slice-1B divergence
-    /// (separate Uuid for persona_id vs peer_id), this test fails.
-    ///
-    /// Per [[every-error-is-an-opportunity-to-battle-harden]] — the
-    /// PR #1522 reviewer caught the divergence after the fact;
-    /// this test is the rigging that catches the regression class
-    /// at unit-test time.
+    /// what this catches: the Slice-1B identity projection. The
+    /// pre-Slice-1B divergence (a separate `persona_id` Uuid vs the
+    /// airc `peer_id`) was the regression class PR #1522's reviewer
+    /// caught after the fact. Step 4b made that class IMPOSSIBLE by
+    /// collapsing the twin fields into the single canonical
+    /// [`crate::identity::PeerId`] — so the remaining seam this pins is
+    /// [`PersonaInstanceInfo::persona_identity`] projecting that one
+    /// `peer_id` down to the bare `Uuid` the `(id, name)` dispatch pair
+    /// carries (the registry key path). If that projection ever stopped
+    /// reading `peer_id`, dispatch would key on the wrong id.
     #[test]
-    fn persona_context_identity_id_matches_registry_key() {
-        use crate::context::Context;
+    fn persona_identity_projects_canonical_peer_id() {
         let instance = fake_instance("Maya");
-        // Sanity: fixture itself honors the invariant.
-        assert_eq!(instance.persona_id, instance.peer_id);
-
-        let ctx_identity = instance.peer_id;
-        let cognition_persona_id = instance.persona_id;
-
-        // The PersonaContext Context impl projects identity.peer_id
-        // into Identity.id; the registry key path reads
-        // identity.persona_id. Post-Slice-1B these MUST match.
+        let dispatch = instance.persona_identity();
         assert_eq!(
-            ctx_identity, cognition_persona_id,
-            "Slice 1B invariant broken: ctx.identity().id != ctx.identity.persona_id"
+            dispatch.id,
+            instance.peer_id.as_uuid(),
+            "persona_identity() must project the canonical peer_id into the dispatch (id, name) pair"
         );
     }
 
@@ -1086,7 +1076,7 @@ mod tests {
     #[tokio::test]
     async fn runtime_lookup_none_surfaces_as_runtime_missing() {
         let instance = fake_instance("Paige");
-        let expected_persona_id = instance.persona_id;
+        let expected_persona_id = instance.peer_id.as_uuid();
         let plans = vec![MaterializedPersonaPlan {
             role: RoleId::Helper,
             instance,
@@ -1132,7 +1122,7 @@ mod tests {
         init_test_registry();
         let paige = fake_instance("Paige");
         let pax = fake_instance("Pax");
-        let pax_persona_id = pax.persona_id;
+        let pax_persona_id = pax.peer_id.as_uuid();
         let plans = vec![
             MaterializedPersonaPlan {
                 role: RoleId::Helper,

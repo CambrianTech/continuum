@@ -195,7 +195,7 @@ impl RagInspectionRequest {
         now_ms: u64,
     ) -> Self {
         Self::for_persona(
-            ctx.identity.persona_id,
+            ctx.identity.peer_id.as_uuid(),
             ctx.identity.agent_name.clone(),
             now_ms,
             &ctx.profile,

@@ -71,7 +71,7 @@ pipeline: Pipeline, } | { "type": "approve",
  */
 prompt: string, 
 /**
- * PersonaId UUIDs or "human" for Joel
+ * PeerId UUIDs or "human" for Joel
  */
 approvers: Array<string>, 
 /**

@@ -383,7 +383,7 @@ async fn serve_persona_loop_inner(
         }
         high_water = msg.lamport.max(high_water);
 
-        if msg.peer_id == ctx.identity.peer_id {
+        if msg.peer_id == ctx.identity.peer_id.as_uuid() {
             outcome.turns_skipped += 1;
             continue;
         }
@@ -413,7 +413,7 @@ async fn serve_persona_loop_inner(
         crate::probe!(
             class = "persona.turn.start",
             persona = %ctx.identity.agent_name,
-            persona_id = %ctx.identity.persona_id,
+            persona_id = %ctx.identity.peer_id.as_uuid(),
             room_id = %ctx.identity.default_room,
             lamport = msg.lamport,
             peer_id = %msg.peer_id,
@@ -620,7 +620,7 @@ async fn serve_persona_loop_inner(
         // filter above), so including own posts purely as read-context is safe.
         let respond_started = std::time::Instant::now();
         let response_text = match crate::cognition::persona_workspace::global()
-            .get(&ctx.identity.persona_id)
+            .get(&ctx.identity.peer_id.as_uuid())
         {
             Some(cycle) => {
                 // Run the mind over the metadata-rich burst built above
@@ -752,7 +752,7 @@ async fn serve_persona_loop_inner(
                 phase_timings.respond_ms = respond_started.elapsed().as_millis() as u64;
                 tracing::error!(
                     persona = %ctx.identity.agent_name,
-                    persona_id = %ctx.identity.persona_id,
+                    persona_id = %ctx.identity.peer_id.as_uuid(),
                     lamport = msg.lamport,
                     "no WorkspaceCycle registered — spawn wiring bug; dropping turn (no respond() fallback)"
                 );
@@ -848,7 +848,7 @@ async fn serve_persona_loop_inner(
         // (`drive_to_settle`) never run, so the training set can never be
         // contaminated by a measurement simulation.
         crate::persona::training_producer::produce(
-            ctx.identity.persona_id,
+            ctx.identity.peer_id.as_uuid(),
             ctx.identity.agent_name.clone(),
             ctx.profile.model_id.clone(),
             msg.text.clone(),
@@ -1053,7 +1053,7 @@ async fn run_self_cycle(
             &ctx.identity.agent_name,
         ),
     );
-    let Some(cycle) = crate::cognition::persona_workspace::global().get(&ctx.identity.persona_id)
+    let Some(cycle) = crate::cognition::persona_workspace::global().get(&ctx.identity.peer_id.as_uuid())
     else {
         return; // no cycle registered (shouldn't happen) — nothing to run
     };
@@ -1103,7 +1103,7 @@ async fn run_self_cycle(
     // BOTH this loop and the self-set tool she invokes (the brain holds no global
     // handle), so her steering and this floor read one state. Locked only across the
     // synchronous read (no await held), per the concurrency style guide.
-    let focus_handle = crate::persona::focus::registry().handle(ctx.identity.persona_id);
+    let focus_handle = crate::persona::focus::registry().handle(ctx.identity.peer_id.as_uuid());
     let wakes = {
         let mut focus = focus_handle
             .lock()
@@ -1430,11 +1430,9 @@ mod tests {
     ) -> HostedPersona {
         use crate::persona::hw_tier_descriptor::HwTierCategory;
         use crate::persona::inference_profile::{PersonaInferenceProfile, SamplingProfile};
-        // Honor the Slice-1B-of-#142 invariant: `persona_id ==
-        // peer_id` for every PersonaInstanceInfo. Test fixtures
-        // that bypass the runtime constructor (where the collapse
-        // would otherwise be enforced) keep both fields equal so the
-        // identity shape matches what production sees.
+        // The PersonaInferenceProfile still keys on a bare Uuid; the
+        // PersonaInstanceInfo now carries the single canonical
+        // `peer_id: PeerId` (Step 4b collapsed the persona_id twin).
         let persona_id = persona_peer_id;
         // Build a profile shaped like the LCD Compat tier — the
         // substrate's lowest common denominator. Test exercises the
@@ -1459,9 +1457,8 @@ mod tests {
         HostedPersona {
             role: RoleId::Helper,
             identity: PersonaInstanceInfo {
-                persona_id,
                 agent_name: "Paige".to_string(),
-                peer_id: persona_peer_id,
+                peer_id: crate::identity::PeerId::from_uuid(persona_peer_id),
                 home: PathBuf::from("/tmp/fake-service-loop"),
                 default_room: Uuid::nil(),
                 source: PersonaIdentitySource::FreshlyMinted,
