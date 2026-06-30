@@ -994,6 +994,7 @@ mod tests {
                 cost_input_per_1k: 0.0,
                 cost_output_per_1k: 0.0,
                 gguf_hint: None,
+                hf_source: None,
                 gguf_local_path: None,
                 chat_template: None,
                 stop_sequences: Vec::new(),

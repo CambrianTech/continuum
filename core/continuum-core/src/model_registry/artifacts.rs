@@ -32,6 +32,37 @@ pub fn resolve_gguf_for_model_id(model_id: &str) -> Option<PathBuf> {
     resolve_gguf(model_id, None, None)
 }
 
+/// Resolve a canonical model id to the HF safetensors repo id of its
+/// *trainable* form (`Model::hf_source`). The training lane (`mlx_lm.lora
+/// --model`) and the forge custodian's HF→PEFT→GGUF convert both need the
+/// safetensors base, NOT the serving GGUF — this is the one bridge from the
+/// canonical id (which serving/eval resolve to a GGUF) to the HF cache.
+///
+/// Fails loud (no fallback) when the id has no registry row or the row
+/// declares no `hf_source`: a missing trainable base is a real precondition
+/// gap the caller must fix (add the field to the row), never silently
+/// reinterpreted as "the id is already an HF repo".
+pub fn resolve_hf_source_for_model_id(model_id: &str) -> Result<String, String> {
+    let registry = crate::model_registry::try_global().ok_or_else(|| {
+        format!(
+            "cannot resolve hf_source for '{model_id}': model registry not initialized"
+        )
+    })?;
+    let model = registry.model(model_id).ok_or_else(|| {
+        format!(
+            "cannot resolve hf_source for '{model_id}': no such model row in the registry \
+             — training/convert require a canonical registry id, not an arbitrary string"
+        )
+    })?;
+    model.hf_source.clone().ok_or_else(|| {
+        format!(
+            "model '{model_id}' has no hf_source — it declares a serving GGUF but no \
+             trainable HF safetensors base; add `hf_source` to its registry row before \
+             training or converting against it"
+        )
+    })
+}
+
 pub fn resolve_local_model_dir_for_model_id(model_id: &str) -> Option<PathBuf> {
     resolve_from_local_model_roots(model_id).and_then(|gguf| gguf.parent().map(Path::to_path_buf))
 }
@@ -365,6 +396,7 @@ mod tests {
             cost_input_per_1k: 0.0,
             cost_output_per_1k: 0.0,
             gguf_hint: hint.map(str::to_string),
+            hf_source: None,
             gguf_local_path: explicit,
             mmproj_local_path: None,
             chat_template: None,

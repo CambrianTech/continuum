@@ -129,7 +129,24 @@ impl ServiceModule for ForgeModule {
                     // reads at (re)spawn. Resolve loud (a pathological missing HOME
                     // with no override fails here, not by writing to a surprise loc).
                     let manifest = crate::forge::adapter_manifest::manifest_path()?;
-                    run_export_gguf_lora(&ForgeCustodianHttp::from_config(), &parsed, &manifest).await
+                    // The trinity split: the canonical base_model_id (→ manifest, eval)
+                    // resolves IN-CORE to the safetensors hf_source (→ custodian convert).
+                    let base_model_id = parsed.base_model_id.clone().ok_or_else(|| {
+                        "format 'gguf-lora' requires base_model_id — the converter needs \
+                         the base architecture to produce a loadable adapter"
+                            .to_string()
+                    })?;
+                    let hf_base =
+                        crate::model_registry::artifacts::resolve_hf_source_for_model_id(
+                            &base_model_id,
+                        )?;
+                    run_export_gguf_lora(
+                        &ForgeCustodianHttp::from_config(),
+                        &parsed,
+                        &hf_base,
+                        &manifest,
+                    )
+                    .await
                 } else {
                     run_export(&UnslothForgeHttp::from_config(), parsed).await
                 }
@@ -725,13 +742,23 @@ async fn run_export(
 /// LOUD on a missing base, an unreachable custodian, or a non-success envelope.
 /// The emitted gene is exactly what `cognition/eval` pages into a live persona to
 /// measure LIFT.
+/// The base-id split (the L3 trinity bridge) lives at the call site: `p.base_model_id`
+/// is the CANONICAL registry id (what serving/eval resolve to a GGUF, and what the
+/// manifest records so `cognition/eval` can find the base lane), while `hf_base` is
+/// that id resolved to its SAFETENSORS repo (`Model::hf_source`) — the only thing the
+/// custodian's HF→PEFT→GGUF convert can consume. Resolution is the in-core handler's
+/// job (it owns the live registry); this fn stays registry-free so it is unit-testable
+/// by passing both ids explicitly. The custodian is a separate process and stays dumb,
+/// receiving a pre-resolved HF id.
 async fn run_export_gguf_lora(
     custodian: &dyn crate::forge::custodian_client::ForgeCustodian,
     p: &ForgeExportParams,
+    hf_base: &str,
     manifest_path: &std::path::Path,
 ) -> Result<CommandResult, String> {
     // A GGUF LoRA with no base is meaningless — the converter needs the base
-    // architecture. Reject loudly at the boundary, never silently default.
+    // architecture. Reject loudly at the boundary, never silently default. This is
+    // the CANONICAL id the manifest is keyed on (eval filters genes by it).
     let base_model_id = p.base_model_id.clone().ok_or_else(|| {
         "format 'gguf-lora' requires base_model_id — the converter needs the base \
          architecture to produce a loadable adapter"
@@ -745,7 +772,7 @@ async fn run_export_gguf_lora(
     let req = crate::forge::protocol::GgufLoraRequest {
         checkpoint: p.checkpoint.clone(),
         save_directory: p.save_directory.clone(),
-        base_model_id: base_model_id.clone(),
+        base_model_id: hf_base.to_string(),
         outtype: p.outtype.clone(),
     };
     let result = custodian
@@ -1462,18 +1489,23 @@ mod tests {
             save_directory: "/out".into(),
             format: "gguf-lora".into(),
             quantization: "Q4_K_M".into(),
-            base_model_id: Some("unsloth/Qwen2.5-0.5B-Instruct".into()),
+            // CANONICAL id (what the manifest/eval key on); the custodian must
+            // receive the RESOLVED hf_base instead — the trinity split.
+            base_model_id: Some("continuum-ai/qwen2.5-0.5b-instruct-GGUF".into()),
             outtype: "f16".into(),
             max_seq_length: 2048,
             load_in_4bit: true,
         };
         let path = tmp_manifest("stateless");
         let _ = std::fs::remove_file(&path);
-        run_export_gguf_lora(&cust, &p, &path).await.unwrap();
+        run_export_gguf_lora(&cust, &p, "unsloth/Qwen2.5-0.5B-Instruct", &path)
+            .await
+            .unwrap();
         let reqs = cust.exports.lock().unwrap();
         assert_eq!(reqs.len(), 1, "exactly one export call");
         assert_eq!(reqs[0].checkpoint, "/ckpt", "checkpoint named in the body (stateless)");
         assert_eq!(reqs[0].save_directory, "/out");
+        // The custodian gets the SAFETENSORS hf_base, not the canonical GGUF id.
         assert_eq!(reqs[0].base_model_id, "unsloth/Qwen2.5-0.5B-Instruct");
         assert_eq!(reqs[0].outtype, "f16");
     }
@@ -1494,7 +1526,8 @@ mod tests {
             max_seq_length: 2048,
             load_in_4bit: true,
         };
-        let err = run_export_gguf_lora(&cust, &p, &tmp_manifest("nobase"))
+        // hf_base is irrelevant here — the None base_model_id fails loud first.
+        let err = run_export_gguf_lora(&cust, &p, "unsloth/Qwen2.5-0.5B-Instruct", &tmp_manifest("nobase"))
             .await
             .expect_err("missing base must error");
         assert!(err.contains("base_model_id"), "got: {err}");
@@ -1516,7 +1549,7 @@ mod tests {
             max_seq_length: 2048,
             load_in_4bit: true,
         };
-        let err = run_export_gguf_lora(&cust, &p, &tmp_manifest("custfail"))
+        let err = run_export_gguf_lora(&cust, &p, "unsloth/Qwen2.5-0.5B-Instruct", &tmp_manifest("custfail"))
             .await
             .expect_err("must error");
         assert!(err.contains("gguf-lora) failed"), "got: {err}");
@@ -1544,7 +1577,11 @@ mod tests {
         let path = tmp_manifest("registers");
         let _ = std::fs::remove_file(&path);
 
-        run_export_gguf_lora(&cust, &p, &path).await.unwrap();
+        // hf_base (safetensors) goes to the custodian; the manifest is keyed on the
+        // CANONICAL p.base_model_id below — the split this test guards.
+        run_export_gguf_lora(&cust, &p, "unsloth/Qwen2.5-0.5B-Instruct", &path)
+            .await
+            .unwrap();
 
         let all = crate::forge::adapter_manifest::load_from(&path).unwrap();
         let matched =

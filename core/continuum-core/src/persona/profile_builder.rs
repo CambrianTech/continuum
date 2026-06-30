@@ -263,6 +263,7 @@ mod tests {
             cost_input_per_1k: 0.0,
             cost_output_per_1k: 0.0,
             gguf_hint: Some("hf.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF".to_string()),
+            hf_source: None,
             gguf_local_path: Some(fake_gguf),
             chat_template: Some("{% for m in messages %}".to_string()),
             stop_sequences: vec!["<|im_end|>".to_string()],

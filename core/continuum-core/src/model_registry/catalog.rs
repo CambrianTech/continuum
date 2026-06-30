@@ -496,6 +496,10 @@ pub fn models() -> Vec<Model> {
                 Capability::Streaming,
             ],
             gguf_hint: Some("huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF"),
+            // Trainable safetensors base for the L3 genome loop. The `-GGUF` repo
+            // above is serving-only; MLX/PEFT fine-tuning + the custodian convert
+            // resolve THIS HF repo (cached, MLX-ready) through the canonical id.
+            hf_source: Some("unsloth/Qwen2.5-0.5B-Instruct"),
             gguf_local_path: Some(
                 "~/.continuum/genome/models/qwen2.5-0.5b-instruct/qwen2.5-0.5b-instruct-q4_k_m.gguf",
             ),
@@ -750,6 +754,8 @@ struct ModelSpec {
     cost_input_per_1k: f32,
     cost_output_per_1k: f32,
     gguf_hint: Option<&'static str>,
+    /// HF safetensors repo id for the trainable form (see `Model::hf_source`).
+    hf_source: Option<&'static str>,
     gguf_local_path: Option<&'static str>,
     mmproj_local_path: Option<&'static str>,
     chat_template: Option<&'static str>,
@@ -771,6 +777,7 @@ impl Default for ModelSpec {
             cost_input_per_1k: 0.0,
             cost_output_per_1k: 0.0,
             gguf_hint: None,
+            hf_source: None,
             gguf_local_path: None,
             mmproj_local_path: None,
             chat_template: None,
@@ -793,6 +800,7 @@ fn model(spec: ModelSpec) -> Model {
         cost_input_per_1k: spec.cost_input_per_1k,
         cost_output_per_1k: spec.cost_output_per_1k,
         gguf_hint: spec.gguf_hint.map(str::to_string),
+        hf_source: spec.hf_source.map(str::to_string),
         gguf_local_path: spec.gguf_local_path.map(PathBuf::from),
         mmproj_local_path: spec.mmproj_local_path.map(PathBuf::from),
         chat_template: spec.chat_template.map(str::to_string),

@@ -172,6 +172,14 @@ impl FineTuningAdapter for MlxLoraFineTuner {
                     .into(),
             ));
         }
+        // `base_model` is the CANONICAL registry id (GGUF-resolvable for
+        // serving/eval). mlx_lm.lora needs the safetensors base instead, so
+        // resolve the canonical id → the row's `hf_source` (fail loud if the
+        // row declares no trainable base — see resolve_hf_source_for_model_id).
+        let train_base = crate::model_registry::artifacts::resolve_hf_source_for_model_id(
+            &request.base_model,
+        )
+        .map_err(FineTuningError::InvalidRequest)?;
         if request.dataset.examples.is_empty() {
             return Err(FineTuningError::InvalidRequest(
                 "dataset has no examples".into(),
@@ -214,7 +222,7 @@ impl FineTuningAdapter for MlxLoraFineTuner {
         cmd.arg("-m")
             .arg("mlx_lm.lora")
             .arg("--model")
-            .arg(&request.base_model)
+            .arg(&train_base)
             .arg("--train")
             .arg("--data")
             .arg(&data_dir)
@@ -233,7 +241,8 @@ impl FineTuningAdapter for MlxLoraFineTuner {
             .kill_on_drop(true);
 
         log.info(&format!(
-            "spawning mlx_lm.lora: model={} iters={} batch={} data={} → adapters={}",
+            "spawning mlx_lm.lora: model={} (canonical={}) iters={} batch={} data={} → adapters={}",
+            train_base,
             request.base_model,
             iters,
             schedule.batch_size,

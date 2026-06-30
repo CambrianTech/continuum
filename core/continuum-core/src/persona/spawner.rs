@@ -157,6 +157,7 @@ mod tests {
             cost_input_per_1k: 0.0,
             cost_output_per_1k: 0.0,
             gguf_hint: None,
+            hf_source: None,
             gguf_local_path: Some(make_fake_gguf_tempfile("lcd")),
             chat_template: Some("{% for m in messages %}".to_string()),
             stop_sequences: vec!["<|im_end|>".to_string()],

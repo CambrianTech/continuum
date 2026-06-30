@@ -347,6 +347,19 @@ pub struct Model {
     /// Absent for cloud models.
     #[serde(default)]
     pub gguf_hint: Option<String>,
+    /// HF safetensors repo id for the *trainable* form of this model.
+    /// The GGUF (`gguf_hint` / `gguf_local_path`) is the SERVING artifact;
+    /// MLX/PEFT fine-tuning needs the original safetensors weights instead.
+    /// One canonical registry id (the row's `id`, GGUF-resolvable) threads all
+    /// three consumers: serving resolves the GGUF off this row, while training
+    /// (`mlx_lm.lora --model`) and the forge custodian's HF→PEFT→GGUF convert
+    /// resolve the safetensors dir THROUGH this field. Without it there is no
+    /// bridge from the canonical id to the HF cache and the training/convert
+    /// lanes can't locate base weights. Absent for cloud models (they expose
+    /// no local trainable form) and for serving-only local rows.
+    /// Example: "unsloth/Qwen2.5-0.5B-Instruct".
+    #[serde(default)]
+    pub hf_source: Option<String>,
     /// Resolved local filesystem path to the GGUF. Populated at registry
     /// load by the artifact resolver from `gguf_hint`, local model roots,
     /// or an explicit path if one exists. TOML should normally leave this
