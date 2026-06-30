@@ -995,9 +995,14 @@ async fn run_self_cycle(
     last_burst_fp: &mut u64,
 ) {
     let now_ms = (opts.now_ms)();
-    let composed = {
+    // Compose the world AND snapshot her self-set focus in ONE lock scope. The
+    // focus snapshot is cheap (a scalar + cursor + a usually-empty mute vec) and
+    // taken by-value so the mute/interrupt-floor decision happens WITHOUT holding
+    // the brain mutex across the mentions scan + settle below.
+    let (composed, focus) = {
         let cognition = ctx.cognition.lock().await;
-        cognition.compose_for_turn(&ctx.profile, now_ms).await
+        let composed = cognition.compose_for_turn(&ctx.profile, now_ms).await;
+        (composed, cognition.focus.clone())
     };
     // Wake on a CHANGE to what I should attend to — others' chat (own chat excluded
     // so my speech can't spiral into self-talk) OR my own active work (so the
@@ -1049,6 +1054,26 @@ async fn run_self_cycle(
         addressed,
         "self-tick addressing perception — input-derived fact, not a force-respond gate"
     );
+    // The wake FLOOR (#91): honor a mute SHE set on this lane. A hard mute = she
+    // chose deliberate, duration-bounded blindness (even a direct address is held);
+    // a soft mute drops ambient chatter but a direct address still cuts through
+    // (the interrupt floor — "mute the chatter, not the alarm"). With no mute set
+    // (the default) this is always true — identical to prior behavior, inert until
+    // she steers. The fingerprint was already advanced above, so a muted change is
+    // SEEN-and-dismissed (it won't re-fire); a snooze auto-expiring restores
+    // awareness to the next change. This gates SCHEDULING on her own choice + a
+    // structural fact, never her decision ([[no-hardcoded-heuristics-to-steer-cognition]],
+    // [[focus-is-self-allocation-not-siloing]]).
+    if !focus.wakes_on(ctx.identity.default_room, addressed, now_ms) {
+        crate::probe!(
+            class = "persona.selftick.muted",
+            persona = %ctx.identity.agent_name,
+            room = %ctx.identity.default_room,
+            addressed,
+            "self-tick wake held by a self-set mute — back to sleep (interrupt floor honored)"
+        );
+        return;
+    }
     let addressing = if addressed {
         "Someone addressed you directly in what follows."
     } else {
