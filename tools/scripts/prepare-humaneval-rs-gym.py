@@ -68,13 +68,26 @@ def signature(prompt: str) -> str:
 
 
 def build_prompt(sig: str) -> str:
-    """Frame the signature as an unambiguous "return the complete function"
-    task — the grader only ever compiles the persona's code, never the prompt,
-    so she must emit a standalone, compilable `fn`."""
+    """Frame the signature as a task to implement, WITHOUT suppressing the
+    persona's tools.
+
+    The grader only ever compiles the persona's code (never the prompt), so the
+    contract she must honor is "your final answer is a single standalone,
+    compilable `fn` in a ```rust block" — `extract_code_block` pulls that block
+    out of any surrounding prose, so prose is harmless.
+
+    What this prompt MUST NOT do (the bug it replaces): say "reply with ONLY the
+    function, no prose, no explanation". That instruction forbade the exact
+    self-checking the gym exists to reward — the persona has an 8-act
+    compile/run budget and `code/run`/`cargo/check` in her tool surface, and the
+    old wording told her not to use any of it, producing acts=0 on every task.
+    This wording states the final-answer contract and otherwise leaves acting to
+    her judgment — it neither suppresses tools nor scripts their use (that
+    disposition is the genome's to instil, not the prompt's to puppet)."""
     return (
-        "Implement the following Rust function so it passes its tests. Reply with "
-        "ONLY the complete function (signature and body) in a single ```rust fenced "
-        "code block — no prose, no explanation.\n\n"
+        "Implement the following Rust function so it passes its tests. Give your "
+        "final answer as the complete function (signature and body) in a single "
+        "```rust fenced code block.\n\n"
         f"{sig}\n"
     )
 
