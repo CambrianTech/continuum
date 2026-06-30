@@ -29,6 +29,7 @@ pub mod genome;
 pub mod gpu;
 pub mod health;
 pub mod help;
+pub mod hf;
 pub mod inference;
 pub mod log;
 pub mod memory;
