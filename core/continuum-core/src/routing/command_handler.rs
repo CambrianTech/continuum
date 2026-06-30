@@ -261,7 +261,7 @@ impl CommandRequestHandler {
         // invalid grant → empty caps → pure tier gating (unchanged behavior).
         let granted = self.verify_presented_grant(parsed).await;
         let caller =
-            CallerIdentity::airc(parsed.caller_peer_id.0).with_granted_capabilities(granted);
+            CallerIdentity::airc(parsed.caller_peer_id).with_granted_capabilities(granted);
         Self::dispatch_request(&self.executor, parsed, caller).await
     }
 
@@ -314,7 +314,7 @@ impl CommandRequestHandler {
         executor: &CommandExecutor,
         parsed: &ParsedEnvelope,
     ) -> AircCommandResponse {
-        let caller = CallerIdentity::airc(parsed.caller_peer_id.0);
+        let caller = CallerIdentity::airc(parsed.caller_peer_id);
         Self::dispatch_request(executor, parsed, caller).await
     }
 
@@ -873,7 +873,7 @@ mod tests {
              process_request_via failed to thread the caller through",
         );
         assert_eq!(
-            observed.peer_id, sender_peer_id.0,
+            observed.peer_id, sender_peer_id,
             "caller's peer_id must match the envelope sender — \
              closes the silent-privilege-escalation seam reviewer 2 flagged"
         );

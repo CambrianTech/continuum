@@ -89,7 +89,12 @@ impl CommandToolExecutor {
         // peer: it carries `LocalPersona` identity → resolves to `Trusted` at the
         // gate (file/shell access), capped below Owner. Unforgeable remotely (the
         // airc inbound pump stamps `Airc`); only this local spawn path mints it.
-        let transport = InProcessTransport::new(executor, Some(CallerIdentity::local_persona(persona)));
+        // `persona` is the persona's bare-Uuid id; the gate identity is the canonical
+        // PeerId (== peer_id by invariant). Convert at this spawn boundary.
+        let transport = InProcessTransport::new(
+            executor,
+            Some(CallerIdentity::local_persona(crate::identity::PeerId::from_uuid(persona))),
+        );
         Self::new(Connection::new(transport))
     }
 }

@@ -90,7 +90,7 @@ impl ActionCommand for FocusNudge {
                     .into(),
             ));
         }
-        let persona_id = caller.peer_id;
+        let persona_id = caller.peer_id.as_uuid();
 
         let handle = focus::registry().handle(persona_id);
         let mut state = handle
@@ -122,7 +122,7 @@ mod tests {
 
     fn persona_ctx(persona: Uuid) -> Ctx {
         Ctx {
-            caller: Some(CallerIdentity::local_persona(persona)),
+            caller: Some(CallerIdentity::local_persona(crate::identity::PeerId::from_uuid(persona))),
             ..Ctx::default()
         }
     }
@@ -199,7 +199,7 @@ mod tests {
         assert!(matches!(denied, Err(CommandError::Denied(_))));
 
         let remote = Ctx {
-            caller: Some(CallerIdentity::tcp(Uuid::from_u128(0xE5))),
+            caller: Some(CallerIdentity::tcp(crate::identity::PeerId::from_u128(0xE5))),
             ..Ctx::default()
         };
         let denied_remote = FocusNudge.run(&remote, FocusNudgeParams::default()).await;

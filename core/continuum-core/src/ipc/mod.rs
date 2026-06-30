@@ -2092,7 +2092,9 @@ pub fn start_server(
                                             // source, not the id.
                                             let caller = Some(
                                                 crate::routing::CallerIdentity::tcp(
-                                                    uuid::Uuid::nil(),
+                                                    crate::identity::PeerId::from_uuid(
+                                                        uuid::Uuid::nil(),
+                                                    ),
                                                 ),
                                             );
                                             if let Err(e) = handle_client(stream, state, caller) {

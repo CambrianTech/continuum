@@ -165,7 +165,9 @@ pub fn produce(
         // `peer_id` because that's the cryptographic identity the gate routes on.
         let conn = Connection::new(InProcessTransport::new(
             executor,
-            Some(CallerIdentity::local_persona(persona_id)),
+            Some(CallerIdentity::local_persona(
+                crate::identity::PeerId::from_uuid(persona_id),
+            )),
         ));
 
         let example = TrainingExample {

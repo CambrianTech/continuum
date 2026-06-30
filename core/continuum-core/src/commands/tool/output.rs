@@ -110,7 +110,7 @@ impl ActionCommand for ToolOutput {
         let persona_id = ctx
             .caller
             .as_ref()
-            .map(|c| c.peer_id)
+            .map(|c| c.peer_id.as_uuid())
             .ok_or_else(|| {
                 CommandError::Invalid(
                     "tool/output needs an authenticated caller to scope the output to".into(),

@@ -166,7 +166,7 @@ impl EventSubscribeAdapter {
         // `events/<topic>/subscribe` — policies match on path
         // prefixes the same way they do for commands, keeping the
         // gate authoring uniform across the two surfaces.
-        let caller = CallerIdentity::airc(parsed.caller_peer_id.0);
+        let caller = CallerIdentity::airc(parsed.caller_peer_id);
         let decision = RouteDecision::Local {
             path: format!("events/{}/subscribe", parsed.request.topic),
             query: None,
@@ -282,7 +282,7 @@ impl EventPublishAdapter {
             ));
         }
 
-        let caller = CallerIdentity::airc(parsed.caller_peer_id.0);
+        let caller = CallerIdentity::airc(parsed.caller_peer_id);
         let decision = RouteDecision::Local {
             path: format!("events/{}/publish", parsed.request.topic),
             query: None,
@@ -727,7 +727,7 @@ mod tests {
             .clone()
             .expect("AuthPolicy::gate must have been invoked with Some(caller)");
         assert_eq!(
-            observed.peer_id, sender_peer_id.0,
+            observed.peer_id, sender_peer_id,
             "caller's peer_id must match the envelope sender — \
              closes the reviewer 2 BLOCK 1 silent-privilege-escalation seam"
         );
@@ -861,7 +861,7 @@ mod tests {
             .clone()
             .expect("AuthPolicy::gate must have been invoked with Some(caller)");
         assert_eq!(
-            observed.peer_id, sender_peer_id.0,
+            observed.peer_id, sender_peer_id,
             "caller's peer_id must match the envelope sender — a publish is a \
              WRITE; the gate must see who is emitting"
         );

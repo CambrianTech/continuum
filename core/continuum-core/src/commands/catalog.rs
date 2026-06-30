@@ -170,7 +170,7 @@ mod tests {
             .await
             .unwrap();
         let airc_ctx = Ctx {
-            caller: Some(CallerIdentity::airc(Uuid::new_v4())),
+            caller: Some(CallerIdentity::airc(crate::identity::PeerId::new())),
             ..Default::default()
         };
         let provisional = CommandsList

@@ -103,7 +103,7 @@ impl ActionCommand for FocusMute {
                     .into(),
             ));
         }
-        let persona_id = caller.peer_id;
+        let persona_id = caller.peer_id.as_uuid();
 
         // Default the lane to the room she's acting in (the turn's context). Fail loud
         // if neither is available — a mute with no lane is meaningless.
@@ -150,7 +150,7 @@ mod tests {
 
     fn persona_ctx(persona: Uuid, room: Uuid) -> Ctx {
         Ctx {
-            caller: Some(CallerIdentity::local_persona(persona)),
+            caller: Some(CallerIdentity::local_persona(crate::identity::PeerId::from_uuid(persona))),
             context_id: Some(room),
             ..Ctx::default()
         }
@@ -206,7 +206,7 @@ mod tests {
             .run(
                 // explicit lane (no room context) to prove `lane` overrides the default
                 &Ctx {
-                    caller: Some(CallerIdentity::local_persona(persona)),
+                    caller: Some(CallerIdentity::local_persona(crate::identity::PeerId::from_uuid(persona))),
                     ..Ctx::default()
                 },
                 FocusMuteParams {
@@ -245,7 +245,7 @@ mod tests {
         // a non-persona caller (e.g. a remote peer) is denied even though AiSafe lets
         // it reach the body.
         let remote = Ctx {
-            caller: Some(CallerIdentity::tcp(Uuid::from_u128(0xE5))),
+            caller: Some(CallerIdentity::tcp(crate::identity::PeerId::from_u128(0xE5))),
             context_id: Some(Uuid::from_u128(0xF6)),
             ..Ctx::default()
         };

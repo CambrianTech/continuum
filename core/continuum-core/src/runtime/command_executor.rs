@@ -794,7 +794,7 @@ mod tests {
 
         // Composed as an airc/Provisional caller → identity propagated → FORBIDDEN.
         let airc_ctx = Ctx {
-            caller: Some(CallerIdentity::airc(uuid::Uuid::new_v4())),
+            caller: Some(CallerIdentity::airc(crate::identity::PeerId::new())),
             ..Default::default()
         };
         let escalated = composer.run(&airc_ctx, NoParams {}).await.unwrap();

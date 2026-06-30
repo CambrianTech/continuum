@@ -199,7 +199,7 @@ mod tests {
     #[tokio::test]
     async fn unknown_target_fails_loud() {
         let ctx = Ctx {
-            caller: Some(crate::routing::auth_policy::CallerIdentity::local_persona(Uuid::nil())),
+            caller: Some(crate::routing::auth_policy::CallerIdentity::local_persona(crate::identity::PeerId::from_uuid(Uuid::nil()))),
             ..Default::default()
         };
         let err = Capture
