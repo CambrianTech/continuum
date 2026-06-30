@@ -29,6 +29,7 @@
 //!   already laid here — no caller-code changes
 
 pub mod command_executor;
+pub mod spill;
 pub mod types;
 
 /// Realistic 50-persona load/profiling harness (real CodeModule, real payloads).

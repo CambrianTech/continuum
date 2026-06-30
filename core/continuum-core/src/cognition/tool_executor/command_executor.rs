@@ -43,6 +43,7 @@ use uuid::Uuid;
 use super::types::{
     NativeBatchOutcome, ParsedToolBatch, ToolError, ToolExecutionContext, ToolOutcome,
 };
+use super::spill;
 use super::ToolExecutor;
 use crate::ai::types::{ToolCall as NativeToolCall, ToolResult as NativeToolResult};
 use crate::routing::CallerIdentity;
@@ -123,7 +124,13 @@ fn truncate_on_boundary(mut s: String, max: usize) -> String {
 ///
 /// Like the failure-feedback translation, this is affordance quality, not output
 /// steering: it shapes what the tool layer hands back, never reads her generation.
-fn truncate_tool_output(s: String, max: usize) -> String {
+///
+/// When `spill` is `Some`, the FULL result was first persisted (tier 2) and the
+/// elision marker names the handle so she can grep/page the whole thing via
+/// `tool/output` — Joel's "even if it blows up, all is not lost". When it's
+/// `None` (small output, or the spill itself failed), the marker reinforces the
+/// re-run-scoped / `code/search` narrowing affordance instead.
+fn truncate_tool_output(s: String, max: usize, spill: Option<&spill::SpillRef>) -> String {
     if s.len() <= max {
         return s;
     }
@@ -145,14 +152,46 @@ fn truncate_tool_output(s: String, max: usize) -> String {
         return truncate_on_boundary(s, max);
     }
     let dropped = tail_start - head_end;
+    let recovery = match spill {
+        // The whole result is recoverable — point her at the handle, and at the
+        // failure-hunting path specifically (grep for the error), per Joel: the
+        // build hands spit out a lot of crap and the job is finding the error.
+        Some(r) => format!(
+            "the FULL {} lines were saved as output `{}`. Find the part you need \
+             with `tool/output` — e.g. grep for the failure with \
+             `{{\"handle\":\"{}\",\"pattern\":\"error|panic|failed\"}}`, or read a \
+             line range with `startLine`/`endLine`",
+            r.lines, r.handle, r.handle,
+        ),
+        // Not recoverable — narrow at the source instead.
+        None => "Re-run the tool SCOPED to what you need (a narrower argument, e.g. \
+                 `filter`/`package`/`path`), or grep with `code/search`, instead of \
+                 reading it all"
+            .to_string(),
+    };
     format!(
-        "{}\n…[{dropped} chars elided — this result is large. Re-run the tool \
-         SCOPED to what you need (a narrower argument, e.g. `filter`/`package`/\
-         `path`), or grep with `code/search`, instead of reading it all. The \
-         start and end are kept below.]…\n{}",
+        "{}\n…[{dropped} chars elided — this result is large. {recovery}. The start \
+         and end are kept below.]…\n{}",
         &s[..head_end],
         &s[tail_start..],
     )
+}
+
+/// Bound a tool result for re-injection, spilling the FULL output to disk first
+/// when it overflows so nothing is lost (tier 2). The returned preview names the
+/// spill handle (when the spill succeeded) so the persona can grep/page it.
+///
+/// Spilling is best-effort: if it fails (no home dir, disk full) we STILL bound
+/// the output — context safety is non-negotiable — she just loses the recover-it
+/// affordance for that one result. We never fabricate a handle we couldn't write.
+fn fold_with_recovery(full: String, max: usize, persona_id: Uuid) -> String {
+    if full.len() <= max {
+        return full;
+    }
+    match spill::spill(persona_id, &full) {
+        Ok(r) => truncate_tool_output(full, max, Some(&r)),
+        Err(_) => truncate_tool_output(full, max, None),
+    }
 }
 
 /// Translate a raw substrate failure into feedback a PERSONA can act on.
@@ -273,7 +312,13 @@ impl ToolExecutor for CommandToolExecutor {
             .map(|(i, (tool_use_id, outcome))| match outcome {
                 Ok(value) => NativeToolResult {
                     tool_use_id,
-                    content: truncate_tool_output(value.to_string(), max_result_chars),
+                    // Spill-then-bound: a flood-sized result is persisted whole
+                    // (recoverable via `tool/output`) before the preview is cut.
+                    content: fold_with_recovery(
+                        value.to_string(),
+                        max_result_chars,
+                        ctx.persona_id,
+                    ),
                     is_error: None,
                 },
                 // A failed tool call is NOT a batch failure — it's fed back to the
@@ -458,7 +503,8 @@ mod tests {
             "BUILD START\n{}\nerror: linker failed — THE VERDICT AT THE END",
             "compiling module …\n".repeat(5000)
         );
-        let out = truncate_tool_output(body, 600);
+        // None spill ref → the narrow-at-source affordance (re-run scoped / grep).
+        let out = truncate_tool_output(body, 600, None);
         assert!(out.len() < 1200, "stays bounded near the cap: {} chars", out.len());
         assert!(out.contains("BUILD START"), "keeps the head: {out}");
         assert!(out.contains("THE VERDICT AT THE END"), "keeps the tail (the verdict): {out}");
@@ -466,11 +512,29 @@ mod tests {
         assert!(out.contains("elided"), "names that output was cut: {out}");
     }
 
+    // what this catches: when the full result was spilled, the elision marker
+    // names the recovery handle AND points at the failure-hunting path
+    // (grep the error via `tool/output`) — Joel's "all is not lost" affordance.
+    #[test]
+    fn spilled_output_marker_names_the_handle_and_recovery() {
+        let body = format!("BUILD START\n{}\nerror: boom", "noise\n".repeat(5000));
+        let fake = spill::SpillRef {
+            handle: "deadbeefcafe0001".to_string(),
+            path: std::path::PathBuf::from("/tmp/x.log"),
+            bytes: body.len(),
+            lines: body.lines().count(),
+        };
+        let out = truncate_tool_output(body, 600, Some(&fake));
+        assert!(out.contains("deadbeefcafe0001"), "names the handle: {out}");
+        assert!(out.contains("tool/output"), "names the recovery tool: {out}");
+        assert!(out.contains("error|panic|failed"), "points at the failure hunt: {out}");
+    }
+
     // what this catches: output within budget is returned verbatim — no marker,
     // no elision when nothing was dropped.
     #[test]
     fn small_output_is_returned_verbatim() {
-        let out = truncate_tool_output("ok: 2 passed".to_string(), 16_000);
+        let out = truncate_tool_output("ok: 2 passed".to_string(), 16_000, None);
         assert_eq!(out, "ok: 2 passed");
     }
 
@@ -481,7 +545,7 @@ mod tests {
     fn multibyte_body_never_panics_at_any_budget() {
         let body = "αβγδε".repeat(2000); // 2-byte chars, well over any cap
         for max in [8usize, 64, 600, 4096] {
-            let out = truncate_tool_output(body.clone(), max);
+            let out = truncate_tool_output(body.clone(), max, None);
             // round-trips as valid UTF-8 (the assertions themselves would panic on
             // a mid-codepoint slice) and stays near the requested budget.
             assert!(out.chars().count() > 1, "valid UTF-8 at max={max}");
