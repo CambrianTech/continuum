@@ -2,19 +2,19 @@
 //! focus scalar (#91). She mutes a noisy thread/channel for herself; the never-stop
 //! serve loop's wake floor (`FocusState::wakes_on`) honors it on the very next slice.
 //!
-//! SOFT (default) silences a lane's ambient chatter but a direct address still wakes
-//! her — "mute the chatter, not the alarm." HARD silences everything for the lane
-//! including that interrupt floor: deliberate blindness, only ever safe paired with a
-//! duration. A snooze (`durationSecs`) auto-expires so the substrate reasserts
-//! "never blind" without her having to remember to un-mute — a mute can never
-//! silently calcify into permanent neglect.
+//! SOFT (default) turns part-way from a lane's ambient chatter; HARD turns fully from
+//! it (the allocation kernel pools no ambient attention there). NEITHER blinds her: a
+//! direct address pierces every level — the inviolable interrupt floor. Mute is
+//! attention allocation, never sensory shutoff: "I don't turn off my eyes and ears." A
+//! snooze (`durationSecs`) auto-expires so ambient awareness self-restores without her
+//! having to remember to un-mute — a mute can never silently calcify into neglect.
 //!
 //! Keyed on the AUTHENTICATED caller ([`CallerIdentity::local_persona`], stamped onto
 //! her tool connection by `CommandToolExecutor::for_persona`), never a spoofable
 //! param: she mutes her OWN lanes, never another persona's
 //! ([[persona-is-a-client]], [[focus-is-self-allocation-not-siloing]]). This is the
-//! decision half of "steer without going blind" — she owns the path; the substrate
-//! still guarantees perception via the interrupt floor.
+//! decision half of "navigate away without going numb" — she owns where her attention
+//! turns; the substrate still guarantees perception of a direct address.
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -37,10 +37,11 @@ pub struct FocusMuteParams {
     #[ts(optional)]
     #[ts(type = "string")]
     pub lane: Option<Uuid>,
-    /// `false` (default) = soft: silence the lane's ambient chatter, but a direct
-    /// address still reaches you (the interrupt floor). `true` = hard: silence
-    /// everything for the lane incl. the floor — deliberate blindness, only sound
-    /// when paired with `durationSecs`.
+    /// `false` (default) = soft: turn part-way from the lane's ambient chatter. `true`
+    /// = hard: turn fully from it (no ambient attention pooled there). Either way a
+    /// direct address still reaches you — the inviolable interrupt floor; mute is
+    /// attention allocation, never going deaf to the lane. Pair a hard mute with
+    /// `durationSecs` so your ambient awareness self-restores.
     #[serde(default)]
     pub hard: bool,
     /// Seconds until the mute auto-expires (a snooze). Omit to hold the mute until
@@ -192,11 +193,12 @@ mod tests {
         assert_eq!(state.lock().unwrap().active_mute(room, now_ms()), None);
     }
 
-    // what this catches: a hard snooze sets a future expiry and the wake floor goes
-    // blind even to a direct address until it lapses — the "deliberate, bounded
-    // blindness" contract, end to end through the command.
+    // what this catches: a hard snooze sets a future expiry and suppresses AMBIENT wake
+    // while active, yet a direct address still pierces it (never numb) and ambient
+    // awareness self-restores once it lapses — the "navigate away, never numb, bounded"
+    // contract, end to end through the command.
     #[tokio::test]
-    async fn hard_snooze_sets_expiry_and_blinds_the_floor() {
+    async fn hard_snooze_sets_expiry_and_preserves_the_floor() {
         let persona = Uuid::from_u128(0xC3);
         let lane = Uuid::from_u128(0xD4);
         let before = now_ms();
@@ -221,9 +223,11 @@ mod tests {
         assert!(expiry >= before + 60_000, "expiry ~= now + 60s");
 
         let state = focus::registry().handle(persona);
-        // hard mute blinds even a direct address while active...
-        assert!(!state.lock().unwrap().wakes_on(lane, true, before + 1_000));
-        // ...but awareness self-restores once the snooze lapses.
+        // hard mute suppresses AMBIENT wake while active...
+        assert!(!state.lock().unwrap().wakes_on(lane, false, before + 1_000));
+        // ...but a direct address still pierces it — never numb...
+        assert!(state.lock().unwrap().wakes_on(lane, true, before + 1_000));
+        // ...and ambient awareness self-restores once the snooze lapses.
         assert!(state.lock().unwrap().wakes_on(lane, false, expiry + 1));
     }
 

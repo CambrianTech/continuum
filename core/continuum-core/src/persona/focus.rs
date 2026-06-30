@@ -27,17 +27,20 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 use uuid::Uuid;
 
-/// How hard a mute silences a lane — and whether the no-blindness interrupt floor
-/// still cuts through it.
+/// How far a mute navigates her ambient attention away from a lane. Mute is attention
+/// allocation, never sensory shutoff: the inviolable interrupt floor (a direct address)
+/// cuts through EVERY level — "I don't turn off my eyes and ears." The levels differ
+/// only in how hard the lane's ambient chatter is down-weighted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MuteLevel {
-    /// Silence the lane's ambient / backlog chatter, but a direct address still
-    /// wakes her: "mute the chatter, not the alarm." The interrupt floor holds.
+    /// Turn part-way from a lane's ambient / backlog chatter — its pull on her attention
+    /// drops but she keeps some peripheral awareness. A direct address still reaches her:
+    /// "turn from the chatter, not deaf to the alarm."
     Soft,
-    /// Silence everything for this lane, including the interrupt floor — the one
-    /// place she may choose *actual* blindness. Safe only because a mute can be
-    /// duration-bounded: a hard mute that auto-expires is deliberate and never
-    /// permanent-by-accident.
+    /// Turn fully from a lane's ambient chatter — the allocation kernel pools no ambient
+    /// attention there at all. She is still NOT blind to it: a direct address pierces (the
+    /// inviolable interrupt floor). A sane mind navigates away from noise; it does not go
+    /// numb to it.
     Hard,
 }
 
@@ -168,16 +171,23 @@ impl FocusState {
     /// — derived elsewhere from the actual content via the identity-aware `mentions`
     /// primitive). It gates scheduling, not her decision, and never reads her output
     /// ([[no-hardcoded-heuristics-to-steer-cognition]]):
-    ///   * **Hard** mute → never wakes (deliberate, duration-bounded blindness).
-    ///   * **Soft** mute → wakes ONLY on a direct address (the interrupt floor —
-    ///     "mute the chatter, not the alarm").
-    ///   * **No active mute** → always wakes on change (unchanged from prior behavior).
+    ///   * **A direct address** → ALWAYS wakes her. The interrupt floor is INVIOLABLE:
+    ///     "I don't turn off my eyes and ears." A sane mind navigates away from noise; it
+    ///     never goes numb to it — so not even her own self-set mute can blind her to a
+    ///     direct address. This is a codified protection that keeps the mind sane
+    ///     ([[commands-are-agency-algs-are-pathways]]), the boundary her agency lives
+    ///     within.
+    ///   * **A muted lane's ambient change** (Soft *or* Hard) → does NOT wake her: she
+    ///     has navigated her attention away from that lane's chatter. The two levels
+    ///     differ only in how far the allocation kernel pools ambient attention off the
+    ///     lane, never in whether an address pierces. Mute is attention allocation, never
+    ///     sensory shutoff.
+    ///   * **No active mute** → always wakes on change.
     pub fn wakes_on(&self, lane: Uuid, addressed: bool, now_ms: u64) -> bool {
-        match self.active_mute(lane, now_ms) {
-            Some(MuteLevel::Hard) => false,
-            Some(MuteLevel::Soft) => addressed,
-            None => true,
+        if addressed {
+            return true;
         }
+        self.active_mute(lane, now_ms).is_none()
     }
 
     /// Materialize the focus KERNEL: a normalized allocation `a` over `threads`, the
@@ -193,10 +203,16 @@ impl FocusState {
     /// post-endorphin broad pole), `1.0` → peaked on the cursor / highest-relevance
     /// thread (heads-down — the locked-in pole). The sticky `cursor` gets a proximity
     /// bonus so that rising focus collapses toward HER chosen lane, not merely the
-    /// loudest one. A **hard-muted** lane (at `now_ms`) is excluded — weight `0.0`,
-    /// outside the normalization. (Soft mute's allocation effect is the caller's: it
-    /// passes that lane's relevance net of ambient — soft mute's load-bearing job is
-    /// the wake floor in [`wakes_on`], not allocation.)
+    /// loudest one. A **hard-muted** lane (at `now_ms`) is excluded from *ambient*
+    /// allocation — weight `0.0`, outside the normalization — UNLESS it is her `cursor`:
+    /// a lane she has actively turned toward is no longer ambient, so her own focus
+    /// pierces the mute. That is the allocation-surface twin of the inviolable interrupt
+    /// floor in [`wakes_on`] (mute is attention allocation, never sensory shutoff — she
+    /// is never numb to a lane she or another has brought to the fore). (Soft mute's
+    /// allocation effect is the caller's: it passes that lane's relevance net of ambient
+    /// — soft mute's load-bearing job is the wake floor, not allocation. Address-level
+    /// piercing of an ambient hard mute arrives when `allocate`'s perception consumer
+    /// lands — multi-lane #43 — supplying addressing-bearing relevance per lane.)
     ///
     /// Returns one [`ThreadShare`] per input thread, in input order, weights summing to
     /// ~1.0 (or all `0.0` only if every thread is hard-muted — a degenerate, honest
@@ -212,11 +228,15 @@ impl FocusState {
         // Score each thread: base relevance + a cursor proximity bonus (binary today —
         // "is this the lane she settled on"; a semantic thread-distance can replace the
         // indicator later without touching the kernel's shape). A hard-muted lane scores
-        // NaN as a sentinel for "excluded" so it never enters the normalization.
+        // NaN as a sentinel for "excluded" so it never enters the normalization — but her
+        // cursor pierces a hard mute (a lane she has turned toward is not ambient), the
+        // allocation twin of the inviolable wake floor.
         let scores: Vec<f32> = threads
             .iter()
             .map(|(id, relevance)| {
-                if self.active_mute(*id, now_ms) == Some(MuteLevel::Hard) {
+                if self.cursor != Some(*id)
+                    && self.active_mute(*id, now_ms) == Some(MuteLevel::Hard)
+                {
                     f32::NAN
                 } else {
                     let cursor_bonus = if self.cursor == Some(*id) {
@@ -386,10 +406,11 @@ mod tests {
         assert_eq!(f.active_mute(lane(), 5_000), None);
     }
 
-    // what this catches: the interrupt floor — hard mute blinds even a direct
-    // address; soft mute lets the address through but drops ambient; an expired or
-    // absent mute always wakes. This is the load-bearing "steer without going
-    // blind" invariant.
+    // what this catches: the INVIOLABLE interrupt floor — a direct address always wakes
+    // her at EVERY mute level ("I don't turn off my eyes and ears"); both soft and hard
+    // suppress only ambient (non-addressed) change; an expired or absent mute always
+    // wakes. This is the load-bearing "navigate away without going numb" invariant — not
+    // even her own self-set hard mute can blind her to a direct address.
     #[test]
     fn wake_floor_honors_mute_level_and_address() {
         let mut f = FocusState::new();
@@ -400,10 +421,11 @@ mod tests {
         f.mute(lane(), MuteLevel::Soft, None);
         assert!(!f.wakes_on(lane(), false, 0));
         assert!(f.wakes_on(lane(), true, 0));
-        // hard: blind even to a direct address (deliberate)
+        // hard: ambient suppressed MORE, but the address still pierces — never numb
         f.mute(lane(), MuteLevel::Hard, Some(1_000));
-        assert!(!f.wakes_on(lane(), true, 0));
-        // ...but the snooze restores full awareness on lapse
+        assert!(!f.wakes_on(lane(), false, 0));
+        assert!(f.wakes_on(lane(), true, 0));
+        // ...and once the snooze lapses, even ambient change wakes her again
         assert!(f.wakes_on(lane(), false, 1_000));
     }
 
