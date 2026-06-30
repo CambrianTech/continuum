@@ -1805,7 +1805,7 @@ pub fn start_server(
     // selection logic lives in the coordinator.
     {
         use crate::genome::fine_tuning::{
-            FineTuningRegistry, LocalCandleFineTuner, OpenAIFineTuningAdapter,
+            FineTuningRegistry, LocalCandleFineTuner, MlxLoraFineTuner, OpenAIFineTuningAdapter,
         };
         let ft_registry = std::sync::Arc::new(FineTuningRegistry::new());
 
@@ -1833,6 +1833,24 @@ pub fn start_server(
             "server",
             "GenomeModule: registered LocalCandleFineTuner (skeleton — tasks #231-#233 \
              track the optimizer-loop landing)"
+        );
+
+        // MlxLoraFineTuner — the REAL owned trainer (#32): Apple's
+        // mlx_lm.lora on the Metal GPU → forge-custodian converts to a
+        // GGUF-lora gene → llama-server serves it. Always registered; its
+        // capability declares `requires: TrainerHardware::Metal`, so the
+        // coordinator routes here only on a Metal host, and create_job
+        // fails loud (never silently) when Metal / the mlx python env /
+        // a base model / examples are missing. Without this slot the live
+        // registry held only the synthetic Candle skeleton + conditional
+        // cloud OpenAI, so genome/job-create could never produce a
+        // real, loadable LoRA — the closed L1→L3 loop was broken here.
+        ft_registry.register(std::sync::Arc::new(MlxLoraFineTuner::new()));
+        log_info!(
+            "ipc",
+            "server",
+            "GenomeModule: registered MlxLoraFineTuner (mlx-local — real Apple-Silicon \
+             LoRA trainer; coordinator gates on a probed Metal device)"
         );
 
         // L3 completion sentinel shares the SAME registry — it polls the handles the
