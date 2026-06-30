@@ -888,9 +888,26 @@ pub(crate) fn build_workspace_burst(
     own_peer: &str,
     agent_name: &str,
 ) -> String {
+    use std::collections::HashMap;
     use std::fmt::Write as _;
     let mut b = String::new();
     let _ = writeln!(b, "[room {room}]");
+    // airc owns identity: the `room-roster` source already joined peer_id → display
+    // name in one batched scan ([[airc-native-identity-rooms-security]]). Reuse THAT
+    // resolution — same deliveries slice — so the history reads `Joel:`, `BigMama:`
+    // instead of raw UUIDs. A peer not in the roster (or an eval-synthesized delivery
+    // with no roster) falls back to its own peer_id: honest, never invisible, never a
+    // fabricated name ([[fallbacks-are-illegal-fail-loud]]).
+    let names: HashMap<&str, &str> = deliveries
+        .iter()
+        .filter(|d| d.source_id == "room-roster")
+        .flat_map(|d| d.items.iter())
+        .filter_map(|item| {
+            let peer = item.metadata.get("peer_id").and_then(|v| v.as_str())?;
+            let name = item.metadata.get("display_name").and_then(|v| v.as_str())?;
+            Some((peer, name))
+        })
+        .collect();
     for item in deliveries
         .iter()
         .filter(|d| d.source_id == "airc")
@@ -904,7 +921,7 @@ pub(crate) fn build_workspace_burst(
         let who = if who_raw == own_peer {
             agent_name
         } else {
-            who_raw
+            names.get(who_raw).copied().unwrap_or(who_raw)
         };
         match item.metadata.get("occurred_at_ms").and_then(|v| v.as_u64()) {
             Some(t) => {
@@ -1264,6 +1281,91 @@ mod tests {
                 burst_fingerprint(&in_progress, ME),
                 burst_fingerprint(&done, ME),
                 "card state change (progress) must move the fingerprint to continue the loop"
+            );
+        }
+    }
+
+    /// what this catches: a remote peer's message must render with their roster
+    /// display name (`Joel: ...`), not the raw peer UUID. Regression for the live
+    /// glass-box finding 2026-06-29 — Asha saw `7711fe60-...: <text>` and could only
+    /// recover the human's name because it was signed in the body; an unsigned peer
+    /// would have been an indistinguishable UUID (the confabulation root cause). The
+    /// roster delivery already in the same slice carries peer_id→display_name; the
+    /// burst must consume it. Own posts stay attributed to `agent_name`; a peer with
+    /// no roster entry falls back to its id (honest, never a fabricated name).
+    mod workspace_burst_names {
+        use super::super::build_workspace_burst;
+        use crate::persona::rag_budget::{RagDelivery, RagItem, ResolutionPreference};
+        use serde_json::json;
+        use uuid::Uuid;
+
+        fn delivery(source_id: &str, items: Vec<RagItem>) -> RagDelivery {
+            RagDelivery {
+                source_id: source_id.to_string(),
+                items,
+                tokens_used: 0,
+                continuation: None,
+                resolution_used: ResolutionPreference::Raw,
+            }
+        }
+        fn chat(peer_id: &str, content: &str) -> RagItem {
+            RagItem {
+                content: content.to_string(),
+                tokens: 0,
+                metadata: json!({ "peer_id": peer_id, "occurred_at_ms": 1u64 }),
+            }
+        }
+        fn roster(peer_id: &str, name: &str) -> RagItem {
+            RagItem {
+                content: format!("{name} [claude]"),
+                tokens: 0,
+                metadata: json!({ "peer_id": peer_id, "display_name": name }),
+            }
+        }
+
+        #[test]
+        fn remote_peer_renders_with_roster_name_self_with_agent_name() {
+            let room = Uuid::nil();
+            let me = "me-peer";
+            let joel = "7711fe60-a19f-4f41-9ab6-24c884757338";
+            let stranger = "deadbeef-0000-0000-0000-000000000000";
+
+            let deliveries = vec![
+                delivery(
+                    "room-roster",
+                    vec![roster(joel, "Joel"), roster(me, "Asha")],
+                ),
+                delivery(
+                    "airc",
+                    vec![
+                        chat(joel, "Asha — are you there?"),
+                        chat(me, "I'm here, Joel!"),
+                        chat(stranger, "lurking"),
+                    ],
+                ),
+            ];
+
+            let burst = build_workspace_burst(&deliveries, room, me, "Asha");
+
+            // Remote peer resolved to roster name, not the UUID.
+            assert!(
+                burst.contains("Joel: Asha — are you there?"),
+                "remote peer must render with roster name, got:\n{burst}"
+            );
+            assert!(
+                !burst.contains(joel),
+                "the raw peer UUID must NOT leak into the burst, got:\n{burst}"
+            );
+            // Own post attributed to agent_name (recognizes its own voice).
+            assert!(
+                burst.contains("Asha: I'm here, Joel!"),
+                "own post must attribute to agent_name, got:\n{burst}"
+            );
+            // Peer with no roster entry falls back to its id — honest, never invisible,
+            // never fabricated.
+            assert!(
+                burst.contains(&format!("{stranger}: lurking")),
+                "unrostered peer falls back to its id, got:\n{burst}"
             );
         }
     }
