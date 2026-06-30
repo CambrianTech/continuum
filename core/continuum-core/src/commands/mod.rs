@@ -47,3 +47,4 @@ pub mod training_trigger;
 pub mod vdd;
 pub mod vector;
 pub mod vision;
+pub mod web;
