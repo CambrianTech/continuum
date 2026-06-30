@@ -111,6 +111,34 @@ pub fn resolve_gym(reference: &str) -> Result<(String, String), String> {
     ))
 }
 
+/// Maps a trait (`DomainClassifier` domain — the `trait_kind` of a gene's
+/// `(persona_id, trait_kind, base_model)` bucket) → the committed gym that
+/// MEASURES it. This is the recipe's `{trait → gym}` edge: it lets the
+/// AUTOMATIC producer path stamp an `eval_set` onto a gene it dispatches, so the
+/// L3 sentinel can A/B and adopt it. Without this map the producer omitted
+/// `eval_set` (→ `None`), and the sentinel correctly REFUSED to adopt every
+/// auto-produced gene as unmeasurable — so only a hand-dispatched job (with a
+/// hand-declared gym) could ever close the loop.
+///
+/// A trait with NO entry returns `None` — and that is the honest answer, NOT a
+/// gap to paper over: we have no gym that measures (say) `conversation`
+/// improvement, so the producer declares no gym and the sentinel refuses to
+/// adopt rather than grading a conversation gene against a coder set
+/// ([[fallbacks-are-illegal-fail-loud]]). Adding a measured trait is one line
+/// here, paired with its committed gym in [`EMBEDDED_GYMS`] (the unit test below
+/// asserts every mapped gym resolves, so a typo fails at test time, not in prod).
+const TRAIT_GYMS: &[(&str, &str)] = &[("code", "docs/genome/coder-eval.jsonl")];
+
+/// The committed gym that measures `trait_kind`, or `None` when no gym measures
+/// that trait yet. See [`TRAIT_GYMS`]. The returned reference is resolvable via
+/// [`resolve_gym`] (CWD-/deployment-independent).
+pub fn gym_for_trait(trait_kind: &str) -> Option<&'static str> {
+    TRAIT_GYMS
+        .iter()
+        .find(|(trait_name, _)| *trait_name == trait_kind)
+        .map(|(_, gym)| *gym)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -140,6 +168,30 @@ mod tests {
             .expect_err("unknown gym must fail loud");
         assert!(err.contains("does-not-exist.jsonl"), "names the reference");
         assert!(err.contains("coder-eval.jsonl"), "lists embedded candidates");
+    }
+
+    // what this catches: the `code` trait resolves to its measuring gym, an
+    // unmapped trait honestly returns None (→ producer omits eval_set → sentinel
+    // refuses to adopt, never grades against the wrong gym), and EVERY mapped gym
+    // actually resolves — a typo in TRAIT_GYMS fails here, not in production when
+    // the automatic loop tries to eval an auto-produced gene.
+    #[test]
+    fn trait_gym_map_is_honest_and_every_target_resolves() {
+        assert_eq!(
+            gym_for_trait("code"),
+            Some("docs/genome/coder-eval.jsonl"),
+            "the code trait must map to its committed gym"
+        );
+        assert_eq!(
+            gym_for_trait("conversation"),
+            None,
+            "an unmeasured trait must return None — not a wrong-gym fallback"
+        );
+        for (trait_name, gym) in super::TRAIT_GYMS {
+            resolve_gym(gym).unwrap_or_else(|e| {
+                panic!("trait '{trait_name}' maps to gym '{gym}' which does not resolve: {e}")
+            });
+        }
     }
 
     // what this catches: an existing on-disk custom gym is read from disk (step

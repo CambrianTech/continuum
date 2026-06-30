@@ -183,14 +183,16 @@ pub fn produce(
         // = unfiltered live capture (TrainingSource::Raw). minExamples omitted →
         // DEFAULT_MIN_EXAMPLES; the trigger auto-fires job-create at the threshold.
         //
-        // `evalSet` is INTENTIONALLY omitted (→ None): the `DomainClassifier` bucket
-        // (`plan.trait_kind`) does not yet resolve to a measuring gym, so the producer
-        // cannot honestly declare one. The L3 sentinel will therefore REFUSE to adopt
-        // a gene from this path until a trait→gym map exists
-        // ([[fallbacks-are-illegal-fail-loud]]) — an unmeasurable auto-gene is never
-        // paged into a live persona. Wiring that map is the explicit follow-up; the
-        // field is plumbed end-to-end so the producer only needs to start filling it.
-        let params = json!({
+        // `evalSet` rides the recipe's {trait → gym} edge: the committed gym that
+        // MEASURES `plan.trait_kind`, looked up in `cognition::gym::gym_for_trait`.
+        // When the trait HAS a gym (e.g. `code`), it is declared so the L3 sentinel
+        // can A/B and adopt the auto-produced gene — this is what lets the AUTOMATIC
+        // loop close, not just a hand-dispatched job. When the trait has NO gym
+        // (e.g. `conversation`), the field is OMITTED (→ None) and the sentinel
+        // REFUSES to adopt the gene as unmeasurable rather than grading it against
+        // the wrong gym ([[fallbacks-are-illegal-fail-loud]]) — never paged into a
+        // live persona on a gym that doesn't measure its trait.
+        let mut params = json!({
             "personaId": persona_id,
             "personaName": persona_name,
             "baseModel": base_model,
@@ -198,6 +200,14 @@ pub fn produce(
             "examples": [example],
             "source": "raw",
         });
+        if let Some(eval_set) = crate::cognition::gym::gym_for_trait(&plan.trait_kind) {
+            if let serde_json::Value::Object(ref mut map) = params {
+                map.insert(
+                    "evalSet".into(),
+                    serde_json::Value::String(eval_set.to_string()),
+                );
+            }
+        }
 
         if let Err(e) = conn
             .commands()
@@ -246,6 +256,30 @@ mod tests {
             p.quality >= MIN_TRAINING_QUALITY,
             "the carried quality must be the score that cleared the gate: {}",
             p.quality
+        );
+    }
+
+    // what this catches: the recipe's {trait → gym} edge that lets the AUTOMATIC
+    // loop close. A code turn classifies as the `code` trait, which resolves to a
+    // committed gym — so the gene the producer dispatches carries an eval_set the
+    // L3 sentinel can A/B and adopt. Before this map the producer omitted eval_set
+    // and every auto-produced gene was unadoptable (only hand-dispatched jobs
+    // closed the loop). The wiring inside `produce` stamps this same lookup onto
+    // the submit params.
+    #[test]
+    fn a_code_turn_auto_produces_a_measurable_gene() {
+        let classifier = DomainClassifier::new();
+        let code_reply = "Here is the fix: the bug is a null deref in the cargo build \
+            script. Add an `if let Some(x) = opt` guard before the `.unwrap()`, return \
+            an `Err` with the missing-field name, and the async function compiles and \
+            the test passes against the typescript interface.";
+        let p = plan(&classifier, "Why does my Rust function panic?", code_reply)
+            .expect("a substantive code reply must clear the quality gate");
+        assert_eq!(p.trait_kind, "code", "a code turn must bucket as the code trait");
+        assert_eq!(
+            crate::cognition::gym::gym_for_trait(&p.trait_kind),
+            Some("docs/genome/coder-eval.jsonl"),
+            "the code trait must resolve to a measuring gym so the gene is adoptable"
         );
     }
 }
