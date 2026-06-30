@@ -218,6 +218,18 @@ impl FineTuningAdapter for MlxLoraFineTuner {
         let lora = request.lora.clone().unwrap_or_else(default_lora);
         let iters = iters_for(&request, &schedule);
 
+        // mlx_lm.lora reads rank/scale/dropout ONLY from a `-c` config YAML — there
+        // are no CLI flags for them. Emit it (or mlx silently uses scale 20.0; see
+        // `lora_config_yaml`) into the already-created adapter dir and pass it below.
+        let config_path = adapter_dir.join("mlx_train_config.yaml");
+        let scale = lora.alpha as f64 / (lora.rank.max(1) as f64);
+        std::fs::write(&config_path, lora_config_yaml(&lora)).map_err(|e| {
+            FineTuningError::LocalTrainerFailed(format!(
+                "write mlx lora config {}: {e}",
+                config_path.display()
+            ))
+        })?;
+
         let mut cmd = tokio::process::Command::new(&self.python);
         cmd.arg("-m")
             .arg("mlx_lm.lora")
@@ -236,16 +248,21 @@ impl FineTuningAdapter for MlxLoraFineTuner {
             .arg(lora.target_modules.len().max(8).to_string())
             .arg("--learning-rate")
             .arg(format!("{:e}", schedule.learning_rate))
+            .arg("-c")
+            .arg(&config_path)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
 
         log.info(&format!(
-            "spawning mlx_lm.lora: model={} (canonical={}) iters={} batch={} data={} → adapters={}",
+            "spawning mlx_lm.lora: model={} (canonical={}) iters={} batch={} \
+             rank={} scale={:.1} data={} → adapters={}",
             train_base,
             request.base_model,
             iters,
             schedule.batch_size,
+            lora.rank,
+            scale,
             data_dir.display(),
             adapter_dir.display()
         ));
@@ -469,6 +486,31 @@ fn default_lora() -> LoRAHyperparams {
     }
 }
 
+/// The `-c` config YAML carrying the LoRA knobs mlx_lm.lora has NO CLI flag for
+/// (`rank`/`scale`/`dropout`). This is LOAD-BEARING: without it, mlx_lm silently
+/// falls back to its built-in defaults — rank 8 **and scale 20.0** — over-baking
+/// every gene ~10× past the substrate-intended scale (`== alpha/rank`, ≈2.0 for the
+/// rank-8/alpha-16 default). A scale-20 LoRA serves as gibberish at request-scale
+/// 1.0, so the genome A/B measures a real-but-overdriven gene as a loss and rejects
+/// an adapter that lifts cleanly at the intended strength. Rendered through the ONE
+/// canonical encoder the forge train primitive uses
+/// ([[fallbacks-are-illegal-fail-loud]] — fix the trained scale at its source, never
+/// dial around it at serve time).
+///
+/// `keys` is left EMPTY here, leaving mlx_lm on its own default target set. The
+/// genome adapter's convert-safe MLP-only targeting (the forge path's hard-won
+/// invariant) is the #52 convergence follow-up; this fix isolates the proven scale
+/// variable and changes nothing else about what the trainer touches.
+fn lora_config_yaml(lora: &LoRAHyperparams) -> String {
+    let scale = lora.alpha as f64 / (lora.rank.max(1) as f64);
+    crate::forge::mlx_train::render_lora_parameters_yaml(
+        lora.rank,
+        scale,
+        lora.dropout as f64,
+        &[],
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -509,6 +551,21 @@ mod tests {
         assert_eq!(caps.provider_id, "mlx-local");
         assert!(caps.supports_lora);
         assert!(caps.produces_local_artifact);
+    }
+
+    // what this catches: the `-c` config the adapter emits carries the
+    // substrate-intended LoRA scale (== alpha/rank, ≈2.0 for the rank-8/alpha-16
+    // default), NOT mlx_lm's built-in default 20.0. Without this config mlx silently
+    // over-bakes every gene ~10×, serving gibberish at request-scale 1.0 and getting
+    // a good gene wrongly rejected by the genome A/B. The scale line is the proven
+    // root cause of the positive-control "failure"; this pins it at the source.
+    #[test]
+    fn lora_config_carries_intended_scale_two() {
+        let cfg = lora_config_yaml(&default_lora());
+        assert!(cfg.contains("rank: 8"), "config: {cfg}");
+        assert!(cfg.contains("scale: 2.0"), "config: {cfg}");
+        // 20.0 is exactly the mlx default this config exists to override.
+        assert!(!cfg.contains("scale: 20"), "leaked mlx default scale: {cfg}");
     }
 
     // what this catches: empty base / empty dataset are caller errors

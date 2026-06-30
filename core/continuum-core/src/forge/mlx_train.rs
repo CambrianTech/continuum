@@ -155,19 +155,31 @@ pub struct MlxTrainOutput {
 /// invariant is pinned independently of a real run. Everything else rides as an
 /// explicit CLI flag (see [`build_train_args`]).
 pub fn build_lora_config_yaml(spec: &MlxTrainSpec) -> String {
+    render_lora_parameters_yaml(spec.rank, spec.scale, spec.dropout, &spec.target_keys)
+}
+
+/// The pure `lora_parameters` YAML block — the ONE place the substrate encodes the
+/// mlx_lm LoRA knobs that have NO CLI flag (`rank`/`scale`/`dropout`/`keys`). EVERY
+/// training path renders through here — the forge primitive above AND the genome
+/// [`crate::genome::fine_tuning`] `FineTuningAdapter` — so the scale~2 invariant
+/// (NEVER mlx_lm's built-in default 20.0, which over-bakes a gene ~10×) holds
+/// uniformly. Without a `-c` config carrying these, mlx_lm silently substitutes its
+/// own defaults: that is exactly the bug this seam exists to prevent.
+///
+/// `keys` EMPTY → no `keys:` line, leaving mlx_lm on its own default target set
+/// (the explicit "let the trainer decide" escape hatch); a non-empty set pins the
+/// convert-safe targets (see [`MlxTrainSpec::target_keys`]).
+pub fn render_lora_parameters_yaml(rank: u32, scale: f64, dropout: f64, keys: &[String]) -> String {
     // Render scale/dropout as floats even when integral (`2` → `2.0`) so the YAML
     // is unambiguously numeric and self-documenting about being a scale, not a count.
     let mut yaml = format!(
         "lora_parameters:\n  rank: {}\n  scale: {:.1}\n  dropout: {}\n",
-        spec.rank, spec.scale, spec.dropout
+        rank, scale, dropout
     );
-    // The convert-safe target set (see `MlxTrainSpec::target_keys`). EMPTY leaves
-    // mlx_lm on its default set — which produces unconvertible attention genes for
-    // qwen3.5; the genome-loop caller always supplies the MLP set. Rendered as a
-    // YAML flow list of quoted suffixes (mlx_lm matches them against module names).
-    if !spec.target_keys.is_empty() {
-        let quoted = spec
-            .target_keys
+    // Rendered as a YAML flow list of quoted suffixes (mlx_lm matches them against
+    // module names).
+    if !keys.is_empty() {
+        let quoted = keys
             .iter()
             .map(|k| format!("\"{k}\""))
             .collect::<Vec<_>>()
@@ -450,6 +462,20 @@ mod tests {
         s.target_keys.clear();
         let y = build_lora_config_yaml(&s);
         assert!(!y.contains("keys:"), "empty target set must omit keys: {y}");
+    }
+
+    // what this catches: the SHARED render seam the genome FineTuningAdapter emits
+    // through (genome/fine_tuning/mlx_lora_adapter.rs::lora_config_yaml). Both paths
+    // MUST land the same scale~2 invariant; a regression here that dropped the scale
+    // line (or rounded it to an int count) would let mlx_lm fall back to its built-in
+    // scale 20.0 on the genome path — the over-bake that served gibberish and got a
+    // good gene wrongly rejected. Empty keys → no `keys:` line (genome default).
+    #[test]
+    fn render_seam_pins_scale_and_omits_empty_keys() {
+        let y = render_lora_parameters_yaml(8, 2.0, 0.0, &[]);
+        assert!(y.contains("rank: 8"), "yaml: {y}");
+        assert!(y.contains("scale: 2.0"), "yaml: {y}");
+        assert!(!y.contains("keys:"), "empty keys must omit the line: {y}");
     }
 
     // what this catches: the argv mirrors the mlx_lm.lora CLI contract — train mode,
