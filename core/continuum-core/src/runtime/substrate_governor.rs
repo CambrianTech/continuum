@@ -80,6 +80,15 @@
 //!   dimension (`PressureSignalKind::VramHigh` reserves it); a narrow `InferenceQueueDepth`
 //!   metric is the wrong frame. The budget backs off when the *whole system* is starved, by
 //!   whoever is using it, never just when inference is busy.
+//! - **Memory topology is per-platform, so pressure is PER-POOL, not a single scalar.** On
+//!   Apple Silicon memory is UNIFIED — GPU and CPU share one physical pool, so a model paged
+//!   into "VRAM" eats system RAM directly and the wired RAM floor already captures GPU load.
+//!   On Windows + discrete CUDA (e.g. the 5090) VRAM is a SEPARATE pool from main RAM — a
+//!   model can saturate VRAM while RAM is calm, or the reverse. The `ResourceGovernor` reports
+//!   per-pool pressure and the platform supplies the topology (how many pools exist); this
+//!   gate then reacts to the BINDING constraint — the tightest pool (`max` of the normalized
+//!   pressures) — so the same scheduler code is correct on both machines (DVFS: one Rust, a
+//!   per-host governor view).
 //! - `PersonaCognitionRegion` + the multi-tower inference router (command→handle→event).
 //! - R5: the speciation (sleep-phase consolidation / genome-learning) region.
 
