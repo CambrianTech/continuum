@@ -11,10 +11,11 @@ export type FocusMuteParams = {
  */
 lane?: string, 
 /**
- * `false` (default) = soft: silence the lane's ambient chatter, but a direct
- * address still reaches you (the interrupt floor). `true` = hard: silence
- * everything for the lane incl. the floor — deliberate blindness, only sound
- * when paired with `durationSecs`.
+ * `false` (default) = soft: turn part-way from the lane's ambient chatter. `true`
+ * = hard: turn fully from it (no ambient attention pooled there). Either way a
+ * direct address still reaches you — the inviolable interrupt floor; mute is
+ * attention allocation, never going deaf to the lane. Pair a hard mute with
+ * `durationSecs` so your ambient awareness self-restores.
  */
 hard: boolean, 
 /**
