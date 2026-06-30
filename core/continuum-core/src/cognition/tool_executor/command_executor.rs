@@ -109,6 +109,52 @@ fn truncate_on_boundary(mut s: String, max: usize) -> String {
     s
 }
 
+/// Bound a tool RESULT for re-injection, keeping BOTH ends and naming the cut.
+///
+/// A tool that floods — a build log, a giant file, a chatty command (an Xcode or
+/// cargo build is the canonical case) — must never blow the persona's context
+/// window. The cap (`max_result_chars`) is that protection. But a naive head-keep
+/// throws away exactly the part she needs for log-shaped output: the verdict (the
+/// errors, the failing target, the summary) lives at the END. So this keeps the
+/// HEAD (where a read/listing/JSON starts) AND the TAIL (where a build/test/log
+/// concludes), eliding the middle with a marker that (a) names how much was
+/// dropped and (b) reinforces the narrowing affordance — re-run the tool SCOPED,
+/// or grep with `code/search`, so she asks for less next time instead of drowning.
+///
+/// Like the failure-feedback translation, this is affordance quality, not output
+/// steering: it shapes what the tool layer hands back, never reads her generation.
+fn truncate_tool_output(s: String, max: usize) -> String {
+    if s.len() <= max {
+        return s;
+    }
+    // Split the visible budget between the two ends — the head of a read/listing
+    // and the tail of a build/log are both load-bearing (~60/40 toward the head).
+    let head_budget = max * 3 / 5;
+    let tail_budget = max - head_budget;
+
+    let mut head_end = head_budget.min(s.len());
+    while head_end > 0 && !s.is_char_boundary(head_end) {
+        head_end -= 1;
+    }
+    let mut tail_start = s.len().saturating_sub(tail_budget);
+    while tail_start < s.len() && !s.is_char_boundary(tail_start) {
+        tail_start += 1;
+    }
+    // Degenerate tiny budget where the ends would overlap: fall back to head-only.
+    if tail_start <= head_end {
+        return truncate_on_boundary(s, max);
+    }
+    let dropped = tail_start - head_end;
+    format!(
+        "{}\n…[{dropped} chars elided — this result is large. Re-run the tool \
+         SCOPED to what you need (a narrower argument, e.g. `filter`/`package`/\
+         `path`), or grep with `code/search`, instead of reading it all. The \
+         start and end are kept below.]…\n{}",
+        &s[..head_end],
+        &s[tail_start..],
+    )
+}
+
 /// Translate a raw substrate failure into feedback a PERSONA can act on.
 ///
 /// The substrate's own error strings are written for a developer caller. The
@@ -227,7 +273,7 @@ impl ToolExecutor for CommandToolExecutor {
             .map(|(i, (tool_use_id, outcome))| match outcome {
                 Ok(value) => NativeToolResult {
                     tool_use_id,
-                    content: truncate_on_boundary(value.to_string(), max_result_chars),
+                    content: truncate_tool_output(value.to_string(), max_result_chars),
                     is_error: None,
                 },
                 // A failed tool call is NOT a batch failure — it's fed back to the
@@ -401,6 +447,46 @@ mod tests {
         let raw = "data/delete: refused — requires Owner trust".to_string();
         let out = persona_tool_error("data/delete", raw.clone());
         assert_eq!(out, raw);
+    }
+
+    // what this catches: a flood-sized tool result (a build log) is bounded AND
+    // keeps the END — where the verdict/errors live — not just the head, and the
+    // elision marker reinforces narrowing (re-run scoped / code/search grep).
+    #[test]
+    fn huge_output_keeps_both_ends_and_suggests_narrowing() {
+        let body = format!(
+            "BUILD START\n{}\nerror: linker failed — THE VERDICT AT THE END",
+            "compiling module …\n".repeat(5000)
+        );
+        let out = truncate_tool_output(body, 600);
+        assert!(out.len() < 1200, "stays bounded near the cap: {} chars", out.len());
+        assert!(out.contains("BUILD START"), "keeps the head: {out}");
+        assert!(out.contains("THE VERDICT AT THE END"), "keeps the tail (the verdict): {out}");
+        assert!(out.contains("code/search"), "reinforces grep/narrowing: {out}");
+        assert!(out.contains("elided"), "names that output was cut: {out}");
+    }
+
+    // what this catches: output within budget is returned verbatim — no marker,
+    // no elision when nothing was dropped.
+    #[test]
+    fn small_output_is_returned_verbatim() {
+        let out = truncate_tool_output("ok: 2 passed".to_string(), 16_000);
+        assert_eq!(out, "ok: 2 passed");
+    }
+
+    // what this catches: a multi-byte body never slices mid-codepoint (would panic),
+    // at both a normal and a pathologically tiny budget — the head/tail boundary
+    // walks must land on char boundaries on both ends.
+    #[test]
+    fn multibyte_body_never_panics_at_any_budget() {
+        let body = "αβγδε".repeat(2000); // 2-byte chars, well over any cap
+        for max in [8usize, 64, 600, 4096] {
+            let out = truncate_tool_output(body.clone(), max);
+            // round-trips as valid UTF-8 (the assertions themselves would panic on
+            // a mid-codepoint slice) and stays near the requested budget.
+            assert!(out.chars().count() > 1, "valid UTF-8 at max={max}");
+            assert!(out.contains("elided"), "marks the cut at max={max}: {out}");
+        }
     }
 
     /// Build a persona's tool executor over the uniform client: a
