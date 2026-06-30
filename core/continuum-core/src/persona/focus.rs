@@ -106,6 +106,15 @@ impl FocusState {
         self.focus = focus.clamp(0.0, 1.0);
     }
 
+    /// Return ONLY the focus scalar to its resting setpoint (the value [`Default`]
+    /// carries — single-sourced here, the future genome-borne trait baseline replaces
+    /// it). Cursor and mutes are independent steering inputs and are left untouched:
+    /// "return my concentration to rest" is not "forget where I was / un-hush
+    /// everything". The homeostatic counterpart to a `focus/nudge` lean.
+    pub fn reset_focus(&mut self) {
+        self.focus = Self::default().focus;
+    }
+
     /// The lane currently in focus, if she has settled on one.
     pub fn cursor(&self) -> Option<Uuid> {
         self.cursor
