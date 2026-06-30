@@ -143,7 +143,7 @@ mod tests {
     use crate::genome::recall::{FreshnessTarget, RecallScope, ResidencyHint, TaskKind};
     use crate::genome::recall_trait::{DomainHint, RecallBudget, RecallContext};
     use crate::genome::tier::TierRole;
-    use crate::genome::working_set::PersonaId;
+    use crate::identity::PeerId;
     use parking_lot::Mutex;
     use uuid::Uuid;
 
@@ -207,7 +207,7 @@ mod tests {
         }
     }
     fn ctx() -> RecallContext {
-        RecallContext::cold_start(PersonaId::new(Uuid::nil()))
+        RecallContext::cold_start(PeerId::from_uuid(Uuid::nil()))
     }
 
     /// What this catches: empty composite returns empty Vec. No-

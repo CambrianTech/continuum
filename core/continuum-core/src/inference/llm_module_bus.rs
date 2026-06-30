@@ -185,7 +185,8 @@ mod tests {
     //! subscriber sees the right key + payload. Same shape as
     //! genome::bus tests (#1358).
     use super::*;
-    use crate::genome::working_set::{ArtifactId, PageKind, PageOffset, PageRef, PersonaId};
+    use crate::genome::working_set::{ArtifactId, PageKind, PageOffset, PageRef};
+    use crate::identity::PeerId;
     use crate::inference::llm_module::{
         CompositionPlan, FinishReason, GenerationBudget, InferenceRequestId, SamplingParams,
     };
@@ -267,8 +268,8 @@ mod tests {
         }
     }
 
-    fn sample_persona() -> PersonaId {
-        PersonaId::new(Uuid::from_u128(1))
+    fn sample_persona() -> PeerId {
+        PeerId::from_uuid(Uuid::from_u128(1))
     }
     fn sample_request_id() -> InferenceRequestId {
         InferenceRequestId::new(Uuid::from_u128(42))

@@ -306,7 +306,7 @@ pub enum PipelineStep {
     Approve {
         /// What to show the approver: "Review the architecture plan before proceeding"
         prompt: String,
-        /// PersonaId UUIDs or "human" for Joel
+        /// PeerId UUIDs or "human" for Joel
         #[serde(default)]
         approvers: Vec<String>,
         /// Auto-approve after this many seconds (optional — None means wait forever)

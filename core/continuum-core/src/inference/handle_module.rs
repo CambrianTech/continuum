@@ -51,7 +51,7 @@ use uuid::Uuid;
 
 use crate::ai::adapter::AIProviderAdapter;
 use crate::ai::types::{ActiveAdapterRequest, TextGenerationRequest, TextGenerationResponse};
-use crate::genome::working_set::PersonaId;
+use crate::identity::PeerId;
 use crate::inference::coordinator::{
     CoordinatorError, InferenceCoordinator, OpenLaneRequest,
 };
@@ -550,7 +550,7 @@ impl InferenceHandleModule {
         };
 
         if let Some(coordinator) = &self.coordinator {
-            let persona = PersonaId::new(params.persona_id.unwrap_or_else(Uuid::new_v4));
+            let persona = PeerId::from_uuid(params.persona_id.unwrap_or_else(Uuid::new_v4));
             let task = params.task.unwrap_or(TaskKind::Chat);
             let now_ms = now_ms_default();
             let lane_req = OpenLaneRequest {

@@ -42,7 +42,7 @@ use super::recall::{
     FreshnessTarget, PeerId, RecallError, RecallScope, RecallScore, ResidencyHint, TaskKind,
     TrustClass,
 };
-use super::working_set::{ArtifactId, PersonaId};
+use super::working_set::ArtifactId;
 
 // ─── Reference newtypes ─────────────────────────────────────────
 
@@ -200,7 +200,8 @@ pub struct CompositionRef(pub ArtifactId);
     export_to = "../../../protocol/typescript/genome/RecallContext.ts"
 )]
 pub struct RecallContext {
-    pub persona: PersonaId,
+    #[ts(type = "string")]
+    pub persona: crate::identity::PeerId,
     /// What composition is already hot for this persona. `None`
     /// means the persona is starting fresh (cold composition).
     #[ts(optional)]
@@ -217,7 +218,7 @@ impl RecallContext {
     /// Cold-start RecallContext: no current composition, no
     /// outcome window, no trajectory, no trust overrides. Used by
     /// tests + first-turn recall calls.
-    pub fn cold_start(persona: PersonaId) -> Self {
+    pub fn cold_start(persona: crate::identity::PeerId) -> Self {
         Self {
             persona,
             current_composition: None,
@@ -449,8 +450,8 @@ mod tests {
         ArtifactId::new(Uuid::nil())
     }
 
-    fn sample_persona() -> PersonaId {
-        PersonaId::new(Uuid::from_u128(1))
+    fn sample_persona() -> crate::identity::PeerId {
+        crate::identity::PeerId::from_uuid(Uuid::from_u128(1))
     }
 
     /// Minimal stub implementor: always returns an empty pool on

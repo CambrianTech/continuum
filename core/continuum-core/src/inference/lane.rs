@@ -24,7 +24,7 @@
 //!   Graceful / Hard) that the pressure broker honors.
 //! - [`crate::inference::recipe_budget::TaskKind`] — the canonical
 //!   per-task seed budget table.
-//! - [`crate::genome::working_set::PersonaId`] — the substrate's
+//! - [`crate::identity::PeerId`] — the substrate's
 //!   persona identity type.
 //! - [`HandleRef`] — the inference handle the caller threads
 //!   through `ai/inference/{open,generate,close}`.
@@ -51,7 +51,7 @@ use ts_rs::TS;
 use uuid::Uuid;
 
 use crate::cognition::throughput_lease::{ThroughputLease, ThroughputLeaseRevocationPolicy};
-use crate::genome::working_set::PersonaId;
+use crate::identity::PeerId;
 use crate::inference::recipe_budget::TaskKind;
 
 /// One persona's budgeted inference slot, served by the shared
@@ -62,7 +62,7 @@ use crate::inference::recipe_budget::TaskKind;
 /// keeps the coordinator the only mutator of the lease state.
 #[derive(Debug, Clone)]
 pub struct Lane {
-    persona: PersonaId,
+    persona: PeerId,
     task: TaskKind,
     lease: ThroughputLease,
     /// Bound HandleRef's UUID. The coordinator's
@@ -150,7 +150,7 @@ impl Lane {
     /// `FootprintRegistry::acquire_lease` path before calling here
     /// — Lane itself doesn't touch the registry.
     pub fn new(
-        persona: PersonaId,
+        persona: PeerId,
         task: TaskKind,
         lease: ThroughputLease,
         handle_id: Uuid,
@@ -165,7 +165,7 @@ impl Lane {
         }
     }
 
-    pub fn persona(&self) -> PersonaId {
+    pub fn persona(&self) -> PeerId {
         self.persona
     }
     pub fn task(&self) -> TaskKind {
@@ -224,8 +224,8 @@ mod tests {
     use super::*;
     use crate::cognition::{ResourceClass, TargetSilicon};
 
-    fn persona() -> PersonaId {
-        PersonaId::new(Uuid::from_u128(0xAAAA))
+    fn persona() -> PeerId {
+        PeerId::from_uuid(Uuid::from_u128(0xAAAA))
     }
 
     fn make_lease(policy: ThroughputLeaseRevocationPolicy) -> ThroughputLease {

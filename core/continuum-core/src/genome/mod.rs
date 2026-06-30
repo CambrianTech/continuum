@@ -94,8 +94,8 @@ pub use recall_trait::{
 pub use store::TierStore;
 pub use tier::{EvictionPolicy, EvictionRecord, TierCapacity, TierError, TierRole};
 pub use working_set::{
-    AccessDenied, ArtifactId, PageFault, PageHandle, PageKind, PageOffset, PageRef, PersonaId,
-    ResidentPage, WorkingSet, WorkingSetCapacity,
+    AccessDenied, ArtifactId, PageFault, PageHandle, PageKind, PageOffset, PageRef, ResidentPage,
+    WorkingSet, WorkingSetCapacity,
 };
 pub mod recall_scoring;
 pub use recall_scoring::{

@@ -153,7 +153,8 @@ mod tests {
     //! dispatch path end-to-end for genome events.
     use super::*;
     use crate::genome::tier::{EvictionPolicy, TierRole};
-    use crate::genome::working_set::{ArtifactId, PageKind, PageOffset, PageRef, PersonaId};
+    use crate::genome::working_set::{ArtifactId, PageKind, PageOffset, PageRef};
+    use crate::identity::PeerId;
     use crate::runtime::runtime::Runtime;
     use crate::runtime::service_module::{
         CommandResult, ModuleConfig, ModulePriority, ServiceModule,
@@ -224,8 +225,8 @@ mod tests {
         }
     }
 
-    fn sample_persona(low_bits: u128) -> PersonaId {
-        PersonaId::new(Uuid::from_u128(low_bits))
+    fn sample_persona(low_bits: u128) -> PeerId {
+        PeerId::from_uuid(Uuid::from_u128(low_bits))
     }
 
     fn sample_page() -> PageRef {

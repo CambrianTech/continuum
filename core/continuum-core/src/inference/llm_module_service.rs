@@ -482,7 +482,8 @@ mod tests {
     //! integration tests that exercise the real engine; PR-2's
     //! tests pin the seam.
     use super::*;
-    use crate::genome::working_set::{ArtifactId, PersonaId};
+    use crate::genome::working_set::ArtifactId;
+    use crate::identity::PeerId;
     use crate::inference::llm_module::{
         CompositionPlan, GenerationBudget, InferenceRequestId, SamplingParams,
     };
@@ -491,7 +492,7 @@ mod tests {
     fn sample_request() -> InferenceRequest {
         InferenceRequest {
             request_id: InferenceRequestId::new(Uuid::from_u128(42)),
-            persona: PersonaId::new(Uuid::from_u128(1)),
+            persona: PeerId::from_uuid(Uuid::from_u128(1)),
             composition: CompositionPlan(ArtifactId::new(Uuid::from_u128(100))),
             prompt_tokens: vec![10, 11, 12],
             prompt_text: None,

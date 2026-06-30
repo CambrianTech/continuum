@@ -485,7 +485,7 @@ impl ServiceModule for CognitionModule {
                     request_id: crate::inference::llm_module::InferenceRequestId::new(
                         Uuid::new_v4(),
                     ),
-                    persona: crate::genome::working_set::PersonaId::new(persona_uuid),
+                    persona: crate::identity::PeerId::from_uuid(persona_uuid),
                     composition: crate::inference::llm_module::CompositionPlan(
                         crate::genome::working_set::ArtifactId::new(composition_artifact_id),
                     ),

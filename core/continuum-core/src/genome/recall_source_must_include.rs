@@ -140,8 +140,9 @@ mod tests {
     use crate::genome::store::TierStore;
     use crate::genome::tier::{EvictionRecord, TierCapacity, TierError, TierRole};
     use crate::genome::working_set::{
-        ArtifactId, PageHandle, PageOffset, PageRef, PersonaId, WorkingSetCapacity,
+        ArtifactId, PageHandle, PageOffset, PageRef, WorkingSetCapacity,
     };
+    use crate::identity::PeerId;
     use parking_lot::Mutex;
     use std::sync::Arc;
     use uuid::Uuid;
@@ -149,8 +150,8 @@ mod tests {
     fn art(low: u128) -> ArtifactId {
         ArtifactId::new(Uuid::from_u128(low))
     }
-    fn persona() -> PersonaId {
-        PersonaId::new(Uuid::nil())
+    fn persona() -> PeerId {
+        PeerId::from_uuid(Uuid::nil())
     }
     fn ctx() -> RecallContext {
         RecallContext::cold_start(persona())

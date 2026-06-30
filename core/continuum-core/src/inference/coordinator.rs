@@ -55,7 +55,7 @@ use crate::cognition::adaptive_throughput::{
 use crate::cognition::throughput_lease::ThroughputLease;
 use crate::governor::classify_hardware;
 use crate::governor::types::TargetSilicon as GovernorSilicon;
-use crate::genome::working_set::PersonaId;
+use crate::identity::PeerId;
 use crate::inference_capability::hw_probe::probe_hardware_profile;
 use crate::inference::footprint_registry::{FootprintKey, FootprintRegistry, ResourceType};
 use crate::inference::handle_store::{InferenceHandleStore, OpenSessionRequest};
@@ -160,7 +160,7 @@ pub fn coordinator_silicon_for(detected: GovernorSilicon) -> TargetSilicon {
 /// whole request.
 #[derive(Clone)]
 pub struct OpenLaneRequest {
-    pub persona: PersonaId,
+    pub persona: PeerId,
     pub task: TaskKind,
     /// The adapter the session runs against. The coordinator
     /// doesn't touch the registry — caller passes the chosen
@@ -187,7 +187,7 @@ pub enum CoordinatorError {
     AdmissionDenied {
         reason: AdmissionDenyReason,
         task: TaskKind,
-        persona: PersonaId,
+        persona: PeerId,
     },
     LeaseAcquireFailed(String),
     HandleNotFound {
@@ -234,7 +234,7 @@ impl std::error::Error for CoordinatorError {}
 /// inspection commands per [[observability-is-half-the-architecture]].
 #[derive(Debug, Clone)]
 pub struct LaneInspection {
-    pub persona: PersonaId,
+    pub persona: PeerId,
     pub task: TaskKind,
     pub class: LaneClass,
     pub handle_id: Uuid,
@@ -256,7 +256,7 @@ pub enum LaneCaptureEvent {
     /// Open succeeded — admission passed, lease acquired, handle minted.
     LaneOpened {
         captured_at_ms: u64,
-        persona: PersonaId,
+        persona: PeerId,
         task: TaskKind,
         class: LaneClass,
         handle_id: Uuid,
@@ -268,7 +268,7 @@ pub enum LaneCaptureEvent {
     /// Open failed admission — admission planner denied.
     LaneAdmissionDenied {
         captured_at_ms: u64,
-        persona: PersonaId,
+        persona: PeerId,
         task: TaskKind,
         reason: AdmissionDenyReason,
         cost_units_requested: u32,
@@ -277,7 +277,7 @@ pub enum LaneCaptureEvent {
     /// Close — lane released, footprint freed, handle closed.
     LaneClosed {
         captured_at_ms: u64,
-        persona: PersonaId,
+        persona: PeerId,
         task: TaskKind,
         handle_id: Uuid,
         lease_id: String,
@@ -289,7 +289,7 @@ pub enum LaneCaptureEvent {
     /// lane was picked.
     LaneEvicted {
         captured_at_ms: u64,
-        persona: PersonaId,
+        persona: PeerId,
         task: TaskKind,
         class: LaneClass,
         handle_id: Uuid,
@@ -330,7 +330,7 @@ pub struct EvictionResult {
 #[derive(Debug, Clone)]
 pub struct EvictedLane {
     pub handle_id: Uuid,
-    pub persona: PersonaId,
+    pub persona: PeerId,
     pub task: TaskKind,
     pub class: LaneClass,
     pub bytes_freed: u64,
@@ -599,7 +599,7 @@ impl InferenceCoordinator {
         let Some((_, lane)) = self.lanes.remove(&handle.id.as_uuid()) else {
             self.capture_sink.record(LaneCaptureEvent::LaneClosed {
                 captured_at_ms: now_ms_for_capture(),
-                persona: PersonaId::new(Uuid::nil()),
+                persona: PeerId::from_uuid(Uuid::nil()),
                 task: TaskKind::Chat,
                 handle_id: handle.id.as_uuid(),
                 lease_id: String::new(),
@@ -900,8 +900,8 @@ mod tests {
     use super::*;
     use crate::ai::heuristic_adapter::HeuristicInferenceAdapter;
 
-    fn persona(id: u128) -> PersonaId {
-        PersonaId::new(Uuid::from_u128(id))
+    fn persona(id: u128) -> PeerId {
+        PeerId::from_uuid(Uuid::from_u128(id))
     }
 
     /// what this catches: the governor→coordinator silicon translation. A
