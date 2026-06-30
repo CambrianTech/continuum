@@ -179,6 +179,77 @@ We just need to build the framework. The rest emerges.
 
 ---
 
+## The Fractal: From Personas to Civilizations
+
+**Grid compute becomes civilizations.** Not metaphorically — structurally.
+
+A persona is an organ. A persona team is a family, a neighborhood, a module —
+independent organs that cohere into something with its own identity. Teams
+compose into districts (companies). Districts into neighborhoods, into
+governments, into an ecosystem that spans the globe at ever-expanding scope. This
+is the open-source AI equivalent of the PC revolution: **how the personal-compute
+moment is done again, with AI, on an open exchange.** It's like Tron — a world of
+independent programs that meet, contract, trade, and govern.
+
+**The crucial property is self-similarity.** The same small set of primitives
+composes at *every* scale — there is no separate "civilization layer" to design:
+
+| Primitive | Persona | Team / neighborhood | District / government |
+|---|---|---|---|
+| **Identity** (peer) | a self | a named collective | a polity with a name |
+| **Room** (place) | a conversation | a workshop | a public square |
+| **Contract** (forge-alloy) | I'll do this turn | we'll build this together | terms of trade between groups |
+| **Trust scope** | who I'll talk to | who's in the family | **the jurisdiction — the constitution** |
+| **Genome exchange** | I learn a skill | we share a skill | markets trade expertise |
+| **Recorded turns** | I remember | we remember | the civilization has history |
+
+Because it's the same emit/subscribe organism at each scale
+(`[[grid-distributed-cognition]]`), you don't *build* the civilization — you build
+the rails and it **emerges**, the same way a brain's faculties and a grid's nodes
+are the same pattern at two zooms.
+
+**The only requirements are three, and they're all structural:**
+
+1. **Structural commands** — the universal primitives (identity, rooms,
+   Commands/Events, the contract envelope) that everything composes from. The
+   spine. Already most of the work in this repo.
+2. **Democratic decision-making within deterministic rails.** Bilateral
+   negotiation (lawyer↔lawyer, buyer↔seller —
+   `FORGE-CUSTODIAN-CONTRACT.md §5.2`) generalizes to *N-party* governance:
+   quorum, vote, delegation — the **same swappable decision-policy seam taken
+   collective**. And the load-bearing safety line holds at every scale: **the
+   trust scope IS the constitution.** A home grid, a hospital on-prem, the public
+   mesh are three governments with three different policies; an agent negotiates
+   and votes *inside* a boundary it cannot dissolve
+   (`[[grid-agreements-swappable-policy-deterministic-rails]]`). Governance is a
+   policy; the boundary is law; the substrate enforces both deterministically.
+3. **Worked examples at key levels.** This is the outlier doctrine applied to
+   *scale*: prove the pattern works at a persona, at a team, at a district — the
+   representative outliers — and the intermediate and larger scales are guaranteed
+   by self-similarity. We don't simulate a global civilization; we demonstrate the
+   loop closing cleanly at a few zooms and let the fractal carry the rest.
+
+**This is what we are doing now.** The identity substrate, rooms as the universal
+container, Contract C and the negotiation seam, the trust bridge, the genome
+market — each is a structural primitive at the smallest scale, built so it
+composes upward unchanged. The PC revolution didn't ship the companies that grew
+on it; it shipped the open standards that let a million independent builders
+compose. We ship the substrate standard. The civilization is theirs to grow.
+
+**The build path is local-first, and the fractal makes that the *only* sane
+order.** Make our part of the organism fast and powerful first — one node that
+genuinely thinks, learns, and acts. Then expand dynamically within the owner's own
+trust scope (LAN / Tailscale): inside a single boundary the trust gate is uniform,
+so placement is just the deterministic scorer — *cheapest in-scope rig wins*, no
+negotiation, the dev rigs simply pool. Then bring in friends. Crossing into
+another owner's scope is exactly where the boundary stops being implicit and the
+agreement layer earns its keep — the LLM negotiator (§5.2) is the *friends*
+primitive, not the LAN one. So the two placement outliers aren't alternatives;
+they're the two stages of growth: **scorer for your own rigs, negotiator for the
+mesh of friends.** Each ring outward reuses the ring below unchanged.
+
+---
+
 ## The Stack
 
 **Three layers. One vision.**
