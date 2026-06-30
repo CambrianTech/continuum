@@ -219,7 +219,8 @@ pub type ArcFineTuningAdapter = Arc<dyn FineTuningAdapter>;
 mod tests {
     use super::*;
     use crate::genome::fine_tuning::types::{
-        JobMetrics, TrainingArtifact, TrainingDataset, TrainingSource, TrainingStatus,
+        ArtifactFormat, JobMetrics, TrainingArtifact, TrainingDataset, TrainingSource,
+        TrainingStatus,
     };
     use uuid::Uuid;
 
@@ -257,6 +258,7 @@ mod tests {
                 artifact: TrainingArtifact {
                     model_id: "stub:trained-model".into(),
                     local_path: None,
+                    format: ArtifactFormat::ProviderHosted,
                     metrics: JobMetrics::default(),
                 },
             })

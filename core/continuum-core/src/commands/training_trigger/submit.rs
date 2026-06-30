@@ -837,8 +837,8 @@ mod tests {
             FineTuningAdapter, FineTuningCapabilities, FineTuningError, TrainerHardware,
         };
         use crate::genome::fine_tuning::types::{
-            JobHandle, JobMetrics, TrainingArtifact, TrainingExample, TrainingJobRequest,
-            TrainingStatus,
+            ArtifactFormat, JobHandle, JobMetrics, TrainingArtifact, TrainingExample,
+            TrainingJobRequest, TrainingStatus,
         };
         use crate::genome::fine_tuning::FineTuningRegistry;
         use crate::modules::genome::GenomeModule;
@@ -903,6 +903,7 @@ mod tests {
                     artifact: TrainingArtifact {
                         model_id: handle.provider_job_id.clone(),
                         local_path: None,
+                        format: ArtifactFormat::ProviderHosted,
                         metrics: JobMetrics::default(),
                     },
                 })

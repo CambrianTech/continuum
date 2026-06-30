@@ -53,8 +53,8 @@ use uuid::Uuid;
 
 use super::adapter::{FineTuningAdapter, FineTuningCapabilities, FineTuningError, TrainerHardware};
 use super::types::{
-    JobHandle, JobMetrics, LoRAHyperparams, ScheduleParams, TrainingArtifact, TrainingJobRequest,
-    TrainingStatus,
+    ArtifactFormat, JobHandle, JobMetrics, LoRAHyperparams, ScheduleParams, TrainingArtifact,
+    TrainingJobRequest, TrainingStatus,
 };
 use crate::inference_capability::probe_hardware_profile;
 use crate::runtime;
@@ -338,6 +338,11 @@ fn spawn_watcher(
                         artifact: TrainingArtifact {
                             model_id,
                             local_path: Some(adapter_dir),
+                            // The MLX `adapters.safetensors` dir — NOT directly
+                            // pageable. The completion sentinel dispatches a
+                            // `forge/export` (gguf-lora) to the custodian to
+                            // convert this into a loadable gene before eval.
+                            format: ArtifactFormat::MlxAdapterDir,
                             metrics: JobMetrics {
                                 wall_clock_ms,
                                 ..Default::default()

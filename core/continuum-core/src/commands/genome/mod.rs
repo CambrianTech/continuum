@@ -100,7 +100,8 @@ pub(crate) mod test_support {
         FineTuningAdapter, FineTuningCapabilities, TrainerHardware,
     };
     use crate::genome::fine_tuning::types::{
-        JobMetrics, TrainingArtifact, TrainingDataset, TrainingSource, TrainingStatus,
+        ArtifactFormat, JobMetrics, TrainingArtifact, TrainingDataset, TrainingSource,
+        TrainingStatus,
     };
     use crate::genome::fine_tuning::{
         FineTuningError, FineTuningRegistry, JobHandle, TrainingJobRequest,
@@ -137,6 +138,7 @@ pub(crate) mod test_support {
                 artifact: TrainingArtifact {
                     model_id: format!("{}:trained", self.0),
                     local_path: None,
+                    format: ArtifactFormat::ProviderHosted,
                     metrics: JobMetrics::default(),
                 },
             })

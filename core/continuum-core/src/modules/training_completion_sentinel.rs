@@ -8,9 +8,23 @@
 //! get a job dispatched. But nothing observed completion, so the loop stopped at
 //! "trained" — the freshly-forged layer was never measured against the persona and
 //! never paged in. This sentinel is the keystone that makes the single-machine loop
-//! AUTOMATIC: `train-done → cognition/eval → lift>0 → page-in`. Page-in is local
-//! (no publish step), so L1+L2+L3 alone is a closed self-improvement loop on one
-//! machine (`docs/genome/DEV-TASK-LOOP-CLOSURE-PLAN.md`).
+//! AUTOMATIC: `train-done → convert → cognition/eval → lift>0 → page-in`. Page-in
+//! is local (no publish step), so L1+L2+L3 alone is a closed self-improvement loop
+//! on one machine (`docs/genome/DEV-TASK-LOOP-CLOSURE-PLAN.md`).
+//!
+//! ## The CONVERT stage (format-driven, custodian-dispatched)
+//!
+//! A trainer doesn't necessarily emit a pageable gene. Apple's `mlx_lm.lora`
+//! (the real owned trainer, #32) writes an MLX `adapters.safetensors` dir — the
+//! A/B lane and `page_in` load a `gguf-lora`. So before eval the sentinel
+//! NORMALIZES the completed artifact to a pageable gene, keyed on its
+//! [`ArtifactFormat`] (declared by the producing adapter — never sniffed from the
+//! provider string, smell #70): `MlxAdapterDir` is dispatched to the forge
+//! custodian via `forge/export` (convert + register the gene); a `GgufLora` is
+//! used as-is; a synthetic/provider-hosted artifact has no locally-loadable gene
+//! and is kept out. The custodian is a TRAIT — local convert today, a grid GPU
+//! node tomorrow — so heavy convert (and eventually training) offloads to the
+//! mesh by construction. See [`resolve_pageable_gene_path`].
 //!
 //! ## The shape (canonical RTOS daemon)
 //!
@@ -60,7 +74,8 @@ use serde_json::Value;
 use crate::ai::types::ActiveAdapterRequest;
 use crate::cognition::eval::{CognitionEvalParams, EvalGene};
 use crate::genome::fine_tuning::{
-    FineTuningRegistry, TrainingArtifact, TrainingJobBoard, TrainingStatus, WatchedJob,
+    ArtifactFormat, FineTuningRegistry, TrainingArtifact, TrainingJobBoard, TrainingStatus,
+    WatchedJob,
 };
 use crate::routing::CallerIdentity;
 use crate::runtime::{
@@ -113,21 +128,6 @@ impl TrainingCompletionSentinel {
             return;
         };
 
-        // The gene must live on disk for the A/B lane to load it (the eval adapter
-        // resolves name/path → the serving endpoint's LoRA index). A provider-side
-        // artifact with no local copy can't be measured by this lane — fail loud and
-        // keep it out rather than adopt something unmeasured ([[fallbacks-are-illegal-fail-loud]]).
-        let Some(local_path) = artifact.local_path.clone() else {
-            tracing::warn!(
-                persona = %job.persona_id,
-                trait_kind = %job.trait_kind,
-                model_id = %artifact.model_id,
-                "training-completion-sentinel: completed artifact has no local path — cannot A/B-measure it; NOT adopted"
-            );
-            return;
-        };
-        let path_str = local_path.to_string_lossy().to_string();
-
         tokio::spawn(async move {
             // Dispatch `cognition/eval` AS the persona (LocalPersona → Trusted, which
             // may run the Privileged eval) over the wired executor — the same
@@ -138,6 +138,16 @@ impl TrainingCompletionSentinel {
                     crate::identity::PeerId::from_uuid(job.persona_id),
                 )),
             ));
+
+            // CONVERT stage. Normalize whatever the trainer produced into a PAGEABLE
+            // gguf-lora gene before measuring it — an MLX adapter dir gets dispatched
+            // to the forge custodian (local today, a grid GPU node tomorrow, same
+            // `ForgeCustodian` trait); a gguf-lora is used as-is; a synthetic/
+            // provider-hosted artifact has no locally-loadable gene and is kept out.
+            // All fail-loud logging lives in the helper.
+            let Some(path_str) = resolve_pageable_gene_path(&conn, &job, &artifact).await else {
+                return;
+            };
 
             let params = CognitionEvalParams {
                 persona_id: job.persona_id.to_string(),
@@ -240,6 +250,125 @@ impl TrainingCompletionSentinel {
                 "training-completion-sentinel: lift > 0 — gene ADOPTED, paged into live persona (loop closed)"
             );
         });
+    }
+}
+
+/// Normalize a completed training artifact into a PAGEABLE gguf-lora gene path —
+/// the one shape `cognition/eval`'s A/B lane and `cycle.page_in` can load. The
+/// decision is FORMAT-driven, never provider-string-matched (smell #70): each
+/// trainer declared what it produced, so the sentinel asks the artifact's
+/// [`ArtifactFormat`], not its provider id.
+///
+/// - [`ArtifactFormat::GgufLora`] → already pageable; its local path verbatim.
+/// - [`ArtifactFormat::MlxAdapterDir`] → dispatch `forge/export` (`gguf-lora`) to
+///   the forge CUSTODIAN, which converts the MLX adapter into a GGUF-lora AND
+///   registers it in the serving manifest (the "5th wire"). The custodian is a
+///   trait: `ForgeCustodianHttp` runs the convert locally today; a future
+///   `GridForgeCustodian` routes the SAME request to a GPU node on the mesh — so a
+///   slow machine offloads the heavy convert by construction, no caller change.
+///   We dispatch the command (persona-is-a-client), never reach into forge's
+///   private convert fn — `forge/export` already owns convert + register.
+/// - [`ArtifactFormat::CandleSafetensors`] / [`ArtifactFormat::ProviderHosted`] →
+///   no locally-pageable gene for the A/B lane; fail loud and keep it OUT rather
+///   than adopt something unmeasured ([[fallbacks-are-illegal-fail-loud]]).
+///
+/// Returns `None` (with a named log) whenever a pageable gene can't be produced;
+/// the caller then leaves the live persona on her current genome.
+async fn resolve_pageable_gene_path(
+    conn: &Connection<InProcessTransport>,
+    job: &WatchedJob,
+    artifact: &TrainingArtifact,
+) -> Option<String> {
+    match artifact.format {
+        ArtifactFormat::GgufLora => {
+            let Some(path) = artifact.local_path.as_ref() else {
+                tracing::warn!(
+                    persona = %job.persona_id,
+                    trait_kind = %job.trait_kind,
+                    model_id = %artifact.model_id,
+                    "training-completion-sentinel: gguf-lora artifact has no local path — cannot A/B-measure it; NOT adopted"
+                );
+                return None;
+            };
+            Some(path.to_string_lossy().to_string())
+        }
+        ArtifactFormat::MlxAdapterDir => {
+            let Some(mlx_dir) = artifact.local_path.as_ref() else {
+                tracing::warn!(
+                    persona = %job.persona_id,
+                    trait_kind = %job.trait_kind,
+                    model_id = %artifact.model_id,
+                    "training-completion-sentinel: MLX artifact has no local adapter dir — nothing to convert; NOT adopted"
+                );
+                return None;
+            };
+            let mlx_dir = mlx_dir.to_string_lossy().to_string();
+
+            // The custodian converts the trained checkpoint and writes the gene
+            // alongside it. `base_model_id` is REQUIRED for gguf-lora — the
+            // converter needs the base architecture; forge/export fails loud
+            // without it, and so do we by passing the watched base.
+            let params = serde_json::json!({
+                "checkpoint": mlx_dir,
+                "save_directory": mlx_dir,
+                "format": "gguf-lora",
+                "base_model_id": job.base_model,
+                "outtype": "f16",
+            });
+            let result = match conn.commands().execute_value("forge/export", params).await {
+                Ok(v) => v,
+                Err(e) => {
+                    tracing::warn!(
+                        persona = %job.persona_id,
+                        trait_kind = %job.trait_kind,
+                        base_model = %job.base_model,
+                        error = %e,
+                        "training-completion-sentinel: forge/export (gguf-lora) failed — gene not converted (custodian unreachable or convert error); NOT adopted"
+                    );
+                    return None;
+                }
+            };
+
+            // forge/export registered the gene; `registered.path` is the on-disk
+            // gguf-lora the serving lane loads. Absent = contract breach → keep out.
+            let Some(path) = result
+                .get("registered")
+                .and_then(|r| r.get("path"))
+                .and_then(Value::as_str)
+            else {
+                tracing::warn!(
+                    persona = %job.persona_id,
+                    trait_kind = %job.trait_kind,
+                    "training-completion-sentinel: forge/export returned no registered gene path — NOT adopted"
+                );
+                return None;
+            };
+            tracing::info!(
+                persona = %job.persona_id,
+                trait_kind = %job.trait_kind,
+                gene = %path,
+                "training-completion-sentinel: MLX adapter converted to gguf-lora gene via custodian"
+            );
+            Some(path.to_string())
+        }
+        ArtifactFormat::CandleSafetensors => {
+            tracing::warn!(
+                persona = %job.persona_id,
+                trait_kind = %job.trait_kind,
+                model_id = %artifact.model_id,
+                "training-completion-sentinel: Candle skeleton artifact is a synthetic-base LoRA, not a loadable gene (#231-#233) — NOT adopted"
+            );
+            None
+        }
+        ArtifactFormat::ProviderHosted => {
+            tracing::warn!(
+                persona = %job.persona_id,
+                trait_kind = %job.trait_kind,
+                model_id = %artifact.model_id,
+                "training-completion-sentinel: provider-hosted artifact has no local gene for the A/B lane — NOT adopted"
+            );
+            None
+        }
     }
 }
 

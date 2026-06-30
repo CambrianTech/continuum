@@ -248,23 +248,13 @@ impl TrainingTriggerState {
             .ok_or_else(|| "genome/job-create result missing selectedProvider".to_string())?
             .to_string();
 
-        // L2→L3 seam: retain the handle so the completion sentinel can poll it,
-        // run `cognition/eval`, and page the gene in on `lift > 0`. Without this
-        // the handle would be dropped on the floor (the old shape) and the loop
-        // would stop at "trained" — never reaching "measured + adopted". ONE
-        // registration point covers both callers (submit + flush), since both fire
-        // through this single dispatch helper.
+        // L2→L3 retention (the board write) lives at the ONE birth-seam every
+        // training job funnels through — the `genome/job-create` command body that
+        // this helper dispatches to above — NOT here. That keeps a single
+        // registration point for the trigger path, a direct `cu genome/job-create`,
+        // and any future caller alike (compression principle), instead of one writer
+        // per caller that silently misses jobs born off this path.
         // ([[dev-task-learning-loop-gap-map]] L3, docs/genome/DEV-TASK-LOOP-CLOSURE-PLAN.md)
-        crate::genome::fine_tuning::TrainingJobBoard::global().register(
-            crate::genome::fine_tuning::WatchedJob {
-                handle: handle.clone(),
-                persona_id,
-                persona_name: batch.persona_name.clone(),
-                base_model: base_model.to_string(),
-                trait_kind: trait_kind.to_string(),
-            },
-        );
-
         Ok((handle, selected_provider))
     }
 }

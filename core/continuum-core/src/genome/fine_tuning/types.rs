@@ -249,9 +249,42 @@ pub enum TrainingStatus {
 
 // ─── Artifact ────────────────────────────────────────────────────────
 
-/// What a successful training run produces. Flows directly into
-/// forge / alloy for signing + provenance, and into genome paging
-/// once a persona requests the corresponding skill.
+/// The on-disk SHAPE of a completed training artifact — the load-bearing
+/// fact the completion sentinel keys its supply step on. A persona pages in a
+/// GGUF-lora; everything else is an intermediate that must be CONVERTED first
+/// (the custodian's job). Declaring the format on the artifact (rather than
+/// sniffing the provider id — that's tracked smell #70) lets the sentinel ask
+/// "is this pageable, or does it need a convert dispatch?" without knowing
+/// which trainer produced it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/genome/fine_tuning/ArtifactFormat.ts"
+)]
+#[serde(rename_all = "kebab-case")]
+pub enum ArtifactFormat {
+    /// Apple `mlx_lm.lora` output dir (`adapters.safetensors` +
+    /// `adapter_config.json`). NOT directly pageable — the forge custodian
+    /// converts it to a GGUF-lora gene (locally today, on a grid GPU node
+    /// tomorrow, same `ForgeCustodian` trait) before eval/page-in.
+    MlxAdapterDir,
+    /// A pageable GGUF-lora — `llama-server --lora` (and the genome page-in)
+    /// loads it directly. No convert step.
+    GgufLora,
+    /// Candle synthetic-base LoRA safetensors (the `local-candle` skeleton,
+    /// tasks #231-#233). Not yet a loadable gene against a real base.
+    CandleSafetensors,
+    /// Provider-hosted (OpenAI etc.) — no local weights kept; the inference
+    /// adapter pulls on demand. No local convert. The conservative default
+    /// for an unmarked artifact: never silently treated as a local pageable gene.
+    #[default]
+    ProviderHosted,
+}
+
+/// What a successful training run produces. Flows directly into forge / alloy
+/// for signing + provenance, and into genome paging once a persona requests the
+/// corresponding skill. Its [`ArtifactFormat`] tells the completion sentinel
+/// whether the artifact is a pageable gene or needs a custodian convert first.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(
     export,
@@ -269,6 +302,12 @@ pub struct TrainingArtifact {
     /// (the inference adapter pulls it on demand).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub local_path: Option<PathBuf>,
+    /// The artifact's on-disk shape. Drives whether the completion sentinel
+    /// dispatches a custodian convert before eval/page-in. Defaults to
+    /// `ProviderHosted` for backward-compatible deserialization of artifacts
+    /// persisted before this field existed.
+    #[serde(default)]
+    pub format: ArtifactFormat,
     pub metrics: JobMetrics,
 }
 

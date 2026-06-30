@@ -38,7 +38,7 @@ use crate::secrets::get_secret;
 
 use super::adapter::{FineTuningAdapter, FineTuningCapabilities, FineTuningError, TrainerHardware};
 use super::types::{
-    JobHandle, JobMetrics, TrainingArtifact, TrainingJobRequest, TrainingStatus,
+    ArtifactFormat, JobHandle, JobMetrics, TrainingArtifact, TrainingJobRequest, TrainingStatus,
 };
 
 const PROVIDER_ID: &str = "openai";
@@ -342,6 +342,10 @@ fn map_status(r: JobStatusResponse) -> TrainingStatus {
                 artifact: TrainingArtifact {
                     model_id,
                     local_path: None,
+                    // Provider-hosted: OpenAI keeps the weights; the inference
+                    // adapter pulls by `model_id` on demand. No local convert,
+                    // no page-in of a local gene.
+                    format: ArtifactFormat::ProviderHosted,
                     metrics: JobMetrics {
                         trained_tokens: r.trained_tokens.unwrap_or(0),
                         final_loss: None,

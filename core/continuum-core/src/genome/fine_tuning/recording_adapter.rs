@@ -52,7 +52,7 @@ use uuid::Uuid;
 
 use super::adapter::{FineTuningAdapter, FineTuningCapabilities, FineTuningError, TrainerHardware};
 use super::types::{
-    JobHandle, JobMetrics, TrainingArtifact, TrainingJobRequest, TrainingStatus,
+    ArtifactFormat, JobHandle, JobMetrics, TrainingArtifact, TrainingJobRequest, TrainingStatus,
 };
 
 /// Provider id this fixture advertises. Tests using this fixture
@@ -160,6 +160,10 @@ impl FineTuningAdapter for RecordingFineTuningAdapter {
             artifact: TrainingArtifact {
                 model_id: handle.provider_job_id.clone(),
                 local_path: None,
+                // Replay fixture — no real weights, so nothing to convert or
+                // page in. Provider-hosted keeps the sentinel from expecting a
+                // local gene.
+                format: ArtifactFormat::ProviderHosted,
                 metrics: JobMetrics::default(),
             },
         })
