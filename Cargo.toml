@@ -100,11 +100,11 @@ members = [
 # grounding A/B. Additive to the API surface continuum uses. NOTE: this SHA is
 # on the scoped-state working branch, not canary — reconcile to the canary SHA
 # when the airc PR lands; re-validate persona attach + wall publish on bump.
-airc-core = { git = "https://github.com/CambrianTech/airc", rev = "17b238c" }
-airc-protocol = { git = "https://github.com/CambrianTech/airc", rev = "17b238c" }
-airc-ipc = { git = "https://github.com/CambrianTech/airc", rev = "17b238c" }
-airc-lib = { git = "https://github.com/CambrianTech/airc", rev = "17b238c" }
-airc-wire = { git = "https://github.com/CambrianTech/airc", rev = "17b238c" }
+airc-core = { git = "https://github.com/CambrianTech/airc", rev = "3b5368b" }
+airc-protocol = { git = "https://github.com/CambrianTech/airc", rev = "3b5368b" }
+airc-ipc = { git = "https://github.com/CambrianTech/airc", rev = "3b5368b" }
+airc-lib = { git = "https://github.com/CambrianTech/airc", rev = "3b5368b" }
+airc-wire = { git = "https://github.com/CambrianTech/airc", rev = "3b5368b" }
 
 # Candle ML framework — patched via [patch.crates-io] below.
 # Fixes: Metal buffer pool leak (#2271), RoPE NEOX convention (#3410)
