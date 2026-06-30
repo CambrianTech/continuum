@@ -47,6 +47,7 @@ use super::ToolExecutor;
 use crate::ai::types::{ToolCall as NativeToolCall, ToolResult as NativeToolResult};
 use crate::routing::CallerIdentity;
 use crate::runtime::{CommandExecutor, InProcessTransport};
+use crate::sdk_codegen::{command_registry, AccessLevel};
 use continuum_client::{ClientError, Connection};
 use std::sync::Arc;
 
@@ -108,6 +109,72 @@ fn truncate_on_boundary(mut s: String, max: usize) -> String {
     s
 }
 
+/// Translate a raw substrate failure into feedback a PERSONA can act on.
+///
+/// The substrate's own error strings are written for a developer caller. The
+/// worst offender: an unknown command returns a paragraph about the disabled
+/// "TS-bridge fallthrough", `execute_ts_json`, and "register a `ServiceModule`"
+/// — noise to a persona, which can do none of those. A persona's only recovery
+/// affordances are `commands/list` (find the right name) and `commands/help`
+/// (get the exact call format), so failure feedback must point THERE, in her
+/// own paradigm. A near-miss where she dropped the category prefix
+/// (`cargo/check` → `code/cargo/check`) gets a concrete did-you-mean drawn from
+/// the live registry, restricted to `AiSafe` names she can actually call (those
+/// are already in her catalog, so nothing about the surface leaks).
+///
+/// This is affordance/feedback quality — like a good compiler error or a CLI's
+/// "did you mean" — NOT output steering: it never reads her generated text to
+/// puppet her, it only rewrites what the tool layer hands back when a call she
+/// already made could not run. [[no-hardcoded-heuristics-to-steer-cognition]]
+fn persona_tool_error(attempted: &str, raw: String) -> String {
+    // The dispatched (slash) form is what the registry knows; she may have
+    // emitted the underscore form, so normalize before matching/suggesting.
+    let normalized = attempted.replace('_', "/");
+
+    // Unknown command: the substrate's dev-facing message is useless to her.
+    if raw.contains("no Rust module handles command") || raw.starts_with("no command") {
+        // A command whose full name ends with `/<attempted>` is almost certainly
+        // what she meant — she dropped the leading category (`cargo/check` →
+        // `code/cargo/check`). Suggest only AiSafe names (the surface she can
+        // call), deduped and ordered for a stable, leak-free hint.
+        let suffix = format!("/{normalized}");
+        let mut suggestions: Vec<&'static str> = command_registry()
+            .into_iter()
+            .filter(|d| d.access_level == AccessLevel::AiSafe && d.name.ends_with(&suffix))
+            .map(|d| d.name)
+            .collect();
+        suggestions.sort_unstable();
+        suggestions.dedup();
+        let did_you_mean = match suggestions.as_slice() {
+            [] => String::new(),
+            [one] => format!(" Did you mean `{one}`?"),
+            many => format!(
+                " Did you mean one of: {}?",
+                many.iter().map(|n| format!("`{n}`")).collect::<Vec<_>>().join(", ")
+            ),
+        };
+        return format!(
+            "`{normalized}` is not a tool you can call.{did_you_mean} \
+             Call `commands/list` (optionally with a `filter` keyword) to find the \
+             right tool, then `commands/help` with its exact name to see the \
+             arguments and an example before you retry."
+        );
+    }
+
+    // Bad/missing arguments: the `[invalid]` prefix means serde already named the
+    // offending field — reinforce the manual so she gets the exact shape + example.
+    if raw.contains("[invalid]") {
+        return format!(
+            "{raw}\n→ Call `commands/help` with name \"{normalized}\" to see the \
+             exact argument names, types, and a fill-in-the-blanks example, then retry."
+        );
+    }
+
+    // Any other substrate refusal already carries its own real reason — pass it
+    // through unchanged (fail loud, name the cause). [[fallbacks-are-illegal-fail-loud]]
+    raw
+}
+
 #[async_trait]
 impl ToolExecutor for CommandToolExecutor {
     async fn execute_native_batch(
@@ -156,7 +223,8 @@ impl ToolExecutor for CommandToolExecutor {
         let results = join_all(dispatches)
             .await
             .into_iter()
-            .map(|(tool_use_id, outcome)| match outcome {
+            .enumerate()
+            .map(|(i, (tool_use_id, outcome))| match outcome {
                 Ok(value) => NativeToolResult {
                     tool_use_id,
                     content: truncate_on_boundary(value.to_string(), max_result_chars),
@@ -165,17 +233,25 @@ impl ToolExecutor for CommandToolExecutor {
                 // A failed tool call is NOT a batch failure — it's fed back to the
                 // model as an error result so it can recover (retry, fix args,
                 // pick another tool). Batch-level `Err` is reserved for the
-                // executor/transport itself being unavailable. Surface the
-                // substrate's OWN reason (e.g. "Unknown command: …"), not the
-                // client-wrapper prefix, so the model recovers on the real message.
+                // executor/transport itself being unavailable. Take the substrate's
+                // OWN reason (e.g. "no Rust module handles command: …") and translate
+                // it into PERSONA-actionable feedback — naming the problem AND
+                // reinforcing `commands/help`/`commands/list` — so she recovers on a
+                // message in her own paradigm, not a developer-internal one.
                 Err(e) => {
-                    let content = match e {
+                    let raw = match e {
                         ClientError::Refused { reason, .. } => reason,
                         other => other.to_string(),
                     };
+                    // Index back to the call that failed (the OK path never pays
+                    // this — names are only needed to build recovery guidance).
+                    let attempted = calls.get(i).map(|c| c.name.as_str()).unwrap_or("");
                     NativeToolResult {
                         tool_use_id,
-                        content: truncate_on_boundary(content, max_result_chars),
+                        content: truncate_on_boundary(
+                            persona_tool_error(attempted, raw),
+                            max_result_chars,
+                        ),
                         is_error: Some(true),
                     }
                 }
@@ -273,6 +349,58 @@ mod tests {
                 supported_media_types: vec![],
             },
         }
+    }
+
+    // what this catches: the developer-internal unknown-command paragraph (TS-bridge
+    // fallthrough, "register a ServiceModule") must NEVER reach the persona — she gets
+    // a paradigm-native message pointing at commands/list + commands/help instead.
+    #[test]
+    fn unknown_command_feedback_is_persona_actionable_not_dev_noise() {
+        let raw = "no Rust module handles command: 'frobnicate'. \
+                   The implicit TS-bridge fallthrough is disabled per [[no-fallbacks-ever]]. \
+                   register a `ServiceModule` whose `command_prefixes` covers it."
+            .to_string();
+        let out = persona_tool_error("frobnicate", raw);
+        assert!(!out.contains("ServiceModule"), "dev noise leaked to persona: {out}");
+        assert!(!out.contains("TS-bridge"), "dev noise leaked to persona: {out}");
+        assert!(out.contains("commands/list"), "must point her at discovery: {out}");
+        assert!(out.contains("commands/help"), "must reinforce the manual: {out}");
+        assert!(out.contains("`frobnicate`"), "must name what she tried: {out}");
+    }
+
+    // what this catches: a dropped category prefix (the most common near-miss) gets a
+    // concrete did-you-mean drawn from the live registry — `cargo/check` is a real
+    // suffix of the AiSafe `code/cargo/check`, so she's handed the exact name.
+    #[test]
+    fn unknown_command_offers_did_you_mean_on_dropped_prefix() {
+        let raw = "no Rust module handles command: 'cargo/check'.".to_string();
+        let out = persona_tool_error("cargo/check", raw);
+        assert!(
+            out.contains("Did you mean") && out.contains("code/cargo/check"),
+            "should suggest the full AiSafe name: {out}"
+        );
+    }
+
+    // what this catches: a bad-args refusal keeps the substrate's own field-naming
+    // reason AND appends the commands/help reinforcement — feedback that names the
+    // problem and the fix, in her paradigm.
+    #[test]
+    fn invalid_params_feedback_reinforces_help() {
+        let raw = "code/write: [invalid] missing field `filePath`".to_string();
+        let out = persona_tool_error("code/write", raw);
+        assert!(out.contains("missing field `filePath`"), "keeps the real cause: {out}");
+        assert!(out.contains("commands/help"), "reinforces the manual: {out}");
+        assert!(out.contains("code/write"), "names the tool to look up: {out}");
+    }
+
+    // what this catches: a refusal that already carries a real, persona-readable
+    // reason (e.g. an authorization denial) passes through unchanged — we don't
+    // bury a genuine cause under boilerplate. [[fallbacks-are-illegal-fail-loud]]
+    #[test]
+    fn other_refusals_pass_through_unchanged() {
+        let raw = "data/delete: refused — requires Owner trust".to_string();
+        let out = persona_tool_error("data/delete", raw.clone());
+        assert_eq!(out, raw);
     }
 
     /// Build a persona's tool executor over the uniform client: a

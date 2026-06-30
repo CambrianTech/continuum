@@ -58,11 +58,14 @@ pub struct CargoCheckResult {
 }
 
 crate::action_command! {
-    /// Type-check your Rust workspace with `cargo check` and get back structured
-    /// compiler diagnostics — each error/warning with its file, line, and the
-    /// rendered message. Use this to actually verify your Rust compiles and to read
-    /// exactly where it broke, instead of guessing. Optionally scope to one package
-    /// (`package`) and enable features (`features`).
+    /// Type-check the Rust workspace ON DISK you are editing with `cargo check` and
+    /// get back structured compiler diagnostics — each error/warning with its file,
+    /// line, and rendered message. Use this when you have edited files in a real cargo
+    /// project and want to verify the project still compiles. It checks the project in
+    /// your working directory — it CANNOT check a standalone function or snippet you
+    /// have only written in chat (there is no file for it to compile); for that, use
+    /// `code/run`, which compiles and runs the exact code you pass it. Optionally scope
+    /// to one package (`package`) and enable features (`features`).
     pub struct CargoCheck { state: Arc<CodeState> }
     name: "code/cargo/check",
     access: AiSafe,
