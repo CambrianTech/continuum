@@ -838,6 +838,22 @@ async fn serve_persona_loop_inner(
         outcome.respond_latency.record(phase_timings.respond_ms);
         outcome.say_latency.record(phase_timings.say_ms);
         outcome.turns_replied += 1;
+
+        // L2 continuous-learning producer: this completed live turn (the
+        // triggering message → the reply just published) is a `(context,
+        // completion)` training example [[capability-is-driver-plus-genome]].
+        // Hand it to the producer, which scores + classifies + submits it on a
+        // spawned task — best-effort, never touching this turn's latency or
+        // correctness. It lives ONLY on this live `Spoke` path, which eval forks
+        // (`drive_to_settle`) never run, so the training set can never be
+        // contaminated by a measurement simulation.
+        crate::persona::training_producer::produce(
+            ctx.identity.persona_id,
+            ctx.identity.agent_name.clone(),
+            ctx.profile.model_id.clone(),
+            msg.text.clone(),
+            response_text.clone(),
+        );
         tracing::info!(
             lamport = msg.lamport,
             turn_duration_ms = turn_duration_ms,

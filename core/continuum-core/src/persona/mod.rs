@@ -62,6 +62,7 @@ pub mod service_loop;
 pub mod spawner;
 pub mod spawner_module;
 pub mod supervisor;
+pub mod training_producer;
 pub mod inbox_admission;
 pub mod media_policy;
 pub mod message_cache;

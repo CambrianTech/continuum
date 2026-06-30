@@ -1969,6 +1969,13 @@ pub fn start_server(
         .registry()
         .install_executor_on_all(Arc::clone(&executor));
 
+    // L2 continuous-learning producer: hand the same wired executor to the
+    // turn-completion training producer so a live persona reply can be scored,
+    // classified, and submitted to `genome/training-trigger` AS the persona
+    // (LocalPersona → Trusted). Late-bound because the service loop has no
+    // executor in scope; this is the one install site.
+    crate::persona::training_producer::install_executor(Arc::clone(&executor));
+
     // Round-2 verifier fix on PR #1568: now that the executor is
     // installed on every module, release the persona-supervisor task
     // (if wired). The spawned task at line ~1239 has been awaiting
