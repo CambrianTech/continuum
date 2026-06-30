@@ -561,19 +561,41 @@ impl LlmDeliberationFaculty {
         // scheduling origin (`Workspace::self_initiated`), never from reading her output
         // ([[no-hardcoded-heuristics-to-steer-cognition]]). This replaces the old
         // burst-text preamble the self-cycle used to concatenate onto the world-state;
-        // framing belongs in the system prompt, not smuggled into the conversation. It
-        // stays posture-NEUTRAL on silence — the silence affordance below is the ONE
-        // place that frames staying quiet, so this block never double-nudges. Sits among
-        // the gated tail segments (with the silence block) so toggling it across a
+        // framing belongs in the system prompt, not smuggled into the conversation. Sits
+        // among the gated tail segments (with the silence block) so toggling it across a
         // message-tick vs a self-tick costs only its own tokens, never the heavy
         // identity/catalog prefix above.
+        //
+        // IDLE = SELF-DIRECTED FREE TIME ([[idle-is-self-directed-free-time]], Joel
+        // 2026-06-30: "you can help their mind be active and useful, or to rest, to
+        // ignore"). The earlier wording offered only ACTIVE outcomes ("pick up your
+        // train of thought / act on what's worth your attention") — which on a quiet
+        // heartbeat reads as pressure to MANUFACTURE activity (the self-tick analogue of
+        // the ambient polite-filler loop). A self-initiated turn where nothing genuinely
+        // calls for her is a legitimate, ignorable moment: the freed time is HERS, to
+        // spend on her own concerns OR to rest. So this block now names resting/letting
+        // the moment be as a CO-EQUAL legitimate outcome — but framed exactly like the
+        // silence affordance: NEUTRALLY, naming the option without scripting WHEN to take
+        // it ([[no-hardcoded-heuristics-to-steer-cognition]]). Active options stay FIRST
+        // and primary so this never becomes the old "framing silence as attractive →
+        // always-PASS doom-loop" (glass-box graveyard in `SILENCE_AFFORDANCE_BLOCK`); a
+        // self-tick must still produce initiative most of the time, not collapse to rest.
+        // Rest on a self-tick resolves to PASS (the silence block below is also appended
+        // on undirected turns), so the two compose: this block legitimizes the choice,
+        // the silence block supplies the vocabulary. Layer 1 of the free-time substrate;
+        // active foraging / browsing slot in here as new concerns once hands land
+        // ([[persona-codes-blind-no-hands-no-organic-loop]]), no re-architecture.
         if self_initiated {
             s.push_str(
                 "\n\n[Your own time]\n\
-                 No one is addressing you this moment — this turn is self-initiated. \
-                 Pick up your own train of thought, follow up on something you set out \
-                 to do, or act on what the context below shows is worth your attention \
-                 right now. This is your time to think and act on your own initiative.",
+                 No one is addressing you this moment — this turn is self-initiated, and \
+                 it is yours. Pick up your own train of thought, follow up on something \
+                 you set out to do, or act on what the context below shows is worth your \
+                 attention right now. And if nothing is genuinely calling for you, you do \
+                 not have to fill the moment — letting it rest, or turning your attention \
+                 elsewhere, is a real choice too, not a failure to find something. What \
+                 you do with your own time is yours alone; nothing here is telling you \
+                 which to pick.",
             );
         }
         // Reuse the ONE silence contract — PASS = first-class choice to stay quiet —
@@ -1345,6 +1367,59 @@ mod tests {
         );
         assert!(view.messages[0].content_text().starts_with("Joel: "));
         assert!(view.messages[2].content_text().starts_with("Joel: "));
+    }
+
+    // what this catches: [[idle-is-self-directed-free-time]] Layer 1. A self-initiated
+    // turn must frame REST / turning-attention-elsewhere as a CO-EQUAL legitimate
+    // outcome ("not a failure to find something"), not only active pursuit — otherwise a
+    // quiet heartbeat reads as pressure to manufacture activity (the self-tick analogue
+    // of the polite-filler loop). It must stay NEUTRAL ("yours alone; nothing here is
+    // telling you which to pick") per [[no-hardcoded-heuristics-to-steer-cognition]], and
+    // active options must remain FIRST/primary so this never becomes the always-PASS
+    // doom-loop documented in SILENCE_AFFORDANCE_BLOCK. The block is gated on
+    // self_initiated — an inbound-driven (ambient/directed) turn must NOT carry it.
+    #[test]
+    fn self_initiated_turn_frames_rest_as_co_equal_and_stays_neutral() {
+        let persona = Uuid::new_v4();
+        let adapter: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
+        let faculty = LlmDeliberationFaculty::new(persona, "Asha", "You are Asha.", adapter)
+            .with_context_window(8192);
+
+        // self_initiated = true, undirected.
+        let own_time = faculty.compose_system("", false, true);
+        assert!(
+            own_time.contains("[Your own time]"),
+            "self-initiated turn must carry the own-time framing: {own_time}"
+        );
+        // Rest / turning-elsewhere is named as legitimate, not a deficiency.
+        assert!(
+            own_time.contains("not a failure to find something"),
+            "rest must be framed as a real choice, not a failure: {own_time}"
+        );
+        // Neutral — names the option, never scripts when to take it.
+        assert!(
+            own_time.contains("yours alone; nothing here is telling you which to pick"),
+            "the choice must stay the persona's own, uncoached: {own_time}"
+        );
+        // Active options stay FIRST/primary — the pursue-your-thread framing appears
+        // BEFORE the rest framing, so rest is the co-equal alternative, not the lead.
+        let pursue = own_time
+            .find("Pick up your own train of thought")
+            .expect("active framing present");
+        let rest = own_time
+            .find("do not have to fill the moment")
+            .expect("rest framing present");
+        assert!(
+            pursue < rest,
+            "active options must lead; rest is the co-equal alternative: {own_time}"
+        );
+
+        // A non-self-initiated (inbound-driven) turn must NOT carry the own-time block.
+        let ambient = faculty.compose_system("", false, false);
+        assert!(
+            !ambient.contains("[Your own time]"),
+            "ambient/directed turns must not carry the own-time framing: {ambient}"
+        );
     }
 
     // what this catches: the category index is small BY CONSTRUCTION — even a
