@@ -1835,9 +1835,31 @@ pub fn start_server(
              track the optimizer-loop landing)"
         );
 
+        // L3 completion sentinel shares the SAME registry — it polls the handles the
+        // trigger registers and looks the owning adapter back up here. Clone the Arc
+        // before the registry is moved into GenomeModule.
+        let completion_sentinel = Arc::new(
+            crate::modules::training_completion_sentinel::TrainingCompletionSentinel::new(
+                ft_registry.clone(),
+            ),
+        );
+
         runtime.register(Arc::new(crate::modules::genome::GenomeModule::new(
             ft_registry,
         )));
+
+        // TrainingCompletionSentinel: L3 of the dev-task continuous-learning loop.
+        // Polls in-flight training jobs (the TrainingJobBoard the trigger writes to);
+        // on completion runs `cognition/eval` and pages the gene into the live
+        // persona ONLY on lift>0 — the keystone that makes the single-machine loop
+        // automatic (`docs/genome/DEV-TASK-LOOP-CLOSURE-PLAN.md` L3). Its executor is
+        // installed below by `install_executor_on_all`.
+        runtime.register(completion_sentinel);
+        log_info!(
+            "ipc",
+            "server",
+            "TrainingCompletionSentinel: registered (L3 train-done → eval → lift>0 → page-in)"
+        );
 
         // TrainingTriggerModule: substrate-native batching coordinator
         // sitting between curriculum producers (teacher persona's

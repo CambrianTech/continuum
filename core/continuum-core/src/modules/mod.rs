@@ -71,6 +71,7 @@ pub mod serving_consumer;
 pub mod serving_daemon;
 pub mod system_resources;
 pub mod tool_parsing;
+pub mod training_completion_sentinel;
 pub mod training_trigger;
 pub mod vdd;
 pub mod vision;
