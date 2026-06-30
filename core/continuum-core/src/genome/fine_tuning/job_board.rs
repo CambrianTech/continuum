@@ -61,6 +61,12 @@ pub struct WatchedJob {
     /// The domain bucket (`DomainClassifier` output) this layer specializes — used
     /// as the gene NAME on page-in and the eval gene label.
     pub trait_kind: String,
+    /// The gym that measures this trait — the `cognition/eval` `eval_set` JSONL path,
+    /// carried verbatim from the [`super::types::TrainingJobRequest`]. The sentinel
+    /// passes it to the A/B eval; `None` means the recipe declared no gym, so the
+    /// gene is unmeasurable and the sentinel refuses to adopt it (never falls back to
+    /// a default gym — [[fallbacks-are-illegal-fail-loud]]).
+    pub eval_set: Option<String>,
 }
 
 /// Process-global registry of in-flight training jobs. DashMap-backed so the L2
@@ -127,6 +133,7 @@ mod tests {
             persona_name: "asha".to_string(),
             base_model: "qwen3-coder".to_string(),
             trait_kind: "code".to_string(),
+            eval_set: Some("docs/genome/coder-eval.jsonl".to_string()),
         }
     }
 

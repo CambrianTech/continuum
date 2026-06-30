@@ -118,6 +118,14 @@ pub(crate) struct PendingBatch {
     pub(crate) preferred_provider: Option<String>,
     pub(crate) min_examples: u32,
     pub(crate) validation_split: f32,
+    /// The gym that MEASURES this bucket's trait — the `cognition/eval` `eval_set`
+    /// JSONL path, carried verbatim onto the dispatched
+    /// [`TrainingJobRequest::eval_set`] so it rides the board to the L3 sentinel. A
+    /// first-arrival-wins bucket policy field like `lora`/`schedule`: a later submit
+    /// with a divergent gym is rejected `InconsistentBucket`, never silently merged.
+    /// `None` means the recipe declared no gym — the sentinel then REFUSES to adopt
+    /// rather than measuring against a default ([[fallbacks-are-illegal-fail-loud]]).
+    pub(crate) eval_set: Option<String>,
 }
 
 /// The shared state the three `genome/training-trigger/*` commands
@@ -201,6 +209,7 @@ impl TrainingTriggerState {
                 source: batch.source,
                 validation_split: batch.validation_split,
             },
+            eval_set: batch.eval_set.clone(),
             lora: batch.lora.clone(),
             schedule: batch.schedule.clone(),
             local_artifact_dir: batch.local_artifact_dir.clone(),

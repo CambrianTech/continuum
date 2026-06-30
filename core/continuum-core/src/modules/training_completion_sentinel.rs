@@ -115,6 +115,24 @@ impl TrainingCompletionSentinel {
     /// the live persona on its current genome — a failed measurement NEVER degrades
     /// her ([[humane-snapshot-eval]]).
     fn spawn_completion_chain(&self, job: WatchedJob, artifact: TrainingArtifact) {
+        // FAIL LOUD at the earliest seam: a gene the substrate cannot fairly MEASURE
+        // must never be paged into a live persona. The recipe declares its gym (the
+        // `cognition/eval` `eval_set`) at submission and it rides the board to here;
+        // when it's absent there is no honest A/B to gate on, so we REFUSE to adopt
+        // rather than measuring against an arbitrary default gym
+        // ([[fallbacks-are-illegal-fail-loud]]). Checked BEFORE the convert/eval spend
+        // because an unmeasurable gene is wasted compute. The job is already claimed
+        // off the board, so dropping it here simply leaves the living persona on her
+        // current genome — never degraded by a measurement we couldn't run.
+        let Some(eval_set) = job.eval_set.clone() else {
+            tracing::warn!(
+                persona = %job.persona_id,
+                trait_kind = %job.trait_kind,
+                "training-completion-sentinel: recipe declared no gym (eval_set) — gene is unmeasurable, NOT adopted (persona unchanged)"
+            );
+            return;
+        };
+
         let Some(executor) = self.executor.cloned() else {
             // Before boot installs the executor (early boot / tests) we cannot run
             // the eval. Named, not silent: the job is already claimed, so this layer
@@ -158,7 +176,10 @@ impl TrainingCompletionSentinel {
                 }),
                 room_id: None,
                 tasks: None,
-                eval_set: None,
+                // The gym the recipe DECLARED for this trait — measured on its own
+                // gym, never a default ([[fallbacks-are-illegal-fail-loud]]). Guarded
+                // Some at the top of this fn.
+                eval_set: Some(eval_set),
                 max_acts: None,
                 note: Some(format!(
                     "L3 auto-eval (gene={}, base={}, provider={})",

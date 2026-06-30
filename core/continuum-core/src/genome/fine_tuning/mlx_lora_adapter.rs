@@ -534,6 +534,7 @@ mod tests {
                 source: TrainingSource::OperatorCurated,
                 validation_split: 0.2,
             },
+            eval_set: None,
             lora: None,
             schedule: None,
             local_artifact_dir: None,

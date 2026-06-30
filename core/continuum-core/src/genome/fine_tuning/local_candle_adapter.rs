@@ -286,6 +286,7 @@ mod tests {
             base_model: "synthetic".into(),
             trait_kind: "stand-in".into(),
             dataset: small_dataset(),
+            eval_set: None,
             lora: Some(LoRAHyperparams {
                 rank: 2,
                 alpha: 4,

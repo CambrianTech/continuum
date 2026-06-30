@@ -97,6 +97,7 @@ crate::action_command! {
         let watched_persona_name = p.request.persona_name.clone();
         let watched_base_model = p.request.base_model.clone();
         let watched_trait_kind = p.request.trait_kind.clone();
+        let watched_eval_set = p.request.eval_set.clone();
 
         // 2. Adapter creates the job. FineTuningError carries a stable errorKind
         //    slug callers branch on for retry-vs-surface.
@@ -118,6 +119,7 @@ crate::action_command! {
                         persona_name: watched_persona_name,
                         base_model: watched_base_model,
                         trait_kind: watched_trait_kind,
+                        eval_set: watched_eval_set,
                     },
                 );
                 Ok(JobCreateOutcome {

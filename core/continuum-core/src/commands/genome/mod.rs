@@ -165,6 +165,7 @@ pub(crate) mod test_support {
             base_model: base.into(),
             trait_kind: "test-trait".into(),
             dataset: dataset(),
+            eval_set: None,
             lora: None,
             schedule: None,
             local_artifact_dir: None,

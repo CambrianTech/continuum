@@ -182,6 +182,14 @@ pub fn produce(
         // Wire form per genome/training-trigger/submit (camelCase). `source: raw`
         // = unfiltered live capture (TrainingSource::Raw). minExamples omitted →
         // DEFAULT_MIN_EXAMPLES; the trigger auto-fires job-create at the threshold.
+        //
+        // `evalSet` is INTENTIONALLY omitted (→ None): the `DomainClassifier` bucket
+        // (`plan.trait_kind`) does not yet resolve to a measuring gym, so the producer
+        // cannot honestly declare one. The L3 sentinel will therefore REFUSE to adopt
+        // a gene from this path until a trait→gym map exists
+        // ([[fallbacks-are-illegal-fail-loud]]) — an unmeasurable auto-gene is never
+        // paged into a live persona. Wiring that map is the explicit follow-up; the
+        // field is plumbed end-to-end so the producer only needs to start filling it.
         let params = json!({
             "personaId": persona_id,
             "personaName": persona_name,

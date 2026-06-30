@@ -10,4 +10,12 @@ import type { TrainingSource } from "../genome/fine_tuning/TrainingSource";
  * provider preference). All `Option` fields default; first-arrival pins the bucket's
  * policy and later submits to the same bucket must agree (else `InconsistentBucket`).
  */
-export type SubmitParams = { personaId: string, personaName: string, baseModel: string, traitKind: string, examples: Array<TrainingExample>, source: TrainingSource, lora?: LoRAHyperparams, schedule?: ScheduleParams, localArtifactDir?: string, preferredProvider?: string, minExamples?: number, validationSplit?: number, };
+export type SubmitParams = { personaId: string, personaName: string, baseModel: string, traitKind: string, examples: Array<TrainingExample>, source: TrainingSource, 
+/**
+ * The gym that MEASURES this trait — the `cognition/eval` `eval_set` JSONL path.
+ * First-arrival pins it for the bucket; a later submit with a divergent gym is
+ * rejected `InconsistentBucket`. Rides onto the dispatched `TrainingJobRequest`
+ * so the L3 sentinel measures the gene on its OWN declared gym; `None` means no
+ * gym → the sentinel refuses to adopt ([[fallbacks-are-illegal-fail-loud]]).
+ */
+evalSet?: string, lora?: LoRAHyperparams, schedule?: ScheduleParams, localArtifactDir?: string, preferredProvider?: string, minExamples?: number, validationSplit?: number, };
