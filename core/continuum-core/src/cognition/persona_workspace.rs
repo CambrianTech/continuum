@@ -777,20 +777,18 @@ mod tests {
         }
 
         // ---- EXACTLY what the LLM was fed (reconstruct the pre-deliberation ws) ----
-        let context_ws = Workspace {
-            world_state: burst.to_string(),
-            room_id: trace.room_id,
-            cycle: crate::cognition::workspace::CycleId::UNSTAMPED,
-            broadcast: trace.context_broadcast.clone(),
-            // The trace does not yet record the turn's directedness; reconstruct as
-            // ambient (the live default). TODO(#9): carry directedness on the trace so
-            // a replayed directed turn shows the silence escape withheld as it was.
-            directed_at_self: false,
-        };
+        // Route through the constructor (opaque single-turn burst) so this can't
+        // drift as Workspace gains fields; then graft on the recorded context
+        // broadcast the decider actually saw. The trace does not yet record the
+        // turn's directedness or self-initiation; reconstruct as ambient /
+        // message-driven (the live defaults). TODO(#9): carry directedness on the
+        // trace so a replayed directed turn shows the silence escape withheld as it was.
+        let mut context_ws = Workspace::in_room(burst.to_string(), trace.room_id);
+        context_ws.broadcast = trace.context_broadcast.clone();
         let view = delib.prompt_view(&context_ws);
         eprintln!("\n--------------- WHAT THE LLM WAS FED ---------------");
         eprintln!("[SYSTEM]\n{}\n", view.system);
-        eprintln!("[USER]\n{}", view.user);
+        eprintln!("[CONVERSATION]\n{}", view.user_text());
 
         eprintln!("\n--------------- Ivar's DECISION ---------------");
         match ws.decision() {

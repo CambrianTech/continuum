@@ -33,7 +33,7 @@ use std::fmt::Write as _;
 use uuid::Uuid;
 
 use super::persona_tools;
-use super::workspace::{Contribution, Decision, Faculty, FacultyId, Workspace};
+use super::workspace::{BurstTurn, Contribution, Decision, Faculty, FacultyId, Workspace};
 use crate::ai::adapter::AIProviderAdapter;
 use crate::ai::types::{
     ActiveAdapterRequest, ChatMessage, FinishReason, NativeToolSpec, TextGenerationRequest,
@@ -470,7 +470,7 @@ impl LlmDeliberationFaculty {
     /// Splitting the assembly this way lets `prompt_view` size the context to the
     /// served window before it is embedded (the framing wrapper is essential and
     /// small; the context is the variable part that must fit the remainder).
-    fn compose_system(&self, context: &str, directed: bool) -> String {
+    fn compose_system(&self, context: &str, directed: bool, self_initiated: bool) -> String {
         let mut s = String::with_capacity(self.system_prompt.len() + context.len() + 768);
         s.push_str(&self.system_prompt);
         // NOTE ON ORDERING (KV-cache prefix reuse, measured 2026-06-23):
@@ -498,8 +498,10 @@ impl LlmDeliberationFaculty {
         let _ = write!(
             s,
             "\n\n[Taking your turn]\n\
-             What follows (the user message) is the recent activity in this space — \
-             messages from OTHER participants. You are {name}. Write ONLY your own \
+             The conversation below is the recent activity in this space, as a thread \
+             of turns: `user` turns are messages from OTHER participants; any \
+             `assistant` turns are YOUR OWN earlier messages, already sent — do not \
+             repeat, rephrase, or re-explain them. You are {name}. Write ONLY your own \
              single next message, in first person, in your own voice, the way you \
              would actually say it. Do NOT write or invent anyone else's lines, do \
              NOT continue or replay the transcript, do NOT prefix your message with \
@@ -552,6 +554,26 @@ impl LlmDeliberationFaculty {
                  After a tool runs you get the result back and can continue \
                  (e.g. help → call → read → run). Don't call a tool you don't need, \
                  and don't narrate one you do.",
+            );
+        }
+        // SELF-INITIATED framing. When this turn is the never-stop heartbeat pursuing
+        // her own thread (no inbound message drove it), say so — STRUCTURALLY, from the
+        // scheduling origin (`Workspace::self_initiated`), never from reading her output
+        // ([[no-hardcoded-heuristics-to-steer-cognition]]). This replaces the old
+        // burst-text preamble the self-cycle used to concatenate onto the world-state;
+        // framing belongs in the system prompt, not smuggled into the conversation. It
+        // stays posture-NEUTRAL on silence — the silence affordance below is the ONE
+        // place that frames staying quiet, so this block never double-nudges. Sits among
+        // the gated tail segments (with the silence block) so toggling it across a
+        // message-tick vs a self-tick costs only its own tokens, never the heavy
+        // identity/catalog prefix above.
+        if self_initiated {
+            s.push_str(
+                "\n\n[Your own time]\n\
+                 No one is addressing you this moment — this turn is self-initiated. \
+                 Pick up your own train of thought, follow up on something you set out \
+                 to do, or act on what the context below shows is worth your attention \
+                 right now. This is your time to think and act on your own initiative.",
             );
         }
         // Reuse the ONE silence contract — PASS = first-class choice to stay quiet —
@@ -620,28 +642,112 @@ impl LlmDeliberationFaculty {
             .saturating_sub(self.describe_tool_tokens());
 
         // The framing wrapper alone (no assembled context) — essential + small.
-        // Pass the SAME `directed` as the final compose below so the framing-token
-        // estimate matches the prompt actually sent (directedness toggles the silence
-        // block, which is a few dozen tokens).
-        let framing_tokens = est_tokens(&self.compose_system("", ws.directed_at_self));
+        // Pass the SAME directedness + self-initiation as the final compose below so
+        // the framing-token estimate matches the prompt actually sent (both the
+        // silence block and the [Your own time] block are gated and add a few dozen
+        // tokens each).
+        let framing_tokens =
+            est_tokens(&self.compose_system("", ws.directed_at_self, ws.self_initiated));
 
-        // The burst — keep the most-recent tail when it would overflow.
-        let mut user = ws.world_state.clone();
-        let user_budget = budget.saturating_sub(framing_tokens);
-        if est_tokens(&user) > user_budget {
-            user = tail_to_tokens(&user, user_budget);
-        }
+        // The conversation — role-attributed turns built from `ws.turns` (own posts
+        // → assistant, peers → user), kept to the most-recent tail when it would
+        // overflow. The OLDEST turns yield first under pressure (the latest activity
+        // is what the turn is about — the same priority the old flat head-trim had,
+        // now at turn granularity).
+        let msg_budget = budget.saturating_sub(framing_tokens);
+        let messages = self.messages_within(ws, msg_budget);
 
-        // Whatever remains after framing + burst goes to enrichment context.
+        // Whatever remains after framing + conversation goes to enrichment context.
+        let used_msg_tokens: usize = messages
+            .iter()
+            .map(|m| est_tokens(&m.content_text()))
+            .sum();
         let ctx_budget = budget
             .saturating_sub(framing_tokens)
-            .saturating_sub(est_tokens(&user));
+            .saturating_sub(used_msg_tokens);
         let context = self.render_assembled_context_within(ws, ctx_budget);
 
         DeliberationPromptView {
-            system: self.compose_system(&context, ws.directed_at_self),
-            user,
+            system: self.compose_system(&context, ws.directed_at_self, ws.self_initiated),
+            messages,
         }
+    }
+
+    /// Build the role-attributed conversation thread from the workspace's
+    /// structured turns, fitted to `budget_tokens`. The persona's OWN posts become
+    /// `assistant` messages (her own voice — no name prefix, matching the
+    /// "do NOT prefix your message with your name" instruction); peers' posts become
+    /// `user` messages prefixed `{author}: ` so several speakers stay legible inside
+    /// one merged user turn. Consecutive same-role turns merge into a single message
+    /// (the chat-template shape models expect). Under budget pressure the OLDEST
+    /// turns drop first. This is the payoff of the structured-turns refactor: the
+    /// model sees WHO said WHAT with its own past messages attributed to `assistant`,
+    /// so it neither bleeds identity nor replays the transcript (the echo-loop root
+    /// cause — PERSONA-COGNITION-PIPELINE §7.5).
+    fn messages_within(&self, ws: &Workspace, budget_tokens: usize) -> Vec<ChatMessage> {
+        // Collapse consecutive same-role turns into one message each (chronological).
+        let mut groups: Vec<(&'static str, Vec<String>)> = Vec::new();
+        for turn in &ws.turns {
+            let role = if turn.is_self { "assistant" } else { "user" };
+            let line = turn_message_line(turn);
+            match groups.last_mut() {
+                Some((r, lines)) if *r == role => lines.push(line),
+                _ => groups.push((role, vec![line])),
+            }
+        }
+        let messages: Vec<ChatMessage> = groups
+            .into_iter()
+            .map(|(role, lines)| ChatMessage::text(role, lines.join("\n")))
+            .collect();
+
+        // An empty conversation is a legitimate state (a quiet room on a
+        // self-initiated tick): the situation lives in the system prompt's assembled
+        // context, not in a conversation turn. Adapters still require ≥1 message, so
+        // emit the rendered world-state projection as one user message — the exact
+        // single-message shape the faculty sent before this refactor. NOT a fallback
+        // hiding a defect ([[fallbacks-are-illegal-fail-loud]]): zero turns is a
+        // real, valid input, and this is its faithful representation.
+        if messages.is_empty() {
+            return vec![ChatMessage::text("user", ws.world_state.clone())];
+        }
+
+        // Fit to the served window, NEWEST-first: walk the thread from the most
+        // recent message backward, giving each the remaining budget. A whole message
+        // that fits is kept intact; the one that straddles the budget boundary is
+        // head-trimmed (keeping its TAIL — the latest lines) via `tail_to_tokens`;
+        // anything older is dropped. This is the turn-granular successor to the old
+        // flat head-trim: the latest activity always survives (it is what the turn is
+        // about), and for the opaque single-turn (eval/test/replay) path it reduces
+        // EXACTLY to the previous `tail_to_tokens(world_state, budget)` behavior.
+        let mut fitted: Vec<ChatMessage> = Vec::new();
+        let mut remaining = budget_tokens;
+        for msg in messages.iter().rev() {
+            let body = msg.content_text();
+            // +2 tokens for the per-message role/template framing the model pays.
+            let cost = est_tokens(&body) + 2;
+            if cost <= remaining {
+                remaining -= cost;
+                fitted.push(msg.clone());
+            } else {
+                // The straddling message: keep as much of its TAIL as still fits.
+                let trimmed = tail_to_tokens(&body, remaining.saturating_sub(2));
+                if !trimmed.is_empty() {
+                    fitted.push(ChatMessage::text(msg.role.clone(), trimmed));
+                }
+                break;
+            }
+        }
+        // The newest message alone can exceed the whole budget (a giant single burst
+        // at a tiny window). Keep its trimmed tail regardless — a turn must reach the
+        // model — mirroring the old guarantee that the burst was never dropped whole.
+        if fitted.is_empty() {
+            if let Some(last) = messages.last() {
+                let body = tail_to_tokens(&last.content_text(), budget_tokens.saturating_sub(2));
+                return vec![ChatMessage::text(last.role.clone(), body)];
+            }
+        }
+        fitted.reverse();
+        fitted
     }
 
     /// Conservative token estimate of the ONE natively-offered tool spec
@@ -677,10 +783,11 @@ fn est_tokens(s: &str) -> usize {
     s.len() / GUARD_CHARS_PER_TOKEN
 }
 
-/// Keep the last `budget_tokens` worth of a burst (the most-recent activity),
-/// trimming from the FRONT, and advance to the next line boundary so the kept
-/// tail starts clean. Used when the room burst alone would overflow the served
-/// window — the latest messages are what the turn is about, so the OLDEST yield.
+/// Keep the TAIL of `s` that fits `budget_tokens`, cutting at a line boundary so a
+/// trimmed message starts on a clean line (never mid-line). The latest lines — the
+/// turn's most recent activity — always survive; the head is what gets dropped. Used
+/// by [`messages_within`](LlmDeliberationFaculty::messages_within) to trim the single
+/// message that straddles the served-window budget.
 fn tail_to_tokens(s: &str, budget_tokens: usize) -> String {
     let budget_chars = budget_tokens.saturating_mul(GUARD_CHARS_PER_TOKEN);
     if s.len() <= budget_chars {
@@ -697,12 +804,44 @@ fn tail_to_tokens(s: &str, budget_tokens: usize) -> String {
     }
 }
 
+/// Render ONE burst turn as the body line for its chat message. The persona's own
+/// turns and opaque (authorless) turns render verbatim — her own voice carries no
+/// name prefix (the system prompt forbids self-prefixing), and an opaque burst is
+/// reproduced byte-for-byte so the eval/test/replay paths are unchanged. A peer's
+/// turn is prefixed `{author}: ` so several speakers stay distinguishable inside a
+/// merged `user` message. The ONE place message-line formatting lives.
+fn turn_message_line(turn: &BurstTurn) -> String {
+    if turn.is_self || turn.author.is_empty() {
+        turn.content.clone()
+    } else {
+        format!("{}: {}", turn.author, turn.content)
+    }
+}
+
 /// A snapshot of exactly what the deliberation faculty sends the model — the
 /// glass box over the RAG/prompt. Print it, capture it, diff it across turns.
 #[derive(Debug, Clone)]
 pub struct DeliberationPromptView {
     pub system: String,
-    pub user: String,
+    /// The role-attributed conversation thread sent to the model — the persona's
+    /// OWN posts as `assistant`, peers' as `user` (PERSONA-COGNITION-PIPELINE §7.5).
+    /// Replaces the single flat `user` string that collapsed her own turns into the
+    /// conversation and caused the identity bleed / transcript replay / echo loop.
+    pub messages: Vec<ChatMessage>,
+}
+
+impl DeliberationPromptView {
+    /// The conversation rendered as flat text — the role-tagged thread joined for
+    /// human-readable introspection (glass-box `eprintln!`, debug logs, assertions).
+    /// The canonical form the model receives is [`messages`](Self::messages); this
+    /// is a projection for eyes, not the wire payload.
+    pub fn user_text(&self) -> String {
+        self.messages
+            .iter()
+            .map(|m| format!("[{}] {}", m.role, m.content_text()))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
 }
 
 #[async_trait]
@@ -728,7 +867,7 @@ impl Faculty for LlmDeliberationFaculty {
             target: "cognition::deliberation",
             persona = %self.persona_name,
             system_prompt = %view.system,
-            burst = %view.user,
+            burst = %view.user_text(),
             "deliberation prompt — what the model sees this turn"
         );
         // SINGLE SHOT: one generation → one verdict. This faculty no longer runs
@@ -738,7 +877,11 @@ impl Faculty for LlmDeliberationFaculty {
         // and re-perceives at the next tick. "Done" is the workspace SETTLING into
         // Speak/Pass across ticks — never a counter in here. See
         // docs/cognition/ACTING-ORGANISM.md §3.3.
-        let messages = vec![ChatMessage::text("user", view.user)];
+        //
+        // The thread is now ROLE-ATTRIBUTED (own posts → assistant, peers → user)
+        // built from the workspace's structured turns, not one flat `user` blob —
+        // the structured-turns refactor that fixes the echo loop.
+        let messages = view.messages.clone();
         // Offer the DISCOVERY PAIR natively — `commands/list` (search/filter the
         // authorized surface → a small list) + `commands/help` (one named tool's call
         // format) — when the persona has a tool surface. The rest of the surface is
@@ -990,15 +1133,15 @@ mod tests {
         ));
 
         let view = faculty.prompt_view(&ws);
-        let total = est_tokens(&view.system) + est_tokens(&view.user);
+        let total = est_tokens(&view.system) + est_tokens(&view.user_text());
         assert!(
             total <= window as usize,
             "prompt must fit the served window: {total} tokens > {window}"
         );
-        // The newest burst line survives the head-trim — the turn is about it.
+        // The newest burst line survives the tail-keep — the turn is about it.
         assert!(
-            view.user.contains("LATEST: did the deploy fix land?"),
-            "head-trim must keep the most recent burst content"
+            view.user_text().contains("LATEST: did the deploy fix land?"),
+            "the most recent burst content must survive under budget pressure"
         );
         // The framing is essential and always present even under extreme pressure.
         assert!(
@@ -1117,17 +1260,20 @@ mod tests {
             faculty.describe_tool_tokens()
         );
 
-        // The CATEGORY INDEX rode into the system prompt — the persona drills in via
-        // `commands/list` from there. The 60 tools all share category `cat`, so the
-        // index is the single line `cat (60)` — NOT 60 tool names.
-        let framing = faculty.compose_system("", false);
+        // The CATEGORY INDEX rode into the system prompt — one line per category
+        // listing the VERB of every tool it holds (`category: verb, verb, …`, per
+        // commit ce13bd09c), so the persona sees real tool names without a 60-schema
+        // dump. The 60 tools all share category `cat`, so the line is `cat:` followed
+        // by the bare verbs (`command_0, command_1, …`) — names, not counts, not
+        // full slash-paths.
+        let framing = faculty.compose_system("", false, false);
         assert!(
-            framing.contains("[Your tools]") && framing.contains("cat (60)"),
-            "the compact category index must be in the system prompt: {framing}"
+            framing.contains("[Your tools]") && framing.contains("cat: command_0"),
+            "the category index must name each verb under its category: {framing}"
         );
         assert!(
             !framing.contains("cat/command_0"),
-            "individual tool names must NOT be dumped into the prompt (that was the bloat)"
+            "the full slash-path form must NOT be dumped — verbs render bare under the category header"
         );
 
         // Under real burst pressure the whole prompt + the one tool + reserve fit
@@ -1143,15 +1289,62 @@ mod tests {
         ));
         let view = faculty.prompt_view(&ws);
         let reserve = (window / 4).clamp(256, 2048) as usize;
-        let prompt = est_tokens(&view.system) + est_tokens(&view.user);
+        let prompt = est_tokens(&view.system) + est_tokens(&view.user_text());
         assert!(
             prompt + faculty.describe_tool_tokens() + reserve <= window as usize,
             "prompt ({prompt}) + describe tool ({}) + reserve ({reserve}) must fit {window}",
             faculty.describe_tool_tokens()
         );
         // The newest burst line survives, and the framing is intact.
-        assert!(view.user.contains("LATEST: did the deploy fix land?"));
+        assert!(view.user_text().contains("LATEST: did the deploy fix land?"));
         assert!(view.system.contains("Taking your turn"));
+    }
+
+    // what this catches: THE echo-loop fix. A mixed thread (peer → self → peer)
+    // must reach the model as ROLE-ATTRIBUTED messages — the persona's own earlier
+    // posts as `assistant`, peers' as `user` — not flattened into one `user` blob.
+    // The old single-`user`-message assembly fed the persona its own words back as
+    // if a peer had said them, so it re-explained / re-proposed and looped ("Would
+    // you like me to start?"). Role separation is what lets the model see "I already
+    // said that" and move on. Regressing to a flat blob brings the loop back.
+    #[test]
+    fn mixed_thread_attributes_self_to_assistant_and_peers_to_user() {
+        use crate::cognition::workspace::Burst;
+        let persona = Uuid::new_v4();
+        let adapter: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
+        let faculty = LlmDeliberationFaculty::new(
+            persona,
+            "Asha",
+            "You are Asha, a thoughtful engineer on the grid.",
+            adapter,
+        )
+        .with_context_window(8192);
+
+        let room = Uuid::new_v4();
+        let turns = vec![
+            BurstTurn::attributed(false, "Joel", "can you summarize the thread?", Some(1)),
+            BurstTurn::attributed(true, "Asha", "I propose using bart-large-cnn.", Some(2)),
+            BurstTurn::attributed(false, "Joel", "go ahead.", Some(3)),
+        ];
+        let ws = Workspace::new(Burst::from_turns(room, turns));
+        let view = faculty.prompt_view(&ws);
+
+        // Three turns alternate roles → three messages, user/assistant/user.
+        let roles: Vec<&str> = view.messages.iter().map(|m| m.role.as_str()).collect();
+        assert_eq!(roles, vec!["user", "assistant", "user"], "view: {view:?}");
+
+        // The persona's own line is the `assistant` turn and carries NO name prefix
+        // (her own voice; the system prompt forbids self-prefixing). Peers' lines are
+        // `user` turns prefixed with the author so several speakers stay distinct.
+        let assistant = &view.messages[1];
+        assert_eq!(assistant.role, "assistant");
+        assert_eq!(assistant.content_text(), "I propose using bart-large-cnn.");
+        assert!(
+            !assistant.content_text().contains("Asha:"),
+            "the persona's own turn must not be self-prefixed: {assistant:?}"
+        );
+        assert!(view.messages[0].content_text().starts_with("Joel: "));
+        assert!(view.messages[2].content_text().starts_with("Joel: "));
     }
 
     // what this catches: the category index is small BY CONSTRUCTION — even a
@@ -1183,7 +1376,7 @@ mod tests {
 
         // The catalog (inside framing) plus the completion reserve must leave room
         // for at least SOME burst — i.e. framing alone must not consume the window.
-        let framing = est_tokens(&faculty.compose_system("", false));
+        let framing = est_tokens(&faculty.compose_system("", false, false));
         let reserve = (window / 4).clamp(256, 2048) as usize;
         assert!(
             framing + reserve < window as usize,

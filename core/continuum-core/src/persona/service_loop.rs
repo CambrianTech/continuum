@@ -537,12 +537,19 @@ async fn serve_persona_loop_inner(
         // the same seam carrying their own metadata. Built here where the item
         // metadata is still intact. (Self-echo is safe: own posts never TRIGGER a
         // turn — the `msg.peer_id == own` filter above — only inform context.)
-        // Shared burst truth — the same projection the never-stop self-tick uses.
-        let workspace_burst: String = build_workspace_burst(
-            &composed.deliveries,
+        // Shared burst truth — the same structured turns the never-stop self-tick
+        // uses. Built as `Vec<BurstTurn>` (WHO/WHEN/WHAT + the is_self attribution
+        // role assignment turns on), wrapped into a `Burst` carrying both the turns
+        // and their text projection. The deliberation faculty reads the turns to
+        // assemble role-attributed messages; nothing flattens her own posts into a
+        // peer's voice anymore (the identity-bleed/echo root cause).
+        let workspace_burst = crate::cognition::workspace::Burst::from_turns(
             ctx.identity.default_room,
-            &ctx.identity.peer_id.to_string(),
-            &ctx.identity.agent_name,
+            build_workspace_turns(
+                &composed.deliveries,
+                &ctx.identity.peer_id.to_string(),
+                &ctx.identity.agent_name,
+            ),
         );
         // Mark this world-state as just-deliberated so the next heartbeat tick doesn't
         // re-run the same burst (the message path and the self-tick share the gate;
@@ -662,7 +669,7 @@ async fn serve_persona_loop_inner(
                     workspace_burst,
                     ctx.identity.default_room,
                     true,
-                    directed,
+                    crate::cognition::workspace::TurnFraming::message(directed),
                 )
                 .await;
                 phase_timings.respond_ms = respond_started.elapsed().as_millis() as u64;
@@ -882,16 +889,13 @@ enum Wake {
 /// `ComposedTurn`) because the format only depends on the deliveries; eval can
 /// hand-build a single synthetic airc delivery for a task without composing a
 /// full turn.
-pub(crate) fn build_workspace_burst(
+pub(crate) fn build_workspace_turns(
     deliveries: &[crate::persona::rag_budget::RagDelivery],
-    room: Uuid,
     own_peer: &str,
     agent_name: &str,
-) -> String {
+) -> Vec<crate::cognition::workspace::BurstTurn> {
+    use crate::cognition::workspace::BurstTurn;
     use std::collections::HashMap;
-    use std::fmt::Write as _;
-    let mut b = String::new();
-    let _ = writeln!(b, "[room {room}]");
     // airc owns identity: the `room-roster` source already joined peer_id → display
     // name in one batched scan ([[airc-native-identity-rooms-security]]). Reuse THAT
     // resolution — same deliveries slice — so the history reads `Joel:`, `BigMama:`
@@ -908,31 +912,29 @@ pub(crate) fn build_workspace_burst(
             Some((peer, name))
         })
         .collect();
-    for item in deliveries
+    deliveries
         .iter()
         .filter(|d| d.source_id == "airc")
         .flat_map(|d| d.items.iter())
-    {
-        let who_raw = item
-            .metadata
-            .get("peer_id")
-            .and_then(|v| v.as_str())
-            .unwrap_or("peer");
-        let who = if who_raw == own_peer {
-            agent_name
-        } else {
-            names.get(who_raw).copied().unwrap_or(who_raw)
-        };
-        match item.metadata.get("occurred_at_ms").and_then(|v| v.as_u64()) {
-            Some(t) => {
-                let _ = writeln!(b, "[t={t}] {who}: {}", item.content);
-            }
-            None => {
-                let _ = writeln!(b, "{who}: {}", item.content);
-            }
-        }
-    }
-    b
+        .map(|item| {
+            let who_raw = item
+                .metadata
+                .get("peer_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("peer");
+            // is_self — the ONE structural fact role attribution turns on (own posts
+            // → assistant, peers → user). Carried here where the peer_id is intact,
+            // never re-derived from a `Name:` prefix downstream.
+            let is_self = who_raw == own_peer;
+            let author = if is_self {
+                agent_name
+            } else {
+                names.get(who_raw).copied().unwrap_or(who_raw)
+            };
+            let occurred_at_ms = item.metadata.get("occurred_at_ms").and_then(|v| v.as_u64());
+            BurstTurn::attributed(is_self, author, item.content.clone(), occurred_at_ms)
+        })
+        .collect()
 }
 
 /// The "is there anything for me to attend to?" MECHANISM for the heartbeat: a
@@ -1024,11 +1026,16 @@ async fn run_self_cycle(
         return; // nothing NEW to attend to (no external change, no work progress) → sleep
     }
     *last_burst_fp = fp;
-    let burst = build_workspace_burst(
-        &composed.deliveries,
+    // Structured turns (own posts attributed as self → assistant, peers → user),
+    // wrapped into a Burst carrying both the turns and their text projection — the
+    // SAME shape the message path builds.
+    let burst = crate::cognition::workspace::Burst::from_turns(
         ctx.identity.default_room,
-        &ctx.identity.peer_id.to_string(),
-        &ctx.identity.agent_name,
+        build_workspace_turns(
+            &composed.deliveries,
+            &ctx.identity.peer_id.to_string(),
+            &ctx.identity.agent_name,
+        ),
     );
     let Some(cycle) = crate::cognition::persona_workspace::global().get(&ctx.identity.persona_id)
     else {
@@ -1098,16 +1105,13 @@ async fn run_self_cycle(
         );
         return;
     }
-    let addressing = if addressed {
-        "Someone addressed you directly in what follows."
-    } else {
-        "No one addressed you directly just now."
-    };
-    let framed = format!(
-        "[Self-initiated moment. {addressing} This is your own time — pursue your own \
-         thread, reason, and act as you see fit. The room is shared with real peers; \
-         contribute to it what genuinely serves them.]\n{burst}"
-    );
+    // The self-initiated framing (formerly an `[Self-initiated moment…]` text
+    // preamble concatenated onto the burst) now rides `TurnFraming::self_thread`
+    // into the system prompt, so the conversation turns stay clean role-attributed
+    // messages and the "this is your own time" framing is standing instruction, not
+    // a fake conversation line. The addressing fact rides the SAME framing's
+    // `directed` bit (withholds the silent-PASS hatch when she was named); no
+    // hand-written "someone addressed you" sentence is needed.
     // ONE settlement step through the SAME shared primitive as the message path and
     // the eval driver (`act_observe::settle_step`, `may_act = true`): run ONCE, and
     // on `Act` admit the result as memory + let the next heartbeat re-perceive — no
@@ -1126,10 +1130,10 @@ async fn run_self_cycle(
     // words, she just isn't handed the silent hatch when named.
     let (step, _turn_metrics) = crate::cognition::act_observe::settle_step(
         &cycle,
-        framed,
+        burst,
         ctx.identity.default_room,
         true,
-        addressed,
+        crate::cognition::workspace::TurnFraming::self_thread(addressed),
     )
     .await;
     match step {
@@ -1294,7 +1298,8 @@ mod tests {
     /// burst must consume it. Own posts stay attributed to `agent_name`; a peer with
     /// no roster entry falls back to its id (honest, never a fabricated name).
     mod workspace_burst_names {
-        use super::super::build_workspace_burst;
+        use super::super::build_workspace_turns;
+        use crate::cognition::workspace::Burst;
         use crate::persona::rag_budget::{RagDelivery, RagItem, ResolutionPreference};
         use serde_json::json;
         use uuid::Uuid;
@@ -1345,9 +1350,30 @@ mod tests {
                 ),
             ];
 
-            let burst = build_workspace_burst(&deliveries, room, me, "Asha");
+            let turns = build_workspace_turns(&deliveries, me, "Asha");
 
-            // Remote peer resolved to roster name, not the UUID.
+            // STRUCTURAL attribution (the whole point of the turns refactor): the
+            // `is_self` bit role attribution turns on must be set from peer_id ==
+            // own_peer, NOT re-derived from a `Name:` prefix downstream. Own post →
+            // self; peers (rostered or not) → not-self.
+            assert_eq!(turns.len(), 3, "one turn per airc item");
+            let joel_turn = &turns[0];
+            let own_turn = &turns[1];
+            let stranger_turn = &turns[2];
+            assert!(!joel_turn.is_self && joel_turn.author == "Joel");
+            assert!(
+                own_turn.is_self && own_turn.author == "Asha",
+                "own post must be attributed to self/agent_name, got {own_turn:?}"
+            );
+            assert!(
+                !stranger_turn.is_self && stranger_turn.author == stranger,
+                "unrostered peer is not-self and falls back to its id, got {stranger_turn:?}"
+            );
+
+            // The rendered text projection (what `world_state` IS) must still read
+            // byte-identically — roster names resolved, no raw UUID leak for rostered
+            // peers, own post attributed, unrostered peer honest-by-id.
+            let burst = Burst::from_turns(room, turns).rendered;
             assert!(
                 burst.contains("Joel: Asha — are you there?"),
                 "remote peer must render with roster name, got:\n{burst}"
@@ -1356,13 +1382,10 @@ mod tests {
                 !burst.contains(joel),
                 "the raw peer UUID must NOT leak into the burst, got:\n{burst}"
             );
-            // Own post attributed to agent_name (recognizes its own voice).
             assert!(
                 burst.contains("Asha: I'm here, Joel!"),
                 "own post must attribute to agent_name, got:\n{burst}"
             );
-            // Peer with no roster entry falls back to its id — honest, never invisible,
-            // never fabricated.
             assert!(
                 burst.contains(&format!("{stranger}: lurking")),
                 "unrostered peer falls back to its id, got:\n{burst}"

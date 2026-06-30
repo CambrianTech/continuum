@@ -317,15 +317,214 @@ impl Contribution {
     }
 }
 
+/// One attributed turn in the burst the persona reasons over — a single
+/// message in the conversation, with WHO said it preserved as structure rather
+/// than flattened into a `Name:`-prefixed line. This is the unit that lets the
+/// deliberation faculty assemble role-attributed `Vec<ChatMessage>` (the
+/// persona's OWN posts → `assistant`, peers' → `user`; PERSONA-COGNITION-PIPELINE
+/// §7.5) instead of collapsing the whole conversation into one `user` message —
+/// the defect that caused identity bleed, transcript replay, and the echo loop.
+#[derive(Debug, Clone)]
+pub struct BurstTurn {
+    /// Did THIS persona author the turn? `true` → it renders as an `assistant`
+    /// message (her own voice); `false` → a peer's `user` message. The ONE fact
+    /// role attribution turns on — carried as structure so the deliberation
+    /// faculty never has to guess from a `Name:` prefix.
+    pub is_self: bool,
+    /// Display name of the author (the persona's `agent_name` for self, the
+    /// roster `display_name` for peers, the raw `peer_id` when unresolved —
+    /// honest, never fabricated). Empty for an opaque turn (raw-string burst with
+    /// no authorship — eval/test stimuli).
+    pub author: String,
+    /// The message body.
+    pub content: String,
+    /// When it occurred (airc `occurred_at_ms`), if known. Drives the `[t=…]`
+    /// timestamp prefix in the rendered projection so a lived turn and a measured
+    /// one render byte-identically.
+    pub occurred_at_ms: Option<u64>,
+}
+
+impl BurstTurn {
+    /// An attributed turn — the live/eval path that knows WHO spoke and WHEN.
+    pub fn attributed(
+        is_self: bool,
+        author: impl Into<String>,
+        content: impl Into<String>,
+        occurred_at_ms: Option<u64>,
+    ) -> Self {
+        Self {
+            is_self,
+            author: author.into(),
+            content: content.into(),
+            occurred_at_ms,
+        }
+    }
+
+    /// An OPAQUE turn — a raw-string burst with no authorship (a hand-built eval
+    /// stimulus, a faculty-isolation test input, a replay-reconstructed
+    /// world-state). NOT a fallback ([[fallbacks-are-illegal-fail-loud]]): these
+    /// inputs genuinely have no author, so the honest structure is one unattributed
+    /// turn — the deliberation faculty renders it as a single `user` message,
+    /// byte-identical to today.
+    pub fn opaque(content: impl Into<String>) -> Self {
+        Self {
+            is_self: false,
+            author: String::new(),
+            content: content.into(),
+            occurred_at_ms: None,
+        }
+    }
+
+    /// Render this turn as ONE line of the world-state projection, matching the
+    /// historical `build_workspace_burst` format exactly: `[t={ms}] {author}:
+    /// {content}` when timed, `{author}: {content}` when authored-but-untimed,
+    /// the bare content (no prefix, no added newline) when opaque.
+    fn write_line(&self, out: &mut String) {
+        use std::fmt::Write as _;
+        if self.author.is_empty() {
+            // Opaque: preserve the raw burst verbatim (it may already contain its
+            // own newlines / structure — adding a prefix or trailing newline would
+            // change the bytes every text reader of `world_state` sees).
+            let _ = write!(out, "{}", self.content);
+        } else if let Some(t) = self.occurred_at_ms {
+            let _ = writeln!(out, "[t={t}] {}: {}", self.author, self.content);
+        } else {
+            let _ = writeln!(out, "{}: {}", self.author, self.content);
+        }
+    }
+}
+
+/// The assembled burst a persona reasons over THIS tick, carried as structure
+/// (`turns`) with its text projection (`rendered`) materialized once. `turns` is
+/// the canonical form the deliberation faculty reads to build role-attributed
+/// messages; `rendered` is the flat string every other (text) reader of
+/// `world_state` keeps consuming unchanged — one rendering decision, one place
+/// (the compression principle). Construct via [`Burst::from_turns`] (the live /
+/// eval path, with authorship) or via `From<String>`/`From<&str>` (a raw-string
+/// stimulus → a single opaque turn rendered verbatim).
+#[derive(Debug, Clone)]
+pub struct Burst {
+    /// The structured conversation — the unit the deliberation faculty attributes
+    /// to `assistant`/`user` roles. Excludes the room header (standing context
+    /// that belongs in the system prompt, not the conversation).
+    pub turns: Vec<BurstTurn>,
+    /// The text projection of `turns` (+ room header) — what `world_state` IS.
+    /// Materialized once at construction so the hot path never re-renders.
+    pub rendered: String,
+}
+
+impl Burst {
+    /// Assemble an attributed burst: a `[room {room}]` header followed by each
+    /// turn rendered to its historical line format. The header is rendered INTO
+    /// `rendered` (so `world_state` is byte-identical to the old
+    /// `build_workspace_burst`) but deliberately kept OUT of `turns` — room
+    /// identity is standing context for the system prompt, not a conversation turn.
+    pub fn from_turns(room: Uuid, turns: Vec<BurstTurn>) -> Self {
+        use std::fmt::Write as _;
+        let mut rendered = String::new();
+        let _ = writeln!(rendered, "[room {room}]");
+        for turn in &turns {
+            turn.write_line(&mut rendered);
+        }
+        Self { turns, rendered }
+    }
+}
+
+impl From<String> for Burst {
+    /// A raw-string burst → ONE opaque turn, rendered verbatim. Keeps every
+    /// string-passing call site (faculty tests, eval shorthand, replay) compiling
+    /// and byte-identical.
+    fn from(s: String) -> Self {
+        Self {
+            turns: vec![BurstTurn::opaque(s.clone())],
+            rendered: s,
+        }
+    }
+}
+
+impl From<&str> for Burst {
+    fn from(s: &str) -> Self {
+        Burst::from(s.to_string())
+    }
+}
+
+impl From<&String> for Burst {
+    fn from(s: &String) -> Self {
+        Burst::from(s.clone())
+    }
+}
+
+/// How THIS turn is framed for the persona — the two structural facts the system
+/// prompt reflects: is it DIRECTED at her (suppress the silence escape) and is it
+/// SELF-INITIATED (the heartbeat pursuing her own thread, vs a message/eval
+/// driving it). Replaces the lone `directed: bool` that used to thread through
+/// the run/settle seam, so the self-initiated framing lives in the system prompt
+/// instead of being concatenated onto the burst text. Both facts are STRUCTURAL
+/// (addressing / scheduling origin), never a read of her output
+/// ([[no-hardcoded-heuristics-to-steer-cognition]]).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct TurnFraming {
+    /// Directed AT the persona (@mention / DM / examiner question) — see
+    /// [`Workspace::directed_at_self`].
+    pub directed: bool,
+    /// The never-stop heartbeat pursuing her own thread (no inbound message) —
+    /// see [`Workspace::self_initiated`].
+    pub self_initiated: bool,
+}
+
+impl TurnFraming {
+    /// Ordinary room chatter, message-driven — silence stays first-class.
+    pub fn ambient() -> Self {
+        Self::default()
+    }
+
+    /// A message put TO her (the message path's addressed turn, or an eval
+    /// examiner question) — directed, not self-initiated.
+    pub fn directed() -> Self {
+        Self {
+            directed: true,
+            self_initiated: false,
+        }
+    }
+
+    /// The message path: a turn driven by an inbound message (not self-initiated),
+    /// `directed` iff she was actually named. `false` collapses to [`ambient`] —
+    /// silence stays first-class for room chatter she wasn't addressed in.
+    pub fn message(directed: bool) -> Self {
+        Self {
+            directed,
+            self_initiated: false,
+        }
+    }
+
+    /// The self-initiated heartbeat. Directed iff she was named in what she
+    /// perceived (so a question reaching her on the digest path is not ghosted).
+    pub fn self_thread(directed: bool) -> Self {
+        Self {
+            directed,
+            self_initiated: true,
+        }
+    }
+}
+
 /// The bounded global workspace: the consolidated world-state being reasoned
 /// over (channel/recipe-shaped — a text thread, a game space + player
 /// positions, an AR scene, a code diff) plus what won attention and is
 /// broadcast back to all faculties.
 #[derive(Debug, Clone)]
 pub struct Workspace {
-    /// The consolidated burst / world-state at service time. Opaque to the
-    /// core — the channel/recipe adapter shapes it.
+    /// The consolidated burst / world-state at service time, as flat text — the
+    /// rendered projection of [`turns`](Self::turns). Opaque to the core; the
+    /// channel/recipe adapter shapes it. Every TEXT reader (recall, dashboards,
+    /// focus, capture) consumes this unchanged; the deliberation faculty reads
+    /// [`turns`](Self::turns) instead to recover role attribution.
     pub world_state: String,
+    /// The CANONICAL structured form of the burst — the attributed conversation
+    /// the deliberation faculty turns into role-separated `Vec<ChatMessage>`
+    /// (own posts → `assistant`, peers → `user`). `world_state` is its text
+    /// projection; this is the source of truth for WHO said what. A raw-string
+    /// burst collapses to a single opaque turn (rendered identically to today).
+    pub turns: Vec<BurstTurn>,
     /// The CONTEXT this tick reasons within — the room/conversation the turn is
     /// for (the third ID tier, contextId; see
     /// docs/architecture/IDENTITY-SCOPE-PEER-LIVENESS-MODEL.md Part A). Faculties
@@ -351,23 +550,36 @@ pub struct Workspace {
     /// decision over a structural addressing fact (like ACL/routing), NOT a filter on
     /// her output. `false` (the default) = ambient: silence stays first-class.
     pub directed_at_self: bool,
+    /// Is this a SELF-INITIATED turn — the never-stop heartbeat pursuing the
+    /// persona's own thread with no inbound message — versus a turn driven by an
+    /// arriving message or an examiner's question? Drives the `[Your own time]`
+    /// framing block in the system prompt (relocated here from a text preamble
+    /// concatenated onto the burst, so the framing lives in the system prompt and
+    /// the conversation turns stay clean). `false` (the default) = message/eval
+    /// driven.
+    pub self_initiated: bool,
 }
 
 impl Workspace {
-    pub fn new(world_state: impl Into<String>) -> Self {
-        Self::in_room(world_state, Uuid::nil())
+    pub fn new(burst: impl Into<Burst>) -> Self {
+        Self::in_room(burst, Uuid::nil())
     }
 
     /// Construct scoped to a specific room/context (the contextId the turn acts
     /// within). The live persona path always uses this; `new` is the nil-room
-    /// shorthand for faculty-isolation tests.
-    pub fn in_room(world_state: impl Into<String>, room_id: Uuid) -> Self {
+    /// shorthand for faculty-isolation tests. Takes `impl Into<Burst>`: an
+    /// attributed `Burst` (live/eval, carries authorship) or a raw `String`/`&str`
+    /// (collapses to one opaque turn — faculty tests, replay).
+    pub fn in_room(burst: impl Into<Burst>, room_id: Uuid) -> Self {
+        let burst = burst.into();
         Self {
-            world_state: world_state.into(),
+            world_state: burst.rendered,
+            turns: burst.turns,
             room_id,
             cycle: CycleId::UNSTAMPED,
             broadcast: Vec::new(),
             directed_at_self: false,
+            self_initiated: false,
         }
     }
 
@@ -377,6 +589,14 @@ impl Workspace {
     /// first-class for ambient participation.
     pub fn directed(mut self, directed: bool) -> Self {
         self.directed_at_self = directed;
+        self
+    }
+
+    /// Mark whether this turn is the self-initiated heartbeat (builder form). See
+    /// [`self_initiated`](Self::self_initiated) — `true` emits the `[Your own time]`
+    /// framing in the system prompt.
+    pub fn self_initiated(mut self, self_initiated: bool) -> Self {
+        self.self_initiated = self_initiated;
         self
     }
 
@@ -905,43 +1125,46 @@ impl WorkspaceCycle {
     /// This is what makes "pull relevant memory, *then* decide" real: the decider
     /// is never blind to recall. Still one tick over the consolidated burst, still
     /// `O(capacity)` for the bounded context — no per-event slowdown.
-    pub async fn run(&self, world_state: impl Into<String>) -> Workspace {
-        self.run_in_room(world_state, Uuid::nil()).await
+    pub async fn run(&self, burst: impl Into<Burst>) -> Workspace {
+        self.run_in_room(burst, Uuid::nil()).await
     }
 
-    /// Same as [`run_in_room`](Self::run_in_room) but for a turn DIRECTED at the
-    /// persona (a direct @mention / DM / examiner question) — the silence escape is
-    /// suppressed so a question asked of her is not ghosted. `run_in_room` is the
-    /// ambient default (silence first-class). See [`Workspace::directed_at_self`].
-    pub async fn run_directed(
+    /// Same as [`run_in_room`](Self::run_in_room) but with explicit
+    /// [`TurnFraming`] — the live persona path passes `directed`/`self_initiated`
+    /// here so the deliberation faculty's system prompt reflects whether a question
+    /// was put TO her (suppress the silence escape) and whether this is her own
+    /// heartbeat. `run_in_room` is the ambient shorthand.
+    pub async fn run_framed(
         &self,
-        world_state: impl Into<String>,
+        burst: impl Into<Burst>,
         room_id: Uuid,
-        directed: bool,
+        framing: TurnFraming,
     ) -> Workspace {
-        self.run_in_room_inner(world_state, room_id, directed).await
+        self.run_in_room_inner(burst, room_id, framing).await
     }
 
     /// Same as [`run`](Self::run) but scoped to a room/context (the contextId the
     /// turn acts within). The live persona path uses THIS so the deliberation
     /// faculty stamps tool calls with the real room — `run` is the nil-room
     /// shorthand for tests that aren't room-scoped.
-    pub async fn run_in_room(&self, world_state: impl Into<String>, room_id: Uuid) -> Workspace {
-        // Ambient default: silence stays first-class (`directed = false`). A turn put
-        // TO the persona uses [`run_directed`](Self::run_directed) so the silence
-        // escape is suppressed.
-        self.run_in_room_inner(world_state, room_id, false).await
+    pub async fn run_in_room(&self, burst: impl Into<Burst>, room_id: Uuid) -> Workspace {
+        // Ambient default: silence stays first-class, message-driven. A turn put TO
+        // the persona, or her own heartbeat, uses [`run_framed`](Self::run_framed)
+        // with the appropriate [`TurnFraming`].
+        self.run_in_room_inner(burst, room_id, TurnFraming::ambient())
+            .await
     }
 
-    /// The full cognitive tick. `directed` is set on the [`Workspace`] so the
+    /// The full cognitive tick. [`TurnFraming`] is set on the [`Workspace`] so the
     /// deliberation faculty knows whether to offer the silence escape (see
-    /// [`Workspace::directed_at_self`]); everything else is identical for an ambient
-    /// or a directed turn — directedness only reframes the silence affordance.
+    /// [`Workspace::directed_at_self`]) and whether to frame the turn as the
+    /// persona's own time (see [`Workspace::self_initiated`]); everything else is
+    /// identical across framings — framing only reshapes the system prompt.
     async fn run_in_room_inner(
         &self,
-        world_state: impl Into<String>,
+        burst: impl Into<Burst>,
         room_id: Uuid,
-        directed: bool,
+        framing: TurnFraming,
     ) -> Workspace {
         // Bump the service tick: this workspace IS cycle N, and every finding
         // collected against it is stamped N (the cbar `frameIndex`). 1-based so
@@ -952,9 +1175,14 @@ impl WorkspaceCycle {
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
                 .wrapping_add(1),
         );
-        let mut ws = Workspace::in_room(world_state, room_id)
+        // Carry the structured burst straight through: `in_room` splits it into the
+        // canonical `turns` (the deliberation faculty's role-attribution source) and
+        // the `world_state` text projection (every other reader). Framing reshapes
+        // only the system prompt — it never touches the conversation turns.
+        let mut ws = Workspace::in_room(burst, room_id)
             .with_cycle(cycle)
-            .directed(directed);
+            .directed(framing.directed)
+            .self_initiated(framing.self_initiated);
 
         // --- Phase 1: perception. Context faculties react to the raw world-state. ---
         let perception: Vec<&Arc<dyn Faculty>> = self

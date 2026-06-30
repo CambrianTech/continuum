@@ -966,11 +966,13 @@ async fn run_pass(
         };
         // own_peer/agent_name attribute the persona's OWN past posts; a single-task
         // exam has none, so they're inert here (the item's peer_id "peer" ≠ "").
-        let burst = crate::persona::service_loop::build_workspace_burst(
-            std::slice::from_ref(&task_delivery),
+        let burst = crate::cognition::workspace::Burst::from_turns(
             room,
-            "",
-            "",
+            crate::persona::service_loop::build_workspace_turns(
+                std::slice::from_ref(&task_delivery),
+                "",
+                "",
+            ),
         );
         // `directed = true`: an exam question is put TO the persona — it is not
         // ambient room chatter she may let pass. This withholds the bare-PASS silence
@@ -982,8 +984,14 @@ async fn run_pass(
         // decline in her own words; she just isn't handed the silent hatch. The live
         // path computes directedness from real addressing (TODO #9); pinning it here
         // is the eval's exam-is-directed control. See `Workspace::directed_at_self`.
-        let settled =
-            crate::cognition::act_observe::drive_to_settle(cycle, burst, room, max_acts, true).await;
+        let settled = crate::cognition::act_observe::drive_to_settle(
+            cycle,
+            burst,
+            room,
+            max_acts,
+            crate::cognition::workspace::TurnFraming::directed(),
+        )
+        .await;
         let answer = settled.spoken.unwrap_or_default();
         let (ok, grade) = if let Some(test) = &t.test {
             let lang = t.lang.as_deref().unwrap_or("rust");
