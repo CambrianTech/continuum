@@ -116,15 +116,12 @@ pub struct PersonaCognition {
     /// `JsonlRagCaptureSink` for on-disk traces or
     /// `InMemoryRagCaptureSink` for in-flight inspection.
     pub capture_sink: Arc<dyn RagCaptureSink>,
-    /// Self-determined attention allocation — the focus scalar + sticky thread
-    /// cursor + time-boxed mutes she sets for herself (#91). Per-persona because
-    /// each mind steers its own attention. Mutated under the brain mutex (the
-    /// service loop / a focus tool both hold `cognition.lock()`), so no interior
-    /// mutability. Default = balanced, no cursor, nothing muted; she tunes it
-    /// sparsely and the substrate rides the level. Persistence lives in airc
-    /// per-(persona,room) state (#89); this is the live in-memory copy.
-    pub focus: crate::persona::focus::FocusState,
 }
+
+// Self-determined attention allocation (#91) does NOT live on the brain: it must be
+// reachable by `persona_id` from BOTH the service loop and a self-set tool she invokes
+// through the command registry (which only knows her id, never holds `cognition.lock()`).
+// Its single home is `crate::persona::focus::registry()` — see that module.
 
 /// What [`PersonaCognition::compose_for_turn`] returns — the
 /// substrate's structured handoff between "brain composed a budgeted
@@ -205,7 +202,6 @@ impl PersonaCognition {
             roster_source: None,
             doctrine_source: None,
             capture_sink,
-            focus: crate::persona::focus::FocusState::new(),
         }
     }
 

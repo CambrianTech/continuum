@@ -23,6 +23,8 @@
 //! primitive + its honoring semantics, which are not blocked on that store.
 
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, OnceLock};
 use uuid::Uuid;
 
 /// How hard a mute silences a lane — and whether the no-blindness interrupt floor
@@ -170,6 +172,64 @@ impl FocusState {
     }
 }
 
+/// Process-global per-persona focus registry — the by-`persona_id` seam.
+///
+/// `FocusState` lives behind no global handle on the brain ([`PersonaCognition`] is
+/// reached only through the serve loop's mutex), but self-determination needs TWO
+/// reachers of the SAME state: the never-stop serve loop (reads the wake floor) and a
+/// self-set TOOL she invokes through the command registry (writes the scalar / mutes),
+/// which knows only her `persona_id`. This registry is that seam — one `FocusState`
+/// per persona, resolved by id from both sides. It is NOT a parallel copy of brain
+/// state; it is the single home for focus, the same way `persona_workspace::global()`
+/// is the single home for a persona's mind. #89 (airc per-(persona,room) state)
+/// persists behind this same handle later; the in-memory authority lives here.
+#[derive(Default)]
+pub struct FocusRegistry {
+    states: Mutex<HashMap<Uuid, Arc<Mutex<FocusState>>>>,
+}
+
+impl FocusRegistry {
+    pub fn new() -> Self {
+        Self {
+            states: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// Resolve (get-or-create) the persona's focus handle. Idempotent: the first
+    /// caller for a persona installs a default `FocusState` (balanced, no mutes — the
+    /// correct birth posture, not a silent fallback over a missing precondition); every
+    /// later caller — serve loop, tool — gets the SAME `Arc`, so her steering and the
+    /// wake floor read one state. A poisoned lock is a prior panic mid-mutation and is
+    /// propagated (fail loud), never swallowed.
+    pub fn handle(&self, persona_id: Uuid) -> Arc<Mutex<FocusState>> {
+        self.states
+            .lock()
+            .expect("focus registry mutex poisoned by a prior panic")
+            .entry(persona_id)
+            .or_insert_with(|| Arc::new(Mutex::new(FocusState::new())))
+            .clone()
+    }
+
+    /// Peek the handle without creating one — `None` if she has never touched focus.
+    pub fn get(&self, persona_id: &Uuid) -> Option<Arc<Mutex<FocusState>>> {
+        self.states
+            .lock()
+            .expect("focus registry mutex poisoned by a prior panic")
+            .get(persona_id)
+            .cloned()
+    }
+}
+
+/// Process-global focus registry. Same `OnceLock` shape as
+/// `persona_workspace::global()` — the shared seam between the serve loop that honors
+/// focus and the tool that sets it.
+pub fn registry() -> Arc<FocusRegistry> {
+    static GLOBAL: OnceLock<Arc<FocusRegistry>> = OnceLock::new();
+    GLOBAL
+        .get_or_init(|| Arc::new(FocusRegistry::new()))
+        .clone()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -252,5 +312,28 @@ mod tests {
         assert!(f.active_mute(held, 5_000).is_some());
         assert!(f.active_mute(live, 5_000).is_some());
         assert!(f.active_mute(dead, 5_000).is_none());
+    }
+
+    // what this catches: the registry hands the SAME Arc back for one persona (serve
+    // loop + tool mutate one shared state), while distinct personas stay independent.
+    // This is the load-bearing "she steers it, the loop honors it" seam.
+    #[test]
+    fn registry_shares_one_handle_per_persona() {
+        let reg = FocusRegistry::new();
+        let p = Uuid::from_u128(0xAA);
+        let q = Uuid::from_u128(0xBB);
+
+        let h1 = reg.handle(p);
+        h1.lock().unwrap().set_focus(0.9);
+        let h2 = reg.handle(p); // same persona → same state
+        assert!(Arc::ptr_eq(&h1, &h2));
+        assert!((h2.lock().unwrap().focus() - 0.9).abs() < f32::EPSILON);
+
+        // a distinct persona is untouched (its own default), and `get` sees what
+        // `handle` installed.
+        let q_focus = reg.handle(q).lock().unwrap().focus();
+        assert!((q_focus - 0.5).abs() < f32::EPSILON);
+        assert!(reg.get(&p).is_some());
+        assert!(reg.get(&Uuid::from_u128(0xCC)).is_none());
     }
 }

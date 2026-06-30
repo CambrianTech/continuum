@@ -995,14 +995,9 @@ async fn run_self_cycle(
     last_burst_fp: &mut u64,
 ) {
     let now_ms = (opts.now_ms)();
-    // Compose the world AND snapshot her self-set focus in ONE lock scope. The
-    // focus snapshot is cheap (a scalar + cursor + a usually-empty mute vec) and
-    // taken by-value so the mute/interrupt-floor decision happens WITHOUT holding
-    // the brain mutex across the mentions scan + settle below.
-    let (composed, focus) = {
+    let composed = {
         let cognition = ctx.cognition.lock().await;
-        let composed = cognition.compose_for_turn(&ctx.profile, now_ms).await;
-        (composed, cognition.focus.clone())
+        cognition.compose_for_turn(&ctx.profile, now_ms).await
     };
     // Wake on a CHANGE to what I should attend to — others' chat (own chat excluded
     // so my speech can't spiral into self-talk) OR my own active work (so the
@@ -1064,7 +1059,19 @@ async fn run_self_cycle(
     // awareness to the next change. This gates SCHEDULING on her own choice + a
     // structural fact, never her decision ([[no-hardcoded-heuristics-to-steer-cognition]],
     // [[focus-is-self-allocation-not-siloing]]).
-    if !focus.wakes_on(ctx.identity.default_room, addressed, now_ms) {
+    // Focus is resolved from the by-persona registry — the single home reachable by
+    // BOTH this loop and the self-set tool she invokes (the brain holds no global
+    // handle), so her steering and this floor read one state. Locked only across the
+    // synchronous read (no await held), per the concurrency style guide.
+    let focus_handle = crate::persona::focus::registry().handle(ctx.identity.persona_id);
+    let wakes = {
+        let mut focus = focus_handle
+            .lock()
+            .expect("focus mutex poisoned by a prior panic");
+        focus.prune_expired(now_ms); // drop lapsed snoozes while we hold it (bounded list)
+        focus.wakes_on(ctx.identity.default_room, addressed, now_ms)
+    };
+    if !wakes {
         crate::probe!(
             class = "persona.selftick.muted",
             persona = %ctx.identity.agent_name,
