@@ -87,13 +87,24 @@ mod tests {
         // that registry. That's still a valid state under our "first
         // caller wins" contract, so the assertion just has to hold
         // regardless of order.
-        let reg = init_global().expect("Rust catalog must load");
-        assert!(reg.models().count() > 0);
-        assert!(reg.providers().count() > 0);
-        // Canonical anchor: Claude Sonnet 4.5 must exist and have Vision.
-        let sonnet = reg
-            .model("claude-sonnet-4-5-20250929")
-            .expect("sonnet in registry");
-        assert!(sonnet.has(Capability::Vision));
+        //
+        // Run under a clean, serialized HOME (#72): if THIS is the first
+        // caller, `init_global()` resolves + hydrates local GGUFs from the HF
+        // cache under HOME, and reading the ambient HOME let a concurrent
+        // `with_test_home` leak a fake GGUF into this init. Sharing
+        // `with_test_home`'s lock + empty HOME serializes against every HOME
+        // mutation; the assertions here (Sonnet exists, has Vision) are
+        // hand-authored catalog facts that hold under any HOME.
+        let home = tempfile::tempdir().unwrap();
+        crate::model_registry::artifacts::with_test_home(home.path(), || {
+            let reg = init_global().expect("Rust catalog must load");
+            assert!(reg.models().count() > 0);
+            assert!(reg.providers().count() > 0);
+            // Canonical anchor: Claude Sonnet 4.5 must exist and have Vision.
+            let sonnet = reg
+                .model("claude-sonnet-4-5-20250929")
+                .expect("sonnet in registry");
+            assert!(sonnet.has(Capability::Vision));
+        });
     }
 }

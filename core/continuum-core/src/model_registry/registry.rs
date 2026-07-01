@@ -213,43 +213,56 @@ mod tests {
     // Omni sensory caps gets caught here.
     #[test]
     fn rust_catalog_validates_with_anchor_models() {
-        let reg = catalog::registry().expect("Rust catalog must always validate");
-        assert!(reg.providers().count() >= 8);
-        assert!(reg.models().count() >= 12);
+        // Run under a clean, serialized HOME. `catalog::registry()` resolves
+        // each local model's GGUF from the HF cache under HOME and hydrates its
+        // header at load (#74 Slice 1). Reading the *ambient* HOME made this
+        // test environment-dependent (#72): a concurrent `with_test_home` in
+        // another test points HOME at a temp dir seeded with a fake forged-Qwen
+        // GGUF, which this test would then resolve and hydrate mid-run. Sharing
+        // `with_test_home`'s lock + empty HOME both serializes against every
+        // HOME mutation and pins a deterministic environment where no local
+        // GGUF resolves, so the hand-authored catalog values (arch, context
+        // window, sensory caps) stand on their own.
+        let home = tempfile::tempdir().unwrap();
+        crate::model_registry::artifacts::with_test_home(home.path(), || {
+            let reg = catalog::registry().expect("Rust catalog must always validate");
+            assert!(reg.providers().count() >= 8);
+            assert!(reg.models().count() >= 12);
 
-        let sonnet = reg
-            .model("claude-sonnet-4-5-20250929")
-            .expect("Claude Sonnet 4.5 must be in the catalog");
-        assert_eq!(sonnet.arch, Arch::Claude);
-        assert!(sonnet.has(Capability::Vision));
-        assert!(sonnet.has(Capability::ToolUse));
+            let sonnet = reg
+                .model("claude-sonnet-4-5-20250929")
+                .expect("Claude Sonnet 4.5 must be in the catalog");
+            assert_eq!(sonnet.arch, Arch::Claude);
+            assert!(sonnet.has(Capability::Vision));
+            assert!(sonnet.has(Capability::ToolUse));
 
-        let forged = reg
-            .model("continuum-ai/qwen3.5-4b-code-forged-GGUF")
-            .expect("forged Qwen3.5-4B must be in the catalog");
-        assert_eq!(forged.arch, Arch::Qwen35);
-        assert_eq!(forged.context_window, 262144);
+            let forged = reg
+                .model("continuum-ai/qwen3.5-4b-code-forged-GGUF")
+                .expect("forged Qwen3.5-4B must be in the catalog");
+            assert_eq!(forged.arch, Arch::Qwen35);
+            assert_eq!(forged.context_window, 262144);
 
-        let omni = reg
-            .model("qwen2.5-omni-7b-instruct")
-            .expect("Qwen2.5-Omni-7B sensory-input model must be in the catalog");
-        assert_eq!(omni.provider, "llamacpp-local");
-        assert_eq!(omni.arch, Arch::Qwen2);
-        assert!(omni.has(Capability::Vision));
-        assert!(omni.has(Capability::AudioInput));
-        assert!(
-            !omni.has(Capability::AudioOutput),
-            "GGUF admission must not claim native audio output until it is validated"
-        );
-        assert!(
-            omni.mmproj_local_path.is_some(),
-            "local sensory-input admission requires an mmproj path"
-        );
+            let omni = reg
+                .model("qwen2.5-omni-7b-instruct")
+                .expect("Qwen2.5-Omni-7B sensory-input model must be in the catalog");
+            assert_eq!(omni.provider, "llamacpp-local");
+            assert_eq!(omni.arch, Arch::Qwen2);
+            assert!(omni.has(Capability::Vision));
+            assert!(omni.has(Capability::AudioInput));
+            assert!(
+                !omni.has(Capability::AudioOutput),
+                "GGUF admission must not claim native audio output until it is validated"
+            );
+            assert!(
+                omni.mmproj_local_path.is_some(),
+                "local sensory-input admission requires an mmproj path"
+            );
 
-        assert!(
-            reg.model("qwen2-vl-7b-instruct").is_some(),
-            "Rust catalog must own the vetted local vision model"
-        );
+            assert!(
+                reg.model("qwen2-vl-7b-instruct").is_some(),
+                "Rust catalog must own the vetted local vision model"
+            );
+        });
     }
 
     // what this catches: from_catalog resolves a model's local GGUF from the
