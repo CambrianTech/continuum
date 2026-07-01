@@ -117,10 +117,10 @@ impl ModelArchConfig {
             .map_err(|e| format!("read GGUF {}: {e}", path.display()))?;
         let md = &content.metadata;
 
-        let arch = md
-            .get("general.architecture")
-            .and_then(|v| v.to_string().ok())
-            .cloned()
+        // `general.architecture` via the ONE shared reader; this consumer's
+        // policy is "required" so it wraps the shared `Option` in its own
+        // refuse-error.
+        let arch = crate::inference_capability::gguf_keys::architecture(&content)
             .ok_or_else(|| format!("GGUF {} missing `general.architecture`", path.display()))?;
 
         // Required scalar dimension keyed under the model's own architecture.
@@ -138,7 +138,22 @@ impl ModelArchConfig {
         let num_attention_heads = req(&format!("{arch}.attention.head_count"))?;
         let num_kv_heads = req(&format!("{arch}.attention.head_count_kv"))?;
         let num_layers = req(&format!("{arch}.block_count"))?;
-        let context_length = req(&format!("{arch}.context_length"))?;
+        // context_length through the shared reader so this path inherits the
+        // `{arch}.context_length` → `llama.context_length` fallback the other
+        // readers already have (previously ABSENT here — a GGUF carrying only
+        // the historical llama.* key failed dimension extraction while its
+        // Model row hydrated fine). Required for the KV-cache budget, so the
+        // absent case is a refuse-error.
+        let context_length =
+            crate::inference_capability::gguf_keys::context_length(&content, &arch).ok_or_else(
+                || {
+                    format!(
+                        "GGUF {} missing required context_length (tried `{arch}.context_length` \
+                         and `llama.context_length`)",
+                        path.display()
+                    )
+                },
+            )? as usize;
 
         // head_dim: explicit `{arch}.attention.key_length` if present, else the
         // spec-defined derivation hidden_size / num_attention_heads (llama.cpp

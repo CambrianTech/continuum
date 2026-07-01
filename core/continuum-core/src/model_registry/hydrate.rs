@@ -49,6 +49,7 @@
 //! unparseable (a genuinely broken artifact the row depends on).
 
 use super::types::{Arch, Capability, Model};
+use crate::inference_capability::gguf_keys;
 use candle_core::quantized::gguf_file;
 use std::path::Path;
 
@@ -219,32 +220,17 @@ fn read_gguf_facts(path: &Path) -> Result<GgufFacts, String> {
     let mut file = std::fs::File::open(path).map_err(|e| format!("open GGUF: {e}"))?;
     let content = gguf_file::Content::read(&mut file).map_err(|e| format!("read GGUF: {e}"))?;
 
-    let architecture = content
-        .metadata
-        .get("general.architecture")
-        .and_then(|v| v.to_string().ok())
-        .cloned();
-
-    // Architecture-specific key first, then the historical `llama.*` key
-    // some exporters wrote regardless of architecture.
+    // Every canonical key is read through the ONE shared reader
+    // ([`gguf_keys`]) so the coercion + the `context_length` fallback policy
+    // can never drift from the other readers. This hydrator's role is purely
+    // "absent → None, let the catalog field stand"; the fatality decision is
+    // the caller's, so each fact is a bare `Option`.
+    let architecture = gguf_keys::architecture(&content);
     let context_length = architecture
-        .as_ref()
-        .and_then(|arch| content.metadata.get(&format!("{arch}.context_length")))
-        .or_else(|| content.metadata.get("llama.context_length"))
-        .and_then(|v| v.to_u32().ok());
-
-    let chat_template = content
-        .metadata
-        .get("tokenizer.chat_template")
-        .and_then(|v| v.to_string().ok())
-        .cloned();
-
-    // `general.parameter_count` is a `u64` in the spec — a 7B model already
-    // overflows `u32`, so read it wide. Absent for exporters that omit it.
-    let parameter_count = content
-        .metadata
-        .get("general.parameter_count")
-        .and_then(|v| v.to_u64().ok());
+        .as_deref()
+        .and_then(|arch| gguf_keys::context_length(&content, arch));
+    let chat_template = gguf_keys::chat_template(&content);
+    let parameter_count = gguf_keys::parameter_count(&content);
 
     Ok(GgufFacts {
         architecture,
