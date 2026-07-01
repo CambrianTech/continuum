@@ -19,6 +19,7 @@ pub mod ai;
 pub mod catalog;
 pub mod chat;
 pub mod code;
+pub mod cognition;
 pub mod command;
 pub mod data;
 pub mod dataset;

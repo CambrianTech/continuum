@@ -656,38 +656,15 @@ impl ServiceModule for CognitionModule {
             }
 
             // ================================================================
-            // AI Gating (continuum#1284)
+            // AI Gating + Draft Redundancy — MIGRATED to the typed registry.
             // ================================================================
-            "cognition/should-respond" => {
-                let _timer = TimingGuard::new("module", "cognition_should_respond");
-                let request = serde_json::from_value::<crate::cognition::ShouldRespondRequest>(
-                    params.clone(),
-                )
-                .map_err(|e| format!("Invalid should-respond request: {e}"))?;
-                let decision = crate::cognition::evaluate_gating(request)
-                    .await
-                    .map_err(|e| format!("should-respond error: {e}"))?;
-                Ok(CommandResult::Json(
-                    serde_json::to_value(&decision).map_err(|e| format!("Serialize error: {e}"))?,
-                ))
-            }
-
-            // ================================================================
-            // Draft Redundancy Check (continuum#1375 PR-2)
-            // ================================================================
-            "cognition/check-redundancy" => {
-                let _timer = TimingGuard::new("module", "cognition_check_redundancy");
-                let request = serde_json::from_value::<
-                    crate::cognition::check_redundancy::RedundancyCheckRequest,
-                >(params.clone())
-                .map_err(|e| format!("Invalid check-redundancy request: {e}"))?;
-                let decision = crate::cognition::check_redundancy::evaluate_redundancy(request)
-                    .await
-                    .map_err(|e| format!("check-redundancy error: {e}"))?;
-                Ok(CommandResult::Json(
-                    serde_json::to_value(&decision).map_err(|e| format!("Serialize error: {e}"))?,
-                ))
-            }
+            // `cognition/should-respond` and `cognition/check-redundancy` are now
+            // stateless `ActionCommand`s in `crate::commands::cognition` (each calls
+            // the same free fn — `evaluate_gating` / `evaluate_redundancy` — over its
+            // typed request). `route_object` dispatches them via `command_registry()`,
+            // so they reach the ACL, codegen, `cu`, and grid routing. Both are
+            // `access: Internal`. No match arm here — a second registration would be
+            // the only place they could collide, and there is none.
 
             // ================================================================
             // Response Generation (continuum#1385 PR-2)
