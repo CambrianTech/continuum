@@ -767,9 +767,9 @@ mod tests {
     // produce the FAITHFUL type from one CommandMap, modeling exactly what the real
     // handler exchanges (the lie the prior pass shipped was modeling a bare handler
     // as enveloped). The sampling spans all three:
-    //   - Bare      (inference/llm/request): handler returns bare InferenceResponse
+    //   - Bare      (inference/llm/request, chat/send): handler returns bare types
     //   - Provided  (interface/screenshot):  adapter exchanges bare types
-    //   - Enveloped (chat/send, ai/inference/open): handler rides the envelope
+    //   - Enveloped (ai/inference/open): handle-minting handler rides the envelope
     #[test]
     fn wire_shape_decides_envelope_wrapping_faithfully() {
         let registry = command_registry();
@@ -797,15 +797,23 @@ mod tests {
             "Provided command must stay bare:\n{out}"
         );
 
-        // Enveloped substrate commands — wrapped both sides (faithful: the handler
-        // really emits CommandResponse + parses CommandRequest).
+        // `chat/send` migrated to the typed DynCommand registry, so its
+        // `ActionCommand` blanket-impls `WireShape::Bare` — bare both sides, NOT
+        // enveloped. This pins the migration: the moment chat/send regresses back to
+        // an envelope wrapper, this fails.
         assert!(
-            out.contains(
-                "'chat/send': { params: CommandRequest<ChatSendParams>; \
-                 result: CommandResponse<ChatSendResult> }"
-            ),
-            "Enveloped command must be wrapped:\n{out}"
+            out.contains("'chat/send': { params: ChatSendParams; result: ChatSendResult }"),
+            "migrated chat/send must be Bare (no envelope):\n{out}"
         );
+        assert!(
+            !out.contains("CommandRequest<ChatSendParams>")
+                && !out.contains("CommandResponse<ChatSendResult>"),
+            "the envelope must NOT wrap the migrated bare chat/send"
+        );
+
+        // Enveloped substrate command — wrapped both sides (faithful: the handler
+        // really emits CommandResponse + parses CommandRequest). Post-migration the
+        // remaining Enveloped surface is the handle-minting inference family.
         assert!(
             out.contains(
                 "'ai/inference/open': { params: CommandRequest<OpenParams>; \
@@ -839,14 +847,20 @@ mod tests {
         let out = generate_command_api(&registry, "@protocol", "./Commands");
 
         // Enveloped: typed accessor, wrapped signature, string only in the body.
+        // Post-migration the enveloped exemplar is the handle-minting inference open.
         assert!(
             out.contains(
-                "chatSend(params: CommandRequest<ChatSendParams>): \
-                 Promise<CommandResponse<ChatSendResult>> {"
+                "aiInferenceOpen(params: CommandRequest<OpenParams>): \
+                 Promise<CommandResponse<OpenResult>> {"
             ),
             "enveloped accessor is typed both ends:\n{out}"
         );
-        // Bare: typed accessor, bare signature.
+        // Bare: typed accessor, bare signature. `chat/send` migrated to Bare, so its
+        // accessor is now bare both ends — no envelope.
+        assert!(
+            out.contains("chatSend(params: ChatSendParams): Promise<ChatSendResult> {"),
+            "migrated chat/send accessor is bare both ends:\n{out}"
+        );
         assert!(
             out.contains(
                 "inferenceLlmRequest(params: InferenceRequest): Promise<InferenceResponse> {"

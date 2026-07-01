@@ -21,7 +21,7 @@ use uuid::Uuid;
 /// That keeps the kernel command compositional with the future
 /// `channel` module rather than dragging room-name semantics into
 /// every consumer of the chat surface.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[ts(export, export_to = "../../../protocol/typescript/chat/ChatPollParams.ts")]
 #[serde(rename_all = "camelCase")]
 pub struct ChatPollParams {
@@ -92,7 +92,7 @@ pub struct ChatPollResult {
 /// pre-warming are deferred to follow-up PRs — this first migration
 /// stress-tests the dual-write composition (chat → data + chat → airc)
 /// which is the substrate-shaped kink the design needed proof of.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[ts(export, export_to = "../../../protocol/typescript/chat/ChatSendParams.ts")]
 #[serde(rename_all = "camelCase")]
 pub struct ChatSendParams {
@@ -172,47 +172,13 @@ pub const CHAT_MESSAGES_COLLECTION: &str = "chat_messages";
 /// the historical TS default (`params.limit || 50`).
 pub const DEFAULT_POLL_LIMIT: usize = 50;
 
-// ── SDK CommandSpec declarations (sdk_codegen) ───────────────────────────
-//
-// chat/send + chat/poll are ENVELOPED: the handler (chat/mod.rs) parses
-// `CommandRequest::<P>::from_value` and returns
-// `CommandResponse::ok(result).into_command_result()`, so the generated SDK
-// surface wraps them as `CommandRequest<ChatSendParams>` →
-// `CommandResponse<ChatSendResult>` — faithful to the real wire. Neither mints
-// or consumes a handle. The canonical NAME is the short `chat/*` form (the
-// `collaboration/chat/*` alias is a routing detail, not a second command).
-
-/// `chat/send` — store + broadcast a chat message. Enveloped, no handle.
-pub struct ChatSendCommand;
-
-impl crate::sdk_codegen::CommandSpec for ChatSendCommand {
-    const NAME: &'static str = "chat/send";
-    const ACCESS_LEVEL: crate::sdk_codegen::AccessLevel = crate::sdk_codegen::AccessLevel::AiSafe;
-    const DESCRIPTION: &'static str =
-        "Send a chat message to a room. Use to post a message addressed to others; \
-         params carry the room and the message text.";
-    const WIRE: crate::sdk_codegen::WireShape = crate::sdk_codegen::WireShape::Enveloped;
-    type Params = ChatSendParams;
-    type Result = ChatSendResult;
-}
-
-crate::register_command!(ChatSendCommand);
-
-/// `chat/poll` — fetch recent messages for a room. Enveloped, no handle.
-pub struct ChatPollCommand;
-
-impl crate::sdk_codegen::CommandSpec for ChatPollCommand {
-    const NAME: &'static str = "chat/poll";
-    const ACCESS_LEVEL: crate::sdk_codegen::AccessLevel = crate::sdk_codegen::AccessLevel::AiSafe;
-    const DESCRIPTION: &'static str =
-        "Fetch recent messages for a room — read the latest conversation. Params \
-         carry the room and how many messages to retrieve.";
-    const WIRE: crate::sdk_codegen::WireShape = crate::sdk_codegen::WireShape::Enveloped;
-    type Params = ChatPollParams;
-    type Result = ChatPollResult;
-}
-
-crate::register_command!(ChatPollCommand);
+// The `chat/send` + `chat/poll` descriptors are now published by the typed
+// `ActionCommand`s in `crate::commands::chat` (each `action_command!` block
+// emits its own `register_command!`), so the registry self-assembles from the
+// SAME site that owns the runtime object. The old enveloped `CommandSpec`
+// stubs that used to live here were deleted in the DynCommand migration — a
+// second registration of these names would hard-panic `command_registry()`
+// on a duplicate NAME.
 
 #[cfg(test)]
 mod tests {

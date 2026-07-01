@@ -17,6 +17,7 @@ pub mod auth;
 pub mod avatar;
 pub mod ai;
 pub mod catalog;
+pub mod chat;
 pub mod code;
 pub mod command;
 pub mod data;
