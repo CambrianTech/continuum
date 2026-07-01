@@ -490,72 +490,14 @@ impl ServiceModule for CognitionModule {
             // the only place they could collide, and there is none.
 
             // ================================================================
-            // Response Generation (continuum#1385 PR-2)
+            // Response Generation + Tool Embedding + Validate-Decision
             // ================================================================
-            "cognition/generate-response" => {
-                let _timer = TimingGuard::new("module", "cognition_generate_response");
-                let request = serde_json::from_value::<
-                    crate::cognition::generate_response::GenerateResponseRequest,
-                >(params.clone())
-                .map_err(|e| format!("Invalid generate-response request: {e}"))?;
-                let result = crate::cognition::generate_response::evaluate_response(request)
-                    .await
-                    .map_err(|e| format!("generate-response error: {e}"))?;
-                Ok(CommandResult::Json(
-                    serde_json::to_value(&result).map_err(|e| format!("Serialize error: {e}"))?,
-                ))
-            }
-
-            // ================================================================
-            // Tool Embedding Cache + Semantic Search (continuum#1411 PR-2)
-            // ================================================================
-            "cognition/embed-tools" => {
-                let _timer = TimingGuard::new("module", "cognition_embed_tools");
-                let request = serde_json::from_value::<
-                    crate::cognition::tool_embedding::EmbedToolsRequest,
-                >(params.clone())
-                .map_err(|e| format!("Invalid embed-tools request: {e}"))?;
-                let result = crate::cognition::tool_embedding::embed_tools(request)
-                    .await
-                    .map_err(|e| format!("embed-tools error: {e}"))?;
-                Ok(CommandResult::Json(
-                    serde_json::to_value(&result).map_err(|e| format!("Serialize error: {e}"))?,
-                ))
-            }
-
-            "cognition/semantic-search-tools" => {
-                let _timer = TimingGuard::new("module", "cognition_semantic_search_tools");
-                let request = serde_json::from_value::<
-                    crate::cognition::tool_embedding::SemanticSearchToolsRequest,
-                >(params.clone())
-                .map_err(|e| format!("Invalid semantic-search-tools request: {e}"))?;
-                let results = crate::cognition::tool_embedding::semantic_search_tools(request)
-                    .await
-                    .map_err(|e| format!("semantic-search-tools error: {e}"))?;
-                Ok(CommandResult::Json(
-                    serde_json::to_value(&results).map_err(|e| format!("Serialize error: {e}"))?,
-                ))
-            }
-
-            // ================================================================
-            // Validate Response Decision (one-PR oxidizer — replaces TS AIValidateResponseServerCommand).
-            // Distinct from cognition/validate-response (which is persona-level
-            // response validation defined later in this match).
-            // ================================================================
-            "cognition/validate-response-decision" => {
-                let _timer = TimingGuard::new("module", "cognition_validate_response_decision");
-                let request = serde_json::from_value::<
-                    crate::cognition::validate_response::ValidateResponseRequest,
-                >(params.clone())
-                .map_err(|e| format!("Invalid validate-response-decision request: {e}"))?;
-                let decision =
-                    crate::cognition::validate_response::evaluate_validate_response(request)
-                        .await
-                        .map_err(|e| format!("validate-response-decision error: {e}"))?;
-                Ok(CommandResult::Json(
-                    serde_json::to_value(&decision).map_err(|e| format!("Serialize error: {e}"))?,
-                ))
-            }
+            // cognition/generate-response, cognition/embed-tools,
+            // cognition/semantic-search-tools, and cognition/validate-response-decision
+            // migrated to the typed DynCommand registry as stateless unit-struct
+            // action_command!s — see commands/cognition/{generate_response,embed_tools,
+            // semantic_search_tools,validate_response_decision}.rs (access: Internal, no
+            // module state — they self-route via inventory).
 
             // ================================================================
             // Message Deduplication (single source of truth in Rust)

@@ -24,7 +24,9 @@ pub mod check_redundancy;
 pub mod classify_domain;
 pub mod configure_rate_limiter;
 pub mod create_engine;
+pub mod embed_tools;
 pub mod enqueue_message;
+pub mod generate_response;
 pub mod genome_activate_skill;
 pub mod genome_coverage_report;
 pub mod genome_evict_under_pressure;
@@ -39,10 +41,12 @@ pub mod mark_evaluated;
 pub mod recall_engrams;
 pub mod record_content;
 pub mod register_domain_keywords;
+pub mod semantic_search_tools;
 pub mod set_sleep_mode;
 pub mod should_respond;
 pub mod sync_domain_classifier;
 pub mod track_response;
+pub mod validate_response_decision;
 
 use admit_inbox_message::AdmitInboxMessage;
 use cache_message::CacheMessage;
@@ -74,8 +78,10 @@ use track_response::TrackResponse;
 /// [`CognitionModule::commands`](crate::modules::cognition::CognitionModule) so they
 /// reach `command_registry()`, the persona tool surface, the ACL, codegen, and `cu`.
 ///
-/// The stateless gating commands ([`should_respond`], [`check_redundancy`]) self-route
-/// via `inventory` and are NOT listed here.
+/// The stateless oxidizer commands ([`should_respond`], [`check_redundancy`],
+/// [`generate_response`], [`embed_tools`], [`semantic_search_tools`],
+/// [`validate_response_decision`]) hold no module state, self-route via `inventory`, and
+/// are NOT listed here.
 pub fn command_objects(state: Arc<CognitionState>) -> Vec<Arc<dyn DynCommand>> {
     vec![
         Arc::new(CacheMessage {

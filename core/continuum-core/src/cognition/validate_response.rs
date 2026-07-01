@@ -70,7 +70,7 @@ pub enum ResponseDecision {
 
 /// IPC request: ask cognition whether a draft response actually answers
 /// the original question.
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 #[ts(
     export,
