@@ -22,6 +22,8 @@ pub mod check_content_dedup;
 pub mod check_redundancy;
 pub mod classify_domain;
 pub mod configure_rate_limiter;
+pub mod create_engine;
+pub mod enqueue_message;
 pub mod genome_activate_skill;
 pub mod genome_coverage_report;
 pub mod genome_evict_under_pressure;
@@ -29,6 +31,8 @@ pub mod genome_record_activity;
 pub mod genome_state;
 pub mod genome_sync;
 pub mod has_evaluated;
+pub mod inbox_create;
+pub mod inbox_drain_frame;
 pub mod mark_evaluated;
 pub mod record_content;
 pub mod register_domain_keywords;
@@ -41,6 +45,8 @@ use cache_message::CacheMessage;
 use check_content_dedup::CheckContentDedup;
 use classify_domain::ClassifyDomain;
 use configure_rate_limiter::ConfigureRateLimiter;
+use create_engine::CreateEngine;
+use enqueue_message::EnqueueMessage;
 use genome_activate_skill::GenomeActivateSkill;
 use genome_coverage_report::GenomeCoverageReport;
 use genome_evict_under_pressure::GenomeEvictUnderPressure;
@@ -48,6 +54,8 @@ use genome_record_activity::GenomeRecordActivity;
 use genome_state::GenomeState;
 use genome_sync::GenomeSync;
 use has_evaluated::HasEvaluated;
+use inbox_create::InboxCreate;
+use inbox_drain_frame::InboxDrainFrame;
 use mark_evaluated::MarkEvaluated;
 use record_content::RecordContent;
 use register_domain_keywords::RegisterDomainKeywords;
@@ -112,6 +120,18 @@ pub fn command_objects(state: Arc<CognitionState>) -> Vec<Arc<dyn DynCommand>> {
         Arc::new(SetSleepMode {
             state: state.clone(),
         }),
-        Arc::new(ConfigureRateLimiter { state }),
+        Arc::new(ConfigureRateLimiter {
+            state: state.clone(),
+        }),
+        Arc::new(CreateEngine {
+            state: state.clone(),
+        }),
+        Arc::new(InboxCreate {
+            state: state.clone(),
+        }),
+        Arc::new(EnqueueMessage {
+            state: state.clone(),
+        }),
+        Arc::new(InboxDrainFrame { state }),
     ]
 }

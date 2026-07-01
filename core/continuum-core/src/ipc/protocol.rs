@@ -8,10 +8,11 @@
 
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
+use uuid::Uuid;
 
 /// Inbox message for IPC (mirrors InboxMessage but with string UUIDs for
 /// JSON transport).
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[ts(
     export,
     export_to = "../../../protocol/typescript/ipc/InboxMessageRequest.ts"
@@ -33,9 +34,51 @@ pub struct InboxMessageRequest {
     pub voice_session_id: Option<String>,
 }
 
-// NOTE: InboxMessageRequest is used for ts-rs TypeScript generation.
-// The to_inbox_message() method was removed when migrating to CognitionModule.
-// See modules/cognition.rs for the parsing logic.
+impl InboxMessageRequest {
+    /// Convert this JSON-transport request (string UUIDs, string enums) into the
+    /// domain [`InboxMessage`](crate::persona::InboxMessage). The single
+    /// wire→domain conversion for inbox messages — reused by every typed command
+    /// that accepts an inbox message off the wire.
+    ///
+    /// Fails loud on a malformed UUID or an unknown `sender_type` (the legacy
+    /// free-fn form silently dropped an unparseable `voice_session_id`; this
+    /// surfaces it instead, per the no-silent-fallback rule).
+    pub fn to_inbox_message(&self) -> Result<crate::persona::InboxMessage, String> {
+        use crate::persona::{InboxMessage, Modality, SenderType};
+
+        let sender_type = match self.sender_type.as_str() {
+            "human" => SenderType::Human,
+            "persona" => SenderType::Persona,
+            "agent" => SenderType::Agent,
+            "system" => SenderType::System,
+            other => return Err(format!("Invalid sender_type: {other}")),
+        };
+
+        Ok(InboxMessage {
+            id: Uuid::parse_str(&self.id).map_err(|e| format!("invalid id: {e}"))?,
+            room_id: Uuid::parse_str(&self.room_id)
+                .map_err(|e| format!("invalid room_id: {e}"))?,
+            sender_id: Uuid::parse_str(&self.sender_id)
+                .map_err(|e| format!("invalid sender_id: {e}"))?,
+            sender_name: self.sender_name.clone(),
+            sender_type,
+            content: self.content.clone(),
+            timestamp: self.timestamp,
+            priority: self.priority,
+            source_modality: self.source_modality.as_deref().map(|m| match m {
+                "voice" => Modality::Voice,
+                _ => Modality::Chat,
+            }),
+            voice_session_id: self
+                .voice_session_id
+                .as_deref()
+                .map(|s| {
+                    Uuid::parse_str(s).map_err(|e| format!("invalid voice_session_id: {e}"))
+                })
+                .transpose()?,
+        })
+    }
+}
 
 // All commands route through ServiceModule implementations in src/modules/.
 

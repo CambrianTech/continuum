@@ -199,26 +199,9 @@ impl ServiceModule for CognitionModule {
             // ================================================================
             // Persona Lifecycle
             // ================================================================
-            "cognition/create-engine" => {
-                let _timer = TimingGuard::new("module", "cognition_create_engine");
-                let persona_uuid = p.uuid("persona_id")?;
-                let persona_name = p.str("persona_name")?;
-
-                let cognition = PersonaCognition::new(
-                    persona_uuid,
-                    persona_name.to_string(),
-                    self.state.rag_engine.clone(),
-                );
-                self.state.personas.insert(persona_uuid, cognition);
-
-                log_info!(
-                    "module",
-                    "cognition",
-                    "Created cognition for {}",
-                    persona_uuid
-                );
-                Ok(CommandResult::Json(serde_json::json!({ "created": true })))
-            }
+            // cognition/create-engine migrated to the typed DynCommand registry (Slice 7)
+            // — see commands/cognition/create_engine.rs (dep-holding on CognitionState,
+            // access: Internal).
 
             // NOTE: `cognition/eval` (the test-graded coder gym) is now a typed,
             // registered, Privileged ActionCommand — see `cognition::eval::CognitionEval`.
@@ -266,20 +249,9 @@ impl ServiceModule for CognitionModule {
                 ))
             }
 
-            "cognition/enqueue-message" => {
-                let _timer = TimingGuard::new("module", "cognition_enqueue_message");
-                let persona_uuid = p.uuid("persona_id")?;
-                let message = p.value("message").ok_or("Missing message")?;
-                let inbox_msg = parse_inbox_message(message)?;
-
-                let persona = get_or_create_persona!(self, persona_uuid);
-                persona.inbox.enqueue(inbox_msg);
-
-                Ok(CommandResult::Json(serde_json::json!({
-                    "enqueued": true,
-                    "queue_size": persona.inbox.len(),
-                })))
-            }
+            // cognition/enqueue-message migrated to the typed DynCommand registry (Slice 7)
+            // — see commands/cognition/enqueue_message.rs. The wire→domain conversion now
+            // lives as InboxMessageRequest::to_inbox_message (ipc/protocol.rs).
 
             "cognition/get-state" => {
                 let _timer = TimingGuard::new("module", "cognition_get_state");
@@ -304,36 +276,10 @@ impl ServiceModule for CognitionModule {
                 })))
             }
 
-            "inbox/create" => {
-                let _timer = TimingGuard::new("module", "inbox_create");
-                let persona_uuid = p.uuid("persona_id")?;
-                // Ensure persona exists with all state (inbox is part of PersonaCognition)
-                get_or_create_persona!(self, persona_uuid);
-                log_info!("module", "cognition", "Ensured inbox for {}", persona_uuid);
-                Ok(CommandResult::Json(serde_json::json!({ "created": true })))
-            }
-
-            "inbox/drain-frame" => {
-                let _timer = TimingGuard::new("module", "inbox_drain_frame");
-                let persona_uuid = p.uuid("persona_id")?;
-                let window_ms = p.u64_or("window_ms", 80);
-                let max_items_u64 = p.u64_or("max_items", 16);
-                let max_items = usize::try_from(max_items_u64)
-                    .map_err(|_| format!("max_items too large: {max_items_u64}"))?;
-
-                let persona = self
-                    .state
-                    .personas
-                    .get(&persona_uuid)
-                    .ok_or_else(|| format!("No cognition for {persona_uuid}"))?;
-
-                let frame = persona.inbox.drain_frame(window_ms, max_items);
-                record_drained_turn_frame(&frame);
-
-                Ok(CommandResult::Json(
-                    serde_json::to_value(&frame).map_err(|e| format!("Serialize error: {e}"))?,
-                ))
-            }
+            // inbox/create + inbox/drain-frame migrated to the typed DynCommand registry
+            // (Slice 7) — see commands/cognition/{inbox_create,inbox_drain_frame}.rs. The
+            // frame recording helpers (record_drained_turn_frame / turn_frame_replay_record)
+            // moved into inbox_drain_frame.rs with their sole consumer.
 
             // ─── Lane D: PersonaTurnFrame wrap-in-Rust ──────────────
             //
@@ -1220,7 +1166,14 @@ impl ServiceModule for CognitionModule {
     }
 }
 
-fn record_drained_turn_frame(frame: &Option<PersonaInboxFrame>) {
+/// Fire-and-forget: build the replay record for a drained frame and write it on a
+/// blocking pool thread so the hot drain path never stalls on recorder I/O.
+///
+/// `pub(crate)` because it is the one shared recorder-write for drained frames —
+/// consumed by the typed `inbox/drain-frame` command (`commands/cognition/inbox_drain_frame.rs`)
+/// and the still-legacy Lane D arms (`persona/drain-turn-frame`, `persona/turn-execute`).
+/// When those arms migrate, this can move to the command file with its sole consumer.
+pub(crate) fn record_drained_turn_frame(frame: &Option<PersonaInboxFrame>) {
     if let Some(record) = turn_frame_replay_record(frame) {
         tokio::task::spawn_blocking(move || {
             crate::persona::recorder::record_turn_frame_replay(&record);
