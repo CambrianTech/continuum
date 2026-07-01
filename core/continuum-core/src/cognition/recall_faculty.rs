@@ -41,6 +41,7 @@ use futures_util::future::{join, join_all};
 use uuid::Uuid;
 
 use super::embedding::{cosine_similarity, EmbeddingProvider};
+use super::working_memory::WorkingMemory;
 use super::workspace::{Contribution, Faculty, FacultyId, Workspace};
 use crate::persona::admission_state::AdmissionState;
 use crate::persona::engram::Engram;
@@ -208,6 +209,17 @@ pub struct RecallFaculty {
     /// (harness) → the historical default count, no token gate. Threaded from
     /// [`PersonaBrainConfig::context_window`] via `with_context_window`.
     context_window: u32,
+    /// The recency channel (working memory), when shared in. Recall is the SEMANTIC
+    /// channel for the broader past; the recency channel owns what the persona's
+    /// hands JUST did ([[act-results-need-a-recency-channel-not-semantic-recall]]).
+    /// When set, recall drops any engram whose content the working-memory head
+    /// already carries — so a just-happened act is not shown twice in one prompt
+    /// (its head in `[working-memory]`, its full body in `[recall]`), which wasted
+    /// prefill on a byte-for-byte-overlapping block. Once the act ages out of the
+    /// small working-memory window, recall surfaces the full engram again: a clean
+    /// recency→semantic handoff, never both at once. `None` → no dedup (harness /
+    /// backward-compatible).
+    working_memory: Option<Arc<WorkingMemory>>,
 }
 
 impl RecallFaculty {
@@ -221,6 +233,7 @@ impl RecallFaculty {
             embedder: None,
             relevance_weight: DEFAULT_RELEVANCE_WEIGHT,
             context_window: 0,
+            working_memory: None,
         }
     }
 
@@ -267,11 +280,41 @@ impl RecallFaculty {
         self.relevance_weight
     }
 
+    /// Share in the recency channel (working memory) so recall can drop an engram the
+    /// working-memory head already carries — the just-happened act appears once (its
+    /// head, in `[working-memory]`), not twice (also its full body in `[recall]`). See
+    /// [`working_memory`](Self::working_memory) for the recency→semantic handoff.
+    pub fn with_working_memory(mut self, working_memory: Arc<WorkingMemory>) -> Self {
+        self.working_memory = Some(working_memory);
+        self
+    }
+
     /// The persona this faculty recalls for.
     pub fn persona_id(&self) -> Uuid {
         self.persona_id
     }
 }
+
+/// Strip the monotonic `[action #N] ` recency stamp that `WorkingMemory::record_action`
+/// prepends, returning the raw observation head the entry carries. The head is the
+/// first `WM_ACTION_HEAD_CHARS` of the SAME observation string whose full form is the
+/// admitted engram content (see `act_observe::apply_act`), so the stripped body is an
+/// exact PREFIX of that engram's content — which makes the dedup below a `starts_with`
+/// test, not a fuzzy match. A non-action reasoning trace (no stamp) is returned
+/// unchanged; it won't prefix an act engram, so it never spuriously dedups.
+fn strip_action_stamp(entry: &str) -> &str {
+    entry
+        .strip_prefix("[action #")
+        .and_then(|rest| rest.find("] ").map(|i| &rest[i + 2..]))
+        .unwrap_or(entry)
+        .trim()
+}
+
+/// Minimum stripped-body length for a working-memory entry to gate recall dedup. A
+/// trivially-short trace (e.g. an empty or one-token action) is too generic to safely
+/// prefix-match a distinct engram, so it never suppresses recall — only a substantive
+/// act head does.
+const WM_DEDUP_MIN_BODY_CHARS: usize = 24;
 
 #[async_trait]
 impl Faculty for RecallFaculty {
@@ -315,7 +358,7 @@ impl Faculty for RecallFaculty {
         // Without an embedder there is no relevance signal: blended_score IS
         // salience (candidates already in that order) and relevance is 1.0 so the
         // floor never fires (pure salience×recency, backward-compatible).
-        let mut scored: Vec<(f32, Engram, f32, f32)> = match &self.embedder {
+        let scored: Vec<(f32, Engram, f32, f32)> = match &self.embedder {
             Some(embedder) => {
                 // Embed the query AND every candidate CONCURRENTLY. Each embed is an
                 // independent IO future on the neural/grid backend; awaiting them in
@@ -378,6 +421,32 @@ impl Faculty for RecallFaculty {
             }
             used_tokens += est;
             surfaced.push((blended, engram, salience));
+        }
+
+        // Recency→semantic handoff: drop any surfaced engram the recency channel
+        // (working memory) ALREADY carries this tick. The persona's own just-happened
+        // act lands in BOTH tiers by design — an 800-char head in working memory, the
+        // full result-as-memory as an engram (`act_observe::apply_act`). Surfacing
+        // both in one prompt shows the act twice (head in `[working-memory]`, full
+        // body in `[recall]`) and burns prefill on a byte-overlapping block. The
+        // recency channel owns what just happened; recall is for the broader past
+        // ([[act-results-need-a-recency-channel-not-semantic-recall]]). The WM head is
+        // an exact prefix of the engram content, so `starts_with` is precise — and
+        // once the act ages out of the small WM window, recall surfaces the full
+        // engram again. Done AFTER budgeting so we never record a recall hit (below)
+        // on a memory we drop here.
+        if let Some(wm) = &self.working_memory {
+            let recent = wm.recent();
+            let wm_bodies: Vec<&str> = recent
+                .iter()
+                .map(|e| strip_action_stamp(e))
+                .filter(|b| b.len() >= WM_DEDUP_MIN_BODY_CHARS)
+                .collect();
+            if !wm_bodies.is_empty() {
+                surfaced.retain(|(_, engram, _)| {
+                    !wm_bodies.iter().any(|b| engram.content.starts_with(b))
+                });
+            }
         }
         let scored = surfaced;
 
@@ -1175,6 +1244,137 @@ mod tests {
             c.content.lines().count(),
             3,
             "a 4096-token window caps recall at 3 memories; got:\n{}",
+            c.content
+        );
+    }
+
+    // what this catches: the recency→semantic handoff. The persona's own just-happened
+    // act lands in BOTH tiers by design (an 800-char head in working memory, the full
+    // result as an engram — act_observe::apply_act). Without the dedup, one prompt shows
+    // the act twice: its head in [working-memory] AND its full body in [recall], burning
+    // prefill on a byte-overlapping block. With the working-memory Arc shared in, recall
+    // drops the engram whose content the working-memory head already carries (exact
+    // prefix match), while an UNRELATED memory still surfaces. Regression for
+    // [[act-results-need-a-recency-channel-not-semantic-recall]].
+    #[tokio::test]
+    async fn recall_drops_an_act_the_recency_channel_already_carries() {
+        let now = 1_000_000_000u64;
+        let recall_meta = Arc::new(RecallMetadataRegistry::new());
+        let state = Arc::new(AdmissionState::new(recall_meta.clone()));
+
+        // The persona's own action observation (the exact string apply_act admits) and
+        // an unrelated long-term memory. Same salience so ordering can't hide the drop.
+        let own_act =
+            "I ran code/run(source=fn is_prime) because I must verify. Result: 2 prime, 4 not";
+        let other = "The team agreed to ship the auth flow on Friday.";
+        for content in [own_act, other] {
+            let id = Uuid::new_v4();
+            state.push_for_test(Engram {
+                context_id: None,
+                id,
+                kind: EngramKind::Episodic,
+                content: content.to_string(),
+                origin: EngramOrigin::Chat(ChatMessageRef {
+                    message_id: Uuid::new_v4(),
+                    room_id: Uuid::new_v4(),
+                    sender_id: Uuid::new_v4(),
+                    posted_at_ms: now,
+                    content_hash: format!("h-{}", content.len()),
+                }),
+                recall_keys: Vec::new(),
+                admitted_at_ms: now,
+                trust_state_at_admission: TrustState::ApprovedPeer,
+                admission_trace_id: None,
+            });
+            recall_meta.admit(
+                id,
+                RecallMetadata {
+                    salience: 0.7,
+                    access_count: 0,
+                    last_accessed_ms: 0,
+                    protected_until_ms: 0,
+                    last_decayed_ms: now,
+                },
+            );
+        }
+
+        // The recency channel carries the SAME act (its head, stamped), exactly as
+        // apply_act records it after executing the Decision::Act.
+        let wm = Arc::new(WorkingMemory::new(3));
+        wm.record_action(own_act);
+
+        // No embedder → pure salience×recency, relevance floor disabled → both would
+        // surface if not for the working-memory dedup. Large window so count is not the
+        // limiter.
+        let recall = RecallFaculty::new(Uuid::new_v4(), state)
+            .with_clock(Arc::new(move || now))
+            .with_context_window(131_072)
+            .with_working_memory(Arc::clone(&wm));
+        let c = recall
+            .contribute(&Workspace::new("is_prime check"))
+            .await
+            .expect("the unrelated memory still surfaces");
+        assert!(
+            !c.content.contains("code/run(source=fn is_prime)"),
+            "recall must NOT re-surface an act the recency channel already carries; got:\n{}",
+            c.content
+        );
+        assert!(
+            c.content.contains("ship the auth flow on Friday"),
+            "an unrelated long-term memory must still surface; got:\n{}",
+            c.content
+        );
+    }
+
+    // what this catches: with NO working memory shared in (harness / backward-compatible
+    // path), recall is unchanged — the act engram still surfaces. Guards against the
+    // dedup firing when it has no recency channel to defer to.
+    #[tokio::test]
+    async fn recall_keeps_the_act_when_no_recency_channel_is_shared() {
+        let now = 1_000_000_000u64;
+        let recall_meta = Arc::new(RecallMetadataRegistry::new());
+        let state = Arc::new(AdmissionState::new(recall_meta.clone()));
+        let own_act =
+            "I ran code/run(source=fn is_prime) because I must verify. Result: 2 prime, 4 not";
+        let id = Uuid::new_v4();
+        state.push_for_test(Engram {
+            context_id: None,
+            id,
+            kind: EngramKind::Episodic,
+            content: own_act.to_string(),
+            origin: EngramOrigin::Chat(ChatMessageRef {
+                message_id: Uuid::new_v4(),
+                room_id: Uuid::new_v4(),
+                sender_id: Uuid::new_v4(),
+                posted_at_ms: now,
+                content_hash: "h".to_string(),
+            }),
+            recall_keys: Vec::new(),
+            admitted_at_ms: now,
+            trust_state_at_admission: TrustState::ApprovedPeer,
+            admission_trace_id: None,
+        });
+        recall_meta.admit(
+            id,
+            RecallMetadata {
+                salience: 0.7,
+                access_count: 0,
+                last_accessed_ms: 0,
+                protected_until_ms: 0,
+                last_decayed_ms: now,
+            },
+        );
+        // No .with_working_memory(...) — the dedup has nothing to defer to.
+        let recall = RecallFaculty::new(Uuid::new_v4(), state)
+            .with_clock(Arc::new(move || now))
+            .with_context_window(131_072);
+        let c = recall
+            .contribute(&Workspace::new("is_prime check"))
+            .await
+            .expect("the act memory surfaces with no recency channel");
+        assert!(
+            c.content.contains("code/run(source=fn is_prime)"),
+            "without a working-memory channel, recall must keep the act; got:\n{}",
             c.content
         );
     }

@@ -225,12 +225,25 @@ pub fn build_workspace_cycle(cfg: PersonaBrainConfig) -> WorkspaceCycle {
             LexicalEmbedder::new(),
         )))
     });
+    // Working memory: the persona's recent chain-of-thought AND the head of what its
+    // hands just did, carried forward across turns. The deliberator WRITES its
+    // reasoning here after each verdict; the perception-tier `WorkingMemoryFaculty`
+    // (pushed below) READS it into the next tick — so the persona resumes its train of
+    // thought instead of re-deriving it cold. Volatile scratchpad, distinct from the
+    // long-term engram store; self-activates only when thinking is enabled (suppressed
+    // turns record nothing). Built HERE (before recall) so recall can share it in and
+    // suppress an engram the recency channel already carries — see below.
+    let working_memory = Arc::new(WorkingMemory::new(DEFAULT_WORKING_MEMORY_CAPACITY));
     let recall = RecallFaculty::new(cfg.persona_id, cfg.admission)
         .with_embedder(embedder)
         // Budget recall by the served model's capability: a tight 4B window
         // gets fewer memories (and a closest-match floor drops topically-
         // irrelevant high-salience nags) so attention isn't spent on noise.
-        .with_context_window(cfg.context_window);
+        .with_context_window(cfg.context_window)
+        // Share in the recency channel so recall drops a just-happened act the
+        // working-memory head already carries — no double-surface of the same act
+        // (head in [working-memory], full body in [recall]); recency→semantic handoff.
+        .with_working_memory(Arc::clone(&working_memory));
     // Recall is speculative prefetch (Joel's CPU branch-prediction analogy): on
     // the live paths we run it OFF the hot path so the per-turn output never
     // waits on a neural-embed + vector-search round-trip. The worker computes
@@ -247,13 +260,9 @@ pub fn build_workspace_cycle(cfg: PersonaBrainConfig) -> WorkspaceCycle {
         faculties.push(Arc::new(recall));
     }
 
-    // Working memory: the persona's recent chain-of-thought, carried forward across
-    // turns. The deliberator WRITES its reasoning here after each verdict; this
-    // perception-tier faculty READS it into the next tick — so the persona resumes
-    // its train of thought instead of re-deriving it cold. Volatile scratchpad,
-    // distinct from the long-term engram store; self-activates only when thinking is
-    // enabled (suppressed turns record nothing). See `working_memory` module.
-    let working_memory = Arc::new(WorkingMemory::new(DEFAULT_WORKING_MEMORY_CAPACITY));
+    // The perception-tier reader of the working memory built above: each tick it bids
+    // the recent reasoning + act heads into the workspace so the deliberator conditions
+    // on them. (The buffer itself is created before recall so recall can share it in.)
     faculties.push(Arc::new(WorkingMemoryFaculty::new(Arc::clone(
         &working_memory,
     ))));
