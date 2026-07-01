@@ -42,6 +42,7 @@ pub mod models;
 pub mod persona;
 pub mod plasticity;
 pub mod rag;
+pub mod resources;
 pub mod runtime;
 pub mod search;
 pub mod serving;

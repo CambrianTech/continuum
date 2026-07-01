@@ -946,6 +946,15 @@ pub fn start_server(
     ));
     runtime.register(serving_daemon.clone());
 
+    // #79: expose the one per-machine resource authority's accounting board as a typed
+    // read command (`resources/board`). The daemon owns its background poll + watch
+    // snapshot; this thin module wraps the same `Arc<ResourceDaemon>` so the measured
+    // per-consumer attributions + drift are readable by an operator, a persona, or a
+    // grid peer — the reporting half of "accurate footprint() drift-reporting."
+    runtime.register(Arc::new(
+        crate::modules::resources_module::ResourcesModule::new(resource_daemon.clone()),
+    ));
+
     // Phase 2 of #1239 (continuum#1299 PR-1): PressureBrokerModule.
     // Brings the cross-pool PressureBroker online — instantiates the
     // singleton, pre-registers DockerTierPool as a ResourcePool, and

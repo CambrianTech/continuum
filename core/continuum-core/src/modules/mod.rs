@@ -65,6 +65,7 @@ pub mod probe_stream;
 pub mod python_adapter;
 pub mod rag;
 pub mod resource_broker;
+pub mod resources_module;
 pub mod runtime_control;
 pub mod sentinel;
 pub mod serving_consumer;
