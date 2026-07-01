@@ -2,9 +2,13 @@
 import type { PersonaTurnFrameReplayRecord } from "./PersonaTurnFrameReplayRecord";
 
 /**
- * The bundled outcome of one persona turn: the replay-stable turn frame plus the raw
- * inference response the Rust module returned. Both are `null` on an empty drain (no-op);
- * `inferenceResponse` is the untyped module cell projection (its shape belongs to the
- * inference module, not this command), so it rides as `unknown`.
+ * The bundled outcome of one persona turn: the replay-stable turn frame plus the live
+ * turn's outcome. Both are `null` on an empty drain (no-op). `inferenceResponse` is the
+ * [`settle_step_to_json`] projection of the [`SettleStep`] the live `WorkspaceCycle`
+ * produced (`{ outcome, text?|intent?|calls?, metrics? }`) — its shape is owned by this
+ * command, but rides as `unknown` on the wire so the field stays open as the outcome
+ * vocabulary grows.
+ *
+ * [`SettleStep`]: crate::cognition::act_observe::SettleStep
  */
 export type TurnExecuteResult = { replayRecord?: PersonaTurnFrameReplayRecord, inferenceResponse?: unknown, };

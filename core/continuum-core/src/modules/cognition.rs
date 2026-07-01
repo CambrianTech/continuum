@@ -43,8 +43,7 @@ use crate::persona::{
 use crate::rag::RagEngine;
 use crate::runtime;
 use crate::runtime::{
-    CommandResult, LateBound, ModuleConfig, ModuleContext, ModulePriority, ModuleRegistry,
-    ServiceModule,
+    CommandResult, LateBound, ModuleConfig, ModuleContext, ModulePriority, ServiceModule,
 };
 use crate::utils::params::Params;
 use async_trait::async_trait;
@@ -70,12 +69,6 @@ pub struct CognitionState {
     pub loop_detector: LoopDetector,
     /// GPU memory manager — real VRAM budgets for genome paging.
     pub gpu_manager: Option<Arc<GpuMemoryManager>>,
-    /// Rust module registry for in-process cognition -> inference dispatch.
-    ///
-    /// This is intentionally NOT the global command executor: `persona/turn-execute`
-    /// must fail loudly if the Rust inference module is absent instead of falling
-    /// through to TypeScript.
-    pub module_registry: Option<Arc<ModuleRegistry>>,
 }
 
 impl CognitionState {
@@ -85,17 +78,11 @@ impl CognitionState {
             rag_engine,
             loop_detector: LoopDetector::new(),
             gpu_manager: None,
-            module_registry: None,
         }
     }
 
     pub fn with_gpu_manager(mut self, manager: Arc<GpuMemoryManager>) -> Self {
         self.gpu_manager = Some(manager);
-        self
-    }
-
-    pub fn with_module_registry(mut self, registry: Arc<ModuleRegistry>) -> Self {
-        self.module_registry = Some(registry);
         self
     }
 

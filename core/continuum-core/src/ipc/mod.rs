@@ -1203,9 +1203,7 @@ pub fn start_server(
     // Shared state for per-persona cognition (unified: engine + inbox + rate limiter + sleep + adapters + genome)
     let rag_engine = Arc::new(RagEngine::new());
     let cognition_state = Arc::new(
-        CognitionState::new(rag_engine.clone())
-            .with_gpu_manager(gpu_manager.clone())
-            .with_module_registry(runtime.registry_arc()),
+        CognitionState::new(rag_engine.clone()).with_gpu_manager(gpu_manager.clone()),
     );
     let personas = cognition_state.personas.clone();
     runtime.register(Arc::new(CognitionModule::new(cognition_state)));

@@ -1,36 +1,42 @@
-//! `persona/turn-execute` — chain a persona's full Rust turn in one IPC hop (typed,
-//! dep-holding).
+//! `persona/turn-execute` — drive a persona's ONE live turn in one IPC hop (typed,
+//! dep-holding), the deterministic third doorbell to the single turn primitive.
 //!
-//! Lane D of the persona substrate (alpha card #1409). Where
-//! [`drain`](super::drain) stops at the replay-stable turn frame, this command carries
-//! the frame all the way through inference:
+//! Where [`drain`](super::drain) stops at the replay-stable turn frame, this command
+//! carries the drained messages all the way through a real turn — but NOT through a
+//! second, parallel inference path. It drives [`settle_step`] on the persona's ONE live
+//! [`WorkspaceCycle`], the exact step the airc heartbeat (`service_loop`) and the eval
+//! grader drive:
 //!
 //! ```text
-//!   drain inbox
-//!     -> wrap in PersonaTurnFrame
-//!     -> derive ResponsePrompt (lazy output)
-//!     -> build InferenceRequest (prompt_text path)
-//!     -> dispatch `inference/llm/request` via the Rust ModuleRegistry only
-//!     -> bundle { replayRecord, inferenceResponse }
+//!   drain inbox (deterministic command-side doorbell)
+//!     -> synthesize the airc-shaped burst (same build_workspace_turns formatter)
+//!     -> resolve the persona's live WorkspaceCycle (persona_workspace::global())
+//!     -> settle_step(may_act = true, directed) — full cognition, faculties inject
+//!        recall + grounding INSIDE the step
+//!     -> bundle { replayRecord, inferenceResponse: <SettleStep + TurnMetrics> }
 //! ```
 //!
-//! Why one command: the TS persona loop previously executed each stage with its own IPC
-//! round-trip (drain, then build prompt, then call inference) — 3 round-trips per turn,
-//! with prompt-building living in TS. Lane D pulls all three into the substrate so
-//! (a) the prompt is built in Rust where the turn frame lives, (b) the production replay
-//! record carries the exact prompt that fed inference, (c) the persona turn becomes one
-//! observable unit on the bus.
+//! Why: this command used to build its OWN prompt from an adapter-less shadow cognition
+//! and dispatch `inference/llm/request` through the module registry — a parallel path
+//! with no system grounding that returned a stub. That is deleted. "Full cognition at all
+//! times" means there is exactly ONE brain per persona and exactly ONE turn primitive;
+//! a command-driven turn perceives its world byte-identically to a lived one and runs the
+//! same Workspace (recall, grounding, deliberation, tools). The inbox stays only as the
+//! deterministic message queue this turn is FOR (fed by `cognition/enqueue-message`).
 //!
 //! Captures the owning [`CognitionModule`](crate::modules::cognition::CognitionModule)'s
-//! shared [`CognitionState`] — the per-persona inbox lives on it, and its
-//! `module_registry` is the seam to the Rust inference module. Assembled by
-//! [`command_objects`](super::command_objects), called from `CognitionModule::commands`.
+//! shared [`CognitionState`] — the per-persona inbox lives on it. The live brain is
+//! resolved from the process-global workspace registry, not from module state. Assembled
+//! by [`command_objects`](super::command_objects), called from `CognitionModule::commands`.
 //!
-//! Fail-loud notes: a persona with no cognition engine is a caller bug
-//! (`CommandError::Invalid`); a missing / unroutable Rust module registry refuses to
-//! fall through to any TypeScript path (`CommandError::Internal` naming the cause). An
-//! **empty** drain is a legitimate no-op: it returns `{ replayRecord: null,
-//! inferenceResponse: null }` BEFORE any inference dispatch, never an error.
+//! Fail-loud notes: a persona with messages to turn but NO live `WorkspaceCycle` is not
+//! hosted — `CommandError::Invalid` naming the cause, never an answer from a shadow
+//! cognition. An **empty** drain (or an absent inbox) is a legitimate no-op: it returns
+//! `{ replayRecord: null, inferenceResponse: null }` BEFORE resolving the brain, never an
+//! error.
+//!
+//! [`settle_step`]: crate::cognition::act_observe::settle_step
+//! [`WorkspaceCycle`]: crate::cognition::workspace::WorkspaceCycle
 //!
 //! `access: Internal` — substrate cognition IPC the host persona loop drives, not a
 //! remote-callable persona toolbelt verb.
@@ -45,7 +51,6 @@ use uuid::Uuid;
 use crate::logging::TimingGuard;
 use crate::modules::cognition::{record_drained_turn_frame, CognitionState};
 use crate::persona::turn_frame::{PersonaTurnFrame, PersonaTurnFrameReplayRecord};
-use crate::runtime::ModuleRegistry;
 use crate::sdk_codegen::CommandError;
 
 /// Default frame window (ms) when the caller omits `windowMs`. Transplanted from the arm.
@@ -58,21 +63,15 @@ fn default_max_items() -> u64 {
     16
 }
 
-/// Default generation cap (tokens) when the caller omits `maxTokens`: a conservative
-/// bound so a misconfigured caller doesn't run unbounded inference. From the arm.
-fn default_max_tokens() -> u64 {
-    512
-}
-
-/// Default generation wall-clock cap (ms) when the caller omits `maxDurationMs`. From the arm.
-fn default_max_duration_ms() -> u64 {
-    10_000
-}
-
-/// Params for `persona/turn-execute`: which persona to turn, the drain frame bounds, and
-/// the optional composition + generation budget. Everything but `personaId` falls back to
-/// the substrate defaults, so the minimal call is `{ personaId }` — matching the legacy
-/// `u64_or` / `uuid_opt` reads.
+/// Params for `persona/turn-execute`: which persona to turn and the drain frame bounds.
+/// Everything but `personaId` falls back to the substrate defaults, so the minimal call
+/// is `{ personaId }`.
+///
+/// Note: there is deliberately NO composition or generation-budget param. Genome
+/// composition is paged in by the live `WorkspaceCycle`'s own faculties during the turn,
+/// and generation length is owned by the model's adapter (tasks #45/#46 — no hardcoded
+/// caps). A turn-execute caller seeds the messages; the persona's ONE brain owns how it
+/// thinks and how long it speaks.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[ts(
     export,
@@ -88,23 +87,16 @@ pub struct TurnExecuteParams {
     #[serde(default = "default_max_items")]
     #[ts(type = "number")]
     pub max_items: u64,
-    /// Genome composition artifact to page in for the turn. Omitted → the nil artifact
-    /// (the substrate's canonical "no explicit composition" sentinel).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional, type = "string")]
-    pub composition_artifact_id: Option<Uuid>,
-    #[serde(default = "default_max_tokens")]
-    #[ts(type = "number")]
-    pub max_tokens: u64,
-    #[serde(default = "default_max_duration_ms")]
-    #[ts(type = "number")]
-    pub max_duration_ms: u64,
 }
 
-/// The bundled outcome of one persona turn: the replay-stable turn frame plus the raw
-/// inference response the Rust module returned. Both are `null` on an empty drain (no-op);
-/// `inferenceResponse` is the untyped module cell projection (its shape belongs to the
-/// inference module, not this command), so it rides as `unknown`.
+/// The bundled outcome of one persona turn: the replay-stable turn frame plus the live
+/// turn's outcome. Both are `null` on an empty drain (no-op). `inferenceResponse` is the
+/// [`settle_step_to_json`] projection of the [`SettleStep`] the live `WorkspaceCycle`
+/// produced (`{ outcome, text?|intent?|calls?, metrics? }`) — its shape is owned by this
+/// command, but rides as `unknown` on the wire so the field stays open as the outcome
+/// vocabulary grows.
+///
+/// [`SettleStep`]: crate::cognition::act_observe::SettleStep
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(
     export,
@@ -121,11 +113,14 @@ pub struct TurnExecuteResult {
 }
 
 crate::action_command! {
-    /// Execute a persona's full turn in one hop: drain the inbox into a replay-stable
-    /// frame, build the response prompt in Rust, dispatch inference through the Rust
-    /// module registry, and bundle `{ replayRecord, inferenceResponse }`. Returns the
-    /// null pair when the drain window was empty (no-op). Substrate cognition IPC the
-    /// host persona loop drives; not a persona toolbelt verb.
+    /// Drive a persona's ONE live turn in one hop: drain the inbox into a replay-stable
+    /// frame, synthesize the airc-shaped burst, and drive `settle_step` on the persona's
+    /// live `WorkspaceCycle` (the same turn primitive the airc heartbeat and the eval
+    /// grader drive — full cognition, no parallel inference path). Bundles
+    /// `{ replayRecord, inferenceResponse }` where `inferenceResponse` is the settle-step
+    /// outcome + live token/latency metrics. Returns the null pair when the drain window
+    /// was empty (no-op). Substrate cognition IPC the host persona loop drives; not a
+    /// persona toolbelt verb.
     pub struct TurnExecute { state: Arc<CognitionState> }
     name: "persona/turn-execute",
     access: Internal,
@@ -136,147 +131,186 @@ crate::action_command! {
 
         let max_items = usize::try_from(params.max_items)
             .map_err(|_| CommandError::Invalid(format!("max_items too large: {}", params.max_items)))?;
-        let max_tokens = u32::try_from(params.max_tokens)
-            .map_err(|_| CommandError::Invalid("max_tokens too large for u32".to_string()))?;
-        let max_duration_ms = u32::try_from(params.max_duration_ms)
-            .map_err(|_| CommandError::Invalid("max_duration_ms too large for u32".to_string()))?;
-        let composition_artifact_id = params.composition_artifact_id.unwrap_or(Uuid::nil());
 
-        let persona = this
-            .state
-            .personas
-            .get(&params.persona_id)
-            .ok_or_else(|| CommandError::Invalid(format!("No cognition for {}", params.persona_id)))?;
-
-        let raw_frame = persona.inbox.drain_frame(params.window_ms, max_items);
+        // Drain the persona's inbox into an OWNED frame, then DROP the DashMap guard
+        // before any await. The inbox is the deterministic command-side doorbell (fed by
+        // `cognition/enqueue-message`); it carries only the WHO/WHEN/WHAT of the messages
+        // this turn is FOR. It is NOT a second cognition — the RESPONSE comes from the
+        // persona's ONE live brain below. Holding the `Ref` across `settle_step().await`
+        // would be a lock-across-await (task #85); we extract owned data and release it.
+        let raw_frame = {
+            let Some(persona) = this.state.personas.get(&params.persona_id) else {
+                // No inbox for this persona ⇒ nothing to turn ⇒ idle no-op (the null
+                // pair), exactly like an empty drain. A tick with nothing to do is the
+                // routine case, never a caller error.
+                return Ok(TurnExecuteResult { replay_record: None, inference_response: None });
+            };
+            persona.inbox.drain_frame(params.window_ms, max_items)
+        };
         record_drained_turn_frame(&raw_frame);
 
-        // Empty drain: returned as the null pair, NOT an Err. Idle ticks are routine; a
-        // no-op is the correct outcome, short-circuiting BEFORE any inference dispatch.
+        // Empty drain: the null pair, NOT an Err. Idle ticks are routine.
         let inbox_frame = match raw_frame {
             Some(f) => f,
             None => {
-                return Ok(TurnExecuteResult {
-                    replay_record: None,
-                    inference_response: None,
-                });
+                return Ok(TurnExecuteResult { replay_record: None, inference_response: None });
             }
         };
 
-        let turn_frame = PersonaTurnFrame::from_inbox_frame(inbox_frame);
+        // Keep the replay record for observability — the same deterministic frame
+        // artifact the recorder captures — but DERIVE the turn from the live brain, not
+        // from a separately-built prompt + a second inference dispatch (the parallel path
+        // this command used to take, which built an adapter-less shadow prompt with no
+        // system grounding and returned a stub).
+        let turn_frame = PersonaTurnFrame::from_inbox_frame(inbox_frame.clone());
         let replay_record = turn_frame.replay_record();
         if let Some(ref rec) = replay_record {
             crate::persona::recorder::record_turn_frame_replay(rec);
         }
 
-        let response_prompt = turn_frame.response_prompt().ok_or_else(|| {
-            CommandError::Internal(format!(
-                "persona/turn-execute: non-empty drain produced no ResponsePrompt for {}",
-                params.persona_id
-            ))
-        })?;
+        // The room this turn is FOR — carried by the drained frame (the messages' room).
+        let room = inbox_frame.room_id;
 
-        // Build the substrate InferenceRequest. request_id is fresh per-turn; the persona
-        // + composition come from the turn frame + caller. prompt_text is the flattened
-        // ResponsePrompt; prompt_tokens is empty (adapter-path).
-        let inference_request = crate::inference::llm_module::InferenceRequest {
-            request_id: crate::inference::llm_module::InferenceRequestId::new(Uuid::new_v4()),
-            persona: crate::identity::PeerId::from_uuid(params.persona_id),
-            composition: crate::inference::llm_module::CompositionPlan(
-                crate::genome::working_set::ArtifactId::new(composition_artifact_id),
-            ),
-            prompt_tokens: vec![],
-            prompt_text: Some(response_prompt.to_prompt_text()),
-            budget: crate::inference::llm_module::GenerationBudget {
-                max_tokens,
-                max_duration_ms,
-            },
-            sampling: crate::inference::llm_module::SamplingParams::default(),
-            stop_sequences: vec![],
+        // Synthesize ONE airc-shaped delivery from the drained messages — the exact
+        // envelope `build_workspace_turns` reads (source_id "airc", per-item peer_id +
+        // occurred_at_ms). This is the SAME burst formatter the live heartbeat
+        // (service_loop) and the eval fork use, so a command-driven turn perceives its
+        // world byte-identically to a lived one. The grounding tier (recall / roster /
+        // doctrine) is injected by the live cycle's OWN faculties inside settle_step — we
+        // compose only the message delivery here (matching eval.rs; the #8 convergence
+        // note), so there is no double grounding and no second allocator.
+        let items = inbox_frame
+            .messages
+            .iter()
+            .map(|m| crate::persona::rag_budget::RagItem {
+                content: m.content.clone(),
+                tokens: 0,
+                metadata: serde_json::json!({
+                    "peer_id": m.sender_id.to_string(),
+                    "occurred_at_ms": m.timestamp,
+                }),
+            })
+            .collect::<Vec<_>>();
+        let delivery = crate::persona::rag_budget::RagDelivery {
+            source_id: "airc".to_string(),
+            items,
+            tokens_used: 0,
+            continuation: None,
+            resolution_used: crate::persona::rag_budget::ResolutionPreference::Raw,
         };
+        // own_peer attributes the persona's OWN past posts (is_self → assistant role); a
+        // command-seeded turn carries only inbound peer messages, so it's inert here but
+        // kept honest. agent_name comes from the live workspace roster (airc owns names);
+        // absent ⇒ empty (never a fabricated name, [[fallbacks-are-illegal-fail-loud]]).
+        let own_peer = params.persona_id.to_string();
+        let agent_name = crate::cognition::persona_workspace::global()
+            .roster()
+            .into_iter()
+            .find(|(id, _)| *id == params.persona_id)
+            .and_then(|(_, name)| name)
+            .unwrap_or_default();
+        let burst = crate::cognition::workspace::Burst::from_turns(
+            room,
+            crate::persona::service_loop::build_workspace_turns(
+                std::slice::from_ref(&delivery),
+                &own_peer,
+                &agent_name,
+            ),
+        );
 
-        let inference_response = execute_rust_module_json(
-            this.state.module_registry.as_deref(),
-            crate::inference::llm_module_service::COMMAND_REQUEST,
-            serde_json::to_value(&inference_request).map_err(|e| {
-                CommandError::Internal(format!("Serialize inference request: {e}"))
-            })?,
-        )
-        .await
-        .map_err(|e| {
-            CommandError::Internal(format!(
-                "persona/turn-execute: Rust inference dispatch failed for {}: {e}",
+        // Resolve the persona's ONE live brain — the WorkspaceCycle the service_loop and
+        // the SubstrateGovernor already drive (registered at spawn). Absent ⇒ the persona
+        // is not hosted; fail loud naming the cause. We NEVER answer from an adapter-less
+        // shadow cognition — that parallel path is exactly what this migration removes.
+        let cycle = crate::cognition::persona_workspace::global()
+            .get(&params.persona_id)
+            .ok_or_else(|| CommandError::Invalid(format!(
+                "persona/turn-execute: no live WorkspaceCycle for {} — the persona is not \
+                 hosted. Spawn it before driving a turn; refusing to answer from a shadow \
+                 cognition with no adapter.",
                 params.persona_id
-            ))
-        })?;
+            )))?;
+
+        // ONE turn primitive: settle_step on the LIVE cycle — the SAME step the airc
+        // heartbeat (service_loop) and the eval grader drive; three doorbells, one brain,
+        // full cognition (the cycle's faculties inject recall + grounding INSIDE the
+        // step). `may_act = true`: the turn permits its one act. `directed = true`: a
+        // command-seeded message is put TO the persona, so we withhold the silent-PASS
+        // hatch — the same exam-is-directed measurement control the eval driver documents
+        // (a structural harness fact fed to the mind, never a filter on her output).
+        let (step, metrics) = crate::cognition::act_observe::settle_step(
+            &cycle,
+            burst,
+            room,
+            true,
+            crate::cognition::workspace::TurnFraming::message(true),
+        )
+        .await;
 
         Ok(TurnExecuteResult {
             replay_record,
-            inference_response: Some(inference_response),
+            inference_response: Some(settle_step_to_json(&step, metrics.as_ref())),
         })
     }
 }
 
-/// Dispatch a Rust `ModuleRegistry` command and project its result cell into a plain JSON
-/// [`Value`]. The sole seam by which `persona/turn-execute` reaches the inference module
-/// in-process. Fails loud — a missing registry or unrouted command refuses to fall
-/// through to any TypeScript path (moved here verbatim with its only consumer during the
-/// Lane D migration off `CognitionModule::handle_command`).
-async fn execute_rust_module_json(
-    registry: Option<&ModuleRegistry>,
-    command: &str,
-    params: Value,
-) -> Result<Value, String> {
-    let registry = registry.ok_or_else(|| {
-        format!("{command}: Rust module registry unavailable; refusing TypeScript fallback")
-    })?;
-    let (module, routed_command) = registry.route_command(command).ok_or_else(|| {
-        format!("{command}: no Rust module route registered; refusing TypeScript fallback")
-    })?;
-
-    module
-        .handle_command(&routed_command, params)
-        .await?
-        .to_json_value()
+/// Project a [`SettleStep`](crate::cognition::act_observe::SettleStep) outcome (+ optional
+/// [`TurnMetrics`](crate::cognition::workspace::TurnMetrics)) into the command's JSON
+/// result cell. The ONE place `persona/turn-execute`'s outcome shape is defined, so the
+/// sweep harness and any other caller read a stable
+/// `{ outcome, text?|intent?|calls?, metrics? }` — where `metrics` carries the live
+/// generation cost (tokens + latency) the model reported for THIS turn.
+fn settle_step_to_json(
+    step: &crate::cognition::act_observe::SettleStep,
+    metrics: Option<&crate::cognition::workspace::TurnMetrics>,
+) -> Value {
+    use crate::cognition::act_observe::SettleStep;
+    let mut base = match step {
+        SettleStep::Spoke(text) => serde_json::json!({ "outcome": "spoke", "text": text }),
+        SettleStep::Acted { calls, intent } => serde_json::json!({
+            "outcome": "acted", "intent": intent, "calls": calls.len(),
+        }),
+        SettleStep::WouldAct { calls, intent } => serde_json::json!({
+            "outcome": "wouldAct", "intent": intent, "calls": calls.len(),
+        }),
+        SettleStep::ActUnfulfilled { calls, intent } => serde_json::json!({
+            "outcome": "actUnfulfilled", "intent": intent, "calls": calls.len(),
+        }),
+        SettleStep::Passed => serde_json::json!({ "outcome": "passed" }),
+    };
+    if let Some(m) = metrics {
+        base["metrics"] = serde_json::json!({
+            "inputTokens": m.input_tokens,
+            "outputTokens": m.output_tokens,
+            "latencyMs": m.latency_ms,
+            "tokensPerSecond": m.tokens_per_second(),
+        });
+    }
+    base
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::inference::llm_module_service::InferenceLlmModule;
+    use crate::cognition::act_observe::SettleStep;
+    use crate::cognition::workspace::TurnMetrics;
     use crate::persona::{InboxMessage, Modality, PersonaCognition, SenderType};
     use crate::rag::RagEngine;
     use crate::sdk_codegen::{AccessLevel, ActionCommand, Ctx};
 
-    // Build a TurnExecute command over a fresh CognitionState carrying one live persona,
-    // optionally wired with a Rust ModuleRegistry (the inference dispatch seam). Mirrors
-    // the legacy turn_execute_tests helpers, now targeting the migrated command object.
-    fn command_with_persona(
-        persona_id: Uuid,
-        registry: Option<Arc<ModuleRegistry>>,
-    ) -> (TurnExecute, Arc<CognitionState>) {
+    // Build a TurnExecute command over a fresh CognitionState carrying one live persona
+    // inbox. NOTE: this seeds only the command-side inbox (the deterministic doorbell) —
+    // it deliberately does NOT register a live WorkspaceCycle in persona_workspace::global()
+    // (that needs a real adapter + model). So a turn WITH messages here exercises the
+    // not-hosted fail-loud path; the real settle_step outcome is validated live via `cu`.
+    fn command_with_persona(persona_id: Uuid) -> (TurnExecute, Arc<CognitionState>) {
         let rag_engine = Arc::new(RagEngine::new());
-        let mut state = CognitionState::new(rag_engine.clone());
-        if let Some(registry) = registry {
-            state = state.with_module_registry(registry);
-        }
-        let state = Arc::new(state);
+        let state = Arc::new(CognitionState::new(rag_engine.clone()));
         state.personas.insert(
             persona_id,
             PersonaCognition::new(persona_id, "Test Persona".to_string(), rag_engine),
         );
-        (
-            TurnExecute {
-                state: state.clone(),
-            },
-            state,
-        )
-    }
-
-    fn rust_inference_registry() -> Arc<ModuleRegistry> {
-        let registry = Arc::new(ModuleRegistry::new());
-        registry.register(Arc::new(InferenceLlmModule::new()));
-        registry
+        (TurnExecute { state: state.clone() }, state)
     }
 
     fn enqueue_message(state: &CognitionState, persona_id: Uuid, content: &str, timestamp: u64) {
@@ -309,48 +343,40 @@ mod tests {
         assert_eq!(TurnExecute::ACCESS, AccessLevel::Internal);
     }
 
-    // what this catches: the generation-budget + frame defaults survive an absent-field
-    // payload. The legacy arm read u64_or(.., 80/16/512/10_000); a `{ personaId }` call
-    // must still get those bounds, not a deserialize error. Guards the serde(default) wiring
-    // that replaced the u64_or reads.
+    // what this catches: the frame-bound defaults survive an absent-field payload — a
+    // `{ personaId }` call still gets window_ms=80 / max_items=16, not a deserialize
+    // error. Guards the serde(default) wiring. (There is deliberately no generation-budget
+    // or composition param anymore — the live cycle + adapter own those.)
     #[test]
     fn defaults_fill_absent_turn_bounds() {
         let p = params(Uuid::nil());
         assert_eq!(p.window_ms, 80);
         assert_eq!(p.max_items, 16);
-        assert_eq!(p.max_tokens, 512);
-        assert_eq!(p.max_duration_ms, 10_000);
-        assert!(p.composition_artifact_id.is_none());
     }
 
-    // what this catches: a turn for a persona with no cognition engine fails loud
-    // (CommandError::Invalid naming the persona), never a silent empty bundle.
+    // what this catches: an absent persona (no inbox) is a no-op, NOT an error. A tick for
+    // a persona this core doesn't host has nothing to drain, so it returns the null pair
+    // BEFORE touching the brain — idle ticks are routine, never a caller error.
     #[tokio::test]
-    async fn persona_not_found_fails_loud() {
+    async fn absent_persona_is_noop_not_error() {
         let rag_engine = Arc::new(RagEngine::new());
         let state = Arc::new(CognitionState::new(rag_engine));
         let cmd = TurnExecute { state };
 
-        let missing = Uuid::new_v4();
-        let err = cmd
-            .run(&Ctx::default(), params(missing))
+        let out = cmd
+            .run(&Ctx::default(), params(Uuid::new_v4()))
             .await
-            .expect_err("missing persona must surface typed Err");
-        match err {
-            CommandError::Invalid(msg) => {
-                assert!(msg.contains("No cognition for"), "got: {msg}");
-                assert!(msg.contains(&missing.to_string()));
-            }
-            other => panic!("expected Invalid, got {other:?}"),
-        }
+            .expect("absent persona is a no-op, not an error");
+        assert!(out.replay_record.is_none(), "no inbox → null replayRecord");
+        assert!(out.inference_response.is_none(), "no inbox → null inferenceResponse");
     }
 
-    // what this catches: an empty inbox short-circuits to the null pair BEFORE any
-    // inference dispatch — a no-op, not an error (idle ticks are routine).
+    // what this catches: an empty inbox short-circuits to the null pair BEFORE resolving
+    // the live brain — a no-op, not an error (idle ticks are routine).
     #[tokio::test]
     async fn empty_drain_returns_null_bundle() {
         let persona_id = Uuid::new_v4();
-        let (cmd, _state) = command_with_persona(persona_id, None);
+        let (cmd, _state) = command_with_persona(persona_id);
 
         let out = cmd
             .run(&Ctx::default(), params(persona_id))
@@ -359,85 +385,62 @@ mod tests {
         assert!(out.replay_record.is_none(), "empty drain → null replayRecord");
         assert!(
             out.inference_response.is_none(),
-            "empty drain → null inferenceResponse (dispatch never ran)"
+            "empty drain → null inferenceResponse (brain never resolved)"
         );
     }
 
-    // what this catches: a non-empty drain routes through the Rust inference module and
-    // bundles the replay record + module response. The registered InferenceLlmModule stub
-    // returns 3 tokens, proving Rust-only dispatch reached inference (no TS fallback), and
-    // the turn drains the persona's inbox to empty.
+    // what this catches: a persona WITH messages to turn but NO live WorkspaceCycle fails
+    // loud (CommandError::Invalid naming "not hosted") — it NEVER answers from an
+    // adapter-less shadow cognition. This is the whole point of the unification: the
+    // response comes from the ONE live brain or not at all. The random persona_id is
+    // guaranteed absent from the process-global workspace registry, so global().get() is
+    // None regardless of what other tests registered.
     #[tokio::test]
-    async fn success_routes_through_rust_inference_module() {
+    async fn messages_without_live_cycle_fail_loud_not_hosted() {
         let persona_id = Uuid::new_v4();
-        let (cmd, state) = command_with_persona(persona_id, Some(rust_inference_registry()));
-        enqueue_message(&state, persona_id, "what changed?", 20_000);
-
-        let out = cmd
-            .run(&Ctx::default(), params(persona_id))
-            .await
-            .expect("Rust inference module handles turn");
-
-        let value = serde_json::to_value(&out).expect("result serializes");
-        assert_eq!(
-            value["replayRecord"]["responsePrompt"]["messages"][0]["content"],
-            "Joel: what changed?"
-        );
-        assert_eq!(
-            value["inferenceResponse"]["complete"]["tokensGenerated"], 3,
-            "registered InferenceLlmModule stub proves Rust-only dispatch reached inference"
-        );
-        assert!(
-            state
-                .personas
-                .get(&persona_id)
-                .expect("persona remains")
-                .inbox
-                .is_empty(),
-            "turn-execute drains one consolidated frame"
-        );
-    }
-
-    // what this catches: a non-empty turn with NO Rust module registry refuses to fall
-    // through to TypeScript — it fails loud (CommandError::Internal) naming the refusal.
-    #[tokio::test]
-    async fn missing_rust_registry_refuses_ts_fallback() {
-        let persona_id = Uuid::new_v4();
-        let (cmd, state) = command_with_persona(persona_id, None);
-        enqueue_message(&state, persona_id, "do not fall back to ts", 30_000);
+        let (cmd, state) = command_with_persona(persona_id);
+        enqueue_message(&state, persona_id, "what is 17 * 23?", 20_000);
 
         let err = cmd
             .run(&Ctx::default(), params(persona_id))
             .await
-            .expect_err("missing Rust registry must not fall through");
-        match err {
-            CommandError::Internal(msg) => assert!(
-                msg.contains("refusing TypeScript fallback"),
-                "expected loud no-TS-fallback refusal, got: {msg}"
-            ),
-            other => panic!("expected Internal, got {other:?}"),
-        }
-    }
-
-    // what this catches: an out-of-range generation budget fails the u32 conversion loud
-    // (CommandError::Invalid) rather than silently truncating. Pins the param-parse guard
-    // the legacy arm expressed via u32::try_from on max_duration_ms.
-    #[tokio::test]
-    async fn overflow_budget_fails_loud() {
-        let persona_id = Uuid::new_v4();
-        let (cmd, _state) = command_with_persona(persona_id, None);
-
-        let mut p = params(persona_id);
-        p.max_duration_ms = u64::MAX;
-        let err = cmd
-            .run(&Ctx::default(), p)
-            .await
-            .expect_err("u64::MAX max_duration_ms must fail u32 conversion");
+            .expect_err("a turn with no live brain must fail loud, not answer from a shadow");
         match err {
             CommandError::Invalid(msg) => {
-                assert!(msg.contains("max_duration_ms too large"), "got: {msg}")
+                assert!(msg.contains("not hosted"), "got: {msg}");
+                assert!(msg.contains(&persona_id.to_string()), "must name the persona: {msg}");
             }
-            other => panic!("expected Invalid, got {other:?}"),
+            other => panic!("expected Invalid naming not-hosted, got {other:?}"),
         }
+    }
+
+    // what this catches: the settle_step → JSON projection is the ONE stable outcome
+    // shape. A Spoke carries `outcome:"spoke"` + the text; a Passed carries just the
+    // outcome; and when metrics are present the live token/latency numbers ride under
+    // `metrics` (the speed half of the scoreboard the sweep reads). Guards the wire
+    // vocabulary any turn-execute caller depends on without needing a live cycle.
+    #[test]
+    fn settle_step_json_projection_is_the_contract() {
+        let metrics = TurnMetrics {
+            input_tokens: 128,
+            output_tokens: 7,
+            latency_ms: 500,
+            ..Default::default()
+        };
+        let spoke = settle_step_to_json(
+            &SettleStep::Spoke("17 * 23 = 391".to_string()),
+            Some(&metrics),
+        );
+        assert_eq!(spoke["outcome"], "spoke");
+        assert_eq!(spoke["text"], "17 * 23 = 391");
+        assert_eq!(spoke["metrics"]["inputTokens"], 128);
+        assert_eq!(spoke["metrics"]["outputTokens"], 7);
+        assert_eq!(spoke["metrics"]["latencyMs"], 500);
+        assert_eq!(spoke["metrics"]["tokensPerSecond"], 14.0);
+
+        // No metrics ⇒ no metrics key (never a fabricated zero-cost row).
+        let passed = settle_step_to_json(&SettleStep::Passed, None);
+        assert_eq!(passed["outcome"], "passed");
+        assert!(passed.get("metrics").is_none(), "absent metrics must not synthesize a row");
     }
 }
