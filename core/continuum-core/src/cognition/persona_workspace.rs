@@ -553,6 +553,35 @@ impl PersonaWorkspaceRegistry {
             .collect()
     }
 
+    /// Re-home EVERY resident persona onto a newly served model — atomically swap
+    /// the shared {adapter, model, context_window} binding on each cycle (see
+    /// [`WorkspaceCycle::rebind_model`]). On a single-serve host ALL personas share
+    /// the ONE served model (INFERENCE-LANES-REALISTIC: "one base model, N persona
+    /// lanes"), so a served-model change re-homes them together through the ONE
+    /// shared `adapter` — no per-persona HTTP init. Each mind's genome + working
+    /// memory + admission + hippocampus are UNTOUCHED (flip-in-place, not rebuild):
+    /// the same continuous personas now deliberate through the new model. Returns
+    /// how many minds were re-homed. Driven by the serving-snapshot reconciler
+    /// (`ipc/mod.rs`) ONLY on an actual model change. The store is a wait-free
+    /// `ArcSwap` under the cycles lock — NO await held across it.
+    /// See [[seamless-persona-failover-model-and-genome]].
+    pub fn re_home_all(
+        &self,
+        adapter: Arc<dyn AIProviderAdapter>,
+        model: Option<String>,
+        context_window: u32,
+    ) -> usize {
+        let cycles = self.cycles.lock().unwrap();
+        for cycle in cycles.values() {
+            cycle.rebind_model(super::llm_deliberation_faculty::ModelBinding {
+                adapter: Arc::clone(&adapter),
+                model: model.clone(),
+                context_window,
+            });
+        }
+        cycles.len()
+    }
+
     /// How many persona minds are resident.
     pub fn len(&self) -> usize {
         self.cycles.lock().unwrap().len()

@@ -1527,6 +1527,59 @@ mod tests {
         assert!(c.genome().is_empty(), "page_out reverts to the clean base");
     }
 
+    // what this catches: `rebind_model` writes THROUGH to the SAME shared binding
+    // handle the deliberation faculty reads — the exact seam the served-model
+    // re-home reconciler drives (ipc/mod.rs `re_home_all`). A live persona's model
+    // page must swap the {adapter, model, context_window} triple the faculty will
+    // budget its NEXT turn against; if the cycle held a separate handle from the
+    // faculty, the swap would land on nothing and every re-home would be a silent
+    // no-op (the multi-model sweep would keep answering as the boot-bound brain).
+    // Also asserts the no-faculty cycle's `rebind_model` is a benign no-op (a
+    // pure-cognition / test cycle shared no binding in).
+    #[test]
+    fn rebind_model_writes_through_the_shared_binding() {
+        use crate::ai::heuristic_adapter::HeuristicInferenceAdapter;
+        use crate::cognition::llm_deliberation_faculty::{model_binding, ModelBinding};
+
+        let adapter: Arc<dyn crate::ai::adapter::AIProviderAdapter> =
+            Arc::new(HeuristicInferenceAdapter::new());
+        // The handle the faculty would hold; the cycle shares the SAME Arc.
+        let handle = model_binding(Arc::clone(&adapter), None, 4096);
+        let c = cycle(vec![], 4).with_model_binding(Arc::clone(&handle));
+
+        // Baseline: what boot bound.
+        assert_eq!(handle.load().context_window, 4096);
+        assert!(handle.load().model.is_none());
+
+        // A served-model change re-homes onto a new model + served window.
+        c.rebind_model(ModelBinding {
+            adapter: Arc::clone(&adapter),
+            model: Some("qwen-coder-14b".to_string()),
+            context_window: 8192,
+        });
+
+        // The faculty (holding the SAME handle) now sees the new binding.
+        assert_eq!(
+            handle.load().context_window,
+            8192,
+            "rebind must swap the served window through the shared handle"
+        );
+        assert_eq!(
+            handle.load().model.as_deref(),
+            Some("qwen-coder-14b"),
+            "rebind must swap the model id through the shared handle"
+        );
+
+        // A cycle that shared no binding in (no deliberation faculty) must not
+        // panic on re-home — it has nothing to rebind.
+        let bare = cycle(vec![], 4);
+        bare.rebind_model(ModelBinding {
+            adapter,
+            model: Some("whatever".to_string()),
+            context_window: 2048,
+        });
+    }
+
     // what this catches: every finding is stamped with the cycle it was computed
     // against (the cbar frameIndex) — the decoupling precondition. Without the
     // stamp a late/deferred finding can't know how stale it is, so the arbiter

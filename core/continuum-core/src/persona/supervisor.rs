@@ -135,21 +135,44 @@ impl PersonaAdapterFactory for ServedModelPersonaAdapterFactory {
             base = %snap.base_url,
             "persona inference bound to the live served model"
         );
-        // The `llama-server` catalog key names the OpenAI-compatible provider
-        // entry (header shape + capabilities). The runtime base_url + model come
-        // from the snapshot, so the catalog default (which can drift from what's
-        // loaded) is overridden here.
-        let mut adapter = crate::ai::openai_adapter::OpenAICompatibleAdapter::from_registry(
-            crate::inference::llama_server::PROVIDER_ID,
-        )
-        .with_runtime_base_url(snap.base_url)
-        .with_default_model(model);
-        adapter
-            .initialize()
-            .await
-            .map_err(|e| format!("persona adapter initialize failed: {e}"))?;
-        Ok(Arc::new(adapter))
+        build_served_adapter(&snap).await
     }
+}
+
+/// Build the shared served-model adapter from a serving snapshot — the ONE site
+/// that turns "what the daemon serves" into an OpenAI-compatible adapter pointed
+/// at the live server. Used by the persona upstart factory ABOVE (first bind) AND
+/// by the served-model re-home reconciler (`ipc/mod.rs`, live rebind), so an
+/// upstart and a grid-driven re-home construct the adapter through IDENTICAL code
+/// — no drift between the boot binding and the swap.
+///
+/// The `llama-server` catalog key names the OpenAI-compatible provider entry
+/// (header shape + capabilities); the runtime `base_url` + `active_model` come from
+/// the snapshot, overriding the catalog default (which can drift from what's
+/// loaded). One adapter is shared by every persona on this node
+/// (INFERENCE-LANES-REALISTIC: one base model, N persona lanes), so this HTTP init
+/// runs once per served-model edge, not per persona.
+///
+/// Fails LOUD if the snapshot carries no active model — the caller must pass a
+/// `ready` snapshot ([[fallbacks-are-illegal-fail-loud]]).
+pub async fn build_served_adapter(
+    snap: &crate::inference::llama_server::ServingSnapshot,
+) -> Result<Arc<dyn AIProviderAdapter>, String> {
+    let model = snap.active_model.clone().ok_or_else(|| {
+        "serving snapshot has no active model — build_served_adapter needs a ready snapshot \
+         (no local fallback)"
+            .to_string()
+    })?;
+    let mut adapter = crate::ai::openai_adapter::OpenAICompatibleAdapter::from_registry(
+        crate::inference::llama_server::PROVIDER_ID,
+    )
+    .with_runtime_base_url(snap.base_url.clone())
+    .with_default_model(model);
+    adapter
+        .initialize()
+        .await
+        .map_err(|e| format!("persona adapter initialize failed: {e}"))?;
+    Ok(Arc::new(adapter))
 }
 
 /// One row of the supervisor's roster — and the substrate's
