@@ -37,9 +37,7 @@ use crate::gpu::GpuMemoryManager;
 use crate::log_info;
 use crate::logging::TimingGuard;
 use crate::persona::evaluator;
-use crate::persona::message_cache::{CachedMessage, SenderCategory};
 use crate::persona::model_selection;
-use crate::persona::text_analysis;
 use crate::persona::text_analysis::LoopDetector;
 use crate::persona::GenomeAdapterInfo;
 use crate::persona::{AdapterInfo, ModelSelectionRequest};
@@ -117,6 +115,25 @@ impl CognitionState {
             None => 200.0,
         }
     }
+
+    /// Get or lazily create per-persona cognition state, GPU-budget-aware. The one
+    /// place that owns the lazy-create policy — the `get_or_create_persona!` macro
+    /// (used by not-yet-migrated match arms) and the migrated typed commands both
+    /// route through here.
+    pub fn get_or_create_persona(
+        &self,
+        persona_uuid: Uuid,
+    ) -> dashmap::mapref::one::RefMut<'_, Uuid, PersonaCognition> {
+        self.personas.entry(persona_uuid).or_insert_with(|| {
+            let budget = self.per_persona_budget_mb();
+            PersonaCognition::with_budget(
+                persona_uuid,
+                String::new(),
+                self.rag_engine.clone(),
+                budget,
+            )
+        })
+    }
 }
 
 pub struct CognitionModule {
@@ -138,19 +155,7 @@ impl CognitionModule {
 /// Uses GPU manager's per-persona budget when available, 200MB otherwise.
 macro_rules! get_or_create_persona {
     ($self:expr, $persona_uuid:expr) => {
-        $self
-            .state
-            .personas
-            .entry($persona_uuid)
-            .or_insert_with(|| {
-                let budget = $self.state.per_persona_budget_mb();
-                PersonaCognition::with_budget(
-                    $persona_uuid,
-                    String::new(),
-                    $self.state.rag_engine.clone(),
-                    budget,
-                )
-            })
+        $self.state.get_or_create_persona($persona_uuid)
     };
 }
 
@@ -1580,86 +1585,22 @@ impl ServiceModule for CognitionModule {
             // =================================================================
             // Message Cache (echo chamber + post-inference adequacy)
             // =================================================================
-            "cognition/cache-message" => {
-                let _timer = TimingGuard::new("module", "cognition_cache_message");
-                let persona_uuid = p.uuid("persona_id")?;
-                let room_uuid = p.uuid("room_id")?;
-
-                let msg = CachedMessage {
-                    id: p.uuid("message_id")?,
-                    sender_id: p.uuid("sender_id")?,
-                    sender_type: if p.str_or("sender_type", "human") == "human" {
-                        SenderCategory::Human
-                    } else {
-                        SenderCategory::AI
-                    },
-                    sender_name: p.str("sender_name")?.to_string(),
-                    content_text: p.str_or("content", "").to_string(),
-                    timestamp_ms: p.u64("timestamp")?,
-                };
-
-                let mut persona = get_or_create_persona!(self, persona_uuid);
-                persona.message_cache.push(room_uuid, msg);
-
-                Ok(CommandResult::Json(serde_json::json!({
-                    "success": true,
-                    "cached": true
-                })))
-            }
-
-            // =================================================================
-            // Content Deduplication
-            // =================================================================
-            "cognition/check-content-dedup" => {
-                let _timer = TimingGuard::new("module", "cognition_check_content_dedup");
-                let persona_uuid = p.uuid("persona_id")?;
-                let room_uuid = p.uuid("room_id")?;
-                let content = p.str("content")?;
-
-                let now_ms = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_millis() as u64;
-
-                let persona = self
-                    .state
-                    .personas
-                    .get(&persona_uuid)
-                    .ok_or_else(|| format!("No cognition for {persona_uuid}"))?;
-
-                let result = persona
-                    .content_dedup
-                    .is_duplicate(content, room_uuid, now_ms);
-
-                Ok(CommandResult::Json(serde_json::json!({
-                    "success": true,
-                    "is_duplicate": result.is_duplicate,
-                    "check_time_us": result.check_time_us
-                })))
-            }
-
-            "cognition/record-content" => {
-                let _timer = TimingGuard::new("module", "cognition_record_content");
-                let persona_uuid = p.uuid("persona_id")?;
-                let room_uuid = p.uuid("room_id")?;
-                let content = p.str("content")?;
-
-                let now_ms = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_millis() as u64;
-
-                let mut persona = get_or_create_persona!(self, persona_uuid);
-                persona.content_dedup.record(content, room_uuid, now_ms);
-
-                Ok(CommandResult::Json(serde_json::json!({
-                    "success": true,
-                    "recorded": true
-                })))
-            }
+            // ================================================================
+            // Recent-message cache + content dedup — MIGRATED to the typed registry.
+            // ================================================================
+            // `cognition/cache-message`, `cognition/check-content-dedup`, and
+            // `cognition/record-content` are now dep-holding `ActionCommand`s in
+            // `crate::commands::cognition` (each captures this module's
+            // `Arc<CognitionState>` and delegates to `get_or_create_persona` +
+            // the per-persona `message_cache` / `content_dedup`). They reach the
+            // registry via `CognitionModule::commands()`. All `access: Internal`.
 
             _ => Err(format!("Unknown cognition command: {command}")),
         }
+    }
+
+    fn commands(&self) -> Vec<Arc<dyn crate::sdk_codegen::DynCommand>> {
+        crate::commands::cognition::command_objects(self.state.clone())
     }
 
     fn install_executor(&self, executor: Arc<crate::runtime::CommandExecutor>) {

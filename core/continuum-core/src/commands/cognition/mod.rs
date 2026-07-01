@@ -12,5 +12,36 @@
 //! Everything here is `access: Internal` — substrate cognition IPC the host drives,
 //! registered and grid-routable but not remote-callable persona toolbelt verbs.
 
+use std::sync::Arc;
+
+use crate::modules::cognition::CognitionState;
+use crate::sdk_codegen::DynCommand;
+
+pub mod cache_message;
+pub mod check_content_dedup;
 pub mod check_redundancy;
+pub mod record_content;
 pub mod should_respond;
+
+use cache_message::CacheMessage;
+use check_content_dedup::CheckContentDedup;
+use record_content::RecordContent;
+
+/// The dep-holding `cognition/*` command objects that capture the module's shared
+/// [`CognitionState`]. Called from
+/// [`CognitionModule::commands`](crate::modules::cognition::CognitionModule) so they
+/// reach `command_registry()`, the persona tool surface, the ACL, codegen, and `cu`.
+///
+/// The stateless gating commands ([`should_respond`], [`check_redundancy`]) self-route
+/// via `inventory` and are NOT listed here.
+pub fn command_objects(state: Arc<CognitionState>) -> Vec<Arc<dyn DynCommand>> {
+    vec![
+        Arc::new(CacheMessage {
+            state: state.clone(),
+        }),
+        Arc::new(CheckContentDedup {
+            state: state.clone(),
+        }),
+        Arc::new(RecordContent { state }),
+    ]
+}
