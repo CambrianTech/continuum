@@ -222,13 +222,20 @@ mod tests {
     /// `resolve_model_artifacts` only honors `gguf_local_path` when the
     /// file actually exists; tests need a real path that does exist
     /// without requiring the real ~500 MiB Qwen2.5-0.5B GGUF download.
+    ///
+    /// The stand-in must be a STRUCTURALLY VALID empty GGUF, not arbitrary
+    /// bytes: `Registry::from_catalog` hydrates every resolved GGUF's header
+    /// at load (#74), and because this row leaves `parameter_count` at its
+    /// `0` sentinel, hydration DOES open the file — arbitrary bytes fail loud
+    /// with `unknown magic`. `write_empty_gguf` is the one canonical stand-in
+    /// (parseable, zero metadata), so hydration finds no `parameter_count`
+    /// key and the row's hand-authored fields stand unchanged.
     fn make_fake_gguf_tempfile() -> PathBuf {
         let path = std::env::temp_dir().join(format!(
             "profile_builder_test_qwen25_05b-{}.gguf",
             uuid::Uuid::new_v4()
         ));
-        std::fs::write(&path, b"fake gguf header for test purposes only")
-            .expect("create tempfile");
+        crate::model_registry::artifacts::write_empty_gguf(&path);
         path
     }
 

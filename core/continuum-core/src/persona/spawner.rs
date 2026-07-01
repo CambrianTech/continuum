@@ -123,7 +123,13 @@ mod tests {
             slug,
             uuid::Uuid::new_v4()
         ));
-        std::fs::write(&path, b"fake gguf").expect("create tempfile");
+        // Must be a STRUCTURALLY VALID empty GGUF, not arbitrary bytes:
+        // `Registry::from_catalog` hydrates every resolved GGUF's header at
+        // load (#74), and `b"fake gguf"` fails loud with `unknown magic` the
+        // moment hydration reads it. `write_empty_gguf` is the one canonical
+        // "a model is present here" stand-in — parseable, zero metadata, so
+        // the row's hand-authored fields stand unchanged.
+        crate::model_registry::artifacts::write_empty_gguf(&path);
         path
     }
 
