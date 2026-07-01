@@ -28,6 +28,7 @@ pub mod catalog;
 pub mod instances;
 pub mod rag_inspect;
 pub mod reassign_model;
+pub mod turn_frame;
 pub mod wall;
 
 use reassign_model::PersonaReassignModel;

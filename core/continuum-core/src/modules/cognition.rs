@@ -247,67 +247,16 @@ impl ServiceModule for CognitionModule {
             // inbox/create + inbox/drain-frame migrated to the typed DynCommand registry
             // (Slice 7) — see commands/cognition/{inbox_create,inbox_drain_frame}.rs. The
             // frame-recording helper `record_drained_turn_frame` stays here (made
-            // pub(crate)) because the still-legacy Lane D arms below (persona/drain-turn-frame,
-            // persona/turn-execute) also call it; it moves out when they migrate.
+            // pub(crate)): it is now called by two migrated commands
+            // (commands/cognition/inbox_drain_frame.rs + commands/persona/turn_frame/drain.rs)
+            // and the still-legacy persona/turn-execute arm below; it moves out when
+            // turn-execute migrates and it has a single consumer.
 
-            // ─── Lane D: PersonaTurnFrame wrap-in-Rust ──────────────
-            //
-            // Wraps the inbox/drain-frame output in a PersonaTurnFrame
-            // and returns the full PersonaTurnFrameReplayRecord (raw
-            // inbox + consolidated_inbox + rag_seed) in ONE Rust hop.
-            //
-            // Why this command exists: per Joel's "no TS wrapping
-            // Rust outputs" rule + ALPHA-GAP Lane D, the substrate
-            // shouldn't return a raw PersonaInboxFrame and rely on
-            // TS to wrap it as a turn frame. The Rust core owns the
-            // turn-frame contract end-to-end.
-            //
-            // Replay: returns None when the frame is empty (no
-            // messages) — caller treats empty drain as no-op, not a
-            // failure. When non-empty, the returned record IS the
-            // replay-stable input contract for inference / RAG /
-            // sentinel attribution downstream.
-            "persona/drain-turn-frame" => {
-                let _timer = TimingGuard::new("module", "persona_drain_turn_frame");
-                let persona_uuid = p.uuid("persona_id")?;
-                let window_ms = p.u64_or("window_ms", 80);
-                let max_items_u64 = p.u64_or("max_items", 16);
-                let max_items = usize::try_from(max_items_u64)
-                    .map_err(|_| format!("max_items too large: {max_items_u64}"))?;
-
-                let persona = self
-                    .state
-                    .personas
-                    .get(&persona_uuid)
-                    .ok_or_else(|| format!("No cognition for {persona_uuid}"))?;
-
-                // Drain the inbox into a raw frame.
-                let raw_frame = persona.inbox.drain_frame(window_ms, max_items);
-                record_drained_turn_frame(&raw_frame);
-
-                // Wrap + populate derived outputs. None = empty
-                // drain; returned as JSON null.
-                let record = match raw_frame {
-                    Some(inbox_frame) => {
-                        let turn_frame =
-                            crate::persona::turn_frame::PersonaTurnFrame::from_inbox_frame(
-                                inbox_frame,
-                            );
-                        turn_frame.replay_record()
-                    }
-                    None => None,
-                };
-
-                // Persist the record to ~/.continuum/replay/ for
-                // prod-replay (Joel's "FROM PROD not POC" rule).
-                if let Some(ref rec) = record {
-                    crate::persona::recorder::record_turn_frame_replay(rec);
-                }
-
-                Ok(CommandResult::Json(
-                    serde_json::to_value(&record).map_err(|e| format!("Serialize error: {e}"))?,
-                ))
-            }
+            // persona/drain-turn-frame migrated to the typed DynCommand registry
+            // (Slice 20) — see commands/persona/turn_frame/drain.rs (dep-holding on
+            // CognitionState, access: Internal, Output Option<PersonaTurnFrameReplayRecord>).
+            // The Lane D turn-frame types (PersonaTurnFrameReplayRecord + its subtree)
+            // now derive TS so the typed Output crosses the wire.
 
             // ─── Lane D: persona/turn-execute (alpha card #1409) ──
             //
@@ -615,7 +564,17 @@ impl ServiceModule for CognitionModule {
     }
 
     fn commands(&self) -> Vec<Arc<dyn crate::sdk_codegen::DynCommand>> {
-        crate::commands::cognition::command_objects(self.state.clone(), self.executor.clone())
+        let mut objects =
+            crate::commands::cognition::command_objects(self.state.clone(), self.executor.clone());
+        // Lane D `persona/*` turn-frame verbs carry the persona/ wire prefix but are
+        // owned here (they act on the module's per-persona CognitionState). They live
+        // under commands/persona/turn_frame per the rag_inspect precedent (path mirrors
+        // wire name) yet are contributed from this module's commands(), not the shared
+        // persona command_objects.
+        objects.extend(crate::commands::persona::turn_frame::command_objects(
+            self.state.clone(),
+        ));
+        objects
     }
 
     fn install_executor(&self, executor: Arc<crate::runtime::CommandExecutor>) {
@@ -631,9 +590,10 @@ impl ServiceModule for CognitionModule {
 /// blocking pool thread so the hot drain path never stalls on recorder I/O.
 ///
 /// `pub(crate)` because it is the one shared recorder-write for drained frames —
-/// consumed by the typed `inbox/drain-frame` command (`commands/cognition/inbox_drain_frame.rs`)
-/// and the still-legacy Lane D arms (`persona/drain-turn-frame`, `persona/turn-execute`).
-/// When those arms migrate, this can move to the command file with its sole consumer.
+/// consumed by two migrated commands (`commands/cognition/inbox_drain_frame.rs` +
+/// `commands/persona/turn_frame/drain.rs`) and the still-legacy `persona/turn-execute`
+/// arm. When turn-execute migrates and this has a single consumer, it can move to that
+/// command file.
 pub(crate) fn record_drained_turn_frame(frame: &Option<PersonaInboxFrame>) {
     if let Some(record) = turn_frame_replay_record(frame) {
         tokio::task::spawn_blocking(move || {

@@ -7,6 +7,7 @@
 use super::inbox::PersonaInboxFrame;
 use super::types::InboxMessage;
 use serde::{Deserialize, Serialize};
+use ts_rs::TS;
 use uuid::Uuid;
 
 /// v1 = original schema (consolidated_inbox + rag_seed only).
@@ -17,13 +18,20 @@ use uuid::Uuid;
 /// behavior).
 pub const PERSONA_TURN_FRAME_REPLAY_SCHEMA_VERSION: u32 = 2;
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/persona/ConsolidatedInboxMessage.ts"
+)]
 pub struct ConsolidatedInboxMessage {
+    #[ts(type = "string")]
     pub id: Uuid,
+    #[ts(type = "string")]
     pub sender_id: Uuid,
     pub sender_name: String,
     pub content: String,
+    #[ts(type = "number")]
     pub timestamp: u64,
 }
 
@@ -39,24 +47,40 @@ impl From<&InboxMessage> for ConsolidatedInboxMessage {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/persona/ConsolidatedInboxChunk.ts"
+)]
 pub struct ConsolidatedInboxChunk {
+    #[ts(type = "string")]
     pub persona_id: Uuid,
+    #[ts(type = "string")]
     pub room_id: Uuid,
+    #[ts(type = "string")]
     pub trigger_message_id: Uuid,
     pub messages: Vec<ConsolidatedInboxMessage>,
     pub transcript: String,
+    #[ts(type = "number")]
     pub source_count: usize,
+    #[ts(type = "number")]
     pub span_ms: u64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/persona/RagAssemblySeed.ts"
+)]
 pub struct RagAssemblySeed {
+    #[ts(type = "string")]
     pub persona_id: Uuid,
+    #[ts(type = "string")]
     pub room_id: Uuid,
     pub query_text: String,
+    #[ts(type = "Array<string>")]
     pub source_message_ids: Vec<Uuid>,
 }
 
@@ -67,8 +91,9 @@ pub struct RagAssemblySeed {
 /// IdentityState (filled in by the caller); Assistant comes from
 /// the persona's prior outputs when self-reflection is wired
 /// (future PR).
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, TS)]
 #[serde(rename_all = "lowercase")]
+#[ts(export, export_to = "../../../protocol/typescript/persona/PromptRole.ts")]
 pub enum PromptRole {
     System,
     User,
@@ -78,8 +103,12 @@ pub enum PromptRole {
 /// One turn in the chat-style ResponsePrompt. Pairs a `PromptRole`
 /// with a content string. Multimodal content (images, audio) lands
 /// in a follow-up PR per the CBAR-SUBSTRATE multimodal contract.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash, TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/persona/PromptMessage.ts"
+)]
 pub struct PromptMessage {
     pub role: PromptRole,
     pub content: String,
@@ -93,10 +122,16 @@ pub struct PromptMessage {
 /// The substrate owns this shape so prompt-building stays
 /// replayable + deterministic — no per-adapter TS prompt-build
 /// hacks.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/persona/ResponsePrompt.ts"
+)]
 pub struct ResponsePrompt {
+    #[ts(type = "string")]
     pub persona_id: Uuid,
+    #[ts(type = "string")]
     pub room_id: Uuid,
     /// Persona identity / role instruction. PR-1 returns `None`;
     /// callers fill in from the persona's IdentityState (loaded
@@ -107,14 +142,22 @@ pub struct ResponsePrompt {
     /// The inbox message that triggered this turn — used by
     /// sentinel attribution + replay to correlate the prompt back
     /// to the originating event.
+    #[ts(type = "string")]
     pub trigger_message_id: Uuid,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/persona/PersonaTurnFrameReplayRecord.ts"
+)]
 pub struct PersonaTurnFrameReplayRecord {
+    #[ts(type = "number")]
     pub schema_version: u32,
+    #[ts(type = "string")]
     pub persona_id: Uuid,
+    #[ts(type = "string")]
     pub room_id: Uuid,
     pub inbox_frame: PersonaInboxFrame,
     pub consolidated_inbox: ConsolidatedInboxChunk,
