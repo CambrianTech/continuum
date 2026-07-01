@@ -1017,7 +1017,15 @@ async fn run_pass(
         )
         .await;
         let answer = settled.spoken.unwrap_or_default();
-        let (ok, grade) = if let Some(test) = &t.test {
+        let (ok, grade) = if let Some(cause) = &settled.inference_error {
+            // The model call FAILED (timeout, 5xx, a serving lane refusing a model it
+            // isn't hosting) — NOT a wrong answer. Grade it a named infra failure so a
+            // serving hiccup never masquerades as a capability miss and corrupts the
+            // accuracy signal ([[self-improvement-is-a-control-loop]]: the reward is
+            // only as trustworthy as the metric). `ok = false`, but the grade tells the
+            // truth instead of a misleading "no match".
+            (false, format!("inference failed: {cause}"))
+        } else if let Some(test) = &t.test {
             let lang = t.lang.as_deref().unwrap_or("rust");
             test_grade(&answer, lang, test).await
         } else {

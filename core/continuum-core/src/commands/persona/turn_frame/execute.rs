@@ -277,6 +277,13 @@ fn settle_step_to_json(
             "outcome": "actUnfulfilled", "intent": intent, "calls": calls.len(),
         }),
         SettleStep::Passed => serde_json::json!({ "outcome": "passed" }),
+        // The model call FAILED — surface it LOUD and NAMED, never as a serene
+        // `passed` ([[fallbacks-are-illegal-fail-loud]]). The sweep harness reads
+        // this to tell an infra failure (timeout / 5xx / a serving lane refusing an
+        // unhosted model) apart from a chosen silence.
+        SettleStep::InferenceFailed { error } => serde_json::json!({
+            "outcome": "inferenceFailed", "error": error,
+        }),
     };
     if let Some(m) = metrics {
         base["metrics"] = serde_json::json!({
@@ -442,5 +449,22 @@ mod tests {
         let passed = settle_step_to_json(&SettleStep::Passed, None);
         assert_eq!(passed["outcome"], "passed");
         assert!(passed.get("metrics").is_none(), "absent metrics must not synthesize a row");
+
+        // A FAILED model call projects a distinct, NAMED `inferenceFailed` outcome —
+        // never a serene `passed`. This is what lets the sweep harness tell an infra
+        // fault (timeout / 5xx / a lane refusing an unhosted model) apart from a
+        // chosen silence ([[fallbacks-are-illegal-fail-loud]]).
+        let failed = settle_step_to_json(
+            &SettleStep::InferenceFailed {
+                error: "serving lane refused unhosted model".to_string(),
+            },
+            None,
+        );
+        assert_eq!(failed["outcome"], "inferenceFailed");
+        assert_eq!(failed["error"], "serving lane refused unhosted model");
+        assert_ne!(
+            failed["outcome"], "passed",
+            "an inference failure must never read as a chosen silence"
+        );
     }
 }

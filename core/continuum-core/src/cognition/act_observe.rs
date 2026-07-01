@@ -66,6 +66,13 @@ pub struct SettleOutcome {
     /// to the accuracy grade — the same number a live turn could surface for the
     /// serving governor.
     pub metrics: TurnMetrics,
+    /// `Some(cause)` when the settle loop stopped because the deliberation model
+    /// call FAILED (timeout, 5xx, a serving lane refusing a model it isn't hosting)
+    /// rather than settling on a verdict. The grader MUST treat this as an
+    /// infrastructure failure — NOT a wrong answer — so an inference hiccup never
+    /// corrupts the accuracy metric ([[self-improvement-is-a-control-loop]]: the
+    /// reward is only as trustworthy as the metric). `None` on every settled turn.
+    pub inference_error: Option<String>,
 }
 
 /// Execute ONE `Act` verdict: run its calls through the persona's hands, admit
@@ -237,6 +244,7 @@ pub async fn drive_to_settle(
                     acts,
                     world_state: burst.rendered.clone(),
                     metrics,
+                    inference_error: None,
                 };
             }
             SettleStep::Acted { .. } => {
@@ -262,6 +270,7 @@ pub async fn drive_to_settle(
                     acts,
                     world_state: burst.rendered.clone(),
                     metrics,
+                    inference_error: None,
                 };
             }
             SettleStep::Passed => {
@@ -271,6 +280,22 @@ pub async fn drive_to_settle(
                     acts,
                     world_state: burst.rendered.clone(),
                     metrics,
+                    inference_error: None,
+                };
+            }
+            // The model call FAILED — no verdict this task. Return LOUD: carry the
+            // cause so the grader scores an infra failure, never a fabricated answer
+            // and never a silent `Pass` ([[fallbacks-are-illegal-fail-loud]]). We do
+            // not loop/retry here — the grader owns retry policy; the settle loop's
+            // job is to report the truth of THIS attempt.
+            SettleStep::InferenceFailed { error } => {
+                return SettleOutcome {
+                    decision: Decision::Pass,
+                    spoken: None,
+                    acts,
+                    world_state: burst.rendered.clone(),
+                    metrics,
+                    inference_error: Some(error),
                 };
             }
         }
@@ -298,6 +323,14 @@ pub enum SettleStep {
     /// She reached for an act that could NOT be carried out (no hands / executor
     /// error). No utterance; the intent rides along for honest logging/grading.
     ActUnfulfilled { calls: Vec<ToolCall>, intent: String },
+    /// The deliberation model call itself FAILED — a timeout, a 5xx, or the serving
+    /// lane refusing a model it isn't hosting (the swept-model bug). NO verdict was
+    /// produced. This is NOT a `Passed`: a failed model is not a chosen silence
+    /// ([[fallbacks-are-illegal-fail-loud]]). Every caller surfaces the cause LOUD —
+    /// the command reports `inferenceFailed`, the live heartbeat logs + retries next
+    /// tick, the eval grades it an infra failure — never a serene no-op that hides a
+    /// broken lane. `error` names the cause verbatim from the adapter.
+    InferenceFailed { error: String },
 }
 
 /// ONE step of settlement — the single place a `Decision` becomes speech-or-action,
@@ -333,6 +366,19 @@ pub async fn settle_step(
     // (the eval driver, or the live heartbeat) can accumulate per-turn speed and
     // latency without re-timing the brain. `None` when no verdict carried metrics.
     let metrics = ws.metrics();
+    // A FAILED model call is not a verdict and not a silence — surface it LOUD so no
+    // failure ever masquerades as a chosen `Pass` ([[fallbacks-are-illegal-fail-loud]]).
+    // Checked BEFORE the decision so a fault can never collapse into `Passed` (the
+    // swept-model bug: reassign changed the served model, the faculty still requested
+    // the old one, the lane refused, and the refusal read as serene silence).
+    if let Some(error) = ws.deliberation_fault() {
+        return (
+            SettleStep::InferenceFailed {
+                error: error.to_string(),
+            },
+            metrics,
+        );
+    }
     let step = match ws.decision().cloned() {
         Some(Decision::Act { calls, intent }) => {
             if !may_act {

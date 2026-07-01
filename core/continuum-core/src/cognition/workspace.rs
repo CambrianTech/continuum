@@ -256,6 +256,16 @@ pub struct Contribution {
     /// This is a SERIALIZATION-order property, not an attention one — salience still
     /// governs which contributions are included and truncated.
     pub stable: bool,
+    /// Set ONLY by the deliberation faculty when the model call itself FAILED — a
+    /// timeout, a 5xx, or the serving lane refusing a model it isn't hosting. This
+    /// is NOT a [`Decision`]: a failed inference is neither a chosen silence nor a
+    /// verdict, and it must never collapse into a `Pass`
+    /// ([[fallbacks-are-illegal-fail-loud]]). Carried into the broadcast so the
+    /// fault is auditable/replayable like any finding, and read by
+    /// [`Workspace::deliberation_fault`] — which the settle step turns into a
+    /// distinct `InferenceFailed` outcome instead of a lying `Passed`. `None` on
+    /// every healthy contribution.
+    pub fault: Option<String>,
 }
 
 impl Contribution {
@@ -275,6 +285,7 @@ impl Contribution {
             decision: None,
             metrics: None,
             stable: false,
+            fault: None,
         }
     }
 
@@ -297,6 +308,30 @@ impl Contribution {
             metrics: None,
             // A verdict is the volatile output of THIS turn; never standing framing.
             stable: false,
+            fault: None,
+        }
+    }
+
+    /// A **deliberation fault** — the model call FAILED and produced no verdict.
+    /// Emitted by the deliberation faculty in place of a silent `None` so the
+    /// failure rides the broadcast (auditable, replayable) and the settle step
+    /// surfaces it LOUD as `InferenceFailed`, never masked as a `Pass`
+    /// ([[fallbacks-are-illegal-fail-loud]]). Not a [`Decision`]: an inference
+    /// failure is neither speech, act, nor a chosen silence. Max salience so it
+    /// always wins [`Workspace::deliberation_fault`]'s scan; `decision` stays
+    /// `None` (no verdict was produced), `fault` carries the named cause.
+    pub fn deliberation_fault(error: impl Into<String>) -> Self {
+        let error = error.into();
+        Self {
+            faculty: FacultyId::Deliberation,
+            cycle: CycleId::UNSTAMPED,
+            content: error.clone(),
+            salience: 1.0,
+            reasoning: "deliberation inference failed".to_string(),
+            decision: None,
+            metrics: None,
+            stable: false,
+            fault: Some(error),
         }
     }
 
@@ -654,6 +689,24 @@ impl Workspace {
                     .partial_cmp(&b.salience)
                     .unwrap_or(std::cmp::Ordering::Equal)
             })
+    }
+
+    /// The deliberation FAULT this tick, if the model call FAILED (as opposed to
+    /// producing a verdict or a chosen `Pass`). Scans the broadcast for the
+    /// highest-salience fault contribution ([`Contribution::deliberation_fault`]).
+    /// `Some` means the settle step MUST surface `InferenceFailed` — a failed model
+    /// is never a silence. The settle step checks this BEFORE [`decision`], so a
+    /// fault can never be read as a `Pass` ([[fallbacks-are-illegal-fail-loud]]).
+    pub fn deliberation_fault(&self) -> Option<&str> {
+        self.broadcast
+            .iter()
+            .filter(|c| c.fault.is_some())
+            .max_by(|a, b| {
+                a.salience
+                    .partial_cmp(&b.salience)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .and_then(|c| c.fault.as_deref())
     }
 }
 
@@ -1698,6 +1751,39 @@ mod tests {
             "the abstaining faculty added nothing"
         );
         assert_eq!(ws.decision(), Some(&Decision::Pass));
+    }
+
+    // what this catches: a FAILED model call (a deliberation FAULT) is surfaced by
+    // `deliberation_fault()` and is NEVER read as a verdict — `decision()` stays
+    // `None`, so the settle step routes it to `InferenceFailed`, never a serene
+    // `Passed`. This is the swept-model regression: reassign changed the served
+    // model, the faculty still requested the old one, the lane refused, and the Err
+    // used to masquerade as chosen silence ([[fallbacks-are-illegal-fail-loud]]).
+    #[tokio::test]
+    async fn deliberation_fault_is_surfaced_and_is_not_a_decision() {
+        let faculties: Vec<Arc<dyn Faculty>> = vec![
+            Arc::new(FixedFaculty(Contribution::context(
+                FacultyId::Recall,
+                "context",
+                0.4,
+                "recalled",
+            ))),
+            Arc::new(FixedFaculty(Contribution::deliberation_fault(
+                "model 'X' is not the active served model (serving: 'Y')",
+            ))),
+        ];
+        let ws = cycle(faculties, 5).run("swept to an unhosted model").await;
+        // The fault is readable and names the cause verbatim…
+        assert_eq!(
+            ws.deliberation_fault(),
+            Some("model 'X' is not the active served model (serving: 'Y')"),
+        );
+        // …and it is NOT a decision, so it can never collapse into Pass/Speak/Act.
+        assert_eq!(
+            ws.decision(),
+            None,
+            "a fault is not a verdict — settle_step must see None here and surface InferenceFailed"
+        );
     }
 
     // what this catches: one cycle runs over a CONSOLIDATED burst (the whole

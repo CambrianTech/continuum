@@ -789,15 +789,21 @@ impl Faculty for LlmDeliberationFaculty {
         let request = self.build_request(messages.clone(), tools, view.system.clone());
         let resp = match self.adapter.generate_text(request).await {
             Ok(r) => r,
-            // Inference failed — abstain this tick (no fabricated Pass: a failed
-            // model is not a chosen silence).
+            // Inference FAILED (timeout, 5xx, the serving lane refusing a model it
+            // isn't hosting). A failed model is NOT a chosen silence — returning a
+            // bare `None` here would let the settle step collapse it into a serene
+            // `Pass`, the exact fallback [[fallbacks-are-illegal-fail-loud]] forbids
+            // (the swept-model bug: every failure masqueraded as silence). Emit a
+            // FAULT contribution instead: it rides the broadcast (auditable/replayable
+            // like any finding) and the settle step surfaces it LOUD as
+            // `InferenceFailed`, naming the cause, never a fabricated no-op.
             Err(e) => {
                 tracing::warn!(
                     persona = %self.persona_name,
                     error = %e,
-                    "deliberation inference failed; abstaining this tick"
+                    "deliberation inference failed; surfacing fault (not a silent Pass)"
                 );
-                return None;
+                return Some(Contribution::deliberation_fault(e.to_string()));
             }
         };
 

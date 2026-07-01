@@ -738,6 +738,28 @@ async fn serve_persona_loop_inner(
                         outcome.turns_skipped += 1;
                         continue;
                     }
+                    crate::cognition::act_observe::SettleStep::InferenceFailed { error } => {
+                        // The model call FAILED (timeout, 5xx, the serving lane
+                        // refusing a model it isn't hosting) — NOT a chosen silence.
+                        // Surface it LOUD and skip the turn; the next tick retries
+                        // against whatever the serving daemon has resident. Never
+                        // fabricate a Pass over a broken lane
+                        // ([[fallbacks-are-illegal-fail-loud]]).
+                        tracing::warn!(
+                            lamport = msg.lamport,
+                            error = %error,
+                            "deliberation inference FAILED — skipping turn (not a chosen silence)"
+                        );
+                        crate::probe!(
+                            class = "persona.turn.inference_failed",
+                            persona = %ctx.identity.agent_name,
+                            lamport = msg.lamport,
+                            error = %error,
+                            "deliberation model call failed; turn skipped, retries next tick"
+                        );
+                        outcome.turns_skipped += 1;
+                        continue;
+                    }
                 }
             }
             None => {
@@ -1178,6 +1200,22 @@ async fn run_self_cycle(
                 tools = calls.len(),
                 intent = %intent,
                 "self-thread act; result admitted as memory, re-perceives next tick"
+            );
+        }
+        crate::cognition::act_observe::SettleStep::InferenceFailed { error } => {
+            // Even on the self-thread a failed model call is surfaced, never swallowed
+            // by the `_ => {}` sleep ([[fallbacks-are-illegal-fail-loud]]): a broken
+            // serving lane is a real fault the operator must see, not idle quiet.
+            tracing::warn!(
+                persona = %ctx.identity.agent_name,
+                error = %error,
+                "self-cycle deliberation inference FAILED — sleeping this tick (not a chosen silence)"
+            );
+            crate::probe!(
+                class = "persona.selftick.inference_failed",
+                persona = %ctx.identity.agent_name,
+                error = %error,
+                "self-thread model call failed; sleeping, retries next tick"
             );
         }
         // ActUnfulfilled (no hands / exec error) → nothing to say, sleep. WouldAct is

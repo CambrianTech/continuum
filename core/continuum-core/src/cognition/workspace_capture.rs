@@ -194,6 +194,7 @@ mod tests {
             decision: None,
             metrics: None,
             stable: false,
+            fault: None,
         };
         let verdict = Contribution {
             faculty: FacultyId::Deliberation,
@@ -206,6 +207,7 @@ mod tests {
             }),
             metrics: None,
             stable: false,
+            fault: None,
         };
         let trace = WorkspaceTrace {
             world_state: "teammate: what should we do about the red deploy?".to_string(),
