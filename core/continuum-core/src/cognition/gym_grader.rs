@@ -30,6 +30,71 @@ pub fn extract_code_block(answer: &str) -> String {
     answer.trim().to_string()
 }
 
+/// Strip a top-level `fn main() { … }` from candidate code, returning the code
+/// with that definition removed. The gym drives the candidate from ITS OWN `main`
+/// built from the task's authoritative `test` (see [`grade_rust`]); a candidate that
+/// ALSO defines a `main` — which is exactly what we coach the persona to do when we
+/// say "verify it works before answering" — would otherwise collide with the
+/// grader's wrapper (`error[E0428]: the name 'main' is defined multiple times`).
+/// We keep the grader's test-driven `main` authoritative and drop the candidate's
+/// demo `main`, brace-matched so a `{`/`}` inside the body doesn't cut it short.
+///
+/// Only a MODULE-LEVEL `fn main` is stripped (the candidate's items live at module
+/// scope). A `main` nested inside another fn is left alone — it's not a collision.
+fn strip_top_level_main(code: &str) -> String {
+    let bytes = code.as_bytes();
+    let mut search_from = 0usize;
+    while let Some(rel) = code[search_from..].find("fn main") {
+        let kw = search_from + rel;
+        // Must be at module level (start of a line, ignoring indentation) so we
+        // don't strip a `fn main` nested inside another function body.
+        let line_start = code[..kw].rfind('\n').map_or(0, |i| i + 1);
+        let indent_is_blank = code[line_start..kw].chars().all(|c| c == ' ' || c == '\t');
+        // After `fn main` expect `(` `)` then `{` (allowing whitespace between).
+        let after = &code[kw + "fn main".len()..];
+        let trimmed = after.trim_start();
+        if indent_is_blank && trimmed.starts_with("()") {
+            let after_parens = trimmed["()".len()..].trim_start();
+            if let Some(open_off) = after_parens.find('{') {
+                // Absolute index of the opening brace.
+                let consumed = (after.len() - trimmed.len())
+                    + "()".len()
+                    + (trimmed["()".len()..].len() - after_parens.len())
+                    + open_off;
+                let brace_open = kw + "fn main".len() + consumed;
+                if let Some(brace_close) = matching_brace(bytes, brace_open) {
+                    let mut out = String::with_capacity(code.len());
+                    out.push_str(&code[..line_start]);
+                    out.push_str(&code[brace_close + 1..]);
+                    return out.trim().to_string();
+                }
+            }
+        }
+        search_from = kw + "fn main".len();
+    }
+    code.to_string()
+}
+
+/// Index of the `}` that closes the `{` at `open`, or `None` if unbalanced. Naive
+/// brace counter (ignores braces inside strings/comments) — sufficient for the gym
+/// floor: candidate `main`s are short demos, not string-literal-heavy code.
+fn matching_brace(bytes: &[u8], open: usize) -> Option<usize> {
+    let mut depth = 0usize;
+    for (i, &b) in bytes.iter().enumerate().skip(open) {
+        match b {
+            b'{' => depth += 1,
+            b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(i);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
 /// TEST-GRADE a coder task: take the model's Rust code, drive it from a `main`
 /// built from the task's test, COMPILE + RUN it — pass = exit 0. The gym's
 /// objective grade in the language the persona actually ships: not
@@ -75,7 +140,10 @@ async fn grade_rust(dir: &std::path::Path, code: &str, test: &str) -> Result<(),
     let src = dir.join("sol.rs");
     let bin = dir.join("sol");
     // The candidate defines the item(s); the task's `test` drives them from main and
-    // panics (assert!/assert_eq!) on failure, so a non-zero exit == fail.
+    // panics (assert!/assert_eq!) on failure, so a non-zero exit == fail. Strip any
+    // `fn main` the candidate wrote to self-verify — the grader's test-driven main is
+    // authoritative, and two module-level mains are an E0428 collision.
+    let code = strip_top_level_main(code);
     let full = format!("#![allow(dead_code)]\n{code}\n\nfn main() {{\n{test}\n}}\n");
     std::fs::write(&src, full).map_err(|e| format!("temp write failed: {e}"))?;
 
@@ -178,6 +246,43 @@ mod tests {
         let (ok, grade) = test_grade(answer, "rust", "let _ = add(2, 3);").await;
         assert!(!ok);
         assert!(grade.contains("compile error"), "grade was: {grade}");
+    }
+
+    // what this catches: a candidate that self-verifies with its OWN `fn main` (the
+    // behavior we coach with "verify it works before answering") still grades on the
+    // task's authoritative test instead of colliding with the grader's wrapper main
+    // (regression for the prime_check `error[E0428]: the name 'main' is defined
+    // multiple times` — Asha's answer carried a demo main).
+    #[tokio::test]
+    async fn candidate_with_its_own_main_still_grades_against_the_test() {
+        let answer = "```rust\n\
+            fn is_prime(n: u64) -> bool {\n\
+            \x20   if n <= 1 { return false; }\n\
+            \x20   let mut i = 2;\n\
+            \x20   while i * i <= n { if n % i == 0 { return false; } i += 1; }\n\
+            \x20   true\n\
+            }\n\n\
+            fn main() {\n\
+            \x20   println!(\"{}\", is_prime(7));\n\
+            }\n```";
+        let (ok, grade) = test_grade(
+            answer,
+            "rust",
+            "assert!(is_prime(7)); assert!(!is_prime(9)); assert!(is_prime(2)); assert!(!is_prime(1));",
+        )
+        .await;
+        assert!(ok, "grade was: {grade}");
+    }
+
+    // what this catches: strip_top_level_main removes ONLY a module-level main and
+    // leaves the rest of the candidate (and a nested `main` inside another fn) intact.
+    #[test]
+    fn strip_top_level_main_removes_module_main_only() {
+        let stripped = strip_top_level_main("fn f() -> i32 { 1 }\nfn main() {\n  let _ = f();\n}\n");
+        assert_eq!(stripped, "fn f() -> i32 { 1 }");
+        // a `main` nested in another fn body is not a module-level collision — keep it.
+        let nested = "fn wrap() { fn main() { } }";
+        assert_eq!(strip_top_level_main(nested), nested);
     }
 
     // what this catches: a non-Rust language fails LOUD (named reason), never
