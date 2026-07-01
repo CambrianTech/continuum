@@ -3,22 +3,41 @@ import type { ResourceKind } from "./ResourceKind";
 
 /**
  * Per-kind accounting snapshot — what one resource axis looks like right now.
- * `available = capacity − granted`; `granted` sums *all* live leases including
- * expired ones (expiry marks a lease overdue for reclaim, it does NOT free the
- * bytes — only `release` does that, after the holder confirms cleanup).
  *
- * `measured_bytes` is a SEPARATE axis: the sum of what live consumers
- * *self-declare* they physically hold ([`ConsumerFootprint`]), gathered by the
- * daemon's background poll. It is reporting-only — it never enters the
- * `available = capacity − granted` math (that stays the honest free-based global
- * remainder). Its purpose is honesty: a MEASURED consumer (serving holding a
- * resident model) can hold gigabytes with zero leases, and without this axis the
- * board would report `granted:0` while the GPU is full. The gap between
- * `measured` and `granted` is the drift the daemon probes.
+ * The un-inversion (#79): `capacity_bytes` is the FIXED hardware ceiling (device
+ * total less a safety reserve), a stable fact about the node. What moves is
+ * `physical_used_bytes` — every byte bodily resident (`total − free` as the
+ * monitor sees it: our leases, our unleased residency, and external processes
+ * alike). The honest commit number is
+ * `available = capacity − max(granted, physical_used)`: we never hand out bytes
+ * that are physically gone, whoever took them, AND we never double-count a
+ * freshly-granted lease that hasn't allocated yet. `granted` sums *all* live
+ * leases including expired ones (expiry marks a lease overdue for reclaim, it
+ * does NOT free the bytes — only `release` does that, after cleanup confirms).
+ *
+ * Two report-only honesty axes sit alongside:
+ * - `measured_bytes` — the sum of what live consumers *self-declare* they hold
+ *   ([`ConsumerFootprint`]), gathered by the daemon's background poll. It fixes
+ *   the `granted:0` blind spot (serving holding a resident model with no lease)
+ *   and its gap from `granted` is the drift the daemon probes.
+ * - `external_bytes` — `physical_used − measured`, the bytes resident that NO
+ *   consumer of ours claims: another process, a game, the OS. The grid signal
+ *   for "how contended is this node beyond our own footprint."
  */
 export type KindLedger = { kind: ResourceKind, capacityBytes: number, grantedBytes: number, availableBytes: number, 
 /**
  * Sum of live consumers' self-declared footprints for this kind. Reporting
- * only — NOT subtracted from `available`.
+ * only — its residency reaches `available` via `physical_used`, not here.
  */
-measuredBytes: number, leaseCount: number, };
+measuredBytes: number, 
+/**
+ * Everything bodily resident of this kind (`total − free`), ours + external.
+ * The moving ground truth the fixed ceiling is netted against.
+ */
+physicalUsedBytes: number, 
+/**
+ * `physical_used − measured` — bytes resident that no consumer of ours
+ * claims (other processes / OS / a game). Reporting only; a grid contention
+ * signal.
+ */
+externalBytes: number, leaseCount: number, };

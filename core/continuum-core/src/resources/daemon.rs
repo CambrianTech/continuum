@@ -105,10 +105,15 @@ impl Default for DaemonConfig {
 /// over-budget flag to keep in sync (the old hand-maintained `AtomicBool` is
 /// gone). Shared by the channel's gate derivation and any reader.
 fn board_over_budget(board: &LeaseBoard) -> bool {
+    // Over-budget is the un-inversion condition: what is REALLY spoken for —
+    // `max(granted, physical_used)` — exceeds the FIXED ceiling. Keying off
+    // `granted` alone would be blind to a game grabbing VRAM (granted stays 0 while
+    // physical usage climbs past capacity); the physical axis is exactly what makes
+    // that oversubscription visible so the reconcile can react.
     board
         .kinds
         .iter()
-        .any(|k| k.granted_bytes > k.capacity_bytes)
+        .any(|k| k.granted_bytes.max(k.physical_used_bytes) > k.capacity_bytes)
 }
 
 /// The single per-machine resource authority's runtime shell.
@@ -156,11 +161,14 @@ impl ResourceDaemon {
         config: DaemonConfig,
     ) -> Arc<Self> {
         let mut governor = ResourceGovernor::with_default_arbiter(config.governor);
-        // Prime capacity from the scan sources NOW, so the authority knows its
-        // ceilings the moment it exists — a lease acquired before the first tick
-        // is admitted against real capacity, not a boot-time zero.
+        // Prime capacity AND physical usage from the scan sources NOW, so the
+        // authority knows both its fixed ceilings and what is already resident the
+        // moment it exists — a lease acquired before the first tick is admitted
+        // against the real global remainder (`capacity − max(granted, used)`), not
+        // a boot-time zero that would over-grant into memory already spoken for.
         for src in &sources {
             governor.set_capacity(src.kind(), src.ceiling_bytes());
+            governor.set_physical_used(src.kind(), src.used_bytes());
         }
         let channel = DaemonChannel::new(governor.board(), board_over_budget);
         let (evict_tx, evict_rx) = mpsc::unbounded_channel();
@@ -309,11 +317,13 @@ impl ResourceDaemon {
             }
         }
 
-        // 2. Read every ceiling OFF the accounting lock (cached monitor reads).
-        let ceilings: Vec<(ResourceKind, u64)> = self
+        // 2. Read every source's fixed ceiling AND live physical usage OFF the
+        //    accounting lock (cached monitor reads). Both feed the governor below;
+        //    the ceiling is near-constant, the usage moves with external pressure.
+        let scans: Vec<(ResourceKind, u64, u64)> = self
             .sources
             .iter()
-            .map(|s| (s.kind(), s.ceiling_bytes()))
+            .map(|s| (s.kind(), s.ceiling_bytes(), s.used_bytes()))
             .collect();
 
         // 2.5 Snapshot live (non-quarantined) consumers ONCE — reused for both the
@@ -357,23 +367,30 @@ impl ResourceDaemon {
         //    pressure, plan the reclaims, snapshot the board. No await inside.
         let (plans, board) = {
             let mut g = self.governor.lock();
-            for (kind, ceil) in &ceilings {
+            for (kind, ceil, used) in &scans {
                 g.set_capacity(*kind, *ceil);
+                // The un-inversion ground truth: everything physically resident,
+                // netted against the fixed ceiling to yield `available`.
+                g.set_physical_used(*kind, *used);
             }
-            // Feed the measurement axis: each consumer's freshly-polled residency.
-            // Reporting only — never enters `available = capacity − granted`.
+            // Feed the self-declared attribution axis: each consumer's freshly-polled
+            // residency. Surfaces per-consumer on the board (the WHO); the physical
+            // total above is what drives `available`.
             for (id, fps) in measured {
                 g.set_measured(&id, fps);
             }
 
-            // Per-kind contention for the arbiter: granted / ceiling, clamped to
-            // the [0,1] the arbiter contract expects. Precomputed into a Copy
-            // array so the reconcile closures don't borrow the guard.
+            // Per-kind contention for the arbiter: committed / ceiling, clamped to
+            // the [0,1] the arbiter contract expects. `committed` = max(granted,
+            // physical_used), so external pressure raises contention even with no
+            // lease — the arbiter weighs victims against true oversubscription, not
+            // just our own grants. Precomputed into a Copy array so the reconcile
+            // closures don't borrow the guard.
             let mut pmap = [0.0f64; 3];
             for kind in ResourceKind::ALL {
                 let ceil = g.capacity(kind);
                 if ceil > 0 {
-                    pmap[kind_idx(kind)] = (g.granted(kind) as f64 / ceil as f64).clamp(0.0, 1.0);
+                    pmap[kind_idx(kind)] = (g.committed(kind) as f64 / ceil as f64).clamp(0.0, 1.0);
                 }
             }
 
@@ -549,9 +566,13 @@ impl ResourcePool for LeasePoolView {
     }
 
     fn usage_bytes(&self) -> u64 {
+        // The broker's pressure = usage/capacity, so this must be the honest
+        // committed number (max(granted, physical_used)), not just our grants —
+        // otherwise external VRAM pressure would read as zero usage and the broker
+        // would never ask us to relieve for a launching game.
         self.daemon
             .upgrade()
-            .map(|d| d.governor.lock().granted(self.kind))
+            .map(|d| d.governor.lock().committed(self.kind))
             .unwrap_or(0)
     }
 
@@ -887,6 +908,56 @@ mod tests {
         // reduced by the measured residency. Measurement reports; it never reserves.
         assert_eq!(vram.available_bytes, 24_000, "available untouched by measurement");
         assert!(!daemon.is_over_budget(), "measured residency is not an over-budget condition");
+    }
+
+    // what this catches: the un-inversion wired end-to-end through the daemon tick —
+    // EXTERNAL physical pressure (a game grabbing VRAM) contracts `available` even
+    // with zero leases, because the tick feeds `used_bytes()` into `physical_used`
+    // and `available = capacity − max(granted, physical_used)`. Before the
+    // un-inversion the board would read `available == capacity` here (blind to the
+    // grab) and the daemon would happily commit into memory the game already took —
+    // the OOM the whole task fixes. When the grab exceeds the FIXED ceiling the
+    // daemon goes over-budget off physical usage alone (no lease shrank), and since
+    // none of the overage is a lease we hold there is nothing safe to reclaim — the
+    // daemon stays alive and simply refuses new demand (we can't evict a game).
+    #[tokio::test]
+    async fn external_physical_pressure_contracts_available_without_a_lease() {
+        let src = Arc::new(MockCapacitySource::new(ResourceKind::Vram, 24_000));
+        let daemon = ResourceDaemon::start(
+            vec![src.clone()],
+            Vec::new(),
+            DaemonConfig {
+                tick_interval: Duration::from_millis(20),
+                min_reclaim_budget: Duration::from_millis(100),
+                governor: GovernorConfig { min_dwell_ms: 0, graceful_grace_ms: 50 },
+            },
+        );
+
+        // A game grabs 21GB of VRAM: physical_used = 21_000, ceiling fixed at 24_000.
+        src.set_used(21_000);
+        let contracted =
+            wait_until(&daemon, |b| b.kinds.iter().any(|k| k.physical_used_bytes == 21_000)).await;
+        assert!(contracted, "the tick must feed external physical usage onto the board");
+
+        let board = daemon.board();
+        let vram = board.kinds.iter().find(|k| k.kind == ResourceKind::Vram).unwrap();
+        assert_eq!(vram.capacity_bytes, 24_000, "ceiling is fixed — the grab did not move it");
+        assert_eq!(vram.granted_bytes, 0, "we hold no lease");
+        assert_eq!(vram.physical_used_bytes, 21_000, "but 21GB is physically resident");
+        assert_eq!(vram.external_bytes, 21_000, "all of it external — no consumer of ours claims it");
+        assert_eq!(vram.available_bytes, 3_000, "available = 24k − max(0, 21k) = 3k, NOT the blind 24k");
+        assert!(!daemon.is_over_budget(), "21k < 24k ceiling — tight, not over");
+
+        // The game grabs more, past the ceiling: physical_used = 26_000 > 24_000.
+        src.set_used(26_000);
+        let over = wait_until(&daemon, |_| daemon.is_over_budget()).await;
+        assert!(over, "physical usage over the fixed ceiling is an over-budget condition on its own");
+        let board = daemon.board();
+        let vram = board.kinds.iter().find(|k| k.kind == ResourceKind::Vram).unwrap();
+        assert_eq!(vram.available_bytes, 0, "committed exceeds capacity → zero to commit");
+        // Nothing safe to reclaim (no lease of ours) — the daemon stays alive and
+        // keeps publishing, it does not thrash trying to evict a game's memory.
+        assert!(daemon.board().leases.is_empty(), "no lease existed to be reclaimed");
     }
 
     // what this catches: a panicking consumer is isolated (catch_unwind) and
