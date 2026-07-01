@@ -3,8 +3,10 @@ import type { ArtifactFormat } from "./ArtifactFormat";
 import type { JobMetrics } from "./JobMetrics";
 
 /**
- * forge / alloy for signing + provenance, and into genome paging
- * once a persona requests the corresponding skill.
+ * What a successful training run produces. Flows directly into forge / alloy
+ * for signing + provenance, and into genome paging once a persona requests the
+ * corresponding skill. Its [`ArtifactFormat`] tells the completion sentinel
+ * whether the artifact is a pageable gene or needs a custodian convert first.
  */
 export type TrainingArtifact = { 
 /**
