@@ -117,8 +117,18 @@ impl CognitionState {
         &self,
         persona_uuid: Uuid,
     ) -> dashmap::mapref::one::RefMut<'_, Uuid, PersonaCognition> {
+        // Compute the budget BEFORE acquiring the entry shard-lock.
+        // `per_persona_budget_mb()` reads `self.personas.len()`, which read-locks
+        // EVERY shard. `DashMap::entry()` holds a WRITE lock on the target key's
+        // shard; calling `len()` inside `or_insert_with` re-enters that same shard
+        // lock, and parking_lot's RwLock is not reentrant → self-deadlock. This is
+        // silent in tests (no GpuMemoryManager → the `None` arm skips `len()`) and
+        // only bites the live core where `gpu_manager` is `Some`. Hoisting the read
+        // out means no lock is held when `len()` runs. The budget is computed even
+        // on the cache-hit path (a cheap shard-count sum) but only consumed on
+        // insert; correctness over shaving one `len()` off the hit path.
+        let budget = self.per_persona_budget_mb();
         self.personas.entry(persona_uuid).or_insert_with(|| {
-            let budget = self.per_persona_budget_mb();
             PersonaCognition::with_budget(
                 persona_uuid,
                 String::new(),
@@ -556,6 +566,60 @@ mod turn_frame_recording_tests {
 
         assert!(turn_frame_replay_record(&None).is_none());
         assert!(turn_frame_replay_record(&Some(empty)).is_none());
+    }
+
+    // Nested theme (one test mod per file): the persona lazy-create locking contract.
+    mod get_or_create_persona_locking {
+        use super::*;
+        use crate::gpu::GpuMemoryManager;
+        use crate::rag::RagEngine;
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        // what this catches: get_or_create_persona must never re-enter its own
+        // DashMap shard lock. `entry()` holds a WRITE lock on the target key's
+        // shard; the lazy-create closure used to call `per_persona_budget_mb()` →
+        // `personas.len()`, which READ-locks every shard including the held one.
+        // parking_lot's RwLock is not reentrant, so a live core with a
+        // GpuMemoryManager (the `Some` arm that reads `len()`) SELF-DEADLOCKED on
+        // the first persona create — the deadlock that hung `cognition/enqueue-message`
+        // and every persona turn. Unit tests missed it because the `None` arm (no
+        // GPU manager) short-circuits before `len()`. This test wires a real GPU
+        // manager so the `Some` arm runs, and guards with a watchdog thread so a
+        // regression fails loud in ~10s instead of hanging CI forever.
+        // regression for the enqueue-message deadlock; fix = hoist the budget read
+        // out of or_insert_with in CognitionState::get_or_create_persona.
+        #[test]
+        fn create_with_gpu_manager_does_not_self_deadlock() {
+            let (done_tx, done_rx) = mpsc::channel();
+            std::thread::spawn(move || {
+                let rag = Arc::new(RagEngine::new());
+                let (ptx, prx) = tokio::sync::watch::channel(0.0f32);
+                let gpu = Arc::new(GpuMemoryManager::new_for_test(
+                    24 * 1024 * 1024 * 1024, // total VRAM
+                    "test-gpu".to_string(),
+                    8 * 1024 * 1024 * 1024, // inference budget
+                    2 * 1024 * 1024 * 1024, // tts budget
+                    2 * 1024 * 1024 * 1024, // rendering budget
+                    1024 * 1024 * 1024,     // reserve
+                    ptx,
+                    prx,
+                ));
+                let state = CognitionState::new(rag).with_gpu_manager(gpu);
+                let id = Uuid::new_v4();
+                // First call runs the lazy-create closure (the budget read); the
+                // guard drops at the end of each statement, so the second call
+                // exercises the cache-hit path without a same-key re-entry.
+                let _ = state.get_or_create_persona(id);
+                let _ = state.get_or_create_persona(id);
+                let _ = done_tx.send(());
+            });
+            assert!(
+                done_rx.recv_timeout(Duration::from_secs(10)).is_ok(),
+                "get_or_create_persona self-deadlocked: the budget read re-entered \
+                 the entry() shard lock"
+            );
+        }
     }
 }
 
