@@ -99,6 +99,21 @@ impl ModelFootprint {
     pub fn kv_at(&self, ctx: u32) -> u64 {
         self.kv_per_token.saturating_mul(ctx as u64)
     }
+
+    /// Total on-device residency for a live server: the weights (shared across
+    /// lanes) PLUS the KV-cache of every lane at the served per-slot window.
+    /// `served_window` is the REAL per-slot context the process serves (the
+    /// value on `ServingSnapshot`, read from llama.cpp `/props`), and `lanes` is
+    /// the `--parallel` slot count — llama.cpp allocates one full KV window per
+    /// slot, so resident KV = `lanes × kv_at(served_window)`. This is the honest
+    /// number serving reports to the resource authority as its `footprint()`:
+    /// weights-only under-reports, and the missing KV then masquerades as
+    /// external/contention on the board. `lanes.max(1)` so a snapshot that has
+    /// not yet stamped its lane count still charges one lane's KV, never zero.
+    pub fn resident_bytes(&self, served_window: u32, lanes: u32) -> u64 {
+        self.weights_bytes
+            .saturating_add(self.kv_at(served_window).saturating_mul(lanes.max(1) as u64))
+    }
 }
 
 /// The serving decision for this host.
@@ -356,6 +371,23 @@ mod tests {
             fp("qwen3.5-4b", 3, 30_000, 262_144, 2), // good general (47 tok/s on M5)
             fp("coder-sentinel-14b", 9, 90_000, 262_144, 3), // rich coding model — more RAM each
         ]
+    }
+
+    // what this catches: resident_bytes folds weights + per-lane KV × lanes into
+    // ONE honest residency — the number serving reports as its footprint(). If it
+    // dropped the lane multiply (or the KV term entirely, the pre-#79 bug), the
+    // board would under-count serving and the missing bytes would masquerade as
+    // external contention. 9GB weights + 4 lanes × (90_000 × 11_008) KV.
+    #[test]
+    fn resident_folds_weights_plus_per_lane_kv() {
+        let f = fp("coder-sentinel-14b", 9, 90_000, 262_144, 3);
+        let per_lane_kv = 90_000u64 * 11_008; // kv_at(11_008)
+        assert_eq!(f.kv_at(11_008), per_lane_kv);
+        assert_eq!(f.resident_bytes(11_008, 4), 9 * GB + per_lane_kv * 4);
+        // A lane-less snapshot (lanes == 0) still charges one lane's KV, never zero.
+        assert_eq!(f.resident_bytes(11_008, 0), 9 * GB + per_lane_kv);
+        // No window served yet → weights only (KV term is zero).
+        assert_eq!(f.resident_bytes(0, 4), 9 * GB);
     }
 
     // what this catches: an 8GB Air must NOT be handed the 14B (won't fit) and

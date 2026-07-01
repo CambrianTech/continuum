@@ -337,6 +337,17 @@ pub struct ServingSnapshot {
     /// `serde(default)` keeps older persisted snapshots (window-less) readable.
     #[serde(default)]
     pub served_context_window: u32,
+    /// The `--parallel` slot count the running server serves — how many personas
+    /// can occupy a lane concurrently. llama.cpp allocates one full
+    /// `served_context_window` KV window PER slot, so total resident KV scales
+    /// with this: `lanes × kv_per_token × served_context_window`. Carried on the
+    /// snapshot so a reader (the resource authority's `footprint()`, a grid
+    /// allocator sizing concurrency) sees the true residency without probing the
+    /// process. `0` only on the empty/not-yet-served snapshot — a `ready`
+    /// snapshot always carries the real lane count. `serde(default)` keeps older
+    /// persisted snapshots (lane-less) readable.
+    #[serde(default)]
+    pub lanes: u32,
 }
 
 impl ServingSnapshot {
@@ -351,6 +362,9 @@ impl ServingSnapshot {
             // carries 0 (the daemon stamps the live `/props` window before
             // publishing ready); 0 is the unambiguous "no window known" sentinel.
             served_context_window: 0,
+            // Nothing served → no lanes. A `ready` snapshot always carries the
+            // real `--parallel` count; 0 is the "no lanes" sentinel.
+            lanes: 0,
         }
     }
 }
@@ -1485,6 +1499,7 @@ mod tests {
             base_url: "x".into(),
             adapters: Vec::new(),
             served_context_window: 0,
+            lanes: 0,
         });
         assert!(!pred(&rx.borrow()));
         // not-ready but has a model → unsatisfied.
@@ -1494,6 +1509,7 @@ mod tests {
             base_url: "x".into(),
             adapters: Vec::new(),
             served_context_window: 0,
+            lanes: 0,
         });
         assert!(!pred(&rx.borrow()));
         // ready AND a model → satisfied, and wait_for resolves to it at once.
@@ -1503,6 +1519,7 @@ mod tests {
             base_url: "x".into(),
             adapters: Vec::new(),
             served_context_window: 0,
+            lanes: 0,
         });
         let got = tokio::time::timeout(Duration::from_millis(100), rx.wait_for(pred))
             .await

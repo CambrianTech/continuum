@@ -529,6 +529,7 @@ impl ServingDaemonModule {
                 &desired,
                 &desired_adapter_paths,
                 served_window,
+                target.lanes,
             );
             crate::probe!(
                 class = "serving.reconcile",
@@ -648,20 +649,22 @@ fn perf_cores() -> u32 {
 /// head_dim) and a real capability score; the classifier consumes whatever
 /// precision we give it without changing shape.
 /// The [`FootprintFn`] serving hands the [`ResourceGovernor`](crate::resources):
-/// resolve an active model id → its resident weights in VRAM, from the SAME live
-/// catalog + [`footprint_for`] estimator the serving plan uses (one footprint
-/// authority, not two). An id the catalog doesn't know, or a model with no
-/// on-disk weights, resolves to `0` — nothing resident to attribute. This reports
-/// the weights term only; the KV-cache residency (which scales with the
-/// resource-derived served window) is the drift the governor's probe surfaces as
-/// untracked residency, and the tier-down slice will fold in.
+/// resolve an active model id + its live serving shape (served per-slot window,
+/// lane count) → total resident bytes in VRAM, from the SAME live catalog +
+/// [`footprint_for`] estimator the serving plan uses (one footprint authority,
+/// not two). An id the catalog doesn't know, or a model with no on-disk weights,
+/// resolves to `0` — nothing resident to attribute. This reports the FULL
+/// residency: weights PLUS the KV-cache of every lane at the served window
+/// (`weights + lanes × kv_at(served_window)`, #79). Folding in the KV term is
+/// what stops serving's own KV from masquerading as external/contention on the
+/// board — the governor's drift probe now sees serving's true footprint.
 fn serving_footprint_fn(catalog: Arc<ModelCatalog>) -> FootprintFn {
-    Arc::new(move |id: &str| {
+    Arc::new(move |id: &str, served_window: u32, lanes: u32| {
         catalog
             .snapshot()
             .get(id)
             .and_then(|live| footprint_for(&live.model))
-            .map(|fp| fp.weights_bytes)
+            .map(|fp| fp.resident_bytes(served_window, lanes))
             .unwrap_or(0)
     })
 }
@@ -783,6 +786,7 @@ fn snapshot_from_outcome(
     desired: &str,
     adapters: &[String],
     served_context_window: u32,
+    lanes: u32,
 ) -> ServingSnapshot {
     match outcome {
         EnsureOutcome::AlreadyServing | EnsureOutcome::Spawned { .. }
@@ -798,6 +802,10 @@ fn snapshot_from_outcome(
                 // The real per-slot window the process serves — every persona
                 // budgets its prompt to THIS (task #50, the drift fix).
                 served_context_window,
+                // The `--parallel` slot count — lets a reader (the resource
+                // authority's footprint(), a grid allocator) charge total resident
+                // KV as `lanes × kv_at(served_context_window)` (#79).
+                lanes,
             }
         }
         // Ready outcome but the served window was unreadable (0) → do NOT publish
@@ -1251,6 +1259,7 @@ mod tests {
             "coder-14b",
             &genes,
             11008,
+            4,
         );
         assert_eq!(up.active_model.as_deref(), Some("coder-14b"));
         assert!(up.ready);
@@ -1260,12 +1269,17 @@ mod tests {
             up.served_context_window, 11008,
             "ready snapshot carries the real per-slot window personas budget to"
         );
+        assert_eq!(
+            up.lanes, 4,
+            "ready snapshot carries the --parallel lane count for total-KV accounting"
+        );
 
         let already =
-            snapshot_from_outcome(&EnsureOutcome::AlreadyServing, "coder-14b", &genes, 11008);
+            snapshot_from_outcome(&EnsureOutcome::AlreadyServing, "coder-14b", &genes, 11008, 4);
         assert_eq!(already.active_model.as_deref(), Some("coder-14b"));
         assert!(already.ready);
         assert_eq!(already.served_context_window, 11008);
+        assert_eq!(already.lanes, 4);
 
         // Ready outcome but the served window was unreadable (0) → publish the gap,
         // NOT a ready snapshot with a zero window a persona would budget against.
@@ -1274,16 +1288,19 @@ mod tests {
             "coder-14b",
             &genes,
             0,
+            4,
         );
         assert_eq!(windowless.active_model, None, "ready-but-no-window → nothing live");
         assert!(!windowless.ready);
         assert_eq!(windowless.served_context_window, 0);
+        assert_eq!(windowless.lanes, 0, "empty snapshot carries no lanes");
 
         let degraded = snapshot_from_outcome(
             &EnsureOutcome::Degraded { reason: "x".into() },
             "coder-14b",
             &genes,
             11008,
+            4,
         );
         assert_eq!(degraded.active_model, None, "degraded → nothing live");
         assert!(!degraded.ready);
@@ -1327,6 +1344,7 @@ mod tests {
             base_url: serving_v1_url(),
             adapters: Vec::new(),
             served_context_window: 11008,
+            lanes: 4,
         });
         let budget = HostBudget { usable_bytes: 45 * GB, perf_cores: 6 };
         let candidates = vec![footprint_from_parts("coder-14b", 9 * GB, 8192, true).unwrap()];
@@ -1351,6 +1369,7 @@ mod tests {
             base_url: serving_v1_url(),
             adapters: Vec::new(),
             served_context_window: 11008,
+            lanes: 4,
         });
         let budget = HostBudget { usable_bytes: 45 * GB, perf_cores: 6 };
         daemon.publish_plan(budget, &[]); // no candidates → plan None
@@ -1433,10 +1452,11 @@ mod tests {
         );
         let resolve = serving_footprint_fn(catalog.clone());
 
-        // NotDownloaded (no on-disk weights) → nothing resident yet.
-        assert_eq!(resolve(id), 0, "no weights on disk → nothing to attribute");
+        // NotDownloaded (no on-disk weights) → nothing resident yet. Window/lanes
+        // are the live serving shape; with no weights they resolve to 0 anyway.
+        assert_eq!(resolve(id, 8192, 2), 0, "no weights on disk → nothing to attribute");
         // An id the catalog has never heard of → 0, never a phantom.
-        assert_eq!(resolve("never-registered"), 0);
+        assert_eq!(resolve("never-registered", 8192, 2), 0);
 
         // Land the artifact: real bytes on disk, flips Ready.
         let mut gguf = tempfile::Builder::new()
@@ -1447,9 +1467,19 @@ mod tests {
         gguf.flush().expect("flush");
         assert!(catalog.attach_local_artifact(id, gguf.path().to_path_buf(), None));
 
-        // Same resolver, same live catalog → now reports the real resident weights,
-        // matching what candidates_from_snapshot sizes the plan against.
-        assert_eq!(resolve(id), 4096, "resolves the real on-disk weights, no reboot");
+        // Same resolver, same live catalog → now reports the real resident bytes:
+        // weights (4096) PLUS the KV of every lane at the served window. kv_per_token
+        // floors at 20_000, so 2 lanes × 20_000 × 8192 tokens of KV on top of 4096
+        // weights. Charging that KV is what stops it masquerading as external (#79).
+        let kv_per_token = 20_000u64; // (4096 / 20_000).max(20_000)
+        let expect = 4096 + 2 * kv_per_token * 8192;
+        assert_eq!(
+            resolve(id, 8192, 2),
+            expect,
+            "resolves real weights + per-lane KV at the served window, no reboot"
+        );
+        // A no-window snapshot (nothing served yet) charges weights only.
+        assert_eq!(resolve(id, 0, 2), 4096, "no served window → weights only");
     }
 
     // what this catches: THE slice-1 production-wiring gap — ServingConsumer was

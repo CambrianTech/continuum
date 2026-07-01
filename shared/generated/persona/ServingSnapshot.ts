@@ -40,4 +40,16 @@ adapters: Array<string>,
  * real window (the daemon refuses to publish `ready` without it).
  * `serde(default)` keeps older persisted snapshots (window-less) readable.
  */
-served_context_window: number, };
+served_context_window: number, 
+/**
+ * The `--parallel` slot count the running server serves — how many personas
+ * can occupy a lane concurrently. llama.cpp allocates one full
+ * `served_context_window` KV window PER slot, so total resident KV scales
+ * with this: `lanes × kv_per_token × served_context_window`. Carried on the
+ * snapshot so a reader (the resource authority's `footprint()`, a grid
+ * allocator sizing concurrency) sees the true residency without probing the
+ * process. `0` only on the empty/not-yet-served snapshot — a `ready`
+ * snapshot always carries the real lane count. `serde(default)` keeps older
+ * persisted snapshots (lane-less) readable.
+ */
+lanes: number, };
