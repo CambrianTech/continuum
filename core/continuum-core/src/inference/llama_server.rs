@@ -785,6 +785,19 @@ impl EphemeralServingLane {
     pub fn port(&self) -> u16 {
         self.port
     }
+
+    /// The REAL per-slot window this lane serves, read from its own `/props`
+    /// (`default_generation_settings.n_ctx`) — the SAME served-truth source the
+    /// live daemon pins the resident persona's window to
+    /// (`supervisor.rs`: `profile.context_length = snap.served_context_window`).
+    /// An eval fork's cognition is sized to THIS, never the planned launch `-c`,
+    /// so a measurement copy plans against exactly the window it is served — no
+    /// planned-vs-served drift between training and the lane it runs on
+    /// ([[dreaming-mind-eval-must-match-live-cognition]], task #50). Fails loud if
+    /// the server is up but `/props` is unreadable — never a guessed window.
+    pub async fn served_context_window(&self) -> Result<u32, LlamaServerError> {
+        self.proc.served_context_window().await
+    }
 }
 
 #[async_trait]

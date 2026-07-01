@@ -25,4 +25,19 @@ base_url: string,
  * genome is live without probing the process. `serde(default)` keeps older
  * persisted snapshots readable.
  */
-adapters: Array<string>, };
+adapters: Array<string>, 
+/**
+ * The REAL per-slot context window the running server serves, read from its
+ * own `/props` (`default_generation_settings.n_ctx`). This is the
+ * AUTHORITATIVE model metadata personas budget their prompts to. llama.cpp
+ * pads the launch per-slot window (`-c / --parallel`) UP to a 256-multiple
+ * internally, so the planner's window and the served window differ — and the
+ * planner RE-computes its window every tick against live memory, drifting
+ * ABOVE the running server's frozen slot. Budgeting to that drifted value
+ * overflows the slot → llama-server 500 "Compute error". So a persona reads
+ * THIS (the process's own truth), never a recomputed plan value. `0` only on
+ * the empty/not-yet-served snapshot — a `ready` snapshot always carries the
+ * real window (the daemon refuses to publish `ready` without it).
+ * `serde(default)` keeps older persisted snapshots (window-less) readable.
+ */
+served_context_window: number, };

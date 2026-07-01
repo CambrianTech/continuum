@@ -58,16 +58,22 @@ const DEFAULT_MAX_ACTS: u32 = 8;
 /// only its constancy matters.
 const EVAL_EPOCH_MS: u64 = 1_700_000_000_000;
 
-/// Bounded context window for the EPHEMERAL gene-measurement lane. This is NOT the
-/// live-serving window — that comes host-fit from the serving plan (#46/#50) and
-/// must never handicap a capable model. This is a THROWAWAY second lane that has to
-/// coexist with the LIVING persona's lane while we score a copy (#59), so its KV is
-/// deliberately small: the coder-eval prompts are short and the deliberation faculty
-/// already bounds its offered tools to fit whatever window the fork carries. Always
-/// capped by the base model's own trained ceiling. Follow-up: pre-flight
-/// `plan_serving` against the live budget (thread the daemon's plan watch into this
-/// command, the way `serving/plan` does) so this lane's window is host-fit too,
-/// rather than a constant.
+/// PHYSICAL launch window (`-c`) cap for the EPHEMERAL gene-measurement lane — NOT
+/// the fork's cognition window. The fork's cognition window is read back from the
+/// lane's real `/props` after spawn (`EphemeralServingLane::served_context_window`),
+/// the SAME served-truth pin the supervisor applies to the living persona, so a
+/// measurement copy always budgets against exactly what its lane serves — never a
+/// constant fed to cognition independently of the lane
+/// ([[dreaming-mind-eval-must-match-live-cognition]], task #50). This constant only
+/// bounds how big that throwaway lane's KV may get: it has to coexist with the
+/// LIVING persona's lane while we score a copy (#59), so its `-c` is deliberately
+/// small — coder-eval prompts are short and the deliberation faculty bounds its
+/// offered tools to whatever window the fork carries. Always capped by the base
+/// model's own trained ceiling. Follow-up (env-match, not self-consistency): size
+/// this lane's `-c` host-fit via `plan_serving` against the live budget (needs a
+/// daemon-published budget watch threaded in, the way `serving/plan` reads it) so
+/// the measurement lane's geometry mirrors what production would serve THIS base —
+/// negligible for short coder prompts, but the last constant on this path.
 const EVAL_LANE_CONTEXT: u32 = 16_384;
 
 /// Base port the ephemeral eval lane scans up from for a free one. Deliberately
@@ -246,9 +252,14 @@ async fn spawn_gene_eval_lane(
             ))
         })?;
 
-    // 3. Bounded, model-capped served window for the throwaway lane (see
+    // 3. Bounded, model-capped PHYSICAL window (`-c`) for the throwaway lane (see
     //    EVAL_LANE_CONTEXT). One lane: a single measurement stream, no batching.
-    let served_ctx = base.context_window.min(EVAL_LANE_CONTEXT);
+    //    This sizes the lane's launch `-c` + its placement; the fork's COGNITION
+    //    window is read back from the lane's real `/props` after spawn (below), the
+    //    same served-truth pin the supervisor applies to the living persona — so a
+    //    measurement copy budgets against exactly what its lane serves, never this
+    //    planned value ([[dreaming-mind-eval-must-match-live-cognition]], task #50).
+    let lane_ctx = base.context_window.min(EVAL_LANE_CONTEXT);
 
     // 3b. GPU-FIRST placement (Joel: fill GPU lanes first, ~100% utilization; CPU is
     //     spillover of last resort, never the default for a coexisting lane). Probe
@@ -257,14 +268,14 @@ async fn spawn_gene_eval_lane(
     //     chosen device + headroom ride out on the result so a CPU spill is VISIBLE in
     //     the harness, not a silent slow path.
     let placement_evidence =
-        decide_eval_lane_placement(&base, served_ctx, &format!("eval-lane gene:{}", gene.name));
+        decide_eval_lane_placement(&base, lane_ctx, &format!("eval-lane gene:{}", gene.name));
 
     // 4. Bring the lane up: forged base + the gene loaded via `--lora` (loadable;
     //    the per-request `lora` field decides per turn whether it actually pages in,
     //    which is exactly the base-vs-gene A/B below).
     let target = ServingTarget {
         model: base.clone(),
-        context_window: served_ctx,
+        context_window: lane_ctx,
         lanes: 1,
         adapters: vec![AdapterEntry {
             alias: gene.name.clone(),
@@ -307,6 +318,24 @@ async fn spawn_gene_eval_lane(
         .probe_lora_catalog()
         .await
         .map_err(|e| CommandError::Internal(format!("eval-lane LoRA catalog probe failed: {e}")))?;
+
+    // Pin the fork's cognition window to the lane's REAL served `/props` slot — the
+    // SAME served-truth discipline the supervisor applies to the living persona
+    // (`profile.context_length = snap.served_context_window`). The planned `lane_ctx`
+    // sized the launch `-c`; the SERVED value is what her cognition must budget
+    // against, so a measurement copy plans against exactly the window it runs on and
+    // training can never silently diverge from the served reality
+    // ([[dreaming-mind-eval-must-match-live-cognition]], task #50). Fail loud if the
+    // lane is up but its `/props` is unreadable — never size cognition off the
+    // planned value and diverge unseen.
+    let served_ctx = lane.served_context_window().await.map_err(|e| {
+        CommandError::Internal(format!(
+            "eval lane for gene '{}' is up but its /props served window is unreadable ({e}) — \
+             refusing to size the fork's cognition from the planned lane `-c` and silently diverge \
+             from what the lane actually serves",
+            gene.name
+        ))
+    })?;
 
     Ok((
         lane,
