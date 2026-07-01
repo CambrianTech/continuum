@@ -74,8 +74,14 @@ mod tests {
         // line, so the straddled head ("old line") is dropped and the result resumes
         // at the clean line boundary — the latest line survives whole.
         let trimmed = tail_to_tokens("old line\nnew line", 3);
-        assert_eq!(trimmed, "new line", "head dropped, latest line kept clean: {trimmed:?}");
-        assert!(!trimmed.contains('\n'), "cut on the line boundary: {trimmed:?}");
+        assert_eq!(
+            trimmed, "new line",
+            "head dropped, latest line kept clean: {trimmed:?}"
+        );
+        assert!(
+            !trimmed.contains('\n'),
+            "cut on the line boundary: {trimmed:?}"
+        );
 
         // Multibyte content must never panic on a mid-char cut (window start lands
         // mid-codepoint and is walked forward to the next char boundary).
