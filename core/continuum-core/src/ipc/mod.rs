@@ -1254,6 +1254,15 @@ pub fn start_server(
         livekit_manager.clone(),
         audio_pool.clone(),
     ));
+    // Voice joins the resource authority as a peer consumer (#56): under VRAM
+    // pressure it REFUSES while a call is live (never kicks a human mid-call) and
+    // sheds its idle STT/TTS models otherwise — serving tiers down first.
+    resource_daemon.add_consumer(Arc::new(
+        crate::modules::live_session_consumer::VoiceConsumer::new(
+            voice_state.resource_lifecycle.clone(),
+            gpu_manager.clone(),
+        ),
+    ));
     runtime.register(Arc::new(VoiceModule::new(voice_state)));
 
     // Phase 3: CodeModule (wraps file engines and shell sessions per-persona)

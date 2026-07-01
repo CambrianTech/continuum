@@ -49,6 +49,7 @@ pub mod hippocampus;
 pub mod inference_coordinator_module;
 pub mod launch_mode;
 pub mod live;
+pub mod live_session_consumer;
 pub mod logger;
 pub mod mcp;
 pub mod mcp_protocol;

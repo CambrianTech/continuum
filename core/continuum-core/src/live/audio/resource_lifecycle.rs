@@ -225,7 +225,12 @@ impl AudioResourceLifecycle {
     ///
     /// Collects adapter Arcs while holding the registry lock, then drops the lock
     /// before awaiting shutdown (parking_lot guards are !Send across await points).
-    async fn shutdown_all_adapters() {
+    ///
+    /// `pub(crate)` so the voice `ResourceConsumer` can pull this exact lever when
+    /// the resource authority asks for VRAM back while no call is live — the same
+    /// teardown the idle watcher runs, just driven by pressure instead of the 5s
+    /// idle timer. Models reload transparently on the next call.
+    pub(crate) async fn shutdown_all_adapters() {
         // Collect initialized STT adapters (drop lock before await)
         let stt_adapters: Vec<(&str, std::sync::Arc<dyn super::stt::SpeechToText>)> = {
             let registry = super::stt::get_registry();
