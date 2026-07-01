@@ -70,6 +70,7 @@ pub mod runtime_control;
 pub mod sentinel;
 pub mod serving_consumer;
 pub mod serving_daemon;
+pub mod serving_tier_down;
 pub mod system_resources;
 pub mod tool_parsing;
 pub mod training_completion_sentinel;

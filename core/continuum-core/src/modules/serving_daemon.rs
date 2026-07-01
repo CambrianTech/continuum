@@ -279,7 +279,13 @@ impl ServingDaemonModule {
         let consumer = ServingConsumer::new(
             self.subscribe_serving(),
             self.suppress_sender(),
+            self.pin_sender(),
             serving_footprint_fn(self.catalog.clone()),
+            // No tier-down selection intelligence is authored yet, so the only
+            // lever is a full unload. `DeclineTierDown` is that honest current
+            // capability — swapping in a catalog/persona/ML policy is a one-line
+            // change here, with zero change to the consumer's handshake (#79).
+            Arc::new(crate::modules::serving_tier_down::DeclineTierDown),
         );
         self.resource_daemon.add_consumer(Arc::new(consumer));
     }
