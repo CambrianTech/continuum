@@ -1159,107 +1159,11 @@ impl ServiceModule for CognitionModule {
             // =================================================================
             // Domain Classification (adapter-aware keyword scoring)
             // =================================================================
-            "cognition/classify-domain" => {
-                let _timer = TimingGuard::new("module", "cognition_classify_domain");
-                let persona_uuid = p.uuid("persona_id")?;
-                let text = p.str("text")?;
-
-                let persona = self
-                    .state
-                    .personas
-                    .get(&persona_uuid)
-                    .ok_or_else(|| format!("No cognition for {persona_uuid}"))?;
-
-                let result = persona.domain_classifier.classify(text);
-
-                log_info!(
-                    "module",
-                    "cognition",
-                    "classify-domain {}: '{}...' → domain={}, confidence={:.2}, adapter={:?} ({:.0}μs)",
-                    persona_uuid,
-                    crate::utils::str_truncate::truncate_at_char_boundary(&text, 40),
-                    result.domain,
-                    result.confidence,
-                    result.adapter_name,
-                    result.decision_time_us
-                );
-
-                Ok(CommandResult::Json(
-                    serde_json::to_value(&result).map_err(|e| format!("Serialize error: {e}"))?,
-                ))
-            }
-
-            "cognition/sync-domain-classifier" => {
-                let _timer = TimingGuard::new("module", "cognition_sync_domain_classifier");
-                let persona_uuid = p.uuid("persona_id")?;
-
-                let mut persona = get_or_create_persona!(self, persona_uuid);
-
-                // Build adapter list from genome engine state
-                let state = persona.genome_engine.state();
-                let all_adapters: Vec<_> = state
-                    .active_adapters
-                    .iter()
-                    .chain(state.available_adapters.iter())
-                    .cloned()
-                    .collect();
-
-                persona.domain_classifier.sync_from_adapters(&all_adapters);
-
-                let summary = persona.domain_classifier.domain_summary();
-                let covered = summary.iter().filter(|(_, has)| *has).count();
-
-                log_info!(
-                    "module",
-                    "cognition",
-                    "sync-domain-classifier {}: {} domains ({} with adapters)",
-                    persona_uuid,
-                    summary.len(),
-                    covered
-                );
-
-                Ok(CommandResult::Json(serde_json::json!({
-                    "synced": true,
-                    "total_domains": summary.len(),
-                    "covered_domains": covered,
-                })))
-            }
-
-            "cognition/register-domain-keywords" => {
-                let _timer = TimingGuard::new("module", "cognition_register_domain_keywords");
-                let persona_uuid = p.uuid("persona_id")?;
-                let domain = p.str("domain")?.to_string();
-                let keywords_json = params
-                    .get("keywords")
-                    .and_then(|v| v.as_array())
-                    .ok_or("Missing keywords array")?;
-
-                let keywords: Vec<String> = keywords_json
-                    .iter()
-                    .filter_map(|v| v.as_str().map(String::from))
-                    .collect();
-
-                let keyword_count = keywords.len();
-                let mut persona = get_or_create_persona!(self, persona_uuid);
-                persona
-                    .domain_classifier
-                    .register_domain_keywords(&domain, keywords);
-
-                log_info!(
-                    "module",
-                    "cognition",
-                    "register-domain-keywords {}: added {} keywords to domain '{}'",
-                    persona_uuid,
-                    keyword_count,
-                    domain
-                );
-
-                Ok(CommandResult::Json(serde_json::json!({
-                    "registered": true,
-                    "domain": domain,
-                    "keywords_added": keyword_count,
-                })))
-            }
+            // Migrated to the typed DynCommand registry (Slice 5):
+            //   cognition/classify-domain          → commands/cognition/classify_domain.rs
+            //   cognition/sync-domain-classifier   → commands/cognition/sync_domain_classifier.rs
+            //   cognition/register-domain-keywords → commands/cognition/register_domain_keywords.rs
+            // Exposed via commands/cognition/mod.rs::command_objects (dep-holding on CognitionState).
 
             // =================================================================
             // Domain Activity Tracking & Gap Detection

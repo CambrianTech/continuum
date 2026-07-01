@@ -20,6 +20,7 @@ use crate::sdk_codegen::DynCommand;
 pub mod cache_message;
 pub mod check_content_dedup;
 pub mod check_redundancy;
+pub mod classify_domain;
 pub mod genome_activate_skill;
 pub mod genome_coverage_report;
 pub mod genome_evict_under_pressure;
@@ -29,11 +30,14 @@ pub mod genome_sync;
 pub mod has_evaluated;
 pub mod mark_evaluated;
 pub mod record_content;
+pub mod register_domain_keywords;
 pub mod should_respond;
+pub mod sync_domain_classifier;
 pub mod track_response;
 
 use cache_message::CacheMessage;
 use check_content_dedup::CheckContentDedup;
+use classify_domain::ClassifyDomain;
 use genome_activate_skill::GenomeActivateSkill;
 use genome_coverage_report::GenomeCoverageReport;
 use genome_evict_under_pressure::GenomeEvictUnderPressure;
@@ -43,6 +47,8 @@ use genome_sync::GenomeSync;
 use has_evaluated::HasEvaluated;
 use mark_evaluated::MarkEvaluated;
 use record_content::RecordContent;
+use register_domain_keywords::RegisterDomainKeywords;
+use sync_domain_classifier::SyncDomainClassifier;
 use track_response::TrackResponse;
 
 /// The dep-holding `cognition/*` command objects that capture the module's shared
@@ -87,6 +93,15 @@ pub fn command_objects(state: Arc<CognitionState>) -> Vec<Arc<dyn DynCommand>> {
         Arc::new(GenomeRecordActivity {
             state: state.clone(),
         }),
-        Arc::new(GenomeCoverageReport { state }),
+        Arc::new(GenomeCoverageReport {
+            state: state.clone(),
+        }),
+        Arc::new(ClassifyDomain {
+            state: state.clone(),
+        }),
+        Arc::new(SyncDomainClassifier {
+            state: state.clone(),
+        }),
+        Arc::new(RegisterDomainKeywords { state }),
     ]
 }
