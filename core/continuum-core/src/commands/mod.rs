@@ -35,6 +35,7 @@ pub mod hf;
 pub mod inference;
 pub mod interface;
 pub mod log;
+pub mod mcp;
 pub mod memory;
 pub mod migration;
 pub mod models;
