@@ -34,6 +34,7 @@ use crate::persona::hw_tier_descriptor::HwTierCategory;
 use crate::model_registry::live::{Availability, CatalogSnapshot, ModelCatalog};
 use crate::model_registry::types::{Capability, Model};
 use crate::resources::{ResourceDaemon, ResourceKind};
+use super::serving_consumer::{FootprintFn, ServingConsumer, SERVING_CONSUMER_ID};
 use crate::runtime::message_bus::MessageBus;
 use crate::runtime::{CommandResult, ModuleConfig, ModuleContext, ModulePriority, ServiceModule};
 use crate::system_resources::SystemResourceMonitor;
@@ -256,6 +257,31 @@ impl ServingDaemonModule {
     /// `base_url` once `ready`; a grid allocator holds it to contract leases.
     pub fn subscribe_serving(&self) -> watch::Receiver<ServingSnapshot> {
         self.serving_tx.subscribe()
+    }
+
+    /// Register serving as a MEASURED [`ResourceConsumer`] with the one
+    /// per-machine authority (#79) — monitor-not-reserve. Serving does NOT
+    /// acquire a lease here; it keeps loading through its own plan/reconcile
+    /// loop. It hands the governor exactly the two handles the authority needs:
+    ///
+    /// - the serving snapshot + a footprint resolver, so the governor's reconcile
+    ///   tick background-polls serving's resident VRAM and *attributes* it on the
+    ///   board (the fix for the `granted:0 while the GPU is full` blindness), and
+    /// - the suppress-set writer, so when a peer needs the bytes the authority can
+    ///   ASK serving to free the active model (whole-lease-granular unload), and
+    ///   serving answers honestly across the async unload.
+    ///
+    /// `available = capacity − granted` is untouched — this only surfaces the
+    /// measured axis. The footprint resolver is the SAME catalog + footprint
+    /// estimator that feeds the serving plan, so there is ONE footprint authority
+    /// on the box, not two.
+    fn register_as_consumer(&self) {
+        let consumer = ServingConsumer::new(
+            self.subscribe_serving(),
+            self.suppress_sender(),
+            serving_footprint_fn(self.catalog.clone()),
+        );
+        self.resource_daemon.add_consumer(Arc::new(consumer));
     }
 
     /// Honest serving budget for this host, RIGHT NOW — from the live free
@@ -621,6 +647,25 @@ fn perf_cores() -> u32 {
 /// Refine when the registry carries arch internals (layers × kv_heads ×
 /// head_dim) and a real capability score; the classifier consumes whatever
 /// precision we give it without changing shape.
+/// The [`FootprintFn`] serving hands the [`ResourceGovernor`](crate::resources):
+/// resolve an active model id → its resident weights in VRAM, from the SAME live
+/// catalog + [`footprint_for`] estimator the serving plan uses (one footprint
+/// authority, not two). An id the catalog doesn't know, or a model with no
+/// on-disk weights, resolves to `0` — nothing resident to attribute. This reports
+/// the weights term only; the KV-cache residency (which scales with the
+/// resource-derived served window) is the drift the governor's probe surfaces as
+/// untracked residency, and the tier-down slice will fold in.
+fn serving_footprint_fn(catalog: Arc<ModelCatalog>) -> FootprintFn {
+    Arc::new(move |id: &str| {
+        catalog
+            .snapshot()
+            .get(id)
+            .and_then(|live| footprint_for(&live.model))
+            .map(|fp| fp.weights_bytes)
+            .unwrap_or(0)
+    })
+}
+
 pub fn footprint_for(model: &Model) -> Option<ModelFootprint> {
     let path = crate::model_registry::artifacts::resolve_gguf_for_model(model)?;
     let weights_bytes = std::fs::metadata(&path).ok()?.len();
@@ -788,6 +833,11 @@ impl ServiceModule for ServingDaemonModule {
         // free functions + adapters read "what's live" as a pointer instead of
         // each probing /v1/models. Set-once (singleton daemon).
         let _ = crate::inference::llama_server::install_serving_state(self.subscribe_serving());
+        // Register serving as a MEASURED ResourceConsumer with the one per-machine
+        // authority (#79). See `register_as_consumer` — this is monitor-not-reserve:
+        // no lease acquired, `available` math untouched, the authority simply stops
+        // being blind to the ~multi-GB model actually resident.
+        self.register_as_consumer();
         // Plan once at boot so the decision is published before the first tick,
         // then kick the first reconcile so the server comes up promptly rather
         // than waiting a full tick interval. The reconcile runs detached.
@@ -1358,5 +1408,70 @@ mod tests {
         let snap: ServingSnapshot = serde_json::from_value(event.payload).unwrap();
         assert_eq!(snap.active_model.as_deref(), Some("coder-14b"));
         assert!(snap.ready, "emitted snapshot reflects the live model");
+    }
+
+    // what this catches: the footprint resolver serving hands the authority reads
+    // the SAME live catalog + estimator the serving plan uses (one footprint
+    // authority) — a Ready model resolves to its real on-disk weights, and an id
+    // the catalog doesn't know resolves to 0 (nothing resident to attribute, never
+    // a phantom the governor would over-account). If this drifted from the plan's
+    // footprint the board would attribute a different number than the planner sized
+    // against.
+    #[test]
+    fn serving_footprint_fn_resolves_live_catalog_weights() {
+        use crate::model_registry::live::ModelStatus;
+        use std::io::Write;
+
+        let catalog = test_catalog();
+        let id = "footprint-probe";
+        catalog.register(
+            fake_model(id),
+            ModelStatus {
+                availability: Availability::NotDownloaded,
+                verified: None,
+            },
+        );
+        let resolve = serving_footprint_fn(catalog.clone());
+
+        // NotDownloaded (no on-disk weights) → nothing resident yet.
+        assert_eq!(resolve(id), 0, "no weights on disk → nothing to attribute");
+        // An id the catalog has never heard of → 0, never a phantom.
+        assert_eq!(resolve("never-registered"), 0);
+
+        // Land the artifact: real bytes on disk, flips Ready.
+        let mut gguf = tempfile::Builder::new()
+            .suffix(".gguf")
+            .tempfile()
+            .expect("temp gguf");
+        gguf.write_all(&[0u8; 4096]).expect("write weights");
+        gguf.flush().expect("flush");
+        assert!(catalog.attach_local_artifact(id, gguf.path().to_path_buf(), None));
+
+        // Same resolver, same live catalog → now reports the real resident weights,
+        // matching what candidates_from_snapshot sizes the plan against.
+        assert_eq!(resolve(id), 4096, "resolves the real on-disk weights, no reboot");
+    }
+
+    // what this catches: THE slice-1 production-wiring gap — ServingConsumer was
+    // defined + unit-tested but never CONSTRUCTED in the boot path, so the
+    // authority polled nothing and stayed blind to serving's multi-GB residency.
+    // register_as_consumer (called from initialize) must register a consumer under
+    // SERVING_CONSUMER_ID with the one per-machine authority. Regresses deleting
+    // that registration — which would silently reopen the granted:0-while-full hole.
+    #[tokio::test]
+    async fn register_as_consumer_wires_serving_into_the_authority() {
+        let gpu = Arc::new(GpuMemoryManager::simulated("Apple M5 Pro", 53 * GB));
+        let system = Arc::new(SystemResourceMonitor::new());
+        let daemon = ServingDaemonModule::new(gpu, system, test_resource_daemon(), test_catalog());
+
+        assert!(
+            !daemon.resource_daemon.consumer_ids().contains(&SERVING_CONSUMER_ID.to_string()),
+            "not registered until the daemon wires itself in"
+        );
+        daemon.register_as_consumer();
+        assert!(
+            daemon.resource_daemon.consumer_ids().contains(&SERVING_CONSUMER_ID.to_string()),
+            "serving must register itself as a measured consumer with the authority"
+        );
     }
 }

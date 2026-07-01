@@ -237,6 +237,20 @@ impl ResourceDaemon {
         clog_info!("🧮 ResourceDaemon: consumer '{id}' registered");
     }
 
+    /// The ids of every registered leaseholder, in registration order. A cheap
+    /// read of the registry (not the accounting lock) — used to confirm a
+    /// consumer is wired in (e.g. serving registering itself at boot) and, on
+    /// the grid, to enumerate what a node measures without waiting for a board
+    /// tick. Quarantined consumers are still listed; quarantine gates polling,
+    /// not membership.
+    pub fn consumer_ids(&self) -> Vec<String> {
+        self.consumers
+            .read()
+            .iter()
+            .map(|c| c.consumer_id().to_string())
+            .collect()
+    }
+
     // ---- hot, lock-free reads ----------------------------------------------
 
     /// Latest board — a `watch` borrow via the embedded channel, never the
