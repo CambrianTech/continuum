@@ -126,6 +126,21 @@ mod tests {
     use crate::model_registry::catalog;
     use crate::model_registry::types::{Arch, Capability};
 
+    /// Write a minimal but STRUCTURALLY VALID empty GGUF (magic + v3 header +
+    /// zero tensors + zero metadata) so a test that only exercises path
+    /// resolution has a parseable artifact at the resolved path. Registry load
+    /// hydrates every local row from its GGUF header now, so a fixture standing
+    /// in for "a model is present here" must be a real GGUF, not `b"gguf"` — a
+    /// present-but-unparseable file is (correctly) a fail-loud broken artifact.
+    fn write_empty_gguf(path: &std::path::Path) {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"GGUF"); // magic
+        bytes.extend_from_slice(&3u32.to_le_bytes()); // version
+        bytes.extend_from_slice(&0u64.to_le_bytes()); // tensor_count
+        bytes.extend_from_slice(&0u64.to_le_bytes()); // metadata_kv_count
+        std::fs::write(path, bytes).unwrap();
+    }
+
     // what this catches: from_catalog must reject two models sharing an id
     // rather than silently letting the second clobber the first.
     #[test]
@@ -262,7 +277,7 @@ mod tests {
             );
             std::fs::create_dir_all(&cached).unwrap();
             let gguf = cached.join("qwen3.5-4b-code-forged-Q4_K_M.gguf");
-            std::fs::write(&gguf, b"gguf").unwrap();
+            write_empty_gguf(&gguf);
 
             let mut forged = catalog::models()
                 .into_iter()

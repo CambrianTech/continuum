@@ -27,13 +27,28 @@
 //! and for discovery-built rows (drop a GGUF → the model appears) where
 //! the artifact is the only source.
 //!
+//! **Sensory capabilities are ADDITIVE, not sentinel-filled.** A local
+//! multimodal model carries a second artifact — the mmproj (multimodal
+//! projector) GGUF — whose own `clip.has_vision_encoder` /
+//! `clip.has_audio_encoder` header keys are the authoritative statement of
+//! which raw modalities the model ingests natively. This is what LiveKit
+//! media routing keys off: a model that `has(Vision)`/`has(AudioInput)`
+//! consumes a camera/mic track directly; a model that does not gets the
+//! sensory bridge (STT / TTS / vision-describe / object-detect → text).
+//! When an mmproj is present and readable, hydration INSERTS the encoders
+//! it declares into the capability set — it never removes a hand-authored
+//! capability (the catalog stays the offline-truth override, so the
+//! curated rows work in CI without the projector file on disk). The win is
+//! the dropped-in projector model that named no caps: it still becomes
+//! correctly sighted/hearing from its own artifact, never from a name guess.
+//!
 //! Hydration is OPPORTUNISTIC enrichment, not a load precondition: if the
 //! GGUF isn't on disk yet (model not downloaded), absent fields stay at
 //! their sentinel — the catalog row's hand-authored values, if any, still
 //! stand. The only error this surfaces is a GGUF that IS present but
 //! unparseable (a genuinely broken artifact the row depends on).
 
-use super::types::{Arch, Model};
+use super::types::{Arch, Capability, Model};
 use candle_core::quantized::gguf_file;
 use std::path::Path;
 
@@ -61,6 +76,11 @@ struct GgufFacts {
 /// GGUF is present but cannot be opened/parsed — a broken artifact the
 /// row depends on, which is a fail-loud condition, not a thing to guess.
 pub fn hydrate_model_from_gguf(model: &mut Model) -> Result<(), String> {
+    // Sensory caps live on their own artifact (the mmproj) with their own
+    // gate, independent of the main-GGUF fields below — run it first so a
+    // fully-specified-but-projector-bearing row still gets its modalities.
+    hydrate_sensory_caps_from_mmproj(model)?;
+
     let needs_arch = model.arch == Arch::Unknown;
     let needs_context = model.context_window == 0;
     let needs_template = model.chat_template.is_none();
@@ -102,6 +122,77 @@ pub fn hydrate_model_from_gguf(model: &mut Model) -> Result<(), String> {
     }
 
     Ok(())
+}
+
+/// Insert the native input modalities the model's multimodal projector
+/// declares, from the projector's own header — the authoritative source for
+/// "does this model see / hear raw pixels / raw audio". Additive: it never
+/// removes a hand-authored capability (the catalog override stands), it only
+/// fills what a projector-bearing model didn't spell out. No-op when there's
+/// no projector path (text-only model) or the projector isn't on disk yet
+/// (opportunistic, same contract as the main GGUF read). A projector that IS
+/// present but unparseable is a broken artifact the row points at — fail loud.
+fn hydrate_sensory_caps_from_mmproj(model: &mut Model) -> Result<(), String> {
+    let Some(path) = model.mmproj_local_path.clone() else {
+        return Ok(());
+    };
+    if !path.exists() {
+        return Ok(());
+    }
+    let encoders = read_projector_encoders(&path).map_err(|e| {
+        format!(
+            "hydrating sensory caps for `{}` from projector {}: {e}",
+            model.id,
+            path.display()
+        )
+    })?;
+    apply_projector_encoders(model, encoders);
+    Ok(())
+}
+
+/// Which raw-input encoders a multimodal projector carries. Each maps to the
+/// [`Capability`] the model gains: a vision encoder ⇒ [`Capability::Vision`],
+/// an audio encoder ⇒ [`Capability::AudioInput`]. Output modalities
+/// ([`Capability::AudioOutput`]) are NOT a projector fact — a projector is an
+/// input adapter — so they stay catalog-authored until validated.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ProjectorEncoders {
+    has_vision: bool,
+    has_audio: bool,
+}
+
+/// Fold a projector's declared encoders into the model's capability set.
+/// Pure and additive — the single place the projector's input modalities
+/// meet the registry's [`Capability`] vocabulary.
+fn apply_projector_encoders(model: &mut Model, encoders: ProjectorEncoders) {
+    if encoders.has_vision {
+        model.capabilities.insert(Capability::Vision);
+    }
+    if encoders.has_audio {
+        model.capabilities.insert(Capability::AudioInput);
+    }
+}
+
+/// Read a multimodal projector GGUF's `clip.has_*_encoder` flags. Opening or
+/// parsing failure is an error (broken artifact); a missing individual flag
+/// is a definite `false` — the projector spec writes the flag when the
+/// encoder is present, so its absence is a real "no such encoder", not an
+/// unknown to guess around.
+fn read_projector_encoders(path: &Path) -> Result<ProjectorEncoders, String> {
+    let mut file = std::fs::File::open(path).map_err(|e| format!("open projector: {e}"))?;
+    let content =
+        gguf_file::Content::read(&mut file).map_err(|e| format!("read projector: {e}"))?;
+    let flag = |key: &str| {
+        content
+            .metadata
+            .get(key)
+            .and_then(|v| v.to_bool().ok())
+            .unwrap_or(false)
+    };
+    Ok(ProjectorEncoders {
+        has_vision: flag("clip.has_vision_encoder"),
+        has_audio: flag("clip.has_audio_encoder"),
+    })
 }
 
 /// Translate a GGUF `general.architecture` string into the registry's
@@ -259,6 +350,84 @@ mod tests {
         assert_eq!(m.arch, Arch::Unknown);
         assert_eq!(m.context_window, 0);
         assert!(m.chat_template.is_none());
+    }
+
+    // what this catches: the projector→capability fold is additive. A vision
+    // encoder grants Vision, an audio encoder grants AudioInput, both grant
+    // both — and an existing hand-authored cap is preserved, never clobbered.
+    // This is the exact fact LiveKit routing reads to send a raw track to a
+    // native model vs bridging (STT/TTS/describe) for one that lacks the cap.
+    #[test]
+    fn projector_encoders_fold_additively_into_capabilities() {
+        // vision-only projector → gains Vision, keeps its text caps
+        let mut m = model_with(Arch::Qwen2, 32_768, None);
+        apply_projector_encoders(
+            &mut m,
+            ProjectorEncoders {
+                has_vision: true,
+                has_audio: false,
+            },
+        );
+        assert!(m.has(Capability::Vision));
+        assert!(!m.has(Capability::AudioInput));
+        assert!(m.has(Capability::TextGeneration), "existing caps preserved");
+
+        // omni projector → gains both input modalities
+        let mut omni = model_with(Arch::Qwen2, 32_768, None);
+        apply_projector_encoders(
+            &mut omni,
+            ProjectorEncoders {
+                has_vision: true,
+                has_audio: true,
+            },
+        );
+        assert!(omni.has(Capability::Vision));
+        assert!(omni.has(Capability::AudioInput));
+
+        // a projector never asserts output modality — that's not its job
+        assert!(!omni.has(Capability::AudioOutput));
+
+        // re-applying is idempotent (BTreeSet insert), and a hand-authored
+        // cap the projector doesn't declare survives a re-fold
+        omni.capabilities.insert(Capability::AudioOutput);
+        apply_projector_encoders(
+            &mut omni,
+            ProjectorEncoders {
+                has_vision: true,
+                has_audio: true,
+            },
+        );
+        assert!(omni.has(Capability::AudioOutput), "override not clobbered");
+    }
+
+    // what this catches: a text-only model (no projector path) must not touch
+    // the filesystem for sensory caps and must gain none — the 3.5B-class model
+    // that routes through the STT/TTS/describe bridge, not raw tracks.
+    #[test]
+    fn text_only_model_gets_no_sensory_caps_and_no_io() {
+        let mut m = model_with(Arch::Qwen35, 262144, Some("{{ t }}"));
+        m.parameter_count = 4_000_000_000; // fully specified: main gate is a no-op
+        assert!(m.mmproj_local_path.is_none());
+        hydrate_model_from_gguf(&mut m).expect("no projector, no work, no error");
+        assert!(!m.has(Capability::Vision));
+        assert!(!m.has(Capability::AudioInput));
+    }
+
+    // what this catches: a projector path that points at a present-but-broken
+    // file is a fail-loud artifact error naming the model — not a silent skip
+    // that would leave a multimodal model mysteriously blind. (An ABSENT
+    // projector path is the opportunistic-skip case, covered above.)
+    #[test]
+    fn broken_projector_fails_loud() {
+        let dir = tempfile::tempdir().unwrap();
+        let bogus = dir.path().join("mmproj-broken.gguf");
+        std::fs::write(&bogus, b"not a real gguf").unwrap();
+        let mut m = model_with(Arch::Qwen2, 32_768, Some("{{ t }}"));
+        m.parameter_count = 7_000_000_000;
+        m.mmproj_local_path = Some(bogus);
+        let err = hydrate_model_from_gguf(&mut m).expect_err("broken projector must surface");
+        assert!(err.contains("test/model"), "error names the model: {err}");
+        assert!(err.contains("projector"), "error names the artifact: {err}");
     }
 
     // what this catches: a present-but-unparseable GGUF that the row DEPENDS
