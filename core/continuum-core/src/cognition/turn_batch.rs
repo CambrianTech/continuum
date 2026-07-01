@@ -18,7 +18,7 @@ use ts_rs::TS;
 use uuid::Uuid;
 
 /// Message/event that starts one cognition turn.
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 #[ts(
     export,
@@ -39,7 +39,7 @@ pub struct RecipeTurnTrigger {
 /// Deliberately smaller than `PersonaContext`: no full system prompt, no
 /// recent history, no media blobs. The batch planner should be cheap enough
 /// to run before any heavyweight context build.
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 #[ts(
     export,
@@ -60,7 +60,7 @@ pub struct RecipePersonaCandidate {
 }
 
 /// Caller-supplied policy for one RAG source.
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 #[ts(
     export,
@@ -83,7 +83,7 @@ fn default_true() -> bool {
 }
 
 /// IPC request for `cognition/plan-turn-batch`.
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 #[ts(
     export,

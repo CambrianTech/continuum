@@ -39,6 +39,7 @@ pub mod has_evaluated;
 pub mod inbox_create;
 pub mod inbox_drain_frame;
 pub mod mark_evaluated;
+pub mod plan_turn_batch;
 pub mod recall_engrams;
 pub mod record_content;
 pub mod register_domain_keywords;
@@ -86,8 +87,9 @@ use track_response::TrackResponse;
 ///
 /// The stateless oxidizer commands ([`should_respond`], [`check_redundancy`],
 /// [`generate_response`], [`embed_tools`], [`semantic_search_tools`],
-/// [`validate_response_decision`], [`score_interaction`], [`check_adequacy`]) hold no
-/// module state, self-route via `inventory`, and are NOT listed here.
+/// [`validate_response_decision`], [`score_interaction`], [`check_adequacy`],
+/// [`plan_turn_batch`]) hold no module state, self-route via `inventory`, and are NOT
+/// listed here.
 pub fn command_objects(state: Arc<CognitionState>) -> Vec<Arc<dyn DynCommand>> {
     vec![
         Arc::new(CacheMessage {
