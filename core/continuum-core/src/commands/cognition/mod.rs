@@ -30,6 +30,7 @@ pub mod genome_evict_under_pressure;
 pub mod genome_record_activity;
 pub mod genome_state;
 pub mod genome_sync;
+pub mod get_state;
 pub mod has_evaluated;
 pub mod inbox_create;
 pub mod inbox_drain_frame;
@@ -53,6 +54,7 @@ use genome_evict_under_pressure::GenomeEvictUnderPressure;
 use genome_record_activity::GenomeRecordActivity;
 use genome_state::GenomeState;
 use genome_sync::GenomeSync;
+use get_state::GetState;
 use has_evaluated::HasEvaluated;
 use inbox_create::InboxCreate;
 use inbox_drain_frame::InboxDrainFrame;
@@ -130,6 +132,9 @@ pub fn command_objects(state: Arc<CognitionState>) -> Vec<Arc<dyn DynCommand>> {
             state: state.clone(),
         }),
         Arc::new(EnqueueMessage {
+            state: state.clone(),
+        }),
+        Arc::new(GetState {
             state: state.clone(),
         }),
         Arc::new(InboxDrainFrame { state }),

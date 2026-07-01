@@ -253,28 +253,9 @@ impl ServiceModule for CognitionModule {
             // — see commands/cognition/enqueue_message.rs. The wire→domain conversion now
             // lives as InboxMessageRequest::to_inbox_message (ipc/protocol.rs).
 
-            "cognition/get-state" => {
-                let _timer = TimingGuard::new("module", "cognition_get_state");
-                let persona_uuid = p.uuid("persona_id")?;
-
-                let persona = self
-                    .state
-                    .personas
-                    .get(&persona_uuid)
-                    .ok_or_else(|| format!("No cognition for {persona_uuid}"))?;
-
-                let state = persona.engine.state();
-                Ok(CommandResult::Json(serde_json::json!({
-                    "energy": state.energy,
-                    "attention": state.attention,
-                    "mood": format!("{:?}", state.mood).to_lowercase(),
-                    "inbox_load": state.inbox_load,
-                    "last_activity_time": state.last_activity_time,
-                    "response_count": state.response_count,
-                    "compute_budget": state.compute_budget,
-                    "service_cadence_ms": state.service_cadence_ms(),
-                })))
-            }
+            // cognition/get-state migrated to the typed DynCommand registry (Slice 8)
+            // — see commands/cognition/get_state.rs (dep-holding, access: Internal,
+            // camelCase GetStateResult projection of PersonaState + service_cadence_ms).
 
             // inbox/create + inbox/drain-frame migrated to the typed DynCommand registry
             // (Slice 7) — see commands/cognition/{inbox_create,inbox_drain_frame}.rs. The
