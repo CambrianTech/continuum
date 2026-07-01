@@ -24,11 +24,11 @@
 //! - `cognition/configure-rate-limiter`: Configure rate limiter params
 //! - `cognition/select-model`: 4-tier model priority chain
 //! - `cognition/sync-adapters`: Sync adapter registry from TypeScript
-//! - `cognition/genome-activate-skill`: LRU eviction + skill activation
-//! - `cognition/genome-sync`: Sync full adapter state from TypeScript
-//! - `cognition/genome-state`: Get current genome paging state
-//! - `cognition/genome-evict-under-pressure`: Drive eviction to target pressure (broker lever)
 //! - `cognition/check-adequacy`: Batch adequacy check
+//!
+//! The `cognition/genome-*` family (activate-skill, sync, state, evict-under-pressure,
+//! record-activity, coverage-report) migrated to the typed DynCommand registry —
+//! see `commands/cognition/` and `command_objects` there.
 //! - `inbox/create`: Create persona inbox (alias for create-engine)
 //!
 //! Uses `Params` helper for typed parameter extraction.
@@ -954,146 +954,12 @@ impl ServiceModule for CognitionModule {
             // =================================================================
             // Genome Paging (LRU eviction + memory budget decisions)
             // =================================================================
-            "cognition/genome-activate-skill" => {
-                let _timer = TimingGuard::new("module", "cognition_genome_activate_skill");
-                let persona_uuid = p.uuid("persona_id")?;
-                let skill_name = p.str("skill_name")?.to_string();
-                let gpu_budget = self.state.per_persona_budget_mb();
-                // 0 or missing = use GPU-detected budget
-                let ts_budget = p.f32_or("memory_budget_mb", 0.0);
-                let memory_budget_mb = if ts_budget > 0.0 {
-                    ts_budget
-                } else {
-                    gpu_budget
-                };
-
-                let now_ms = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_millis() as u64;
-
-                let mut persona = get_or_create_persona!(self, persona_uuid);
-                persona.genome_engine.memory_budget_mb = memory_budget_mb;
-                let result = persona.genome_engine.activate_skill(&skill_name, now_ms);
-
-                log_info!(
-                    "module",
-                    "cognition",
-                    "genome-activate-skill {}: {} activated={}, evicted={:?}, to_load={:?} ({:.0}μs)",
-                    persona_uuid,
-                    skill_name,
-                    result.activated,
-                    result.evicted,
-                    result.to_load,
-                    result.decision_time_us
-                );
-
-                Ok(CommandResult::Json(
-                    serde_json::to_value(&result).map_err(|e| format!("Serialize error: {e}"))?,
-                ))
-            }
-
-            "cognition/genome-sync" => {
-                let _timer = TimingGuard::new("module", "cognition_genome_sync");
-                let persona_uuid = p.uuid("persona_id")?;
-                let gpu_budget = self.state.per_persona_budget_mb();
-                // 0 or missing = use GPU-detected budget
-                let ts_budget = p.f32_or("memory_budget_mb", 0.0);
-                let memory_budget_mb = if ts_budget > 0.0 {
-                    ts_budget
-                } else {
-                    gpu_budget
-                };
-                let adapters_json = params
-                    .get("adapters")
-                    .and_then(|v| v.as_array())
-                    .ok_or("Missing adapters array")?;
-
-                let adapters: Vec<GenomeAdapterInfo> = adapters_json
-                    .iter()
-                    .filter_map(|v| serde_json::from_value(v.clone()).ok())
-                    .collect();
-
-                let adapter_count = adapters.len();
-                let active_count = adapters.iter().filter(|a| a.is_loaded).count();
-
-                let mut persona = get_or_create_persona!(self, persona_uuid);
-                persona.genome_engine.memory_budget_mb = memory_budget_mb;
-                persona.genome_engine.sync_state(adapters);
-
-                log_info!(
-                    "module",
-                    "cognition",
-                    "genome-sync {}: {} adapters ({} active), budget={}MB, used={}MB",
-                    persona_uuid,
-                    adapter_count,
-                    active_count,
-                    persona.genome_engine.memory_budget_mb,
-                    persona.genome_engine.memory_used_mb
-                );
-
-                Ok(CommandResult::Json(serde_json::json!({
-                    "synced": true,
-                    "adapter_count": adapter_count,
-                    "active_count": active_count,
-                    "memory_used_mb": persona.genome_engine.memory_used_mb,
-                    "memory_pressure": persona.genome_engine.memory_pressure(),
-                })))
-            }
-
-            "cognition/genome-state" => {
-                let _timer = TimingGuard::new("module", "cognition_genome_state");
-                let persona_uuid = p.uuid("persona_id")?;
-
-                let persona = self
-                    .state
-                    .personas
-                    .get(&persona_uuid)
-                    .ok_or_else(|| format!("No cognition for {persona_uuid}"))?;
-
-                let state = persona.genome_engine.state();
-                Ok(CommandResult::Json(
-                    serde_json::to_value(&state).map_err(|e| format!("Serialize error: {e}"))?,
-                ))
-            }
-
-            // The PressureBroker lever — drive eviction down to a target
-            // pressure ratio without an activate_skill call. Uses the same
-            // formula and victim selection as activate_skill's implicit
-            // eviction; respects critical-adapter protection (priority > 0.9).
-            // Returns bytes_freed + post-eviction state. When the broker
-            // singleton lands and registers per-persona ResourcePool
-            // wrappers, this command is what those wrappers will call;
-            // until then it's manually testable for verification.
-            "cognition/genome-evict-under-pressure" => {
-                let _timer = TimingGuard::new("module", "cognition_genome_evict_under_pressure");
-                let persona_uuid = p.uuid("persona_id")?;
-                let target_pressure = p.f32_or("target_pressure", 0.75);
-
-                let mut persona = get_or_create_persona!(self, persona_uuid);
-                let pressure_before = persona.genome_engine.memory_pressure();
-                let bytes_freed = persona.genome_engine.evict_under_pressure(target_pressure);
-                let pressure_after = persona.genome_engine.memory_pressure();
-
-                log_info!(
-                    "module",
-                    "cognition",
-                    "genome-evict-under-pressure {}: target={:.2} pressure {:.2} → {:.2}, freed {} bytes",
-                    persona_uuid,
-                    target_pressure,
-                    pressure_before,
-                    pressure_after,
-                    bytes_freed
-                );
-
-                Ok(CommandResult::Json(json!({
-                    "personaId": persona_uuid.to_string(),
-                    "targetPressure": target_pressure,
-                    "pressureBefore": pressure_before,
-                    "pressureAfter": pressure_after,
-                    "bytesFreed": bytes_freed,
-                })))
-            }
+            // Migrated to the typed DynCommand registry (Slice 4):
+            //   cognition/genome-activate-skill      → commands/cognition/genome_activate_skill.rs
+            //   cognition/genome-sync                → commands/cognition/genome_sync.rs
+            //   cognition/genome-state               → commands/cognition/genome_state.rs
+            //   cognition/genome-evict-under-pressure → commands/cognition/genome_evict_under_pressure.rs
+            // Exposed via commands/cognition/mod.rs::command_objects (dep-holding on CognitionState).
 
             // =================================================================
             // Persona response (shared cognition pipeline entry point)
@@ -1398,48 +1264,10 @@ impl ServiceModule for CognitionModule {
             // =================================================================
             // Domain Activity Tracking & Gap Detection
             // =================================================================
-            "cognition/genome-record-activity" => {
-                let _timer = TimingGuard::new("module", "cognition_genome_record_activity");
-                let persona_uuid = p.uuid("persona_id")?;
-                let domain = p.str("domain")?.to_string();
-                let success = p.bool_or("success", true);
-
-                let mut persona = get_or_create_persona!(self, persona_uuid);
-                persona.genome_engine.record_activity(&domain, success);
-
-                Ok(CommandResult::Json(serde_json::json!({
-                    "recorded": true,
-                    "domain": domain,
-                    "success": success,
-                })))
-            }
-
-            "cognition/genome-coverage-report" => {
-                let _timer = TimingGuard::new("module", "cognition_genome_coverage_report");
-                let persona_uuid = p.uuid("persona_id")?;
-
-                let persona = self
-                    .state
-                    .personas
-                    .get(&persona_uuid)
-                    .ok_or_else(|| format!("No cognition for {persona_uuid}"))?;
-
-                let report = persona.genome_engine.coverage_report();
-
-                log_info!(
-                    "module",
-                    "cognition",
-                    "genome-coverage-report {}: {} covered, {} gaps, ratio={:.2}",
-                    persona_uuid,
-                    report.covered.len(),
-                    report.gaps.len(),
-                    report.coverage_ratio
-                );
-
-                Ok(CommandResult::Json(
-                    serde_json::to_value(&report).map_err(|e| format!("Serialize error: {e}"))?,
-                ))
-            }
+            // Migrated to the typed DynCommand registry (Slice 4):
+            //   cognition/genome-record-activity  → commands/cognition/genome_record_activity.rs
+            //   cognition/genome-coverage-report  → commands/cognition/genome_coverage_report.rs
+            // Exposed via commands/cognition/mod.rs::command_objects (dep-holding on CognitionState).
 
             // =================================================================
             // GPU Budget Query (for TypeScript genome initialization)

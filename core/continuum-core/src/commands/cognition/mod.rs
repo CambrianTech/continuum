@@ -20,6 +20,12 @@ use crate::sdk_codegen::DynCommand;
 pub mod cache_message;
 pub mod check_content_dedup;
 pub mod check_redundancy;
+pub mod genome_activate_skill;
+pub mod genome_coverage_report;
+pub mod genome_evict_under_pressure;
+pub mod genome_record_activity;
+pub mod genome_state;
+pub mod genome_sync;
 pub mod has_evaluated;
 pub mod mark_evaluated;
 pub mod record_content;
@@ -28,6 +34,12 @@ pub mod track_response;
 
 use cache_message::CacheMessage;
 use check_content_dedup::CheckContentDedup;
+use genome_activate_skill::GenomeActivateSkill;
+use genome_coverage_report::GenomeCoverageReport;
+use genome_evict_under_pressure::GenomeEvictUnderPressure;
+use genome_record_activity::GenomeRecordActivity;
+use genome_state::GenomeState;
+use genome_sync::GenomeSync;
 use has_evaluated::HasEvaluated;
 use mark_evaluated::MarkEvaluated;
 use record_content::RecordContent;
@@ -57,6 +69,24 @@ pub fn command_objects(state: Arc<CognitionState>) -> Vec<Arc<dyn DynCommand>> {
         Arc::new(MarkEvaluated {
             state: state.clone(),
         }),
-        Arc::new(TrackResponse { state }),
+        Arc::new(TrackResponse {
+            state: state.clone(),
+        }),
+        Arc::new(GenomeActivateSkill {
+            state: state.clone(),
+        }),
+        Arc::new(GenomeSync {
+            state: state.clone(),
+        }),
+        Arc::new(GenomeState {
+            state: state.clone(),
+        }),
+        Arc::new(GenomeEvictUnderPressure {
+            state: state.clone(),
+        }),
+        Arc::new(GenomeRecordActivity {
+            state: state.clone(),
+        }),
+        Arc::new(GenomeCoverageReport { state }),
     ]
 }
