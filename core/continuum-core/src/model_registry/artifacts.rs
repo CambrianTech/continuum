@@ -357,6 +357,24 @@ fn home_dir_string() -> Option<String> {
         .or_else(|| std::env::var("USERPROFILE").ok())
 }
 
+/// Write a minimal but STRUCTURALLY VALID empty GGUF (magic + v3 header +
+/// zero tensors + zero metadata) at `path`. The canonical stand-in for "a
+/// model is present here" in resolution tests: the registry hydrates every
+/// resolved GGUF's header at load (param count, arch, context, sensory caps),
+/// so a fixture standing in for a present model MUST be a parseable GGUF —
+/// `b"gguf"` is a lie that fails loud the moment hydration reads it (and,
+/// because `HOME` is a process-global the resolver reads, that lie leaks into
+/// any concurrently-running catalog-load test). One writer, one truth.
+#[cfg(test)]
+pub(crate) fn write_empty_gguf(path: &Path) {
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(b"GGUF"); // magic
+    bytes.extend_from_slice(&3u32.to_le_bytes()); // version
+    bytes.extend_from_slice(&0u64.to_le_bytes()); // tensor_count
+    bytes.extend_from_slice(&0u64.to_le_bytes()); // metadata_kv_count
+    std::fs::write(path, bytes).unwrap();
+}
+
 #[cfg(test)]
 pub(crate) fn with_test_home<T>(home: &Path, f: impl FnOnce() -> T) -> T {
     use std::sync::{Mutex, OnceLock};
@@ -433,7 +451,7 @@ mod tests {
             );
             fs::create_dir_all(&cached).unwrap();
             let gguf = cached.join("qwen3.5-4b-code-forged-Q4_K_M.gguf");
-            fs::write(&gguf, b"gguf").unwrap();
+            write_empty_gguf(&gguf);
 
             let resolved = resolve_gguf_for_model(&model(
                 "continuum-ai/qwen3.5-4b-code-forged-GGUF",
@@ -451,7 +469,7 @@ mod tests {
         with_test_home(home.path(), || {
             let explicit = home.path().join("models").join("model.gguf");
             fs::create_dir_all(explicit.parent().unwrap()).unwrap();
-            fs::write(&explicit, b"gguf").unwrap();
+            write_empty_gguf(&explicit);
             let resolved = resolve_gguf_for_model(&model(
                 "continuum-ai/qwen3.5-4b-code-forged-GGUF",
                 Some("huggingface.co/continuum-ai/qwen3.5-4b-code-forged-gguf"),
@@ -476,7 +494,7 @@ mod tests {
         ] {
             let d = root.path().join(dir);
             fs::create_dir_all(&d).unwrap();
-            fs::write(d.join("model-Q4_K_M.gguf"), b"gguf").unwrap();
+            write_empty_gguf(&d.join("model-Q4_K_M.gguf"));
         }
 
         let resolved =
