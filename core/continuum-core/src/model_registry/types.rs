@@ -414,6 +414,18 @@ pub struct Model {
     /// EOS id in the GGUF at next bake; until then this is the bridge.
     #[serde(default)]
     pub stop_sequences: Vec<String>,
+    /// Total trained parameter count, as the artifact itself declares it
+    /// (`general.parameter_count` in the GGUF header, or the provider
+    /// `/v1/models` listing where one exposes it). `0` is the absent
+    /// sentinel — hydrated once at registry load from the authoritative
+    /// source and kept on the row, NEVER re-derived from a name substring
+    /// (`"4b"`, `"7b"`) at a call site. This is the size fact model-fit
+    /// selection reads to pick "the largest model that fits this host":
+    /// param count × bytes-per-param (the quant) is the weight footprint.
+    /// Cloud models whose API doesn't report a count stay at `0` — an
+    /// honest "unknown", not a guess.
+    #[serde(default)]
+    pub parameter_count: u64,
 }
 
 impl Model {
@@ -422,6 +434,13 @@ impl Model {
     /// check — see CLAUDE.md's adapter axiom.
     pub fn has(&self, cap: Capability) -> bool {
         self.capabilities.contains(&cap)
+    }
+
+    /// Parameter count expressed in billions for display / fit math, or
+    /// `None` when the count is the absent sentinel (`0`). Derived from the
+    /// stored authoritative count — never parsed from the model name.
+    pub fn parameter_count_billions(&self) -> Option<f32> {
+        (self.parameter_count > 0).then(|| self.parameter_count as f32 / 1e9)
     }
 }
 

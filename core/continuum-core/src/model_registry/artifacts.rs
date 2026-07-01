@@ -420,6 +420,7 @@ mod tests {
             chat_template: None,
             multi_party_strategy: Default::default(),
             stop_sequences: Vec::new(),
+            parameter_count: 0,
         }
     }
 

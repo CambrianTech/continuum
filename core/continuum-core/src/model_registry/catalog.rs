@@ -806,6 +806,11 @@ fn model(spec: ModelSpec) -> Model {
         chat_template: spec.chat_template.map(str::to_string),
         multi_party_strategy: spec.multi_party_strategy,
         stop_sequences: spec.stop_sequences.iter().map(|s| s.to_string()).collect(),
+        // Not a hand-authored fact: the size comes from the artifact's own
+        // `general.parameter_count` header, hydrated once at registry load
+        // ([`super::hydrate`]). The `ModelSpec` deliberately omits it so no
+        // human types "4B" into a row — the sentinel `0` means "ask the GGUF".
+        parameter_count: 0,
     }
 }
 

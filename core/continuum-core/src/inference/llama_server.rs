@@ -1208,6 +1208,7 @@ mod tests {
                 stop_sequences: Vec::new(),
                 multi_party_strategy: MultiPartyChatStrategy::ProperChatMlSingleParty,
                 mmproj_local_path: None,
+                parameter_count: 0,
             },
             context_window: 32768,
             lanes: 1,

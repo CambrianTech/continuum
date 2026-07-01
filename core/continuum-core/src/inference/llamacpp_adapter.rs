@@ -1407,6 +1407,7 @@ mod tests {
             chat_template: None,
             multi_party_strategy: MultiPartyChatStrategy::default(),
             stop_sequences: vec![],
+            parameter_count: 0,
         }
     }
 

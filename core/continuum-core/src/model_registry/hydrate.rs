@@ -14,11 +14,12 @@
 //! rope-scaled 262144 context window the GGUF's stated `context_length`
 //! understates). Hydration only fills a field left at its absent sentinel:
 //!
-//! | field             | absent sentinel    |
-//! |-------------------|--------------------|
-//! | `arch`            | [`Arch::Unknown`]  |
-//! | `context_window`  | `0`                |
-//! | `chat_template`   | `None`             |
+//! | field              | absent sentinel    |
+//! |--------------------|--------------------|
+//! | `arch`             | [`Arch::Unknown`]  |
+//! | `context_window`   | `0`                |
+//! | `chat_template`    | `None`             |
+//! | `parameter_count`  | `0`                |
 //!
 //! A fully-specified catalog row hydrates to a no-op (early return before
 //! the GGUF is even opened) — so every current row is unaffected. The
@@ -44,6 +45,13 @@ struct GgufFacts {
     architecture: Option<String>,
     context_length: Option<u32>,
     chat_template: Option<String>,
+    /// `general.parameter_count` — the model's own declared total parameter
+    /// count. `u64` because a 7B+ model overflows `u32`. This is the ONLY
+    /// authoritative source for the size fact: the alternative (parsing
+    /// `"4b"`/`"7b"` out of the model name) is exactly the string-sniff the
+    /// registry exists to kill. Absent (`None`) when the exporter omitted
+    /// the key — the row then keeps the sentinel `0`, an honest "unknown".
+    parameter_count: Option<u64>,
 }
 
 /// Fill a model's absent queryable fields from its resolved local GGUF.
@@ -56,7 +64,8 @@ pub fn hydrate_model_from_gguf(model: &mut Model) -> Result<(), String> {
     let needs_arch = model.arch == Arch::Unknown;
     let needs_context = model.context_window == 0;
     let needs_template = model.chat_template.is_none();
-    if !needs_arch && !needs_context && !needs_template {
+    let needs_param_count = model.parameter_count == 0;
+    if !needs_arch && !needs_context && !needs_template && !needs_param_count {
         return Ok(());
     }
 
@@ -84,6 +93,11 @@ pub fn hydrate_model_from_gguf(model: &mut Model) -> Result<(), String> {
     if needs_template {
         if let Some(template) = facts.chat_template {
             model.chat_template = Some(template);
+        }
+    }
+    if needs_param_count {
+        if let Some(count) = facts.parameter_count {
+            model.parameter_count = count;
         }
     }
 
@@ -134,10 +148,18 @@ fn read_gguf_facts(path: &Path) -> Result<GgufFacts, String> {
         .and_then(|v| v.to_string().ok())
         .cloned();
 
+    // `general.parameter_count` is a `u64` in the spec — a 7B model already
+    // overflows `u32`, so read it wide. Absent for exporters that omit it.
+    let parameter_count = content
+        .metadata
+        .get("general.parameter_count")
+        .and_then(|v| v.to_u64().ok());
+
     Ok(GgufFacts {
         architecture,
         context_length,
         chat_template,
+        parameter_count,
     })
 }
 
@@ -167,6 +189,7 @@ mod tests {
             chat_template: chat_template.map(str::to_string),
             multi_party_strategy: Default::default(),
             stop_sequences: Vec::new(),
+            parameter_count: 0,
         }
     }
 
@@ -192,11 +215,36 @@ mod tests {
     #[test]
     fn fully_specified_row_is_a_noop_even_with_a_bogus_gguf_path() {
         let mut m = model_with(Arch::Qwen35, 262144, Some("{{ template }}"));
+        // Fully specified now includes the param count — otherwise the row
+        // still needs hydration for that one fact and would open the file.
+        m.parameter_count = 4_000_000_000;
         m.gguf_local_path = Some(PathBuf::from("/nonexistent/broken.gguf"));
         hydrate_model_from_gguf(&mut m).expect("no-op must not read the file");
         assert_eq!(m.arch, Arch::Qwen35);
         assert_eq!(m.context_window, 262144);
         assert_eq!(m.chat_template.as_deref(), Some("{{ template }}"));
+        assert_eq!(m.parameter_count, 4_000_000_000);
+    }
+
+    // what this catches: `parameter_count` is wired into the needs-gate — a
+    // row that specifies arch/context/template but leaves the param count at
+    // its `0` sentinel is NOT a no-op; it must consult the artifact. With a
+    // bogus path that means a fail-loud read, proving the field participates
+    // in hydration rather than being silently skipped (which would leave the
+    // size fact permanently unknown and tempt a name-substring guess). The
+    // inverse — an explicit param count winning as an override — is covered
+    // by the fully-specified no-op test above.
+    #[test]
+    fn absent_param_count_alone_still_triggers_hydration() {
+        let dir = tempfile::tempdir().unwrap();
+        let bogus = dir.path().join("broken.gguf");
+        std::fs::write(&bogus, b"not a real gguf").unwrap();
+        let mut m = model_with(Arch::Qwen35, 262144, Some("{{ template }}"));
+        assert_eq!(m.parameter_count, 0, "the one absent queryable fact");
+        m.gguf_local_path = Some(bogus);
+        let err = hydrate_model_from_gguf(&mut m)
+            .expect_err("param count alone must still drive the read");
+        assert!(err.contains("test/model"), "error names the model: {err}");
     }
 
     // what this catches: a row with absent queryable fields but NO resolved

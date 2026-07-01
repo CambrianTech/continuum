@@ -269,6 +269,7 @@ mod tests {
             stop_sequences: vec!["<|im_end|>".to_string()],
             multi_party_strategy: MultiPartyChatStrategy::ProperChatMlSingleParty,
             mmproj_local_path: None,
+            parameter_count: 0,
         };
         Arc::new(
             Registry::from_catalog(vec![model], vec![llamacpp_provider])
