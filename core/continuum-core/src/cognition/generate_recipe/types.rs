@@ -17,7 +17,7 @@ use ts_rs::TS;
 /// fields TS `TemplateRegistry.list()` emits per entry that the prompt needs
 /// (name + description + required fields). Not the full internal template
 /// struct — only what the prompt renders.
-#[derive(Debug, Clone, Serialize, Deserialize, TS, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS, PartialEq, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 #[ts(
     export,
@@ -30,7 +30,7 @@ pub struct RecipeTemplateInfo {
 }
 
 /// Optional generation hints — mirrors TS `RecipeGenerateParams.hints` exactly.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, TS, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, TS, PartialEq, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 #[ts(
     export,
@@ -48,7 +48,7 @@ pub struct RecipeGenerateHints {
 }
 
 /// PR-1 input: pure data, no IPC, no global state.
-#[derive(Debug, Clone, Serialize, Deserialize, TS, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS, PartialEq, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 #[ts(
     export,

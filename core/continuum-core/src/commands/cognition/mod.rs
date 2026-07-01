@@ -27,6 +27,7 @@ pub mod configure_rate_limiter;
 pub mod create_engine;
 pub mod embed_tools;
 pub mod enqueue_message;
+pub mod generate_recipe;
 pub mod generate_response;
 pub mod genome_activate_skill;
 pub mod genome_coverage_report;
@@ -89,8 +90,8 @@ use track_response::TrackResponse;
 /// The stateless oxidizer commands ([`should_respond`], [`check_redundancy`],
 /// [`generate_response`], [`embed_tools`], [`semantic_search_tools`],
 /// [`validate_response_decision`], [`score_interaction`], [`check_adequacy`],
-/// [`plan_turn_batch`], [`rate_proposals`]) hold no module state, self-route via
-/// `inventory`, and are NOT listed here.
+/// [`plan_turn_batch`], [`rate_proposals`], [`generate_recipe`]) hold no module state,
+/// self-route via `inventory`, and are NOT listed here.
 pub fn command_objects(state: Arc<CognitionState>) -> Vec<Arc<dyn DynCommand>> {
     vec![
         Arc::new(CacheMessage {

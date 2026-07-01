@@ -48,12 +48,30 @@ fn default_model_for_provider(provider: &str) -> &'static str {
 
 /// Orchestrator request — extends `RecipeGenerationRequest` with optional
 /// per-call provider/model/temperature overrides. Carrier for what the
-/// TS path passes via `genParams`.
-#[derive(Debug, Clone)]
+/// TS path passes via `genParams`. This IS the typed params of
+/// `cognition/generate-recipe` (the whole `{ request, provider?, model?,
+/// temperature? }` payload deserializes into it), so it carries the full wire
+/// derive set + camelCase serde.
+#[derive(
+    Debug,
+    Clone,
+    serde::Serialize,
+    serde::Deserialize,
+    ts_rs::TS,
+    schemars::JsonSchema,
+)]
+#[serde(rename_all = "camelCase")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/cognition/GenerateRecipeOrchestratorParams.ts"
+)]
 pub struct GenerateRecipeOrchestratorParams {
     pub request: RecipeGenerationRequest,
+    #[ts(optional)]
     pub provider: Option<String>,
+    #[ts(optional)]
     pub model: Option<String>,
+    #[ts(optional)]
     pub temperature: Option<f32>,
 }
 
