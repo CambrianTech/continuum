@@ -17,6 +17,7 @@ use std::sync::Arc;
 use crate::modules::cognition::CognitionState;
 use crate::sdk_codegen::DynCommand;
 
+pub mod admit_inbox_message;
 pub mod cache_message;
 pub mod check_content_dedup;
 pub mod check_redundancy;
@@ -35,6 +36,7 @@ pub mod has_evaluated;
 pub mod inbox_create;
 pub mod inbox_drain_frame;
 pub mod mark_evaluated;
+pub mod recall_engrams;
 pub mod record_content;
 pub mod register_domain_keywords;
 pub mod set_sleep_mode;
@@ -42,6 +44,7 @@ pub mod should_respond;
 pub mod sync_domain_classifier;
 pub mod track_response;
 
+use admit_inbox_message::AdmitInboxMessage;
 use cache_message::CacheMessage;
 use check_content_dedup::CheckContentDedup;
 use classify_domain::ClassifyDomain;
@@ -59,6 +62,7 @@ use has_evaluated::HasEvaluated;
 use inbox_create::InboxCreate;
 use inbox_drain_frame::InboxDrainFrame;
 use mark_evaluated::MarkEvaluated;
+use recall_engrams::RecallEngrams;
 use record_content::RecordContent;
 use register_domain_keywords::RegisterDomainKeywords;
 use set_sleep_mode::SetSleepMode;
@@ -135,6 +139,12 @@ pub fn command_objects(state: Arc<CognitionState>) -> Vec<Arc<dyn DynCommand>> {
             state: state.clone(),
         }),
         Arc::new(GetState {
+            state: state.clone(),
+        }),
+        Arc::new(AdmitInboxMessage {
+            state: state.clone(),
+        }),
+        Arc::new(RecallEngrams {
             state: state.clone(),
         }),
         Arc::new(InboxDrainFrame { state }),

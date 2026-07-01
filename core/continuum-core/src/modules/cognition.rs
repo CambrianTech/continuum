@@ -259,8 +259,9 @@ impl ServiceModule for CognitionModule {
 
             // inbox/create + inbox/drain-frame migrated to the typed DynCommand registry
             // (Slice 7) — see commands/cognition/{inbox_create,inbox_drain_frame}.rs. The
-            // frame recording helpers (record_drained_turn_frame / turn_frame_replay_record)
-            // moved into inbox_drain_frame.rs with their sole consumer.
+            // frame-recording helper `record_drained_turn_frame` stays here (made
+            // pub(crate)) because the still-legacy Lane D arms below (persona/drain-turn-frame,
+            // persona/turn-execute) also call it; it moves out when they migrate.
 
             // ─── Lane D: PersonaTurnFrame wrap-in-Rust ──────────────
             //
@@ -449,120 +450,11 @@ impl ServiceModule for CognitionModule {
                 })))
             }
 
-            // ================================================================
-            // Admission Gate (continuum#1121 PR-4)
-            // ================================================================
-            // Run the persona's admission gate over an InboxMessage. Returns
-            // the typed AdmissionDecision (Admit/Drop/Quarantine) or a typed
-            // error. Records side-effects (admitted engram → store, content_hash
-            // → dedup record, AIRC event_id → replay-protection record).
-            //
-            // Caller responsibility: TS/IPC layer chooses WHEN to call this
-            // (typically per drained inbox frame). Persona state must already
-            // exist (created via cognition/create-engine or get_or_create_persona!).
-            "cognition/admit-inbox-message" => {
-                let _timer = TimingGuard::new("module", "cognition_admit_inbox_message");
-                let persona_uuid = p.uuid("persona_id")?;
-                let message_value = p.value("message").ok_or("Missing message")?;
-                let inbox_msg = parse_inbox_message(message_value)?;
-
-                let persona = self
-                    .state
-                    .personas
-                    .get(&persona_uuid)
-                    .ok_or_else(|| format!("No cognition for {persona_uuid}"))?;
-
-                // The TS-IPC `cognition/admit-inbox-message` caller wants
-                // the trace seam-count back in the response (it surfaces
-                // funnel telemetry to the TS observer), so this site DOES
-                // build a trace and passes Some. The in-process inline
-                // gate (`run_inline_admission_gate` below) passes None
-                // because it doesn't propagate the trace anywhere.
-                let mut trace = crate::persona::trace::CognitionTrace::new();
-                match persona.admission.admit(&inbox_msg, Some(&mut trace)) {
-                    Ok(decision) => Ok(CommandResult::Json(serde_json::json!({
-                        "decision": decision,
-                        "engram_count": persona.admission.engram_count(),
-                        "trace_seam_count": trace.seam_count(),
-                    }))),
-                    // TODO(#1121 PR-5+): return the typed `AdmissionError`
-                    // as JSON via serde so TS callers can pattern-match
-                    // on the variant (`EnvelopeVerificationFailed`,
-                    // `TrustBoundaryRejected`, `ReplayDetected`, etc.).
-                    // The current `format!()` flattens to a string, losing
-                    // the discriminant. Caller can still parse the prefix
-                    // for now; PR-5 swaps to `Err(serde_json::to_string(&err)?)`
-                    // or a CommandResult error variant that preserves shape.
-                    // (claude-tab-2 review nit on #1155.)
-                    Err(err) => Err(format!("admission error: {err}")),
-                }
-            }
-
-            // ================================================================
-            // Engram Recall Surface (continuum#1121 PR-5)
-            // ================================================================
-            // Query the persona's admitted-engram store. Modes:
-            //   - kind=recent + limit  → newest-first N engrams
-            //   - kind=by_id + id      → exact lookup by uuid
-            //   - kind=by_keyword + keyword + limit → case-insensitive substring
-            //   - kind=by_origin + origin (chat|airc|tool|self_reflection) + limit
-            // Defaults to kind=recent + limit=10 if no kind given.
-            //
-            // v1 backs against the in-memory engram Vec from PR-4. PR-6+
-            // swaps to ORM-backed store with the same API.
-            "cognition/recall-engrams" => {
-                let _timer = TimingGuard::new("module", "cognition_recall_engrams");
-                let persona_uuid = p.uuid("persona_id")?;
-                let kind = p.str_opt("kind").unwrap_or("recent");
-                let limit_u64 = p.u64_or("limit", 10);
-                let limit = usize::try_from(limit_u64)
-                    .map_err(|_| format!("limit too large: {limit_u64}"))?;
-
-                let persona = self
-                    .state
-                    .personas
-                    .get(&persona_uuid)
-                    .ok_or_else(|| format!("No cognition for {persona_uuid}"))?;
-
-                let engrams = match kind {
-                    "recent" => persona.admission.recall_recent(limit),
-                    "by_id" => {
-                        let id = p.uuid("id")?;
-                        persona.admission.recall_by_id(id).into_iter().collect()
-                    }
-                    "by_keyword" => {
-                        let keyword = p.str("keyword")?;
-                        persona.admission.recall_by_keyword(keyword, limit)
-                    }
-                    "by_origin" => {
-                        let origin_str = p.str("origin")?;
-                        let origin_kind = match origin_str {
-                            "chat" => crate::persona::EngramOriginKind::Chat,
-                            "airc" => crate::persona::EngramOriginKind::Airc,
-                            "tool" => crate::persona::EngramOriginKind::Tool,
-                            "self_reflection" => crate::persona::EngramOriginKind::SelfReflection,
-                            other => {
-                                return Err(format!(
-                                    "unknown origin kind '{other}'; expected one of: \
-                                     chat, airc, tool, self_reflection"
-                                ))
-                            }
-                        };
-                        persona.admission.recall_by_origin_kind(origin_kind, limit)
-                    }
-                    other => {
-                        return Err(format!(
-                            "unknown recall kind '{other}'; expected one of: \
-                             recent, by_id, by_keyword, by_origin"
-                        ))
-                    }
-                };
-
-                Ok(CommandResult::Json(serde_json::json!({
-                    "engrams": engrams,
-                    "count": engrams.len(),
-                })))
-            }
+            // cognition/admit-inbox-message + cognition/recall-engrams migrated to the
+            // typed DynCommand registry (Slice 9) — see
+            // commands/cognition/{admit_inbox_message,recall_engrams}.rs. The wire→domain
+            // conversion for admit now reuses InboxMessageRequest::to_inbox_message
+            // (ipc/protocol.rs), the one canonical seam.
 
             // ================================================================
             // Vision Describe (continuum#1276 — TS→Rust oxidizer)
