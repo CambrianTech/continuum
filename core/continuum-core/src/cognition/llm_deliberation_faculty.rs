@@ -314,6 +314,17 @@ impl LlmDeliberationFaculty {
             max_tokens: Some(self.completion_budget()),
             top_p: None,
             top_k: None,
+            // `None` here does NOT mean "no repetition penalty" — it defers to the
+            // adapter, which for llama.cpp-family gateways (selected by the TYPED
+            // `llamacpp_sampling_extensions` capability, never a provider-name match)
+            // forwards `repeat_penalty` to the server, defaulting to 1.1 when we pass
+            // None. That 1.1 is load-bearing: at llama.cpp's 1.0 default (disabled) a
+            // small model can collapse into degenerate repetition — reprinting one line
+            // to the token budget for a multi-minute, truncated turn (seen in the glass
+            // box). Cloud OpenAI-compat providers don't accept the non-standard field,
+            // so they correctly leave it off. TODO(#76): lift the penalty (like
+            // temperature) onto the Model row so it's a per-model default the faculty
+            // passes through, not an adapter magic number.
             repeat_penalty: None,
             stop_sequences: None,
             tools,
