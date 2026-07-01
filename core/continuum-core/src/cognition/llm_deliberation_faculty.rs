@@ -29,10 +29,12 @@ use std::sync::Arc;
 
 use arc_swap::ArcSwap;
 use async_trait::async_trait;
+use std::collections::BTreeSet;
 use std::fmt::Write as _;
 use uuid::Uuid;
 
 use super::persona_tools;
+use super::tool_relevance::{self, LexicalToolRelevance};
 use super::workspace::{BurstTurn, Contribution, Decision, Faculty, FacultyId, Workspace};
 use crate::ai::adapter::AIProviderAdapter;
 use crate::ai::types::{
@@ -139,8 +141,9 @@ pub struct LlmDeliberationFaculty {
     /// SPEAK. Non-empty → the persona can ACT. This set is NOT dumped into the
     /// prompt as full schemas (that flood — ~100 schemas, 4–5k tokens riding EVERY
     /// turn — is what starved the conversation AND overflowed `n_ctx`). Instead it
-    /// feeds the compact CATALOG (`tool_catalog`, injected into the system prompt)
-    /// and lets the act→observe path recognise a call by NAME. The model loads any
+    /// feeds the compact bookmarked MENU ([`persona_tools::render_tool_menu`], built
+    /// per turn in [`Self::compose_system`]) and lets the act→observe path recognise a
+    /// call by NAME. The model loads any
     /// one tool's full argument schema on demand via `commands/help`
     /// ([`describe_spec`](Self::describe_spec)) — progressive disclosure, the same
     /// shape Claude Code uses (deferred tools + a describe/search tool). An emitted
@@ -148,14 +151,6 @@ pub struct LlmDeliberationFaculty {
     /// — the act→observe driver ([`super::act_observe`]) does. Single-shot: one
     /// generation → one verdict (`Act` xor `Speak` xor `Pass`) per tick.
     tools: Vec<NativeToolSpec>,
-    /// The compact tool catalog injected into the system prompt — tool names plus
-    /// one-line summaries, grouped by category (see
-    /// [`persona_tools::render_tool_catalog`]). Rebuilt ONCE whenever the tool set
-    /// or the served window changes ([`Self::rebuild_tool_surface`]), never on the
-    /// per-tick path; `compose_system` reads this string by reference. Empty when
-    /// `tools` is empty (pure-chat persona). Two-tier (rich `name — summary`, or
-    /// terse `category: names` if the window is tiny) so it ALWAYS fits.
-    tool_catalog: String,
     /// The tools natively offered to the model each turn: the DISCOVERY PAIR —
     /// `commands/list` (filter/search the authorized surface → a small list of
     /// matching tools) + `commands/help` (load one named tool's full argument
@@ -219,7 +214,6 @@ impl LlmDeliberationFaculty {
             model: None,
             temperature: DEFAULT_TEMPERATURE,
             tools: Vec::new(),
-            tool_catalog: String::new(),
             native_specs: Vec::new(),
             working_memory: None,
             prompt_capture: None,
@@ -288,22 +282,21 @@ impl LlmDeliberationFaculty {
         self
     }
 
-    /// Rebuild the prompt-facing tool surface — the compact catalog text and the
-    /// `commands/help` native offering — from the authorized set + the served
-    /// window. Called ONCE whenever either changes (tool assignment, window
-    /// resize), NEVER on the per-tick path: `compose_system`/`prompt_view` read the
-    /// cached `tool_catalog`/`describe_spec` by reference. The catalog gets HALF the
-    /// window as its char budget (the other half is reserved for framing + burst +
-    /// enrichment), two-tier-rendered so it always fits even at `MIN_SERVE_CTX`.
+    /// Rebuild the native `commands/list` + `commands/help` offering (the DISCOVERY
+    /// PAIR) from the authorized set. Called ONCE whenever the tool set changes (tool
+    /// assignment), NEVER on the per-tick path. The prompt-facing tool MENU is no
+    /// longer cached here: it is an EXPANDABLE BOOKMARKED render
+    /// ([`persona_tools::render_tool_menu`]) whose per-category expansion depends on
+    /// what the persona is doing THIS turn, so `compose_system` builds it per-tick
+    /// from `self.tools` + the turn's `expanded` set (computed once in
+    /// [`Self::prompt_view`] — see [`Self::expanded_categories`]). The menu is small
+    /// by construction (a spine of headers + a few opened categories), so it needs no
+    /// window-budget reflow.
     fn rebuild_tool_surface(&mut self) {
         if self.tools.is_empty() {
-            self.tool_catalog.clear();
             self.native_specs.clear();
             return;
         }
-        let budget_chars =
-            (self.context_window as usize / 2).saturating_mul(GUARD_CHARS_PER_TOKEN);
-        self.tool_catalog = persona_tools::render_tool_catalog(&self.tools, budget_chars);
         self.native_specs = persona_tools::native_tool_specs();
     }
 
@@ -315,9 +308,10 @@ impl LlmDeliberationFaculty {
     /// faculty constructed outside the spawn path (tests, non-served).
     pub fn with_context_window(mut self, context_window: u32) -> Self {
         self.context_window = context_window;
-        // The catalog's char budget scales with the window, so a window change can
-        // flip the two-tier render (rich ↔ terse) — rebuild it.
-        self.rebuild_tool_surface();
+        // The tool surface no longer depends on the window (the menu is a per-turn
+        // render, the native discovery pair is window-independent), so a window
+        // change needs no tool-surface rebuild — only the prompt-fit BUDGET in
+        // `prompt_view` reads `context_window`, and it reads it live.
         self
     }
 
@@ -491,25 +485,30 @@ impl LlmDeliberationFaculty {
     /// Splitting the assembly this way lets `prompt_view` size the context to the
     /// served window before it is embedded (the framing wrapper is essential and
     /// small; the context is the variable part that must fit the remainder).
-    fn compose_system(&self, context: &str, directed: bool, self_initiated: bool) -> String {
+    fn compose_system(
+        &self,
+        context: &str,
+        expanded: &BTreeSet<String>,
+        directed: bool,
+        self_initiated: bool,
+    ) -> String {
         let mut s = String::with_capacity(self.system_prompt.len() + context.len() + 768);
         s.push_str(&self.system_prompt);
-        // NOTE ON ORDERING (KV-cache prefix reuse, measured 2026-06-23):
-        // Everything pushed BEFORE the volatile `context` below forms a
-        // byte-identical prefix across turns of the SAME directedness (identity +
-        // how-to-take-your-turn + the named tool catalog + silence affordance). The
-        // silence affordance is the ONLY directedness-gated segment, and it sits LAST
-        // among the static blocks — so toggling it (directed vs ambient) invalidates
-        // only its own tail tokens, never the heavy identity/catalog prefix; and
-        // within a run directedness is stable (the eval is always directed, live
-        // ambient turns always undirected), so the cache holds in practice. The
-        // llama.cpp server caches that prefix and re-prefills only the changed
-        // tail, so the static ~5k tokens prefill ONCE per session instead of
-        // ~27s every turn. The assembled `context` (recall + live situation) is
-        // the ONLY volatile part, so it is appended LAST — which also puts the
-        // live situation closest to the generation point (recency favors
-        // instruction-following). Do NOT move volatile content above the catalog:
-        // it breaks the cached prefix and every turn pays the full re-prefill.
+        // NOTE ON ORDERING (KV-cache prefix reuse, measured 2026-06-23; tool surface
+        // reworked 2026-07-01):
+        // The byte-identical cross-turn prefix is now the identity + how-to-take-your-
+        // turn block (`system_prompt` + `[Taking your turn]`). The TOOL block below is
+        // an EXPANDABLE BOOKMARKED MENU whose per-category expansion is chosen for what
+        // the persona is doing THIS turn ([`Self::expanded_categories`]), so it is
+        // per-turn volatile — it deliberately trades a byte-stable ~1.8k-token catalog
+        // that rode every prefill for a ~0.4k-token menu that varies (Joel 2026-06-29,
+        // [[adaptive-tool-surface-meets-you-in-the-middle]]; the flip is a net prefill
+        // cut when the stable prefix is NOT reused across turns — the observed regime,
+        // slot churn across ~14 personas on `--parallel 4`). The menu + `[Acting]` sit
+        // ABOVE the assembled `context` (recall + live situation), which stays LAST so
+        // the live situation is closest to the generation point (recency favors
+        // instruction-following). Everything from `[Your tools]` down is re-prefilled
+        // each turn; keep the identity/turn-taking prefix above it byte-stable.
         // Tell the reasoner it is taking a TURN in this activity, not analyzing a
         // transcript — otherwise small models outline the situation instead of
         // participating. The activity is NOT hardcoded (it is recipe-defined): the
@@ -554,17 +553,19 @@ impl LlmDeliberationFaculty {
         if !self.tools.is_empty() {
             s.push_str(
                 "\n\n[Your tools]\n\
-                 You can act, not just talk. Below are your tools, grouped by \
-                 category as `category: verb, verb, …` — each line is one category \
-                 and the verbs are the tools in it (so `code: run` means the tool \
-                 `code/run`). To call one: first call `commands/help` with its exact \
-                 full name (e.g. `code/run`) to see its arguments and an example, \
-                 then call the tool. (`commands/help` and `commands/list` are offered \
-                 to you directly — `commands/list` with a `filter` searches by keyword \
-                 if you need more than the names below; every other tool is called by \
-                 its full name.)\n",
+                 You can act, not just talk. Below is your tool menu, grouped by \
+                 category. Categories that fit what you're doing right now list their \
+                 verbs inline (`code: run(code, lang?), read(path)` means the tools \
+                 `code/run` and `code/read`, with their argument names — a `?` marks an \
+                 optional one). The rest are collapsed to a count \
+                 (`gpu (4 — commands/list --filter gpu)`); open one with \
+                 `commands/list --filter <category>` to see its verbs. To call any \
+                 tool: use its exact full name (e.g. `code/run`); call `commands/help` \
+                 on that name first if you need its full argument schema or an example. \
+                 (`commands/help` and `commands/list` are offered to you directly; \
+                 every other tool is called by its full name.)\n",
             );
-            s.push_str(&self.tool_catalog);
+            s.push_str(&persona_tools::render_tool_menu(&self.tools, expanded));
             s.push_str(
                 "\n[Acting]\n\
                  Do the thing the task asks for. If the answer is something you can \
@@ -679,21 +680,33 @@ impl LlmDeliberationFaculty {
         // via the chat template, outside `system`/`user`. Without counting it the
         // budget silently overshoots `n_ctx` and llama-server 400s ("exceeds context
         // size"). It is a SINGLE tiny schema (progressive disclosure — the rest of
-        // the surface lives in the catalog inside `system`, already counted by
+        // the surface lives in the tool MENU inside `system`, already counted by
         // `framing_tokens`), so this is a few dozen tokens, not the 4–5k the old
-        // full-registry dump cost. The catalog itself is part of `compose_system`,
+        // full-registry dump cost. The menu itself is part of `compose_system`,
         // so it is sized into the framing below — one accounting, not two.
         let budget = (self.context_window as usize)
             .saturating_sub(completion_reserve)
             .saturating_sub(self.describe_tool_tokens());
 
+        // Which tool categories the bookmarked menu OPENS this turn. Computed ONCE
+        // here from `ws` (NOT from the budgeted `context`, which is not built yet) and
+        // threaded IDENTICALLY into both `compose_system` calls below — so the
+        // framing-token ESTIMATE (empty context) and the FINAL render (real context)
+        // carry the exact same menu, and the budget math cannot under-count the tool
+        // block and overshoot `n_ctx`. See [`Self::expanded_categories`].
+        let expanded = self.expanded_categories(ws);
+
         // The framing wrapper alone (no assembled context) — essential + small.
-        // Pass the SAME directedness + self-initiation as the final compose below so
-        // the framing-token estimate matches the prompt actually sent (both the
-        // silence block and the [Your own time] block are gated and add a few dozen
-        // tokens each).
-        let framing_tokens =
-            est_tokens(&self.compose_system("", ws.directed_at_self, ws.self_initiated));
+        // Pass the SAME directedness + self-initiation + expansion as the final
+        // compose below so the framing-token estimate matches the prompt actually sent
+        // (both the silence block and the [Your own time] block are gated and add a
+        // few dozen tokens each).
+        let framing_tokens = est_tokens(&self.compose_system(
+            "",
+            &expanded,
+            ws.directed_at_self,
+            ws.self_initiated,
+        ));
 
         // The conversation — role-attributed turns built from `ws.turns` (own posts
         // → assistant, peers → user), kept to the most-recent tail when it would
@@ -714,9 +727,50 @@ impl LlmDeliberationFaculty {
         let context = self.render_assembled_context_within(ws, ctx_budget);
 
         DeliberationPromptView {
-            system: self.compose_system(&context, ws.directed_at_self, ws.self_initiated),
+            system: self.compose_system(
+                &context,
+                &expanded,
+                ws.directed_at_self,
+                ws.self_initiated,
+            ),
             messages,
         }
+    }
+
+    /// Choose which tool categories the bookmarked menu OPENS (lists verbs inline)
+    /// this turn, from what the persona is doing NOW. The relevance signal is the
+    /// live burst (`ws.world_state`) plus the enrichment already selected for the turn
+    /// (`ws.broadcast` — recall, working memory, situation); scored against the full,
+    /// UN-budgeted broadcast so the result is a pure function of `ws` (see the
+    /// same-set-into-both-composes note in [`Self::prompt_view`]). Lexical scorer
+    /// (outlier A, [`LexicalToolRelevance`]) — a neural embedding scorer is the
+    /// deferred outlier B. `sticky = None`: the "where you were" cursor is per-(user,
+    /// room) state owned by airc (task #89), not yet threaded here. Empty tool set →
+    /// empty (no menu at all).
+    fn expanded_categories(&self, ws: &Workspace) -> BTreeSet<String> {
+        if self.tools.is_empty() {
+            return BTreeSet::new();
+        }
+        let categories = persona_tools::group_categories(&self.tools);
+        // Relevance signal: the live situation + the turn's grounding. Budget-
+        // independent (full broadcast, not the trimmed context) so `expanded` is
+        // stable between the estimate and the final compose.
+        let mut signal = String::with_capacity(ws.world_state.len() + 256);
+        signal.push_str(&ws.world_state);
+        for c in &ws.broadcast {
+            if c.decision.is_none() {
+                signal.push('\n');
+                signal.push_str(&c.content);
+            }
+        }
+        tool_relevance::select_expanded_categories(
+            &LexicalToolRelevance,
+            &categories,
+            &signal,
+            None,
+            MAX_EXPANDED_CATEGORIES,
+            RELEVANCE_FLOOR,
+        )
     }
 
     /// Build the role-attributed conversation thread from the workspace's
@@ -823,6 +877,20 @@ impl LlmDeliberationFaculty {
 /// tokenize far denser than English — so we OVER-count tokens to stay safely
 /// under `n_ctx`. The completion reserve absorbs the remaining slack.
 const GUARD_CHARS_PER_TOKEN: usize = 3;
+
+/// How many tool categories the bookmarked menu may OPEN (list their verbs inline)
+/// on one turn. The rest render as collapsed one-line bookmarks. Bounded so the menu
+/// stays a small per-turn render (a spine of headers + a few opened categories) —
+/// the whole point of the flip away from the ~1.8k-token open-everything catalog.
+/// Consumed by [`LlmDeliberationFaculty::expanded_categories`].
+const MAX_EXPANDED_CATEGORIES: usize = 4;
+
+/// The minimum lexical-relevance score a category must clear to be OPENED by
+/// [`tool_relevance::select_expanded_categories`]. A small positive floor (not zero)
+/// so an off-task turn (pure chat, no tool vocabulary in the situation) opens NOTHING
+/// — she still sees the full header spine and reaches any tool via
+/// `commands/list --filter`. Tuned low: one on-topic keyword should open a category.
+const RELEVANCE_FLOOR: f32 = 0.02;
 
 /// Conservative token estimate for the window guard (see [`GUARD_CHARS_PER_TOKEN`]).
 fn est_tokens(s: &str) -> usize {
@@ -1360,20 +1428,28 @@ mod tests {
             faculty.describe_tool_tokens()
         );
 
-        // The CATEGORY INDEX rode into the system prompt — one line per category
-        // listing the VERB of every tool it holds (`category: verb, verb, …`, per
-        // commit ce13bd09c), so the persona sees real tool names without a 60-schema
-        // dump. The 60 tools all share category `cat`, so the line is `cat:` followed
-        // by the bare verbs (`command_0, command_1, …`) — names, not counts, not
-        // full slash-paths.
-        let framing = faculty.compose_system("", false, false);
+        // The bookmarked MENU rode into the system prompt. An EXPANDED category lists
+        // the VERB of every tool it holds WITH its param-name hint
+        // (`category: verb(param), …`), so the persona sees real tool names + arg names
+        // without a 60-schema dump. The 60 tools all share category `cat`, so with
+        // `cat` expanded the line is `cat:` followed by `command_0(path), command_1(path),
+        // …` — names + arg names, not counts, not full slash-paths.
+        let expanded = BTreeSet::from(["cat".to_string()]);
+        let framing = faculty.compose_system("", &expanded, false, false);
         assert!(
-            framing.contains("[Your tools]") && framing.contains("cat: command_0"),
-            "the category index must name each verb under its category: {framing}"
+            framing.contains("[Your tools]") && framing.contains("cat: command_0(path"),
+            "an expanded category must name each verb + its param hint under its header: {framing}"
         );
         assert!(
             !framing.contains("cat/command_0"),
             "the full slash-path form must NOT be dumped — verbs render bare under the category header"
+        );
+        // Collapsed (nothing expanded) the same category renders as a one-line
+        // bookmark — the spine still NAMES it, so she can open it on demand.
+        let collapsed = faculty.compose_system("", &BTreeSet::new(), false, false);
+        assert!(
+            collapsed.contains("cat (60 — commands/list --filter cat)"),
+            "a collapsed category is a one-line bookmark naming it + its verb count: {collapsed}"
         );
 
         // Under real burst pressure the whole prompt + the one tool + reserve fit
@@ -1464,7 +1540,7 @@ mod tests {
             .with_context_window(8192);
 
         // self_initiated = true, undirected.
-        let own_time = faculty.compose_system("", false, true);
+        let own_time = faculty.compose_system("", &BTreeSet::new(), false, true);
         assert!(
             own_time.contains("[Your own time]"),
             "self-initiated turn must carry the own-time framing: {own_time}"
@@ -1493,7 +1569,7 @@ mod tests {
         );
 
         // A non-self-initiated (inbound-driven) turn must NOT carry the own-time block.
-        let ambient = faculty.compose_system("", false, false);
+        let ambient = faculty.compose_system("", &BTreeSet::new(), false, false);
         assert!(
             !ambient.contains("[Your own time]"),
             "ambient/directed turns must not carry the own-time framing: {ambient}"
@@ -1527,32 +1603,36 @@ mod tests {
             .with_context_window(window)
             .with_tools(tools);
 
-        // The catalog (inside framing) plus the completion reserve must leave room
-        // for at least SOME burst — i.e. framing alone must not consume the window.
-        let framing = est_tokens(&faculty.compose_system("", false, false));
+        // The menu (inside framing) plus the completion reserve must leave room for at
+        // least SOME burst — i.e. framing alone must not consume the window. With
+        // nothing expanded (empty context) the menu is its smallest — a spine of
+        // collapsed bookmarks — which is the floor case for this fit guard.
+        let collapsed = faculty.compose_system("", &BTreeSet::new(), false, false);
+        let framing = est_tokens(&collapsed);
         let reserve = (window / 4).clamp(256, 2048) as usize;
         assert!(
             framing + reserve < window as usize,
-            "framing+catalog ({framing}) + reserve ({reserve}) must leave burst room in {window}"
+            "framing+menu ({framing}) + reserve ({reserve}) must leave burst room in {window}"
         );
-        // The named catalog DOES list tool names (the verb under its category) — that
-        // is the fix: she must SEE that a tool exists to call it (glass-box: hidden
-        // names → 909 code-fences / 3 native runs). What it must NOT carry is the
-        // per-tool SUMMARY — that one-line description × ~150 tools was the 18KB bloat.
-        // Names are ~2-3KB and still fit the window (asserted above).
+        // The SPINE names every category even when collapsed (`cat0 (15 — commands/list
+        // --filter cat0)`) — she always sees the full map and can open any category on
+        // demand. What the menu must NOT carry is the per-tool SUMMARY — that one-line
+        // description × ~150 tools was the 18KB bloat.
         assert!(
-            faculty.tool_catalog.contains("command_0"),
-            "named catalog must list tool verbs so she can see them: {}",
-            faculty.tool_catalog
+            collapsed.contains("cat0 (15 — commands/list --filter cat0)"),
+            "the spine must name each category as a collapsed bookmark: {collapsed}"
         );
         assert!(
-            faculty.tool_catalog.contains("cat0:"),
-            "named catalog groups verbs under their category header: {}",
-            faculty.tool_catalog
+            !collapsed.contains("one-line summary for the catalog"),
+            "per-tool SUMMARIES must NOT be in the menu (that was the 18KB bloat)"
         );
+        // And an EXPANDED category DOES list its verbs (the fix: she must SEE that a
+        // tool exists to call it — glass-box: hidden names → 909 code-fences / 3 native
+        // runs). Names ride the expansion, summaries never do.
+        let opened = faculty.compose_system("", &BTreeSet::from(["cat0".to_string()]), false, false);
         assert!(
-            !faculty.tool_catalog.contains("one-line summary for the catalog"),
-            "per-tool SUMMARIES must NOT be in the catalog (that was the 18KB bloat)"
+            opened.contains("cat0: command_0(path)"),
+            "an expanded category lists its verbs + param hints so she can see them: {opened}"
         );
     }
 

@@ -296,12 +296,20 @@ pub fn render_tool_menu(
         return String::new();
     }
     // Same grouping as render_tool_catalog — stable (BTreeMap) order so the spine is
-    // a byte-stable prefix; only the per-category expansion differs.
-    let mut by_cat: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+    // a byte-stable prefix; only the per-category expansion differs. An expanded
+    // category renders its verbs WITH param-name hints (`verb(param, param?)`, see
+    // [`render_param_hint`]) so an expanded surface is byte-identical to the same
+    // slice of [`render_tool_catalog`] — the field-name-guessing fix (measured
+    // 2026-07-01) must not regress just because the verb rides the menu instead of
+    // the catalog. Collapsed categories carry no hints (their verbs aren't shown).
+    let mut by_cat: BTreeMap<&str, Vec<String>> = BTreeMap::new();
     for t in tools {
         let cat = extract_category(&t.name);
         let verb = t.name.strip_prefix(cat).and_then(|r| r.strip_prefix('/')).unwrap_or(&t.name);
-        by_cat.entry(cat).or_default().push(verb);
+        by_cat
+            .entry(cat)
+            .or_default()
+            .push(format!("{verb}{}", render_param_hint(&t.input_schema)));
     }
     let mut out = String::new();
     for (cat, mut verbs) in by_cat {
@@ -316,6 +324,23 @@ pub fn render_tool_menu(
         }
     }
     out
+}
+
+/// Group the authorized tools into `(category, verbs)` pairs — the input
+/// [`tool_relevance::select_expanded_categories`] scores to decide which categories
+/// the menu opens. Verbs are the BARE names (no param hints): they are the category's
+/// vocabulary for lexical relevance, not a render. Stable (BTreeMap) order so the
+/// scored category list matches the spine order [`render_tool_menu`] emits.
+///
+/// [`tool_relevance::select_expanded_categories`]: crate::cognition::tool_relevance::select_expanded_categories
+pub fn group_categories(tools: &[NativeToolSpec]) -> Vec<(&str, Vec<&str>)> {
+    let mut by_cat: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+    for t in tools {
+        let cat = extract_category(&t.name);
+        let verb = t.name.strip_prefix(cat).and_then(|r| r.strip_prefix('/')).unwrap_or(&t.name);
+        by_cat.entry(cat).or_default().push(verb);
+    }
+    by_cat.into_iter().collect()
 }
 
 /// The tools offered NATIVELY (as function specs) every turn: the discovery pair.
