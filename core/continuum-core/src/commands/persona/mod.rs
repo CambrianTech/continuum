@@ -5,6 +5,11 @@
 //! - `persona/reassign-model` (dep-holding, continuum_root + executor) — durably
 //!   assign a persona a new base model AND pin the host now (composes `serving/pin`).
 //! - `persona/instances/*` (the live-citizen roster lifecycle).
+//! - `persona/rag-inspect` (dep-holding, a `PersonaResolver`) — introspect what a
+//!   persona's RAG pipeline would feed the model. It belongs to a SEPARATE module
+//!   ([`PersonaRagInspectModule`](crate::modules::persona_rag_inspect)) which holds
+//!   the resolver, so it is contributed by `rag_inspect::command_objects` from that
+//!   module's `commands()`, NOT by the shared [`command_objects`] below.
 //!
 //! The dep-holding members are wired together by [`command_objects`], which the
 //! owning [`PersonaInstanceManagerModule`](crate::modules::persona_instance_manager)
@@ -21,6 +26,7 @@ use crate::sdk_codegen::DynCommand;
 pub mod allocate;
 pub mod catalog;
 pub mod instances;
+pub mod rag_inspect;
 pub mod reassign_model;
 pub mod wall;
 
