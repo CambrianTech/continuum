@@ -469,12 +469,47 @@ impl ServingDaemonModule {
         let bus = self.bus.get().cloned();
         Some(tokio::spawn(async move {
             let outcome = ensure_model_serving(server.as_ref(), &target).await;
-            let snapshot = snapshot_from_outcome(&outcome, &desired, &desired_adapter_paths);
+            // For a ready outcome, read the REAL per-slot window the running
+            // server serves from its own `/props` — the authoritative model
+            // metadata every persona budgets its prompt to. llama.cpp pads the
+            // launch per-slot `-c/--parallel` window UP to a 256-multiple
+            // internally, and the planner RE-computes its own window each tick
+            // against live memory, drifting ABOVE the running server's frozen
+            // slot; budgeting to that drifted value overflows the slot (500
+            // "Compute error"). So we pass the process's own truth through, not
+            // the plan's `served_ctx`. A read failure on a ready server yields 0,
+            // which `snapshot_from_outcome` turns into "publish the gap" (not a
+            // ready snapshot with a guessed window) — it self-heals next tick.
+            let served_window = match &outcome {
+                EnsureOutcome::AlreadyServing | EnsureOutcome::Spawned { .. } => {
+                    match server.served_context_window().await {
+                        Ok(n) => n,
+                        Err(e) => {
+                            crate::probe!(
+                                class = "serving.reconcile",
+                                desired = desired.as_str(),
+                                error = %e,
+                                "server ready but /props served window unreadable — \
+                                 publishing the gap (no guessed window; retries next tick)",
+                            );
+                            0
+                        }
+                    }
+                }
+                EnsureOutcome::Degraded { .. } => 0,
+            };
+            let snapshot = snapshot_from_outcome(
+                &outcome,
+                &desired,
+                &desired_adapter_paths,
+                served_window,
+            );
             crate::probe!(
                 class = "serving.reconcile",
                 desired = desired.as_str(),
                 ready = snapshot.ready,
                 active = snapshot.active_model.as_deref().unwrap_or("<none>"),
+                served_window = snapshot.served_context_window,
                 "serving reconcile complete",
             );
             // Emit on the bus first (fan-out to every subscriber + the grid),
@@ -688,24 +723,45 @@ pub fn detect_tier(gpu_name: &str) -> (HwCapabilityTier, HwTierCategory, &'stati
     (HwCapabilityTier::CpuOnly, HwTierCategory::Compat, "compat")
 }
 
-/// Map a reconcile [`EnsureOutcome`] to the published [`ServingSnapshot`].
-/// Pure (no IO) so the mapping is unit-tested directly. A live/spawned model is
-/// `ready` with the served base url; a degraded reconcile publishes "nothing
-/// live" — never a half-true "ready but no model" ([[fallbacks-are-illegal-fail-loud]]).
+/// Map a reconcile [`EnsureOutcome`] (+ the real per-slot window read from
+/// `/props`) to the published [`ServingSnapshot`]. Pure (no IO) so the mapping
+/// is unit-tested directly. A live/spawned model is `ready` with the served base
+/// url AND the real served window; a degraded reconcile — OR a ready server whose
+/// window we could not read (`served_context_window == 0`) — publishes "nothing
+/// live" rather than a half-true "ready but no/guessed window"
+/// ([[fallbacks-are-illegal-fail-loud]]). The window-0 guard is what keeps a
+/// persona from ever binding a broken prompt budget: it would rather see the gap
+/// (and the next tick re-reads `/props` via `AlreadyServing` → self-heals) than
+/// budget against a zero window.
 fn snapshot_from_outcome(
     outcome: &EnsureOutcome,
     desired: &str,
     adapters: &[String],
+    served_context_window: u32,
 ) -> ServingSnapshot {
     match outcome {
-        EnsureOutcome::AlreadyServing | EnsureOutcome::Spawned { .. } => ServingSnapshot {
-            active_model: Some(desired.to_string()),
-            ready: true,
-            base_url: serving_v1_url(),
-            // The genome set now live — feeds the next reconcile's relaunch guard
-            // and gives readers the active genome without probing the process.
-            adapters: adapters.to_vec(),
-        },
+        EnsureOutcome::AlreadyServing | EnsureOutcome::Spawned { .. }
+            if served_context_window > 0 =>
+        {
+            ServingSnapshot {
+                active_model: Some(desired.to_string()),
+                ready: true,
+                base_url: serving_v1_url(),
+                // The genome set now live — feeds the next reconcile's relaunch
+                // guard and gives readers the active genome without probing.
+                adapters: adapters.to_vec(),
+                // The real per-slot window the process serves — every persona
+                // budgets its prompt to THIS (task #50, the drift fix).
+                served_context_window,
+            }
+        }
+        // Ready outcome but the served window was unreadable (0) → do NOT publish
+        // a ready snapshot with a zero window; that would poison every binding
+        // persona's budget. Publish "nothing live"; the server stays up and the
+        // next reconcile re-reads /props.
+        EnsureOutcome::AlreadyServing | EnsureOutcome::Spawned { .. } => {
+            ServingSnapshot::empty()
+        }
         EnsureOutcome::Degraded { .. } => ServingSnapshot::empty(),
     }
 }
@@ -936,6 +992,18 @@ mod tests {
                 Err(LlamaServerError::Spawn("test boom".into()))
             }
         }
+        async fn served_context_window(&self) -> Result<u32, LlamaServerError> {
+            // After a successful (test) serve the daemon reads the real per-slot
+            // window; a fixed non-zero value stands in for the live `/props` read
+            // so the reconcile publishes a READY snapshot carrying a real window.
+            Ok(11008)
+        }
+        async fn decode_smoke_ok(&self) -> bool {
+            // The daemon-wiring tests never adopt an orphan (active_model is
+            // Unreachable → always serve), so this is only reached if the adopt
+            // path is exercised; a healthy fake decodes.
+            true
+        }
     }
 
     /// A minimal [`Model`] for reconcile-wiring tests — only `id` is load-bearing
@@ -1119,8 +1187,11 @@ mod tests {
     }
 
     // what this catches: the EnsureOutcome → ServingSnapshot mapping. A live or
-    // spawned model is ready with the served base url; a degraded reconcile
-    // publishes "nothing live", never a half-true ready-with-no-model.
+    // spawned model is ready with the served base url AND the real per-slot window
+    // it carries through to personas; a degraded reconcile — OR a ready server
+    // whose served window was unreadable (0) — publishes "nothing live", never a
+    // half-true ready-with-no-model or ready-with-zero-window (the drift fix:
+    // budgeting against a zero/guessed window is exactly what we refuse).
     #[test]
     fn snapshot_mapping_is_honest() {
         let genes = vec!["/genes/a.gguf".to_string()];
@@ -1128,20 +1199,40 @@ mod tests {
             &EnsureOutcome::Spawned { model: "m".into() },
             "coder-14b",
             &genes,
+            11008,
         );
         assert_eq!(up.active_model.as_deref(), Some("coder-14b"));
         assert!(up.ready);
         assert!(up.base_url.ends_with("/v1"));
         assert_eq!(up.adapters, genes, "live snapshot carries the loaded genome set");
+        assert_eq!(
+            up.served_context_window, 11008,
+            "ready snapshot carries the real per-slot window personas budget to"
+        );
 
-        let already = snapshot_from_outcome(&EnsureOutcome::AlreadyServing, "coder-14b", &genes);
+        let already =
+            snapshot_from_outcome(&EnsureOutcome::AlreadyServing, "coder-14b", &genes, 11008);
         assert_eq!(already.active_model.as_deref(), Some("coder-14b"));
         assert!(already.ready);
+        assert_eq!(already.served_context_window, 11008);
+
+        // Ready outcome but the served window was unreadable (0) → publish the gap,
+        // NOT a ready snapshot with a zero window a persona would budget against.
+        let windowless = snapshot_from_outcome(
+            &EnsureOutcome::Spawned { model: "m".into() },
+            "coder-14b",
+            &genes,
+            0,
+        );
+        assert_eq!(windowless.active_model, None, "ready-but-no-window → nothing live");
+        assert!(!windowless.ready);
+        assert_eq!(windowless.served_context_window, 0);
 
         let degraded = snapshot_from_outcome(
             &EnsureOutcome::Degraded { reason: "x".into() },
             "coder-14b",
             &genes,
+            11008,
         );
         assert_eq!(degraded.active_model, None, "degraded → nothing live");
         assert!(!degraded.ready);
@@ -1184,6 +1275,7 @@ mod tests {
             ready: true,
             base_url: serving_v1_url(),
             adapters: Vec::new(),
+            served_context_window: 11008,
         });
         let budget = HostBudget { usable_bytes: 45 * GB, perf_cores: 6 };
         let candidates = vec![footprint_from_parts("coder-14b", 9 * GB, 8192, true).unwrap()];
@@ -1207,6 +1299,7 @@ mod tests {
             ready: true,
             base_url: serving_v1_url(),
             adapters: Vec::new(),
+            served_context_window: 11008,
         });
         let budget = HostBudget { usable_bytes: 45 * GB, perf_cores: 6 };
         daemon.publish_plan(budget, &[]); // no candidates → plan None

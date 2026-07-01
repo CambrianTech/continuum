@@ -217,6 +217,7 @@ mod tests {
             ready: true,
             base_url: "http://localhost:0/v1".into(),
             adapters: Vec::new(),
+            served_context_window: 11008,
         });
         let (suppress_tx, _srx) = watch::channel(Arc::new(HashSet::new()));
         let footprint_of: FootprintFn = Arc::new(move |_id: &str| bytes);

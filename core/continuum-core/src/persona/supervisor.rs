@@ -479,7 +479,7 @@ pub async fn materialize_adapters(
 ) -> Vec<Result<PersonaContext, SupervisorError>> {
     let mut out = Vec::with_capacity(plans.len());
     for (slot_index, plan) in plans.into_iter().enumerate() {
-        let profile = match plan.profile {
+        let mut profile = match plan.profile {
             Ok(p) => p,
             Err(source) => {
                 out.push(Err(SupervisorError::Profile {
@@ -526,6 +526,41 @@ pub async fn materialize_adapters(
                 message,
             }));
             continue;
+        }
+
+        // Reconcile the persona's effective context window to the TRUTH the
+        // running gateway serves. `build_adapter` just awaited a READY serving
+        // snapshot, so `current_serving()` now carries the real per-slot window
+        // the daemon read from llama-server's own `/props` — the authoritative
+        // model metadata. The profile's window was provisionally set at spawn-plan
+        // time from the planner's `served_context_window`, which the daemon
+        // RE-computes every tick against live memory and which drifts ABOVE the
+        // running server's frozen, 256-padded slot. Budgeting a prompt to that
+        // drifted value overflows the slot → llama-server 500 "Compute error" and
+        // the persona abstains on every tick. Pin `profile.context_length` (the
+        // single source of the persona's compute envelope — read downstream by the
+        // RAG composer, the deliberation faculty's prompt cap, and the ctx_len
+        // probe) to the served truth so every budget is correct by construction.
+        // Cloud-routed personas (tier `Cloud`) keep their model's full window —
+        // their adapter owns its own context and there is no local slot to fit.
+        if profile.tier_category != crate::persona::hw_tier_descriptor::HwTierCategory::Cloud {
+            let snap = crate::inference::llama_server::current_serving();
+            // A ready snapshot always carries a real window (the daemon refuses to
+            // publish ready with 0). Guard on both so a not-yet-ready/empty
+            // snapshot never clobbers the provisional window with 0.
+            if snap.ready && snap.served_context_window > 0 {
+                if snap.served_context_window != profile.context_length {
+                    crate::probe!(
+                        class = "persona.upstart.window",
+                        persona = %profile.persona_name,
+                        persona_id = %profile.persona_id,
+                        planned = profile.context_length,
+                        served = snap.served_context_window,
+                        "pinning persona context window to the gateway's real /props slot (was the drifting plan value)",
+                    );
+                }
+                profile.context_length = snap.served_context_window;
+            }
         }
         // Register the persona's adapter in the global provider
         // registry so the cognition layer (evaluate_response,

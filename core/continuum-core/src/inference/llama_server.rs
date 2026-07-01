@@ -89,6 +89,14 @@ const READY_POLL: Duration = Duration::from_millis(500);
 /// serving daemon's reconcile cadence so a probe never overruns its own tick.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(4);
 
+/// Bound for the decode SMOKE-PROBE (one-token generation in [`decode_smoke_ok`]).
+/// Unlike a control-plane read, this queues behind the inference slots and runs an
+/// actual decode, so it is given more room than [`PROBE_TIMEOUT`] — but still
+/// bounded well under the daemon's own budget so a wedged compute path (the very
+/// thing we are probing for) resolves to "cannot decode" fast instead of hanging
+/// the reconcile. A healthy 14B answers a 1-token request in well under a second.
+const DECODE_SMOKE_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// Everything the launcher needs to bring a model up, GROUPED so adding a new
 /// serving knob is a field here — never a new param threaded down the call chain
 /// ([[pass-the-model-struct-no-param-hell]]). The [`Model`] carries its own id,
@@ -315,6 +323,20 @@ pub struct ServingSnapshot {
     /// persisted snapshots readable.
     #[serde(default)]
     pub adapters: Vec<String>,
+    /// The REAL per-slot context window the running server serves, read from its
+    /// own `/props` (`default_generation_settings.n_ctx`). This is the
+    /// AUTHORITATIVE model metadata personas budget their prompts to. llama.cpp
+    /// pads the launch per-slot window (`-c / --parallel`) UP to a 256-multiple
+    /// internally, so the planner's window and the served window differ — and the
+    /// planner RE-computes its window every tick against live memory, drifting
+    /// ABOVE the running server's frozen slot. Budgeting to that drifted value
+    /// overflows the slot → llama-server 500 "Compute error". So a persona reads
+    /// THIS (the process's own truth), never a recomputed plan value. `0` only on
+    /// the empty/not-yet-served snapshot — a `ready` snapshot always carries the
+    /// real window (the daemon refuses to publish `ready` without it).
+    /// `serde(default)` keeps older persisted snapshots (window-less) readable.
+    #[serde(default)]
+    pub served_context_window: u32,
 }
 
 impl ServingSnapshot {
@@ -325,6 +347,10 @@ impl ServingSnapshot {
             ready: false,
             base_url: serving_v1_url(),
             adapters: Vec::new(),
+            // Nothing served → no real window yet. A `ready` snapshot never
+            // carries 0 (the daemon stamps the live `/props` window before
+            // publishing ready); 0 is the unambiguous "no window known" sentinel.
+            served_context_window: 0,
         }
     }
 }
@@ -468,6 +494,41 @@ pub trait LlamaServerControl: Send + Sync {
     /// target carries the resolved model AND the host-fit served window, so the
     /// launcher never re-resolves or re-clamps anything.
     async fn serve(&self, target: &ServingTarget) -> Result<(), LlamaServerError>;
+
+    /// The REAL per-slot context window the running server serves, read from
+    /// `/props` (`default_generation_settings.n_ctx`). This is the AUTHORITATIVE
+    /// model metadata: llama.cpp pads the launch per-slot window (`-c / --parallel`)
+    /// UP to a 256-multiple internally, so only the process can report what each
+    /// slot will actually accept. The daemon reads this after a ready reconcile and
+    /// stamps it onto [`ServingSnapshot::served_context_window`], so every persona
+    /// budgets its prompt to the truth instead of the planner's drifting window
+    /// (which overflows the slot → 500 "Compute error"). `Unreachable` = no server
+    /// answering (pre-spawn), or a ready server whose `/props` shape is missing
+    /// `n_ctx` (a loud invariant violation — never a guessed window).
+    async fn served_context_window(&self) -> Result<u32, LlamaServerError>;
+
+    /// Prove the GPU DECODE path works, not just that the HTTP server is up. A
+    /// llama-server can answer `/health`, `/v1/models` and `/props` with 200
+    /// while EVERY `llama_decode` returns 500 "Compute error" — observed live in
+    /// a 47-min-old orphan reclaimed from a SIGKILLed core, whose Metal compute
+    /// context had gone bad. `/models` proves the listener thread is alive; only
+    /// an actual generation proves the model can think. This runs a trivial
+    /// 1-token completion and returns `true` iff it succeeds — the readiness
+    /// signal `/health` alone cannot give. Any error (unreachable, non-200,
+    /// compute error) → `false`: "this lane cannot decode", which the caller
+    /// turns into reap + respawn rather than adopting a wedged server.
+    async fn decode_smoke_ok(&self) -> bool;
+
+    /// Does THIS control own the running child (we spawned it), versus pointing
+    /// at a server some other process launched (an adopted orphan)? The adopt
+    /// decision trusts a child we spawned and verified at [`wait_ready`], but
+    /// must decode-smoke-probe an orphan we did not — that orphan is exactly the
+    /// one that can be compute-wedged. Default `false` (a fake/remote control
+    /// owns no local child) so the conservative path (probe before adopt) is the
+    /// default.
+    fn owns_child(&self) -> bool {
+        false
+    }
 }
 
 /// Pure reconcile decision: bring the running server in line with `desired`.
@@ -496,7 +557,23 @@ pub async fn ensure_model_serving<C: LlamaServerControl + ?Sized>(
         let desired = target.adapter_paths();
         let active_adapters = ctrl.active_adapters().await.unwrap_or_default();
         if active_adapters == desired {
-            return EnsureOutcome::AlreadyServing;
+            // Right model, right genome — but is the COMPUTE path alive? A child
+            // we spawned ourselves was decode-verified at `wait_ready` and is
+            // trusted thereafter (no per-tick decode load). A server we did NOT
+            // spawn (an orphan reclaimed from a dead core) can answer
+            // `/v1/models` while every `llama_decode` 500s — so prove decode
+            // before adopting it. A wedged orphan fails the probe and falls
+            // through to `serve()`, which reaps it and spawns fresh.
+            if ctrl.owns_child() || ctrl.decode_smoke_ok().await {
+                return EnsureOutcome::AlreadyServing;
+            }
+            crate::probe!(
+                class = "serving.adopt_rejected",
+                model = target.model_id(),
+                "orphan answers /v1/models but fails the decode smoke-probe \
+                 (compute-wedged); reaping + respawning a fresh lane",
+            );
+            // fall through to relaunch.
         }
         // else: genome set differs → fall through to relaunch.
     }
@@ -592,16 +669,31 @@ impl LlamaServerProcess {
         }
     }
 
-    /// Poll `/health` until the server answers 200 (ready) or we time out. 503
-    /// means "still loading the model" — keep waiting. A connection error means
-    /// "not up yet" early in the launch — also keep waiting, until the deadline.
+    /// Poll `/health` until the server answers 200, THEN prove the compute path
+    /// with a one-token decode — only then is the lane truly ready. 503 means
+    /// "still loading the model" — keep waiting. A connection error means "not up
+    /// yet" early in the launch — also keep waiting, until the deadline. The
+    /// decode check makes "ready" mean "can think", not merely "HTTP listener is
+    /// up": a freshly-spawned server that answers `/health` 200 but cannot decode
+    /// is a loud, novel failure surfaced as `NotReady` (→ Degraded) rather than a
+    /// silently-adopted wedged lane. (This is the spawn-side guarantee that lets
+    /// the adopt path in `ensure_model_serving` TRUST a child we own without
+    /// re-probing every reconcile tick.)
     async fn wait_ready(&self) -> Result<(), LlamaServerError> {
         let health = format!("{}/health", self.root);
         let deadline = Instant::now() + READY_TIMEOUT;
         let mut last = String::from("no response");
         loop {
             match self.client.get(&health).timeout(PROBE_TIMEOUT).send().await {
-                Ok(resp) if resp.status().is_success() => return Ok(()),
+                Ok(resp) if resp.status().is_success() => {
+                    // HTTP listener is up and the model is loaded. Confirm the GPU
+                    // decode path before declaring ready — a 200 /health does not
+                    // prove `llama_decode` works (the wedged-orphan failure mode).
+                    if self.decode_smoke_ok().await {
+                        return Ok(());
+                    }
+                    last = String::from("/health 200 but decode smoke-probe failed");
+                }
                 Ok(resp) => last = format!("status {}", resp.status()),
                 Err(e) => last = e.to_string(),
             }
@@ -733,6 +825,77 @@ impl LlamaServerControl for LlamaServerProcess {
         // The set we launched the current child with. llama.cpp exposes no query
         // for `/lora-adapters` contents, so the truthful answer is what WE loaded.
         Ok(self.served_adapters.lock().unwrap().clone())
+    }
+
+    async fn served_context_window(&self) -> Result<u32, LlamaServerError> {
+        // `/props` lives at the root (not under `/v1`), alongside `/health`. The
+        // per-slot window the server actually serves is
+        // `default_generation_settings.n_ctx` — the launch `-c / --parallel`
+        // per-slot value AFTER llama.cpp's internal 256-multiple padding. A
+        // connection error means nothing is up (normal pre-spawn) → Unreachable.
+        let url = format!("{}/props", self.root);
+        let resp = self
+            .client
+            .get(&url)
+            .timeout(PROBE_TIMEOUT)
+            .send()
+            .await
+            .map_err(|e| LlamaServerError::Unreachable(e.to_string()))?;
+        if !resp.status().is_success() {
+            return Err(LlamaServerError::Unreachable(format!(
+                "status {}",
+                resp.status()
+            )));
+        }
+        let body: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| LlamaServerError::Unreachable(e.to_string()))?;
+        // Fail loud if the shape is missing the field — never guess a window. The
+        // daemon turns this into "publish the gap" (no ready snapshot), so a
+        // malformed /props degrades to not-ready and self-heals next tick rather
+        // than poisoning every persona's prompt budget.
+        body.get("default_generation_settings")
+            .and_then(|s| s.get("n_ctx"))
+            .and_then(|v| v.as_u64())
+            .map(|n| n as u32)
+            .ok_or_else(|| {
+                LlamaServerError::Unreachable(
+                    "/props missing default_generation_settings.n_ctx (server up but shape \
+                     unexpected — refusing to guess the served window)"
+                        .to_string(),
+                )
+            })
+    }
+
+    async fn decode_smoke_ok(&self) -> bool {
+        // The cheapest possible generation: one token, no tools, no stream,
+        // deterministic. Success (HTTP 200) proves the Metal/GPU decode path is
+        // live; a 500 "Compute error" (the wedged-orphan signature) returns
+        // false. We DON'T read the body — the status is the whole signal. The
+        // `--alias` id is what the server answers to; reuse the live v1 url.
+        let url = format!("{}/chat/completions", self.v1_url);
+        let body = serde_json::json!({
+            "messages": [{ "role": "user", "content": "ping" }],
+            "max_tokens": 1,
+            "stream": false,
+            "temperature": 0.0,
+        });
+        match self
+            .client
+            .post(&url)
+            .timeout(DECODE_SMOKE_TIMEOUT)
+            .json(&body)
+            .send()
+            .await
+        {
+            Ok(resp) => resp.status().is_success(),
+            Err(_) => false,
+        }
+    }
+
+    fn owns_child(&self) -> bool {
+        self.child.lock().unwrap().is_some()
     }
 
     async fn serve(&self, target: &ServingTarget) -> Result<(), LlamaServerError> {
@@ -932,6 +1095,13 @@ mod tests {
         active_adapters: Vec<String>,
         serve_ok: bool,
         serves: AtomicUsize,
+        /// Whether the fake's decode smoke-probe succeeds. `true` = a healthy lane
+        /// (adoptable); `false` = a compute-wedged orphan (must be rejected).
+        decode_ok: bool,
+        /// Whether the fake "owns" the running child (we spawned it). `false` =
+        /// an adopted orphan (the conservative default that exercises the
+        /// smoke-probe gate).
+        owns: bool,
     }
 
     impl FakeControl {
@@ -941,6 +1111,8 @@ mod tests {
                 active_adapters: Vec::new(),
                 serve_ok: true,
                 serves: AtomicUsize::new(0),
+                decode_ok: true,
+                owns: false,
             }
         }
         fn serve_fails(mut self) -> Self {
@@ -950,6 +1122,17 @@ mod tests {
         /// Report a genome set as already loaded (the live server's catalog).
         fn with_active_adapters(mut self, adapters: Vec<String>) -> Self {
             self.active_adapters = adapters;
+            self
+        }
+        /// Model the compute-wedged orphan: answers `/v1/models` but every decode
+        /// 500s.
+        fn decode_wedged(mut self) -> Self {
+            self.decode_ok = false;
+            self
+        }
+        /// Model a child we spawned ourselves (trusted without a per-tick probe).
+        fn owned(mut self) -> Self {
+            self.owns = true;
             self
         }
     }
@@ -972,6 +1155,18 @@ mod tests {
             } else {
                 Err(LlamaServerError::Spawn("boom".into()))
             }
+        }
+        async fn served_context_window(&self) -> Result<u32, LlamaServerError> {
+            // Canned per-slot window: the reconcile-decision tests don't probe a
+            // live /props; a fixed value stands in for "the server reports its
+            // real window." Non-zero so a ready outcome publishes a ready snapshot.
+            Ok(11008)
+        }
+        async fn decode_smoke_ok(&self) -> bool {
+            self.decode_ok
+        }
+        fn owns_child(&self) -> bool {
+            self.owns
         }
     }
 
@@ -1060,6 +1255,45 @@ mod tests {
         let outcome = ensure_model_serving(&ctrl, &target("coder-14b")).await;
         assert_eq!(outcome, EnsureOutcome::AlreadyServing);
         assert_eq!(ctrl.serves.load(Ordering::SeqCst), 0, "no relaunch when already serving");
+    }
+
+    // what this catches: an orphan that answers /v1/models with the RIGHT model
+    // but is COMPUTE-WEDGED (every llama_decode 500s "Compute error" — observed
+    // live in a 47-min-old orphan reclaimed from a SIGKILLed core). Trusting
+    // /models alone re-adopted the wedged lane every 5s tick and BOTH personas
+    // abstained forever. The decode smoke-probe must reject it and fall through
+    // to serve() → reap + respawn fresh. Regression here silently re-adopts a
+    // brain that cannot think.
+    #[tokio::test]
+    async fn wedged_orphan_rejected_and_respawned() {
+        let ctrl = FakeControl::probe(Ok(Some("coder-14b".into()))).decode_wedged();
+        let outcome = ensure_model_serving(&ctrl, &target("coder-14b")).await;
+        assert_eq!(
+            outcome,
+            EnsureOutcome::Spawned { model: "coder-14b".into() },
+            "a compute-wedged orphan must be rejected and respawned, never adopted"
+        );
+        assert_eq!(ctrl.serves.load(Ordering::SeqCst), 1, "wedged orphan → fresh spawn");
+    }
+
+    // what this catches: a child WE spawned (owns_child) is decode-verified once
+    // at wait_ready and trusted thereafter — the adopt path must NOT run a decode
+    // smoke-probe against it every 5s tick (that would burn a GPU decode per tick
+    // and contend with the personas' real inference slots). owns_child
+    // short-circuits the probe: even a `decode_wedged` fake adopts, proving the
+    // probe was skipped for an owned child.
+    #[tokio::test]
+    async fn owned_child_adopted_without_smoke_probe() {
+        let ctrl = FakeControl::probe(Ok(Some("coder-14b".into())))
+            .owned()
+            .decode_wedged();
+        let outcome = ensure_model_serving(&ctrl, &target("coder-14b")).await;
+        assert_eq!(
+            outcome,
+            EnsureOutcome::AlreadyServing,
+            "our own decode-verified child is trusted without a per-tick re-probe"
+        );
+        assert_eq!(ctrl.serves.load(Ordering::SeqCst), 0, "no relaunch for an owned child");
     }
 
     // what this catches: a different model live → relaunch to the desired one.
@@ -1236,6 +1470,7 @@ mod tests {
             ready: true,
             base_url: "x".into(),
             adapters: Vec::new(),
+            served_context_window: 0,
         });
         assert!(!pred(&rx.borrow()));
         // not-ready but has a model → unsatisfied.
@@ -1244,6 +1479,7 @@ mod tests {
             ready: false,
             base_url: "x".into(),
             adapters: Vec::new(),
+            served_context_window: 0,
         });
         assert!(!pred(&rx.borrow()));
         // ready AND a model → satisfied, and wait_for resolves to it at once.
@@ -1252,6 +1488,7 @@ mod tests {
             ready: true,
             base_url: "x".into(),
             adapters: Vec::new(),
+            served_context_window: 0,
         });
         let got = tokio::time::timeout(Duration::from_millis(100), rx.wait_for(pred))
             .await

@@ -321,6 +321,20 @@ impl LlmDeliberationFaculty {
         self
     }
 
+    /// The generation budget for one deliberation turn, in tokens: the slice of
+    /// the served window reserved for the model's reply, derived from the SAME
+    /// `context_window` that sizes the prompt. ONE source of truth — [`prompt_view`]
+    /// subtracts exactly this to bound the prompt, and [`build_request`] passes
+    /// exactly this as `max_tokens`, so `prompt + completion` provably never reaches
+    /// `n_ctx`. The `/4` split gives the reply up to a quarter of the window;
+    /// `clamp(256, 2048)` keeps a tiny window usable and a huge one from starving
+    /// the prompt. This is NOT an arbitrary flat cap (the kind that truncated
+    /// qwen3.5 mid-`<think>`): it scales with the real served window and hands the
+    /// reply every token the prompt budget set aside for it.
+    fn completion_budget(&self) -> u32 {
+        (self.context_window / 4).clamp(256, 2048)
+    }
+
     /// Build a generation request for the message thread. Centralized so the
     /// first prompt and any future re-prompt share one shape.
     fn build_request(
@@ -338,11 +352,18 @@ impl LlmDeliberationFaculty {
             // reward metric is reproducible; `None` (live cognition) → her own
             // configured temperature. Wait-free read, like `genome` below.
             temperature: Some((**self.decoding.load()).unwrap_or(self.temperature)),
-            // The MODEL owns its generation length (the adapter forwards no ceiling
-            // when None → unsloth/llama.cpp run to the model's own stop token). A
-            // deliberation turn ends when the model stops, NOT at a const we picked:
-            // a flat cap truncated qwen3.5 mid-`<think>` → empty reply.
-            max_tokens: None,
+            // Generation is bounded to the room the prompt budget RESERVED for it —
+            // `completion_budget()`, the same value `prompt_view` subtracts from the
+            // served window. This is the ONE place the two must agree: the prompt is
+            // sized to leave this many tokens, so the reply is allowed exactly this
+            // many. Left unbounded (`None`), a verbose turn overruns the reserve,
+            // `prompt + completion` reaches `n_ctx`, and llama-server (started with
+            // `--embeddings`, so context-shift is off) returns 500 "Compute error" —
+            // muting the persona for the whole tick. This is NOT the flat cap that
+            // truncated qwen3.5 mid-`<think>`: the budget scales with the real served
+            // window (up to a quarter of it), so the reply gets every token set aside
+            // for it — never a const we picked, never an overrun ([[fallbacks-are-illegal-fail-loud]]).
+            max_tokens: Some(self.completion_budget()),
             top_p: None,
             top_k: None,
             repeat_penalty: None,
@@ -648,7 +669,10 @@ impl LlmDeliberationFaculty {
     ///   3. the assembled context (recall + grounding) — enrichment, gets the
     ///      remainder, dropped WHOLE in salience order.
     pub fn prompt_view(&self, ws: &Workspace) -> DeliberationPromptView {
-        let completion_reserve = (self.context_window / 4).clamp(256, 2048) as usize;
+        // The reply's reserved room — the SAME value `build_request` passes as
+        // `max_tokens`, so the prompt is sized to leave exactly what generation is
+        // then allowed to use. One source: [`completion_budget`].
+        let completion_reserve = self.completion_budget() as usize;
 
         // The ONE natively-offered tool (`commands/help`) rides the served window
         // too: the gateway injects its function spec (name + description + schema)
@@ -1169,6 +1193,60 @@ mod tests {
         assert!(
             view.system.contains("Taking your turn"),
             "the how-to-participate framing must never be dropped"
+        );
+    }
+
+    // what this catches: the 500 "Compute error" that muted Asha + Solenne every
+    // tick — the prompt was sized to leave a completion reserve, but generation was
+    // unbounded (`max_tokens: None`), so a verbose turn overran the reserve and
+    // `prompt + completion` reached `n_ctx` (this llama-server runs `--embeddings`,
+    // so context-shift is off → overrun = 500, not a clean stop). The fix bounds
+    // generation to `completion_budget()` — the SAME slice `prompt_view` carves out.
+    // This asserts the closed invariant: worst-case prompt (at its budget ceiling)
+    // PLUS the generation cap never exceeds the served window. Regression for the
+    // abstain-every-tick reliability bug.
+    #[test]
+    fn prompt_plus_completion_cap_never_exceeds_the_served_window() {
+        let persona = Uuid::new_v4();
+        let adapter: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
+        let window: u32 = 1024;
+        let faculty = LlmDeliberationFaculty::new(
+            persona,
+            "Ivar",
+            "You are Ivar, a thoughtful engineer on the grid.",
+            adapter,
+        )
+        .with_context_window(window);
+
+        // Drive the prompt to its budget ceiling (oversized burst + context bids).
+        let mut burst = "old chatter line\n".repeat(2000);
+        burst.push_str("LATEST: did the deploy fix land?");
+        let mut ws = Workspace::new(&burst);
+        ws.broadcast.push(Contribution::context(
+            FacultyId::Recall,
+            &"deploy pipeline observation; ".repeat(2000),
+            0.9,
+            "recalled",
+        ));
+
+        let view = faculty.prompt_view(&ws);
+        let request =
+            faculty.build_request(view.messages.clone(), None, view.system.clone());
+        // Generation is bounded — never the unbounded `None` that overran n_ctx.
+        let cap = request
+            .max_tokens
+            .expect("deliberation must bound generation to the reserved room");
+        assert_eq!(
+            cap,
+            faculty.completion_budget(),
+            "the generation cap IS the reserved room — one source of truth"
+        );
+        // The closed invariant: prompt-at-ceiling + the generation cap fits n_ctx.
+        let prompt_tokens = est_tokens(&view.system) + est_tokens(&view.user_text());
+        assert!(
+            prompt_tokens + cap as usize <= window as usize,
+            "prompt ({prompt_tokens}) + completion cap ({cap}) must fit the served \
+             window ({window}) — else generation reaches n_ctx and llama-server 500s"
         );
     }
 
