@@ -32,18 +32,17 @@ use async_trait::async_trait;
 use std::collections::BTreeSet;
 use uuid::Uuid;
 
+use super::deliberation_budget::{est_tokens, tail_to_tokens, turn_message_line};
+use super::deliberation_parse::decision_from_response;
 use super::deliberation_prompt;
 use super::persona_tools;
 use super::tool_relevance::{self, LexicalToolRelevance};
-use super::workspace::{BurstTurn, Contribution, Decision, Faculty, FacultyId, Workspace};
+use super::workspace::{Contribution, Decision, Faculty, FacultyId, Workspace};
 use crate::ai::adapter::AIProviderAdapter;
 use crate::ai::types::{
     ActiveAdapterRequest, ChatMessage, FinishReason, NativeToolSpec, TextGenerationRequest,
     TextGenerationResponse,
 };
-
-use crate::persona::prompt_assembly::{looks_like_silence_token, SILENCE_TOKEN};
-use crate::persona::text_analysis::clean_response;
 
 /// The persona's paged-in genome: the LoRA layers active for this faculty's next
 /// generation. Shared (the [`WorkspaceCycle`](super::workspace::WorkspaceCycle)
@@ -80,49 +79,6 @@ pub fn relaxed_decoding() -> DecodingHandle {
 /// Default sampling temperature for deliberation — enough warmth for natural
 /// voice, not so much it drifts.
 const DEFAULT_TEMPERATURE: f32 = 0.7;
-
-/// Map a model's raw output to a participation [`Decision`].
-///
-/// Pure — no IO — so the Speak/Pass branches are unit-testable without a model.
-/// `PASS` (the silence token) → `Pass`; anything else → `Speak`. `RaiseUnprompted`
-/// is the volition faculty's channel (initiative with no prompt), not something
-/// we infer from a single deliberation response — a deliberation faculty answers
-/// the burst it was given.
-pub fn decision_from_response(text: &str) -> Decision {
-    // Strip `<think>`/`<thinking>` chain-of-thought before deciding. qwen3.5-family
-    // models emit a reasoning block (often an EMPTY `<think></think>`) ahead of the
-    // answer; the spoken text must NEVER carry those tags into the room. The legacy
-    // respond() path already cleaned; the workspace path (now the live decision
-    // path) reached `say` raw — this closes that gap at the single point where model
-    // text becomes a Speak decision, so every consumer of the decision gets clean
-    // text. An only-`<think>` response cleans to empty → Pass (silence), matching
-    // the "only thinking → don't speak" behavior.
-    let cleaned = clean_response(text);
-    let trimmed = cleaned.text.trim();
-    if trimmed.is_empty() || looks_like_silence_token(trimmed) || starts_with_silence_token(trimmed)
-    {
-        Decision::Pass
-    } else {
-        Decision::Speak {
-            text: trimmed.to_string(),
-        }
-    }
-}
-
-/// True if the response STARTS with the silence token (e.g. `"PASS — nothing to
-/// add"`). Small models frequently emit `PASS` plus trailing prose despite the
-/// "no other text" instruction; without this they'd literally speak the word
-/// "PASS" into the room. The leading-token check treats that as the chosen
-/// silence it is. (Accepted trade: a real message whose first word is literally
-/// "pass" is silenced — vanishingly rare for a deliberation turn, and silence is
-/// a first-class, low-cost outcome.)
-fn starts_with_silence_token(text: &str) -> bool {
-    let Some(first) = text.split_whitespace().next() else {
-        return false;
-    };
-    let core = first.trim_end_matches(|c: char| !c.is_alphanumeric());
-    core.eq_ignore_ascii_case(SILENCE_TOKEN)
-}
 
 /// The reasoner faculty. Persona-scoped; shared model backend.
 pub struct LlmDeliberationFaculty {
@@ -728,8 +684,6 @@ impl LlmDeliberationFaculty {
 /// carries UUID-dense rosters, structured engram observations, and code, which
 /// tokenize far denser than English — so we OVER-count tokens to stay safely
 /// under `n_ctx`. The completion reserve absorbs the remaining slack.
-const GUARD_CHARS_PER_TOKEN: usize = 3;
-
 /// How many tool categories the bookmarked menu may OPEN (list their verbs inline)
 /// on one turn. The rest render as collapsed one-line bookmarks. Bounded so the menu
 /// stays a small per-turn render (a spine of headers + a few opened categories) —
@@ -743,46 +697,6 @@ const MAX_EXPANDED_CATEGORIES: usize = 4;
 /// — she still sees the full header spine and reaches any tool via
 /// `commands/list --filter`. Tuned low: one on-topic keyword should open a category.
 const RELEVANCE_FLOOR: f32 = 0.02;
-
-/// Conservative token estimate for the window guard (see [`GUARD_CHARS_PER_TOKEN`]).
-fn est_tokens(s: &str) -> usize {
-    s.len() / GUARD_CHARS_PER_TOKEN
-}
-
-/// Keep the TAIL of `s` that fits `budget_tokens`, cutting at a line boundary so a
-/// trimmed message starts on a clean line (never mid-line). The latest lines — the
-/// turn's most recent activity — always survive; the head is what gets dropped. Used
-/// by [`messages_within`](LlmDeliberationFaculty::messages_within) to trim the single
-/// message that straddles the served-window budget.
-fn tail_to_tokens(s: &str, budget_tokens: usize) -> String {
-    let budget_chars = budget_tokens.saturating_mul(GUARD_CHARS_PER_TOKEN);
-    if s.len() <= budget_chars {
-        return s.to_string();
-    }
-    let mut start = s.len().saturating_sub(budget_chars);
-    while start < s.len() && !s.is_char_boundary(start) {
-        start += 1;
-    }
-    let slice = &s[start..];
-    match slice.find('\n') {
-        Some(nl) => slice[nl + 1..].to_string(),
-        None => slice.to_string(),
-    }
-}
-
-/// Render ONE burst turn as the body line for its chat message. The persona's own
-/// turns and opaque (authorless) turns render verbatim — her own voice carries no
-/// name prefix (the system prompt forbids self-prefixing), and an opaque burst is
-/// reproduced byte-for-byte so the eval/test/replay paths are unchanged. A peer's
-/// turn is prefixed `{author}: ` so several speakers stay distinguishable inside a
-/// merged `user` message. The ONE place message-line formatting lives.
-fn turn_message_line(turn: &BurstTurn) -> String {
-    if turn.is_self || turn.author.is_empty() {
-        turn.content.clone()
-    } else {
-        format!("{}: {}", turn.author, turn.content)
-    }
-}
 
 /// A snapshot of exactly what the deliberation faculty sends the model — the
 /// glass box over the RAG/prompt. Print it, capture it, diff it across turns.
@@ -966,57 +880,7 @@ fn metrics_from(resp: &TextGenerationResponse) -> crate::cognition::workspace::T
 mod tests {
     use super::*;
     use crate::ai::heuristic_adapter::HeuristicInferenceAdapter;
-
-    // what this catches: the PASS silence token maps to Decision::Pass (with or
-    // without trailing punctuation); real content maps to Speak. One silence
-    // contract, reused from prompt_assembly.
-    #[test]
-    fn decision_parsing_maps_pass_and_speak() {
-        assert_eq!(decision_from_response("PASS"), Decision::Pass);
-        assert_eq!(decision_from_response("  PASS.  "), Decision::Pass);
-        assert_eq!(decision_from_response(""), Decision::Pass);
-        // Small models leak trailing prose after PASS — must still be silence,
-        // not a message that literally says "PASS ...".
-        assert_eq!(
-            decision_from_response("PASS — nothing to add here"),
-            Decision::Pass
-        );
-        assert_eq!(
-            decision_from_response("PASS.\nI'll stay quiet"),
-            Decision::Pass
-        );
-        match decision_from_response("Let's ship the deploy fix now.") {
-            Decision::Speak { text } => assert!(text.contains("ship the deploy")),
-            other => panic!("expected Speak, got {other:?}"),
-        }
-    }
-
-    // what this catches: qwen3.5 chain-of-thought tags leaking into the spoken
-    // text. The model prefixes an (often empty) <think></think> block before the
-    // answer; the live workspace path reached `say` raw and broadcast the tags
-    // into the room (observed on Asha's first turn). The Speak text must be clean.
-    #[test]
-    fn decision_strips_think_tags_from_spoken_text() {
-        // Empty think block (the exact shape observed live) + real answer.
-        match decision_from_response("<think>\n</think>\nI'm Asha, here to help.") {
-            Decision::Speak { text } => {
-                assert!(!text.contains("<think>"), "think tag leaked: {text:?}");
-                assert!(!text.contains("</think>"), "close tag leaked: {text:?}");
-                assert!(text.starts_with("I'm Asha"), "answer preserved: {text:?}");
-            }
-            other => panic!("expected Speak, got {other:?}"),
-        }
-        // Non-empty reasoning block is also stripped from the spoken text.
-        match decision_from_response("<think>weigh options</think>Ship it.") {
-            Decision::Speak { text } => assert_eq!(text, "Ship it."),
-            other => panic!("expected Speak, got {other:?}"),
-        }
-        // An ONLY-thinking response (no answer) cleans to empty → silence.
-        assert_eq!(
-            decision_from_response("<think>I won't answer this</think>"),
-            Decision::Pass
-        );
-    }
+    use crate::cognition::workspace::BurstTurn;
 
     // what this catches: end-to-end through a REAL adapter (the deterministic
     // heuristic stand-in) — the faculty calls inference and produces a verdict

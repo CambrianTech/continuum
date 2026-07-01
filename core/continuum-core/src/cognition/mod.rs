@@ -36,6 +36,8 @@ pub mod channel_element;
 pub mod channel_substrate;
 pub mod check_redundancy;
 pub mod deferred_faculty;
+pub mod deliberation_budget;
+pub mod deliberation_parse;
 pub mod deliberation_prompt;
 pub mod dream_consolidation;
 pub mod embedding;
