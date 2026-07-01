@@ -19,6 +19,7 @@ use crate::sdk_codegen::DynCommand;
 
 pub mod admit_inbox_message;
 pub mod cache_message;
+pub mod check_adequacy;
 pub mod check_content_dedup;
 pub mod check_redundancy;
 pub mod classify_domain;
@@ -41,6 +42,7 @@ pub mod mark_evaluated;
 pub mod recall_engrams;
 pub mod record_content;
 pub mod register_domain_keywords;
+pub mod score_interaction;
 pub mod select_model;
 pub mod semantic_search_tools;
 pub mod set_sleep_mode;
@@ -84,8 +86,8 @@ use track_response::TrackResponse;
 ///
 /// The stateless oxidizer commands ([`should_respond`], [`check_redundancy`],
 /// [`generate_response`], [`embed_tools`], [`semantic_search_tools`],
-/// [`validate_response_decision`]) hold no module state, self-route via `inventory`, and
-/// are NOT listed here.
+/// [`validate_response_decision`], [`score_interaction`], [`check_adequacy`]) hold no
+/// module state, self-route via `inventory`, and are NOT listed here.
 pub fn command_objects(state: Arc<CognitionState>) -> Vec<Arc<dyn DynCommand>> {
     vec![
         Arc::new(CacheMessage {

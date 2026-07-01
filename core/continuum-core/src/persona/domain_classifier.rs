@@ -422,7 +422,7 @@ impl Default for DomainClassifier {
 // =============================================================================
 
 /// Quality score for a single interaction (input→output pair).
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[ts(
     export,
     export_to = "../../../protocol/typescript/persona/QualityScore.ts"
@@ -435,7 +435,7 @@ pub struct QualityScore {
 }
 
 /// Breakdown of quality factors for an interaction.
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[ts(
     export,
     export_to = "../../../protocol/typescript/persona/QualityFactors.ts"

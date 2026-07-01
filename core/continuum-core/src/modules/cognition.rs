@@ -42,7 +42,6 @@ use crate::persona::{
     InboxMessage, Modality, PersonaCognition, PersonaInboxFrame, PersonaTurnFrame,
     PersonaTurnFrameReplayRecord, SenderType,
 };
-use crate::persona::RecentResponse;
 use crate::rag::RagEngine;
 use crate::runtime;
 use crate::runtime::{
@@ -565,9 +564,6 @@ impl ServiceModule for CognitionModule {
             // CognitionState, access: Internal).
 
             // =================================================================
-            // Model Selection
-            // =================================================================
-            // =================================================================
             // Model Selection + Adapter Sync
             // =================================================================
             // cognition/select-model and cognition/sync-adapters migrated to the typed
@@ -832,60 +828,14 @@ impl ServiceModule for CognitionModule {
             }
 
             // =================================================================
-            // Interaction Quality Scoring
+            // Interaction Quality Scoring + Post-Inference Adequacy Check
             // =================================================================
-            "cognition/score-interaction" => {
-                let _timer = TimingGuard::new("module", "cognition_score_interaction");
-                let input = p.str("input")?;
-                let output = p.str("output")?;
-                let feedback = p.str_opt("feedback");
-                let task_success = p.bool_opt("task_success");
-
-                let result = crate::persona::domain_classifier::score_interaction_quality(
-                    input,
-                    output,
-                    feedback,
-                    task_success,
-                );
-
-                Ok(CommandResult::Json(
-                    serde_json::to_value(&result).map_err(|e| format!("Serialize error: {e}"))?,
-                ))
-            }
-
-            // =================================================================
-            // Post-Inference Adequacy Check
-            // =================================================================
-            "cognition/check-adequacy" => {
-                let _timer = TimingGuard::new("module", "cognition_check_adequacy");
-                let original_text = p.str("original_text")?.to_string();
-                let responses_json = params
-                    .get("responses")
-                    .and_then(|v| v.as_array())
-                    .ok_or("Missing responses array")?;
-
-                let responses: Vec<RecentResponse> = responses_json
-                    .iter()
-                    .filter_map(|v| serde_json::from_value(v.clone()).ok())
-                    .collect();
-
-                let result = evaluator::check_response_adequacy(&original_text, &responses);
-
-                log_info!(
-                    "module",
-                    "cognition",
-                    "check-adequacy: adequate={}, confidence={:.2}, responder={:?} ({:.0}μs, {} responses checked)",
-                    result.is_adequate,
-                    result.confidence,
-                    result.responder_name,
-                    result.check_time_us,
-                    responses.len()
-                );
-
-                Ok(CommandResult::Json(
-                    serde_json::to_value(&result).map_err(|e| format!("Serialize error: {e}"))?,
-                ))
-            }
+            // cognition/score-interaction and cognition/check-adequacy migrated to the
+            // typed DynCommand registry as stateless action_command! unit structs (they
+            // wrap pure sync free fns — no CognitionState) — see
+            // commands/cognition/{score_interaction,check_adequacy}.rs (access: Internal).
+            // The typed Vec<RecentResponse> params deserialize fails loud on a malformed
+            // batch, replacing the legacy filter_map(..ok()) silent-drop.
 
             // =================================================================
             // Message Cache (echo chamber + post-inference adequacy)
