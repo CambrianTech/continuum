@@ -4,78 +4,8 @@
 //! See docs/genome/COMPRESSION-PIPELINE.md for the full pipeline architecture.
 
 use super::types::*;
+use crate::model_registry::ModelArchConfig;
 use std::collections::HashMap;
-
-/// Model architecture configuration. Derived from config.json or GGUF metadata.
-#[derive(Debug, Clone)]
-pub struct ModelArchConfig {
-    pub num_layers: usize,
-    pub hidden_size: usize,
-    pub num_attention_heads: usize,
-    pub num_kv_heads: usize,
-    pub head_dim: usize,
-    pub intermediate_size: usize, // FFN hidden dim
-    pub vocab_size: usize,
-    /// GQA ratio: num_attention_heads / num_kv_heads
-    pub gqa_ratio: usize,
-}
-
-impl ModelArchConfig {
-    /// Qwen2.5-Coder-32B original (before compaction).
-    pub fn qwen2_32b() -> Self {
-        Self {
-            num_layers: 64,
-            hidden_size: 5120,
-            num_attention_heads: 40,
-            num_kv_heads: 8,
-            head_dim: 128,
-            intermediate_size: 27648,
-            vocab_size: 152064,
-            gqa_ratio: 5,
-        }
-    }
-
-    /// Llama 3.2 3B original.
-    pub fn llama_3b() -> Self {
-        Self {
-            num_layers: 28,
-            hidden_size: 3072,
-            num_attention_heads: 24,
-            num_kv_heads: 8,
-            head_dim: 128,
-            intermediate_size: 8192,
-            vocab_size: 128256,
-            gqa_ratio: 3,
-        }
-    }
-
-    /// Per-layer parameter count for attention (Q + K + V + O projections).
-    pub fn attention_params_per_layer(&self, q_heads: usize, kv_heads: usize) -> usize {
-        let q_params = q_heads * self.head_dim * self.hidden_size; // Q proj
-        let k_params = kv_heads * self.head_dim * self.hidden_size; // K proj
-        let v_params = kv_heads * self.head_dim * self.hidden_size; // V proj
-        let o_params = self.hidden_size * q_heads * self.head_dim; // O proj
-        q_params + k_params + v_params + o_params
-    }
-
-    /// Per-layer parameter count for MLP (gate + up + down).
-    pub fn mlp_params_per_layer(&self) -> usize {
-        // gate: [hidden, intermediate], up: [hidden, intermediate], down: [intermediate, hidden]
-        3 * self.hidden_size * self.intermediate_size
-    }
-
-    /// Embedding + LM head parameter count.
-    pub fn embedding_params(&self) -> usize {
-        // embed_tokens + lm_head (may be tied, but budget for both)
-        2 * self.vocab_size * self.hidden_size
-    }
-
-    /// Norm + bias params (small, always F32).
-    pub fn norm_params(&self) -> usize {
-        // 2 norms per layer (attn_norm, ffn_norm) + 1 final norm, each is hidden_size
-        (2 * self.num_layers + 1) * self.hidden_size
-    }
-}
 
 /// Map HeadPrecision tiers to GGUF quant types.
 /// This is the bridge between our fine-grained scoring and GGUF's per-tensor quantization.
@@ -307,7 +237,7 @@ fn estimate_budget(
         .unwrap_or(arch.num_kv_heads);
     let kv_per_layer = 2 * actual_kv_heads as u64
         * arch.head_dim as u64
-        * 32768 // max context
+        * arch.context_length as u64 // trained context window (from the artifact)
         * 4; // F32
     let kv_cache_max_bytes = kv_per_layer * arch.num_layers as u64;
 
@@ -326,6 +256,13 @@ fn estimate_budget(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Qwen2.5-Coder-32B dims as a test fixture — the model-specific constants
+    /// live ONLY here, `#[cfg(test)]`-gated, never in production paths (which
+    /// source dims from the artifact via `ModelArchConfig::from_artifact`).
+    fn qwen2_32b_arch() -> ModelArchConfig {
+        ModelArchConfig::new(64, 5120, 40, 8, 128, 27648, 152064, 32768).unwrap()
+    }
 
     fn make_test_topology() -> HeadTopology {
         // 8 KV groups, keep 5 (groups 0-4), prune 3 (groups 5-7)
@@ -405,7 +342,7 @@ mod tests {
     fn test_plan_fits_32gb() {
         let topology = make_test_topology();
         let device = DeviceSpec::macbook_pro_32gb();
-        let arch = ModelArchConfig::qwen2_32b();
+        let arch = qwen2_32b_arch();
 
         let result = plan_compression(&topology, &device, &arch, "test-model");
         match &result {
@@ -429,7 +366,7 @@ mod tests {
     fn test_plan_has_mixed_quant() {
         let topology = make_test_topology();
         let device = DeviceSpec::macbook_pro_32gb();
-        let arch = ModelArchConfig::qwen2_32b();
+        let arch = qwen2_32b_arch();
 
         let recipe = plan_compression(&topology, &device, &arch, "test-model")
             .expect("should produce a plan");
@@ -455,7 +392,7 @@ mod tests {
     fn test_embeddings_get_high_precision() {
         let topology = make_test_topology();
         let device = DeviceSpec::macbook_pro_32gb();
-        let arch = ModelArchConfig::qwen2_32b();
+        let arch = qwen2_32b_arch();
 
         let recipe = plan_compression(&topology, &device, &arch, "test-model")
             .expect("should produce a plan");
@@ -477,7 +414,7 @@ mod tests {
     fn test_norms_always_f32() {
         let topology = make_test_topology();
         let device = DeviceSpec::macbook_pro_32gb();
-        let arch = ModelArchConfig::qwen2_32b();
+        let arch = qwen2_32b_arch();
 
         let recipe = plan_compression(&topology, &device, &arch, "test-model")
             .expect("should produce a plan");

@@ -12,6 +12,12 @@ export type AnalyzeParams = {
  */
 adapterPath: string, 
 /**
+ * Path to the base model artifact (`.gguf` file or a dir with `config.json`).
+ * Architecture dims (hidden/intermediate/heads/context) are sourced from it —
+ * a correct compaction plan requires the base model's real dimensions.
+ */
+modelPath: string, 
+/**
  * CompactionConfig overrides (partial; unspecified fields use defaults).
  */
 config: CompactionConfig, 

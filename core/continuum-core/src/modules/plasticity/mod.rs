@@ -88,29 +88,18 @@ impl ServiceModule for PlasticityModule {
 pub(crate) fn build_topology(
     utilization: &types::UtilizationData,
     config: &types::CompactionConfig,
+    arch: &crate::model_registry::ModelArchConfig,
 ) -> types::HeadTopology {
-    let arch = lookup_model_arch(&utilization.model_name);
-    let head_dim = arch.as_ref().map(|a| a.head_dim).unwrap_or(128);
-    let hidden_size = arch
-        .as_ref()
-        .map(|a| a.hidden_size)
-        .unwrap_or_else(|| utilization.num_heads * head_dim);
+    let head_dim = arch.head_dim;
+    let hidden_size = arch.hidden_size;
 
     let layers = if let Some(target_gb) = config.target_size_gb {
         // Budget-aware: fit the model into target_gb
-        let (intermediate_size, vocab_size) = arch
-            .as_ref()
-            .map(|a| (a.intermediate_size, a.vocab_size))
-            .unwrap_or_else(|| {
-                // Reasonable defaults: intermediate ≈ 3.5× hidden, vocab ≈ 32K
-                (hidden_size * 7 / 2, 32000)
-            });
-
         let non_attention_bytes = scoring::estimate_non_attention_bytes(
             utilization.layer_scores.len(),
             hidden_size,
-            intermediate_size,
-            vocab_size,
+            arch.intermediate_size,
+            arch.vocab_size,
         );
 
         eprintln!(
@@ -157,133 +146,6 @@ pub(crate) fn build_topology(
     }
 }
 
-/// Known model architecture configurations.
-/// Maps model name patterns to dimensions needed for compaction.
-struct ModelArchConfig {
-    head_dim: usize,
-    hidden_size: usize,
-    intermediate_size: usize,
-    vocab_size: usize,
-}
-
-/// Look up model architecture from name.
-fn lookup_model_arch(name: &str) -> Option<ModelArchConfig> {
-    let name = name.to_lowercase();
-
-    // Qwen 2.5 family (from HuggingFace config.json files)
-    if name.contains("qwen2.5") || name.contains("qwen-2.5") {
-        if name.contains("32b") {
-            return Some(ModelArchConfig {
-                head_dim: 128,
-                hidden_size: 5120,
-                intermediate_size: 27648,
-                vocab_size: 152064,
-            });
-        } else if name.contains("14b") {
-            return Some(ModelArchConfig {
-                head_dim: 128,
-                hidden_size: 5120,
-                intermediate_size: 13824,
-                vocab_size: 152064,
-            });
-        } else if name.contains("7b") {
-            return Some(ModelArchConfig {
-                head_dim: 128,
-                hidden_size: 3584,
-                intermediate_size: 18944,
-                vocab_size: 152064,
-            });
-        } else if name.contains("3b") {
-            return Some(ModelArchConfig {
-                head_dim: 128,
-                hidden_size: 2048,
-                intermediate_size: 11008,
-                vocab_size: 152064,
-            });
-        } else if name.contains("1.5b") {
-            return Some(ModelArchConfig {
-                head_dim: 128,
-                hidden_size: 1536,
-                intermediate_size: 8960,
-                vocab_size: 152064,
-            });
-        } else if name.contains("0.5b") {
-            return Some(ModelArchConfig {
-                head_dim: 64,
-                hidden_size: 896,
-                intermediate_size: 4864,
-                vocab_size: 152064,
-            });
-        }
-    }
-
-    // Llama 3.x family
-    if name.contains("llama-3.2-3b") || name.contains("llama-3.1") || name.contains("llama-3-") {
-        return Some(ModelArchConfig {
-            head_dim: 128,
-            hidden_size: 3072,
-            intermediate_size: 8192,
-            vocab_size: 128256,
-        });
-    }
-    if name.contains("llama-3.2-1b") {
-        return Some(ModelArchConfig {
-            head_dim: 64,
-            hidden_size: 2048,
-            intermediate_size: 8192,
-            vocab_size: 128256,
-        });
-    }
-
-    // SmolLM2 family
-    if name.contains("smollm2-135m") {
-        return Some(ModelArchConfig {
-            head_dim: 64,
-            hidden_size: 576,
-            intermediate_size: 1536,
-            vocab_size: 49152,
-        });
-    }
-    if name.contains("smollm2-360m") {
-        return Some(ModelArchConfig {
-            head_dim: 64,
-            hidden_size: 960,
-            intermediate_size: 2560,
-            vocab_size: 49152,
-        });
-    }
-    if name.contains("smollm2-1.7b") || name.contains("smollm2") {
-        return Some(ModelArchConfig {
-            head_dim: 64,
-            hidden_size: 2048,
-            intermediate_size: 8192,
-            vocab_size: 49152,
-        });
-    }
-
-    None
-}
-
-/// Infer head_dim from model architecture.
-fn infer_head_dim(data: &types::UtilizationData) -> usize {
-    lookup_model_arch(&data.model_name)
-        .map(|c| c.head_dim)
-        .unwrap_or_else(|| {
-            // Fallback: compute from num_heads if we know hidden_size, else default 128
-            128
-        })
-}
-
-/// Infer hidden_size from model architecture.
-///
-/// `pub(crate)`: the `plasticity/{analyze,pipeline}` command bodies size the
-/// quantization-savings estimate off it.
-pub(crate) fn infer_hidden_size(data: &types::UtilizationData) -> usize {
-    lookup_model_arch(&data.model_name)
-        .map(|c| c.hidden_size)
-        .unwrap_or_else(|| data.num_heads * infer_head_dim(data))
-}
-
 /// Current timestamp in ISO 8601 format.
 fn chrono_now() -> String {
     // Use std time instead of chrono dependency
@@ -299,54 +161,18 @@ fn chrono_now() -> String {
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_infer_head_dim_llama_3b() {
-        let data = types::UtilizationData {
-            layer_scores: vec![],
-            num_steps: 0,
-            model_name: "meta-llama/Llama-3.2-3B".to_string(),
-            num_heads: 24,
-            num_kv_heads: 8,
-        };
-        assert_eq!(infer_head_dim(&data), 128);
+    /// Qwen2.5-Coder-32B dims as a test fixture. Production sources these from
+    /// the artifact via `ModelArchConfig::from_artifact`; the constants live
+    /// ONLY here, `#[cfg(test)]`-gated.
+    fn qwen2_32b_arch() -> crate::model_registry::ModelArchConfig {
+        crate::model_registry::ModelArchConfig::new(64, 5120, 40, 8, 128, 27648, 152064, 32768)
+            .unwrap()
     }
 
-    #[test]
-    fn test_infer_hidden_size_llama_3b() {
-        let data = types::UtilizationData {
-            layer_scores: vec![],
-            num_steps: 0,
-            model_name: "meta-llama/Llama-3.2-3B".to_string(),
-            num_heads: 24,
-            num_kv_heads: 8,
-        };
-        assert_eq!(infer_hidden_size(&data), 3072);
-    }
-
-    #[test]
-    fn test_infer_qwen25_coder_32b() {
-        let data = types::UtilizationData {
-            layer_scores: vec![],
-            num_steps: 0,
-            model_name: "Qwen/Qwen2.5-Coder-32B-Instruct".to_string(),
-            num_heads: 40,
-            num_kv_heads: 8,
-        };
-        assert_eq!(infer_head_dim(&data), 128);
-        assert_eq!(infer_hidden_size(&data), 5120);
-    }
-
-    #[test]
-    fn test_infer_qwen25_coder_0_5b() {
-        let data = types::UtilizationData {
-            layer_scores: vec![],
-            num_steps: 0,
-            model_name: "Qwen/Qwen2.5-Coder-0.5B-Instruct".to_string(),
-            num_heads: 14,
-            num_kv_heads: 2,
-        };
-        assert_eq!(infer_head_dim(&data), 64);
-        assert_eq!(infer_hidden_size(&data), 896);
+    /// Llama-3.2-3B dims as a test fixture (same gating rationale).
+    fn llama_3b_arch() -> crate::model_registry::ModelArchConfig {
+        crate::model_registry::ModelArchConfig::new(28, 3072, 24, 8, 128, 8192, 128256, 131072)
+            .unwrap()
     }
 
     #[test]
@@ -378,7 +204,7 @@ mod tests {
             ..types::CompactionConfig::default()
         };
 
-        let topo = build_topology(&data, &config);
+        let topo = build_topology(&data, &config, &qwen2_32b_arch());
 
         assert_eq!(topo.base_model, "Qwen/Qwen2.5-Coder-32B-Instruct");
         assert_eq!(topo.head_dim, 128);
@@ -421,14 +247,14 @@ mod tests {
         };
 
         let threshold_config = types::CompactionConfig::default();
-        let topo_threshold = build_topology(&data, &threshold_config);
+        let topo_threshold = build_topology(&data, &threshold_config, &llama_3b_arch());
 
         // With a very tight budget, should compress more aggressively
         let budget_config = types::CompactionConfig {
             target_size_gb: Some(1.0),
             ..types::CompactionConfig::default()
         };
-        let topo_budget = build_topology(&data, &budget_config);
+        let topo_budget = build_topology(&data, &budget_config, &llama_3b_arch());
 
         // Budget mode with tight target should have more compression
         assert!(

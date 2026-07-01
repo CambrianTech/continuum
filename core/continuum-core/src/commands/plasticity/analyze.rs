@@ -5,8 +5,9 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use ts_rs::TS;
 
+use crate::model_registry::ModelArchConfig;
 use crate::modules::plasticity::types::{AnalysisResult, CompactionConfig};
-use crate::modules::plasticity::{build_topology, infer_hidden_size, quantizer, scoring, topology};
+use crate::modules::plasticity::{build_topology, quantizer, scoring, topology};
 
 use super::effective_config;
 
@@ -22,6 +23,10 @@ use super::effective_config;
 pub struct AnalyzeParams {
     /// Path to the adapter directory containing `gate_gradients.json`.
     pub adapter_path: String,
+    /// Path to the base model artifact (`.gguf` file or a dir with `config.json`).
+    /// Architecture dims (hidden/intermediate/heads/context) are sourced from it —
+    /// a correct compaction plan requires the base model's real dimensions.
+    pub model_path: String,
     /// CompactionConfig overrides (partial; unspecified fields use defaults).
     #[serde(default)]
     pub config: CompactionConfig,
@@ -54,10 +59,11 @@ crate::action_command! {
         );
         let saturated_heads = scoring::find_saturated_heads(&utilization, &config);
 
-        let topo = build_topology(&utilization, &config);
+        let arch = ModelArchConfig::from_artifact(std::path::Path::new(&p.model_path))?;
+        let topo = build_topology(&utilization, &config, &arch);
 
         let (orig_bytes, quant_bytes) =
-            quantizer::estimate_total_savings(&topo, infer_hidden_size(&utilization));
+            quantizer::estimate_total_savings(&topo, arch.hidden_size);
 
         Ok(AnalysisResult {
             topology: topo,

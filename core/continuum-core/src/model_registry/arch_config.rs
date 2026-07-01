@@ -53,6 +53,11 @@ pub struct ModelArchConfig {
     /// FFN hidden dimension.
     pub intermediate_size: usize,
     pub vocab_size: usize,
+    /// Trained context window (positions). A model-specific fact that lives in
+    /// the same artifact as the dims — the compaction planner budgets KV cache
+    /// against it and the GGUF writer stamps it into the compacted header, so
+    /// it rides the same carrier instead of being hardcoded per demo model.
+    pub context_length: usize,
     /// GQA ratio: `num_attention_heads / num_kv_heads`. Cached at
     /// construction so consumers never recompute (and never divide by zero).
     pub gqa_ratio: usize,
@@ -64,6 +69,7 @@ impl ModelArchConfig {
     /// Errors if `num_kv_heads` is zero (would divide by zero) or does not
     /// divide `num_attention_heads` (not a valid GQA grouping) — a corrupt
     /// dimension set is a fail-loud condition, not something to round.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         num_layers: usize,
         hidden_size: usize,
@@ -72,6 +78,7 @@ impl ModelArchConfig {
         head_dim: usize,
         intermediate_size: usize,
         vocab_size: usize,
+        context_length: usize,
     ) -> Result<Self, String> {
         if num_kv_heads == 0 {
             return Err("model arch: num_kv_heads is 0".to_string());
@@ -90,6 +97,7 @@ impl ModelArchConfig {
             head_dim,
             intermediate_size,
             vocab_size,
+            context_length,
             gqa_ratio: num_attention_heads / num_kv_heads,
         })
     }
@@ -130,6 +138,7 @@ impl ModelArchConfig {
         let num_attention_heads = req(&format!("{arch}.attention.head_count"))?;
         let num_kv_heads = req(&format!("{arch}.attention.head_count_kv"))?;
         let num_layers = req(&format!("{arch}.block_count"))?;
+        let context_length = req(&format!("{arch}.context_length"))?;
 
         // head_dim: explicit `{arch}.attention.key_length` if present, else the
         // spec-defined derivation hidden_size / num_attention_heads (llama.cpp
@@ -180,6 +189,7 @@ impl ModelArchConfig {
             head_dim,
             intermediate_size,
             vocab_size,
+            context_length,
         )
     }
 
@@ -209,6 +219,7 @@ impl ModelArchConfig {
         let num_attention_heads = req("num_attention_heads")?;
         let num_layers = req("num_hidden_layers")?;
         let vocab_size = req("vocab_size")?;
+        let context_length = req("max_position_embeddings")?;
 
         // Absent `num_key_value_heads` MEANS multi-head attention (kv == q) in
         // the HF config spec — a defined semantic, not a guess.
@@ -240,7 +251,35 @@ impl ModelArchConfig {
             head_dim,
             intermediate_size,
             vocab_size,
+            context_length,
         )
+    }
+
+    /// Read the architecture dimensions authoritatively from a model artifact,
+    /// dispatching on its on-disk shape: a `.gguf` file → [`from_gguf`]; a
+    /// directory containing `config.json` (the safetensors form) →
+    /// [`from_config_json`]. Any other shape is a hard error naming what was
+    /// found — we never guess dims from the path string.
+    ///
+    /// [`from_gguf`]: ModelArchConfig::from_gguf
+    /// [`from_config_json`]: ModelArchConfig::from_config_json
+    pub fn from_artifact(path: &Path) -> Result<Self, String> {
+        if path.is_dir() {
+            if path.join("config.json").is_file() {
+                return Self::from_config_json(path);
+            }
+            return Err(format!(
+                "model artifact dir {} has no config.json — cannot source arch dims",
+                path.display()
+            ));
+        }
+        if path.extension().and_then(|e| e.to_str()) == Some("gguf") {
+            return Self::from_gguf(path);
+        }
+        Err(format!(
+            "model artifact {} is neither a .gguf file nor a directory with config.json",
+            path.display()
+        ))
     }
 
     /// Per-layer parameter count for attention (Q + K + V + O projections),
@@ -284,18 +323,19 @@ mod tests {
     #[test]
     fn new_validates_gqa_grouping_and_computes_ratio() {
         // Valid GQA: 40 query heads over 8 KV heads → ratio 5.
-        let cfg = ModelArchConfig::new(64, 5120, 40, 8, 128, 27648, 152064).unwrap();
+        let cfg = ModelArchConfig::new(64, 5120, 40, 8, 128, 27648, 152064, 32768).unwrap();
         assert_eq!(cfg.gqa_ratio, 5);
+        assert_eq!(cfg.context_length, 32768);
 
         // Valid MHA: kv == q → ratio 1.
-        let mha = ModelArchConfig::new(28, 3072, 24, 24, 128, 8192, 128256).unwrap();
+        let mha = ModelArchConfig::new(28, 3072, 24, 24, 128, 8192, 128256, 8192).unwrap();
         assert_eq!(mha.gqa_ratio, 1);
 
         // Zero KV heads → error, never a divide-by-zero.
-        assert!(ModelArchConfig::new(1, 8, 4, 0, 2, 16, 100).is_err());
+        assert!(ModelArchConfig::new(1, 8, 4, 0, 2, 16, 100, 2048).is_err());
 
         // Non-dividing grouping (7 query heads over 2 KV) → error.
-        assert!(ModelArchConfig::new(1, 8, 7, 2, 2, 16, 100).is_err());
+        assert!(ModelArchConfig::new(1, 8, 7, 2, 2, 16, 100, 2048).is_err());
     }
 
     // what this catches: a missing artifact / missing required key must fail
@@ -322,7 +362,8 @@ mod tests {
                 "intermediate_size": 5632,
                 "num_attention_heads": 16,
                 "num_hidden_layers": 24,
-                "vocab_size": 32000
+                "vocab_size": 32000,
+                "max_position_embeddings": 4096
             }"#,
         )
         .unwrap();
@@ -335,6 +376,7 @@ mod tests {
         assert_eq!(cfg.gqa_ratio, 1);
         // head_dim absent → hidden_size / heads = 2048 / 16 = 128.
         assert_eq!(cfg.head_dim, 128);
+        assert_eq!(cfg.context_length, 4096);
 
         std::fs::remove_dir_all(&dir).ok();
     }
