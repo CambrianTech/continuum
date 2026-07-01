@@ -812,7 +812,8 @@ pub fn start_server(
         ),
     ));
 
-    // LaunchModeModule (stateless) — system/launch-mode/{get,set}. Headless-native
+    // LaunchModeModule — system/launch-mode/{get,set} as typed self-routing commands
+    // (`get` stateless, `set` dep-holding over the module bus). Headless-native
     // runtime lever for the headless-vs-UI launch preference; persists
     // CONTINUUM_LAUNCH_MODE to config.env (same key bin/continuum reads) and emits
     // system:launch-mode:changed so a running UI can attach/tear down its overlay.
