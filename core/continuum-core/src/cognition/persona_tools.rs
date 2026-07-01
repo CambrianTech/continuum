@@ -203,14 +203,18 @@ pub fn render_tool_catalog(tools: &[NativeToolSpec], _budget_chars: usize) -> St
         return String::new();
     }
     // Group tool VERBS (the name minus its leading category segment) under each
-    // category, stable (BTreeMap) ordering for a byte-stable cacheable prefix.
-    let mut by_cat: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+    // category, each rendered `verb(param, param?)` (see [`render_param_hint`]);
+    // stable (BTreeMap + sort) ordering for a byte-stable cacheable prefix.
+    let mut by_cat: BTreeMap<&str, Vec<String>> = BTreeMap::new();
     for t in tools {
         let cat = extract_category(&t.name);
         // The verb is everything after the first `/` (so `persona/instances/list`
         // shows as `instances/list`); a name with no `/` lists under itself.
         let verb = t.name.strip_prefix(cat).and_then(|r| r.strip_prefix('/')).unwrap_or(&t.name);
-        by_cat.entry(cat).or_default().push(verb);
+        by_cat
+            .entry(cat)
+            .or_default()
+            .push(format!("{verb}{}", render_param_hint(&t.input_schema)));
     }
     let mut out = String::new();
     for (cat, mut verbs) in by_cat {
@@ -218,6 +222,57 @@ pub fn render_tool_catalog(tools: &[NativeToolSpec], _budget_chars: usize) -> St
         let _ = writeln!(out, "{cat}: {}", verbs.join(", "));
     }
     out
+}
+
+/// Render one tool's parameter FIELD NAMES as a compact `(required, optional?)`
+/// hint appended to its catalog verb — required params bare, optional params
+/// suffixed `?`. A no-param command renders as the empty string (just the verb).
+///
+/// ## Why field names ride the catalog (measured 2026-07-01, [[persona-codes-blind]])
+/// Progressive disclosure keeps full param SCHEMAS out of the always-on prompt
+/// (they cost ~4.6k tokens/turn; [`render_tool_catalog`] doc). But names-only
+/// verbs (`code: run, search, read`) left the *param* names invisible too — and a
+/// live 2-task probe on Asha + Solenne (qwen2.5-coder-14b) showed the 14B model
+/// skips the `commands/help` hop and GUESSES field names: `code/search{query}`
+/// (wants `pattern`), `code/run{path:...}` (wants `code`) → both `[invalid]
+/// CommandRequest: missing field`, burning a ~10-15s act each on the
+/// prefill-dominated Metal lane. Field NAMES are the cheap 80/20 fix: a name-list
+/// is a handful of tokens (not the typed+described schema), and it collapses the
+/// guess-fail-retry that convergence + latency compound over. Still progressive
+/// disclosure — types, descriptions, and defaults stay behind `commands/help`;
+/// this adds only which fields exist and which are required. Deterministic order
+/// (required in schema-declaration order, then optional sorted) keeps the catalog
+/// a byte-stable cacheable prefix.
+fn render_param_hint(schema: &ToolInputSchema) -> String {
+    let required: Vec<&str> = schema
+        .required
+        .as_deref()
+        .unwrap_or(&[])
+        .iter()
+        .map(String::as_str)
+        .collect();
+    // Optional = property keys not in `required`, sorted for byte-stability
+    // (`properties` object key order is not guaranteed deterministic).
+    let mut optional: Vec<&str> = schema
+        .properties
+        .as_object()
+        .map(|m| {
+            m.keys()
+                .map(String::as_str)
+                .filter(|k| !required.contains(k))
+                .collect()
+        })
+        .unwrap_or_default();
+    optional.sort_unstable();
+    if required.is_empty() && optional.is_empty() {
+        return String::new();
+    }
+    let parts: Vec<String> = required
+        .iter()
+        .map(|r| (*r).to_string())
+        .chain(optional.iter().map(|o| format!("{o}?")))
+        .collect();
+    format!("({})", parts.join(", "))
 }
 
 /// Render the tool surface as an EXPANDABLE BOOKMARKED MENU: every category HEADER
@@ -498,6 +553,47 @@ mod tests {
         // Collapsed gpu shows depth + how to open, NOT its verbs.
         assert!(out.contains("gpu (2 — commands/list --filter gpu)"), "gpu not collapsed: {out}");
         assert!(!out.contains("stats"), "collapsed gpu leaked verbs: {out}");
+    }
+
+    // Build a spec whose schema declares required + optional fields, so the
+    // catalog's param-name rendering can be asserted.
+    fn spec_with(name: &str, required: &[&str], optional: &[&str]) -> NativeToolSpec {
+        let mut props = serde_json::Map::new();
+        for f in required.iter().chain(optional.iter()) {
+            props.insert((*f).to_string(), json!({ "type": "string" }));
+        }
+        NativeToolSpec {
+            name: name.to_string(),
+            description: String::new(),
+            input_schema: ToolInputSchema {
+                schema_type: "object".to_string(),
+                properties: serde_json::Value::Object(props),
+                required: (!required.is_empty())
+                    .then(|| required.iter().map(|s| s.to_string()).collect()),
+                definitions: None,
+            },
+        }
+    }
+
+    // what this catches: the always-on catalog surfaces each verb's PARAM FIELD
+    // NAMES (required bare, optional suffixed `?`) so a small model stops guessing
+    // `code/search{query}`/`code/run{path}` and hitting `[invalid] CommandRequest`
+    // (2026-07-01 legibility fix, [[persona-codes-blind]]). Required order is the
+    // schema's declared order; optional is sorted; a no-param verb renders bare.
+    #[test]
+    fn catalog_renders_param_field_names() {
+        let tools = [
+            spec_with("code/search", &["pattern"], &["path"]),
+            spec_with("code/run", &["lang", "code"], &["timeout_secs"]),
+            spec("code/list"), // no params → bare verb, no parens
+        ];
+        let out = render_tool_catalog(&tools, 0);
+        // Required bare, optional suffixed `?`; required keeps declared order.
+        assert!(out.contains("run(lang, code, timeout_secs?)"), "run params wrong: {out}");
+        assert!(out.contains("search(pattern, path?)"), "search params wrong: {out}");
+        // A no-param verb renders bare — no empty `()`.
+        assert!(out.contains("list,") || out.trim_end().ends_with("list"), "list should be bare: {out}");
+        assert!(!out.contains("list()"), "no-param verb must not render empty parens: {out}");
     }
 
     // what this catches: the tool surface is DYNAMIC and consistent — it is
