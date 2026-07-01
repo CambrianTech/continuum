@@ -742,35 +742,9 @@ impl ServiceModule for CognitionModule {
             // ================================================================
             // Message Deduplication (single source of truth in Rust)
             // ================================================================
-            "cognition/has-evaluated" => {
-                let persona_uuid = p.uuid("persona_id")?;
-                let message_uuid = p.uuid("message_id")?;
-
-                let persona = self
-                    .state
-                    .personas
-                    .get(&persona_uuid)
-                    .ok_or_else(|| format!("No cognition for {persona_uuid}"))?;
-
-                let evaluated = persona.engine.has_evaluated_message(message_uuid);
-                Ok(CommandResult::Json(
-                    serde_json::json!({ "evaluated": evaluated }),
-                ))
-            }
-
-            "cognition/mark-evaluated" => {
-                let persona_uuid = p.uuid("persona_id")?;
-                let message_uuid = p.uuid("message_id")?;
-
-                let persona = self
-                    .state
-                    .personas
-                    .get(&persona_uuid)
-                    .ok_or_else(|| format!("No cognition for {persona_uuid}"))?;
-
-                persona.engine.mark_message_evaluated(message_uuid);
-                Ok(CommandResult::Json(serde_json::json!({ "marked": true })))
-            }
+            // cognition/has-evaluated + cognition/mark-evaluated migrated to the typed
+            // DynCommand registry — see commands/cognition/{has_evaluated,mark_evaluated}.rs
+            // (dep-holding on CognitionState, access: Internal).
 
             // ================================================================
             // Unified Evaluation (6-gate pipeline, single lock)
@@ -834,34 +808,9 @@ impl ServiceModule for CognitionModule {
                 ))
             }
 
-            "cognition/track-response" => {
-                let _timer = TimingGuard::new("module", "cognition_track_response");
-                let persona_uuid = p.uuid("persona_id")?;
-                let room_uuid = p.uuid("room_id")?;
-
-                let now_ms = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_millis() as u64;
-
-                let mut persona = get_or_create_persona!(self, persona_uuid);
-                persona.rate_limiter.track_response(room_uuid, now_ms);
-
-                let count = persona.rate_limiter.response_count(room_uuid);
-                log_info!(
-                    "module",
-                    "cognition",
-                    "track-response {}: room={}, count={}",
-                    persona_uuid,
-                    room_uuid,
-                    count
-                );
-
-                Ok(CommandResult::Json(serde_json::json!({
-                    "tracked": true,
-                    "response_count": count,
-                })))
-            }
+            // cognition/track-response migrated to the typed DynCommand registry — see
+            // commands/cognition/track_response.rs (dep-holding on CognitionState,
+            // access: Internal).
 
             "cognition/set-sleep-mode" => {
                 let _timer = TimingGuard::new("module", "cognition_set_sleep_mode");

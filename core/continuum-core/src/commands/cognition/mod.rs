@@ -20,12 +20,18 @@ use crate::sdk_codegen::DynCommand;
 pub mod cache_message;
 pub mod check_content_dedup;
 pub mod check_redundancy;
+pub mod has_evaluated;
+pub mod mark_evaluated;
 pub mod record_content;
 pub mod should_respond;
+pub mod track_response;
 
 use cache_message::CacheMessage;
 use check_content_dedup::CheckContentDedup;
+use has_evaluated::HasEvaluated;
+use mark_evaluated::MarkEvaluated;
 use record_content::RecordContent;
+use track_response::TrackResponse;
 
 /// The dep-holding `cognition/*` command objects that capture the module's shared
 /// [`CognitionState`]. Called from
@@ -42,6 +48,15 @@ pub fn command_objects(state: Arc<CognitionState>) -> Vec<Arc<dyn DynCommand>> {
         Arc::new(CheckContentDedup {
             state: state.clone(),
         }),
-        Arc::new(RecordContent { state }),
+        Arc::new(RecordContent {
+            state: state.clone(),
+        }),
+        Arc::new(HasEvaluated {
+            state: state.clone(),
+        }),
+        Arc::new(MarkEvaluated {
+            state: state.clone(),
+        }),
+        Arc::new(TrackResponse { state }),
     ]
 }
