@@ -47,6 +47,7 @@ pub mod plan_turn_batch;
 pub mod rate_proposals;
 pub mod recall_engrams;
 pub mod record_content;
+pub mod respond;
 pub mod register_domain_keywords;
 pub mod score_interaction;
 pub mod select_model;
@@ -81,6 +82,7 @@ use inbox_drain_frame::InboxDrainFrame;
 use mark_evaluated::MarkEvaluated;
 use recall_engrams::RecallEngrams;
 use record_content::RecordContent;
+use respond::Respond;
 use register_domain_keywords::RegisterDomainKeywords;
 use select_model::SelectModel;
 use set_sleep_mode::SetSleepMode;
@@ -185,6 +187,9 @@ pub fn command_objects(
             state: state.clone(),
         }),
         Arc::new(RecallEngrams {
+            state: state.clone(),
+        }),
+        Arc::new(Respond {
             state: state.clone(),
         }),
         Arc::new(InboxDrainFrame { state }),

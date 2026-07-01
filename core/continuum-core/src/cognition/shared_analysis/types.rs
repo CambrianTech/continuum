@@ -15,7 +15,7 @@ use uuid::Uuid;
 /// Wire-exported via ts-rs because `PersonaContext` (recipe-layer
 /// public surface) carries `Vec<RecentMessage>` and the TS host
 /// builds it directly from chat-history queries.
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[ts(
     export,
     export_to = "../../../protocol/typescript/cognition/RecentMessage.ts"

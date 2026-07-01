@@ -520,117 +520,12 @@ impl ServiceModule for CognitionModule {
             //   cognition/genome-evict-under-pressure → commands/cognition/genome_evict_under_pressure.rs
             // Exposed via commands/cognition/mod.rs::command_objects (dep-holding on CognitionState).
 
-            // =================================================================
-            // Persona response (shared cognition pipeline entry point)
-            // =================================================================
-            // The single external IPC command for persona response. Replaces
-            // the old TS PersonaResponseGenerator orchestration. Internally
-            // runs cognition::analyze (cached, shared across responders for
-            // the same message) → cognition::score_persona for THIS persona
-            // only → if should_respond, calls persona::response::respond
-            // which builds the prompt, runs inference, strips/emits <think>
-            // blocks, and returns the visible speech.
-            //
-            // PRG.ts becomes a thin shim that calls this. The chat path's
-            // per-persona iteration calls into this once per persona; the
-            // cognition cache means the analysis runs once per message
-            // even when called M times.
-            //
-            // See docs/architecture/SHARED-COGNITION.md for the full picture
-            // and PERSONA-COGNITION-RUST-MIGRATION.md for why this command
-            // exists in Rust rather than TS.
-            "cognition/respond" => {
-                let _timer = TimingGuard::new("module", "cognition_respond");
-
-                // Wire shape: caller sends `{ signal, personaContext }`.
-                // No `recipe` field — recipes are JSON data walked by the
-                // host (TS recipe loader for chat today; future portable
-                // walker for non-Node hosts). The cognition layer just
-                // projects (signal, ctx) → RespondInput, runs respond(),
-                // and returns the response. Output post-processing
-                // (substitute / intercept) is the walker's concern, not
-                // cognition's.
-                //
-                // No fallback path. Old `{recipe, signal, personaContext}`
-                // shape parses fine here (extra `recipe` field ignored)
-                // but callers should drop it.
-                let signal: crate::persona::cognition_io::Signal = p.json("signal")?;
-                let ctx: crate::persona::cognition_io::PersonaContext = p.json("personaContext")?;
-
-                let mut input = crate::persona::cognition_io::build_respond_input(&signal, &ctx)?;
-
-                // ── Hot-path admission gate (continuum#1211 PR-1) ──
-                // Run admission BEFORE inference so the persona's
-                // engram store grows from real chat turns. Without
-                // this call the admission machinery (#1121 PR-1..5) is
-                // plumbed end-to-end but never reached on the chat
-                // path — personas accumulate zero memory.
-                //
-                // Forensic-not-destructive: a missing AdmissionState
-                // (persona never had `cognition/create-engine` called)
-                // is logged and skipped, NOT a chat-blocking error.
-                // The persona still responds; it just doesn't grow
-                // memory until the engine is created.
-                run_inline_admission_gate(&self.state, &signal, &ctx);
-
-                // ── Hot-path recall surface (continuum#1211 PR-2) ──
-                // After admission gate, populate input.recalled_engrams
-                // with the persona's most-recently-admitted memory so
-                // prompt_assembly can render a `[Recent Memory]` block
-                // in the system prompt. Closes the engram loop:
-                // admit (PR-1) → store → recall (PR-2) → context →
-                // model sees its own memory.
-                //
-                // Cap = 5 most-recent engrams. The number is a budget
-                // policy: enough to ground the persona in continuity
-                // ("yes the user mentioned teal earlier") without
-                // dominating the prompt. Future tunable via per-persona
-                // AdmissionConfig; v1 is a hardcoded sensible default.
-                //
-                // Empty when persona has no AdmissionState (same
-                // forensic-skip path as the gate above) OR no admitted
-                // engrams yet (cold-start). Both are normal early-life
-                // states; a no-recall persona is unchanged from
-                // pre-PR-2 behavior. Prompt_assembly skips rendering
-                // when the list is empty (no `[Recent Memory]` header
-                // appears).
-                const RECALL_LIMIT: usize = 5;
-                if let Some(persona) = self.state.personas.get(&ctx.persona_id) {
-                    input.recalled_engrams = persona
-                        .admission
-                        .recall_recent(RECALL_LIMIT)
-                        .into_iter()
-                        .map(|e| e.content)
-                        .collect();
-                }
-
-                // Diagnostic: log what media survived the projection.
-                // Vision routing was failing 2026-04-21 and this stays
-                // as the in-flight tap to confirm media shape arriving
-                // at cognition matches what the host believed it sent.
-                if !input.message_media.is_empty() {
-                    let shape: Vec<String> = input
-                        .message_media
-                        .iter()
-                        .map(|item| {
-                            let has_b64 = item.base64.as_deref().map(|s| s.len()).unwrap_or(0);
-                            let has_desc = item.description.is_some();
-                            format!("{}(b64={}, desc={})", item.item_type, has_b64, has_desc)
-                        })
-                        .collect();
-                    runtime::logger("cognition").info_fmt(format_args!(
-                        "cognition/respond: message_media count={} shapes=[{}]",
-                        input.message_media.len(),
-                        shape.join(", ")
-                    ));
-                }
-
-                let response = crate::persona::response::respond(input).await?;
-
-                Ok(CommandResult::Json(
-                    serde_json::to_value(&response).map_err(|e| format!("Serialize error: {e}"))?,
-                ))
-            }
+            // MIGRATED to typed ActionCommand (task #62):
+            //   cognition/respond → commands/cognition/respond.rs
+            // The persona-response pipeline entry point. Dep-holding on
+            // CognitionState (admission gate + recall read live per-persona
+            // state through it); exposed via commands/cognition/mod.rs::
+            // command_objects. See that file's doc comment + SHARED-COGNITION.md.
 
             // =================================================================
             // Recipe generation (continuum#1295 PR-2)
