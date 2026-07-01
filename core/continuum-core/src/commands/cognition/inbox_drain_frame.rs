@@ -47,6 +47,20 @@ pub struct InboxDrainFrameParams {
     pub max_items: usize,
 }
 
+/// Result of `inbox/drain-frame`: the drained frame, or `None` on an empty inbox.
+///
+/// A NAMED wrapper around `Option<PersonaInboxFrame>` — the command-schema
+/// validator ([`crate::sdk_codegen`]) rejects a bare `Option<T>` output because an
+/// inline `T | null` has no named TS type to `export_to`, and one such command
+/// panics the whole `command_registry()` walk. `frame == None` preserves the
+/// contract: the coalescing window was empty (no-op).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, ts_rs::TS)]
+#[ts(export, export_to = "../../../protocol/typescript/cognition/InboxDrainFrameResult.ts")]
+#[serde(rename_all = "camelCase")]
+pub struct InboxDrainFrameResult {
+    pub frame: Option<PersonaInboxFrame>,
+}
+
 crate::action_command! {
     /// Drain a batched turn-frame (messages within a coalescing window) off the persona's
     /// inbox and background-record it for replay. Host-invoked. Returns `null` when the
@@ -55,7 +69,7 @@ crate::action_command! {
     name: "inbox/drain-frame",
     access: Internal,
     params: InboxDrainFrameParams,
-    output: Option<PersonaInboxFrame>,
+    output: InboxDrainFrameResult,
     run(this, _ctx, p) => {
         let persona = this
             .state
@@ -66,7 +80,7 @@ crate::action_command! {
         let frame = persona.inbox.drain_frame(p.window_ms, p.max_items);
         record_drained_turn_frame(&frame);
 
-        Ok(frame)
+        Ok(InboxDrainFrameResult { frame })
     }
 }
 

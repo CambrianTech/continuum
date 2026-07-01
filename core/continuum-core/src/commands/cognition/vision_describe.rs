@@ -25,9 +25,31 @@
 
 use std::sync::Arc;
 
+use serde::{Deserialize, Serialize};
+use ts_rs::TS;
+
 use crate::cognition::vision_describe::{describe_image, VisionDescribeRequest, VisionDescription};
 use crate::runtime::{CommandExecutor, LateBound};
 use crate::sdk_codegen::CommandError;
+
+/// Result of `cognition/vision-describe`: the parsed description, or `None`.
+///
+/// A NAMED wrapper around `Option<VisionDescription>` — the command-schema
+/// validator ([`crate::sdk_codegen`]) rejects a bare `Option<T>` output because
+/// an inline `T | null` has no named TS type to `export_to`, and one such command
+/// panics the whole `command_registry()` walk. `description == None` preserves the
+/// free fn's contract: no vision-capable model is registered on this deploy (the
+/// caller's vision pipeline bridges via its own fallback); a provider/inference
+/// failure is still an `Err`, never collapsed into `None`.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/cognition/VisionDescribeResult.ts"
+)]
+pub struct VisionDescribeResult {
+    pub description: Option<VisionDescription>,
+}
 
 crate::action_command! {
     /// Describe an image with a vision-capable model. Given base64 image bytes + MIME type
@@ -39,7 +61,7 @@ crate::action_command! {
     name: "cognition/vision-describe",
     access: Internal,
     params: VisionDescribeRequest,
-    output: Option<VisionDescription>,
+    output: VisionDescribeResult,
     run(this, _ctx, req) => {
         // describe_image re-enters the bus to run ai/generate, so it needs the executor.
         // Fail loud if the module hasn't installed it yet (diagnostic name from LateBound).
@@ -48,9 +70,10 @@ crate::action_command! {
             .require()
             .map_err(CommandError::Internal)?;
 
-        describe_image(req, executor)
+        let description = describe_image(req, executor)
             .await
-            .map_err(CommandError::Internal)
+            .map_err(CommandError::Internal)?;
+        Ok(VisionDescribeResult { description })
     }
 }
 

@@ -66,6 +66,23 @@ pub struct DrainTurnFrameParams {
     pub max_items: u64,
 }
 
+/// Result of `persona/drain-turn-frame`: the replay record, or `None` on an empty drain.
+///
+/// A NAMED wrapper around `Option<PersonaTurnFrameReplayRecord>` — the
+/// command-schema validator ([`crate::sdk_codegen`]) rejects a bare `Option<T>`
+/// output because an inline `T | null` has no named TS type to `export_to`, and
+/// one such command panics the whole `command_registry()` walk. `record == None`
+/// preserves the legacy contract: the drain window was empty (no-op).
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/persona/DrainTurnFrameResult.ts"
+)]
+#[serde(rename_all = "camelCase")]
+pub struct DrainTurnFrameResult {
+    pub record: Option<PersonaTurnFrameReplayRecord>,
+}
+
 crate::action_command! {
     /// Drain a persona's inbox into one replay-stable turn frame: consolidate the bounded
     /// room slice, derive the RAG seed + captured prompt, and persist the record for
@@ -75,7 +92,7 @@ crate::action_command! {
     name: "persona/drain-turn-frame",
     access: Internal,
     params: DrainTurnFrameParams,
-    output: Option<PersonaTurnFrameReplayRecord>,
+    output: DrainTurnFrameResult,
     run(this, _ctx, params) => {
         let _timer = TimingGuard::new("module", "persona_drain_turn_frame");
 
@@ -105,7 +122,7 @@ crate::action_command! {
             crate::persona::recorder::record_turn_frame_replay(rec);
         }
 
-        Ok(record)
+        Ok(DrainTurnFrameResult { record })
     }
 }
 

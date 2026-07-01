@@ -13,10 +13,31 @@
 //! turn, NOT a persona toolbelt verb. Registered and grid-routable, but the trust policy
 //! denies remote peers from querying another node's cache.
 
+use serde::{Deserialize, Serialize};
+use ts_rs::TS;
+
 use crate::cognition::tool_embedding::{
     semantic_search_tools, SemanticSearchResult, SemanticSearchToolsRequest,
 };
 use crate::sdk_codegen::CommandError;
+
+/// Result of `cognition/semantic-search-tools`: the ranked hits.
+///
+/// A NAMED wrapper around `Vec<SemanticSearchResult>` — the command-schema
+/// validator ([`crate::sdk_codegen`]) rejects a bare `Vec<T>` output because an
+/// inline collection has no named TS type (it can't be `export_to`'d), and one
+/// such command panics the whole `command_registry()` walk (→ `commands/list`
+/// panics, cu can't fetch schemas, every schema-canonicalized flag breaks). Same
+/// shape as `McpSearchToolsResult` wrapping `tools: Vec<McpSearchHit>`.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/cognition/SemanticSearchToolsResult.ts"
+)]
+pub struct SemanticSearchToolsResult {
+    pub results: Vec<SemanticSearchResult>,
+}
 
 crate::action_command! {
     /// Rank the cached tool embeddings against a query and return the top hits with
@@ -27,11 +48,12 @@ crate::action_command! {
     name: "cognition/semantic-search-tools",
     access: Internal,
     params: SemanticSearchToolsRequest,
-    output: Vec<SemanticSearchResult>,
+    output: SemanticSearchToolsResult,
     run(_this, _ctx, req) => {
-        semantic_search_tools(req)
+        let results = semantic_search_tools(req)
             .await
-            .map_err(|e| CommandError::Internal(e.to_string()))
+            .map_err(|e| CommandError::Internal(e.to_string()))?;
+        Ok(SemanticSearchToolsResult { results })
     }
 }
 

@@ -718,6 +718,38 @@ mod tests {
     use super::*;
     use std::path::Path;
 
+    // what this catches: EVERY registered command's descriptor must build without
+    // panicking — i.e. its Params and Result are named TS types, not inline
+    // primitives (`Vec<T>`, `Option<T>`, bare scalars). A single inline-primitive
+    // output panics the whole `command_registry()` walk (regression for the
+    // `cognition/semantic-search-tools` / `inbox/drain-frame` / `vision-describe`
+    // sweep — a bare `Vec`/`Option` output that poisoned `commands/list`).
+    #[test]
+    fn every_registered_command_descriptor_builds() {
+        // command_registry() itself panics on the first offender; walk the raw
+        // registrations so a failure names ALL offenders, not just the first.
+        let prev = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+        let mut offenders = Vec::new();
+        for reg in inventory::iter::<CommandRegistration>() {
+            if let Err(e) = std::panic::catch_unwind(reg.descriptor_fn) {
+                let msg = e
+                    .downcast_ref::<String>()
+                    .cloned()
+                    .or_else(|| e.downcast_ref::<&str>().map(|s| s.to_string()))
+                    .unwrap_or_else(|| "<non-string panic>".to_string());
+                offenders.push(msg);
+            }
+        }
+        std::panic::set_hook(prev);
+        assert!(
+            offenders.is_empty(),
+            "{} command(s) have inline-primitive Params/Result — wrap in a named struct:\n{}",
+            offenders.len(),
+            offenders.join("\n")
+        );
+    }
+
     // what this catches (the review's CRITICAL #4): real ts-rs types carry the
     // `../../../protocol/typescript/...` export escape path; module_of must resolve
     // them to clean importable modules. Earlier demo types (no export_to) hid this.
