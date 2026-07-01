@@ -34,9 +34,7 @@
 //! Uses `Params` helper for typed parameter extraction.
 
 use crate::gpu::GpuMemoryManager;
-use crate::log_info;
 use crate::logging::TimingGuard;
-use crate::persona::evaluator;
 use crate::persona::text_analysis::LoopDetector;
 use crate::persona::{
     InboxMessage, Modality, PersonaCognition, PersonaInboxFrame, PersonaTurnFrame,
@@ -495,64 +493,15 @@ impl ServiceModule for CognitionModule {
             // ================================================================
             // Unified Evaluation (6-gate pipeline, single lock)
             // ================================================================
-            "cognition/full-evaluate" => {
-                let _timer = TimingGuard::new("module", "cognition_full_evaluate");
-                let persona_uuid = p.uuid("persona_id")?;
-
-                // Single lock — atomic access to engine + rate_limiter + sleep_state
-                let persona = self
-                    .state
-                    .personas
-                    .get(&persona_uuid)
-                    .ok_or_else(|| format!("No cognition for {persona_uuid}"))?;
-
-                let request = evaluator::FullEvaluateRequest {
-                    persona_id: persona_uuid,
-                    persona_name: p.str("persona_name")?.to_string(),
-                    persona_unique_id: p.str_or("persona_unique_id", "").to_string(),
-                    message_id: p.uuid("message_id")?,
-                    room_id: p.uuid("room_id")?,
-                    sender_id: p.uuid("sender_id")?,
-                    sender_name: p.str("sender_name")?.to_string(),
-                    sender_type: parse_sender_type(p.str("sender_type")?)?,
-                    content: p.str("content")?.to_string(),
-                    timestamp: p.u64("timestamp")?,
-                    is_voice: p.bool_or("is_voice", false),
-                    voice_session_id: p.uuid_opt("voice_session_id"),
-                    sender_is_human: p.bool_or("sender_is_human", false),
-                    topic_similarity: p.f32_opt("topic_similarity"),
-                    recent_room_texts: p.json_opt("recent_room_texts"),
-                };
-
-                let now_ms = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_millis() as u64;
-
-                let result = evaluator::full_evaluate(
-                    &request,
-                    &persona.rate_limiter,
-                    &persona.sleep_state,
-                    &persona.engine,
-                    &persona.message_cache,
-                    now_ms,
-                );
-
-                log_info!(
-                    "module",
-                    "cognition",
-                    "full-evaluate {}: respond={}, gate={}, confidence={:.2} ({:.2}ms)",
-                    persona_uuid,
-                    result.should_respond,
-                    result.gate,
-                    result.confidence,
-                    result.decision_time_ms
-                );
-
-                Ok(CommandResult::Json(
-                    serde_json::to_value(&result).map_err(|e| format!("Serialize error: {e}"))?,
-                ))
-            }
+            // cognition/full-evaluate migrated to the typed DynCommand registry as a
+            // dep-holding action_command! (captures this module's Arc<CognitionState>,
+            // takes the persona's rate_limiter + sleep_state + engine + message_cache under
+            // one DashMap read lock) — see commands/cognition/full_evaluate.rs (access:
+            // Internal), exposed via CognitionModule::commands(). The typed
+            // FullEvaluateRequest params deserialize the whole payload in one step
+            // (SenderType's lowercase serde matches the old parse_sender_type; the three
+            // legacy-defaulted fields carry #[serde(default)]); a request for a persona with
+            // no live cognition engine fails loud as CommandError::NotFound.
 
             // cognition/track-response migrated to the typed DynCommand registry — see
             // commands/cognition/track_response.rs (dep-holding on CognitionState,

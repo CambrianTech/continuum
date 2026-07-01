@@ -27,6 +27,7 @@ pub mod configure_rate_limiter;
 pub mod create_engine;
 pub mod embed_tools;
 pub mod enqueue_message;
+pub mod full_evaluate;
 pub mod generate_recipe;
 pub mod generate_response;
 pub mod genome_activate_skill;
@@ -63,6 +64,7 @@ use classify_domain::ClassifyDomain;
 use configure_rate_limiter::ConfigureRateLimiter;
 use create_engine::CreateEngine;
 use enqueue_message::EnqueueMessage;
+use full_evaluate::FullEvaluate;
 use genome_activate_skill::GenomeActivateSkill;
 use genome_coverage_report::GenomeCoverageReport;
 use genome_evict_under_pressure::GenomeEvictUnderPressure;
@@ -160,6 +162,9 @@ pub fn command_objects(state: Arc<CognitionState>) -> Vec<Arc<dyn DynCommand>> {
             state: state.clone(),
         }),
         Arc::new(EnqueueMessage {
+            state: state.clone(),
+        }),
+        Arc::new(FullEvaluate {
             state: state.clone(),
         }),
         Arc::new(GetState {
