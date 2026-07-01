@@ -20,6 +20,7 @@ use std::collections::BTreeMap;
 use ts_rs::TS;
 
 use super::arbiter::{ArbiterContext, LeaseArbiter};
+use super::consumer::ConsumerFootprint;
 use super::lease::{LeaseError, LeaseRequest, ResourceKind, ResourceLease};
 #[cfg(test)]
 use super::lease::ReclaimPolicy;
@@ -28,6 +29,15 @@ use super::lease::ReclaimPolicy;
 /// `available = capacity − granted`; `granted` sums *all* live leases including
 /// expired ones (expiry marks a lease overdue for reclaim, it does NOT free the
 /// bytes — only `release` does that, after the holder confirms cleanup).
+///
+/// `measured_bytes` is a SEPARATE axis: the sum of what live consumers
+/// *self-declare* they physically hold ([`ConsumerFootprint`]), gathered by the
+/// daemon's background poll. It is reporting-only — it never enters the
+/// `available = capacity − granted` math (that stays the honest free-based global
+/// remainder). Its purpose is honesty: a MEASURED consumer (serving holding a
+/// resident model) can hold gigabytes with zero leases, and without this axis the
+/// board would report `granted:0` while the GPU is full. The gap between
+/// `measured` and `granted` is the drift the daemon probes.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export, export_to = "../../../protocol/typescript/resources/KindLedger.ts")]
@@ -39,17 +49,42 @@ pub struct KindLedger {
     pub granted_bytes: u64,
     #[ts(type = "number")]
     pub available_bytes: u64,
+    /// Sum of live consumers' self-declared footprints for this kind. Reporting
+    /// only — NOT subtracted from `available`.
+    #[ts(type = "number")]
+    pub measured_bytes: u64,
     pub lease_count: u32,
 }
 
+/// One consumer's self-declared residency for one kind — the attribution axis of
+/// the board. This is what fixes a board that reads "nothing tracked" while the
+/// hardware is full: serving reports `{consumer_id:"serving", kind:Vram, bytes:
+/// 18e9, detail:"qwen3-coder-30b weights resident"}` even though it holds no
+/// lease. Each node publishes these so the grid can see WHERE the headroom is
+/// (the unit of cross-node awareness) without any node having to guess.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../../protocol/typescript/resources/ConsumerAttribution.ts")]
+pub struct ConsumerAttribution {
+    pub consumer_id: String,
+    pub kind: ResourceKind,
+    #[ts(type = "number")]
+    pub bytes: u64,
+    pub detail: String,
+}
+
 /// The full board the daemon publishes on its `watch` channel and the
-/// `resource/*` commands return — every live kind plus every lease.
+/// `resource/*` commands return — every live kind, every lease, and every
+/// consumer's measured attribution.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export, export_to = "../../../protocol/typescript/resources/LeaseBoard.ts")]
 pub struct LeaseBoard {
     pub kinds: Vec<KindLedger>,
     pub leases: Vec<ResourceLease>,
+    /// Per-consumer measured residency (self-declared footprints), the honest
+    /// attribution of physical bytes independent of leases.
+    pub attributions: Vec<ConsumerAttribution>,
 }
 
 /// The authority's accounting heart. One per machine (or per container). The
@@ -68,6 +103,14 @@ pub struct ResourceLeaseLedger {
     /// (or a higher arbiter) DECIDES the floor values — policy; the ledger
     /// ENFORCES them — mechanism. Keyed `(kind, consumer_id)`.
     reservations: BTreeMap<(ResourceKind, String), u64>,
+    /// Each consumer's latest self-declared footprint, refreshed wholesale by the
+    /// daemon's background poll of [`ResourceConsumer::footprint`]. This is the
+    /// MEASUREMENT axis: what a consumer physically holds *right now*, independent
+    /// of whether it leased it. Keyed by `consumer_id`; the value is the consumer's
+    /// full footprint across all kinds. Monitored, never reserved — it feeds the
+    /// board's attribution + `measured_bytes` and the drift probe, and NEVER the
+    /// `available = capacity − granted` math.
+    measured: BTreeMap<String, Vec<ConsumerFootprint>>,
 }
 
 impl ResourceLeaseLedger {
@@ -130,6 +173,47 @@ impl ResourceLeaseLedger {
             .get(&(kind, consumer_id.to_string()))
             .copied()
             .unwrap_or(0)
+    }
+
+    // ---- measurement axis (monitored residency, never reserved) ------------
+
+    /// Record a consumer's freshly-polled footprint, replacing its prior one
+    /// wholesale — each poll is a complete restatement of what it holds, not an
+    /// accumulation. An empty footprint clears the consumer (it holds nothing
+    /// measurable now). The daemon calls this every tick from its background poll
+    /// of [`ResourceConsumer::footprint`]. Pure bookkeeping — no I/O, no clock;
+    /// the daemon owns the polling, the ledger only stores the latest truth.
+    pub fn set_measured(&mut self, consumer_id: &str, footprints: Vec<ConsumerFootprint>) {
+        if footprints.is_empty() {
+            self.measured.remove(consumer_id);
+        } else {
+            self.measured.insert(consumer_id.to_string(), footprints);
+        }
+    }
+
+    /// Total self-declared residency of a kind across every measured consumer.
+    /// Reporting only — this is deliberately NOT subtracted from `available`; the
+    /// honest commit number stays `capacity − granted` (the free-based global
+    /// remainder). Never negative (saturating).
+    pub fn measured(&self, kind: ResourceKind) -> u64 {
+        self.measured
+            .values()
+            .flatten()
+            .filter(|f| f.kind == kind)
+            .map(|f| f.bytes)
+            .fold(0u64, |acc, b| acc.saturating_add(b))
+    }
+
+    /// One consumer's measured residency of a kind — used by the drift probe to
+    /// compare a consumer's self-declared footprint against what it has leased.
+    pub fn measured_by(&self, consumer_id: &str, kind: ResourceKind) -> u64 {
+        self.measured
+            .get(consumer_id)
+            .into_iter()
+            .flatten()
+            .filter(|f| f.kind == kind)
+            .map(|f| f.bytes)
+            .fold(0u64, |acc, b| acc.saturating_add(b))
     }
 
     /// Reserved-but-not-yet-granted headroom that must stay free for OTHER
@@ -346,15 +430,18 @@ impl ResourceLeaseLedger {
         self.leases.get(lease_id)
     }
 
-    /// The published board. Omits kinds that are both uncapacitied AND
-    /// unleased (nothing honest to say about them); reports honest math for the
-    /// rest.
+    /// The published board. Omits a kind only when it is uncapacitied AND
+    /// unleased AND unmeasured (nothing honest to say about it); reports honest
+    /// math for the rest. `measured_bytes` and `attributions` surface the
+    /// self-declared residency so a full GPU never reads as "nothing tracked" —
+    /// but `available` stays `capacity − granted`, unchanged by measurement.
     pub fn board(&self) -> LeaseBoard {
         let mut kinds = Vec::new();
         for kind in ResourceKind::ALL {
             let capacity_bytes = self.capacity(kind);
             let lease_count = self.leases.values().filter(|l| l.kind == kind).count() as u32;
-            if capacity_bytes == 0 && lease_count == 0 {
+            let measured_bytes = self.measured(kind);
+            if capacity_bytes == 0 && lease_count == 0 && measured_bytes == 0 {
                 continue;
             }
             let granted_bytes = self.granted(kind);
@@ -363,12 +450,38 @@ impl ResourceLeaseLedger {
                 capacity_bytes,
                 granted_bytes,
                 available_bytes: capacity_bytes.saturating_sub(granted_bytes),
+                measured_bytes,
                 lease_count,
             });
         }
         let mut leases: Vec<ResourceLease> = self.leases.values().cloned().collect();
         leases.sort_by(|a, b| a.lease_id.cmp(&b.lease_id));
-        LeaseBoard { kinds, leases }
+
+        // Flatten every consumer's latest footprint into stable-ordered
+        // attributions (by consumer, then kind) — deterministic for tests + a
+        // stable grid-gossip wire order.
+        let mut attributions = Vec::new();
+        for (consumer_id, footprints) in &self.measured {
+            for f in footprints {
+                attributions.push(ConsumerAttribution {
+                    consumer_id: consumer_id.clone(),
+                    kind: f.kind,
+                    bytes: f.bytes,
+                    detail: f.detail.clone(),
+                });
+            }
+        }
+        attributions.sort_by(|a, b| {
+            a.consumer_id
+                .cmp(&b.consumer_id)
+                .then_with(|| (a.kind as u8).cmp(&(b.kind as u8)))
+        });
+
+        LeaseBoard {
+            kinds,
+            leases,
+            attributions,
+        }
     }
 }
 
@@ -586,6 +699,61 @@ mod tests {
         assert_eq!(vram.available_bytes, 5_000);
         assert_eq!(vram.lease_count, 1);
         assert_eq!(board.leases.len(), 1);
+    }
+
+    // what this catches: the measurement axis is REPORTING-ONLY and never
+    // corrupts the available math. A consumer that holds 18GB resident with NO
+    // lease (serving's real posture) must surface on the board as measured_bytes
+    // + an attribution — fixing the "granted:0 while the GPU is full" blindness —
+    // while `available` stays capacity − granted (unchanged by the measurement).
+    // If measurement ever leaked into `available`, this test's available_bytes
+    // would drop and the honest free-based global remainder would be wrong.
+    #[test]
+    fn measured_footprint_surfaces_on_board_without_touching_available() {
+        let mut ledger = ResourceLeaseLedger::new();
+        ledger.set_capacity(ResourceKind::Vram, 24_000);
+        // Serving holds 18GB resident but leased nothing — the un-inverted case.
+        ledger.set_measured(
+            "serving",
+            vec![ConsumerFootprint {
+                kind: ResourceKind::Vram,
+                bytes: 18_000,
+                detail: "qwen3-coder-30b weights resident".into(),
+            }],
+        );
+
+        assert_eq!(ledger.measured(ResourceKind::Vram), 18_000);
+        assert_eq!(ledger.measured_by("serving", ResourceKind::Vram), 18_000);
+        // available is untouched: capacity − granted(0) = full 24GB, NOT
+        // 24 − 18. Measurement reports; it does not reserve.
+        assert_eq!(ledger.available(ResourceKind::Vram), 24_000);
+
+        let board = ledger.board();
+        let vram = board.kinds.iter().find(|k| k.kind == ResourceKind::Vram).unwrap();
+        assert_eq!(vram.granted_bytes, 0, "no lease → nothing granted");
+        assert_eq!(vram.measured_bytes, 18_000, "but 18GB measured-resident");
+        assert_eq!(vram.available_bytes, 24_000, "available ignores measurement");
+        assert_eq!(board.attributions.len(), 1);
+        assert_eq!(board.attributions[0].consumer_id, "serving");
+        assert_eq!(board.attributions[0].bytes, 18_000);
+        assert_eq!(board.attributions[0].kind, ResourceKind::Vram);
+
+        // A fresh poll restates wholesale: a smaller model now resident.
+        ledger.set_measured(
+            "serving",
+            vec![ConsumerFootprint {
+                kind: ResourceKind::Vram,
+                bytes: 4_000,
+                detail: "qwen2.5-0.5b resident".into(),
+            }],
+        );
+        assert_eq!(ledger.measured(ResourceKind::Vram), 4_000, "restated, not summed");
+
+        // An empty poll clears it (serving unloaded everything) → measured axis
+        // gone, and with no lease + no capacity-less kind, attribution empties.
+        ledger.set_measured("serving", Vec::new());
+        assert_eq!(ledger.measured(ResourceKind::Vram), 0);
+        assert!(ledger.board().attributions.is_empty());
     }
 
     // what this catches: the mechanism/policy split is real — swapping the

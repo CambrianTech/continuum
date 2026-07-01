@@ -62,7 +62,7 @@ use crate::runtime::daemon::{
 use crate::{clog_info, clog_warn};
 
 use super::capacity::CapacitySource;
-use super::consumer::{ReclaimOutcome, ResourceConsumer};
+use super::consumer::{ConsumerFootprint, ReclaimOutcome, ResourceConsumer};
 use super::governor::{GovernorConfig, ResourceGovernor};
 use super::ledger::LeaseBoard;
 use super::lease::{LeaseError, LeaseRequest, ReclaimPolicy, ResourceKind, ResourceLease};
@@ -302,12 +302,54 @@ impl ResourceDaemon {
             .map(|s| (s.kind(), s.ceiling_bytes()))
             .collect();
 
-        // 3. Brief lock: ingest capacity, compute per-kind pressure, plan the
-        //    reclaims, snapshot the board. No await inside.
+        // 2.5 Snapshot live (non-quarantined) consumers ONCE — reused for both the
+        //     footprint poll (this step) and the reclaim fan-out (step 4).
+        //     Quarantine only mutates in the fold at the end of this tick, so the
+        //     snapshot is stable for the whole cycle. Clone the Arcs out from under
+        //     the consumers lock BEFORE taking the quarantine lock so the two locks
+        //     never nest.
+        let all: Vec<Arc<dyn ResourceConsumer>> = self.consumers.read().iter().cloned().collect();
+        let live: Vec<(String, Arc<dyn ResourceConsumer>)> = {
+            let q = self.quarantine.lock();
+            all.into_iter()
+                .filter(|c| !q.is_quarantined(c.consumer_id()))
+                .map(|c| (c.consumer_id().to_string(), c))
+                .collect()
+        };
+
+        // Poll each live consumer's self-declared footprint OFF-lock. This is the
+        // MEASUREMENT axis — pure monitoring, EVERY tick, independent of whether
+        // any reclaim is planned. `footprint()` is a cheap synchronous read; a
+        // panicking one is isolated per-consumer so a single broken consumer can
+        // never abort the whole reconcile tick. On panic we skip that consumer
+        // (preserving its last-good measurement) rather than wiping it.
+        let measured: Vec<(String, Vec<ConsumerFootprint>)> = live
+            .iter()
+            .filter_map(|(id, c)| {
+                match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| c.footprint())) {
+                    Ok(fps) => Some((id.clone(), fps)),
+                    Err(_) => {
+                        clog_warn!(
+                            "🧮 ResourceConsumer '{id}' panicked in footprint() — keeping \
+                             last-good measurement this tick"
+                        );
+                        None
+                    }
+                }
+            })
+            .collect();
+
+        // 3. Brief lock: ingest capacity + measured footprints, compute per-kind
+        //    pressure, plan the reclaims, snapshot the board. No await inside.
         let (plans, board) = {
             let mut g = self.governor.lock();
             for (kind, ceil) in &ceilings {
                 g.set_capacity(*kind, *ceil);
+            }
+            // Feed the measurement axis: each consumer's freshly-polled residency.
+            // Reporting only — never enters `available = capacity − granted`.
+            for (id, fps) in measured {
+                g.set_measured(&id, fps);
             }
 
             // Per-kind contention for the arbiter: granted / ceiling, clamped to
@@ -329,6 +371,25 @@ impl ResourceDaemon {
             (plans, g.board())
         };
 
+        // Drift report: per kind, measured (self-declared residency) vs granted
+        // (what leases account for). A positive drift = bytes physically held that
+        // NO lease tracks — exactly serving holding a resident model with no
+        // lease, the "0 tracked while the GPU is full" blindness this task fixes.
+        // Reporting-only through the observability seam; it steers nothing.
+        for k in &board.kinds {
+            let drift = k.measured_bytes.saturating_sub(k.granted_bytes);
+            if drift > 0 {
+                crate::probe!(
+                    class = "resource_drift",
+                    kind = k.kind.label(),
+                    measured_bytes = k.measured_bytes,
+                    granted_bytes = k.granted_bytes,
+                    drift_bytes = drift,
+                    "untracked residency: measured exceeds leased"
+                );
+            }
+        }
+
         // Publish post-plan board so readers (and the gate) stay fresh even when
         // calm.
         self.channel.publish(board);
@@ -337,20 +398,9 @@ impl ResourceDaemon {
             return;
         }
 
-        // 4. Snapshot live (non-quarantined) consumers, then fan out the reclaims
-        //    CONCURRENTLY off-lock. A plan for an unregistered/quarantined consumer
-        //    is logged, never silently dropped. We clone the Arcs out from under
-        //    the consumers lock BEFORE taking the quarantine lock, so the two
-        //    locks never nest.
-        let all: Vec<Arc<dyn ResourceConsumer>> = self.consumers.read().iter().cloned().collect();
-        let live: Vec<(String, Arc<dyn ResourceConsumer>)> = {
-            let q = self.quarantine.lock();
-            all.into_iter()
-                .filter(|c| !q.is_quarantined(c.consumer_id()))
-                .map(|c| (c.consumer_id().to_string(), c))
-                .collect()
-        };
-
+        // 4. Fan out the reclaims CONCURRENTLY off-lock over the `live` snapshot
+        //    from step 2.5. A plan for an unregistered/quarantined consumer is
+        //    logged, never silently dropped.
         let mut futs = Vec::with_capacity(plans.len());
         for plan in &plans {
             let Some((_, consumer)) = live.iter().find(|(id, _)| id == &plan.consumer_id) else {
@@ -782,6 +832,47 @@ mod tests {
         let settled = wait_until(&daemon, |b| b.leases.iter().map(|l| l.bytes).sum::<u64>() <= 1_000).await;
         assert!(settled, "once ready, the daemon reclaims to the ceiling");
         let _ = lease;
+    }
+
+    // what this catches: the MEASUREMENT axis wired end-to-end through the daemon
+    // tick — a consumer holding VRAM with NO lease (serving's real posture) must
+    // surface on the published board as measured_bytes + an attribution, polled
+    // from footprint() every tick, WITHOUT any lease and WITHOUT disturbing
+    // `available`. This is the "0 tracked while the GPU is full" fix: if the
+    // footprint poll or set_measured wiring is wrong, the board stays blind here.
+    #[tokio::test]
+    async fn footprint_poll_surfaces_measured_residency_without_a_lease() {
+        let src = Arc::new(MockCapacitySource::new(ResourceKind::Vram, 24_000));
+        // Holds 18GB resident (a loaded model) but leases nothing.
+        let serving = ScriptedConsumer::new("serving", 18_000, "release");
+        let daemon = ResourceDaemon::start(
+            vec![src.clone()],
+            vec![serving.clone()],
+            DaemonConfig {
+                tick_interval: Duration::from_millis(20),
+                min_reclaim_budget: Duration::from_millis(100),
+                governor: GovernorConfig { min_dwell_ms: 0, graceful_grace_ms: 50 },
+            },
+        );
+
+        // No acquire — serving holds bytes but never leased. The tick's footprint
+        // poll must still attribute the residency on the board.
+        let surfaced = wait_until(&daemon, |b| !b.attributions.is_empty()).await;
+        assert!(surfaced, "footprint poll should attribute measured residency each tick");
+
+        let board = daemon.board();
+        assert_eq!(board.attributions.len(), 1);
+        assert_eq!(board.attributions[0].consumer_id, "serving");
+        assert_eq!(board.attributions[0].bytes, 18_000);
+        assert_eq!(board.attributions[0].kind, ResourceKind::Vram);
+
+        let vram = board.kinds.iter().find(|k| k.kind == ResourceKind::Vram).unwrap();
+        assert_eq!(vram.granted_bytes, 0, "nothing leased");
+        assert_eq!(vram.measured_bytes, 18_000, "but 18GB measured-resident");
+        // available is the honest free-based remainder — capacity − granted, NOT
+        // reduced by the measured residency. Measurement reports; it never reserves.
+        assert_eq!(vram.available_bytes, 24_000, "available untouched by measurement");
+        assert!(!daemon.is_over_budget(), "measured residency is not an over-budget condition");
     }
 
     // what this catches: a panicking consumer is isolated (catch_unwind) and

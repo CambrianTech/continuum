@@ -6,5 +6,19 @@ import type { ResourceKind } from "./ResourceKind";
  * `available = capacity − granted`; `granted` sums *all* live leases including
  * expired ones (expiry marks a lease overdue for reclaim, it does NOT free the
  * bytes — only `release` does that, after the holder confirms cleanup).
+ *
+ * `measured_bytes` is a SEPARATE axis: the sum of what live consumers
+ * *self-declare* they physically hold ([`ConsumerFootprint`]), gathered by the
+ * daemon's background poll. It is reporting-only — it never enters the
+ * `available = capacity − granted` math (that stays the honest free-based global
+ * remainder). Its purpose is honesty: a MEASURED consumer (serving holding a
+ * resident model) can hold gigabytes with zero leases, and without this axis the
+ * board would report `granted:0` while the GPU is full. The gap between
+ * `measured` and `granted` is the drift the daemon probes.
  */
-export type KindLedger = { kind: ResourceKind, capacityBytes: number, grantedBytes: number, availableBytes: number, leaseCount: number, };
+export type KindLedger = { kind: ResourceKind, capacityBytes: number, grantedBytes: number, availableBytes: number, 
+/**
+ * Sum of live consumers' self-declared footprints for this kind. Reporting
+ * only — NOT subtracted from `available`.
+ */
+measuredBytes: number, leaseCount: number, };

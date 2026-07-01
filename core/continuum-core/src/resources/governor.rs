@@ -26,7 +26,7 @@
 //! Defer/Refuse leave the bytes held and re-surface next tick — never a yank.
 
 use super::arbiter::{LeaseArbiter, TieredArbiter};
-use super::consumer::{ReclaimOutcome, ReclaimReason, ReclaimRequest};
+use super::consumer::{ConsumerFootprint, ReclaimOutcome, ReclaimReason, ReclaimRequest};
 use super::ledger::{LeaseBoard, ResourceLeaseLedger};
 use super::lease::{LeaseError, LeaseRequest, ReclaimPolicy, ResourceKind, ResourceLease};
 
@@ -103,6 +103,19 @@ impl ResourceGovernor {
     /// exactly what `reconcile` then has to claw back.
     pub fn set_capacity(&mut self, kind: ResourceKind, bytes: u64) {
         self.ledger.set_capacity(kind, bytes);
+    }
+
+    /// Daemon feeds a consumer's freshly-polled footprint each tick — the
+    /// MEASUREMENT ingest, sibling of `set_capacity`. Monitored, not reserved:
+    /// this surfaces on the board (attribution + `measured_bytes`) and the drift
+    /// probe but never enters `available`. See [`ResourceLeaseLedger::set_measured`].
+    pub fn set_measured(&mut self, consumer_id: &str, footprints: Vec<ConsumerFootprint>) {
+        self.ledger.set_measured(consumer_id, footprints);
+    }
+
+    /// Total self-declared residency of a kind across all measured consumers.
+    pub fn measured(&self, kind: ResourceKind) -> u64 {
+        self.ledger.measured(kind)
     }
 
     // ---- lease lifecycle (passthrough with id minting) ---------------------
