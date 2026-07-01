@@ -15,6 +15,7 @@
 //!   There is no TOML loader. Hand-authoring is for the residue no query
 //!   can supply; everything else hydrates from artifact metadata.
 
+pub mod arch_config;
 pub mod artifacts;
 pub mod catalog;
 pub mod discovery;
@@ -24,6 +25,7 @@ pub mod registry;
 pub mod singleton;
 pub mod types;
 
+pub use arch_config::ModelArchConfig;
 pub use artifacts::{
     expand_user_path, find_first_local_gguf, resolve_gguf_for_model, resolve_gguf_for_model_id,
     resolve_local_model_dir_for_model_id,
