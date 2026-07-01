@@ -36,6 +36,7 @@ pub mod genome_record_activity;
 pub mod genome_state;
 pub mod genome_sync;
 pub mod get_state;
+pub mod gpu_budget;
 pub mod has_evaluated;
 pub mod inbox_create;
 pub mod inbox_drain_frame;
@@ -69,6 +70,7 @@ use genome_record_activity::GenomeRecordActivity;
 use genome_state::GenomeState;
 use genome_sync::GenomeSync;
 use get_state::GetState;
+use gpu_budget::GpuBudget;
 use has_evaluated::HasEvaluated;
 use inbox_create::InboxCreate;
 use inbox_drain_frame::InboxDrainFrame;
@@ -161,6 +163,9 @@ pub fn command_objects(state: Arc<CognitionState>) -> Vec<Arc<dyn DynCommand>> {
             state: state.clone(),
         }),
         Arc::new(GetState {
+            state: state.clone(),
+        }),
+        Arc::new(GpuBudget {
             state: state.clone(),
         }),
         Arc::new(AdmitInboxMessage {

@@ -745,36 +745,13 @@ impl ServiceModule for CognitionModule {
             // =================================================================
             // GPU Budget Query (for TypeScript genome initialization)
             // =================================================================
-            "cognition/gpu-budget" => {
-                let per_persona = self.state.per_persona_budget_mb();
-                let gpu_info = self
-                    .state
-                    .gpu_manager
-                    .as_ref()
-                    .map(|mgr| {
-                        let stats = mgr.stats();
-                        serde_json::json!({
-                            "gpu_name": stats.gpu_name,
-                            "total_vram_mb": stats.total_vram_mb,
-                            "inference_budget_mb": stats.inference.budget_mb,
-                            "persona_count": self.state.personas.len(),
-                            "per_persona_budget_mb": per_persona,
-                            "pressure": stats.pressure,
-                        })
-                    })
-                    .unwrap_or_else(|| {
-                        serde_json::json!({
-                            "gpu_name": "unknown",
-                            "total_vram_mb": 0,
-                            "inference_budget_mb": 0,
-                            "persona_count": self.state.personas.len(),
-                            "per_persona_budget_mb": per_persona,
-                            "pressure": 0.0,
-                        })
-                    });
-
-                Ok(CommandResult::Json(gpu_info))
-            }
+            // cognition/gpu-budget migrated to the typed DynCommand registry as a
+            // dep-holding action_command! (captures this module's Arc<CognitionState>,
+            // reads its optional GpuMemoryManager) — see commands/cognition/gpu_budget.rs
+            // (access: Internal), exposed via CognitionModule::commands(). The typed
+            // GpuBudgetInfo output replaces the hand-built serde_json::json! object; the
+            // GPU-present / CPU-only branches are honest runtime states (no-GPU reports a
+            // zeroed device + the CPU per-persona floor), not a happy-path + fallback.
 
             // =================================================================
             // Interaction Quality Scoring + Post-Inference Adequacy Check
