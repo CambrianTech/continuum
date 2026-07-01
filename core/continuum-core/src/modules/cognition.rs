@@ -131,14 +131,17 @@ impl CognitionState {
 
 pub struct CognitionModule {
     state: Arc<CognitionState>,
-    executor: LateBound<crate::runtime::CommandExecutor>,
+    /// Shared late-bound executor slot. `Arc`-wrapped so the `cognition/vision-describe`
+    /// command object can hold the same slot and re-enter the bus for `ai/generate`
+    /// (same pattern as the `chat/*` family).
+    executor: Arc<LateBound<crate::runtime::CommandExecutor>>,
 }
 
 impl CognitionModule {
     pub fn new(state: Arc<CognitionState>) -> Self {
         Self {
             state,
-            executor: LateBound::new("cognition::executor"),
+            executor: Arc::new(LateBound::new("cognition::executor")),
         }
     }
 }
@@ -441,26 +444,13 @@ impl ServiceModule for CognitionModule {
             // (ipc/protocol.rs), the one canonical seam.
 
             // ================================================================
-            // Vision Describe (continuum#1276 — TS→Rust oxidizer)
+            // Vision Describe (continuum#1276) — MIGRATED to the typed registry.
             // ================================================================
-            // Migrated from `system/vision/VisionInferenceProvider.ts` (176 LOC).
-            // Selects a vision-capable model from the model registry, builds the
-            // describe prompt, dispatches `ai/generate` with multimodal content,
-            // and parses the response. The TS file becomes a thin shim that
-            // calls this IPC. Outlier-validation pair with codex's #1284
-            // (structured-decision shape: AIDecisionService.evaluateGating).
-            "cognition/vision-describe" => {
-                let _timer = TimingGuard::new("module", "cognition_vision_describe");
-                let request: crate::cognition::vision_describe::VisionDescribeRequest =
-                    serde_json::from_value(params)
-                        .map_err(|e| format!("invalid vision-describe params: {e}"))?;
-                let executor = self.executor.require()?;
-                let result =
-                    crate::cognition::vision_describe::describe_image(request, executor).await?;
-                Ok(CommandResult::Json(serde_json::to_value(result).map_err(
-                    |e| format!("vision-describe serialize result: {e}"),
-                )?))
-            }
+            // `cognition/vision-describe` is now a dep-holding `ActionCommand` in
+            // `crate::commands::cognition::vision_describe` (captures this module's
+            // shared `Arc<LateBound<CommandExecutor>>` and delegates to
+            // `describe_image`). It reaches the registry via
+            // `CognitionModule::commands()`. `access: Internal`. No match arm here.
 
             // ================================================================
             // AI Gating + Draft Redundancy — MIGRATED to the typed registry.
@@ -730,7 +720,7 @@ impl ServiceModule for CognitionModule {
     }
 
     fn commands(&self) -> Vec<Arc<dyn crate::sdk_codegen::DynCommand>> {
-        crate::commands::cognition::command_objects(self.state.clone())
+        crate::commands::cognition::command_objects(self.state.clone(), self.executor.clone())
     }
 
     fn install_executor(&self, executor: Arc<crate::runtime::CommandExecutor>) {

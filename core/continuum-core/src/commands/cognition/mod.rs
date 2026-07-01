@@ -15,6 +15,7 @@
 use std::sync::Arc;
 
 use crate::modules::cognition::CognitionState;
+use crate::runtime::{CommandExecutor, LateBound};
 use crate::sdk_codegen::DynCommand;
 
 pub mod admit_inbox_message;
@@ -56,6 +57,7 @@ pub mod sync_adapters;
 pub mod sync_domain_classifier;
 pub mod track_response;
 pub mod validate_response_decision;
+pub mod vision_describe;
 
 use admit_inbox_message::AdmitInboxMessage;
 use cache_message::CacheMessage;
@@ -85,9 +87,12 @@ use set_sleep_mode::SetSleepMode;
 use sync_adapters::SyncAdapters;
 use sync_domain_classifier::SyncDomainClassifier;
 use track_response::TrackResponse;
+use vision_describe::VisionDescribe;
 
-/// The dep-holding `cognition/*` command objects that capture the module's shared
-/// [`CognitionState`]. Called from
+/// The dep-holding `cognition/*` command objects. Most capture the module's shared
+/// [`CognitionState`]; [`VisionDescribe`] instead captures the module's shared late-bound
+/// [`CommandExecutor`] slot (it re-enters the bus to run `ai/generate`), same as the
+/// `chat/*` family. Called from
 /// [`CognitionModule::commands`](crate::modules::cognition::CognitionModule) so they
 /// reach `command_registry()`, the persona tool surface, the ACL, codegen, and `cu`.
 ///
@@ -96,7 +101,10 @@ use track_response::TrackResponse;
 /// [`validate_response_decision`], [`score_interaction`], [`check_adequacy`],
 /// [`plan_turn_batch`], [`rate_proposals`], [`generate_recipe`]) hold no module state,
 /// self-route via `inventory`, and are NOT listed here.
-pub fn command_objects(state: Arc<CognitionState>) -> Vec<Arc<dyn DynCommand>> {
+pub fn command_objects(
+    state: Arc<CognitionState>,
+    executor_slot: Arc<LateBound<CommandExecutor>>,
+) -> Vec<Arc<dyn DynCommand>> {
     vec![
         Arc::new(CacheMessage {
             state: state.clone(),
@@ -180,5 +188,6 @@ pub fn command_objects(state: Arc<CognitionState>) -> Vec<Arc<dyn DynCommand>> {
             state: state.clone(),
         }),
         Arc::new(InboxDrainFrame { state }),
+        Arc::new(VisionDescribe { executor_slot }),
     ]
 }
