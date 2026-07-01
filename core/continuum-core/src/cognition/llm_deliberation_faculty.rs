@@ -76,6 +76,54 @@ pub fn relaxed_decoding() -> DecodingHandle {
     Arc::new(ArcSwap::from_pointee(None))
 }
 
+/// The live model binding for the deliberation faculty: the inference adapter,
+/// the model to request, and the served context window — the three facts that
+/// MUST move together when the served model re-homes. A `serving/pin` swap (or a
+/// grid failover onto another node) means a new adapter (new `base_url` /
+/// `default_model`), a new requested model (the single-resident guard checks it),
+/// AND a new context window (the new GGUF's `n_ctx`) — as ONE atomic unit. A torn
+/// read (new model + stale window, or new adapter + stale model) is exactly the
+/// silent wrong-brain that [[fallbacks-are-illegal-fail-loud]] forbids, so all
+/// three ride ONE [`ArcSwap`], loaded once per turn.
+pub struct ModelBinding {
+    /// The inference adapter, leased per call. `Arc` so the whole cycle shares the
+    /// one served-model backend (one base model, N persona lanes — the
+    /// INFERENCE-LANES-REALISTIC shape).
+    pub adapter: Arc<dyn AIProviderAdapter>,
+    /// Which model to ask for (`None` → the adapter's own default). The gateway's
+    /// single-resident guard checks this against the resident model and refuses a
+    /// mismatch LOUD, so it must move in lockstep with `adapter`.
+    pub model: Option<String>,
+    /// The effective served context window in tokens (task #50). The deliberation
+    /// prompt + completion reserve MUST fit this or the gateway 500s; it is sized
+    /// from the SAME binding so a re-home to a smaller window can never leave the
+    /// prompt sized for the old one.
+    pub context_window: u32,
+}
+
+/// A shared, wait-free model binding — the SAME [`ArcSwap`] the faculty reads on
+/// every generation and the owning
+/// [`WorkspaceCycle`](super::workspace::WorkspaceCycle) re-homes when the served
+/// model changes. One `ArcSwap`, two holders — exactly like [`GenomeHandle`] and
+/// [`DecodingHandle`]. A re-home stores a fresh [`ModelBinding`]; the faculty's
+/// next generation reads it, and the genome + working memory + admission are
+/// carried across untouched (no cycle rebuild). See
+/// [[seamless-persona-failover-model-and-genome]].
+pub type ModelBindingHandle = Arc<ArcSwap<ModelBinding>>;
+
+/// Build a shared model-binding handle from its parts.
+pub fn model_binding(
+    adapter: Arc<dyn AIProviderAdapter>,
+    model: Option<String>,
+    context_window: u32,
+) -> ModelBindingHandle {
+    Arc::new(ArcSwap::from_pointee(ModelBinding {
+        adapter,
+        model,
+        context_window,
+    }))
+}
+
 /// Default sampling temperature for deliberation — enough warmth for natural
 /// voice, not so much it drifts.
 const DEFAULT_TEMPERATURE: f32 = 0.7;
@@ -86,10 +134,15 @@ pub struct LlmDeliberationFaculty {
     persona_name: String,
     /// The persona's identity / deliberation system prompt (from RAG identity).
     system_prompt: String,
-    /// Shared model backend, leased per call.
-    adapter: Arc<dyn AIProviderAdapter>,
-    /// Which model to ask for (None → the adapter's default).
-    model: Option<String>,
+    /// The live model binding — the served adapter, the requested model, and the
+    /// served context window, swapped ATOMICALLY as one unit when the served model
+    /// re-homes (`serving/pin` or grid failover). Shared with the owning
+    /// [`WorkspaceCycle`](super::workspace::WorkspaceCycle) — one [`ArcSwap`], two
+    /// holders, exactly like `genome`/`decoding`. Read wait-free ONCE per turn (in
+    /// [`Self::contribute`]) so an entire generation sees a consistent
+    /// {adapter, model, window} triple even if a re-home lands mid-turn. See
+    /// [`ModelBinding`].
+    binding: ModelBindingHandle,
     temperature: f32,
     /// The persona's authorized tool set, kept whole. Empty → the persona can only
     /// SPEAK. Non-empty → the persona can ACT. This set is NOT dumped into the
@@ -140,17 +193,6 @@ pub struct LlmDeliberationFaculty {
     /// reproducible; her live cognition leaves it `None`. Read wait-free per
     /// generation, exactly like `genome`.
     decoding: DecodingHandle,
-    /// The effective served context window in tokens (task #50: single-sourced
-    /// from `profile.context_length`, which for a Local persona IS the planner's
-    /// `ServingPlan.served_context_window`).
-    /// The deliberation prompt (system + burst) plus a completion reserve MUST
-    /// fit this or the gateway 500s ("Context size has been exceeded"). This
-    /// faculty is the ONE place the deliberation prompt is assembled, so it is
-    /// where the window invariant is enforced — drop-WHOLE in salience order, the
-    /// same philosophy as `FlexboxRagBudgetAdapter`. Task #8 converges both onto
-    /// that one allocator; until then this is THE allocator for the deliberation
-    /// path (the missing one — there was no budget before), not a parallel one.
-    context_window: u32,
 }
 
 impl LlmDeliberationFaculty {
@@ -164,8 +206,16 @@ impl LlmDeliberationFaculty {
             persona_id,
             persona_name: persona_name.into(),
             system_prompt: system_prompt.into(),
-            adapter,
-            model: None,
+            // A private throwaway binding at the runnable floor — the live spawn
+            // path immediately REPLACES it with the shared handle via
+            // `with_model_binding` (so a `serving/pin` re-home is seen here), and
+            // `with_model`/`with_context_window` mutate it for tests. Mirrors how
+            // `new` builds an `empty_genome()` that `with_genome` then shares in.
+            binding: model_binding(
+                adapter,
+                None,
+                crate::cognition::serving_plan::MIN_SERVE_CTX,
+            ),
             temperature: DEFAULT_TEMPERATURE,
             tools: Vec::new(),
             native_specs: Vec::new(),
@@ -173,7 +223,6 @@ impl LlmDeliberationFaculty {
             prompt_capture: None,
             genome: empty_genome(),
             decoding: relaxed_decoding(),
-            context_window: crate::cognition::serving_plan::MIN_SERVE_CTX,
         }
     }
 
@@ -192,6 +241,17 @@ impl LlmDeliberationFaculty {
     /// takes effect on the faculty's next generation (virtual memory for skill).
     pub fn with_genome(mut self, genome: GenomeHandle) -> Self {
         self.genome = genome;
+        self
+    }
+
+    /// Share the persona's model binding — the same [`ArcSwap`] the owning
+    /// [`WorkspaceCycle`](super::workspace::WorkspaceCycle) re-homes when the
+    /// served model changes. REPLACES the throwaway handle `new` built, so after
+    /// this call a `rebind_model` on the cycle takes effect on the faculty's next
+    /// generation — exactly like `with_genome`/`with_decoding`. See
+    /// [[seamless-persona-failover-model-and-genome]].
+    pub fn with_model_binding(mut self, binding: ModelBindingHandle) -> Self {
+        self.binding = binding;
         self
     }
 
@@ -215,8 +275,15 @@ impl LlmDeliberationFaculty {
         self
     }
 
-    pub fn with_model(mut self, model: impl Into<String>) -> Self {
-        self.model = Some(model.into());
+    pub fn with_model(self, model: impl Into<String>) -> Self {
+        let model = model.into();
+        // Mutate the shared binding in place (keep adapter + window, set model) so
+        // the {adapter, model, window} triple stays a single atomic unit.
+        self.binding.rcu(|cur| ModelBinding {
+            adapter: Arc::clone(&cur.adapter),
+            model: Some(model.clone()),
+            context_window: cur.context_window,
+        });
         self
     }
 
@@ -260,12 +327,17 @@ impl LlmDeliberationFaculty {
     /// `ServingPlan.served_context_window`). Default: the runnable floor
     /// [`MIN_SERVE_CTX`](crate::cognition::serving_plan::MIN_SERVE_CTX) for a
     /// faculty constructed outside the spawn path (tests, non-served).
-    pub fn with_context_window(mut self, context_window: u32) -> Self {
-        self.context_window = context_window;
+    pub fn with_context_window(self, context_window: u32) -> Self {
+        // Mutate the shared binding in place (keep adapter + model, set window).
         // The tool surface no longer depends on the window (the menu is a per-turn
         // render, the native discovery pair is window-independent), so a window
         // change needs no tool-surface rebuild — only the prompt-fit BUDGET in
-        // `prompt_view` reads `context_window`, and it reads it live.
+        // `prompt_view` reads the window, and it reads it live from the binding.
+        self.binding.rcu(|cur| ModelBinding {
+            adapter: Arc::clone(&cur.adapter),
+            model: cur.model.clone(),
+            context_window,
+        });
         self
     }
 
@@ -279,14 +351,19 @@ impl LlmDeliberationFaculty {
     /// the prompt. This is NOT an arbitrary flat cap (the kind that truncated
     /// qwen3.5 mid-`<think>`): it scales with the real served window and hands the
     /// reply every token the prompt budget set aside for it.
-    fn completion_budget(&self) -> u32 {
-        (self.context_window / 4).clamp(256, 2048)
+    fn completion_budget_for(context_window: u32) -> u32 {
+        (context_window / 4).clamp(256, 2048)
     }
 
     /// Build a generation request for the message thread. Centralized so the
-    /// first prompt and any future re-prompt share one shape.
-    fn build_request(
+    /// first prompt and any future re-prompt share one shape. Takes the model
+    /// binding as an already-loaded snapshot (`contribute` loads it ONCE per turn)
+    /// so the requested `model` and the `max_tokens` reserve derived from
+    /// `context_window` come from the SAME atomic {adapter, model, window} triple —
+    /// a re-home landing mid-turn can never tear the model away from its window.
+    fn build_request_within(
         &self,
+        binding: &ModelBinding,
         messages: Vec<ChatMessage>,
         tools: Option<Vec<NativeToolSpec>>,
         system_prompt: String,
@@ -294,7 +371,7 @@ impl LlmDeliberationFaculty {
         TextGenerationRequest {
             messages,
             system_prompt: Some(system_prompt),
-            model: self.model.clone(),
+            model: binding.model.clone(),
             provider: None,
             // Greedy override (the eval window) wins over her lived warmth so the
             // reward metric is reproducible; `None` (live cognition) → her own
@@ -311,7 +388,7 @@ impl LlmDeliberationFaculty {
             // truncated qwen3.5 mid-`<think>`: the budget scales with the real served
             // window (up to a quarter of it), so the reply gets every token set aside
             // for it — never a const we picked, never an overrun ([[fallbacks-are-illegal-fail-loud]]).
-            max_tokens: Some(self.completion_budget()),
+            max_tokens: Some(Self::completion_budget_for(binding.context_window)),
             top_p: None,
             top_k: None,
             // `None` here does NOT mean "no repetition penalty" — it defers to the
@@ -493,10 +570,19 @@ impl LlmDeliberationFaculty {
     ///   3. the assembled context (recall + grounding) — enrichment, gets the
     ///      remainder, dropped WHOLE in salience order.
     pub fn prompt_view(&self, ws: &Workspace) -> DeliberationPromptView {
-        // The reply's reserved room — the SAME value `build_request` passes as
-        // `max_tokens`, so the prompt is sized to leave exactly what generation is
-        // then allowed to use. One source: [`completion_budget`].
-        let completion_reserve = self.completion_budget() as usize;
+        // Introspection / test entry: size against the CURRENT served window. The
+        // production path (`contribute`) instead loads the binding ONCE and calls
+        // `prompt_view_within` with that window, so prompt sizing and the request's
+        // model come from the same atomic snapshot (no torn read across a re-home).
+        self.prompt_view_within(ws, self.binding.load().context_window)
+    }
+
+    /// [`prompt_view`] against an explicit served window. See that method.
+    fn prompt_view_within(&self, ws: &Workspace, context_window: u32) -> DeliberationPromptView {
+        // The reply's reserved room — the SAME value `build_request_within` passes
+        // as `max_tokens`, so the prompt is sized to leave exactly what generation
+        // is then allowed to use. One source: [`completion_budget_for`].
+        let completion_reserve = Self::completion_budget_for(context_window) as usize;
 
         // The ONE natively-offered tool (`commands/help`) rides the served window
         // too: the gateway injects its function spec (name + description + schema)
@@ -507,7 +593,7 @@ impl LlmDeliberationFaculty {
         // `framing_tokens`), so this is a few dozen tokens, not the 4–5k the old
         // full-registry dump cost. The menu itself is part of `compose_system`,
         // so it is sized into the framing below — one accounting, not two.
-        let budget = (self.context_window as usize)
+        let budget = (context_window as usize)
             .saturating_sub(completion_reserve)
             .saturating_sub(self.describe_tool_tokens());
 
@@ -745,7 +831,15 @@ impl Faculty for LlmDeliberationFaculty {
     }
 
     async fn contribute(&self, ws: &Workspace) -> Option<Contribution> {
-        let view = self.prompt_view(ws);
+        // ONE atomic snapshot of the model binding for the whole turn — the
+        // adapter we generate through, the model we request, and the served window
+        // we size the prompt to all come from the same {adapter, model, window}
+        // triple, so a re-home (`serving/pin` / grid failover) landing mid-turn can
+        // never tear them apart. `load_full` (owned `Arc`) is held across the
+        // `.await` below; a swap that happens after this load takes effect on the
+        // NEXT turn. See [`ModelBinding`].
+        let binding = self.binding.load_full();
+        let view = self.prompt_view_within(ws, binding.context_window);
         // Introspection seam: emit EXACTLY what the model sees this tick. The RAG
         // is the load-bearing input — never opaque. Enable the `cognition` log
         // category for the persona to capture this per-turn (the existing
@@ -786,8 +880,9 @@ impl Faculty for LlmDeliberationFaculty {
             Some(self.native_specs.clone())
         };
 
-        let request = self.build_request(messages.clone(), tools, view.system.clone());
-        let resp = match self.adapter.generate_text(request).await {
+        let request =
+            self.build_request_within(&binding, messages.clone(), tools, view.system.clone());
+        let resp = match binding.adapter.generate_text(request).await {
             Ok(r) => r,
             // Inference FAILED (timeout, 5xx, the serving lane refusing a model it
             // isn't hosting). A failed model is NOT a chosen silence — returning a
@@ -1042,14 +1137,18 @@ mod tests {
             ));
 
             let view = faculty.prompt_view(&ws);
-            let request = faculty.build_request(view.messages.clone(), None, view.system.clone());
+            // Same atomic snapshot the production `contribute` path uses — the model
+            // binding carries the served window the request is bounded to.
+            let binding = faculty.binding.load_full();
+            let request =
+                faculty.build_request_within(&binding, view.messages.clone(), None, view.system.clone());
             // Generation is bounded — never the unbounded `None` that overran n_ctx.
             let cap = request
                 .max_tokens
                 .expect("deliberation must bound generation to the reserved room");
             assert_eq!(
                 cap,
-                faculty.completion_budget(),
+                LlmDeliberationFaculty::completion_budget_for(window),
                 "the generation cap IS the reserved room — one source of truth"
             );
             // The closed invariant: prompt-at-ceiling + the generation cap fits n_ctx.

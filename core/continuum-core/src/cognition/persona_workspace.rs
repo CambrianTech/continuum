@@ -304,16 +304,30 @@ pub fn build_workspace_cycle(cfg: PersonaBrainConfig) -> WorkspaceCycle {
     // window's greedy flip on the cycle is seen by the faculty's next generation,
     // exactly like the genome handle. `None` in live cognition (her lived warmth).
     let decoding = super::llm_deliberation_faculty::relaxed_decoding();
+    // The persona's model binding — adapter + requested model + served window,
+    // shared (one ArcSwap, two holders) so a served-model change (`serving/pin` or
+    // a grid failover) swaps all three atomically into the faculty's NEXT
+    // generation without rebuilding the cycle (genome + memory carried across).
+    // Model-load-as-paging: the base-model sibling of the genome page-in above,
+    // frequent and on grid demand. `model: None` → the adapter's own default model,
+    // matching the boot binding; the re-home sets it explicitly. Initial window is
+    // `cfg.context_window` (task #50 — the served window for a Local persona).
+    let adapter = cfg.adapter;
+    let model_binding = super::llm_deliberation_faculty::model_binding(
+        Arc::clone(&adapter),
+        None,
+        cfg.context_window,
+    );
     let mut deliberation = LlmDeliberationFaculty::new(
         cfg.persona_id,
         cfg.persona_name,
         cfg.system_prompt,
-        cfg.adapter,
+        adapter,
     )
     .with_working_memory(Arc::clone(&working_memory))
     .with_genome(Arc::clone(&genome))
     .with_decoding(Arc::clone(&decoding))
-    .with_context_window(cfg.context_window);
+    .with_model_binding(Arc::clone(&model_binding));
     if tool_executor.is_some() {
         // Offer EXACTLY what this persona is authorized to run (offer ==
         // authorized) — never a tool the gate would refuse. A local persona is the
@@ -353,7 +367,8 @@ pub fn build_workspace_cycle(cfg: PersonaBrainConfig) -> WorkspaceCycle {
         cfg.capacity.unwrap_or(DEFAULT_WORKSPACE_CAPACITY),
     )
     .with_genome(genome)
-    .with_decoding(decoding);
+    .with_decoding(decoding)
+    .with_model_binding(model_binding);
 
     // Give the mind its BODY when it has hands. The act→observe driver reads this
     // to execute a `Decision::Act`, admit the result into `admission_for_body` (the

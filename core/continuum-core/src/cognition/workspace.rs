@@ -29,7 +29,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use super::llm_deliberation_faculty::{
-    empty_genome, relaxed_decoding, DecodingHandle, GenomeHandle,
+    empty_genome, relaxed_decoding, DecodingHandle, GenomeHandle, ModelBinding, ModelBindingHandle,
 };
 use crate::ai::types::{ActiveAdapterRequest, ToolCall};
 
@@ -942,6 +942,15 @@ pub struct WorkspaceCycle {
     /// is reproducible, and restores it on the guard's drop. Mirrors `genome`: one
     /// handle, two holders (cycle + faculty).
     decoding: DecodingHandle,
+    /// The persona's live model binding — the served adapter + requested model +
+    /// context window the deliberation faculty reads wait-free each generation. The
+    /// faculty shares this EXACT handle; [`rebind_model`](Self::rebind_model) swaps
+    /// it atomically when the served model changes (`serving/pin` or grid failover),
+    /// carrying the genome + memory across untouched (no cycle rebuild). `None` →
+    /// a pure-cognition / test cycle with no deliberation faculty to re-home (the
+    /// re-home is then a benign no-op). Mirrors `genome`/`decoding`: one handle, two
+    /// holders. See [`ModelBinding`] + [[seamless-persona-failover-model-and-genome]].
+    model_binding: Option<ModelBindingHandle>,
     /// Monotonic service-tick counter — the source of each [`Workspace::cycle`]
     /// frame index. Interior-mutable because `run` takes `&self` (the living
     /// mind is shared, not owned per tick); bumped once per `run_in_room`.
@@ -1049,6 +1058,7 @@ impl WorkspaceCycle {
             acting: None,
             genome: empty_genome(),
             decoding: relaxed_decoding(),
+            model_binding: None,
             cycle_counter: std::sync::atomic::AtomicU64::new(0),
         }
     }
@@ -1067,6 +1077,32 @@ impl WorkspaceCycle {
     pub fn with_genome(mut self, genome: GenomeHandle) -> Self {
         self.genome = genome;
         self
+    }
+
+    /// Share the model binding the deliberation faculty reads — call with the SAME
+    /// [`ModelBindingHandle`] passed to
+    /// [`LlmDeliberationFaculty::with_model_binding`](super::llm_deliberation_faculty::LlmDeliberationFaculty::with_model_binding)
+    /// so a [`rebind_model`](Self::rebind_model) on the cycle takes effect on the
+    /// faculty's next generation. Without this call the cycle has no binding to
+    /// re-home (a pure-cognition / test cycle), and `rebind_model` is a no-op.
+    pub fn with_model_binding(mut self, binding: ModelBindingHandle) -> Self {
+        self.model_binding = Some(binding);
+        self
+    }
+
+    /// Re-home the persona's deliberation onto a newly served model — swap the
+    /// {adapter, model, context window} triple ATOMICALLY into the shared binding
+    /// the faculty reads. The genome, working memory, admission, and hippocampus are
+    /// UNTOUCHED (no cycle rebuild): the SAME continuous mind now deliberates through
+    /// the new model, so this is model-load-as-paging (frequent, on grid demand —
+    /// the base-model sibling of [`page_in`](Self::page_in)'s LoRA paging), not a
+    /// teardown. Wait-free swap; the faculty's next generation sees it. No-op for a
+    /// cycle with no deliberation faculty (no binding was shared in). See
+    /// [`ModelBinding`] + [[seamless-persona-failover-model-and-genome]].
+    pub fn rebind_model(&self, binding: ModelBinding) {
+        if let Some(handle) = &self.model_binding {
+            handle.store(Arc::new(binding));
+        }
     }
 
     /// Page a gene (set of LoRA layers) into the persona's genome — the next
