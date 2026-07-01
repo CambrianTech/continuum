@@ -16,13 +16,25 @@ use crate::modules::cognition::CognitionState;
 use crate::sdk_codegen::DynCommand;
 
 pub mod drain;
+pub mod execute;
 
 use drain::DrainTurnFrame;
+use execute::TurnExecute;
 
 /// The dep-holding Lane D turn-frame command objects over the module's shared
 /// [`CognitionState`]. Called from
 /// [`CognitionModule::commands`](crate::modules::cognition::CognitionModule) so they
 /// reach `command_registry()`, the ACL, codegen, and `cu`.
+///
+/// - [`DrainTurnFrame`](drain::DrainTurnFrame) (`persona/drain-turn-frame`) stops at the
+///   replay-stable turn frame.
+/// - [`TurnExecute`](execute::TurnExecute) (`persona/turn-execute`) carries that frame
+///   through Rust inference in one hop.
 pub fn command_objects(state: Arc<CognitionState>) -> Vec<Arc<dyn DynCommand>> {
-    vec![Arc::new(DrainTurnFrame { state })]
+    vec![
+        Arc::new(DrainTurnFrame {
+            state: state.clone(),
+        }),
+        Arc::new(TurnExecute { state }),
+    ]
 }

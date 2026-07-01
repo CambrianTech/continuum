@@ -80,4 +80,6 @@ export type { ToolInvocationRef } from './ToolInvocationRef';
 export type { ToolParseRequest } from './ToolParseRequest';
 export type { ToolParseResult } from './ToolParseResult';
 export type { TrustState } from './TrustState';
+export type { TurnExecuteParams } from './TurnExecuteParams';
+export type { TurnExecuteResult } from './TurnExecuteResult';
 export type { ValidationResult } from './ValidationResult';
