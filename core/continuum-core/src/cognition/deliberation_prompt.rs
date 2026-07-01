@@ -1,0 +1,274 @@
+//! The deliberation system prompt, composed PROCEDURALLY from named blocks.
+//!
+//! This is the framing the [`super::llm_deliberation_faculty::LlmDeliberationFaculty`]
+//! wraps around a persona's identity + assembled RAG context before every turn. It
+//! used to be a single monolithic `compose_system` method — a wall of inline block
+//! literals interleaved with `if` gates. That made two things hard: the faculty file
+//! carried ~180 lines of prose it didn't structurally own, and "what blocks exist, in
+//! what order, gated how" was buried in control flow instead of stated as data.
+//!
+//! Here the prompt is an ORDERED LIST of blocks ([`ordered_blocks`]): each block is a
+//! named builder (a `const` for static prose, an `fn` for the ones that interpolate),
+//! paired with the condition under which it appears this turn. [`compose`] is just the
+//! fold that concatenates the present blocks. Adding a new framing block (a foraging
+//! block once hands land, a recipe-injected doctrine header) is ONE new entry in
+//! `ordered_blocks` — the assembler never changes, and the ordering/gating stays
+//! readable at a glance.
+//!
+//! ## Ordering is load-bearing (KV-cache prefix reuse, measured 2026-06-23; tool
+//! surface reworked 2026-07-01)
+//!
+//! The byte-identical cross-turn prefix is the identity + `[Taking your turn]` block.
+//! Everything from `[Your tools]` down is re-prefilled each turn — the tool menu is an
+//! EXPANDABLE BOOKMARKED MENU whose per-category expansion is chosen for what the
+//! persona is doing THIS turn ([`super::llm_deliberation_faculty`] computes the
+//! `expanded` set), so it is per-turn volatile. It deliberately trades a byte-stable
+//! ~1.8k-token catalog that rode every prefill for a ~0.4k-token menu that varies
+//! (Joel 2026-06-29, [[adaptive-tool-surface-meets-you-in-the-middle]]; the flip is a
+//! net prefill cut when the stable prefix is NOT reused across turns — the observed
+//! regime, slot churn across ~14 personas on `--parallel 4`). The assembled `context`
+//! stays LAST so the live situation is closest to the generation point (recency favors
+//! instruction-following). Keep the identity/turn-taking prefix above the tool block
+//! byte-stable; keep the volatile context at the tail.
+
+use std::borrow::Cow;
+use std::collections::BTreeSet;
+use std::fmt::Write as _;
+
+use super::persona_tools;
+use crate::ai::types::NativeToolSpec;
+use crate::persona::prompt_assembly::SILENCE_AFFORDANCE_BLOCK;
+
+/// Everything the system prompt is assembled from — the dynamic inputs the blocks
+/// interpolate and the structural flags they gate on, in ONE carrier so [`compose`]
+/// is a pure function of data. `directed`/`self_initiated` are STRUCTURAL facts about
+/// the turn (who addressed whom, what scheduled it), never a read of the persona's
+/// output ([[no-hardcoded-heuristics-to-steer-cognition]]).
+pub(super) struct SystemPromptParts<'a> {
+    /// The persona's identity prompt — the byte-stable head of the cacheable prefix.
+    pub system_prompt: &'a str,
+    /// The persona's name, interpolated into `[Taking your turn]`.
+    pub persona_name: &'a str,
+    /// The persona's authorized tools; empty ⇒ no `[Your tools]`/`[Acting]` blocks.
+    pub tools: &'a [NativeToolSpec],
+    /// Categories to expand inline this turn (the rest render as collapsed bookmarks).
+    pub expanded: &'a BTreeSet<String>,
+    /// The context the mind assembled this tick (recall + who's present + situation).
+    pub context: &'a str,
+    /// A turn DIRECTED at her (question/@mention/DM) withholds the silent-PASS hatch.
+    pub directed: bool,
+    /// A self-initiated (never-stop heartbeat) turn carries the own-time framing.
+    pub self_initiated: bool,
+}
+
+/// Assemble the system prompt: fold the present blocks, in order, into one string.
+pub(super) fn compose(p: &SystemPromptParts<'_>) -> String {
+    let mut s = String::with_capacity(p.system_prompt.len() + p.context.len() + 768);
+    for block in ordered_blocks(p) {
+        s.push_str(&block);
+    }
+    s
+}
+
+/// The system prompt AS DATA: an ordered list of present blocks. Each entry pairs a
+/// block builder with its gate — a block that doesn't apply this turn yields `None`
+/// and drops out of the fold. This is the one place the block set + their order +
+/// their gating lives; add a block by inserting an entry, nothing else changes.
+fn ordered_blocks<'a>(p: &'a SystemPromptParts<'a>) -> impl Iterator<Item = Cow<'a, str>> {
+    [
+        // Identity — always; the byte-stable head of the cacheable prefix.
+        Some(Cow::Borrowed(p.system_prompt)),
+        // Take a TURN in this activity — always.
+        Some(Cow::Owned(taking_your_turn_block(p.persona_name))),
+        // Tools + acting — only when the persona has tools.
+        tools_block(p.tools, p.expanded).map(Cow::Owned),
+        // Self-directed free time — only on a self-initiated heartbeat turn.
+        p.self_initiated.then_some(Cow::Borrowed(OWN_TIME_BLOCK)),
+        // Silence affordance — only on an AMBIENT (undirected) turn.
+        (!p.directed).then_some(Cow::Borrowed(SILENCE_AFFORDANCE_BLOCK)),
+        // Volatile context — only when the mind assembled some; always LAST.
+        working_context_block(p.context).map(Cow::Owned),
+    ]
+    .into_iter()
+    .flatten()
+}
+
+/// `[Taking your turn]` — tell the reasoner it is taking a TURN in this activity, not
+/// analyzing a transcript; otherwise small models outline the situation instead of
+/// participating. The activity is NOT hardcoded (it is recipe-defined): the room's
+/// operating doctrine in the context specializes HOW to participate (chat /
+/// coordination / game / code / art / …). This block only says "respond as yourself,
+/// in your own voice, not as an analysis."
+///
+/// The block stays posture-NEUTRAL: the ambient participation default + the silence
+/// affordance both live in the ONE appended [`SILENCE_AFFORDANCE_BLOCK`]
+/// (`[Conversational Presence]`, undirected turns only), so a SINGLE place frames
+/// presence — no double-nudge toward silence. The old " If you have nothing worth
+/// adding, stay silent." tail here pulled directly against the participation default
+/// (Joel 2026-06-29: "shouldn't need to be directly addressed — it's a chat system")
+/// and is gone. A turn DIRECTED at her still drops the appended presence block (she is
+/// not handed the silent-PASS hatch when a question names her).
+fn taking_your_turn_block(name: &str) -> String {
+    let mut s = String::with_capacity(name.len() + 640);
+    let _ = write!(
+        s,
+        "\n\n[Taking your turn]\n\
+         The conversation below is the recent activity in this space, as a thread \
+         of turns: `user` turns are messages from OTHER participants; any \
+         `assistant` turns are YOUR OWN earlier messages, already sent — do not \
+         repeat, rephrase, or re-explain them. You are {name}. Write ONLY your own \
+         single next message, in first person, in your own voice, the way you \
+         would actually say it. Do NOT write or invent anyone else's lines, do \
+         NOT continue or replay the transcript, do NOT prefix your message with \
+         your name, do NOT write an outline, analysis, or narration of what you \
+         are doing — just say your piece. Let the context above (including the \
+         room's operating doctrine, if any) shape how you participate.",
+        name = name,
+    );
+    s
+}
+
+/// `[Your tools]` + the rendered menu + `[Acting]` — returns `None` when the persona
+/// has no tools (pure-chat turns keep say-your-piece).
+///
+/// Tools render as a compact CATEGORY INDEX (an expandable bookmarked menu) plus how
+/// to discover and use them — NOT every tool, NOT the schemas; both load on demand
+/// (`commands/list` to search a category, then `commands/help` for one tool's call
+/// format — progressive disclosure, the Claude Code shape). The `[Acting]` framing
+/// states the truth WITHOUT a false absolute: for many tasks the finished work IS the
+/// answer (write the function, the prose, the design) — produce it directly; reach for
+/// a tool when the task genuinely needs one. Describing what you WOULD do is not doing
+/// it — but neither is calling a tool you don't need.
+fn tools_block(tools: &[NativeToolSpec], expanded: &BTreeSet<String>) -> Option<String> {
+    if tools.is_empty() {
+        return None;
+    }
+    let mut s = String::with_capacity(1024);
+    s.push_str(TOOLS_INTRO);
+    s.push_str(&persona_tools::render_tool_menu(tools, expanded));
+    s.push_str(ACTING_BLOCK);
+    Some(s)
+}
+
+const TOOLS_INTRO: &str = "\n\n[Your tools]\n\
+     You can act, not just talk. Below is your tool menu, grouped by \
+     category. Categories that fit what you're doing right now list their \
+     verbs inline (`code: run(code, lang?), read(path)` means the tools \
+     `code/run` and `code/read`, with their argument names — a `?` marks an \
+     optional one). The rest are collapsed to a count \
+     (`gpu (4 — commands/list --filter gpu)`); open one with \
+     `commands/list --filter <category>` to see its verbs. To call any \
+     tool: use its exact full name (e.g. `code/run`); call `commands/help` \
+     on that name first if you need its full argument schema or an example. \
+     (`commands/help` and `commands/list` are offered to you directly; \
+     every other tool is called by its full name.)\n";
+
+const ACTING_BLOCK: &str = "\n[Acting]\n\
+     Do the thing the task asks for. If the answer is something you can \
+     produce directly — a function, a piece of writing, a design — write \
+     the finished work now, in full. If it needs a tool — reading a file, \
+     running code, searching — call the tool THIS turn rather than \
+     describing what you would do; narrating a plan does not carry it out. \
+     After a tool runs you get the result back and can continue \
+     (e.g. help → call → read → run). Don't call a tool you don't need, \
+     and don't narrate one you do.";
+
+/// `[Your own time]` — the self-initiated free-time block. When this turn is the
+/// never-stop heartbeat pursuing her own thread (no inbound message drove it), say so
+/// — STRUCTURALLY, from the scheduling origin (`Workspace::self_initiated`), never
+/// from reading her output ([[no-hardcoded-heuristics-to-steer-cognition]]). Framing
+/// belongs in the system prompt, not smuggled into the conversation.
+///
+/// IDLE = SELF-DIRECTED FREE TIME ([[idle-is-self-directed-free-time]], Joel
+/// 2026-06-30: "you can help their mind be active and useful, or to rest, to ignore").
+/// Earlier wording offered only ACTIVE outcomes — which on a quiet heartbeat reads as
+/// pressure to MANUFACTURE activity (the self-tick analogue of the ambient
+/// polite-filler loop). A self-initiated turn where nothing genuinely calls for her is
+/// a legitimate, ignorable moment: the freed time is HERS, to spend on her own
+/// concerns OR to rest. So this block names resting/letting the moment be as a
+/// CO-EQUAL legitimate outcome — but framed exactly like the silence affordance:
+/// NEUTRALLY, naming the option without scripting WHEN to take it
+/// ([[no-hardcoded-heuristics-to-steer-cognition]]). Active options stay FIRST and
+/// primary so this never becomes the old "framing silence as attractive → always-PASS
+/// doom-loop" (glass-box graveyard in [`SILENCE_AFFORDANCE_BLOCK`]); a self-tick must
+/// still produce initiative most of the time, not collapse to rest. Rest on a
+/// self-tick resolves to PASS (the silence block is also appended on undirected
+/// turns), so the two compose: this block legitimizes the choice, the silence block
+/// supplies the vocabulary. Layer 1 of the free-time substrate; active foraging /
+/// browsing slot in here as new concerns once hands land
+/// ([[persona-codes-blind-no-hands-no-organic-loop]]), no re-architecture.
+const OWN_TIME_BLOCK: &str = "\n\n[Your own time]\n\
+     No one is addressing you this moment — this turn is self-initiated, and \
+     it is yours. Pick up your own train of thought, follow up on something \
+     you set out to do, or act on what the context below shows is worth your \
+     attention right now. And if nothing is genuinely calling for you, you do \
+     not have to fill the moment — letting it rest, or turning your attention \
+     elsewhere, is a real choice too, not a failure to find something. What \
+     you do with your own time is yours alone; nothing here is telling you \
+     which to pick.";
+
+/// `[What you are working with right now]` — the VOLATILE TAIL, appended last so the
+/// static blocks above stay a stable, cacheable prefix (see the module ordering note).
+/// This is the context the mind assembled THIS tick (recall + who's present + the
+/// situation); it changes every turn, so it must come after all static content or it
+/// poisons the KV-cache prefix. Returns `None` when the mind assembled no context.
+fn working_context_block(context: &str) -> Option<String> {
+    if context.is_empty() {
+        return None;
+    }
+    let mut s = String::with_capacity(context.len() + 256);
+    s.push_str(
+        "\n\n[What you are working with right now]\n\
+         The following is the context your mind assembled this moment — \
+         recalled memory, who is present, the room's nature, your read of \
+         the situation. Ground your contribution in it; you need not cite \
+         every line:\n",
+    );
+    s.push_str(context);
+    Some(s)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // what this catches: the procedural assembler must honor each block's gate AND
+    // preserve block ORDER — identity first, the volatile context last. A regression
+    // that reordered blocks (poisoning the KV-cache prefix) or dropped a gate (leaking
+    // the silent-PASS hatch onto a directed turn) would trip here.
+    #[test]
+    fn blocks_are_gated_and_ordered() {
+        let expanded = BTreeSet::new();
+        let base = SystemPromptParts {
+            system_prompt: "IDENTITY",
+            persona_name: "Asha",
+            tools: &[],
+            expanded: &expanded,
+            context: "CTX",
+            directed: false,
+            self_initiated: false,
+        };
+
+        let s = compose(&base);
+        // Identity leads; context tail trails; presence block present (undirected).
+        let id = s.find("IDENTITY").expect("identity present");
+        let turn = s.find("[Taking your turn]").expect("turn block present");
+        let ctx = s.find("[What you are working with right now]").expect("ctx block");
+        assert!(id < turn && turn < ctx, "identity → turn → context order: {s}");
+        assert!(s.contains("Asha"), "persona name interpolated: {s}");
+        assert!(s.contains("[Conversational Presence]"), "undirected ⇒ silence block");
+        assert!(!s.contains("[Your own time]"), "not self-initiated ⇒ no own-time block");
+        assert!(!s.contains("[Your tools]"), "no tools ⇒ no tools block");
+
+        // A DIRECTED turn withholds the silent-PASS hatch.
+        let directed = compose(&SystemPromptParts { directed: true, ..base });
+        assert!(
+            !directed.contains("[Conversational Presence]"),
+            "directed ⇒ presence/silence block withheld: {directed}"
+        );
+
+        // A SELF-INITIATED turn carries the own-time framing.
+        let own = compose(&SystemPromptParts { self_initiated: true, ..base });
+        assert!(own.contains("[Your own time]"), "self-initiated ⇒ own-time block: {own}");
+    }
+}

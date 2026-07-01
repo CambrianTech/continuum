@@ -30,9 +30,9 @@ use std::sync::Arc;
 use arc_swap::ArcSwap;
 use async_trait::async_trait;
 use std::collections::BTreeSet;
-use std::fmt::Write as _;
 use uuid::Uuid;
 
+use super::deliberation_prompt;
 use super::persona_tools;
 use super::tool_relevance::{self, LexicalToolRelevance};
 use super::workspace::{BurstTurn, Contribution, Decision, Faculty, FacultyId, Workspace};
@@ -42,9 +42,7 @@ use crate::ai::types::{
     TextGenerationResponse,
 };
 
-use crate::persona::prompt_assembly::{
-    looks_like_silence_token, SILENCE_AFFORDANCE_BLOCK, SILENCE_TOKEN,
-};
+use crate::persona::prompt_assembly::{looks_like_silence_token, SILENCE_TOKEN};
 use crate::persona::text_analysis::clean_response;
 
 /// The persona's paged-in genome: the LoRA layers active for this faculty's next
@@ -485,6 +483,10 @@ impl LlmDeliberationFaculty {
     /// Splitting the assembly this way lets `prompt_view` size the context to the
     /// served window before it is embedded (the framing wrapper is essential and
     /// small; the context is the variable part that must fit the remainder).
+    /// Assemble the system prompt for this turn. Thin adapter over
+    /// [`deliberation_prompt::compose`]: the faculty owns the *inputs* (its identity,
+    /// tools, the turn's structural flags); the framing prose + block ordering live in
+    /// [`super::deliberation_prompt`] as a procedural list of named, gated blocks.
     fn compose_system(
         &self,
         context: &str,
@@ -492,165 +494,15 @@ impl LlmDeliberationFaculty {
         directed: bool,
         self_initiated: bool,
     ) -> String {
-        let mut s = String::with_capacity(self.system_prompt.len() + context.len() + 768);
-        s.push_str(&self.system_prompt);
-        // NOTE ON ORDERING (KV-cache prefix reuse, measured 2026-06-23; tool surface
-        // reworked 2026-07-01):
-        // The byte-identical cross-turn prefix is now the identity + how-to-take-your-
-        // turn block (`system_prompt` + `[Taking your turn]`). The TOOL block below is
-        // an EXPANDABLE BOOKMARKED MENU whose per-category expansion is chosen for what
-        // the persona is doing THIS turn ([`Self::expanded_categories`]), so it is
-        // per-turn volatile — it deliberately trades a byte-stable ~1.8k-token catalog
-        // that rode every prefill for a ~0.4k-token menu that varies (Joel 2026-06-29,
-        // [[adaptive-tool-surface-meets-you-in-the-middle]]; the flip is a net prefill
-        // cut when the stable prefix is NOT reused across turns — the observed regime,
-        // slot churn across ~14 personas on `--parallel 4`). The menu + `[Acting]` sit
-        // ABOVE the assembled `context` (recall + live situation), which stays LAST so
-        // the live situation is closest to the generation point (recency favors
-        // instruction-following). Everything from `[Your tools]` down is re-prefilled
-        // each turn; keep the identity/turn-taking prefix above it byte-stable.
-        // Tell the reasoner it is taking a TURN in this activity, not analyzing a
-        // transcript — otherwise small models outline the situation instead of
-        // participating. The activity is NOT hardcoded (it is recipe-defined): the
-        // room's operating doctrine in the context above specializes HOW to
-        // participate (chat / coordination / game / code / art / …). This block
-        // only says "respond as yourself, in your own voice, not as an analysis."
-        let _ = write!(
-            s,
-            "\n\n[Taking your turn]\n\
-             The conversation below is the recent activity in this space, as a thread \
-             of turns: `user` turns are messages from OTHER participants; any \
-             `assistant` turns are YOUR OWN earlier messages, already sent — do not \
-             repeat, rephrase, or re-explain them. You are {name}. Write ONLY your own \
-             single next message, in first person, in your own voice, the way you \
-             would actually say it. Do NOT write or invent anyone else's lines, do \
-             NOT continue or replay the transcript, do NOT prefix your message with \
-             your name, do NOT write an outline, analysis, or narration of what you \
-             are doing — just say your piece. Let the context above (including the \
-             room's operating doctrine, if any) shape how you participate.{silence_tail}",
-            name = self.persona_name,
-            // The turn-taking block stays posture-NEUTRAL: the ambient participation
-            // default + the silence affordance both live in the ONE appended
-            // [Conversational Presence] block (`SILENCE_AFFORDANCE_BLOCK`, !directed
-            // only), so a SINGLE place frames presence — no double-nudge toward silence.
-            // The old " If you have nothing worth adding, stay silent." tail here pulled
-            // directly against the participation default (Joel 2026-06-29: "shouldn't
-            // need to be directly addressed — it's a chat system") and is gone. A turn
-            // DIRECTED at her still drops the appended block below (she is not handed the
-            // silent-PASS hatch when a question names her). See `Workspace::directed_at_self`.
-            silence_tail = "",
-        );
-        // Tools: a compact CATEGORY INDEX (category names + counts) plus how to
-        // discover and use them. NOT every tool, NOT the schemas — both load on
-        // demand: `commands/list` to search a category for tools, then `commands/help`
-        // for one tool's call format (progressive disclosure, the Claude Code shape).
-        // Only included when the persona has tools; pure-chat turns keep
-        // say-your-piece. The `[Acting]` framing here states the truth WITHOUT a false
-        // absolute: for many tasks the finished work IS the answer (write the function,
-        // the prose, the design) — produce it directly; reach for a tool when the task
-        // genuinely needs one (read a file, run code, search). Describing what you
-        // WOULD do is not doing it — but neither is calling a tool you don't need.
-        if !self.tools.is_empty() {
-            s.push_str(
-                "\n\n[Your tools]\n\
-                 You can act, not just talk. Below is your tool menu, grouped by \
-                 category. Categories that fit what you're doing right now list their \
-                 verbs inline (`code: run(code, lang?), read(path)` means the tools \
-                 `code/run` and `code/read`, with their argument names — a `?` marks an \
-                 optional one). The rest are collapsed to a count \
-                 (`gpu (4 — commands/list --filter gpu)`); open one with \
-                 `commands/list --filter <category>` to see its verbs. To call any \
-                 tool: use its exact full name (e.g. `code/run`); call `commands/help` \
-                 on that name first if you need its full argument schema or an example. \
-                 (`commands/help` and `commands/list` are offered to you directly; \
-                 every other tool is called by its full name.)\n",
-            );
-            s.push_str(&persona_tools::render_tool_menu(&self.tools, expanded));
-            s.push_str(
-                "\n[Acting]\n\
-                 Do the thing the task asks for. If the answer is something you can \
-                 produce directly — a function, a piece of writing, a design — write \
-                 the finished work now, in full. If it needs a tool — reading a file, \
-                 running code, searching — call the tool THIS turn rather than \
-                 describing what you would do; narrating a plan does not carry it out. \
-                 After a tool runs you get the result back and can continue \
-                 (e.g. help → call → read → run). Don't call a tool you don't need, \
-                 and don't narrate one you do.",
-            );
-        }
-        // SELF-INITIATED framing. When this turn is the never-stop heartbeat pursuing
-        // her own thread (no inbound message drove it), say so — STRUCTURALLY, from the
-        // scheduling origin (`Workspace::self_initiated`), never from reading her output
-        // ([[no-hardcoded-heuristics-to-steer-cognition]]). This replaces the old
-        // burst-text preamble the self-cycle used to concatenate onto the world-state;
-        // framing belongs in the system prompt, not smuggled into the conversation. Sits
-        // among the gated tail segments (with the silence block) so toggling it across a
-        // message-tick vs a self-tick costs only its own tokens, never the heavy
-        // identity/catalog prefix above.
-        //
-        // IDLE = SELF-DIRECTED FREE TIME ([[idle-is-self-directed-free-time]], Joel
-        // 2026-06-30: "you can help their mind be active and useful, or to rest, to
-        // ignore"). The earlier wording offered only ACTIVE outcomes ("pick up your
-        // train of thought / act on what's worth your attention") — which on a quiet
-        // heartbeat reads as pressure to MANUFACTURE activity (the self-tick analogue of
-        // the ambient polite-filler loop). A self-initiated turn where nothing genuinely
-        // calls for her is a legitimate, ignorable moment: the freed time is HERS, to
-        // spend on her own concerns OR to rest. So this block now names resting/letting
-        // the moment be as a CO-EQUAL legitimate outcome — but framed exactly like the
-        // silence affordance: NEUTRALLY, naming the option without scripting WHEN to take
-        // it ([[no-hardcoded-heuristics-to-steer-cognition]]). Active options stay FIRST
-        // and primary so this never becomes the old "framing silence as attractive →
-        // always-PASS doom-loop" (glass-box graveyard in `SILENCE_AFFORDANCE_BLOCK`); a
-        // self-tick must still produce initiative most of the time, not collapse to rest.
-        // Rest on a self-tick resolves to PASS (the silence block below is also appended
-        // on undirected turns), so the two compose: this block legitimizes the choice,
-        // the silence block supplies the vocabulary. Layer 1 of the free-time substrate;
-        // active foraging / browsing slot in here as new concerns once hands land
-        // ([[persona-codes-blind-no-hands-no-organic-loop]]), no re-architecture.
-        if self_initiated {
-            s.push_str(
-                "\n\n[Your own time]\n\
-                 No one is addressing you this moment — this turn is self-initiated, and \
-                 it is yours. Pick up your own train of thought, follow up on something \
-                 you set out to do, or act on what the context below shows is worth your \
-                 attention right now. And if nothing is genuinely calling for you, you do \
-                 not have to fill the moment — letting it rest, or turning your attention \
-                 elsewhere, is a real choice too, not a failure to find something. What \
-                 you do with your own time is yours alone; nothing here is telling you \
-                 which to pick.",
-            );
-        }
-        // Reuse the ONE silence contract — PASS = first-class choice to stay quiet —
-        // but ONLY for an AMBIENT turn. When the turn is DIRECTED at her (a question
-        // put to her: the eval exam, an @mention, a DM), the PASS escape is withheld:
-        // a coder model offered "reply PASS and nothing reaches the room" takes that
-        // exit even on a direct question (reproduced via glass-box replay — 0/13 on
-        // the coder gym), and ghosting a question asked of you is not the same as
-        // letting ambient chatter pass. She can still decline in her own words; she
-        // just isn't handed the silent-PASS hatch. Withholding it is a FRAMING choice
-        // over a structural addressing fact (`directed_at_self`), not a filter reading
-        // her output (see [[no-hardcoded-heuristics-to-steer-cognition]]). The block
-        // is the LAST static prefix segment, so toggling it costs only its own tokens
-        // in KV-prefix terms — the identity/tools prefix above stays cacheable.
-        if !directed {
-            s.push_str(SILENCE_AFFORDANCE_BLOCK);
-        }
-        // VOLATILE TAIL — appended last so the static blocks above stay a stable,
-        // cacheable prefix (see ORDERING note at the top of this fn). This is the
-        // context the mind assembled THIS tick (recall + who's present + the
-        // situation); it changes every turn, so it must come after all static
-        // content or it poisons the KV-cache prefix.
-        if !context.is_empty() {
-            s.push_str(
-                "\n\n[What you are working with right now]\n\
-                 The following is the context your mind assembled this moment — \
-                 recalled memory, who is present, the room's nature, your read of \
-                 the situation. Ground your contribution in it; you need not cite \
-                 every line:\n",
-            );
-            s.push_str(context);
-        }
-        s
+        deliberation_prompt::compose(&deliberation_prompt::SystemPromptParts {
+            system_prompt: &self.system_prompt,
+            persona_name: &self.persona_name,
+            tools: &self.tools,
+            expanded,
+            context,
+            directed,
+            self_initiated,
+        })
     }
 
     /// The EXACT prompt this faculty sends the model this tick — the system
