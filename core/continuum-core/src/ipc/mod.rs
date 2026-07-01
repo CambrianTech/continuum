@@ -1263,6 +1263,18 @@ pub fn start_server(
             gpu_manager.clone(),
         ),
     ));
+    // The Bevy avatar renderer joins as the third peer consumer (#56): fat and
+    // reclaimable (~3GB) when idle, but its output texture IS the LiveKit video
+    // feed during a call — so under pressure while a call is live it REFUSES
+    // (tearing it down would freeze the avatar mid-call) and sheds the renderer
+    // only when nothing is rendering. Shares the same live-session lifecycle as
+    // voice, so both sides of a call are protected together.
+    resource_daemon.add_consumer(Arc::new(
+        crate::modules::bevy_consumer::BevyConsumer::new(
+            voice_state.resource_lifecycle.clone(),
+            gpu_manager.clone(),
+        ),
+    ));
     runtime.register(Arc::new(VoiceModule::new(voice_state)));
 
     // Phase 3: CodeModule (wraps file engines and shell sessions per-persona)
