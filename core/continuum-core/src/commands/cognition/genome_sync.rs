@@ -14,7 +14,6 @@ use uuid::Uuid;
 
 use crate::modules::cognition::CognitionState;
 use crate::persona::genome_paging::GenomeAdapterInfo;
-use crate::sdk_codegen::CommandError;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, ts_rs::TS, schemars::JsonSchema)]
 #[ts(export, export_to = "../../../protocol/typescript/cognition/GenomeSyncParams.ts")]

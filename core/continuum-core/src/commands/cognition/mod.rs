@@ -41,9 +41,11 @@ pub mod mark_evaluated;
 pub mod recall_engrams;
 pub mod record_content;
 pub mod register_domain_keywords;
+pub mod select_model;
 pub mod semantic_search_tools;
 pub mod set_sleep_mode;
 pub mod should_respond;
+pub mod sync_adapters;
 pub mod sync_domain_classifier;
 pub mod track_response;
 pub mod validate_response_decision;
@@ -69,7 +71,9 @@ use mark_evaluated::MarkEvaluated;
 use recall_engrams::RecallEngrams;
 use record_content::RecordContent;
 use register_domain_keywords::RegisterDomainKeywords;
+use select_model::SelectModel;
 use set_sleep_mode::SetSleepMode;
+use sync_adapters::SyncAdapters;
 use sync_domain_classifier::SyncDomainClassifier;
 use track_response::TrackResponse;
 
@@ -127,6 +131,12 @@ pub fn command_objects(state: Arc<CognitionState>) -> Vec<Arc<dyn DynCommand>> {
             state: state.clone(),
         }),
         Arc::new(RegisterDomainKeywords {
+            state: state.clone(),
+        }),
+        Arc::new(SelectModel {
+            state: state.clone(),
+        }),
+        Arc::new(SyncAdapters {
             state: state.clone(),
         }),
         Arc::new(SetSleepMode {

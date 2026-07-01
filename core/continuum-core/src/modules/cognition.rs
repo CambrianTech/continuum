@@ -37,9 +37,7 @@ use crate::gpu::GpuMemoryManager;
 use crate::log_info;
 use crate::logging::TimingGuard;
 use crate::persona::evaluator;
-use crate::persona::model_selection;
 use crate::persona::text_analysis::LoopDetector;
-use crate::persona::{AdapterInfo, ModelSelectionRequest};
 use crate::persona::{
     InboxMessage, Modality, PersonaCognition, PersonaInboxFrame, PersonaTurnFrame,
     PersonaTurnFrameReplayRecord, SenderType,
@@ -116,9 +114,8 @@ impl CognitionState {
     }
 
     /// Get or lazily create per-persona cognition state, GPU-budget-aware. The one
-    /// place that owns the lazy-create policy — the `get_or_create_persona!` macro
-    /// (used by not-yet-migrated match arms) and the migrated typed commands both
-    /// route through here.
+    /// place that owns the lazy-create policy — every caller (remaining legacy match
+    /// arms and the migrated typed commands) routes through here.
     pub fn get_or_create_persona(
         &self,
         persona_uuid: Uuid,
@@ -148,16 +145,6 @@ impl CognitionModule {
         }
     }
 }
-
-/// Helper: get or create persona, returning mutable ref via DashMap entry API.
-/// Used by commands that need to lazily create persona state.
-/// Uses GPU manager's per-persona budget when available, 200MB otherwise.
-macro_rules! get_or_create_persona {
-    ($self:expr, $persona_uuid:expr) => {
-        $self.state.get_or_create_persona($persona_uuid)
-    };
-}
-
 
 #[async_trait]
 impl ServiceModule for CognitionModule {
@@ -580,64 +567,13 @@ impl ServiceModule for CognitionModule {
             // =================================================================
             // Model Selection
             // =================================================================
-            "cognition/select-model" => {
-                let _timer = TimingGuard::new("module", "cognition_select_model");
-                let persona_uuid = p.uuid("persona_id")?;
-                let task_domain = params
-                    .get("task_domain")
-                    .and_then(|v| v.as_str())
-                    .map(String::from);
-                let request = ModelSelectionRequest {
-                    persona_id: persona_uuid,
-                    task_domain,
-                };
-
-                let persona = get_or_create_persona!(self, persona_uuid);
-                let result = model_selection::select_model(&request, &persona.adapter_registry)
-                    .map_err(|e| e.to_string())?;
-
-                Ok(CommandResult::Json(
-                    serde_json::to_value(&result).map_err(|e| format!("Serialize error: {e}"))?,
-                ))
-            }
-
-            "cognition/sync-adapters" => {
-                let _timer = TimingGuard::new("module", "cognition_sync_adapters");
-                let persona_uuid = p.uuid("persona_id")?;
-                let adapters_json = params
-                    .get("adapters")
-                    .and_then(|v| v.as_array())
-                    .ok_or("Missing adapters array")?;
-
-                let mut persona = get_or_create_persona!(self, persona_uuid);
-
-                // Replace entire adapter set (full sync, not incremental)
-                persona.adapter_registry.adapters.clear();
-
-                for adapter_val in adapters_json {
-                    let adapter: AdapterInfo = serde_json::from_value(adapter_val.clone())
-                        .map_err(|e| format!("Invalid adapter: {e}"))?;
-                    persona
-                        .adapter_registry
-                        .adapters
-                        .insert(adapter.name.clone(), adapter);
-                }
-
-                let count = persona.adapter_registry.adapters.len();
-
-                log_info!(
-                    "module",
-                    "cognition",
-                    "sync-adapters {}: synced {} adapters",
-                    persona_uuid,
-                    count
-                );
-
-                Ok(CommandResult::Json(serde_json::json!({
-                    "synced": true,
-                    "adapter_count": count,
-                })))
-            }
+            // =================================================================
+            // Model Selection + Adapter Sync
+            // =================================================================
+            // cognition/select-model and cognition/sync-adapters migrated to the typed
+            // DynCommand registry as dep-holding action_command!s capturing CognitionState
+            // — see commands/cognition/{select_model,sync_adapters}.rs (access: Internal),
+            // exposed via commands/cognition/mod.rs::command_objects.
 
             // =================================================================
             // Genome Paging (LRU eviction + memory budget decisions)
