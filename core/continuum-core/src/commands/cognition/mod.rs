@@ -21,6 +21,7 @@ pub mod cache_message;
 pub mod check_content_dedup;
 pub mod check_redundancy;
 pub mod classify_domain;
+pub mod configure_rate_limiter;
 pub mod genome_activate_skill;
 pub mod genome_coverage_report;
 pub mod genome_evict_under_pressure;
@@ -31,6 +32,7 @@ pub mod has_evaluated;
 pub mod mark_evaluated;
 pub mod record_content;
 pub mod register_domain_keywords;
+pub mod set_sleep_mode;
 pub mod should_respond;
 pub mod sync_domain_classifier;
 pub mod track_response;
@@ -38,6 +40,7 @@ pub mod track_response;
 use cache_message::CacheMessage;
 use check_content_dedup::CheckContentDedup;
 use classify_domain::ClassifyDomain;
+use configure_rate_limiter::ConfigureRateLimiter;
 use genome_activate_skill::GenomeActivateSkill;
 use genome_coverage_report::GenomeCoverageReport;
 use genome_evict_under_pressure::GenomeEvictUnderPressure;
@@ -48,6 +51,7 @@ use has_evaluated::HasEvaluated;
 use mark_evaluated::MarkEvaluated;
 use record_content::RecordContent;
 use register_domain_keywords::RegisterDomainKeywords;
+use set_sleep_mode::SetSleepMode;
 use sync_domain_classifier::SyncDomainClassifier;
 use track_response::TrackResponse;
 
@@ -102,6 +106,12 @@ pub fn command_objects(state: Arc<CognitionState>) -> Vec<Arc<dyn DynCommand>> {
         Arc::new(SyncDomainClassifier {
             state: state.clone(),
         }),
-        Arc::new(RegisterDomainKeywords { state }),
+        Arc::new(RegisterDomainKeywords {
+            state: state.clone(),
+        }),
+        Arc::new(SetSleepMode {
+            state: state.clone(),
+        }),
+        Arc::new(ConfigureRateLimiter { state }),
     ]
 }

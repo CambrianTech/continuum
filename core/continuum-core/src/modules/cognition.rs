@@ -39,13 +39,12 @@ use crate::logging::TimingGuard;
 use crate::persona::evaluator;
 use crate::persona::model_selection;
 use crate::persona::text_analysis::LoopDetector;
-use crate::persona::GenomeAdapterInfo;
 use crate::persona::{AdapterInfo, ModelSelectionRequest};
 use crate::persona::{
     InboxMessage, Modality, PersonaCognition, PersonaInboxFrame, PersonaTurnFrame,
     PersonaTurnFrameReplayRecord, SenderType,
 };
-use crate::persona::{RecentResponse, SleepMode};
+use crate::persona::RecentResponse;
 use crate::rag::RagEngine;
 use crate::runtime;
 use crate::runtime::{
@@ -55,7 +54,7 @@ use crate::runtime::{
 use crate::utils::params::Params;
 use async_trait::async_trait;
 use dashmap::DashMap;
-use serde_json::{json, Value};
+use serde_json::Value;
 use std::any::Any;
 use std::sync::Arc;
 use uuid::Uuid;
@@ -812,82 +811,10 @@ impl ServiceModule for CognitionModule {
             // commands/cognition/track_response.rs (dep-holding on CognitionState,
             // access: Internal).
 
-            "cognition/set-sleep-mode" => {
-                let _timer = TimingGuard::new("module", "cognition_set_sleep_mode");
-                let persona_uuid = p.uuid("persona_id")?;
-                let mode_str = p.str("mode")?;
-                let reason = p.str_or("reason", "").to_string();
-                let duration_minutes = p.f64_opt("duration_minutes");
-
-                let mode = match mode_str {
-                    "active" => SleepMode::Active,
-                    "mentioned_only" => SleepMode::MentionedOnly,
-                    "human_only" => SleepMode::HumanOnly,
-                    "sleeping" => SleepMode::Sleeping,
-                    "until_topic" => SleepMode::UntilTopic,
-                    _ => return Err(format!("Invalid sleep mode: {mode_str}")),
-                };
-
-                let now_ms = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_millis() as u64;
-
-                let wake_at_ms = duration_minutes.map(|d| now_ms + (d * 60_000.0) as u64);
-
-                let mut persona = get_or_create_persona!(self, persona_uuid);
-                let previous = format!("{:?}", persona.sleep_state.mode);
-
-                persona.sleep_state = crate::persona::evaluator::SleepState {
-                    mode,
-                    reason: reason.clone(),
-                    set_at_ms: now_ms,
-                    wake_at_ms,
-                };
-
-                log_info!(
-                    "module",
-                    "cognition",
-                    "set-sleep-mode {}: {} → {:?} (reason: {})",
-                    persona_uuid,
-                    previous,
-                    mode,
-                    reason
-                );
-
-                Ok(CommandResult::Json(serde_json::json!({
-                    "set": true,
-                    "previous_mode": previous,
-                    "new_mode": mode_str,
-                    "wake_at_ms": wake_at_ms,
-                })))
-            }
-
-            "cognition/configure-rate-limiter" => {
-                let _timer = TimingGuard::new("module", "cognition_configure_rate_limiter");
-                let persona_uuid = p.uuid("persona_id")?;
-                let min_seconds = p.f64_or("min_seconds_between_responses", 10.0);
-                let max_responses = p.u64_or("max_responses_per_session", 50) as u32;
-
-                let mut persona = get_or_create_persona!(self, persona_uuid);
-                persona.rate_limiter.min_seconds_between_responses = min_seconds;
-                persona.rate_limiter.max_responses_per_session = max_responses;
-
-                log_info!(
-                    "module",
-                    "cognition",
-                    "configure-rate-limiter {}: min_seconds={}, max_responses={}",
-                    persona_uuid,
-                    min_seconds,
-                    max_responses
-                );
-
-                Ok(CommandResult::Json(serde_json::json!({
-                    "configured": true,
-                    "min_seconds_between_responses": min_seconds,
-                    "max_responses_per_session": max_responses,
-                })))
-            }
+            // cognition/set-sleep-mode + cognition/configure-rate-limiter migrated to the
+            // typed DynCommand registry (Slice 6) — see
+            // commands/cognition/{set_sleep_mode,configure_rate_limiter}.rs (dep-holding on
+            // CognitionState, access: Internal).
 
             // =================================================================
             // Model Selection

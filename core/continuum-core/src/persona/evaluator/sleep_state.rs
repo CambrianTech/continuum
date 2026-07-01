@@ -11,7 +11,9 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 /// Voluntary sleep modes — persona controls own attention.
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[derive(
+    Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq, TS, schemars::JsonSchema,
+)]
 #[serde(rename_all = "snake_case")]
 #[ts(export, export_to = "../../../protocol/typescript/persona/SleepMode.ts")]
 pub enum SleepMode {
