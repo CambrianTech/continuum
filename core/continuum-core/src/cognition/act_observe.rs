@@ -75,6 +75,53 @@ pub struct SettleOutcome {
     pub inference_error: Option<String>,
 }
 
+/// The tail of the working-memory buffer SINCE the persona last settled (produced an
+/// utterance). Everything before the most recent [`WM_SETTLEMENT_PREFIX`] boundary
+/// belongs to a concern she already ANSWERED — an identical tool call over there is
+/// not a spin, so re-issuing it for the current concern is legitimate. This is the
+/// scope that separates "how many commands?" → answer → "list them again" (both emit
+/// `commands/list({})`, legitimately) from re-issuing the SAME call within one
+/// unanswered settling (the spin). Mirrors the `responded_through` boundary the
+/// `ActThenSpeak` test faculty tracks — content-driven, not a turn counter.
+fn entries_since_last_settlement(recent: &[String]) -> &[String] {
+    match recent
+        .iter()
+        .rposition(|e| e.starts_with(crate::cognition::working_memory::WM_SETTLEMENT_PREFIX))
+    {
+        Some(i) => &recent[i + 1..],
+        None => recent,
+    }
+}
+
+/// True when EVERY call in this batch has ALREADY been carried out SINCE THE LAST
+/// SETTLEMENT — the identical `(name, args)` already appears as a satisfied `I ran …`
+/// trace in the not-yet-answered tail of the working-memory recency channel. Keyed on
+/// the SAME `name(args)` rendering [`apply_act`] records below (`I ran {name}({args})`),
+/// so detection and recording can never drift; scoped to the current concern by
+/// [`entries_since_last_settlement`] so an identical call the mind already answered in
+/// a PRIOR concern (still lingering in the volatile buffer) does not false-trigger.
+///
+/// This is content-driven proprioception, NOT an iteration counter: it fires only on a
+/// byte-identical re-request whose result the mind already holds THIS concern —
+/// precisely the signal the `[action #n]` stamp shift was MEANT to convey but
+/// empirically does not. A greedy instruct model re-emits the identical `Act` despite
+/// the shifted window (proven live 2026-07-02 via `cognition/prompt`, nil-room eval:
+/// working memory carried `commands/list` + its full result and she re-issued
+/// `commands/list` on every act, never converting the result to an answer). A MIXED
+/// batch — any genuinely new call — is NOT a repeat: the new call yields new
+/// perception and must run.
+fn all_calls_already_satisfied(recent: &[String], calls: &[ToolCall]) -> bool {
+    if calls.is_empty() {
+        return false;
+    }
+    let scope = entries_since_last_settlement(recent);
+    calls.iter().all(|call| {
+        let args = serde_json::to_string(&call.input).unwrap_or_else(|_| "{}".to_string());
+        let signature = format!("I ran {}({})", call.name, args);
+        scope.iter().any(|trace| trace.contains(&signature))
+    })
+}
+
 /// Execute ONE `Act` verdict: run its calls through the persona's hands, admit
 /// the outcome as an Episodic engram (the result becomes memory), and return the
 /// observation text so the caller can fold it into the next perception.
@@ -95,6 +142,44 @@ pub async fn apply_act(
     room_id: Uuid,
 ) -> Option<String> {
     let body = cycle.acting()?; // no hands → cannot act (and tools were never offered)
+
+    // Repeat-perception (proprioception, content-driven — NOT an agentic counter).
+    // If this exact batch was ALREADY carried out this settle, its result is already
+    // in working memory. Re-running it burns a tool round-trip + a redundant (content-
+    // deduped, so no-op) engram and returns byte-identical perception — off which a
+    // greedy instruct model re-emits the identical `Act` forever. The `[action #n]`
+    // stamp shift was supposed to break this and does not (see
+    // `all_calls_already_satisfied`). So do NOT re-execute: record an EXPLICIT
+    // "already satisfied — answer now" trace so the redundancy is PERCEIVED rather
+    // than merely present, and let the caller re-perceive. This decides nothing about
+    // WHAT she answers; it only stops her being blind to the fact she already acted —
+    // symmetric to the recency channel itself and the loop-filler dedup (context
+    // hygiene, not cognition steering; [[no-hardcoded-heuristics-to-steer-cognition]]).
+    let recent = body.working_memory.recent();
+    if all_calls_already_satisfied(&recent, calls) {
+        let names = calls
+            .iter()
+            .map(|c| {
+                let args = serde_json::to_string(&c.input).unwrap_or_else(|_| "{}".to_string());
+                format!("{}({})", c.name, args)
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        let nudge = format!(
+            "I already ran {names} this turn — the result is in my working memory above. \
+             Running it again returns nothing new. I have what I need; I should ANSWER the \
+             question now from that result instead of acting again."
+        );
+        body.working_memory.record_action(&nudge);
+        crate::probe!(
+            class = "persona.act.repeat_short_circuited",
+            persona = %body.persona_name,
+            room_id = %room_id,
+            calls = calls.len(),
+            "identical act already satisfied this turn — recorded answer-now proprioception, skipped re-execution"
+        );
+        return Some(nudge);
+    }
 
     let ctx = crate::cognition::tool_executor::ToolExecutionContext {
         persona_id: body.persona_id,
@@ -426,6 +511,16 @@ pub async fn settle_step(
             }
         }
         Some(Decision::Speak { text }) | Some(Decision::RaiseUnprompted { text }) => {
+            // Mark the settlement in the volatile buffer: she produced an utterance, so
+            // the current concern is answered. This boundary is what lets the next
+            // concern legitimately re-issue a tool call identical to one used here
+            // without the repeat-perception guard mistaking it for a spin (and it reads
+            // as honest proprioception — "I already answered this" — next tick). Only
+            // when she has hands; a handless persona never spins on a tool.
+            if let Some(body) = cycle.acting() {
+                let head: String = text.chars().take(WM_ACTION_HEAD_CHARS).collect();
+                body.working_memory.record_settlement(&head);
+            }
             SettleStep::Spoke(text)
         }
         Some(Decision::Pass) | None => SettleStep::Passed,
@@ -1019,6 +1114,56 @@ mod tests {
             adm.engram_count(),
             2,
             "each discovery became a durable memory the mind perceived next tick"
+        );
+    }
+
+    // what this catches: the repeat-perception short-circuit. An IDENTICAL, already-
+    // satisfied call this turn must NOT re-execute — the greedy re-emission that spun
+    // `commands/list` forever in the nil-room eval (proven live 2026-07-02): working
+    // memory already carried the result, yet the model re-issued the byte-identical
+    // call every act and never answered. `apply_act` now detects the satisfied
+    // `(name, args)` in working memory, skips the hand, and records an explicit
+    // "already ran it; answer now" proprioception so the redundancy is PERCEIVED rather
+    // than merely present via a stamp shift the greedy decode ignores. A MIXED batch (a
+    // genuinely new call) still runs — proven by
+    // `the_hands_change_the_mind_across_a_multi_act_investigation` (two DISTINCT calls
+    // both execute). Content-driven, not an iteration counter
+    // ([[persona-tool-loop-act-then-report]], [[no-hardcoded-heuristics-to-steer-cognition]]).
+    #[tokio::test]
+    async fn identical_already_satisfied_act_does_not_re_execute() {
+        // Two queued results: only the FIRST may ever be popped. If the identical
+        // second act reached the hand, the queue would drain by one more — the length
+        // assertion below catches exactly that.
+        let exec = Arc::new(ScriptedExecutor::new(["4\n", "SECOND-MUST-NOT-POP"]));
+        let adm = admission();
+        let wm = Arc::new(WorkingMemory::new(4));
+        let cycle = WorkspaceCycle::new(Vec::new(), Arc::new(SalienceArbiter), 8)
+            .with_acting(body_with_wm(exec.clone(), adm.clone(), Arc::clone(&wm)));
+        let room = Uuid::new_v4();
+
+        // First act genuinely runs; its result lands in working memory.
+        let first = apply_act(&cycle, &[tool_call()], "check the math", room)
+            .await
+            .expect("first act runs");
+        assert!(first.contains("code/run"), "first act names the tool it ran");
+        assert_eq!(
+            exec.results.lock().unwrap().len(),
+            1,
+            "first act popped exactly one result off the hand"
+        );
+
+        // Second, byte-identical act: already satisfied → short-circuit, no re-run.
+        let second = apply_act(&cycle, &[tool_call()], "check the math", room)
+            .await
+            .expect("short-circuit still returns Some — it counts as an act, honestly");
+        assert!(
+            second.contains("already ran"),
+            "records explicit answer-now proprioception instead of another result: {second}"
+        );
+        assert_eq!(
+            exec.results.lock().unwrap().len(),
+            1,
+            "the identical call NEVER reached the hand a second time (queue undrained)"
         );
     }
 
