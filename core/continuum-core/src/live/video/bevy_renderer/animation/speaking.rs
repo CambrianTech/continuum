@@ -5,21 +5,26 @@ use bevy::prelude::*;
 
 use super::super::scene::animation::{AnimationConfig, PORTRAIT_PROFILE};
 use super::components::*;
+use super::ExternalPose;
 use crate::clog_info;
 
 /// Animate mouth + head nod on speaking entities.
+/// Skips entities owned by an external animator (`Without<ExternalPose>`).
 pub(in crate::live::video::bevy_renderer) fn animate_speaking(
     time: Res<Time>,
-    query: Query<(
-        Entity,
-        &MorphTargets,
-        &MorphMeshLink,
-        &Skeleton,
-        Option<&SpeechClip>,
-        Option<&MouthWeight>,
-        Option<&AnimationConfig>,
-        Has<Speaking>,
-    )>,
+    query: Query<
+        (
+            Entity,
+            &MorphTargets,
+            &MorphMeshLink,
+            &Skeleton,
+            Option<&SpeechClip>,
+            Option<&MouthWeight>,
+            Option<&AnimationConfig>,
+            Has<Speaking>,
+        ),
+        Without<ExternalPose>,
+    >,
     mut morph_weights: Query<&mut MorphWeights>,
     mut transforms: Query<&mut Transform>,
     mut commands: Commands,

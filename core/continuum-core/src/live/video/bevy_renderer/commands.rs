@@ -9,8 +9,8 @@ use bevy::camera::RenderTarget;
 use bevy::prelude::*;
 
 use super::animation::{
-    CognitiveGesture, Emotion, EmotionAnimation, GestureAnimation, GesturePhase, MouthWeight,
-    Speaking, SpeechClip, EMOTION_DECAY_SECS,
+    select_animator_for_identity, AnimatorRegistry, CognitiveGesture, Emotion, EmotionAnimation,
+    GestureAnimation, GesturePhase, MouthWeight, Speaking, SpeechClip, EMOTION_DECAY_SECS,
 };
 use super::scene::physics::PhysicsBackendRegistry;
 use super::scene::{birth_scene_for_identity, build_scene_from_description, InstantiateParams};
@@ -33,6 +33,7 @@ pub(super) fn process_commands(
     mut slot_dims: ResMut<SlotDimensions>,
     mut hd_pool: ResMut<HdRenderTargetPool>,
     mut gpu_guards: ResMut<GpuGuards>,
+    mut animator_registry: ResMut<AnimatorRegistry>,
     physics_registry: Res<PhysicsBackendRegistry>,
 ) {
     while let Ok(cmd) = command_channel.0.try_recv() {
@@ -52,6 +53,13 @@ pub(super) fn process_commands(
                     slot_data.teardown(&mut commands);
                     gpu_guards.model_guards.remove(&slot);
 
+                    // Every avatar is born procedural: select its animator
+                    // deterministically from identity (base host = procedural only)
+                    // so the slot runs through the Animator seam from tick one. A
+                    // VLA is opt-in later via AttachVlaAnimator (Slice 3), never a
+                    // Load outcome — the base engine never depends on a transport.
+                    animator_registry.insert(slot, select_animator_for_identity(&identity));
+
                     // Data-driven load: birth the scene as a backend-neutral
                     // SceneDescription, then walk it into the live Bevy graph
                     // through the single instantiate seam. The birther owns the
@@ -66,7 +74,8 @@ pub(super) fn process_commands(
                         pending: &mut pending,
                         physics: physics_registry.backend(),
                     };
-                    match build_scene_from_description(&mut commands, &asset_server, &desc, params) {
+                    match build_scene_from_description(&mut commands, &asset_server, &desc, params)
+                    {
                         Ok(instance) => {
                             slot_data.scene_root = Some(instance.scene_root);
                             slot_data.camera_entity = instance.camera_entity;
@@ -110,6 +119,7 @@ pub(super) fn process_commands(
                     }
                     slot_data.teardown(&mut commands);
                     gpu_guards.model_guards.remove(&slot);
+                    animator_registry.remove(slot);
                     clog_info!("🎨 Slot {}: unloaded", slot);
                 }
             }
