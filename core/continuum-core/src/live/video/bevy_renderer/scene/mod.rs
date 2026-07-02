@@ -15,7 +15,9 @@
 //! ## Module Structure
 //!
 //! - `animation` — AnimationConfig component + profiles (portrait, full-body, minimal)
-//! - `object` — SceneObject enum + variant structs
+//! - `description` — SceneDescription: the backend-neutral, representation-neutral scene-graph data
+//! - `object` — SceneObject trait + concrete impls (avatar, prop)
+//! - `physics` — PhysicsBackend adapter seam (data now, no simulation in the base engine)
 //! - `avatar` — AvatarState, animation state types, morph targets, bones
 //! - `lighting` — LightRig configurations and spawn functions
 //! - `builder` — SceneConfig, build_scene(), marker components
@@ -23,15 +25,19 @@
 pub mod animation;
 pub(crate) mod avatar;
 mod builder;
+pub mod description;
 mod lighting;
 mod object;
+pub mod physics;
 pub mod room;
 mod slot;
 
 pub use animation::AnimationConfig;
 pub use avatar::*;
 pub use builder::*;
+pub use description::*;
 pub use lighting::*;
 pub use object::*;
+pub use physics::*;
 pub use room::{scene_model_path, select_scene_for_identity, RoomConfig};
 pub use slot::*;

@@ -2884,6 +2884,7 @@ dependencies = [
  "rayon",
  "regex",
  "reqwest",
+ "ron",
  "rubato 0.15.0",
  "rusqlite",
  "safetensors 0.7.0",
