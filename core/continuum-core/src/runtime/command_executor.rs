@@ -191,6 +191,19 @@ impl CommandExecutor {
         self.bus.is_some()
     }
 
+    /// The wired message bus, if any. The Events primitive the executor
+    /// composes with Commands at dispatch. Ingress-adjacent subscribers
+    /// that need the live event stream (e.g. the positron chat
+    /// projection in `ipc::positron_source`, which subscribes to
+    /// `chat:*`/`presence:*` and stores the projected view into the
+    /// thin-client `Substrate`) take a clone through this accessor
+    /// rather than reaching into the kernel's internals. `None` when no
+    /// bus is wired (headless test executors) — callers fail loud on
+    /// their own precondition rather than this defaulting a bus.
+    pub fn message_bus(&self) -> Option<Arc<MessageBus>> {
+        self.bus.clone()
+    }
+
     /// Execute ANY command — walks the dispatch chain documented on the
     /// struct: interceptors → local Rust module → TypeScript bridge.
     ///

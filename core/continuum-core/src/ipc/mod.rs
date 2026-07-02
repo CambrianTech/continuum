@@ -108,6 +108,7 @@ impl IpcStream for TcpStream {
 
 pub mod diagnostics;
 pub mod positron_dispatch;
+pub mod positron_source;
 pub mod protocol;
 pub mod ws;
 
@@ -2305,13 +2306,29 @@ pub fn start_server(
                 let ws_executor = Arc::clone(&executor);
                 // The positron state substrate for the thin-client fleet:
                 // one shared snapshot+broadcast cell that WS sessions
-                // subscribe against. The airc source wiring (task #29,
-                // next step) will hold this same handle and call
-                // `Substrate::store` on each airc roster/message/wall/
-                // scoped-state change, so the projection tracks the
-                // airc-owned truth. Constructed here (not in `serve`) so
-                // that future subscriber can share the instance.
+                // subscribe against. The airc source wiring (task #29)
+                // holds this same handle and calls `Substrate::store` on
+                // each airc chat/roster change, so the projection tracks
+                // the airc-owned truth (see `ipc::positron_source`).
+                // Constructed here (not in `serve`) so the projection
+                // subscriber shares the instance the server serves.
                 let ws_substrate = continuum_positron::Substrate::new();
+
+                // airc source wiring: subscribe the chat projection to
+                // the live event bus with a clone of the served
+                // substrate. It folds `chat:posted` + `presence:updated`
+                // into the `chat` `ChatViewState` and stores each
+                // transition, which streams down to subscribed WS
+                // sessions as a `State` frame. Requires a wired bus —
+                // fail loud (not a silent skip) if the executor has none,
+                // because a WS server with no state source is a boot bug,
+                // not a runtime condition ([[fallbacks-are-illegal-fail-loud]]).
+                let projection_bus = ws_executor.message_bus().expect(
+                    "CONTINUUM_CORE_WS is set but the command executor has no message bus — \
+                     the positron chat projection has no airc source to subscribe to",
+                );
+                positron_source::spawn(&state.rt_handle, projection_bus, ws_substrate.clone());
+
                 state.rt_handle.spawn(async move {
                     ws::serve(bind_addr, ws_executor, ws_substrate).await;
                 });
