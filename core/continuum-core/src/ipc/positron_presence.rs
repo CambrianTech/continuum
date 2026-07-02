@@ -151,34 +151,135 @@ pub fn spawn_presence_emitter(
     room_name: String,
     bus: Arc<MessageBus>,
 ) {
-    rt.spawn(async move {
-        let mut ticker = tokio::time::interval(EMIT_INTERVAL);
-        let mut last_published: Option<AircPresenceUpdate> = None;
-        loop {
-            ticker.tick().await;
-            let members = match reader.room_roster(PRESENCE_WINDOW, ROSTER_SCAN).await {
-                Ok(m) => m,
-                Err(err) => {
-                    tracing::warn!(
-                        error = %err,
-                        %room_id,
-                        "positron_presence: room_roster failed — skip tick, keep last roster (reader owns reconnection)"
-                    );
-                    continue;
-                }
-            };
-            let update = project_presence(members, room_id, room_name.clone());
-            if last_published.as_ref() == Some(&update) {
+    rt.spawn(run_presence_loop(reader, room_id, room_name, bus));
+}
+
+/// The tick loop, shared by every spawn entry point. Reads the roster,
+/// projects it, and publishes only on change. Kept as a standalone
+/// future so a caller that already holds a reader
+/// ([`spawn_presence_emitter`]) and one that must first *attach* a reader
+/// ([`spawn_node_presence_emitter`]) run the identical loop — one wire
+/// contract, one dedup discipline, defined once.
+async fn run_presence_loop(
+    reader: Arc<dyn AircRosterReader>,
+    room_id: Uuid,
+    room_name: String,
+    bus: Arc<MessageBus>,
+) {
+    let mut ticker = tokio::time::interval(EMIT_INTERVAL);
+    let mut last_published: Option<AircPresenceUpdate> = None;
+    loop {
+        ticker.tick().await;
+        let members = match reader.room_roster(PRESENCE_WINDOW, ROSTER_SCAN).await {
+            Ok(m) => m,
+            Err(err) => {
+                tracing::warn!(
+                    error = %err,
+                    %room_id,
+                    "positron_presence: room_roster failed — skip tick, keep last roster (reader owns reconnection)"
+                );
                 continue;
             }
-            // Substrate-owned type: a serialize failure is a bug, not a
-            // runtime condition (same discipline as
-            // `continuum_positron::StateBuilder::build`).
-            let payload = serde_json::to_value(&update)
-                .expect("AircPresenceUpdate must serialize — bug, not a runtime error");
-            bus.publish_async_only(PRESENCE_UPDATED, payload);
-            last_published = Some(update);
+        };
+        let update = project_presence(members, room_id, room_name.clone());
+        if last_published.as_ref() == Some(&update) {
+            continue;
         }
+        // Substrate-owned type: a serialize failure is a bug, not a
+        // runtime condition (same discipline as
+        // `continuum_positron::StateBuilder::build`).
+        let payload = serde_json::to_value(&update)
+            .expect("AircPresenceUpdate must serialize — bug, not a runtime error");
+        bus.publish_async_only(PRESENCE_UPDATED, payload);
+        last_published = Some(update);
+    }
+}
+
+/// Fixed identity name for the node-level presence reader. It attaches
+/// as a **heartbeat-less lurker** (`attach_as` opens + wires a daemon
+/// client but never spawns a `HeartbeatTask`), so it reads the daemon's
+/// authoritative roster without ever appearing in it — an invisible
+/// observer, never a phantom occupant. The name is stable so the reader
+/// resumes the same keypair across reboots.
+const NODE_PRESENCE_READER_NAME: &str = "continuum-node";
+
+/// Attach a node-level roster reader and run the presence emitter for one
+/// room. This is the **producing half** of the `presence:updated` stream:
+/// without it, nothing publishes presence and every rendered message
+/// carries only a provisional peer-id label.
+///
+/// ## Why a dedicated node reader, not a persona's handle
+///
+/// The widget roster must survive **zero resident personas** — a chat
+/// window with no persona present still shows its human occupants. So the
+/// reader is node-scoped, not borrowed from a persona lifecycle. It reuses
+/// the exact non-persona attach shape [`crate::context::agent`] uses
+/// (`Airc::attach_as` → `AircHandleAdapter`), attaching a heartbeat-less
+/// lurker at a stable node home. `room_roster` routes through the daemon
+/// (`page_recent` is daemon-aware), so the lurker reads every *other*
+/// peer's presence from the shared transcript while contributing none of
+/// its own.
+///
+/// A failed initial attach/join means the projection can't start; it logs
+/// the cause loudly and the task exits (the WS server is optional, so this
+/// is a disabled feature, not a substrate-wide panic —
+/// [[fallbacks-are-illegal-fail-loud]]: no fabricated roster is ever
+/// substituted).
+pub fn spawn_node_presence_emitter(
+    rt: &tokio::runtime::Handle,
+    daemon_socket: std::path::PathBuf,
+    node_home: std::path::PathBuf,
+    room_id: Uuid,
+    room_name: String,
+    bus: Arc<MessageBus>,
+) {
+    rt.spawn(async move {
+        if let Err(err) = tokio::fs::create_dir_all(&node_home).await {
+            tracing::error!(
+                error = %err,
+                home = %node_home.display(),
+                "positron_presence: cannot create node reader home — presence projection disabled"
+            );
+            return;
+        }
+        let airc = match airc_lib::Airc::attach_as(
+            node_home.clone(),
+            NODE_PRESENCE_READER_NAME,
+            daemon_socket,
+        )
+        .await
+        {
+            Ok(airc) => airc,
+            Err(err) => {
+                tracing::error!(
+                    error = %err,
+                    home = %node_home.display(),
+                    "positron_presence: node reader attach failed — presence projection disabled"
+                );
+                return;
+            }
+        };
+        // Join by NAME (never UUID-as-string, which derives a *different*
+        // channel — the recurring hazard documented in
+        // `context::agent` + `PersonaAircRuntime`). The reader must share
+        // the operator's channel or its roster reads land in an empty
+        // derived room.
+        if let Err(err) = airc.join(&room_name).await {
+            tracing::error!(
+                error = %err,
+                room = %room_name,
+                "positron_presence: node reader could not join room — presence projection disabled"
+            );
+            return;
+        }
+        let reader: Arc<dyn AircRosterReader> =
+            Arc::new(crate::context::airc_adapter::AircHandleAdapter::new(Arc::new(airc)));
+        tracing::info!(
+            %room_id,
+            room = %room_name,
+            "positron_presence: node reader attached — emitting presence:updated"
+        );
+        run_presence_loop(reader, room_id, room_name, bus).await;
     });
 }
 

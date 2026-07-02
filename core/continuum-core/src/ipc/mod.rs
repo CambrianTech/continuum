@@ -1403,6 +1403,12 @@ pub fn start_server(
         .map(|p| p.to_path_buf())
         .zip(airc_module.default_room());
     let persona_bootstrap_room_name = airc_module.default_room_name().map(|s| s.to_string());
+    // The node-level presence emitter (WS seam below) needs the same
+    // (daemon_socket, default_room) the persona block consumes. Clone the
+    // deps here BEFORE that `if let Some(...)` moves them, so the emitter
+    // can attach a heartbeat-less node reader against the same daemon +
+    // room the citizens attach to.
+    let node_presence_deps = persona_bootstrap_deps.clone();
     runtime.register(airc_module);
 
     // A.2 [[no-fallbacks-ever]]: in `FullCitizen` or `FailFast` mode,
@@ -2109,6 +2115,13 @@ pub fn start_server(
     // existing commands see zero behavior change.
     let executor = Arc::new(
         crate::runtime::CommandExecutor::new(runtime.registry_arc())
+            // Share the ONE runtime bus (the same Arc every ModuleContext
+            // gets — `chat:posted` from the airc daemon-attach projector
+            // and `presence:updated` from the node presence emitter both
+            // land here). Without this the WS positron projection has no
+            // event source and `message_bus()` is None — the boot-loud
+            // panic the `CONTINUUM_CORE_WS` block asserts against.
+            .with_message_bus(runtime.bus_arc())
             .with_interceptor(Arc::new(crate::runtime::AircInterceptor::new()))
             .with_interceptor(Arc::new(crate::runtime::GridInterceptor::new(grid_state)))
             // Hard ACL gate: cross-grid (airc) + TCP callers — incl. a persona's
@@ -2328,7 +2341,45 @@ pub fn start_server(
                     "CONTINUUM_CORE_WS is set but the command executor has no message bus — \
                      the positron chat projection has no airc source to subscribe to",
                 );
-                positron_source::spawn(&state.rt_handle, projection_bus, ws_substrate.clone());
+                positron_source::spawn(
+                    &state.rt_handle,
+                    projection_bus.clone(),
+                    ws_substrate.clone(),
+                );
+
+                // Producer half of the same stream: attach a node-level
+                // roster reader and emit `presence:updated` so the consumer
+                // above has an identity source to fold in — otherwise every
+                // rendered message keeps its provisional peer-id label
+                // forever. Gated on the SAME (socket, room) precondition as
+                // persona hosting; if airc discovery gave us neither, the
+                // roster has no source and we log the skip (not a silent
+                // fallback — an honestly-disabled projection).
+                match node_presence_deps.clone().zip(persona_bootstrap_room_name.clone()) {
+                    Some(((daemon_socket, room_id), room_name)) => {
+                        let node_home =
+                            crate::modules::persona_instance_manager::resolve_continuum_root()
+                                .join("citizens")
+                                .join("node")
+                                .join("presence")
+                                .join("airc");
+                        positron_presence::spawn_node_presence_emitter(
+                            &state.rt_handle,
+                            daemon_socket,
+                            node_home,
+                            room_id.as_uuid(),
+                            room_name,
+                            projection_bus,
+                        );
+                    }
+                    None => {
+                        tracing::warn!(
+                            "positron presence emitter not started — airc discovery produced no \
+                             (daemon socket, default room, room name); the WS roster will stay \
+                             empty until airc is Healthy"
+                        );
+                    }
+                }
 
                 state.rt_handle.spawn(async move {
                     ws::serve(bind_addr, ws_executor, ws_substrate).await;
