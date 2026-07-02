@@ -1964,4 +1964,59 @@ mod tests {
         );
 
     }
+
+    // What this catches: the per-task eval rewind invariant (cognition/eval.rs
+    // run_pass calls `isolation.rewind()` before EVERY task). An engram admitted
+    // while measuring task N — e.g. the act->observe self-observation from a
+    // code/search she ran — must NOT survive into task N+1's recall, or the exam
+    // bleeds ("based on my earlier code search, SELF_TICK_MS is in…" leaking into
+    // an unrelated task, observed live 2026-07-02). checkpoint()/restore() is the
+    // mechanism the rewind uses: restoring the pre-task checkpoint discards every
+    // engram admitted since, while PRESERVING the baseline the fork was born with
+    // (her real engrams via fork_detached) — mirror her reality, drop only the
+    // cross-task bleed. See [[mirror-and-challenge-during-training-and-dream]].
+    #[test]
+    fn restore_drops_post_checkpoint_engrams_but_keeps_baseline() {
+        let state = AdmissionState::new(Arc::new(
+            crate::persona::recall_metadata::RecallMetadataRegistry::new(),
+        ));
+        let mut trace = CognitionTrace::new();
+
+        // Baseline: one engram present when the "task" begins (stands in for the
+        // real engrams the eval fork is born carrying).
+        let baseline = "a durable baseline observation the fork was born carrying";
+        state
+            .admit(&synthetic_human_message(baseline), Some(&mut trace))
+            .unwrap();
+        assert_eq!(state.engram_count(), 1);
+
+        // Checkpoint = the pre-task frame the rewind restores to.
+        let cp = state.checkpoint();
+
+        // Task N admits a fresh engram (the act->observe result-as-engram).
+        let task_n = "task N just ran code/search and admitted this result engram";
+        state
+            .admit(&synthetic_human_message(task_n), Some(&mut trace))
+            .unwrap();
+        assert_eq!(state.engram_count(), 2);
+        assert!(
+            state.recall_recent(8).iter().any(|e| e.content == task_n),
+            "task N's engram is recallable within task N (sanity)"
+        );
+
+        // Rewind before task N+1.
+        state.restore(&cp);
+
+        // Task N's engram is gone; the baseline reality survives untouched.
+        assert_eq!(state.engram_count(), 1, "rewind drops the post-checkpoint engram");
+        let recalled = state.recall_recent(8);
+        assert!(
+            !recalled.iter().any(|e| e.content == task_n),
+            "task N's engram must NOT bleed into task N+1"
+        );
+        assert!(
+            recalled.iter().any(|e| e.content == baseline),
+            "the pre-eval baseline reality is preserved (mirror, not sterilize)"
+        );
+    }
 }

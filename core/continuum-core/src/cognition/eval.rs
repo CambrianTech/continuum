@@ -695,20 +695,20 @@ impl ActionCommand for CognitionEval {
         // separate, deliberate decision, never a side effect of measuring it.
         if let Some(gene) = &p.gene {
             cycle.page_out();
-            let (base_score, _) = run_pass(&cycle, &tasks, room, max_acts).await;
+            let (base_score, _) = run_pass(&cycle, &isolation, &tasks, room, max_acts).await;
 
-            // Rewind to the pre-eval memory frame so the candidate arm starts from
-            // EXACTLY the state the base arm did — the only difference the lift
-            // measures is the genome, never the engrams the base arm just admitted.
-            isolation.rewind();
-
+            // Both arms start each task from the pre-eval memory frame — `run_pass`
+            // rewinds the admission frame before EVERY task (per-task isolation), so
+            // the candidate arm inherits none of the engrams the base arm admitted.
+            // The only difference the lift measures is the genome, paged in here.
             cycle.page_in(vec![crate::ai::types::ActiveAdapterRequest {
                 name: gene.name.clone(),
                 path: gene.path.clone(),
                 domain: String::new(),
                 scale: gene.scale.unwrap_or(1.0),
             }]);
-            let (gene_score, gene_results) = run_pass(&cycle, &tasks, room, max_acts).await;
+            let (gene_score, gene_results) =
+                run_pass(&cycle, &isolation, &tasks, room, max_acts).await;
             cycle.page_out();
 
             // Guard drops here: her memory frame + real persistence sink restored.
@@ -775,7 +775,7 @@ impl ActionCommand for CognitionEval {
         // Single pass: measure whatever genome is currently paged in (base by
         // default) — the plain coder number, no A/B. Still isolated, so a plain
         // baseline run is reproducible and leaves her memory untouched.
-        let (score, results) = run_pass(&cycle, &tasks, room, max_acts).await;
+        let (score, results) = run_pass(&cycle, &isolation, &tasks, room, max_acts).await;
         drop(isolation);
         let verify = self_verify_rate(&results);
         let agg = speed_latency_aggregates(&results);
@@ -945,6 +945,7 @@ fn append_progress_ledger(result: &CognitionEvalResult, note: Option<&str>, eval
 /// the genome). That sameness is what makes the lift a fair measurement.
 async fn run_pass(
     cycle: &crate::cognition::workspace::WorkspaceCycle,
+    isolation: &crate::cognition::workspace::EvalIsolation,
     tasks: &[EvalTask],
     room: Uuid,
     max_acts: usize,
@@ -953,14 +954,26 @@ async fn run_pass(
     let mut results = Vec::with_capacity(tasks.len());
     for t in tasks {
         // Each task is a DISJOINT concern (the grader presents them back-to-back
-        // with no temporal continuity), so reset the volatile working-memory scratch
-        // first — otherwise the prior task's proprioception (`[action #n]` traces)
-        // bleeds into this one's perception, contaminating an independent
-        // measurement. This is task-isolation, the same family as the admission
-        // rewind the `EvalIsolation` guard does between A/B arms; the perception
-        // assembly + decision path stay identical to the live heartbeat (which
-        // never resets — there concerns flow continuously and traces age naturally).
+        // with no temporal continuity), so reset BOTH memory channels to the
+        // pre-eval frame before it runs — otherwise the prior task's state bleeds
+        // into this one's perception and contaminates an independent measurement:
+        //   (1) the VOLATILE working-memory scratch — the `[action #n]`
+        //       proprioception traces (`reset_working_memory`); and
+        //   (2) the DURABLE admission frame — the Episodic engrams a task admits
+        //       by ACTING (act→observe's result-as-engram), which survive a
+        //       working-memory clear and which recall would otherwise surface next
+        //       task ("based on my earlier code search, SELF_TICK_MS is in…" leaking
+        //       into an unrelated task — observed live 2026-07-02). `isolation.rewind`
+        //       restores the admission frame to the checkpoint the guard took before
+        //       any task ran, so every task starts from the IDENTICAL clean memory.
+        // This is the SAME rewind mechanism the A/B path uses between arms, now
+        // applied at the finer per-task boundary — one rule: every task starts from
+        // the pre-eval frame. The perception assembly + decision path stay identical
+        // to the live heartbeat (which never resets — there concerns flow
+        // continuously and traces age naturally); this is exam hygiene, not a change
+        // to how she thinks.
         cycle.reset_working_memory();
+        isolation.rewind();
         // Frame the task through the SAME burst formatter the live heartbeat uses
         // (service_loop::build_workspace_burst), as a single airc room message
         // from a peer — so her deliberation perceives an examiner's question with
