@@ -219,4 +219,102 @@ mod tests {
             WsServerMessage::Response { id, .. } => assert_eq!(id, 42),
         }
     }
+
+    // what this catches: the FULL server ingress over a REAL socket — the piece
+    // no unit test reaches: `accept_async` upgrade, the mpsc sender task, and the
+    // per-command dispatch spawn in `handle_ws_connection`. A real client frames a
+    // `WsClientMessage::Command`, it flows through `execute_command_request` into a
+    // module, and the correlated `WsServerMessage::Response` unwraps to the result.
+    // This is the wire-level twin of the TS `WebSocketTransport` spec.
+    #[tokio::test]
+    async fn ws_command_roundtrips_through_a_real_socket() {
+        use crate::runtime::service_module::CommandResult;
+        use crate::runtime::{
+            ModuleConfig, ModuleContext, ModulePriority, ModuleRegistry, ServiceModule,
+        };
+        use tokio_tungstenite::connect_async;
+
+        // A module that echoes its params back — so the reply proves the command
+        // reached a handler with its params intact, not just that a frame bounced.
+        struct EchoModule;
+        #[async_trait::async_trait]
+        impl ServiceModule for EchoModule {
+            fn config(&self) -> ModuleConfig {
+                ModuleConfig {
+                    name: "echo",
+                    priority: ModulePriority::Normal,
+                    command_prefixes: &["echo/"],
+                    event_subscriptions: &[],
+                    needs_dedicated_thread: false,
+                    max_concurrency: 0,
+                    tick_interval: None,
+                }
+            }
+            async fn initialize(&self, _ctx: &ModuleContext) -> Result<(), String> {
+                Ok(())
+            }
+            async fn handle_command(
+                &self,
+                _command: &str,
+                params: serde_json::Value,
+            ) -> Result<CommandResult, String> {
+                Ok(CommandResult::Json(params))
+            }
+            fn as_any(&self) -> &dyn std::any::Any {
+                self
+            }
+        }
+
+        let registry = Arc::new(ModuleRegistry::new());
+        registry.register(Arc::new(EchoModule));
+        let executor = Arc::new(CommandExecutor::new(registry));
+
+        // Bind an ephemeral loopback port and drive the REAL connection handler.
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind ephemeral");
+        let addr = listener.local_addr().expect("local addr");
+        let exec = Arc::clone(&executor);
+        tokio::spawn(async move {
+            if let Ok((stream, peer)) = listener.accept().await {
+                handle_ws_connection(stream, peer, exec).await;
+            }
+        });
+
+        let (mut ws, _resp) = connect_async(format!("ws://{addr}"))
+            .await
+            .expect("client connects to WS ingress");
+
+        let frame = WsClientMessage::Command {
+            id: 7,
+            request: AircCommandRequest::new(
+                "echo/run".into(),
+                continuum_airc_protocol::KIND_PEER.into(),
+                None,
+                serde_json::json!({"hello": "world"}),
+            ),
+        };
+        ws.send(Message::Text(serde_json::to_string(&frame).unwrap().into()))
+            .await
+            .expect("send command frame");
+
+        let reply = ws.next().await.expect("a reply arrives").expect("reply is ok");
+        let text = match reply {
+            Message::Text(t) => t,
+            other => panic!("expected a text reply, got {other:?}"),
+        };
+        let msg: WsServerMessage = serde_json::from_str(&text).expect("reply parses");
+        match msg {
+            WsServerMessage::Response { id, response } => {
+                assert_eq!(id, 7, "correlation id survives the real socket round-trip");
+                match response {
+                    AircCommandResponse::Ok { result } => assert_eq!(
+                        result["hello"], "world",
+                        "the echo module saw the params; the reply unwraps to its result"
+                    ),
+                    AircCommandResponse::Error { message } => {
+                        panic!("expected ok, got error: {message}")
+                    }
+                }
+            }
+        }
+    }
 }
