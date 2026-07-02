@@ -333,6 +333,41 @@ pub enum SettleStep {
     InferenceFailed { error: String },
 }
 
+impl SettleStep {
+    /// Project a fully-driven [`SettleOutcome`] back onto the SAME `SettleStep` the
+    /// live heartbeat already handles — so a DIRECTED live turn can `drive_to_settle`
+    /// (converge to an answer in-turn, exactly as the eval path does) and feed the
+    /// result through the one existing turn handler, no parallel match.
+    ///
+    /// The mapping is total and lossless for the live handler's purposes:
+    ///   • `inference_error` present → `InferenceFailed` (a failed model is never a
+    ///     chosen silence — [[fallbacks-are-illegal-fail-loud]]);
+    ///   • `Speak`/`RaiseUnprompted` → `Spoke` (the prose reaches the room);
+    ///   • `Act` → `Acted` — the drive spent its whole act budget without settling on
+    ///     speech; the results are already in memory, so the live handler `continue`s
+    ///     and the metronome re-perceives next tick (the honest long-tail degrade, and
+    ///     the ONLY case a directed turn still leans on the tick loop);
+    ///   • `Pass` → `Passed` (she declined in her own words).
+    /// `drive_to_settle` collapses `WouldAct`/`ActUnfulfilled` into `Decision::Act`
+    /// before returning, so those never surface here — an over-budget or un-carried
+    /// act both land on `Acted`, which the live handler treats as "re-perceive next
+    /// tick", the correct move either way.
+    pub fn from_settled(outcome: SettleOutcome) -> (SettleStep, Option<TurnMetrics>) {
+        let metrics = Some(outcome.metrics);
+        if let Some(error) = outcome.inference_error {
+            return (SettleStep::InferenceFailed { error }, metrics);
+        }
+        let step = match outcome.decision {
+            Decision::Speak { text } | Decision::RaiseUnprompted { text } => {
+                SettleStep::Spoke(text)
+            }
+            Decision::Act { calls, intent } => SettleStep::Acted { calls, intent },
+            Decision::Pass => SettleStep::Passed,
+        };
+        (step, metrics)
+    }
+}
+
 /// ONE step of settlement — the single place a `Decision` becomes speech-or-action,
 /// shared by the live heartbeat (`persona::service_loop`, called ONCE per metronome
 /// tick) and the eval driver ([`drive_to_settle`], which loops steps because the
@@ -1035,6 +1070,76 @@ mod tests {
             adm.engram_count(),
             2,
             "continuity of self: concern-A memory persisted, concern B added its own"
+        );
+    }
+
+    /// what this catches: `SettleStep::from_settled` mis-projecting a driven
+    /// `SettleOutcome` onto the live turn handler — the seam that lets a DIRECTED
+    /// live turn `drive_to_settle` and feed the ONE existing turn match (no parallel
+    /// handler). A regression here would route a settled Speak to silence, hide an
+    /// inference failure behind a serene Pass ([[fallbacks-are-illegal-fail-loud]]),
+    /// or drop an over-budget Act instead of re-perceiving next tick.
+    fn outcome_with(decision: Decision, inference_error: Option<String>) -> SettleOutcome {
+        SettleOutcome {
+            spoken: match &decision {
+                Decision::Speak { text } | Decision::RaiseUnprompted { text } => {
+                    Some(text.clone())
+                }
+                _ => None,
+            },
+            decision,
+            acts: 0,
+            world_state: String::new(),
+            metrics: TurnMetrics::default(),
+            inference_error,
+        }
+    }
+
+    #[test]
+    fn from_settled_projects_every_terminal_outcome_onto_the_live_handler() {
+        // Speak → Spoke (the prose reaches the room).
+        let (step, m) = SettleStep::from_settled(outcome_with(
+            Decision::Speak {
+                text: "hello".into(),
+            },
+            None,
+        ));
+        assert!(matches!(step, SettleStep::Spoke(t) if t == "hello"));
+        assert!(m.is_some(), "metrics always carry through");
+
+        // RaiseUnprompted also speaks — initiative is still an utterance.
+        let (step, _) = SettleStep::from_settled(outcome_with(
+            Decision::RaiseUnprompted {
+                text: "idea".into(),
+            },
+            None,
+        ));
+        assert!(matches!(step, SettleStep::Spoke(t) if t == "idea"));
+
+        // Budget-spent Act → Acted (results already in memory; live handler
+        // re-perceives next tick — the honest long-tail degrade).
+        let (step, _) = SettleStep::from_settled(outcome_with(
+            Decision::Act {
+                calls: vec![],
+                intent: "kept gathering".into(),
+            },
+            None,
+        ));
+        assert!(matches!(step, SettleStep::Acted { .. }));
+
+        // Pass → Passed (chosen silence, honored).
+        let (step, _) = SettleStep::from_settled(outcome_with(Decision::Pass, None));
+        assert!(matches!(step, SettleStep::Passed));
+
+        // inference_error present → InferenceFailed, REGARDLESS of decision — a
+        // failed model is never a chosen silence.
+        let (step, _) = SettleStep::from_settled(outcome_with(
+            Decision::Pass,
+            Some("lane refused model".into()),
+        ));
+        assert!(
+            matches!(step, SettleStep::InferenceFailed { error } if error == "lane refused model"),
+            "an inference failure must surface LOUD, never collapse to Passed"
         );
     }
 }

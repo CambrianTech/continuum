@@ -664,14 +664,51 @@ async fn serve_persona_loop_inner(
                 // flooding) is substrate-blocked on the airc per-(persona,room) state
                 // store (#89); this is the addressing half, unblocked today.
                 let directed = ctx.identity.persona_identity().mentions(&msg.text);
-                let (step, turn_metrics) = crate::cognition::act_observe::settle_step(
-                    &cycle,
-                    workspace_burst,
-                    ctx.identity.default_room,
-                    true,
-                    crate::cognition::workspace::TurnFraming::message(directed),
-                )
-                .await;
+                let framing = crate::cognition::workspace::TurnFraming::message(directed);
+                // Directed vs ambient part ways HERE — the fix for the live/eval
+                // convergence divergence the ACTING-ORGANISM comments flagged (eval
+                // SPOKE 36/38; the live path single-stepped a DIRECT question, `Acted`
+                // once, `continue`d — and the burst-fingerprint dedup then suppressed
+                // re-perception, so she went idle with the question unanswered).
+                //
+                // DIRECTED (she was actually named/asked) → `drive_to_settle`, the SAME
+                // primitive the eval path validates (eval.rs run_pass): act→observe→act
+                // until she SPEAKS/PASSES, so a direct question converges to an answer
+                // WITHIN the turn instead of leaking onto the slow ambient tick loop.
+                // `from_settled` projects the driven outcome back onto the one existing
+                // turn handler below, so there is no parallel match. `LIVE_DIRECTED_MAX_ACTS`
+                // is a heartbeat safety valve, NOT a behavioral cap: the common case
+                // (gather once or twice, then speak) settles well under it; only a
+                // pathological act-heavy turn hits it and degrades to the metronome tail
+                // (`Acted`→re-perceive-next-tick) — no worse than today, and an
+                // "acts-forever" persona is a fitness gap to TRAIN, never a substrate
+                // ceiling (ACTING-ORGANISM §4).
+                //
+                // AMBIENT (undirected perception) keeps the calm one-step metronome
+                // motion: act at most once, re-perceive next tick — the self-directed
+                // free-time posture ([[idle-is-self-directed-free-time]]); driving every
+                // ambient glance to settlement would make her over-eager to converge on
+                // noise she should be free to let pass.
+                let (step, turn_metrics) = if directed {
+                    let outcome = crate::cognition::act_observe::drive_to_settle(
+                        &cycle,
+                        workspace_burst,
+                        ctx.identity.default_room,
+                        LIVE_DIRECTED_MAX_ACTS,
+                        framing,
+                    )
+                    .await;
+                    crate::cognition::act_observe::SettleStep::from_settled(outcome)
+                } else {
+                    crate::cognition::act_observe::settle_step(
+                        &cycle,
+                        workspace_burst,
+                        ctx.identity.default_room,
+                        true,
+                        framing,
+                    )
+                    .await
+                };
                 phase_timings.respond_ms = respond_started.elapsed().as_millis() as u64;
                 // Live speed/latency on the probe stream — the model's own measured
                 // generation cost for THIS turn (decode tok/s + latency), the same
@@ -903,6 +940,19 @@ async fn serve_persona_loop_inner(
 /// conservative so a full LLM deliberation can't fire faster than the world
 /// meaningfully changes; the burst-fingerprint gate keeps idle ticks free.
 const SELF_TICK_MS: u64 = 3_000;
+
+/// Act budget for a DIRECTED live turn driven to settlement (the eval-validated
+/// `drive_to_settle` path). A directly-addressed question must converge to an
+/// answer WITHIN the turn — gather, observe, then speak — rather than acting once
+/// and leaking onto the slow ambient tick loop (which the burst-fingerprint dedup
+/// then suppressed, leaving a direct question unanswered). This bounds the
+/// investigation as a heartbeat safety valve, NOT a behavioral ceiling: the common
+/// case (gather once or twice, then speak) settles far under it; the pathological
+/// act-heavy turn degrades to the metronome tail (`Acted`→re-perceive-next-tick).
+/// Mirrors the eval driver's `DEFAULT_MAX_ACTS` so the live directed path and its
+/// scored twin converge under the same budget. An "acts-forever" persona is a
+/// fitness gap to TRAIN, never a substrate cap (ACTING-ORGANISM §4).
+const LIVE_DIRECTED_MAX_ACTS: usize = 8;
 
 /// What woke the service loop this cycle. A message from the wire, the never-stop
 /// heartbeat, or the end of the stream. Returned by the `select!` so the borrow of
