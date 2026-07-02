@@ -61,6 +61,14 @@ pub fn write_typescript_sdk(
     for e in events {
         seeds.insert(e.payload.module.clone());
     }
+    // The thin-client WS transport envelope (task #29): always vendored, because
+    // it's infrastructure the `WebSocketTransport` speaks directly — NOT derived
+    // from any single command's params. Seeding it here pulls in
+    // AircCommandRequest/AircCommandResponse transitively (their own relative
+    // imports are followed by the vendorer), so the transport imports generated
+    // wire types instead of hand-writing the wire shape ([[the-compression-principle]]).
+    seeds.insert("transport/WsClientMessage".to_string());
+    seeds.insert("transport/WsServerMessage".to_string());
 
     // 2. Vendor: copy each seed file + everything it transitively imports. Clean
     //    the wire tree first so a removed/renamed command/event leaves no orphan
