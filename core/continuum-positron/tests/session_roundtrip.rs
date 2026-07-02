@@ -53,7 +53,7 @@ use std::sync::Arc;
 
 use continuum_positron::{
     apply_subscribe, ChatMessageView, ChatViewState, ClientMessage, KindRevision, KnownKind,
-    Revisions, RosterSlotView, SenderKind, ServerMessage, StateBuilder, StateLayer,
+    Provenance, Revisions, RosterSlotView, SenderKind, ServerMessage, StateBuilder, StateLayer,
     SubstrateStateCache,
 };
 use std::collections::BTreeMap;
@@ -77,6 +77,9 @@ fn build_chat_state(content: &str) -> ChatViewState {
             sender_name: "Joel".into(),
             sender_kind: SenderKind::Human,
             integrations: BTreeMap::new(),
+            provenance: Provenance {
+                runtime: "interactive".into(),
+            },
             content: content.into(),
             timestamp: 1_700_000_000_000,
         }],
@@ -85,6 +88,9 @@ fn build_chat_state(content: &str) -> ChatViewState {
             display_name: "Helper".into(),
             kind: SenderKind::Agent,
             integrations: BTreeMap::new(),
+            provenance: Provenance {
+                runtime: "claude".into(),
+            },
             active: true,
         }],
     }

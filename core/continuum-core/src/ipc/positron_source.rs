@@ -70,12 +70,13 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::Arc;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast::error::RecvError;
 use uuid::Uuid;
 
 use continuum_positron::{
-    ChatMessageView, ChatViewState, KnownKind, RosterSlotView, SenderKind, StateBuilder, Substrate,
+    ChatMessageView, ChatViewState, KnownKind, Provenance, RosterSlotView, SenderKind, StateBuilder,
+    Substrate,
 };
 
 use crate::runtime::MessageBus;
@@ -90,7 +91,11 @@ use crate::runtime::MessageBus;
 /// re-typing the literal.
 pub(crate) const CHAT_POSTED: &str = "chat:posted";
 /// Bus event carrying a room roster/presence delta.
-const PRESENCE_UPDATED: &str = "presence:updated";
+///
+/// `pub(crate)` for the same reason as [`CHAT_POSTED`]: the presence
+/// EMITTER (`crate::ipc::positron_presence`) and this CONSUMER must agree
+/// on the wire name — one string, one source of truth.
+pub(crate) const PRESENCE_UPDATED: &str = "presence:updated";
 /// Bounded message window carried in each snapshot. Matches the
 /// `chat/poll` default (`ChatPollParams.limit` defaults to 50) — the
 /// renderer shows a recent window; deeper history is a `chat/history`
@@ -103,7 +108,12 @@ const MAX_MESSAGES_PER_SNAPSHOT: usize = 50;
 /// provisional row is visible, not silently wrong. Upgraded in place the
 /// instant `presence:updated` resolves the card
 /// ([[fallbacks-are-illegal-fail-loud]]).
-fn provisional_sender_name(sender_id: Uuid) -> String {
+///
+/// `pub(crate)` so the presence EMITTER
+/// (`crate::ipc::positron_presence`) labels a present-but-unnamed peer
+/// with the SAME short-peer form — one provisional-label source, not two
+/// (compression principle).
+pub(crate) fn provisional_sender_name(sender_id: Uuid) -> String {
     let simple = sender_id.simple().to_string();
     format!("peer-{}", &simple[..8])
 }
@@ -138,29 +148,55 @@ struct AircChatPosted {
 /// snapshot so a leave is reflected by absence, never a stale merged
 /// entry. This is also the lookup table `apply_message` resolves a
 /// sender's name / kind / badges from.
-#[derive(Debug, Clone, Deserialize)]
+///
+/// `pub(crate)` + `Serialize` because the EMITTER
+/// (`crate::ipc::positron_presence`) builds and serializes THIS SAME
+/// struct — one wire shape defined once, both sides agree by
+/// construction rather than by a hand-copied JSON literal (compression
+/// principle). The emitter/consumer round-trip is pinned by a test.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct AircPresenceUpdate {
-    room_id: Uuid,
-    room_name: String,
-    roster: Vec<AircPresenceSlot>,
+pub(crate) struct AircPresenceUpdate {
+    pub(crate) room_id: Uuid,
+    pub(crate) room_name: String,
+    pub(crate) roster: Vec<AircPresenceSlot>,
 }
 
 /// One roster entry inside an [`AircPresenceUpdate`] — a member joined
 /// with its airc identity card. `kind` is the neutral author kind
-/// (`Human` / `Agent` / `System`) resolved by the presence emitter from
-/// the card; `integrations` is the opaque cross-system badge map from
-/// `Identity.integrations`, transported straight through and interpreted
-/// only at continuum's app layer (renderer reads `continuum.persona*`).
-#[derive(Debug, Clone, Deserialize)]
+/// (`Human` / `Agent` / `System`) the presence emitter derives from the
+/// member's `runtime`; `integrations` is the opaque cross-system badge
+/// map from `Identity.integrations`, transported straight through and
+/// interpreted only at continuum's app layer (renderer reads
+/// `continuum.persona*`); `provenance` is the accountability slot (the
+/// member's verifiable origin — `runtime` today, trust tier +
+/// verification later, no wire break).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct AircPresenceSlot {
-    member_id: Uuid,
-    display_name: String,
-    kind: SenderKind,
+pub(crate) struct AircPresenceSlot {
+    pub(crate) member_id: Uuid,
+    pub(crate) display_name: String,
+    pub(crate) kind: SenderKind,
     #[serde(default)]
+    pub(crate) integrations: BTreeMap<String, String>,
+    /// The accountability half of the identity card. `#[serde(default)]`
+    /// so a slot predating the field folds as `Provenance::unresolved()`
+    /// (honest empty), symmetric with `integrations` — never a fabricated
+    /// origin ([[fallbacks-are-illegal-fail-loud]]).
+    #[serde(default)]
+    pub(crate) provenance: Provenance,
+    pub(crate) active: bool,
+}
+
+/// A sender's identity resolved from the roster — name + neutral kind +
+/// opaque badges + accountability provenance. A struct (not an
+/// ever-widening tuple) so adding the next identity axis is a field, not
+/// a re-thread of every call site.
+struct ResolvedSender {
+    name: String,
+    kind: SenderKind,
     integrations: BTreeMap<String, String>,
-    active: bool,
+    provenance: Provenance,
 }
 
 /// Accumulates airc room events into the renderer-shaped
@@ -212,26 +248,28 @@ impl ChatProjection {
         }
     }
 
-    /// Resolve a sender's display name / kind / badges from the roster.
-    /// The roster is airc presence joined with identity cards
+    /// Resolve a sender's display name / kind / badges / provenance from
+    /// the roster. The roster is airc presence joined with identity cards
     /// (`presence:updated`); a sender present there renders richly. A
     /// sender whose card has not folded in yet renders **provisionally**
-    /// — a short peer-id label, neutral `Human`, empty badges — upgraded
-    /// in place the instant presence lands. This is a provisional
-    /// projection pending authoritative truth, never a fabricated
-    /// identity ([[fallbacks-are-illegal-fail-loud]]).
-    fn resolve_sender(&self, sender_id: Uuid) -> (String, SenderKind, BTreeMap<String, String>) {
+    /// — a short peer-id label, neutral `Human`, empty badges, unresolved
+    /// provenance — upgraded in place the instant presence lands. This is
+    /// a provisional projection pending authoritative truth, never a
+    /// fabricated identity ([[fallbacks-are-illegal-fail-loud]]).
+    fn resolve_sender(&self, sender_id: Uuid) -> ResolvedSender {
         match self.roster.iter().find(|s| s.member_id == sender_id) {
-            Some(slot) => (
-                slot.display_name.clone(),
-                slot.kind,
-                slot.integrations.clone(),
-            ),
-            None => (
-                provisional_sender_name(sender_id),
-                SenderKind::Human,
-                BTreeMap::new(),
-            ),
+            Some(slot) => ResolvedSender {
+                name: slot.display_name.clone(),
+                kind: slot.kind,
+                integrations: slot.integrations.clone(),
+                provenance: slot.provenance.clone(),
+            },
+            None => ResolvedSender {
+                name: provisional_sender_name(sender_id),
+                kind: SenderKind::Human,
+                integrations: BTreeMap::new(),
+                provenance: Provenance::unresolved(),
+            },
         }
     }
 
@@ -244,14 +282,15 @@ impl ChatProjection {
         if self.messages.iter().any(|m| m.id == msg.message_id) {
             return;
         }
-        let (sender_name, sender_kind, integrations) = self.resolve_sender(msg.sender_id);
+        let resolved = self.resolve_sender(msg.sender_id);
         self.messages.push_back(ChatMessageView {
             id: msg.message_id,
             room_id: msg.room_id,
             sender_id: msg.sender_id,
-            sender_name,
-            sender_kind,
-            integrations,
+            sender_name: resolved.name,
+            sender_kind: resolved.kind,
+            integrations: resolved.integrations,
+            provenance: resolved.provenance,
             content: msg.content,
             timestamp: msg.timestamp,
         });
@@ -277,6 +316,7 @@ impl ChatProjection {
                 display_name: s.display_name,
                 kind: s.kind,
                 integrations: s.integrations,
+                provenance: s.provenance,
                 active: s.active,
             })
             .collect();
@@ -297,6 +337,7 @@ impl ChatProjection {
                 msg.sender_name = slot.display_name.clone();
                 msg.sender_kind = slot.kind;
                 msg.integrations = slot.integrations.clone();
+                msg.provenance = slot.provenance.clone();
             }
         }
     }
@@ -571,6 +612,60 @@ mod tests {
         assert!(view.roster[0].active);
         assert_eq!(view.roster[1].kind, SenderKind::Human);
         assert!(!view.roster[1].active);
+    }
+
+    #[test]
+    fn provenance_flows_from_presence_through_roster_to_message() {
+        // what this catches: the accountability slot (task #38's
+        // substrate seam) must ride the identity card end to end — a
+        // presence slot's `provenance.runtime` lands on the roster entry
+        // AND upgrades a provisional message's provenance in place. A
+        // regression that dropped provenance from `apply_presence` /
+        // `reresolve_messages` would leave every rendered row
+        // unattributable — the exact leak the zero-trust flow doctrine
+        // exists to close. A message with no card yet is honestly
+        // unresolved (empty runtime), never a fabricated origin.
+        let substrate = Substrate::new();
+        let mut p = ChatProjection::new(substrate.clone());
+        let room = Uuid::from_u128(0xa);
+        let sender = Uuid::from_u128(0xd);
+        // Message before the card → provenance honestly unresolved.
+        if let ProjectionInput::Message(m) =
+            classify(CHAT_POSTED, &posted_from(room, Uuid::from_u128(0xb), sender, "hi")).unwrap()
+        {
+            p.apply_message(m);
+        }
+        assert_eq!(
+            current_chat(&substrate).messages[0].provenance.runtime, "",
+            "unresolved provenance is empty, not fabricated"
+        );
+        // Presence folds the card carrying a runtime origin.
+        let presence = json!({
+            "roomId": room,
+            "roomName": "general",
+            "roster": [
+                {
+                    "memberId": sender,
+                    "displayName": "Helper",
+                    "kind": { "kind": "agent" },
+                    "integrations": {},
+                    "provenance": { "runtime": "claude" },
+                    "active": true,
+                }
+            ],
+        });
+        if let ProjectionInput::Presence(u) = classify(PRESENCE_UPDATED, &presence).unwrap() {
+            p.apply_presence(u);
+        }
+        let view = current_chat(&substrate);
+        assert_eq!(
+            view.roster[0].provenance.runtime, "claude",
+            "roster carries the member's origin"
+        );
+        assert_eq!(
+            view.messages[0].provenance.runtime, "claude",
+            "the provisional message's provenance upgraded from the card"
+        );
     }
 
     #[test]

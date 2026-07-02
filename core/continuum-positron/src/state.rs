@@ -135,7 +135,7 @@ impl StateBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::chat::{ChatViewState, RosterSlotView, SenderKind};
+    use crate::chat::{ChatViewState, Provenance, RosterSlotView, SenderKind};
     use std::collections::BTreeMap;
     use uuid::Uuid;
 
@@ -149,6 +149,9 @@ mod tests {
                 display_name: "Helper".into(),
                 kind: SenderKind::Agent,
                 integrations: BTreeMap::new(),
+                provenance: Provenance {
+                    runtime: "claude".into(),
+                },
                 active: true,
             }],
         }

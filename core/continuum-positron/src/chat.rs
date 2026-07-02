@@ -105,6 +105,13 @@ pub struct ChatMessageView {
     /// not yet resolved.
     #[ts(type = "Record<string, string>")]
     pub integrations: BTreeMap<String, String>,
+    /// Verifiable provenance of the author — the accountability half of
+    /// identity (see [`Provenance`]). Resolved from the roster alongside
+    /// `sender_name` / `sender_kind`, so a message row is attributable
+    /// on its face. Woven in from day one per
+    /// `[[positron-identity-security-first-class]]`; grows to carry trust
+    /// tier + verification with no wire break.
+    pub provenance: Provenance,
     pub content: String,
     /// Unix-ms substrate-local time of arrival.
     #[ts(type = "number")]
@@ -137,6 +144,81 @@ pub enum SenderKind {
     System,
 }
 
+impl SenderKind {
+    /// Project an airc presence `runtime` class onto the neutral author
+    /// kind — a **coarse styling hint**, not the accountability truth.
+    ///
+    /// airc's `runtime` is a free-form self-reported client class
+    /// (`"claude"`, `"codex"`, `"interactive"`, `"automation"`, …); it
+    /// does NOT cleanly encode human-vs-AI. So this mapping is
+    /// deliberately minimal: airc's documented human-driven runtime
+    /// (`"interactive"`) → [`SenderKind::Human`]; every other running
+    /// actor (an AI of any framework, an automation) → [`SenderKind::Agent`].
+    /// A roster member is a *present citizen*, so this never yields
+    /// `System` (system events are message-only, never roster entries).
+    ///
+    /// This is a projection between two **neutral** vocabularies (a
+    /// runtime class → an author kind), NOT identity-sniffing a model
+    /// name to pick behavior (the `model.starts_with("qwen")` smell this
+    /// codebase kills). The precise accountability signal is carried
+    /// verbatim in [`Provenance::runtime`]; `kind` only drives the
+    /// avatar/styling discriminant. The default-to-`Agent` is not a
+    /// bug-hiding fallback — an unclassified present actor genuinely is
+    /// "some running agent" until its card refines it via `provenance`.
+    pub fn from_runtime(runtime: &str) -> Self {
+        match runtime {
+            "interactive" => SenderKind::Human,
+            _ => SenderKind::Agent,
+        }
+    }
+}
+
+/// Verifiable provenance of the citizen behind a roster slot or message
+/// — the **accountability** half of identity, distinct from the
+/// *display* half (name / kind / badges).
+///
+/// Woven in from day one per `[[positron-identity-security-first-class]]`:
+/// the slot costs nothing now and is ruinous to retrofit. Every unit of
+/// rendered data (a roster member, a message row) carries "who/what
+/// produced this, verifiably" so a human or a security persona can
+/// attribute it — the substrate-side seam the zero-trust flow doctrine
+/// (`docs/architecture/ZERO-TRUST-IDENTITY-AND-FLOW.md`) checks on the
+/// way out.
+///
+/// **What it carries TODAY:** the one axis airc authoritatively surfaces
+/// through presence — the peer's self-reported `runtime` origin. **What
+/// joins it NEXT (no wire break — the whole point of reserving the typed
+/// home now):** the per-peer trust tier + a cryptographic-verification
+/// bit, once the airc peer-trust bridge (task #38) lands. Growable
+/// struct-carrier, same discipline as the adapter capability surface.
+///
+/// Neutral like the rest of positron: `runtime` is transported verbatim,
+/// not interpreted here — the app layer decides what a given runtime
+/// means for trust, exactly as it does for `integrations`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct Provenance {
+    /// The producer's self-reported runtime class, verbatim from airc
+    /// presence (`"claude"` / `"codex"` / `"interactive"` / …). The
+    /// neutral ORIGIN axis — WHO/WHAT produced this, before any trust
+    /// judgment. Empty string = present but unresolved (the card has
+    /// not folded a runtime in yet) — an honest "unknown", never a
+    /// fabricated origin (`[[fallbacks-are-illegal-fail-loud]]`).
+    pub runtime: String,
+}
+
+impl Provenance {
+    /// A provisional provenance for a producer whose identity card has
+    /// not resolved yet — empty runtime = honestly unknown, upgraded in
+    /// place the instant presence lands (mirrors the provisional
+    /// display-name path).
+    pub fn unresolved() -> Self {
+        Self {
+            runtime: String::new(),
+        }
+    }
+}
+
 /// A roster entry — one member present in this room.
 ///
 /// Roster is airc presence (surfaced through `RoomRosterSource`),
@@ -165,6 +247,11 @@ pub struct RosterSlotView {
     /// `ChatMessageView.integrations`).
     #[ts(type = "Record<string, string>")]
     pub integrations: BTreeMap<String, String>,
+    /// Verifiable provenance of this member — the accountability half of
+    /// identity (see [`Provenance`]). The roster IS the source of truth
+    /// the projection resolves message provenance from, so it lives here
+    /// first and rides through to each `ChatMessageView`.
+    pub provenance: Provenance,
     /// `true` if the member is currently attached and ready to receive
     /// turns. `false` for paged-out or spawning. The widget shows a
     /// presence indicator off this bit — single source of truth in the
@@ -245,6 +332,9 @@ mod tests {
             sender_name: "Helper".into(),
             sender_kind: SenderKind::Agent,
             integrations: integrations.clone(),
+            provenance: Provenance {
+                runtime: "claude".into(),
+            },
             content: "hi".into(),
             timestamp: 1_700_000_000_000,
         };
@@ -252,6 +342,51 @@ mod tests {
             serde_json::from_str(&serde_json::to_string(&msg).unwrap()).unwrap();
         assert_eq!(back.integrations, integrations);
         assert_eq!(back.sender_kind, SenderKind::Agent);
+        assert_eq!(back.provenance.runtime, "claude");
+    }
+
+    #[test]
+    fn from_runtime_is_coarse_and_neutral() {
+        // what this catches: the runtime→kind projection is a COARSE
+        // styling hint, not identity-sniffing. airc's documented
+        // human-driven runtime maps to Human; every other running actor
+        // (any AI framework, an automation) maps to Agent — the honest
+        // "some running agent" default, NOT a bug-hiding fallback. A
+        // regression that grew a per-framework match table here
+        // (claude→X, codex→Y) would be the `starts_with("qwen")` smell
+        // this codebase kills; the precise signal rides Provenance.
+        assert_eq!(SenderKind::from_runtime("interactive"), SenderKind::Human);
+        assert_eq!(SenderKind::from_runtime("claude"), SenderKind::Agent);
+        assert_eq!(SenderKind::from_runtime("codex"), SenderKind::Agent);
+        assert_eq!(SenderKind::from_runtime("automation"), SenderKind::Agent);
+        // A roster member is a present citizen — never a System row.
+        assert_ne!(SenderKind::from_runtime("anything"), SenderKind::System);
+        // Unknown/empty is honest-Agent, never a panic or a fabricated kind.
+        assert_eq!(SenderKind::from_runtime(""), SenderKind::Agent);
+    }
+
+    #[test]
+    fn provenance_rides_the_wire_and_unresolved_is_empty() {
+        // what this catches: the accountability slot round-trips and its
+        // "not yet resolved" state is an honest empty runtime, never a
+        // fabricated origin ([[fallbacks-are-illegal-fail-loud]]). If a
+        // refactor dropped `provenance` or gave `unresolved()` a
+        // made-up runtime, a security persona / human would attribute a
+        // message to the wrong origin.
+        assert_eq!(Provenance::unresolved().runtime, "");
+        let slot = RosterSlotView {
+            member_id: Uuid::from_u128(0xd),
+            display_name: "Helper".into(),
+            kind: SenderKind::Agent,
+            integrations: BTreeMap::new(),
+            provenance: Provenance {
+                runtime: "claude".into(),
+            },
+            active: true,
+        };
+        let back: RosterSlotView =
+            serde_json::from_str(&serde_json::to_string(&slot).unwrap()).unwrap();
+        assert_eq!(back.provenance.runtime, "claude");
     }
 
     #[test]
@@ -269,6 +404,9 @@ mod tests {
                 sender_name: "Joel".into(),
                 sender_kind: SenderKind::Human,
                 integrations: BTreeMap::new(),
+                provenance: Provenance {
+                    runtime: "interactive".into(),
+                },
                 content: "hi".into(),
                 timestamp: 1_700_000_000_000,
             }],
@@ -277,6 +415,9 @@ mod tests {
                 display_name: "Helper".into(),
                 kind: SenderKind::Agent,
                 integrations: BTreeMap::new(),
+                provenance: Provenance {
+                    runtime: "claude".into(),
+                },
                 active: true,
             }],
         };

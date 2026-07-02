@@ -1,0 +1,289 @@
+//! The airc → positron **presence emitter** (task #29 / #38 identity seam).
+//!
+//! ## What this is
+//!
+//! The producing half of the `presence:updated` stream that
+//! [`crate::ipc::positron_source`] consumes. That consumer projects a
+//! room roster into the renderer-shaped `ChatViewState`; until this
+//! emitter exists, nothing publishes `presence:updated`, so every message
+//! renders with only a provisional peer-id label
+//! (`inbound_attach::chat_posted_from_message` emits identity-free
+//! message facts and explicitly skips presence transitions). This module
+//! reads airc's owned roster, projects each member into an identity card,
+//! and publishes it on the bus — the identity lookup table the consumer
+//! folds in to resolve every sender's name / kind / **provenance**.
+//!
+//! ## Why the provenance slot rides from day one — weave, not wall
+//!
+//! Per `[[positron-identity-security-first-class]]`: identity is a
+//! property that must hold at every seam, woven in as each seam is built,
+//! never bolted on after. So every projected slot carries a
+//! [`Provenance`] — the member's verifiable origin. Today that is airc's
+//! self-reported `runtime` class, carried **verbatim** (the one
+//! accountability axis airc surfaces now); trust tier + cryptographic
+//! verification join the same struct later with no wire break (growable
+//! struct-carrier, `[[adapter-capability-surface-growable-struct-carrier]]`).
+//! The slot costs nothing now and is ruinous to retrofit — the whole
+//! point of weaving it in at Commit 2.
+//!
+//! ## The one wire contract, defined once
+//!
+//! Per the compression principle: the emitter builds and serializes the
+//! SAME [`AircPresenceUpdate`] / [`AircPresenceSlot`] structs the consumer
+//! deserializes (both live in `positron_source`, `pub(crate)` +
+//! `Serialize`/`Deserialize`). Both sides agree by construction, not by a
+//! hand-copied JSON literal — a round-trip test in `positron_source` pins
+//! the emitter's output against the consumer's `classify` path.
+//!
+//! ## kind is derived coarsely; runtime is the truth
+//!
+//! `RoomMember` carries no author `kind` — the emitter derives one from
+//! `runtime` via [`SenderKind::from_runtime`], a *coarse styling hint*
+//! (`"interactive"` → Human, else → Agent). The authoritative,
+//! unabridged origin rides `provenance.runtime`. This is deliberate: a
+//! richer `runtime → kind` table would be the string-matching smell
+//! (task #70); the coarse projection stays honest by keeping the full
+//! string in provenance for anyone who needs to discriminate.
+
+use std::collections::BTreeMap;
+use std::sync::Arc;
+use std::time::Duration;
+
+use airc_lib::RoomMember;
+use uuid::Uuid;
+
+use continuum_positron::{Provenance, SenderKind};
+
+use crate::ipc::positron_source::{
+    provisional_sender_name, AircPresenceSlot, AircPresenceUpdate, PRESENCE_UPDATED,
+};
+use crate::persona::room_roster_source::AircRosterReader;
+use crate::runtime::MessageBus;
+
+/// How often the emitter re-reads the roster. Presence is Session-tier
+/// (a human-perceivable roster delta, not a sub-second signal), and the
+/// change-dedup below means an unchanged roster publishes nothing — so a
+/// modest poll is cheap. This is a first-cut poll; a future airc
+/// presence-delta subscription would replace it with an event-driven read
+/// (design-for, not built here).
+const EMIT_INTERVAL: Duration = Duration::from_secs(2);
+
+/// Presence recency window + transcript scan depth — mirrors
+/// [`crate::persona::room_roster_source`] so the widget roster and the
+/// persona's grounding roster describe the same population.
+const PRESENCE_WINDOW: Duration = Duration::from_secs(120);
+const ROSTER_SCAN: usize = 200;
+
+/// Project airc's owned roster into a `presence:updated` payload for one
+/// room. Pure — no bus, no clock — so the mapping is unit-testable and
+/// the round-trip against the consumer's `classify` is a plain function
+/// call.
+///
+/// Unlike [`crate::persona::room_roster_source`] (which drops `self`
+/// because it grounds a persona in "who is NOT me"), the widget roster
+/// shows **every** present member including self — a chat roster you are
+/// absent from would be wrong. Every member airc returns becomes a slot.
+pub(crate) fn project_presence(
+    members: Vec<RoomMember>,
+    room_id: Uuid,
+    room_name: String,
+) -> AircPresenceUpdate {
+    let roster = members.into_iter().map(project_member).collect();
+    AircPresenceUpdate {
+        room_id,
+        room_name,
+        roster,
+    }
+}
+
+/// One `RoomMember` → one identity card. Derives the coarse `kind`
+/// *before* moving `runtime` into `provenance` (the verbatim
+/// accountability truth).
+fn project_member(member: RoomMember) -> AircPresenceSlot {
+    // Coarse styling hint from the free-form runtime class; the full
+    // string is preserved in `provenance` below (never string-match on
+    // runtime here — that is task #70's smell).
+    let kind = SenderKind::from_runtime(&member.runtime);
+    // airc resolved the name; a present-but-unnamed peer gets the SAME
+    // short-peer label the consumer uses provisionally — one label form,
+    // never a silently-invisible citizen.
+    let display_name = member
+        .display_name
+        .unwrap_or_else(|| provisional_sender_name(member.peer_id.as_uuid()));
+    AircPresenceSlot {
+        member_id: member.peer_id.as_uuid(),
+        display_name,
+        kind,
+        // airc's `RoomMember` carries no cross-system badge map yet (airc
+        // gap): integrations stays empty until airc surfaces the
+        // `Identity.integrations` card on presence. Empty is the honest
+        // "no badges known", not a fabricated one
+        // ([[fallbacks-are-illegal-fail-loud]]).
+        integrations: BTreeMap::new(),
+        // The accountability truth airc DOES surface today, carried
+        // verbatim. Trust tier + verification join here later (task #38)
+        // with no wire break.
+        provenance: Provenance {
+            runtime: member.runtime,
+        },
+        // airc excludes `Leaving` peers from the roster, so every member
+        // returned is present → active.
+        active: true,
+    }
+}
+
+/// Subscribe an airc roster reader to a room and emit `presence:updated`
+/// whenever the roster changes. Spawns a tick loop on `rt`; each tick
+/// reads the roster, projects it, and publishes only when the projection
+/// differs from the last published one (change-dedup — an idle-tick
+/// re-render is wasted work and a wasted revision bump).
+///
+/// A roster read error skips the tick and keeps the last published roster
+/// on the widget (the reader — `airc_lib::Airc` — owns reconnection per
+/// `[[persona-airc-resilience]]`; a transient poll failure must not blink
+/// the roster empty). This is resilience, not a fallback: no fabricated
+/// data is ever substituted; the emitter simply waits for the next good
+/// read.
+pub fn spawn_presence_emitter(
+    rt: &tokio::runtime::Handle,
+    reader: Arc<dyn AircRosterReader>,
+    room_id: Uuid,
+    room_name: String,
+    bus: Arc<MessageBus>,
+) {
+    rt.spawn(async move {
+        let mut ticker = tokio::time::interval(EMIT_INTERVAL);
+        let mut last_published: Option<AircPresenceUpdate> = None;
+        loop {
+            ticker.tick().await;
+            let members = match reader.room_roster(PRESENCE_WINDOW, ROSTER_SCAN).await {
+                Ok(m) => m,
+                Err(err) => {
+                    tracing::warn!(
+                        error = %err,
+                        %room_id,
+                        "positron_presence: room_roster failed — skip tick, keep last roster (reader owns reconnection)"
+                    );
+                    continue;
+                }
+            };
+            let update = project_presence(members, room_id, room_name.clone());
+            if last_published.as_ref() == Some(&update) {
+                continue;
+            }
+            // Substrate-owned type: a serialize failure is a bug, not a
+            // runtime condition (same discipline as
+            // `continuum_positron::StateBuilder::build`).
+            let payload = serde_json::to_value(&update)
+                .expect("AircPresenceUpdate must serialize — bug, not a runtime error");
+            bus.publish_async_only(PRESENCE_UPDATED, payload);
+            last_published = Some(update);
+        }
+    });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use airc_core::PeerId;
+
+    /// Build a `RoomMember` — `name: Some` mirrors a peer that published
+    /// an identity card; `None` mirrors present-but-unnamed. Mirrors the
+    /// `room_roster_source` test builder so both sides describe the same
+    /// airc shape.
+    fn member(peer: PeerId, runtime: &str, name: Option<&str>) -> RoomMember {
+        RoomMember {
+            peer_id: peer,
+            display_name: name.map(|s| s.to_string()),
+            runtime: runtime.to_string(),
+            availability: None,
+            last_seen_ms: 1_000_000,
+        }
+    }
+
+    // what this catches: the identity card the emitter produces must
+    // carry the member's verifiable origin (provenance.runtime, verbatim)
+    // AND a coarse neutral kind — the accountability guarantee Commit 2
+    // exists to weave in. A regression that dropped provenance, or that
+    // string-matched runtime into kind instead of carrying it whole,
+    // would leave every rendered row unattributable.
+    #[test]
+    fn project_carries_origin_verbatim_and_coarse_kind() {
+        let named = PeerId::new();
+        let unnamed = PeerId::new();
+        let human = PeerId::new();
+        let update = project_presence(
+            vec![
+                member(named, "claude", Some("win-claude")),
+                member(unnamed, "codex", None),
+                member(human, "interactive", Some("Joel")),
+            ],
+            Uuid::from_u128(0xa),
+            "general".into(),
+        );
+        assert_eq!(update.roster.len(), 3, "every present member is a slot");
+
+        let card = &update.roster[0];
+        assert_eq!(card.member_id, named.as_uuid());
+        assert_eq!(card.display_name, "win-claude");
+        assert_eq!(card.kind, SenderKind::Agent);
+        assert_eq!(
+            card.provenance.runtime, "claude",
+            "the full runtime origin is carried verbatim, not lost to the coarse kind"
+        );
+        assert!(
+            card.integrations.is_empty(),
+            "no airc badge map yet — empty is honest, not fabricated"
+        );
+        assert!(card.active, "a present member is active");
+
+        // Unnamed peer → the SAME provisional short-peer label the
+        // consumer uses; still an Agent by its codex runtime.
+        let anon = &update.roster[1];
+        assert!(
+            anon.display_name.starts_with("peer-"),
+            "unnamed citizen is labelled, never invisible"
+        );
+        assert_eq!(anon.kind, SenderKind::Agent);
+        assert_eq!(anon.provenance.runtime, "codex");
+
+        // The one interactive runtime → Human (the coarse hint), origin
+        // still whole in provenance.
+        let carbon = &update.roster[2];
+        assert_eq!(carbon.kind, SenderKind::Human);
+        assert_eq!(carbon.provenance.runtime, "interactive");
+    }
+
+    // what this catches: the widget roster must include self — unlike the
+    // persona-grounding roster (which drops self). A regression that
+    // copied the self-exclusion here would erase the local user from
+    // their own room roster.
+    #[test]
+    fn self_is_included_in_the_widget_roster() {
+        let me = PeerId::new();
+        let update = project_presence(
+            vec![member(me, "interactive", Some("Joel"))],
+            Uuid::from_u128(0xb),
+            "general".into(),
+        );
+        assert_eq!(update.roster.len(), 1);
+        assert_eq!(update.roster[0].member_id, me.as_uuid());
+    }
+
+    // what this catches: the emitter's serialized output must survive a
+    // round-trip through the exact wire structs the consumer
+    // deserializes — the "both sides agree by construction" contract. A
+    // divergence (e.g. a rename_all mismatch or a non-serde field) would
+    // silently drop the roster on the consumer side.
+    #[test]
+    fn serialized_update_round_trips_the_wire_shape() {
+        let update = project_presence(
+            vec![member(PeerId::new(), "claude", Some("win-claude"))],
+            Uuid::from_u128(0xc),
+            "general".into(),
+        );
+        let json = serde_json::to_value(&update).expect("serializes");
+        let back: AircPresenceUpdate = serde_json::from_value(json).expect("round-trips");
+        assert_eq!(update, back);
+    }
+}
