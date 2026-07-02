@@ -6,6 +6,7 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use ts_rs::TS;
 
 // ─── Wire-stable route kind constants ────────────────────────────────
 //
@@ -62,13 +63,16 @@ pub const COMMAND_RESPONSE_BODY_HINT: &str = "continuum.command.response.v1";
 
 /// Wire-out envelope: the substrate's "dispatch this command on your
 /// peer" shape. Serialized as JSON in the airc frame body.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[ts(export, export_to = "../../../protocol/typescript/transport/AircCommandRequest.ts")]
 pub struct AircCommandRequest {
     pub path: String,
     pub kind: String,
     #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[ts(optional)]
     pub env: Option<String>,
     #[serde(default)]
+    #[ts(type = "unknown")]
     pub params: Value,
 }
 
@@ -88,11 +92,17 @@ impl AircCommandRequest {
 }
 
 /// Wire-back envelope: typed success/error.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[ts(export, export_to = "../../../protocol/typescript/transport/AircCommandResponse.ts")]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum AircCommandResponse {
-    Ok { result: Value },
-    Error { message: String },
+    Ok {
+        #[ts(type = "unknown")]
+        result: Value,
+    },
+    Error {
+        message: String,
+    },
 }
 
 impl AircCommandResponse {

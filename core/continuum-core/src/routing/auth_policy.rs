@@ -109,6 +109,15 @@ pub enum CallerSource {
     /// signed envelope, so it must NOT be treated as local/owner: it is gated
     /// at the remote (non-owner) trust ceiling like any cross-grid caller.
     Tcp,
+    /// The caller arrived over the core's WebSocket ingress — a thin client
+    /// (browser/desktop/mobile) reaching the core over WS. Like [`Tcp`](CallerSource::Tcp)
+    /// there is no signed envelope yet, so it is gated at the SAME remote
+    /// (non-owner) trust ceiling: unauthenticated WS callers reach only the
+    /// AiSafe surface. A GitHub-identity handshake (task #29) will later
+    /// authenticate the socket and raise the ceiling per authenticated user;
+    /// until then it is honestly labeled `Ws` (distinct from `Tcp` for
+    /// telemetry) but shares Tcp's Provisional ceiling.
+    Ws,
 }
 
 /// Caller identity passed to the auth gate. Cross-grid dispatches
@@ -181,6 +190,19 @@ impl CallerIdentity {
         Self {
             peer_id,
             source: CallerSource::Tcp,
+            granted_capabilities: Vec::new(),
+        }
+    }
+
+    /// Construct a WS-sourced (unauthenticated thin-client socket) caller
+    /// identity. The WS ingress stamps this on every connection until a
+    /// GitHub-identity handshake authenticates the socket. Gated as remote
+    /// (non-owner) at the same Provisional ceiling as [`tcp`](Self::tcp) —
+    /// AiSafe surface only — never as local/owner.
+    pub fn ws(peer_id: PeerId) -> Self {
+        Self {
+            peer_id,
+            source: CallerSource::Ws,
             granted_capabilities: Vec::new(),
         }
     }

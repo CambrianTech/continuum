@@ -138,7 +138,10 @@ impl GridTrustAuthPolicy {
                 // Privileged→Trusted tier) but capped below Owner, so the most
                 // destructive ops stay the human operator's. Unforgeable remotely.
                 CallerSource::LocalPersona => TrustLevel::Trusted,
-                CallerSource::Airc | CallerSource::Tcp => {
+                // WS thin-client callers share the remote (non-owner) path: an
+                // unauthenticated socket carries a nil peer_id → no registered
+                // trust → Provisional. A future GH-auth handshake raises this.
+                CallerSource::Airc | CallerSource::Tcp | CallerSource::Ws => {
                     match self.trust_source.as_ref().and_then(|s| s.trust_of(c.peer_id.as_uuid())) {
                         Some(registered) => registered.min(REMOTE_TRUST_CEILING),
                         None => TrustLevel::Provisional,
@@ -184,6 +187,10 @@ pub fn caller_trust(caller: Option<&CallerIdentity>) -> TrustLevel {
             // 2026-06-21). Stricter-than-airc (it has no verified peer) is a future
             // refinement; non-owner is the load-bearing guarantee.
             CallerSource::Tcp => AIRC_CALLER_CEILING,
+            // A WS thin-client caller is an unauthenticated socket — same remote
+            // Provisional ceiling as TCP (AiSafe surface, never Owner-gated) until
+            // the GH-auth handshake (task #29) authenticates the socket.
+            CallerSource::Ws => AIRC_CALLER_CEILING,
         },
     }
 }

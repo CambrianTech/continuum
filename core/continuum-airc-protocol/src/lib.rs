@@ -17,6 +17,7 @@
 
 pub mod command;
 pub mod event;
+pub mod ws;
 
 pub use command::{
     AircCommandRequest, AircCommandResponse, COMMAND_REQUEST_BODY_HINT, COMMAND_RESPONSE_BODY_HINT,
@@ -24,6 +25,7 @@ pub use command::{
     HEADER_COMMAND_STATUS, HEADER_CONTINUUM_BODY_HINT, KIND_BROADCAST, KIND_LOCAL, KIND_PEER,
     KIND_ROOM,
 };
+pub use ws::{WsClientMessage, WsServerMessage};
 pub use event::{
     // Helper functions — shared by substrate AND client
     decode_deliver_frame,

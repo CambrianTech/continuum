@@ -2769,6 +2769,7 @@ dependencies = [
  "airc-core",
  "serde",
  "serde_json",
+ "ts-rs 12.0.1",
  "uuid",
 ]
 
