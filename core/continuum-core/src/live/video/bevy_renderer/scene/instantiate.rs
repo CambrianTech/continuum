@@ -52,7 +52,7 @@ use crate::live::video::bevy_renderer::api::gpu_manager;
 use crate::live::video::bevy_renderer::types::{
     GpuGuards, PendingLoadEntry, PendingLoads, SlotRegistry, SnapshotTracker,
 };
-use crate::live::video::bevy_renderer::{coordinate, skeleton};
+use crate::live::video::bevy_renderer::{coordinate, mesh_fixup, skeleton};
 use crate::{clog_info, clog_warn};
 
 /// Bevy's forward+ pipeline budgets a fixed number of directional lights across
@@ -333,6 +333,8 @@ impl SceneWalk<'_, '_, '_> {
                   children_query: Query<&Children>,
                   names: Query<&Name>,
                   mut transforms: Query<&mut Transform>,
+                  mesh_handles: Query<&Mesh3d>,
+                  mut meshes: ResMut<Assets<Mesh>>,
                   mut cmds: Commands,
                   mut slot_registry: ResMut<SlotRegistry>,
                   mut gpu_guards: ResMut<GpuGuards>,
@@ -347,6 +349,23 @@ impl SceneWalk<'_, '_, '_> {
                 );
                 skeleton::dump_bone_names(root, &children_query, &names);
                 skeleton::fix_tpose_arms(root, &children_query, &names, &mut transforms);
+
+                // Strip VRoid's degenerate (0,0,0,0) COLOR_0 vertex attribute
+                // that renders skin/surfaces black under Bevy's PBR pipeline.
+                // See `mesh_fixup` — the material JSON is clean; this is a mesh bug.
+                let fixed = mesh_fixup::strip_degenerate_vertex_colors(
+                    root,
+                    &children_query,
+                    &mesh_handles,
+                    &mut meshes,
+                );
+                if fixed > 0 {
+                    clog_info!(
+                        "🎨 mesh_fixup: stripped degenerate COLOR_0 from {} mesh(es) on slot {}",
+                        fixed,
+                        slot_for_observer
+                    );
+                }
 
                 let bones = skeleton::discover_bones(
                     root,
