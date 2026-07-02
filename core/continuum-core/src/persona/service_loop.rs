@@ -1272,22 +1272,35 @@ async fn run_self_cycle(
     // synchronous loop, no narration of the intermediate step into the room. She
     // speaks only when she has something worth the others' attention
     // (ACTING-ORGANISM.md §4).
-    // `directed = addressed`: a self-tick fires on ANY external change, INCLUDING a
-    // message that named her — the `addressed` perception above captures exactly that.
-    // When she was addressed, the turn IS directed: the bare-PASS escape is withheld so
-    // a question put to her by name isn't ghosted. This is the SAME structural-addressing
-    // fact the message path feeds to `directed` (service_loop ~658), now also honored on
-    // the digest-perceived path (ordinary room chat reaches her here, not via the inbound
-    // settle_step). When `addressed` is false the turn is genuinely ambient and silence
-    // stays first-class. Framing over a structural fact, never an output filter
-    // ([[no-hardcoded-heuristics-to-steer-cognition]]): she can still decline in her own
-    // words, she just isn't handed the silent hatch when named.
+    // Self-initiated free time NEVER force-withholds the silence hatch. A self-tick
+    // fires on ANY external change — INCLUDING another party's content-free courtesy
+    // that happens to name her by id — and forcing a turn on that is EXACTLY what
+    // generated the two-persona courtesy spiral: two AIs mutually naming each other →
+    // `addressed` true every tick → hatch withheld → a forced content-free turn → the
+    // other's self-tick perceives it → resonance, burning GPU (~40s/decode each) and
+    // flooding the room with poisoned `assistant` precedent (proven live 2026-07-02,
+    // room cb2e21a1, personas 90e758b2 + 0d3209a1). On her OWN time the hatch is
+    // inviolable: she may always yield when nothing is worth the others' attention
+    // ([[idle-is-self-directed-free-time]], [[organic-substrate-continuous-concern-scheduler]]).
+    //
+    // `addressed` stays a PERCEIVED fact — the `persona.selftick.perceive` probe above
+    // surfaces it for observability, and it still floors the wake decision (`wakes_on`,
+    // so a hard mute can't swallow a real alarm). The message content itself is in the
+    // burst turns, so the mind still SEES that it was named and can choose to answer; it
+    // is simply never COMPELLED to on the ambient tick. Anti-ghosting of a genuine direct
+    // question is the REACTIVE message path's job (service_loop ~675,
+    // `TurnFraming::message(directed)`), where a real inbound question arrives as an
+    // addressed event — not this ambient digest tick. Framing over a structural fact,
+    // never a gate on cognition ([[no-hardcoded-heuristics-to-steer-cognition]]): the
+    // previous `self_thread(addressed)` was a dumb function steering the mind away from
+    // silence; removing the force lets per-slice judgment decide, which is the whole
+    // organic-substrate thesis.
     let (step, _turn_metrics) = crate::cognition::act_observe::settle_step(
         &cycle,
         burst,
         ctx.identity.default_room,
         true,
-        crate::cognition::workspace::TurnFraming::self_thread(addressed),
+        crate::cognition::workspace::TurnFraming::self_thread(false),
     )
     .await;
     match step {
