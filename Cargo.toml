@@ -127,11 +127,11 @@ members = [
 # `peer_identity_index_converges_across_scopes_via_coordinator_store`. The
 # general scope-home scoped_state (tool.mode/wall/coordination) is unchanged.
 # Additive — no ABI change. Re-validate persona attach on bump.
-airc-core = { git = "https://github.com/CambrianTech/airc", rev = "305c319" }
-airc-protocol = { git = "https://github.com/CambrianTech/airc", rev = "305c319" }
-airc-ipc = { git = "https://github.com/CambrianTech/airc", rev = "305c319" }
-airc-lib = { git = "https://github.com/CambrianTech/airc", rev = "305c319" }
-airc-wire = { git = "https://github.com/CambrianTech/airc", rev = "305c319" }
+airc-core = { git = "https://github.com/CambrianTech/airc", rev = "70c6d55" }
+airc-protocol = { git = "https://github.com/CambrianTech/airc", rev = "70c6d55" }
+airc-ipc = { git = "https://github.com/CambrianTech/airc", rev = "70c6d55" }
+airc-lib = { git = "https://github.com/CambrianTech/airc", rev = "70c6d55" }
+airc-wire = { git = "https://github.com/CambrianTech/airc", rev = "70c6d55" }
 
 # Candle ML framework — patched via [patch.crates-io] below.
 # Fixes: Metal buffer pool leak (#2271), RoPE NEOX convention (#3410)
