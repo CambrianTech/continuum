@@ -1295,6 +1295,18 @@ pub fn start_server(
     // DB path is passed per-request from TypeScript - NO defaults
     runtime.register(Arc::new(DataModule::new()));
 
+    // ChatModule: the kernel `chat/send` + `chat/poll` surface (aliases of
+    // `collaboration/chat/*`). Unlike `search/*` these DynCommands are NOT
+    // inventory-self-registering — they carry a late-bound `CommandExecutor`
+    // (via `command_objects(executor_slot)`) so `chat/send` can dual-write to
+    // `data/*` + airc. That injected state is why the module is the required
+    // carrier. It was defined and schema-registered but never wired into boot,
+    // so `chat/send`/`chat/poll` LISTED via `commands/list` yet failed to route
+    // ("No module registered for this command prefix") — a discoverability lie.
+    // The slot is filled by `install_executor_on_all` after all registration,
+    // so ordering here is irrelevant.
+    runtime.register(Arc::new(crate::modules::chat::ChatModule::new()));
+
     // Phase 4a: LoggerModule (absorbs standalone logger worker)
     // Provides log/write, log/ping via main socket
     runtime.register(Arc::new(LoggerModule::new()));
