@@ -7,24 +7,16 @@
 use bevy::camera::visibility::RenderLayers;
 use bevy::camera::RenderTarget;
 use bevy::prelude::*;
-use bevy::scene::SceneInstanceReady;
 
 use super::animation::{
-    BreathingAnimation, CameraHeadLock, CognitiveGesture, Emotion, EmotionAnimation,
-    GestureAnimation, GesturePhase, IdleMotion, ModelPath, MouthWeight, SlotId, Speaking,
-    SpeechClip, EMOTION_DECAY_SECS,
+    CognitiveGesture, Emotion, EmotionAnimation, GestureAnimation, GesturePhase, MouthWeight,
+    Speaking, SpeechClip, EMOTION_DECAY_SECS,
 };
-use super::api::gpu_manager;
-use super::scene::{
-    build_scene, room_color_from_identity, scene_model_path, select_scene_for_identity,
-    AnimationConfig, AvatarObject, LightRig, RoomConfig, SceneConfig,
-};
+use super::scene::physics::PhysicsBackendRegistry;
+use super::scene::{birth_scene_for_identity, build_scene_from_description, InstantiateParams};
 use super::setup::spawn_readback_entity_opt;
-use super::skeleton;
 use super::types::*;
 use super::{AVATAR_HEIGHT, AVATAR_WIDTH, HD_HEIGHT, HD_WIDTH};
-use crate::gpu::make_entry;
-use crate::gpu::memory_manager::{GpuPriority, GpuSubsystem};
 use crate::{clog_info, clog_warn};
 
 #[allow(clippy::too_many_arguments)]
@@ -41,6 +33,7 @@ pub(super) fn process_commands(
     mut slot_dims: ResMut<SlotDimensions>,
     mut hd_pool: ResMut<HdRenderTargetPool>,
     mut gpu_guards: ResMut<GpuGuards>,
+    physics_registry: Res<PhysicsBackendRegistry>,
 ) {
     while let Ok(cmd) = command_channel.0.try_recv() {
         match cmd {
@@ -59,218 +52,48 @@ pub(super) fn process_commands(
                     slot_data.teardown(&mut commands);
                     gpu_guards.model_guards.remove(&slot);
 
-                    let bg_color = room_color_from_identity(&identity);
-                    let config = SceneConfig {
-                        slot_id: slot,
+                    // Data-driven load: birth the scene as a backend-neutral
+                    // SceneDescription, then walk it into the live Bevy graph
+                    // through the single instantiate seam. The birther owns the
+                    // room/backdrop/camera-framing choice; instantiate owns the
+                    // avatar spawn + observer + coordinate correction. The avatar
+                    // node id == identity == objects key == observer identity.
+                    let desc = birth_scene_for_identity(&identity, &model_path, &display_name);
+                    let params = InstantiateParams {
+                        slot,
                         render_target: slot_data.render_target.clone(),
-                        background_color: bg_color,
-                        layer: layer.clone(),
-                        light_rig: LightRig::Portrait,
-                        camera_transform: None,
+                        layer,
+                        pending: &mut pending,
+                        physics: physics_registry.backend(),
                     };
-                    let (scene_root, camera_entity) = build_scene(&mut commands, &config);
-                    // Camera gets SlotId + CameraHeadLock
-                    commands
-                        .entity(camera_entity)
-                        .insert((SlotId(slot), CameraHeadLock { head_y: None }));
-
-                    let scene_entry = select_scene_for_identity(&identity);
-                    let asset_path = scene_model_path(scene_entry.filename)
-                        .to_string_lossy()
-                        .to_string();
-                    commands.entity(scene_root).insert(RoomConfig {
-                        asset_path,
-                        layer: layer.clone(),
-                        scene_id: scene_entry.id.to_string(),
-                    });
-
-                    slot_data.scene_root = Some(scene_root);
-                    slot_data.camera_entity = Some(camera_entity);
-
-                    // Bevy's glTF loader requires .glb/.gltf extension.
-                    // VRM files are glTF-compatible — create a .glb symlink if needed.
-                    let load_path = if model_path.ends_with(".vrm") {
-                        let glb_path = model_path.replacen(".vrm", ".glb", 1);
-                        if !std::path::Path::new(&glb_path).exists()
-                            && std::path::Path::new(&model_path).exists()
-                        {
-                            // Symlink target must be relative to the link's directory (just the filename)
-                            let vrm_filename = std::path::Path::new(&model_path)
-                                .file_name()
-                                .unwrap_or_default();
-                            #[cfg(unix)]
-                            {
-                                let _ = std::os::unix::fs::symlink(vrm_filename, &glb_path);
+                    match build_scene_from_description(&mut commands, &asset_server, &desc, params) {
+                        Ok(instance) => {
+                            slot_data.scene_root = Some(instance.scene_root);
+                            slot_data.camera_entity = instance.camera_entity;
+                            for (id, object) in instance.objects {
+                                slot_data.add_object(id, object);
                             }
-                            #[cfg(not(unix))]
-                            {
-                                let _ = std::fs::copy(&model_path, &glb_path);
-                            }
-                        }
-                        glb_path
-                    } else {
-                        model_path.clone()
-                    };
-
-                    let mut avatar = AvatarObject::new(
-                        model_path.clone(),
-                        display_name.clone(),
-                        identity.clone(),
-                    );
-
-                    let asset_path = format!("{}#Scene0", load_path);
-                    let scene_handle: Handle<Scene> = asset_server.load(&asset_path);
-                    let gltf_handle: Handle<bevy::gltf::Gltf> = asset_server.load(&load_path);
-                    clog_info!(
-                        "🎨 Slot {}: loading '{}' from {}",
-                        slot,
-                        display_name,
-                        load_path
-                    );
-                    pending.scene_handles.push(PendingLoadEntry {
-                        slot,
-                        handle: scene_handle.clone(),
-                        path: asset_path,
-                        logged_final: false,
-                    });
-                    pending.gltf_handles.push(PendingLoadEntry {
-                        slot,
-                        handle: gltf_handle.clone(),
-                        path: load_path.clone(),
-                        logged_final: false,
-                    });
-                    avatar.state.gltf_handle = Some(gltf_handle);
-
-                    // Coordinate adapter: translate the model's authored space
-                    // into our canonical (glTF/Bevy) space so ANY model kind
-                    // (VRM 0.x/1.0, ReadyPlayerMe, converted .glb) presents
-                    // face-on and upright — no per-model rotation hacks.
-                    let model_transform = super::coordinate::detect_convention(&load_path)
-                        .correction()
-                        .to_transform();
-
-                    // Spawn avatar entity with animation Components
-                    let avatar_entity = commands
-                        .spawn((
-                            SceneRoot(scene_handle),
-                            model_transform,
-                            layer.clone(),
-                            SlotId(slot),
-                            AnimationConfig::portrait(slot),
-                            ModelPath(load_path.clone()),
-                            // Animation components — entity IS the animated object
-                            BreathingAnimation::new(slot),
-                            IdleMotion::new(slot),
-                        ))
-                        .id();
-                    commands.entity(scene_root).add_child(avatar_entity);
-
-                    let layer_for_observer = layer;
-                    let slot_for_observer = slot;
-                    let model_path_for_observer = load_path.clone();
-                    let identity_for_observer = identity.clone();
-                    commands.entity(avatar_entity).observe(
-                        move |event: On<SceneInstanceReady>,
-                              children_query: Query<&Children>,
-                              names: Query<&Name>,
-                              mut transforms: Query<&mut Transform>,
-                              mut cmds: Commands,
-                              mut slot_registry: ResMut<SlotRegistry>,
-                              mut gpu_guards: ResMut<GpuGuards>,
-                              mut snapshots: ResMut<SnapshotTracker>| {
-                            let root = event.entity;
-                            let child_count = skeleton::count_descendants(root, &children_query);
-                            skeleton::propagate_render_layers(
-                                root,
-                                &layer_for_observer,
-                                &children_query,
-                                &mut cmds,
-                            );
-                            skeleton::dump_bone_names(root, &children_query, &names);
-                            skeleton::fix_tpose_arms(
-                                root,
-                                &children_query,
-                                &names,
-                                &mut transforms,
-                            );
-
-                            // Discover bones and insert Skeleton Component directly on the entity
-                            let bones = skeleton::discover_bones(
-                                root,
-                                slot_for_observer,
-                                &model_path_for_observer,
-                                &children_query,
-                                &names,
-                                &transforms,
-                            );
-                            cmds.entity(root).insert(bones);
-
-                            if let Some(slot_data) = slot_registry.slots.get_mut(&slot_for_observer)
-                            {
-                                if let Some(avatar) = slot_data.avatar_mut(&identity_for_observer) {
-                                    avatar.state.model_loaded = true;
+                            if let Some(camera_entity) = instance.camera_entity {
+                                if let Ok(mut camera) = cameras.get_mut(camera_entity) {
+                                    camera.is_active = true;
                                 }
                             }
-
-                            snapshots.mark_loaded(slot_for_observer);
-
-                            let model_bytes = std::fs::metadata(&model_path_for_observer)
-                                .map(|m| m.len())
-                                .unwrap_or(0);
-                            if model_bytes > 0 {
-                                if let Some(mgr) = gpu_manager() {
-                                    match mgr.allocate(
-                                        GpuSubsystem::Rendering,
-                                        model_bytes,
-                                        GpuPriority::Interactive,
-                                    ) {
-                                        Ok(guard) => {
-                                            mgr.eviction_registry.register(make_entry(
-                                                &format!("render:model:slot{}", slot_for_observer),
-                                                &format!(
-                                                    "Avatar Model (slot {})",
-                                                    slot_for_observer
-                                                ),
-                                                GpuPriority::Interactive,
-                                                model_bytes,
-                                            ));
-                                            gpu_guards
-                                                .model_guards
-                                                .insert(slot_for_observer, guard);
-                                        }
-                                        Err(e) => {
-                                            clog_warn!(
-                                                "🎨 GPU: model allocation for slot {} failed ({})",
-                                                slot_for_observer,
-                                                e
-                                            );
-                                        }
-                                    }
-                                }
-                            }
-
                             clog_info!(
-                                "🎨 SceneInstanceReady: slot {}, entity {:?}, {} descendants",
-                                slot_for_observer,
-                                root,
-                                child_count
+                                "🎨 Slot {}: loaded '{}' from {}",
+                                slot,
+                                display_name,
+                                model_path
                             );
-                        },
-                    );
-
-                    avatar.entity = Some(avatar_entity);
-                    slot_data.add_object(identity, Box::new(avatar));
-
-                    if let Ok(mut camera) = cameras.get_mut(camera_entity) {
-                        camera.is_active = true;
+                        }
+                        Err(e) => {
+                            clog_warn!(
+                                "🎨 Slot {}: scene instantiation failed for '{}': {}",
+                                slot,
+                                display_name,
+                                e
+                            );
+                        }
                     }
-
-                    clog_info!(
-                        "🎨 Slot {}: loaded '{}' from {}",
-                        slot,
-                        display_name,
-                        load_path
-                    );
                 }
             }
             AvatarCommand::Unload { slot } => {

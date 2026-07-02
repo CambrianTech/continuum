@@ -47,6 +47,7 @@ pub(super) fn run_bevy_app(
         .insert_resource(SnapshotTracker::new())
         .insert_resource(RenderSchedule::default())
         .insert_resource(GpuGuards::default())
+        .insert_resource(scene::physics::PhysicsBackendRegistry::default())
         .insert_resource(SharedMemoryStats(memory_stats))
         .add_plugins(
             DefaultPlugins
