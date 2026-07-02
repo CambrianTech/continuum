@@ -2767,6 +2767,7 @@ name = "continuum-airc-protocol"
 version = "0.1.0"
 dependencies = [
  "airc-core",
+ "positron-core",
  "serde",
  "serde_json",
  "ts-rs 12.0.1",
@@ -2852,6 +2853,7 @@ dependencies = [
  "continuum-bridge-protocol",
  "continuum-client",
  "continuum-orm-derive",
+ "continuum-positron",
  "crossbeam-channel",
  "csv",
  "dashmap",

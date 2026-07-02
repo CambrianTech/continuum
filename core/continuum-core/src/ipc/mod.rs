@@ -107,6 +107,7 @@ impl IpcStream for TcpStream {
 // here so existing call sites resolve unchanged.
 
 pub mod diagnostics;
+pub mod positron_dispatch;
 pub mod protocol;
 pub mod ws;
 
@@ -2302,8 +2303,17 @@ pub fn start_server(
                     .unwrap_or_else(|_| "127.0.0.1".to_string());
                 let bind_addr = format!("{bind_host}:{port}");
                 let ws_executor = Arc::clone(&executor);
+                // The positron state substrate for the thin-client fleet:
+                // one shared snapshot+broadcast cell that WS sessions
+                // subscribe against. The airc source wiring (task #29,
+                // next step) will hold this same handle and call
+                // `Substrate::store` on each airc roster/message/wall/
+                // scoped-state change, so the projection tracks the
+                // airc-owned truth. Constructed here (not in `serve`) so
+                // that future subscriber can share the instance.
+                let ws_substrate = continuum_positron::Substrate::new();
                 state.rt_handle.spawn(async move {
-                    ws::serve(bind_addr, ws_executor).await;
+                    ws::serve(bind_addr, ws_executor, ws_substrate).await;
                 });
             }
         }

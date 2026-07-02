@@ -27,12 +27,15 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use continuum_airc_protocol::{WsClientMessage, WsServerMessage};
+use continuum_airc_protocol::{AircCommandRequest, WsClientMessage, WsServerMessage};
+use continuum_positron::{run_session, ClientMessage, CommandDispatch, ServerMessage, Substrate};
 use futures_util::{SinkExt, StreamExt};
 use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::mpsc;
 use tokio_tungstenite::{accept_async, tungstenite::Message};
 
 use crate::identity::PeerId;
+use crate::ipc::positron_dispatch::ExecutorDispatch;
 use crate::routing::{CallerIdentity, CommandRequestHandler};
 use crate::runtime::CommandExecutor;
 
@@ -40,7 +43,7 @@ use crate::runtime::CommandExecutor;
 /// until the process exits. Spawned on the tokio runtime from `start_server`
 /// when `CONTINUUM_CORE_WS` is set. Fails loud (logs + returns) if the bind
 /// fails — a dead listener never silently pretends to serve.
-pub async fn serve(bind_addr: String, executor: Arc<CommandExecutor>) {
+pub async fn serve(bind_addr: String, executor: Arc<CommandExecutor>, substrate: Substrate) {
     let listener = match TcpListener::bind(&bind_addr).await {
         Ok(listener) => {
             crate::log_info!(
@@ -57,12 +60,23 @@ pub async fn serve(bind_addr: String, executor: Arc<CommandExecutor>) {
         }
     };
 
+    // One production dispatcher shared across connections — the real
+    // command surface behind the positron session's `CommandDispatch`
+    // seam (see `positron_dispatch`). The WS transport routes commands
+    // via the RPC path today, so this is not on the hot path here, but
+    // `run_session` requires it and a session-routed command would
+    // dispatch correctly.
+    let dispatcher: Arc<dyn CommandDispatch> =
+        Arc::new(ExecutorDispatch::new(Arc::clone(&executor)));
+
     loop {
         match listener.accept().await {
             Ok((stream, peer)) => {
                 let executor = Arc::clone(&executor);
+                let substrate = substrate.clone();
+                let dispatcher = Arc::clone(&dispatcher);
                 tokio::spawn(async move {
-                    handle_ws_connection(stream, peer, executor).await;
+                    handle_ws_connection(stream, peer, executor, substrate, dispatcher).await;
                 });
             }
             Err(e) => {
@@ -74,12 +88,29 @@ pub async fn serve(bind_addr: String, executor: Arc<CommandExecutor>) {
 
 /// Serve one upgraded WebSocket connection.
 ///
-/// Each inbound command is dispatched on its own task and replies funnel back
-/// through an mpsc channel to a single sender task — this is what makes the
-/// correlation `id` meaningful: command B can complete and reply before the
-/// slower command A, and the client resolves each by its id. Serializing
-/// dispatch inline would defeat the multiplexing the envelope exists for.
-async fn handle_ws_connection(stream: TcpStream, peer: SocketAddr, executor: Arc<CommandExecutor>) {
+/// The one socket multiplexes two completion models (see the module
+/// doc's ack-semantics note):
+///
+/// - **Commands** (`WsClientMessage::Command`) ride the **RPC path**:
+///   each dispatches on its own task and its correlated
+///   `WsServerMessage::Response` funnels back through the sender
+///   channel. Per-command tasks are what make the correlation `id`
+///   meaningful — command B can reply before the slower command A, and
+///   the client resolves each by id. Serializing dispatch inline would
+///   defeat the multiplexing the envelope exists for.
+/// - **State subscriptions** (`Subscribe`/`Observe`) ride the
+///   **positron path**: they feed one long-lived [`run_session`] task
+///   (via [`WsClientMessage::to_session`]), whose `ServerMessage::State`
+///   / `CommandFailed` output a drain task re-frames as
+///   [`WsServerMessage`] onto the same sender channel. Subscriptions
+///   have no per-frame reply — the live `State` stream IS the response.
+async fn handle_ws_connection(
+    stream: TcpStream,
+    peer: SocketAddr,
+    executor: Arc<CommandExecutor>,
+    substrate: Substrate,
+    dispatcher: Arc<dyn CommandDispatch>,
+) {
     let ws_stream = match accept_async(stream).await {
         Ok(ws) => ws,
         Err(e) => {
@@ -91,9 +122,9 @@ async fn handle_ws_connection(stream: TcpStream, peer: SocketAddr, executor: Arc
 
     let (mut ws_sink, mut ws_source) = ws_stream.split();
 
-    // Sender task: owns the write half, serializes reply frames. Concurrent
-    // dispatch tasks push completed WsServerMessages here.
-    let (tx, mut rx) = tokio::sync::mpsc::channel::<Message>(64);
+    // Sender task: owns the write half, serializes reply frames. Both the
+    // per-command RPC tasks and the positron drain task push here.
+    let (tx, mut rx) = mpsc::channel::<Message>(64);
     let sender_task = tokio::spawn(async move {
         while let Some(msg) = rx.recv().await {
             if ws_sink.send(msg).await.is_err() {
@@ -102,28 +133,100 @@ async fn handle_ws_connection(stream: TcpStream, peer: SocketAddr, executor: Arc
         }
     });
 
+    // Positron session: one task per connection. `run_session` reads
+    // `ClientMessage`s from `session_in` and emits `ServerMessage`s on
+    // `session_out`; the drain task re-frames those as `WsServerMessage`
+    // onto the shared sender. Dropping `session_in_tx` at teardown closes
+    // the inbound channel → `run_session` returns cleanly → its
+    // forwarders abort → `session_out_tx` drops → the drain task ends.
+    let (session_in_tx, session_in_rx) = mpsc::channel::<ClientMessage>(64);
+    let (session_out_tx, mut session_out_rx) = mpsc::channel::<ServerMessage>(64);
+    let session_task = tokio::spawn(async move {
+        if let Err(e) = run_session(session_in_rx, session_out_tx, substrate, dispatcher).await {
+            crate::log_warn!("ipc", "ws", "positron session for {} ended with error: {}", peer, e);
+        }
+    });
+    let drain_tx = tx.clone();
+    let drain_task = tokio::spawn(async move {
+        while let Some(server_msg) = session_out_rx.recv().await {
+            let Some(reply) = ws_reply_from_session(server_msg) else {
+                continue;
+            };
+            match serde_json::to_string(&reply) {
+                Ok(json) => {
+                    if drain_tx.send(Message::Text(json.into())).await.is_err() {
+                        break;
+                    }
+                }
+                Err(e) => {
+                    crate::log_error!("ipc", "ws", "failed to serialize positron frame: {}", e);
+                }
+            }
+        }
+    });
+
     while let Some(frame) = ws_source.next().await {
         match frame {
             Ok(Message::Text(text)) => {
-                let executor = Arc::clone(&executor);
-                let tx = tx.clone();
-                tokio::spawn(async move {
-                    if let Some(reply) = dispatch_ws_text(&text, &executor).await {
-                        match serde_json::to_string(&reply) {
-                            Ok(json) => {
-                                let _ = tx.send(Message::Text(json.into())).await;
+                let client_msg: WsClientMessage = match serde_json::from_str(&text) {
+                    Ok(msg) => msg,
+                    Err(e) => {
+                        // Malformed frame carries no correlation id to answer to.
+                        // Log loud, drop; never fabricate a bogus id=0 reply.
+                        crate::log_warn!(
+                            "ipc",
+                            "ws",
+                            "dropping malformed WS frame (no correlation id to answer): {}",
+                            e
+                        );
+                        continue;
+                    }
+                };
+                match client_msg {
+                    WsClientMessage::Command { id, request } => {
+                        let executor = Arc::clone(&executor);
+                        let tx = tx.clone();
+                        tokio::spawn(async move {
+                            let reply = dispatch_command(id, &request, &executor).await;
+                            match serde_json::to_string(&reply) {
+                                Ok(json) => {
+                                    let _ = tx.send(Message::Text(json.into())).await;
+                                }
+                                Err(e) => {
+                                    crate::log_error!(
+                                        "ipc",
+                                        "ws",
+                                        "failed to serialize WS reply: {}",
+                                        e
+                                    );
+                                }
                             }
-                            Err(e) => {
-                                crate::log_error!(
+                        });
+                    }
+                    // Subscribe / Observe → the positron session. `to_session`
+                    // returns None only for Command (handled above), so a
+                    // None here is a genuine protocol contradiction, not a
+                    // dropped subscription.
+                    other => match other.to_session() {
+                        Some(session_msg) => {
+                            if session_in_tx.send(session_msg).await.is_err() {
+                                crate::log_debug!(
                                     "ipc",
                                     "ws",
-                                    "failed to serialize WS reply: {}",
-                                    e
+                                    "positron session inbound closed; dropping frame from {}",
+                                    peer
                                 );
                             }
                         }
-                    }
-                });
+                        None => {
+                            crate::log_warn!(
+                                "ipc",
+                                "ws",
+                                "non-Command frame did not project to a session message (protocol contradiction)"
+                            );
+                        }
+                    },
+                }
             }
             // tokio-tungstenite auto-replies to Ping and handles Pong; Binary
             // isn't part of the thin-client envelope yet (all frames are JSON
@@ -137,40 +240,55 @@ async fn handle_ws_connection(stream: TcpStream, peer: SocketAddr, executor: Arc
         }
     }
 
-    // Dropping the last `tx` closes the channel; the sender task drains and exits.
+    // Teardown order: drop the session inbound so `run_session` exits and
+    // its forwarders abort; drop the last sender `tx` so the sender task
+    // drains and exits. Then await all three tasks so no forwarder or
+    // channel outlives the connection.
+    drop(session_in_tx);
     drop(tx);
+    let _ = session_task.await;
+    let _ = drain_task.await;
     let _ = sender_task.await;
     crate::log_debug!("ipc", "ws", "WS client disconnected: {}", peer);
 }
 
-/// Decode one text frame into a [`WsClientMessage`], dispatch it as a
-/// Provisional WS caller, and produce the correlated [`WsServerMessage`].
+/// Dispatch one RPC `Command` as a Provisional WS caller and pair the
+/// result to its correlation `id`. Unauthenticated remote socket → nil
+/// peer_id, `Ws` source; trust comes from the source (Provisional
+/// ceiling), not the id.
+async fn dispatch_command(
+    id: u64,
+    request: &AircCommandRequest,
+    executor: &CommandExecutor,
+) -> WsServerMessage {
+    let caller = CallerIdentity::ws(PeerId::from_uuid(uuid::Uuid::nil()));
+    let response = CommandRequestHandler::execute_command_request(executor, request, caller).await;
+    WsServerMessage::response(id, response)
+}
+
+/// Re-frame a positron [`ServerMessage`] as the thin-client
+/// [`WsServerMessage`] that rides the WS transport.
 ///
-/// Returns `None` only when the frame can't be parsed into an envelope — a
-/// malformed frame carries no correlation `id`, so there is nothing to answer
-/// to. That path logs (loud), never silently swallows a well-formed request.
-async fn dispatch_ws_text(text: &str, executor: &CommandExecutor) -> Option<WsServerMessage> {
-    let client_msg: WsClientMessage = match serde_json::from_str(text) {
-        Ok(msg) => msg,
-        Err(e) => {
+/// `State` is the live snapshot/update — the whole reason the positron
+/// path exists. `CommandFailed` returns `None`: this transport routes
+/// commands via the RPC path (`WsServerMessage::Response{status:error}`
+/// carries a failure), so `run_session` here is never fed a `Command`
+/// and cannot legitimately emit `CommandFailed`. If one arrives it's a
+/// wiring contradiction — log it loud (never fabricate a wire frame the
+/// envelope has no variant for), and let the caller skip it.
+fn ws_reply_from_session(msg: ServerMessage) -> Option<WsServerMessage> {
+    match msg {
+        ServerMessage::State(envelope) => Some(WsServerMessage::state(envelope)),
+        ServerMessage::CommandFailed { correlation_id, .. } => {
             crate::log_warn!(
                 "ipc",
                 "ws",
-                "dropping malformed WS frame (no correlation id to answer): {}",
-                e
+                "positron session emitted CommandFailed (correlation {}) on the WS transport, \
+                 which routes commands via RPC — dropping (command failures surface as \
+                 Response{{status:error}})",
+                correlation_id
             );
-            return None;
-        }
-    };
-
-    match client_msg {
-        WsClientMessage::Command { id, request } => {
-            // Unauthenticated remote socket → nil peer_id, Ws source. Trust
-            // comes from the source (Provisional ceiling), not the id.
-            let caller = CallerIdentity::ws(PeerId::from_uuid(uuid::Uuid::nil()));
-            let response =
-                CommandRequestHandler::execute_command_request(executor, &request, caller).await;
-            Some(WsServerMessage::response(id, response))
+            None
         }
     }
 }
@@ -212,11 +330,13 @@ mod tests {
                 assert_eq!(id, 42);
                 assert_eq!(request.path, "chat/send");
             }
+            other => panic!("expected a Command frame, got {other:?}"),
         }
         // And the reply pairs to the same id.
         let reply = WsServerMessage::response(42, AircCommandResponse::ok(serde_json::json!({})));
         match reply {
             WsServerMessage::Response { id, .. } => assert_eq!(id, 42),
+            other => panic!("expected a Response reply, got {other:?}"),
         }
     }
 
@@ -273,9 +393,12 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind ephemeral");
         let addr = listener.local_addr().expect("local addr");
         let exec = Arc::clone(&executor);
+        let substrate = Substrate::new();
+        let dispatcher: Arc<dyn CommandDispatch> =
+            Arc::new(ExecutorDispatch::new(Arc::clone(&exec)));
         tokio::spawn(async move {
             if let Ok((stream, peer)) = listener.accept().await {
-                handle_ws_connection(stream, peer, exec).await;
+                handle_ws_connection(stream, peer, exec, substrate, dispatcher).await;
             }
         });
 
@@ -315,6 +438,97 @@ mod tests {
                     }
                 }
             }
+            other => panic!("expected a Response, got {other:?}"),
+        }
+    }
+
+    // what this catches: the OTHER half of the WS ingress no unit test reaches —
+    // the positron state path over a REAL socket. A client `Subscribe` frame must
+    // be decoded, routed into the per-connection `run_session` (NOT the RPC path),
+    // deliver the snapshot as a `WsServerMessage::State`, and then fan a later
+    // `Substrate::store` out live as another `State` frame — all without a second
+    // request. This is the wire-level twin of `run_session`'s in-memory tests: it
+    // proves `handle_ws_connection` wires Subscribe→session, the drain task, and
+    // `ws_reply_from_session` together. A regression that dropped the session task
+    // (or only served the snapshot) leaves the thin-client fleet un-live (#794).
+    #[tokio::test]
+    async fn ws_subscribe_streams_a_live_state_frame_over_a_real_socket() {
+        use continuum_positron::{StateEnvelope, StateLayer};
+        use crate::runtime::{ModuleRegistry, CommandExecutor as Exec};
+        use tokio_tungstenite::connect_async;
+
+        fn state_env(kind: &str, revision: u64) -> StateEnvelope {
+            StateEnvelope {
+                kind: kind.to_string(),
+                revision: Some(revision),
+                layer: StateLayer::Session,
+                payload: serde_json::json!({ "rev": revision }),
+            }
+        }
+
+        // The state path never dispatches a command, so an empty executor is
+        // enough to satisfy the dispatcher the session task requires.
+        let executor = Arc::new(Exec::new(Arc::new(ModuleRegistry::new())));
+
+        // Shared substrate — the same handle the (future) airc source writes to.
+        // Seed the "chat" kind so the Subscribe snapshot has a revision to serve.
+        let substrate = Substrate::new();
+        substrate.store(state_env("chat", 1));
+        let dispatcher: Arc<dyn CommandDispatch> =
+            Arc::new(ExecutorDispatch::new(Arc::clone(&executor)));
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind ephemeral");
+        let addr = listener.local_addr().expect("local addr");
+        let conn_substrate = substrate.clone();
+        tokio::spawn(async move {
+            if let Ok((stream, peer)) = listener.accept().await {
+                handle_ws_connection(stream, peer, executor, conn_substrate, dispatcher).await;
+            }
+        });
+
+        let (mut ws, _resp) = connect_async(format!("ws://{addr}"))
+            .await
+            .expect("client connects to WS ingress");
+
+        // Subscribe to "chat" — rides the positron path (to_session), not RPC.
+        let subscribe = WsClientMessage::Subscribe {
+            kinds: vec!["chat".into()],
+            layers: vec![StateLayer::Session],
+            last_seen: vec![],
+        };
+        ws.send(Message::Text(serde_json::to_string(&subscribe).unwrap().into()))
+            .await
+            .expect("send subscribe frame");
+
+        // First frame: the snapshot at revision 1, re-framed as WsServerMessage::State.
+        let snapshot = decode_state(ws.next().await);
+        assert_eq!(snapshot.kind, "chat");
+        assert_eq!(snapshot.revision, Some(1), "snapshot rides the wire as a State frame");
+
+        // A later store must arrive live over the SAME socket, no second request.
+        substrate.store(state_env("chat", 2));
+        let live = decode_state(ws.next().await);
+        assert_eq!(
+            live.revision,
+            Some(2),
+            "the store fanned out over the real socket as a live State frame"
+        );
+    }
+
+    /// Decode the next WS frame as a `State` envelope, or panic loud with what
+    /// arrived instead — a `Response` here would mean Subscribe was mis-routed
+    /// onto the RPC path.
+    #[cfg(test)]
+    fn decode_state(
+        frame: Option<Result<Message, tokio_tungstenite::tungstenite::Error>>,
+    ) -> continuum_positron::StateEnvelope {
+        let text = match frame.expect("a frame arrives").expect("frame is ok") {
+            Message::Text(t) => t,
+            other => panic!("expected a text frame, got {other:?}"),
+        };
+        match serde_json::from_str::<WsServerMessage>(&text).expect("frame parses") {
+            WsServerMessage::State(env) => env,
+            other => panic!("expected a State frame, got {other:?}"),
         }
     }
 }

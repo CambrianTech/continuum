@@ -9,4 +9,4 @@ import type { AircCommandRequest } from "./AircCommandRequest";
  * it back verbatim and never interprets it. `u64` is mapped to a TS `number`
  * (correlation ids never approach 2^53 on a single connection).
  */
-export type WsClientMessage = { "type": "command", id: number, request: AircCommandRequest, };
+export type WsClientMessage = { "type": "command", id: number, request: AircCommandRequest, } | { "type": "subscribe", kinds: Array<string>, layers: Array<StateLayer>, last_seen: Array<KindRevision>, } | { "type": "observe", spec: ObserverSpec, last_seen: Array<KindRevision>, };

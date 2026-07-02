@@ -6,5 +6,9 @@ import type { AircCommandResponse } from "./AircCommandResponse";
  *
  * `id` mirrors the request's correlation id so the client can resolve the
  * matching pending promise.
+ *
+ * Not `Eq`: the `State` variant carries a [`StateEnvelope`] whose `payload`
+ * is a `serde_json::Value` (only `PartialEq`). `PartialEq` is what the tests
+ * and any dedup need; `Eq` was never load-bearing here.
  */
-export type WsServerMessage = { "type": "response", id: number, response: AircCommandResponse, };
+export type WsServerMessage = { "type": "response", id: number, response: AircCommandResponse, } | { "type": "state" } & StateEnvelope;
