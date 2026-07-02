@@ -55,6 +55,7 @@ pub mod identity_provider;
 pub mod persona_identity;
 pub mod inbox;
 pub mod inference_profile;
+pub mod loop_dedup;
 pub mod model_override;
 pub mod portability;
 pub mod profile_builder;

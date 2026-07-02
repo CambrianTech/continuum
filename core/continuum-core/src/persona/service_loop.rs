@@ -1167,10 +1167,19 @@ async fn run_self_cycle(
         let cognition = ctx.cognition.lock().await;
         cognition.compose_for_turn(&ctx.profile, now_ms).await
     };
+    // Collapse loop-filler BEFORE anything reasons over the burst (task #16). Two idle
+    // personas cycling stock courtesy templates each append another COPY per tick — the
+    // item list grows so the fingerprint changes, even though no DISTINCT turn is new,
+    // and the wake fires into a 40s decode → resonance. Deduping to first-occurrence
+    // makes a repeated template a no-op for the fingerprint (stable → sleep), while a
+    // genuinely new turn still changes it (→ wake). Symmetric to burst_fingerprint's
+    // own-post exclusion — scheduling hygiene, not cognition-steering. See
+    // `persona::loop_dedup`. [[false-refusal-anchor-present-but-positionally-defeated]].
+    let deliveries = crate::persona::loop_dedup::dedup_loop_filler(&composed.deliveries);
     // Wake on a CHANGE to what I should attend to — others' chat (own chat excluded
     // so my speech can't spiral into self-talk) OR my own active work (so the
     // heartbeat advances my thread, not just reacts to pokes). See burst_fingerprint.
-    let fp = burst_fingerprint(&composed.deliveries, &ctx.identity.peer_id.to_string());
+    let fp = burst_fingerprint(&deliveries, &ctx.identity.peer_id.to_string());
     if fp == *last_burst_fp {
         return; // nothing NEW to attend to (no external change, no work progress) → sleep
     }
@@ -1181,7 +1190,7 @@ async fn run_self_cycle(
     let burst = crate::cognition::workspace::Burst::from_turns(
         ctx.identity.default_room,
         build_workspace_turns(
-            &composed.deliveries,
+            &deliveries,
             &ctx.identity.peer_id.to_string(),
             &ctx.identity.agent_name,
             // The self-tick perceives AMBIENT state — no single triggering
@@ -1207,8 +1216,7 @@ async fn run_self_cycle(
     // with the fact; the substrate only perceives.
     let identity = ctx.identity.persona_identity();
     let own_peer = ctx.identity.peer_id.to_string();
-    let addressed = composed
-        .deliveries
+    let addressed = deliveries
         .iter()
         .filter(|d| d.source_id == "airc")
         .flat_map(|d| d.items.iter())
