@@ -32,11 +32,21 @@
 //! ## What's deferred
 //!
 //! Media attachments, reactions, threads, typing indicators —
-//! deferred to follow-up slices once the substrate event source is
-//! wired (subsequent task). The schema grows by extending these
+//! deferred to follow-up slices once the **airc source wiring** lands
+//! (the projection subscribes to airc's room stream; see the "State
+//! ownership" note in `lib.rs`). The schema grows by extending these
 //! structs; the wire kind string stays `"chat"`. Renderers that don't
 //! know the new fields ignore them; the ts-rs flow makes those
 //! additions visible to the widget side at the same time.
+//!
+//! ## These fields are a VIEW onto airc-owned state
+//!
+//! `room_id` is the airc `RoomId`; `roster` is airc presence; messages
+//! ride airc's room event stream. This struct is the *projection* the
+//! renderer reads — the substrate resolves display names / sender kind
+//! ONCE here so the renderer never re-derives from ids (that re-derive
+//! is the widget-local cache #794 is a symptom of). It is not a second
+//! store of room truth; the airc row is the truth.
 
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -94,7 +104,8 @@ pub enum SenderKind {
 
 /// A roster entry — a persona present in this room.
 ///
-/// Roster is substrate-owned and refreshed on join / leave / spawn /
+/// Roster is airc presence (surfaced through `RoomRosterSource`),
+/// projected into this view and refreshed on join / leave / spawn /
 /// despawn. The widget never derives "who is here?" from message
 /// senders — that's a stale-cache footgun #794 is currently a symptom
 /// of.

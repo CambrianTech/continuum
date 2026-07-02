@@ -70,7 +70,7 @@ impl Connection {
     /// Single dispatch point — the variant match is exhaustive per
     /// `[[no-fallbacks-ever]]`. Async because `apply_command` is
     /// async (the dispatcher may be remote).
-    pub async fn handle<D: CommandDispatch>(
+    pub async fn handle<D: CommandDispatch + ?Sized>(
         &mut self,
         msg: ClientMessage,
         substrate: &Substrate,
@@ -118,7 +118,7 @@ impl Connection {
     /// protocol §"Delivery scope": the caller (slice 2D-3 async
     /// session task) is responsible for emitting these frames ONLY
     /// to this connection.
-    pub async fn handle_command<D: CommandDispatch>(
+    pub async fn handle_command<D: CommandDispatch + ?Sized>(
         &mut self,
         msg: ClientMessage,
         dispatcher: &D,
