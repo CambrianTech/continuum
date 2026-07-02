@@ -108,6 +108,7 @@ impl IpcStream for TcpStream {
 
 pub mod diagnostics;
 pub mod protocol;
+pub mod ws;
 
 use diagnostics::{current_rss_mb, dump_memory_report, log_command_rss_delta};
 pub use protocol::InboxMessageRequest;
@@ -2280,6 +2281,30 @@ pub fn start_server(
                         );
                     }
                 }
+            }
+        }
+    }
+
+    // WebSocket listener for the thin-client fleet (task #29). Additive,
+    // env-gated by `CONTINUUM_CORE_WS=<port>` (bind host shared with TCP via
+    // `CONTINUUM_CORE_BIND`, default 127.0.0.1). Browsers can't speak the
+    // length-prefixed IPC frame format, so thin clients (`sdk/typescript`
+    // WebSocketTransport) speak WebSocket + the multiplexed
+    // WsClientMessage/WsServerMessage envelope. Every frame dispatches through
+    // the SAME `CommandRequestHandler::execute_command_request` owner the airc
+    // peer path uses, stamped `CallerSource::Ws` → Provisional ceiling (see
+    // ipc::ws module docs + the TCP SECURITY note above; same unauthenticated
+    // AiSafe surface, do NOT bind 0.0.0.0 on an untrusted network).
+    if let Ok(ws_port_str) = std::env::var("CONTINUUM_CORE_WS") {
+        if let Ok(port) = ws_port_str.parse::<u16>() {
+            if port > 0 {
+                let bind_host = std::env::var("CONTINUUM_CORE_BIND")
+                    .unwrap_or_else(|_| "127.0.0.1".to_string());
+                let bind_addr = format!("{bind_host}:{port}");
+                let ws_executor = Arc::clone(&executor);
+                state.rt_handle.spawn(async move {
+                    ws::serve(bind_addr, ws_executor).await;
+                });
             }
         }
     }
