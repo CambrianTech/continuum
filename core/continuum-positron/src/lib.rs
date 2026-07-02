@@ -127,7 +127,7 @@ pub mod substrate;
 
 pub use broadcast::Broadcast;
 pub use cache::SubstrateStateCache;
-pub use chat::{ChatMessageView, ChatViewState, PersonaSlotView, SenderKind};
+pub use chat::{ChatMessageView, ChatViewState, RosterSlotView, SenderKind};
 pub use connection::Connection;
 pub use dispatch::{apply_command, CommandDispatch};
 pub use kinds::{KnownKind, RevisionKey};

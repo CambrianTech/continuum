@@ -20,18 +20,23 @@
 //! stream: airc publishes room events on the bus, we fold them into the
 //! renderer-shaped [`ChatViewState`], the renderer reads the snapshot.
 //! The renderer never re-derives identity from ids (the widget-local
-//! cache footgun #794 exists to kill) — the projection resolves
-//! `sender_name`/`sender_kind`/roster ONCE here, exactly as
-//! [`crate::chat`-shaped] `ChatViewState` documents.
+//! cache footgun #794 exists to kill) — the projection resolves a
+//! sender's `sender_name`/`sender_kind`/`integrations` ONCE here, by
+//! looking the id up in the roster, exactly as `ChatViewState` documents.
 //!
 //! ## Which airc streams map to `kind="chat"`
 //!
-//! Two bus streams fold onto the single existing `KnownKind::Chat`:
+//! Two bus streams fold onto the single existing `KnownKind::Chat`, and
+//! the split between them mirrors airc's own message/identity split:
 //!
-//! - **`chat:posted`** — a posted message. Deserialized into
-//!   [`AircChatPosted`], appended to the room's bounded message ring.
+//! - **`chat:posted`** — a posted message. Deserialized into the **thin**
+//!   [`AircChatPosted`] (core message facts only — no identity), appended
+//!   to the room's bounded message ring. Identity is resolved from the
+//!   roster at fold time.
 //! - **`presence:updated`** — the room roster changed. Deserialized into
-//!   [`AircPresenceUpdate`], replaces the room's roster.
+//!   [`AircPresenceUpdate`], each entry an airc member joined with its
+//!   identity card (neutral `kind` + opaque `integrations`), replacing
+//!   the room's roster. This is the identity lookup table for messages.
 //!
 //! Wall / coordination / kanban / widget state (task #89) are *different*
 //! kinds and are deliberately out of scope here — they get their own
@@ -62,7 +67,7 @@
 //! instancing (many rooms cached at once) is kind-instancing, deferred
 //! with the same `RevisionKey` note in `continuum-positron/src/kinds.rs`.
 
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::sync::Arc;
 
 use serde::Deserialize;
@@ -70,14 +75,20 @@ use tokio::sync::broadcast::error::RecvError;
 use uuid::Uuid;
 
 use continuum_positron::{
-    ChatMessageView, ChatViewState, KnownKind, PersonaSlotView, SenderKind, StateBuilder, Substrate,
+    ChatMessageView, ChatViewState, KnownKind, RosterSlotView, SenderKind, StateBuilder, Substrate,
 };
 
 use crate::runtime::MessageBus;
 
 /// Bus event prefix carrying posted-message payloads. A cheap prefix
 /// check keeps presence/media/transport events out of the message arm.
-const CHAT_POSTED: &str = "chat:posted";
+///
+/// `pub(crate)` because the EMITTER
+/// (`airc::inbound_attach::publish_transcript_event`) and this CONSUMER
+/// must agree on the wire name — one string, one source of truth
+/// (compression principle). The emitter imports this const rather than
+/// re-typing the literal.
+pub(crate) const CHAT_POSTED: &str = "chat:posted";
 /// Bus event carrying a room roster/presence delta.
 const PRESENCE_UPDATED: &str = "presence:updated";
 /// Bounded message window carried in each snapshot. Matches the
@@ -86,31 +97,47 @@ const PRESENCE_UPDATED: &str = "presence:updated";
 /// pull, not a fatter snapshot (see `ChatViewState.messages` doc).
 const MAX_MESSAGES_PER_SNAPSHOT: usize = 50;
 
-/// Typed `chat:posted` payload — the fields the projection needs to fold
-/// a message into the renderer view. camelCase to match the bus JSON
-/// convention (`chat/types.rs` wire shapes are camelCase). `sender_kind`
-/// reuses the canonical [`SenderKind`] wire representation
-/// (`{"kind":"human"}`) — one type, one shape, per the compression
-/// principle. `room_name` is required: the emitter resolved the room to
-/// post, so it knows the name; an event without it is incomplete and
-/// skipped.
+/// A provisional display label for a sender whose identity card has not
+/// yet folded in through presence — the first 8 chars of the peer id,
+/// prefixed. Deliberately unmistakable for a real name so a stuck-
+/// provisional row is visible, not silently wrong. Upgraded in place the
+/// instant `presence:updated` resolves the card
+/// ([[fallbacks-are-illegal-fail-loud]]).
+fn provisional_sender_name(sender_id: Uuid) -> String {
+    let simple = sender_id.simple().to_string();
+    format!("peer-{}", &simple[..8])
+}
+
+/// Typed `chat:posted` payload — **thin by design**. It carries only the
+/// authoritative core facts airc owns about a posted message:
+/// `message_id` (airc's `event_id`), `room_id`, `sender_id`, `content`,
+/// `timestamp`. camelCase matches the bus JSON convention.
+///
+/// Identity (sender name / kind / badges) is NOT a message fact — it is
+/// an identity-card fact that lives on the airc `Identity`, surfaced
+/// through `presence:updated`. The projection resolves it downstream by
+/// looking `sender_id` up in the roster (see `apply_message`). A message
+/// whose sender has no card yet renders provisionally
+/// ([[fallbacks-are-illegal-fail-loud]]: a provisional projection
+/// pending authoritative truth, never a fabricated identity). Keeping
+/// the emitter thin is what lets Hermes / openclaw / a python foundry
+/// emit `chat:posted` without knowing continuum's identity model.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct AircChatPosted {
     message_id: Uuid,
     room_id: Uuid,
-    room_name: String,
     sender_id: Uuid,
-    sender_name: String,
-    sender_kind: SenderKind,
     content: String,
     timestamp: u64,
 }
 
 /// Typed `presence:updated` payload — a full roster snapshot for a room.
-/// The roster is airc presence; the projection replaces (not merges) the
-/// room's roster from this snapshot so a leave is reflected by absence,
-/// never a stale merged entry.
+/// The roster is airc presence joined with each member's identity card;
+/// the projection replaces (not merges) the room's roster from this
+/// snapshot so a leave is reflected by absence, never a stale merged
+/// entry. This is also the lookup table `apply_message` resolves a
+/// sender's name / kind / badges from.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct AircPresenceUpdate {
@@ -119,12 +146,20 @@ struct AircPresenceUpdate {
     roster: Vec<AircPresenceSlot>,
 }
 
-/// One roster entry inside an [`AircPresenceUpdate`].
+/// One roster entry inside an [`AircPresenceUpdate`] — a member joined
+/// with its airc identity card. `kind` is the neutral author kind
+/// (`Human` / `Agent` / `System`) resolved by the presence emitter from
+/// the card; `integrations` is the opaque cross-system badge map from
+/// `Identity.integrations`, transported straight through and interpreted
+/// only at continuum's app layer (renderer reads `continuum.persona*`).
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct AircPresenceSlot {
-    persona_id: Uuid,
+    member_id: Uuid,
     display_name: String,
+    kind: SenderKind,
+    #[serde(default)]
+    integrations: BTreeMap<String, String>,
     active: bool,
 }
 
@@ -144,7 +179,7 @@ struct ChatProjection {
     /// Bounded ring of recent messages, oldest first (the order
     /// `ChatViewState.messages` is documented to carry).
     messages: VecDeque<ChatMessageView>,
-    roster: Vec<PersonaSlotView>,
+    roster: Vec<RosterSlotView>,
 }
 
 impl ChatProjection {
@@ -162,33 +197,61 @@ impl ChatProjection {
         }
     }
 
-    /// Switch the accumulator to `room_id`/`room_name` if it differs from
-    /// the current room, clearing the prior room's ring + roster. The
+    /// Switch the accumulator to `room_id` if it differs from the current
+    /// room, clearing the prior room's ring + roster + stale name. The
     /// single-cache-per-kind substrate holds one room's view at a time.
-    fn focus_room(&mut self, room_id: Uuid, room_name: &str) {
+    /// The room *name* is an identity-card fact carried by presence, not
+    /// by messages, so this does NOT set it — a message that focuses a
+    /// fresh room leaves `room_name` empty until presence resolves it.
+    fn switch_room(&mut self, room_id: Uuid) {
         if self.room_id != Some(room_id) {
             self.room_id = Some(room_id);
+            self.room_name.clear();
             self.messages.clear();
             self.roster.clear();
         }
-        // Always adopt the latest resolved name for the focused room.
-        self.room_name = room_name.to_string();
+    }
+
+    /// Resolve a sender's display name / kind / badges from the roster.
+    /// The roster is airc presence joined with identity cards
+    /// (`presence:updated`); a sender present there renders richly. A
+    /// sender whose card has not folded in yet renders **provisionally**
+    /// — a short peer-id label, neutral `Human`, empty badges — upgraded
+    /// in place the instant presence lands. This is a provisional
+    /// projection pending authoritative truth, never a fabricated
+    /// identity ([[fallbacks-are-illegal-fail-loud]]).
+    fn resolve_sender(&self, sender_id: Uuid) -> (String, SenderKind, BTreeMap<String, String>) {
+        match self.roster.iter().find(|s| s.member_id == sender_id) {
+            Some(slot) => (
+                slot.display_name.clone(),
+                slot.kind,
+                slot.integrations.clone(),
+            ),
+            None => (
+                provisional_sender_name(sender_id),
+                SenderKind::Human,
+                BTreeMap::new(),
+            ),
+        }
     }
 
     /// Fold a posted message into the view and store the new snapshot.
     /// Idempotent on `message_id`: a redelivered event (the bus is
-    /// best-effort) does not double-append.
+    /// best-effort) does not double-append. Identity is resolved from the
+    /// roster, never carried on the message (see `AircChatPosted`).
     fn apply_message(&mut self, msg: AircChatPosted) {
-        self.focus_room(msg.room_id, &msg.room_name);
+        self.switch_room(msg.room_id);
         if self.messages.iter().any(|m| m.id == msg.message_id) {
             return;
         }
+        let (sender_name, sender_kind, integrations) = self.resolve_sender(msg.sender_id);
         self.messages.push_back(ChatMessageView {
             id: msg.message_id,
             room_id: msg.room_id,
             sender_id: msg.sender_id,
-            sender_name: msg.sender_name,
-            sender_kind: msg.sender_kind,
+            sender_name,
+            sender_kind,
+            integrations,
             content: msg.content,
             timestamp: msg.timestamp,
         });
@@ -199,19 +262,43 @@ impl ChatProjection {
     }
 
     /// Replace the focused room's roster from a presence snapshot and
-    /// store the new view.
+    /// store the new view. Presence is the room-name authority, so this
+    /// (unlike a message) adopts the resolved name. It also **upgrades**
+    /// any message whose sender was provisional (posted before its card
+    /// arrived) now that the card is known.
     fn apply_presence(&mut self, update: AircPresenceUpdate) {
-        self.focus_room(update.room_id, &update.room_name);
+        self.switch_room(update.room_id);
+        self.room_name = update.room_name;
         self.roster = update
             .roster
             .into_iter()
-            .map(|s| PersonaSlotView {
-                persona_id: s.persona_id,
+            .map(|s| RosterSlotView {
+                member_id: s.member_id,
                 display_name: s.display_name,
+                kind: s.kind,
+                integrations: s.integrations,
                 active: s.active,
             })
             .collect();
+        self.reresolve_messages();
         self.store();
+    }
+
+    /// Re-resolve each stored message's identity from the current roster.
+    /// Only **upgrades** — a message whose sender is present in the roster
+    /// adopts the card; a sender who has since left keeps its already-
+    /// resolved identity (presence is authoritative for who is here NOW,
+    /// not for who authored a past message). This is what makes the
+    /// provisional-until-card projection settle to the truth in place.
+    fn reresolve_messages(&mut self) {
+        let roster = &self.roster;
+        for msg in self.messages.iter_mut() {
+            if let Some(slot) = roster.iter().find(|s| s.member_id == msg.sender_id) {
+                msg.sender_name = slot.display_name.clone();
+                msg.sender_kind = slot.kind;
+                msg.integrations = slot.integrations.clone();
+            }
+        }
     }
 
     /// Frame the current accumulator as a `chat` `StateEnvelope` and write
@@ -293,16 +380,46 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    /// A thin `chat:posted` payload — core message facts only, sender
+    /// hardcoded to `0xc`. Mirrors the emitter contract (identity is NOT
+    /// on the message; it resolves from the roster).
     fn posted(room: Uuid, msg: Uuid, text: &str) -> serde_json::Value {
+        posted_from(room, msg, Uuid::from_u128(0xc), text)
+    }
+
+    /// A thin `chat:posted` payload with an explicit `sender_id` — used to
+    /// prove roster-based identity resolution.
+    fn posted_from(room: Uuid, msg: Uuid, sender: Uuid, text: &str) -> serde_json::Value {
         json!({
             "messageId": msg,
             "roomId": room,
-            "roomName": "general",
-            "senderId": Uuid::from_u128(0xc),
-            "senderName": "Joel",
-            "senderKind": { "kind": "human" },
+            "senderId": sender,
             "content": text,
             "timestamp": 1_700_000_000_000u64,
+        })
+    }
+
+    /// A `presence:updated` payload for `room` with a single member
+    /// carrying `kind` + `integrations`.
+    fn presence_one(
+        room: Uuid,
+        member: Uuid,
+        name: &str,
+        kind: &str,
+        integrations: serde_json::Value,
+    ) -> serde_json::Value {
+        json!({
+            "roomId": room,
+            "roomName": "general",
+            "roster": [
+                {
+                    "memberId": member,
+                    "displayName": name,
+                    "kind": { "kind": kind },
+                    "integrations": integrations,
+                    "active": true,
+                }
+            ],
         })
     }
 
@@ -319,7 +436,9 @@ mod tests {
         // what this catches: regression where a chat:posted event does
         // not reach the substrate as a ChatViewState — the whole point
         // of the airc source wiring. Drives the pure fold (no bus) and
-        // asserts the cache holds the projected message.
+        // asserts the cache holds the projected message. With no presence
+        // yet, the sender renders provisionally (short peer-id label,
+        // neutral Human) and the room_name is unresolved.
         let substrate = Substrate::new();
         let mut p = ChatProjection::new(substrate.clone());
         let room = Uuid::from_u128(0xa);
@@ -330,11 +449,81 @@ mod tests {
         }
         let view = current_chat(&substrate);
         assert_eq!(view.room_id, room);
-        assert_eq!(view.room_name, "general");
+        assert_eq!(view.room_name, "", "room_name is unresolved until presence");
         assert_eq!(view.messages.len(), 1);
         assert_eq!(view.messages[0].id, m);
         assert_eq!(view.messages[0].content, "hi");
         assert_eq!(view.messages[0].sender_kind, SenderKind::Human);
+        assert!(
+            view.messages[0].sender_name.starts_with("peer-"),
+            "provisional sender label, got {}",
+            view.messages[0].sender_name
+        );
+        assert!(view.messages[0].integrations.is_empty());
+    }
+
+    #[test]
+    fn message_before_presence_is_provisional_then_upgrades() {
+        // what this catches: the provisional-until-card contract — a
+        // message posted before its sender's identity card arrives
+        // renders provisionally, then UPGRADES in place (name + kind +
+        // badges) the instant presence folds the card. A regression that
+        // dropped the re-resolution would leave the sender stuck as
+        // "peer-xxxx"/Human forever. [[fallbacks-are-illegal-fail-loud]].
+        let substrate = Substrate::new();
+        let mut p = ChatProjection::new(substrate.clone());
+        let room = Uuid::from_u128(0xa);
+        let sender = Uuid::from_u128(0xd);
+        if let ProjectionInput::Message(m) =
+            classify(CHAT_POSTED, &posted_from(room, Uuid::from_u128(0xb), sender, "hi")).unwrap()
+        {
+            p.apply_message(m);
+        }
+        // Provisional before the card.
+        assert_eq!(current_chat(&substrate).messages[0].sender_kind, SenderKind::Human);
+        // Card arrives via presence: Agent named Helper carrying a badge.
+        let presence = presence_one(
+            room,
+            sender,
+            "Helper",
+            "agent",
+            json!({ "continuum.persona_id": "helper-1" }),
+        );
+        if let ProjectionInput::Presence(u) = classify(PRESENCE_UPDATED, &presence).unwrap() {
+            p.apply_presence(u);
+        }
+        let msg = &current_chat(&substrate).messages[0];
+        assert_eq!(msg.sender_name, "Helper");
+        assert_eq!(msg.sender_kind, SenderKind::Agent);
+        assert_eq!(
+            msg.integrations.get("continuum.persona_id").map(String::as_str),
+            Some("helper-1"),
+            "opaque badge resolved from the card"
+        );
+    }
+
+    #[test]
+    fn message_after_presence_resolves_identity_from_the_roster() {
+        // what this catches: regression where sender identity is not
+        // resolved from the roster (the whole point of the thin emitter).
+        // Presence first establishes the card, then a message from that
+        // sender must render richly with no provisional phase.
+        let substrate = Substrate::new();
+        let mut p = ChatProjection::new(substrate.clone());
+        let room = Uuid::from_u128(0xa);
+        let sender = Uuid::from_u128(0xd);
+        let presence = presence_one(room, sender, "Helper", "agent", json!({}));
+        if let ProjectionInput::Presence(u) = classify(PRESENCE_UPDATED, &presence).unwrap() {
+            p.apply_presence(u);
+        }
+        if let ProjectionInput::Message(m) =
+            classify(CHAT_POSTED, &posted_from(room, Uuid::from_u128(0xb), sender, "hi")).unwrap()
+        {
+            p.apply_message(m);
+        }
+        let msg = &current_chat(&substrate).messages[0];
+        assert_eq!(msg.sender_name, "Helper");
+        assert_eq!(msg.sender_kind, SenderKind::Agent);
     }
 
     #[test]
@@ -342,7 +531,8 @@ mod tests {
         // what this catches: regression where presence:updated does not
         // fold into the roster — the second airc stream (outlier B,
         // maximally different from the message stream) proving the
-        // accumulator holds two independent airc shapes on one kind.
+        // accumulator holds two independent airc shapes on one kind, and
+        // carries each member's neutral kind + opaque badges.
         let substrate = Substrate::new();
         let mut p = ChatProjection::new(substrate.clone());
         let room = Uuid::from_u128(0xa);
@@ -350,8 +540,20 @@ mod tests {
             "roomId": room,
             "roomName": "general",
             "roster": [
-                { "personaId": Uuid::from_u128(0xd), "displayName": "Helper", "active": true },
-                { "personaId": Uuid::from_u128(0xe), "displayName": "Critic", "active": false },
+                {
+                    "memberId": Uuid::from_u128(0xd),
+                    "displayName": "Helper",
+                    "kind": { "kind": "agent" },
+                    "integrations": { "continuum.persona_id": "helper-1" },
+                    "active": true,
+                },
+                {
+                    "memberId": Uuid::from_u128(0xe),
+                    "displayName": "Joel",
+                    "kind": { "kind": "human" },
+                    "integrations": {},
+                    "active": false,
+                },
             ],
         });
         match classify(PRESENCE_UPDATED, &payload).unwrap() {
@@ -361,7 +563,13 @@ mod tests {
         let view = current_chat(&substrate);
         assert_eq!(view.roster.len(), 2);
         assert_eq!(view.roster[0].display_name, "Helper");
+        assert_eq!(view.roster[0].kind, SenderKind::Agent);
+        assert_eq!(
+            view.roster[0].integrations.get("continuum.persona_id").map(String::as_str),
+            Some("helper-1")
+        );
         assert!(view.roster[0].active);
+        assert_eq!(view.roster[1].kind, SenderKind::Human);
         assert!(!view.roster[1].active);
     }
 
@@ -378,11 +586,7 @@ mod tests {
         {
             p.apply_message(m);
         }
-        let presence = json!({
-            "roomId": room,
-            "roomName": "general",
-            "roster": [{ "personaId": Uuid::from_u128(0xd), "displayName": "Helper", "active": true }],
-        });
+        let presence = presence_one(room, Uuid::from_u128(0xd), "Helper", "agent", json!({}));
         if let ProjectionInput::Presence(u) = classify(PRESENCE_UPDATED, &presence).unwrap() {
             p.apply_presence(u);
         }
@@ -443,7 +647,8 @@ mod tests {
         // [[fallbacks-are-illegal-fail-loud]]: an event that can't
         // deserialize into the contract is not-a-chat-event → None.
         assert!(classify("media:frame", &json!({ "bytes": 4 })).is_none());
-        // chat:posted missing senderName / senderKind / ids → not renderable.
+        // chat:posted missing the core message facts (ids / timestamp) →
+        // not a renderable message.
         assert!(classify(CHAT_POSTED, &json!({ "content": "hi" })).is_none());
     }
 
