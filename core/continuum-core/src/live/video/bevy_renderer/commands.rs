@@ -17,7 +17,7 @@ use super::animation::{
 use super::api::gpu_manager;
 use super::scene::{
     build_scene, room_color_from_identity, scene_model_path, select_scene_for_identity,
-    AnimationConfig, AvatarObject, LightRig, RoomConfig, SceneConfig, SceneObject,
+    AnimationConfig, AvatarObject, LightRig, RoomConfig, SceneConfig,
 };
 use super::setup::spawn_readback_entity_opt;
 use super::skeleton;
@@ -251,7 +251,7 @@ pub(super) fn process_commands(
                     );
 
                     avatar.entity = Some(avatar_entity);
-                    slot_data.add_object(identity, SceneObject::Avatar(avatar));
+                    slot_data.add_object(identity, Box::new(avatar));
 
                     if let Ok(mut camera) = cameras.get_mut(camera_entity) {
                         camera.is_active = true;
