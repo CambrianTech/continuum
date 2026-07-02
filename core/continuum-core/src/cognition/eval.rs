@@ -996,6 +996,9 @@ async fn run_pass(
                 std::slice::from_ref(&task_delivery),
                 "",
                 "",
+                // A single-task exam IS the stimulus — the task delivery is the
+                // whole thread; there is no out-of-band trigger to anchor.
+                None,
             ),
         );
         // `directed = true`: an exam question is put TO the persona — it is not

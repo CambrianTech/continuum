@@ -549,6 +549,16 @@ async fn serve_persona_loop_inner(
                 &composed.deliveries,
                 &ctx.identity.peer_id.to_string(),
                 &ctx.identity.agent_name,
+                // Anchor the message that woke this turn as the final peer turn —
+                // the composed thread's `airc` delivery can lag the wake, and a
+                // directed turn that reasons over a stale thread emits an empty
+                // completion → Pass (see `TriggerTurn`). `msg.peer_id` resolves to
+                // its roster name inside; `now_ms` is the wake time.
+                Some(TriggerTurn {
+                    peer_id: &msg.peer_id.to_string(),
+                    content: &msg.text,
+                    occurred_at_ms: now_ms,
+                }),
             ),
         );
         // Mark this world-state as just-deliberated so the next heartbeat tick doesn't
@@ -977,10 +987,36 @@ enum Wake {
 /// `ComposedTurn`) because the format only depends on the deliveries; eval can
 /// hand-build a single synthetic airc delivery for a task without composing a
 /// full turn.
+/// The message that WOKE a turn — anchored as the burst's final peer turn so the
+/// persona always perceives what it is answering, regardless of RAG-delivery lag.
+///
+/// The `airc` RAG delivery that threads the conversation is refreshed
+/// asynchronously from the wake, so a directed message can trigger a turn whose
+/// composed thread still ends on the persona's OWN prior reply. The model then
+/// sees nothing new after its last turn and emits an empty completion
+/// (decodeTokens=1, text="") which parses as Pass — the persona goes silent on a
+/// question addressed straight at it, then answers ~one self-tick later once the
+/// delivery catches up. Carrying the trigger here lets `build_workspace_turns`
+/// guarantee it is the last `user` turn, deterministically, with no dependence on
+/// delivery timing. The self-tick / eval / turn_frame callers pass `None` (they
+/// perceive ambient state, no single triggering message) and stay byte-identical.
+pub(crate) struct TriggerTurn<'a> {
+    /// The waking peer's id — resolved to a display name through the SAME roster
+    /// `names` map the rest of the thread uses (falls back to the raw id, honest,
+    /// never fabricated — the [[fallbacks-are-illegal-fail-loud]] doctrine).
+    pub peer_id: &'a str,
+    /// The message body that triggered the turn.
+    pub content: &'a str,
+    /// When it arrived (airc `occurred_at_ms` / wake `now_ms`) — drives the
+    /// `[t=…]` prefix so an anchored trigger renders identically to a threaded one.
+    pub occurred_at_ms: u64,
+}
+
 pub(crate) fn build_workspace_turns(
     deliveries: &[crate::persona::rag_budget::RagDelivery],
     own_peer: &str,
     agent_name: &str,
+    trigger: Option<TriggerTurn<'_>>,
 ) -> Vec<crate::cognition::workspace::BurstTurn> {
     use crate::cognition::workspace::BurstTurn;
     use std::collections::HashMap;
@@ -1000,7 +1036,7 @@ pub(crate) fn build_workspace_turns(
             Some((peer, name))
         })
         .collect();
-    deliveries
+    let mut turns: Vec<BurstTurn> = deliveries
         .iter()
         .filter(|d| d.source_id == "airc")
         .flat_map(|d| d.items.iter())
@@ -1022,7 +1058,32 @@ pub(crate) fn build_workspace_turns(
             let occurred_at_ms = item.metadata.get("occurred_at_ms").and_then(|v| v.as_u64());
             BurstTurn::attributed(is_self, author, item.content.clone(), occurred_at_ms)
         })
-        .collect()
+        .collect();
+
+    // Anchor the waking message as the final peer turn. Without this the persona
+    // can go silent on a question addressed straight at it (see `TriggerTurn`):
+    // the delivery lagged the wake, the thread ended on her own prior reply, the
+    // model saw nothing new and emitted an empty completion → Pass. Idempotent:
+    // if the delivery ALREADY threaded the trigger as the last peer turn (the
+    // caught-up case — the self-tick that re-perceives it), this is a no-op, so
+    // the trigger is never doubled. A turn is only ever triggered by a PEER
+    // message (own-echo is filtered upstream), so the anchor is always a `user`
+    // turn (is_self = false) — resolved to a name through the same roster map.
+    if let Some(trigger) = trigger {
+        let already_last = turns
+            .last()
+            .is_some_and(|t| !t.is_self && t.content == trigger.content);
+        if !already_last {
+            let author = names.get(trigger.peer_id).copied().unwrap_or(trigger.peer_id);
+            turns.push(BurstTurn::attributed(
+                false,
+                author,
+                trigger.content.to_string(),
+                Some(trigger.occurred_at_ms),
+            ));
+        }
+    }
+    turns
 }
 
 /// The "is there anything for me to attend to?" MECHANISM for the heartbeat: a
@@ -1123,6 +1184,11 @@ async fn run_self_cycle(
             &composed.deliveries,
             &ctx.identity.peer_id.to_string(),
             &ctx.identity.agent_name,
+            // The self-tick perceives AMBIENT state — no single triggering
+            // message to anchor. It re-derives the thread from the (now caught-up)
+            // delivery, which is exactly why it recovers the message-path's missed
+            // turn ~one tick later; anchoring is the message path's job.
+            None,
         ),
     );
     let Some(cycle) = crate::cognition::persona_workspace::global().get(&ctx.identity.peer_id.as_uuid())
@@ -1454,7 +1520,7 @@ mod tests {
                 ),
             ];
 
-            let turns = build_workspace_turns(&deliveries, me, "Asha");
+            let turns = build_workspace_turns(&deliveries, me, "Asha", None);
 
             // STRUCTURAL attribution (the whole point of the turns refactor): the
             // `is_self` bit role attribution turns on must be set from peer_id ==
@@ -1494,6 +1560,79 @@ mod tests {
                 burst.contains(&format!("{stranger}: lurking")),
                 "unrostered peer falls back to its id, got:\n{burst}"
             );
+        }
+
+        #[test]
+        fn trigger_is_anchored_as_last_turn_when_delivery_lags() {
+            // what this catches: the empty-message-turn quirk (glass-box 2026-06-30).
+            // The `airc` delivery that threads the conversation is refreshed
+            // asynchronously from the wake, so a directed message can trigger a turn
+            // whose composed thread still ENDS on the persona's own prior reply. The
+            // model then sees nothing new after its last turn, emits an empty
+            // completion, and the turn parses as Pass — the persona goes silent on a
+            // question aimed straight at it. Anchoring the trigger as the final `user`
+            // turn (from the KNOWN waking message, not the lagging delivery) makes the
+            // turn always perceive what it is answering. This test simulates the lag
+            // (delivery ends on her own turn, trigger absent) and asserts the trigger
+            // becomes the last peer turn, resolved to its roster name.
+            let me = "me-peer";
+            let joel = "7711fe60-a19f-4f41-9ab6-24c884757338";
+            let deliveries = vec![
+                delivery("room-roster", vec![roster(joel, "Joel"), roster(me, "Asha")]),
+                // The lagging thread: her own reply is the last turn; Joel's new
+                // question has NOT yet landed in the delivery.
+                delivery(
+                    "airc",
+                    vec![chat(joel, "morning"), chat(me, "morning Joel!")],
+                ),
+            ];
+            let trigger = super::super::TriggerTurn {
+                peer_id: joel,
+                content: "run commands/list and tell me the count",
+                occurred_at_ms: 42,
+            };
+            let turns = build_workspace_turns(&deliveries, me, "Asha", Some(trigger));
+
+            let last = turns.last().expect("at least the anchored trigger");
+            assert!(
+                !last.is_self
+                    && last.author == "Joel"
+                    && last.content == "run commands/list and tell me the count",
+                "the waking message must be anchored as the final peer turn (roster \
+                 name resolved), got {last:?}"
+            );
+            assert_eq!(turns.len(), 3, "two threaded turns + the anchored trigger");
+        }
+
+        #[test]
+        fn trigger_is_not_doubled_when_delivery_already_threaded_it() {
+            // what this catches: idempotency of the anchor. On the self-tick that
+            // re-perceives the message ~one tick later, the delivery HAS caught up —
+            // the trigger is already the last peer turn. Anchoring must be a no-op
+            // then, never a duplicate turn (which would make her re-answer / echo).
+            let me = "me-peer";
+            let joel = "7711fe60-a19f-4f41-9ab6-24c884757338";
+            let question = "run commands/list and tell me the count";
+            let deliveries = vec![
+                delivery("room-roster", vec![roster(joel, "Joel"), roster(me, "Asha")]),
+                // Caught-up thread: the trigger IS the last turn already.
+                delivery(
+                    "airc",
+                    vec![chat(me, "morning Joel!"), chat(joel, question)],
+                ),
+            ];
+            let trigger = super::super::TriggerTurn {
+                peer_id: joel,
+                content: question,
+                occurred_at_ms: 42,
+            };
+            let turns = build_workspace_turns(&deliveries, me, "Asha", Some(trigger));
+            assert_eq!(
+                turns.len(),
+                2,
+                "already-threaded trigger must not be doubled, got {turns:?}"
+            );
+            assert_eq!(turns.last().unwrap().content, question);
         }
     }
 

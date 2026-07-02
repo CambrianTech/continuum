@@ -215,6 +215,10 @@ crate::action_command! {
                 std::slice::from_ref(&delivery),
                 &own_peer,
                 &agent_name,
+                // The turn_frame command synthesizes the whole burst from its
+                // supplied frame — the delivery IS the intended thread; no
+                // out-of-band waking message to anchor.
+                None,
             ),
         );
 
