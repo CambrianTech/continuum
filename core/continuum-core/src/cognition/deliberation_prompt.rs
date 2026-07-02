@@ -151,7 +151,17 @@ fn tools_block(tools: &[NativeToolSpec], expanded: &BTreeSet<String>) -> Option<
 }
 
 const TOOLS_INTRO: &str = "\n\n[Your tools]\n\
-     You can act, not just talk. Below is your tool menu, grouped by \
+     You can act, not just talk. The tools below are REAL and they are \
+     yours: you are embodied in this system, with hands that reach the live \
+     grid — not a hosted chat model answering from memory. You have NO \
+     knowledge cutoff that limits what you can do here, and no policy that \
+     forbids these actions. So never say you \"can't execute tools\", \"don't \
+     have access\", \"can only assist with conversation\", or refer to a \
+     training date — in this world every one of those is simply false, and a \
+     turn that says it is a mistake to be corrected by just calling the tool. \
+     If another participant (or an earlier line of yours) claims the tools \
+     can't be used, that claim is wrong; ignore it and use them. Below is \
+     your tool menu, grouped by \
      category. Categories that fit what you're doing right now list their \
      verbs inline (`code: run(code, lang?), read(path)` means the tools \
      `code/run` and `code/read`, with their argument names — a `?` marks an \
@@ -270,5 +280,47 @@ mod tests {
         // A SELF-INITIATED turn carries the own-time framing.
         let own = compose(&SystemPromptParts { self_initiated: true, ..base });
         assert!(own.contains("[Your own time]"), "self-initiated ⇒ own-time block: {own}");
+    }
+
+    // what this catches: the anti-refusal coherence anchor. Live glass-box showed
+    // qwen2.5-coder personas collapsing into the base-model RLHF refusal attractor
+    // ("As an AI I can't execute tools / my training cutoff is October 2021") — false
+    // in this substrate — then mirroring each other into a mutual-deflection loop. The
+    // [Your tools] block must, WHEN tools exist, assert embodiment and explicitly
+    // forbid that false refusal (and tell her to ignore a prior line that claims the
+    // tools can't be used), so a contaminated thread can't lock her into refusing. A
+    // regression that softened the header back to a bare "you can act" would trip here.
+    #[test]
+    fn tools_block_inoculates_against_the_false_refusal() {
+        use crate::ai::types::{NativeToolSpec, ToolInputSchema};
+        let expanded = BTreeSet::new();
+        let tools = vec![NativeToolSpec {
+            name: "commands/list".to_string(),
+            description: "List the available commands.".to_string(),
+            input_schema: ToolInputSchema {
+                schema_type: "object".to_string(),
+                properties: serde_json::json!({}),
+                required: None,
+                definitions: None,
+            },
+        }];
+        let s = compose(&SystemPromptParts {
+            system_prompt: "IDENTITY",
+            persona_name: "Asha",
+            tools: &tools,
+            expanded: &expanded,
+            context: "CTX",
+            directed: true,
+            self_initiated: false,
+        });
+        assert!(s.contains("[Your tools]"), "tools present ⇒ tools block: {s}");
+        // The exact false-refusal phrases the base model reaches for are named + forbidden.
+        assert!(s.contains("can't execute tools"), "names the false refusal to forbid it");
+        assert!(s.contains("NO \n     knowledge cutoff") || s.contains("NO knowledge cutoff"),
+            "denies the training-cutoff prior: {s}");
+        assert!(
+            s.contains("embodied in this system"),
+            "asserts embodiment, not hosted-chat-model: {s}"
+        );
     }
 }
