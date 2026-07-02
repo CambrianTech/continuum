@@ -1544,12 +1544,27 @@ pub fn start_server(
         // persona: 'Paige' })` to honestly see what Paige's RAG layer would
         // surface right now. Per [[observability-is-half-the-architecture]].
         //
-        // chain_inference path stays RAG-only here (default_adapter=None)
-        // until the substrate has an Arc-shareable inference adapter pool
-        // (the current AdapterRegistry is Box-based + can't hand out Arcs
-        // without a separate refactor). The chained variant is exercised
-        // by the existing unit tests; production wiring of the inference
-        // probe is a follow-up.
+        // chain_inference path stays RAG-only here (default_adapter=None).
+        //
+        // The old reason cited on this line — "AdapterRegistry is Box-based
+        // + can't hand out Arcs" — is a STALE LIE (same class as #77): #162
+        // already moved the registry to `Arc<dyn AIProviderAdapter>` and
+        // added `get_arc`, and `global_registry()` hands out Arcs today.
+        //
+        // The REAL blocker is per-persona model resolution. The canonical
+        // live generation path (`cognition/generate_response.rs`) selects
+        // via `registry.select(DEFAULT_GENERATE_PROVIDER, Some(&session.model),
+        // Auto)` — it needs the persona's SESSION MODEL to honor the
+        // no-fallbacks `select()` guard (which refuses no-specifier
+        // auto-discovery). The FilesystemPersonaResolver only reads
+        // seed.json (persona_id + name); it has no session/model, and the
+        // substrate "doesn't yet model per-persona adapter preferences"
+        // (see FilesystemPersonaResolver::with_default_adapter). Threading
+        // the persona's live model in is the real follow-up — NOT an Arc
+        // refactor. Until then the chained variant is exercised by unit
+        // tests with an explicit adapter; RAG-only is the honest default
+        // for production callers (the recent deliveries already carry the
+        // persona's own last generations, which is what an inspector reads).
         let rag_inspect_resolver = std::sync::Arc::new(
             crate::modules::persona_rag_inspect_filesystem::FilesystemPersonaResolver::new(
                 crate::modules::persona_instance_manager::resolve_continuum_root(),
