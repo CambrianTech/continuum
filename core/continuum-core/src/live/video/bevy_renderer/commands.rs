@@ -141,11 +141,19 @@ pub(super) fn process_commands(
                     });
                     avatar.state.gltf_handle = Some(gltf_handle);
 
+                    // Coordinate adapter: translate the model's authored space
+                    // into our canonical (glTF/Bevy) space so ANY model kind
+                    // (VRM 0.x/1.0, ReadyPlayerMe, converted .glb) presents
+                    // face-on and upright — no per-model rotation hacks.
+                    let model_transform = super::coordinate::detect_convention(&load_path)
+                        .correction()
+                        .to_transform();
+
                     // Spawn avatar entity with animation Components
                     let avatar_entity = commands
                         .spawn((
                             SceneRoot(scene_handle),
-                            Transform::default(),
+                            model_transform,
                             layer.clone(),
                             SlotId(slot),
                             AnimationConfig::portrait(slot),
