@@ -75,13 +75,23 @@ pub async fn run(socket_path: &str, livekit_url: &str) -> Result<(), Box<dyn std
                     });
                 });
 
-                // Handle commands on this thread
-                if let Err(e) = handle_client(stream, mgr, handle, writer) {
-                    error!("🌉 Client error: {}", e);
-                }
-
-                // Only handle one core connection (first one wins).
-                // Bridge is a single-client server — one core per bridge.
+                // Handle commands on a DEDICATED std thread — NOT a runtime
+                // worker. `dispatch_command` is driven via `rt.block_on(...)`,
+                // and `block_on` panics ("Cannot start a runtime from within a
+                // runtime") if called from a thread that already has the runtime
+                // context entered (i.e. a tokio worker). `run` is an `async fn`
+                // awaited by `#[tokio::main]`, so this loop body executes ON a
+                // worker; calling `handle_client` inline would panic on the
+                // first command. The event forwarder above already sidesteps
+                // this with a plain `std::thread` — mirror it here.
+                let client = std::thread::spawn(move || {
+                    if let Err(e) = handle_client(stream, mgr, handle, writer) {
+                        error!("🌉 Client error: {}", e);
+                    }
+                });
+                // Single-client server — one core per bridge. Block until this
+                // core disconnects, then stop accepting.
+                let _ = client.join();
                 break;
             }
             Err(e) => {
