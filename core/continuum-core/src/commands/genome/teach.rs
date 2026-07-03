@@ -63,11 +63,14 @@ const DEFAULT_DATASET_NAME: &str = "coder-reflex-teacher";
 
 /// How many fix attempts a single task gets before it's dropped as unsolved, when
 /// the caller doesn't set `max_fix_iters`. The first generation + this many fixes.
-const DEFAULT_MAX_FIX_ITERS: u32 = 4;
+/// `pub(crate)` so the [`curriculum`](super::curriculum) synthesizer reuses the same
+/// default — one place decides how many fixes a lesson gets, command or loop.
+pub(crate) const DEFAULT_MAX_FIX_ITERS: u32 = 4;
 
 /// Teacher decoding temperature default — low, because we want correct code, and a
-/// fix turn should converge on the error, not wander.
-const DEFAULT_TEMPERATURE: f32 = 0.2;
+/// fix turn should converge on the error, not wander. `pub(crate)` for the same
+/// single-source reason as [`DEFAULT_MAX_FIX_ITERS`].
+pub(crate) const DEFAULT_TEMPERATURE: f32 = 0.2;
 
 /// The teacher's standing instruction — frames it as an engineer who reads errors
 /// and returns a complete corrected solution. This is the BEHAVIOR the trajectory
