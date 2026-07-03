@@ -36,6 +36,10 @@ pub enum KnownKind {
     /// agenda, recipe): a supersede-projected board keyed by open
     /// consumer-defined category. See [`crate::wall::WallViewState`].
     Wall,
+    /// `"kanban"` — the room's work board: cards (open→merged) grouped
+    /// into lanes, projected from airc's event-sourced work board. See
+    /// [`crate::kanban::KanbanViewState`].
+    Kanban,
 }
 
 impl KnownKind {
@@ -47,6 +51,7 @@ impl KnownKind {
         match self {
             KnownKind::Chat => "chat",
             KnownKind::Wall => "wall",
+            KnownKind::Kanban => "kanban",
         }
     }
 }
@@ -84,5 +89,6 @@ mod tests {
         // by this exact string; a silent change breaks the widget.
         assert_eq!(KnownKind::Chat.wire_name(), "chat");
         assert_eq!(KnownKind::Wall.wire_name(), "wall");
+        assert_eq!(KnownKind::Kanban.wire_name(), "kanban");
     }
 }
