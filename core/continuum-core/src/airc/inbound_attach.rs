@@ -14,6 +14,7 @@ use tracing::warn;
 
 use crate::airc::realtime_wire::{bus_event_from_envelope, envelope_from_event};
 use crate::ipc::positron_source::CHAT_POSTED;
+use crate::ipc::positron_wall_source::WALL_CHANGED;
 use crate::runtime::MessageBus;
 
 pub fn spawn_daemon_attach(
@@ -104,7 +105,14 @@ pub async fn publish_transcript_event(
         // ours here → skip. This is classification, not a fallback —
         // a non-message never fabricates a chat event.
         Ok(None) => {
+            // Classify the plain airc event into a positron projection
+            // signal. A message → `chat:posted`; a wall post → `wall:changed`
+            // (a re-read cue, not the content). An event is at most one of
+            // these; anything else is not ours here → skip. Classification,
+            // never a fallback — a non-matching kind fabricates nothing.
             if let Some((name, payload)) = chat_posted_from_message(event) {
+                bus.publish_async_only(name, payload);
+            } else if let Some((name, payload)) = wall_changed_from_event(event) {
                 bus.publish_async_only(name, payload);
             }
             return Ok(());
@@ -147,6 +155,28 @@ fn chat_posted_from_message(
         "timestamp": event.occurred_at_ms,
     });
     Some((CHAT_POSTED, payload))
+}
+
+/// Project a `WallPostPublished` transcript event into the `wall:changed`
+/// bus signal the positron wall projection consumes (`AircWallChanged` in
+/// `ipc/positron_wall_source.rs`). Returns `None` for any other kind.
+///
+/// The signal carries ONLY the `room_id`: the pinned board is airc's
+/// supersede projection (`Airc::wall_posts`), which cannot be
+/// reconstructed from a single delta, so the consumer RE-READS the
+/// authoritative board rather than trusting this event's body. This is
+/// why we emit a change *cue*, not the post content — the exact
+/// re-read-not-fold discipline the wall projector documents.
+fn wall_changed_from_event(
+    event: &airc_core::TranscriptEvent,
+) -> Option<(&'static str, serde_json::Value)> {
+    if event.kind != TranscriptKind::WallPostPublished {
+        return None;
+    }
+    let payload = serde_json::json!({
+        "roomId": event.room_id.as_uuid(),
+    });
+    Some((WALL_CHANGED, payload))
 }
 
 #[cfg(test)]
@@ -291,6 +321,34 @@ mod tests {
         assert!(timeout(Duration::from_millis(20), receiver.recv())
             .await
             .is_err());
+    }
+
+    #[tokio::test]
+    async fn wall_post_event_projects_thin_wall_changed_signal() {
+        // what this catches: the wall classification arm (task #89 Unit 2).
+        // A `WallPostPublished` transcript event (no continuum envelope)
+        // must project a `wall:changed` bus signal carrying ONLY the
+        // room_id — the re-read cue the positron wall projector folds. The
+        // signal must NOT carry post content (the supersede-projected board
+        // is re-read from airc, never reconstructed from one delta). A
+        // regression that drops this arm silently stops every pinned board
+        // from ever updating on the renderer.
+        let bus = MessageBus::new();
+        let mut receiver = bus.receiver();
+        let mut event = transcript_event(None, Default::default());
+        event.kind = TranscriptKind::WallPostPublished;
+
+        publish_transcript_event(&event, &bus).await.unwrap();
+
+        let delivered = timeout(Duration::from_millis(200), receiver.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(delivered.name, "wall:changed");
+        assert_eq!(delivered.payload["roomId"], Uuid::from_u128(2).to_string());
+        // A cue, not the content: the board is re-read authoritatively.
+        assert!(delivered.payload.get("body").is_none());
+        assert!(delivered.payload.get("category").is_none());
     }
 
     #[tokio::test]

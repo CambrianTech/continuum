@@ -88,7 +88,7 @@ pub use governor_bus::{publish_persona_scheduled, PersonaScheduled, PERSONA_SCHE
 pub use grid_interceptor::GridInterceptor;
 pub use in_process_transport::InProcessTransport;
 pub use late_bound::LateBound;
-pub use message_bus::MessageBus;
+pub use message_bus::{BusEvent, MessageBus};
 pub use module_context::ModuleContext;
 pub use orientation_shares::{
     apportion, orientation_index, OrientationCounts, OrientationShares, ORIENTATIONS,
