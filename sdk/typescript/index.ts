@@ -44,6 +44,13 @@ export type {
   ClientMessage,
   ServerMessage,
 } from './generated/positron';
+export type {
+  ChatViewState,
+  ChatMessageView,
+  RosterSlotView,
+  SenderKind,
+  Provenance,
+} from './generated/views';
 export type { CommandMap, CommandName } from './generated/CommandMap';
 export type { EventMap, EventClass } from './generated/EventMap';
 /** Typed, string-free accessors generated from the Rust command/event specs. */
