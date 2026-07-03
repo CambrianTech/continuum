@@ -566,32 +566,15 @@ async fn serve_persona_loop_inner(
         // own chat is excluded so this reply can't re-trigger a self-tick, while her
         // own active work is folded in so the tick advances it — see burst_fingerprint).
         last_burst_fp = burst_fingerprint(&composed.deliveries, &ctx.identity.peer_id.to_string());
-        // Project the room-roster delivery into TWO consumers from the
-        // ONE source of truth (the roster delivery), routed by source_id:
-        //   • `room_roster` — the formatted `name [runtime] — avail`
-        //     lines → system-prompt GROUNDING ([Present in this room]).
-        //     Deliberately NOT recent_history: the roster names who is
-        //     present (identity grounding), it is not conversation —
-        //     injecting it as history is the confusion the source removes.
-        //   • `other_persona_names` — bare display names → the
-        //     `ProperChatMlSingleParty` history-drop (single-party models
-        //     can't process other-AI turns). This field was reserved for
-        //     exactly this roster data and previously sat empty; the same
-        //     delivery now feeds it, so there is one roster truth, not two.
-        // See docs/grid/AIRC-NATIVE-IDENTITY-ROOMS-SECURITY.md §5 slice 1.
-        let mut room_roster: Vec<String> = Vec::new();
-        let mut other_persona_names: Vec<String> = Vec::new();
-        for item in composed
-            .deliveries
-            .iter()
-            .filter(|d| d.source_id == "room-roster")
-            .flat_map(|d| d.items.iter())
-        {
-            room_roster.push(item.content.clone());
-            if let Some(name) = item.metadata.get("display_name").and_then(|v| v.as_str()) {
-                other_persona_names.push(name.to_string());
-            }
-        }
+        // Project the room-roster delivery into its TWO grounding consumers —
+        // the formatted `[Present in this room]` lines + the bare
+        // `other_persona_names` history-drop — via the extracted
+        // `project_room_roster` (one roster truth; the exact projection the
+        // convergence seam-proof integration test drives).
+        let RoomRosterProjection {
+            room_roster,
+            other_persona_names,
+        } = project_room_roster(&composed.deliveries);
 
         // Room-doctrine grounding (the [Room operating doctrine] block) now reaches
         // the prompt via the WorkspaceCycle's RagSourceFaculty bridge (task #12), as
@@ -1010,6 +993,43 @@ pub(crate) struct TriggerTurn<'a> {
     /// When it arrived (airc `occurred_at_ms` / wake `now_ms`) — drives the
     /// `[t=…]` prefix so an anchored trigger renders identically to a threaded one.
     pub occurred_at_ms: u64,
+}
+
+/// The two grounding consumers the room-roster delivery feeds — kept as one
+/// struct so the fold below returns both from the ONE roster truth.
+pub(crate) struct RoomRosterProjection {
+    /// `<name> [<runtime>] — <availability>` lines → the system-prompt
+    /// `[Present in this room]` grounding block (identity, NOT conversation).
+    pub(crate) room_roster: Vec<String>,
+    /// Bare display names → the `ProperChatMlSingleParty` history-drop
+    /// (single-party models can't process other-AI turns).
+    pub(crate) other_persona_names: Vec<String>,
+}
+
+/// Fold the `room-roster` delivery into its two grounding consumers, routed by
+/// `source_id`. Pure and extracted from the heartbeat loop (sibling of
+/// [`build_workspace_turns`]) so the live path and the convergence seam-proof
+/// test exercise the IDENTICAL projection — one roster truth, no inline
+/// duplication. See docs/grid/AIRC-NATIVE-IDENTITY-ROOMS-SECURITY.md §5 slice 1.
+pub(crate) fn project_room_roster(
+    deliveries: &[crate::persona::rag_budget::RagDelivery],
+) -> RoomRosterProjection {
+    let mut room_roster: Vec<String> = Vec::new();
+    let mut other_persona_names: Vec<String> = Vec::new();
+    for item in deliveries
+        .iter()
+        .filter(|d| d.source_id == "room-roster")
+        .flat_map(|d| d.items.iter())
+    {
+        room_roster.push(item.content.clone());
+        if let Some(name) = item.metadata.get("display_name").and_then(|v| v.as_str()) {
+            other_persona_names.push(name.to_string());
+        }
+    }
+    RoomRosterProjection {
+        room_roster,
+        other_persona_names,
+    }
 }
 
 pub(crate) fn build_workspace_turns(
