@@ -49,7 +49,6 @@ use airc_core::TranscriptEvent;
 use airc_lib::EventStream;
 use async_trait::async_trait;
 use futures::StreamExt;
-use serde_json::Value;
 use std::sync::Arc;
 use uuid::Uuid;
 
