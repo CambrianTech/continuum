@@ -79,6 +79,7 @@ pub mod active_work_source;
 pub mod recorder;
 pub mod resource_forecast;
 pub mod response;
+pub mod room_board_source;
 pub mod room_doctrine_source;
 pub mod room_roster_source;
 pub mod resume_or_mint_provider;
