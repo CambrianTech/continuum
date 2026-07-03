@@ -54,9 +54,15 @@ async function main(): Promise<void> {
       senderId: config.senderId,
       text,
     });
-    // Kernel-level failure already rejected in the transport; a `warning` here
-    // means stored-locally-but-broadcast-failed. Surface it loud; the message
-    // did persist, so this is not a send failure to throw on.
+    // A kernel-level failure already rejected in the transport (this line never
+    // runs). Belt-and-suspenders for any handler that instead reports failure
+    // in-band: an explicit `success === false` must throw so the widget shows it
+    // and keeps the draft — never a silently-dropped message.
+    if (result.success === false) {
+      throw new Error(`chat/send rejected: ${result.error ?? 'unknown error'}`);
+    }
+    // A `warning` on a success means stored-locally-but-broadcast-failed. Surface
+    // it loud; the message did persist, so this is not a failure to throw on.
     if (result.warning) {
       console.warn(`chat/send partial: ${result.warning}`);
     }
