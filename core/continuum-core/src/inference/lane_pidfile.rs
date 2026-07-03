@@ -148,7 +148,7 @@ async fn reclaim_at(path: &Path, port: u16) -> ReclaimOutcome {
         return ReclaimOutcome::NoPidfile;
     };
 
-    if !process::is_alive(pid) {
+    if !super::lane_process::is_alive(pid) {
         clear_at(path);
         return ReclaimOutcome::AlreadyGone { pid };
     }
@@ -156,9 +156,9 @@ async fn reclaim_at(path: &Path, port: u16) -> ReclaimOutcome {
     // The pid is alive — but is it OUR orphan, or a reused pid? Verify before we
     // ever send a signal. If we cannot positively identify it as a llama-server
     // (different command, or `ps` unavailable), we refuse to kill it.
-    match process::command_name(pid) {
+    match super::lane_process::command_name(pid) {
         Some(comm) if comm.contains("llama-server") => {
-            process::kill9(pid);
+            super::lane_process::kill9(pid);
             let freed = wait_port_free(port, PORT_RELEASE_BUDGET).await;
             clear_at(path);
             if freed {
@@ -192,52 +192,10 @@ async fn wait_port_free(port: u16, budget: Duration) -> bool {
     }
 }
 
-/// Thin, unix-process helpers. Kept private and minimal: liveness via `kill(pid,
-/// 0)` (the pattern already used in `bin/cu.rs`), identity via `ps`, kill via
-/// `SIGKILL`. No new dependency — `libc` is already in the tree.
-mod process {
-    /// True if `pid` names a live process. `kill(pid, 0)` sends no signal: `0` =
-    /// alive and ours; `EPERM` = alive but owned by another user (still alive);
-    /// `ESRCH` = gone.
-    pub fn is_alive(pid: u32) -> bool {
-        let rc = unsafe { libc::kill(pid as libc::pid_t, 0) };
-        if rc == 0 {
-            return true;
-        }
-        matches!(
-            std::io::Error::last_os_error().raw_os_error(),
-            Some(e) if e == libc::EPERM
-        )
-    }
-
-    /// `SIGKILL` the pid. Best-effort: a race where it already exited is fine.
-    pub fn kill9(pid: u32) {
-        unsafe {
-            let _ = libc::kill(pid as libc::pid_t, libc::SIGKILL);
-        }
-    }
-
-    /// The command name (basename) of `pid` via `ps -p <pid> -o comm=`, which
-    /// works identically on macOS and Linux. `None` if the pid is gone or `ps` is
-    /// unavailable — callers treat `None` as "unverifiable" and refuse to kill.
-    pub fn command_name(pid: u32) -> Option<String> {
-        let out = std::process::Command::new("ps")
-            .args(["-p", &pid.to_string(), "-o", "comm="])
-            .output()
-            .ok()?;
-        if !out.status.success() {
-            return None;
-        }
-        let text = String::from_utf8_lossy(&out.stdout);
-        let line = text.trim();
-        if line.is_empty() {
-            return None;
-        }
-        // `comm` can be a full path on Linux — take the basename so the
-        // "llama-server" match is on the binary name, not its install dir.
-        Some(line.rsplit('/').next().unwrap_or(line).to_string())
-    }
-}
+// The unix-process helpers (`is_alive` / `kill9` / `command_name`) live in the
+// shared `super::lane_process` module so the canonical-port reclaim here and the
+// orphan-registry sweep in `super::lane_registry` obey ONE never-blind-kill
+// primitive, not two divergent copies.
 
 #[cfg(test)]
 mod tests {
@@ -296,7 +254,10 @@ mod tests {
             other => panic!("expected NotOurProcess, got {other:?}"),
         }
         // We must still be alive — reclaim must not have signalled us.
-        assert!(process::is_alive(me), "reclaim must never kill a non-llama pid");
+        assert!(
+            super::super::lane_process::is_alive(me),
+            "reclaim must never kill a non-llama pid"
+        );
         // Stale pidfile removed.
         assert_eq!(read_at(&path), None, "stale pidfile cleared");
     }
@@ -328,11 +289,5 @@ mod tests {
         );
         assert_eq!(read_at(&path), None, "stale pidfile cleared");
     }
-
-    // what this catches: is_alive is true for our own process and the liveness
-    // check underpins the whole reclaim decision.
-    #[test]
-    fn is_alive_true_for_self() {
-        assert!(process::is_alive(std::process::id()));
-    }
+    // (is_alive-for-self now lives with the primitive in `super::lane_process`.)
 }

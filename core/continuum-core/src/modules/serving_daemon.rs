@@ -852,6 +852,18 @@ impl ServiceModule for ServingDaemonModule {
         // no lease acquired, `available` math untouched, the authority simply stops
         // being blind to the ~multi-GB model actually resident.
         self.register_as_consumer();
+        // Reap orphaned llama-server lanes left by a crashed/SIGKILLed predecessor
+        // BEFORE reconciling to the new plan — a mid-eval crash leaves ephemeral
+        // lanes (their own scanned ports, no pidfile) holding ~6 GB each with zero
+        // reclaim record but the registry. Sweeping first frees that VRAM so the
+        // new live lane comes up without competing against dead siblings.
+        for outcome in crate::inference::lane_registry::sweep_orphans() {
+            crate::probe!(
+                class = "serving.lane_registry.sweep",
+                outcome = format!("{outcome:?}").as_str(),
+                "boot lane-registry sweep",
+            );
+        }
         // Plan once at boot so the decision is published before the first tick,
         // then kick the first reconcile so the server comes up promptly rather
         // than waiting a full tick interval. The reconcile runs detached.

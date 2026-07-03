@@ -727,12 +727,22 @@ impl Default for LlamaServerProcess {
 
 impl Drop for LlamaServerProcess {
     fn drop(&mut self) {
-        // Did we OWN the child we're about to kill? Capture before `kill_child`
-        // takes it. This is the difference between a core that SPAWNED its server
-        // and one that ADOPTED a persisting one (`AlreadyServing` → never spawned →
-        // no child). Only the spawner kills the server on the way out.
-        let owned_child = self.child.lock().unwrap().is_some();
+        // Did we OWN the child we're about to kill? Capture the pid + ownership
+        // before `kill_child` takes it. Ownership is the difference between a core
+        // that SPAWNED its server and one that ADOPTED a persisting one
+        // (`AlreadyServing` → never spawned → no child). Only the spawner kills the
+        // server on the way out.
+        let owned_pid = self.child.lock().unwrap().as_ref().and_then(|c| c.id());
+        let owned_child = owned_pid.is_some();
         self.kill_child();
+        // Remove this lane's registry record — for BOTH live and ephemeral — since
+        // we just killed the process it named. A crash skips Drop, which is exactly
+        // the case the record survives for (the next boot's `sweep_orphans` reaps
+        // it). Only remove what we OWNED; an adopted persisting server keeps its
+        // record so the successor can reclaim it.
+        if let Some(pid) = owned_pid {
+            crate::inference::lane_registry::remove(pid);
+        }
         // Clear the reclaim pidfile ONLY if we owned the child we just killed — the
         // server is now dead, so there is nothing for the next boot to reclaim. If
         // we ADOPTED a persisting server (no child of our own), it keeps running
@@ -1080,6 +1090,34 @@ impl LlamaServerControl for LlamaServerProcess {
                     port = port,
                     "spawned child has no pid — orphan reclaim disarmed for this run",
                 ),
+            }
+        }
+
+        // Register EVERY lane we spawn (live AND ephemeral) in the lane registry so
+        // a crashed core's successor reaps this exact process instead of leaving a
+        // ~6 GB orphan. `lane_pidfile` above only covers the live lane's canonical
+        // port; the registry is what closes the ephemeral-lane leak. Same as the
+        // pidfile, a write failure only DISARMS future reclaim for this lane — it
+        // never fails the serve.
+        if let Some(pid) = child.id() {
+            let role = if self.is_live_lane {
+                crate::inference::lane_registry::LaneRole::Live
+            } else {
+                crate::inference::lane_registry::LaneRole::Ephemeral
+            };
+            let rec = crate::inference::lane_registry::LaneRecord {
+                pid,
+                port,
+                role,
+                model: target.model_id().to_string(),
+            };
+            if let Err(e) = crate::inference::lane_registry::record(&rec) {
+                crate::probe!(
+                    class = "serving.lane_registry",
+                    port = port,
+                    error = e.to_string().as_str(),
+                    "lane registry write failed — orphan reclaim disarmed for this lane",
+                );
             }
         }
 
