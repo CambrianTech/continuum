@@ -4,14 +4,16 @@
  * On the wire the `kind` and `revision` live on the `StateEnvelope`, NOT on the
  * payload — `ChatViewState` has neither field. positron's renderer contract,
  * though, keys off a state object that carries its own `kind`/`revision` (a
- * `ViewState`). So the app MERGES the envelope's `kind`/`revision` onto the
+ * `ViewState`). So a client MERGES the envelope's `kind`/`revision` onto the
  * payload once, at the seam where a `StateConnection` sink hands a
- * `StateEnvelope` to the widget. That merged object is `ChatState`.
+ * `StateEnvelope` to the renderer. That merged object is `ChatState`.
  *
  * This is the one place the two positron halves — neutral transport
- * (`StateEnvelope`) and concrete payload (`ChatViewState`) — are joined, and it
- * lives in the APP, not the SDK: the SDK stays a neutral envelope courier
- * ([[headless-core-many-clients]]).
+ * (`StateEnvelope`) and concrete payload (`ChatViewState`) — are joined. It
+ * lives in the shared `@continuum/chat-view` package, NOT the SDK: the SDK stays
+ * a neutral envelope courier, and every chat client (apps/web's Lit widget,
+ * apps/tui's ANSI renderer) does this merge identically, so it is single-sourced
+ * here rather than re-forked per client ([[headless-core-many-clients]]).
  */
 
 import type { ChatViewState, StateEnvelope } from '@continuum/sdk-typescript';

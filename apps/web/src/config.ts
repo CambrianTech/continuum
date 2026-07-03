@@ -29,7 +29,7 @@ export interface WebChatConfig {
 
 /** Read a value from `?key=` then `import.meta.env[VITE_key]`, else `undefined`. */
 function lookup(queryKey: string, envKey: string): string | undefined {
-  const params = new URLSearchParams(globalThis.location?.search ?? '');
+  const params = new URLSearchParams(globalThis.location.search);
   const fromQuery = params.get(queryKey);
   if (fromQuery) return fromQuery;
   const env = (import.meta as { env?: Record<string, string | undefined> }).env;
@@ -46,13 +46,14 @@ export function resolveConfig(): WebChatConfig {
   const wsUrl = lookup('core', 'VITE_CONTINUUM_WS');
   const senderId = lookup('me', 'VITE_CONTINUUM_USER_ID');
 
-  const missing: string[] = [];
-  if (!wsUrl) missing.push("core WS url — set VITE_CONTINUUM_WS (or ?core=ws://host:port). The core must run with CONTINUUM_CORE_WS=<port> set.");
-  if (!senderId) missing.push('sender identity — set VITE_CONTINUUM_USER_ID (or ?me=<uuid>). Identity pairing is not wired yet (tasks #37/#38).');
-  if (missing.length > 0) {
+  // Narrow on the values themselves (not a separate count) so TS proves both are
+  // `string` past this block — no cast, no `!`, just a guard that actually holds.
+  if (wsUrl === undefined || senderId === undefined) {
+    const missing: string[] = [];
+    if (wsUrl === undefined) missing.push("core WS url — set VITE_CONTINUUM_WS (or ?core=ws://host:port). The core must run with CONTINUUM_CORE_WS=<port> set.");
+    if (senderId === undefined) missing.push('sender identity — set VITE_CONTINUUM_USER_ID (or ?me=<uuid>). Identity pairing is not wired yet (tasks #37/#38).');
     throw new Error(`web chat config incomplete:\n  - ${missing.join('\n  - ')}`);
   }
 
-  // Non-null: the guard above threw if either was falsy.
-  return { wsUrl: wsUrl as string, senderId: senderId as string };
+  return { wsUrl, senderId };
 }

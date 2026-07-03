@@ -3,12 +3,13 @@
  * render-ready view model the three-panel chat surface draws.
  *
  * This is where ALL the chat presentation logic lives, and it is deliberately
- * DOM-free and Lit-free: a plain `(ChatState) => ChatViewModel` function, unit-
- * tested without a browser. The Lit template (`renderChat`) and the
- * `<chat-widget>` element are then thin — they map this view model to markup and
- * nothing more. Keeping the logic in a pure function is the compression rule
- * (one place computes "how a message row reads") and the reason the widget needs
- * no jsdom to test its behavior.
+ * DOM-free, Lit-free and renderer-neutral: a plain `(ChatState) => ChatViewModel`
+ * function, unit-tested without a browser. Every client renderer is then thin and
+ * maps this view model to its own output — apps/web's Lit template (`renderChat`
+ * → `<chat-widget>`) and apps/tui's ANSI renderer both consume the SAME model.
+ * Keeping the logic in one pure function is the compression rule (one place
+ * computes "how a message row reads") and the reason neither renderer needs a
+ * jsdom or a live terminal to test its behavior.
  *
  * ## The three panels — who / what / where
  *

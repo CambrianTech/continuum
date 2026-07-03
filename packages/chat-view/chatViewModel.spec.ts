@@ -13,7 +13,7 @@ import { chatViewModel, formatTimeOfDay } from './chatViewModel';
 import type { ChatState } from './ChatState';
 import type { ChatMessageView, RosterSlotView, SenderKind } from '@continuum/sdk-typescript';
 
-const kind = (k: SenderKind['kind']): SenderKind => ({ kind: k }) as SenderKind;
+const kind = (k: SenderKind['kind']): SenderKind => ({ kind: k });
 
 const member = (over: Partial<RosterSlotView> = {}): RosterSlotView => ({
   member_id: 'm-1',
@@ -97,9 +97,9 @@ describe('chatViewModel', () => {
         ],
       }),
     );
-    expect(vm.messages[0].senderName).toBe('Asha');
-    expect(vm.messages[0].kind).toBe('agent');
-    expect(vm.messages[0].runtime).toBe('claude');
+    expect(vm.messages[0]?.senderName).toBe('Asha');
+    expect(vm.messages[0]?.kind).toBe('agent');
+    expect(vm.messages[0]?.runtime).toBe('claude');
   });
 
   // what this catches: unresolved provenance ('') must stay empty so the
@@ -107,7 +107,7 @@ describe('chatViewModel', () => {
   // who a citizen really is (an identity/trust concern, [[positron-identity-security-first-class]]).
   it('preserves an unresolved runtime as empty (no fabrication)', () => {
     const vm = chatViewModel(state({ roster: [member({ provenance: { runtime: '' } })] }));
-    expect(vm.members[0].runtime).toBe('');
+    expect(vm.members[0]?.runtime).toBe('');
   });
 
   // what this catches: time-of-day formatting must be deterministic (UTC HH:MM,

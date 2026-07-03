@@ -25,7 +25,7 @@ import {
 } from '@continuum/sdk-typescript';
 import { resolveConfig } from './config';
 import { ChatWidget, type SendHandler } from './chat/ChatWidget';
-import { CHAT_KIND, chatStateFromEnvelope, type ChatState } from './chat/ChatState';
+import { CHAT_KIND, chatStateFromEnvelope, type ChatState } from '@continuum/chat-view';
 
 // Importing the module registers `<chat-widget>` as a side effect; keep the
 // symbol referenced so bundlers don't tree-shake the definition away.
@@ -58,7 +58,7 @@ async function main(): Promise<void> {
     // runs). Belt-and-suspenders for any handler that instead reports failure
     // in-band: an explicit `success === false` must throw so the widget shows it
     // and keeps the draft — never a silently-dropped message.
-    if (result.success === false) {
+    if (!result.success) {
       throw new Error(`chat/send rejected: ${result.error ?? 'unknown error'}`);
     }
     // A `warning` on a success means stored-locally-but-broadcast-failed. Surface
@@ -82,7 +82,7 @@ async function main(): Promise<void> {
   await state.connect();
 }
 
-main().catch((err) => {
+main().catch((err: unknown) => {
   // Boot failure (bad config, dead core) must be visible, not a blank page.
   console.error('web chat client failed to start:', err);
   const mount = document.getElementById('app') ?? document.body;
