@@ -2418,8 +2418,34 @@ pub fn start_server(
                             .join("airc");
                         positron_wall_source::spawn_node_wall_projector(
                             &state.rt_handle,
-                            daemon_socket,
+                            daemon_socket.clone(),
                             wall_home,
+                            room_id.as_uuid(),
+                            room_name.clone(),
+                            ws_substrate.clone(),
+                            projection_bus.clone(),
+                        );
+
+                        // Kanban projector: the consuming half of
+                        // `kanban:changed`. Its own node reader (distinct home
+                        // + identity from presence and wall) re-reads the
+                        // airc-work-owned board fold (`work_board_complete`) on
+                        // each change and stores it as `kind="kanban"`, so a
+                        // chat window shows the room's work board with zero
+                        // resident personas. Same (socket, room) precondition
+                        // as presence/wall — an empty roster leaves card
+                        // authors provisionally labelled, but the board still
+                        // renders. Wired here TOGETHER with the inbound
+                        // classification so the projector goes live fed.
+                        let kanban_home = continuum_root
+                            .join("citizens")
+                            .join("node")
+                            .join("kanban")
+                            .join("airc");
+                        positron_kanban_source::spawn_node_kanban_projector(
+                            &state.rt_handle,
+                            daemon_socket,
+                            kanban_home,
                             room_id.as_uuid(),
                             room_name,
                             ws_substrate.clone(),

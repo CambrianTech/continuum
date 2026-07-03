@@ -13,6 +13,7 @@ use airc_lib::decode_wire_event;
 use tracing::warn;
 
 use crate::airc::realtime_wire::{bus_event_from_envelope, envelope_from_event};
+use crate::ipc::positron_kanban_source::KANBAN_CHANGED;
 use crate::ipc::positron_source::CHAT_POSTED;
 use crate::ipc::positron_wall_source::WALL_CHANGED;
 use crate::runtime::MessageBus;
@@ -106,13 +107,16 @@ pub async fn publish_transcript_event(
         // a non-message never fabricates a chat event.
         Ok(None) => {
             // Classify the plain airc event into a positron projection
-            // signal. A message → `chat:posted`; a wall post → `wall:changed`
-            // (a re-read cue, not the content). An event is at most one of
-            // these; anything else is not ours here → skip. Classification,
-            // never a fallback — a non-matching kind fabricates nothing.
+            // signal. A message → `chat:posted`; a wall post → `wall:changed`;
+            // a work-board event → `kanban:changed` (all re-read cues, not the
+            // content). An event is at most one of these; anything else is not
+            // ours here → skip. Classification, never a fallback — a
+            // non-matching kind fabricates nothing.
             if let Some((name, payload)) = chat_posted_from_message(event) {
                 bus.publish_async_only(name, payload);
             } else if let Some((name, payload)) = wall_changed_from_event(event) {
+                bus.publish_async_only(name, payload);
+            } else if let Some((name, payload)) = kanban_changed_from_event(event) {
                 bus.publish_async_only(name, payload);
             }
             return Ok(());
@@ -177,6 +181,32 @@ fn wall_changed_from_event(
         "roomId": event.room_id.as_uuid(),
     });
     Some((WALL_CHANGED, payload))
+}
+
+/// Project an airc work-board event into the `kanban:changed` bus signal
+/// the positron kanban projection consumes (`AircKanbanChanged` in
+/// `ipc/positron_kanban_source.rs`). Returns `None` for any non-work event.
+///
+/// Work events are not a `TranscriptKind` variant — they ride the transcript
+/// stream discriminated by a body-hint header, so we ask airc-work's
+/// authoritative `transcript_is_work_event` rather than matching a kind (the
+/// header set is airc-work's contract to own, not ours to re-derive).
+///
+/// Like the wall cue, the signal carries ONLY the `room_id`: the board fold
+/// (`Airc::work_board_complete`) cannot be reconstructed from a single work
+/// delta, so the consumer RE-READS the authoritative board rather than
+/// trusting this event's body. We emit a change *cue*, not the delta — the
+/// same re-read-not-fold discipline the kanban projector documents.
+fn kanban_changed_from_event(
+    event: &airc_core::TranscriptEvent,
+) -> Option<(&'static str, serde_json::Value)> {
+    if !airc_work::transcript_is_work_event(event) {
+        return None;
+    }
+    let payload = serde_json::json!({
+        "roomId": event.room_id.as_uuid(),
+    });
+    Some((KANBAN_CHANGED, payload))
 }
 
 #[cfg(test)]
@@ -349,6 +379,49 @@ mod tests {
         // A cue, not the content: the board is re-read authoritatively.
         assert!(delivered.payload.get("body").is_none());
         assert!(delivered.payload.get("category").is_none());
+    }
+
+    #[tokio::test]
+    async fn work_board_event_projects_thin_kanban_changed_signal() {
+        // what this catches: the kanban classification arm (task #117 Unit
+        // 3b-ii). A work-board change rides the transcript as a
+        // `TranscriptKind::System` event carrying airc-work's body-hint
+        // header — NOT a dedicated TranscriptKind — so the classifier
+        // discriminates via airc-work's own `transcript_is_work_event`, not
+        // a kind match. This must project a `kanban:changed` bus signal
+        // carrying ONLY the room_id: the re-read cue the positron kanban
+        // projector folds by re-reading the authoritative board
+        // (`work_board_complete`), never reconstructing the fold from one
+        // delta. A regression that drops this arm silently freezes every
+        // rendered kanban board. Built via the real producer
+        // (`encode_work_event`) so a header-contract drift fails HERE, and
+        // asserts the chat/wall arms yield first for the System kind + JSON
+        // body (no chat/wall misclassification of a work event).
+        let work_event = airc_work::WorkEvent::CardStateChanged(airc_work::CardStateChanged {
+            card_id: airc_work::WorkCardId::new(),
+            state: airc_work::CardState::Open,
+            changed_by: PeerId::from_u128(3),
+            changed_at_ms: 100,
+        });
+        let (headers, body) =
+            airc_work::encode_work_event(&work_event).expect("work event encodes for the fixture");
+
+        let bus = MessageBus::new();
+        let mut receiver = bus.receiver();
+        let mut event = transcript_event(Some(body), headers);
+        event.kind = TranscriptKind::System;
+
+        publish_transcript_event(&event, &bus).await.unwrap();
+
+        let delivered = timeout(Duration::from_millis(200), receiver.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(delivered.name, "kanban:changed");
+        assert_eq!(delivered.payload["roomId"], Uuid::from_u128(2).to_string());
+        // A cue, not the content: the board is re-read authoritatively.
+        assert!(delivered.payload.get("cards").is_none());
+        assert!(delivered.payload.get("state").is_none());
     }
 
     #[tokio::test]
