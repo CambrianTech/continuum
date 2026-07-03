@@ -78,7 +78,7 @@ use crate::ipc::positron_source::{
     resolve_identity, roster_slots_from, AircPresenceUpdate, PRESENCE_UPDATED,
 };
 use crate::persona::wall_source::WallReader;
-use crate::runtime::MessageBus;
+use crate::runtime::{BusEvent, MessageBus};
 
 /// Bus event signalling that a `WallPostPublished` transcript event landed
 /// for a room — the projector's cue to RE-READ the authoritative board.
@@ -248,9 +248,29 @@ async fn run_wall_loop(
     let mut projection = WallProjection::new(substrate, room_id, reader);
     // Initial authoritative read — render the current board immediately.
     projection.reload().await;
-    loop {
-        match rx.recv().await {
-            Ok(event) => match classify(&event.name, &event.payload) {
+    while let LoopStep::Continue = fold_recv(&mut projection, room_id, rx.recv().await).await {}
+}
+
+/// Whether the consume loop keeps folding after one bus receive.
+#[derive(Debug, PartialEq, Eq)]
+enum LoopStep {
+    Continue,
+    Stop,
+}
+
+/// Fold ONE bus receive into the projection — the loop's entire per-event
+/// decision, factored out so the room-guard / `Lagged` / `Closed` branches
+/// are unit-testable without racing a live broadcast channel (the loop
+/// itself is an infinite `recv().await`, so the branches would otherwise be
+/// trust-me). Pure control-flow over the projection; no bus access.
+async fn fold_recv(
+    projection: &mut WallProjection,
+    room_id: Uuid,
+    recv: Result<BusEvent, RecvError>,
+) -> LoopStep {
+    match recv {
+        Ok(event) => {
+            match classify(&event.name, &event.payload) {
                 // Re-read only when the change is for OUR room (defensive
                 // room guard; the node observes exactly this room today).
                 Some(WallInput::Changed(rid)) if rid == room_id => projection.reload().await,
@@ -258,13 +278,17 @@ async fn run_wall_loop(
                     projection.apply_roster(roster)
                 }
                 _ => {}
-            },
-            // Fell behind the broadcast buffer: the projection is a
-            // last-good cache of a live stream, not guaranteed delivery.
-            // Re-read to re-establish a coherent board, then keep folding.
-            Err(RecvError::Lagged(_)) => projection.reload().await,
-            Err(RecvError::Closed) => break,
+            }
+            LoopStep::Continue
         }
+        // Fell behind the broadcast buffer: the projection is a last-good
+        // cache of a live stream, not guaranteed delivery. Re-read to
+        // re-establish a coherent board, then keep folding.
+        Err(RecvError::Lagged(_)) => {
+            projection.reload().await;
+            LoopStep::Continue
+        }
+        Err(RecvError::Closed) => LoopStep::Stop,
     }
 }
 
@@ -360,19 +384,30 @@ mod tests {
     /// driven without a daemon (mirrors `wall_source::tests::StubReader`).
     struct StubReader {
         posts: Mutex<Vec<WallPostPublished>>,
+        fail: Mutex<bool>,
     }
 
     impl StubReader {
         fn new(posts: Vec<WallPostPublished>) -> Arc<Self> {
             Arc::new(Self {
                 posts: Mutex::new(posts),
+                fail: Mutex::new(false),
             })
+        }
+        /// Flip the reader into failure mode — the next `wall_posts()`
+        /// returns a terminal-shaped `AircError` (mirrors
+        /// `wall_source::tests::StubReader::set_fail`).
+        fn set_fail(&self, fail: bool) {
+            *self.fail.lock().unwrap() = fail;
         }
     }
 
     #[async_trait]
     impl WallReader for StubReader {
         async fn wall_posts(&self) -> Result<Vec<WallPostPublished>, airc_lib::AircError> {
+            if *self.fail.lock().unwrap() {
+                return Err(airc_lib::AircError::UnknownPeer(PeerId::new()));
+            }
             Ok(self.posts.lock().unwrap().clone())
         }
     }
@@ -536,5 +571,96 @@ mod tests {
         }
         let r2 = substrate.cache().get(KnownKind::Wall.wire_name()).unwrap().revision;
         assert!(r2 > r1, "revision must advance: {r1:?} -> {r2:?}");
+    }
+
+    #[tokio::test]
+    async fn read_error_keeps_the_last_good_board() {
+        // what this catches: the projector's DISTINCT resilience contract —
+        // a `wall_posts()` read failure must keep the last-good board on the
+        // widget, never blink it empty. This is the difference from the
+        // RagSource path (which reads fresh each turn); here a stale board is
+        // the honest render while the reader reconnects. A regression that
+        // cleared `posts` on error, or stored an empty view, would flash the
+        // board blank on every transient airc hiccup
+        // ([[fallbacks-are-illegal-fail-loud]]: resilience, never a
+        // fabricated empty substitute).
+        let substrate = Substrate::new();
+        let room = RoomId::new();
+        let author = PeerId::new();
+        let reader = StubReader::new(vec![post(room, author, "plan", "v1")]);
+        let mut p = WallProjection::new(substrate.clone(), room.as_uuid(), reader.clone());
+        p.reload().await;
+        assert_eq!(current_wall(&substrate).posts.len(), 1);
+
+        // The reader goes down mid-stream; the re-read fails.
+        reader.set_fail(true);
+        p.reload().await;
+
+        let view = current_wall(&substrate);
+        assert_eq!(view.posts.len(), 1, "last-good board survives a read error");
+        assert_eq!(view.posts[0].body, "v1");
+    }
+
+    #[tokio::test]
+    async fn lagged_re_reads_to_re_establish_coherence() {
+        // what this catches: the projector's one behavioral improvement over
+        // the chat projection — on a broadcast `Lagged` (fell behind the
+        // buffer) it RE-READS the authoritative board rather than `continue`-
+        // ing on a possibly-stale one. A refactor that flipped this back to a
+        // silent continue would leave the board stale after any burst. Drives
+        // the exact loop decision via `fold_recv` (no racing a live channel).
+        let substrate = Substrate::new();
+        let room = RoomId::new();
+        let author = PeerId::new();
+        let reader = StubReader::new(vec![]);
+        let mut p = WallProjection::new(substrate.clone(), room.as_uuid(), reader.clone());
+        p.reload().await;
+        assert!(current_wall(&substrate).posts.is_empty());
+
+        // Board gains a post while the loop was behind; a Lagged arrives.
+        reader.posts.lock().unwrap().push(post(room, author, "plan", "caught up"));
+        let step = fold_recv(&mut p, room.as_uuid(), Err(RecvError::Lagged(3))).await;
+        assert_eq!(step, LoopStep::Continue);
+        assert_eq!(
+            current_wall(&substrate).posts.len(),
+            1,
+            "Lagged must trigger an authoritative re-read, not a stale continue"
+        );
+    }
+
+    #[tokio::test]
+    async fn closed_channel_stops_the_loop_and_foreign_room_is_not_re_read() {
+        // what this catches: two loop-guard branches that are otherwise
+        // trust-me (the loop is an infinite recv). (1) A `Closed` bus stops
+        // the loop (Stop) — no spin. (2) A `wall:changed` for a DIFFERENT
+        // room is NOT re-read: the defensive room guard drops it, so a foreign
+        // room's churn can't thrash this projector's board.
+        let substrate = Substrate::new();
+        let room = RoomId::new();
+        let author = PeerId::new();
+        let reader = StubReader::new(vec![post(room, author, "plan", "mine")]);
+        let mut p = WallProjection::new(substrate.clone(), room.as_uuid(), reader.clone());
+        p.reload().await;
+
+        // A change for some OTHER room: the board must not re-read/change.
+        let other = Uuid::from_u128(0xdead);
+        let foreign = BusEvent {
+            name: WALL_CHANGED.to_string(),
+            payload: json!({ "roomId": other }),
+        };
+        // Even if the board content changed underneath, a foreign event must
+        // not fold it in.
+        reader.posts.lock().unwrap().clear();
+        let step = fold_recv(&mut p, room.as_uuid(), Ok(foreign)).await;
+        assert_eq!(step, LoopStep::Continue);
+        assert_eq!(
+            current_wall(&substrate).posts.len(),
+            1,
+            "a foreign room's wall:changed must not re-read our board"
+        );
+
+        // A closed bus stops the loop.
+        let step = fold_recv(&mut p, room.as_uuid(), Err(RecvError::Closed)).await;
+        assert_eq!(step, LoopStep::Stop);
     }
 }
