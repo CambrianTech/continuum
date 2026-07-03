@@ -147,6 +147,24 @@ impl GridTrustAuthPolicy {
                         None => TrustLevel::Provisional,
                     }
                 }
+                // An AI observer acting through a positron session is CLAMPED at
+                // Provisional and — unlike Ws above — deliberately does NOT consult
+                // the trust bridge. This is the confused-deputy defense: the
+                // observer rides the same socket as the human whose UI it perceives,
+                // so if it resolved through `trust_of(peer_id)` it would inherit the
+                // human's authority the instant a GH-auth handshake elevated that
+                // socket. The AI watching a human's screen must never ride the
+                // human's authority up. Fixed floor, no bridge lookup.
+                //
+                // TODO(task #29): this clamp presumes an HONEST source. The
+                // `PositronObserver` discriminant is selected by the positron
+                // envelope's client-declared `source` field (see
+                // `CallerSource::PositronObserver` docs). The same GH-auth
+                // handshake that raises the `Ws` ceiling must also authenticate
+                // the positron principal, or a compromised observer defeats this
+                // clamp by self-labeling `source: Human`. Harmless today (Ws ==
+                // Provisional); load-bearing the instant socket auth lands.
+                CallerSource::PositronObserver { .. } => TrustLevel::Provisional,
             },
         }
     }
@@ -191,6 +209,12 @@ pub fn caller_trust(caller: Option<&CallerIdentity>) -> TrustLevel {
             // Provisional ceiling as TCP (AiSafe surface, never Owner-gated) until
             // the GH-auth handshake (task #29) authenticates the socket.
             CallerSource::Ws => AIRC_CALLER_CEILING,
+            // A positron AI observer is clamped at the SAME Provisional ceiling —
+            // AiSafe surface only, never Owner-gated. The confused-deputy divergence
+            // from Ws (never rising with socket auth) lives in `resolve_trust`, which
+            // is the bridge-consulting path; this static offer==authorized surface is
+            // already the floor, so observer and Ws coincide here.
+            CallerSource::PositronObserver { .. } => AIRC_CALLER_CEILING,
         },
     }
 }
@@ -482,6 +506,71 @@ mod tests {
         assert!(
             matches!(policy.gate(&decision("code/shell"), Some(&remote)), Verdict::Forbidden { .. }),
             "a remote Provisional peer is denied shell — no cross-grid RCE"
+        );
+    }
+
+    // what this catches: THE confused-deputy clamp for positron AI observers. An
+    // observer rides the SAME socket as the human whose UI it perceives. The
+    // load-bearing invariant: a `PositronObserver` NEVER consults the trust bridge,
+    // so it stays clamped at Provisional even when the SAME peer_id is registered
+    // Owner — whereas a `Ws` caller (the human on that socket) DOES resolve through
+    // the bridge and is elevated to Trusted (capped at REMOTE_TRUST_CEILING). Thus
+    // the moment socket auth exists, the human can run Privileged commands (bash)
+    // and the AI observing that human's screen CANNOT. A regression that routed the
+    // observer through the bridge would let a confused/compromised observer inherit
+    // the human's elevated authority — the exact escalation this variant exists to
+    // prevent. (Today, absent the bridge, both are plain Provisional; this test
+    // wires a bridge to prove the divergence is real and active, not just doc.)
+    #[test]
+    fn positron_observer_never_rides_the_human_socket_authority_up() {
+        use crate::modules::grid::node::TrustLevel;
+        use std::collections::HashMap;
+
+        struct MockTrust(HashMap<Uuid, TrustLevel>);
+        impl PeerTrustSource for MockTrust {
+            fn trust_of(&self, peer_id: Uuid) -> Option<TrustLevel> {
+                self.0.get(&peer_id).copied()
+            }
+        }
+
+        // One peer_id (the authenticated socket) registered as Owner.
+        let socket_peer = Uuid::new_v4();
+        let mut m = HashMap::new();
+        m.insert(socket_peer, TrustLevel::Owner);
+        let policy = GridTrustAuthPolicy::with_trust_source(Arc::new(MockTrust(m)));
+
+        // The human on that socket: Ws consults the bridge → elevated to Trusted
+        // (capped at REMOTE_TRUST_CEILING) → may run Privileged bash.
+        let human = CallerIdentity::ws(crate::identity::PeerId::from_uuid(socket_peer));
+        assert_eq!(
+            policy.gate(&decision("code/shell"), Some(&human)),
+            Verdict::Allowed,
+            "the authenticated human socket is elevated by the trust bridge"
+        );
+
+        // The AI observer riding the SAME socket: clamped at Provisional, bridge
+        // NOT consulted → denied bash even though the peer_id is Owner-registered.
+        let observer = CallerIdentity::positron_observer(
+            crate::identity::PeerId::from_uuid(socket_peer),
+            "asha-brain".to_string(),
+        );
+        assert_eq!(
+            caller_trust(Some(&observer)),
+            TrustLevel::Provisional,
+            "an observer is a fixed Provisional floor — never Owner/Trusted"
+        );
+        assert!(
+            matches!(
+                policy.gate(&decision("code/shell"), Some(&observer)),
+                Verdict::Forbidden { .. }
+            ),
+            "the AI observing a human's screen must NOT inherit the human's shell authority"
+        );
+        // But the observer can still do the AiSafe surface — it isn't muted, just capped.
+        assert_eq!(
+            policy.gate(&decision("ai/generate"), Some(&observer)),
+            Verdict::Allowed,
+            "an observer keeps the AiSafe surface (perceive + generate), just not privilege"
         );
     }
 
