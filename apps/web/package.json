@@ -9,10 +9,11 @@
     "build": "vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run",
+    "test": "vitest run --passWithNoTests",
     "test:watch": "vitest"
   },
   "dependencies": {
+    "@continuum/chat-view": "*",
     "@continuum/sdk-typescript": "*",
     "lit": "^3.2.0"
   },

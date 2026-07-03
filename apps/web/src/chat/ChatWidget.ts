@@ -17,8 +17,8 @@
  */
 
 import { LitElement, html, css, nothing, type PropertyValues, type TemplateResult } from 'lit';
-import type { ChatState } from './ChatState';
-import { chatViewModel } from './chatViewModel';
+import type { ChatState } from '@continuum/chat-view';
+import { chatViewModel } from '@continuum/chat-view';
 import { renderChat } from './renderChat';
 
 /** The send action the host injects. Resolves when the message is accepted by

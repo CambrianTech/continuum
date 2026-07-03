@@ -1,0 +1,22 @@
+{
+  "//": "Typecheck config for @continuum/tui. Mirrors the SDK/chat-view strict contract; compiles against SDK + chat-view SOURCE (both resolve to ./index.ts, no build step). This is a Node client, so the Node lib + @types/node — NOT DOM. It is the deliberate counterpart to apps/web's DOM tsconfig: same shared @continuum/chat-view projection must typecheck under BOTH lib sets, which is the outlier-B proof that the view model is platform-neutral. tsc is --noEmit typecheck only; the Node runtime strips types at load.",
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "lib": ["ES2022"],
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true,
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "types": ["node"]
+  },
+  "include": ["src/**/*.ts"],
+  "exclude": ["node_modules"]
+}

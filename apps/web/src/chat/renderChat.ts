@@ -19,7 +19,7 @@
  */
 
 import { html, nothing, type TemplateResult } from 'lit';
-import type { ChatViewModel, MemberKind, MessageRowVM, RosterMemberVM } from './chatViewModel';
+import type { ChatViewModel, MemberKind, MessageRowVM, RosterMemberVM } from '@continuum/chat-view';
 
 /** Short glyph per author kind — the neutral human/agent/system discriminant. */
 function kindGlyph(kind: MemberKind): string {

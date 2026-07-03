@@ -1,0 +1,86 @@
+// Clippy-grade lint gate for the NEW client tree — the SDK + shared views + the
+// apps built on them. Legacy `src/` keeps its own `src/eslint.config.js`; this
+// config deliberately does NOT touch it (that monolith is reference-only). Here
+// the bar is: type-checked, strict, zero `any`, and it BLOCKS — `--max-warnings 0`
+// means a warning is a failure, the way `cargo clippy -D warnings` won't let a
+// Rust change through with a lint outstanding.
+//
+// Scope: packages/**, apps/web, apps/tui — the hand-written client code this
+// gate owns. sdk/typescript is deliberately out of scope for now: it carries a
+// pre-existing ts-rs codegen drift (u64 fields generated as `bigint` instead of
+// the CLAUDE.md-canonical `#[ts(type="number")]` → `number`), which is a
+// Rust-side regen fix tracked separately — not something to lint-gate around
+// here. Fold the SDK in once that regen lands. Generated bindings and build
+// output are excluded — we lint hand-written source, not machine output.
+
+import js from '@eslint/js';
+import tseslint from 'typescript-eslint';
+import globals from 'globals';
+
+export default tseslint.config(
+  {
+    // Only the new client tree. Everything else (legacy src/, tooling js, build
+    // output, generated bindings) is out of scope for this gate.
+    ignores: [
+      '**/node_modules/**',
+      '**/dist/**',
+      'src/**',
+      'core/**',
+      'tools/**',
+      'scripts/**',
+      'sdk/**',
+      '**/*.js',
+      '**/*.mjs',
+      '**/*.cjs',
+    ],
+  },
+
+  // Type-checked strict base — the real "clippy": rules that need the type
+  // system to fire (no-floating-promises, no-unsafe-*, etc.).
+  js.configs.recommended,
+  ...tseslint.configs.strictTypeChecked,
+  ...tseslint.configs.stylisticTypeChecked,
+
+  {
+    files: ['packages/**/*.ts', 'apps/web/**/*.ts', 'apps/tui/**/*.ts'],
+    languageOptions: {
+      // projectService auto-resolves each file to its nearest tsconfig, so one
+      // config type-checks four packages with four different lib/target sets.
+      parserOptions: {
+        projectService: true,
+        tsconfigRootDir: import.meta.dirname,
+      },
+    },
+    rules: {
+      // Zero tolerance for the escape hatches the doctrine forbids.
+      '@typescript-eslint/no-explicit-any': 'error',
+      '@typescript-eslint/no-unused-vars': ['error', { argsIgnorePattern: '^_' }],
+      '@typescript-eslint/no-non-null-assertion': 'error',
+      // Promise safety — an unawaited send/connect is a real bug in this code.
+      '@typescript-eslint/no-floating-promises': 'error',
+      '@typescript-eslint/no-misused-promises': 'error',
+      // Every exported/public function states its return type (intent over
+      // inference at the boundary).
+      '@typescript-eslint/explicit-function-return-type': [
+        'error',
+        { allowExpressions: true, allowTypedFunctionExpressions: true },
+      ],
+      '@typescript-eslint/consistent-type-imports': [
+        'error',
+        { prefer: 'type-imports', fixStyle: 'inline-type-imports' },
+      ],
+      // Numbers in template literals are type-safe and idiomatic (member counts,
+      // timestamps). Everything else the strict default forbids stays forbidden.
+      '@typescript-eslint/restrict-template-expressions': ['error', { allowNumber: true }],
+    },
+  },
+
+  {
+    // Test files run under Node (vitest globals come from the import, but the
+    // process/env access in specs is Node). Keep the same strict rule set.
+    files: ['**/*.spec.ts', '**/*.test.ts'],
+    languageOptions: {
+      globals: { ...globals.node },
+    },
+  },
+);

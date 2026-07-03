@@ -4,7 +4,9 @@
   "description": "Continuum — a headless persona substrate. The Rust core is the server; every UI is an equal, dependent client over the same Commands/Events SDK. `npm start` boots ONLY the headless core (Rust, no desktop). Clients live under apps/ (web, desktop, cli[Rust], mobile, vr, ar, mcp) and attach on demand.",
   "workspaces": [
     "sdk/typescript",
+    "packages/chat-view",
     "apps/web",
+    "apps/tui",
     "apps/desktop"
   ],
   "scripts": {
@@ -12,6 +14,10 @@
     "dev:web": "npm run dev -w @continuum/web",
     "dev:desktop": "npm run dev -w @continuum/desktop",
     "build:clients": "npm run build -w @continuum/sdk-typescript && npm run build -w @continuum/web",
+    "lint:clients": "eslint --max-warnings 0 packages apps/web apps/tui",
+    "typecheck:clients": "npm run typecheck -w @continuum/chat-view && npm run typecheck -w @continuum/web && npm run typecheck -w @continuum/tui",
+    "test:clients": "npm test -w @continuum/chat-view && npm test -w @continuum/tui && npm test -w @continuum/web",
+    "check:clients": "npm run lint:clients && npm run typecheck:clients && npm run test:clients",
     "stop": "bash tools/scripts/system-stop.sh",
     "install:continuum": "bash tools/scripts/install.sh",
     "setup:git-hooks": "bash tools/scripts/setup-git-hooks.sh",
@@ -20,5 +26,12 @@
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.2.76",
     "@anthropic-ai/claude-code": "^2.1.76"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.13.0",
+    "eslint": "^9.13.0",
+    "globals": "^15.11.0",
+    "typescript": "^5.6.0",
+    "typescript-eslint": "^8.11.0"
   }
 }
