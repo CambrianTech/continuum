@@ -127,10 +127,21 @@ impl Connection {
         // Authenticate the envelope's declared `source` against THIS
         // connection's own established state BEFORE the command reaches
         // the dispatcher (the source-auth leg of the confused-deputy
-        // clamp; see `reject_forged_source`). A source this connection
-        // can prove is forged never executes — the forgery is answered
-        // with one `CommandFailed` naming the cause, not silently
-        // clamped. Per `[[fallbacks-are-illegal-fail-loud]]`.
+        // clamp; see `reject_forged_source`). On the session-routed
+        // command path (`run_session` → `Connection::handle`) a source
+        // this connection can prove is forged never executes — the
+        // forgery is answered with one `CommandFailed` naming the cause,
+        // not silently clamped. Per `[[fallbacks-are-illegal-fail-loud]]`.
+        //
+        // Scope note: today's live WS transport routes commands through
+        // the RPC path (`ipc/ws.rs::dispatch_command`), which hardcodes
+        // `CallerIdentity::ws(nil)` and never populates `source` at all —
+        // so this guard is not yet on that live vector. It closes the
+        // vector for the transport that WILL route commands through the
+        // session (a UDS / airc-sourced session), which is why the
+        // session dispatch carries the whole typed envelope. This is a
+        // build-ahead of the same shape as `ExecutorDispatch` being wired
+        // but not yet reached on the WS path.
         if let ClientMessage::Command(envelope) = &msg {
             if let Some(rejection) = self.reject_forged_source(envelope) {
                 return Ok(vec![rejection]);
@@ -161,7 +172,13 @@ impl Connection {
     ///   or an unestablished principal claiming observer authority.
     ///   Reject loud, naming the id. This also makes the `observer_id`
     ///   that drives authorization + audit downstream *verifiable*
-    ///   provenance rather than an unchecked client claim.
+    ///   provenance rather than an unchecked client claim. Requiring
+    ///   Observe-before-Command is intentional (not an oversight): an
+    ///   actor with no established observer registration IS an
+    ///   unestablished principal, and it is exactly what makes the id
+    ///   verifiable. A future write-only actuator that acts without
+    ///   perceiving is therefore a deliberate protocol change, not a bug
+    ///   to be patched by relaxing this guard.
     ///
     /// What still awaits the socket/GH-auth handshake (honest scope):
     /// - `Human` — the socket owner. There is no separate registration
@@ -175,7 +192,19 @@ impl Connection {
     ///   protects activates the moment that ceiling elevates.
     fn reject_forged_source(&self, envelope: &CommandEnvelope) -> Option<ServerMessage> {
         match &envelope.source {
-            // Awaits the socket/GH-auth handshake — see doc above.
+            // SECURITY TRIPWIRE (task #29): this `None` is safe ONLY
+            // while the `Ws` trust ceiling equals `Provisional` — i.e.
+            // a compromised observer self-labeling `Human` gets
+            // `Ws`→Provisional, no better than `PositronObserver`→
+            // Provisional. That equality is owned by continuum-core
+            // `routing/auth_policy.rs` / the grid trust policy, OUTSIDE
+            // this crate, and nothing here fails loud if it diverges.
+            // The moment task #29 elevates the `Ws` ceiling above
+            // Provisional (its stated goal), this silent passthrough
+            // becomes a live escalation — so the elevation change MUST
+            // revisit this arm and bind/verify the human principal here
+            // (the socket/GH-auth handshake). Do not remove this arm
+            // without that binding.
             CommandSource::Human => None,
             CommandSource::Observer { observer_id } => {
                 if self.observers.contains_key(observer_id) {
@@ -565,6 +594,55 @@ mod tests {
             dispatcher.call_count(),
             1,
             "authenticated observer command reaches the dispatcher"
+        );
+    }
+
+    #[tokio::test]
+    async fn forged_observer_command_is_rejected_through_the_handle_entry_point() {
+        // what this catches: the source-auth guard must fire on the REAL
+        // production entry point — `Connection::handle` routing a
+        // `ClientMessage::Command` — not only when `handle_command` is
+        // called directly. A refactor that routes Command around the
+        // guard (or reorders it after apply_command) would pass the
+        // direct-call tests while reopening the forge hole; this pins the
+        // wiring through `handle`.
+        let substrate = Substrate::new();
+        substrate.store(envelope("chat", 1));
+        let dispatcher = ScriptedDispatcher::ok();
+        let mut conn = Connection::new();
+        let cid = Uuid::from_u128(0xbeef);
+
+        let frames = conn
+            .handle(
+                ClientMessage::Command(CommandEnvelope {
+                    kind: "chat".into(),
+                    command: "chat/send".into(),
+                    params: serde_json::json!({"text": "as ghost"}),
+                    correlation_id: cid,
+                    source: CommandSource::Observer {
+                        observer_id: "ghost".into(),
+                    },
+                }),
+                &substrate,
+                &dispatcher,
+            )
+            .await
+            .unwrap();
+        assert_eq!(frames.len(), 1, "one CommandFailed through handle");
+        match &frames[0] {
+            ServerMessage::CommandFailed {
+                correlation_id,
+                error,
+            } => {
+                assert_eq!(*correlation_id, cid);
+                assert!(error.contains("forged source") && error.contains("ghost"));
+            }
+            other => panic!("expected CommandFailed, got {other:?}"),
+        }
+        assert_eq!(
+            dispatcher.call_count(),
+            0,
+            "forged command must never reach the dispatcher via handle either"
         );
     }
 
