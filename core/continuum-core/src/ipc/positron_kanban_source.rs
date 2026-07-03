@@ -363,6 +363,14 @@ async fn run_kanban_loop(
     bus: Arc<MessageBus>,
 ) {
     let mut rx = bus.receiver();
+    // Demand the current roster now (#118): `reload()` re-reads the board
+    // authoritatively, but the roster it resolves card creators/assignees
+    // against rides the fire-once `presence:updated` stream. Without this
+    // cue a kanban projector that (re)started after the emitter's last
+    // publish would label every card provisionally until presence next
+    // changes. `rx` is subscribed above, so the re-publish lands in our
+    // buffer.
+    crate::ipc::positron_presence::request_presence_resync(&bus);
     let mut projection = KanbanProjection::new(substrate, room_id, reader);
     // Initial authoritative read — render the current board immediately.
     projection.reload().await;
