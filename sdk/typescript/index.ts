@@ -32,6 +32,25 @@ export type {
 export { buildCommandUri, buildEventTopic, stampContext } from './transport';
 export { WebSocketTransport } from './WebSocketTransport';
 export type { WebSocketLike, WebSocketCtor } from './WebSocketTransport';
+export { StateConnection } from './StateConnection';
+export type { StateSink, StateSubscription, StateConnectOptions } from './StateConnection';
+export type {
+  StateLayer,
+  KindRevision,
+  StateEnvelope,
+  ObserverSpec,
+  CommandSource,
+  CommandEnvelope,
+  ClientMessage,
+  ServerMessage,
+} from './generated/positron';
+export type {
+  ChatViewState,
+  ChatMessageView,
+  RosterSlotView,
+  SenderKind,
+  Provenance,
+} from './generated/views';
 export type { CommandMap, CommandName } from './generated/CommandMap';
 export type { EventMap, EventClass } from './generated/EventMap';
 /** Typed, string-free accessors generated from the Rust command/event specs. */

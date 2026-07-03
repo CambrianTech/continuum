@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Continuum — Chat</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        background: #16161a;
+      }
+      /* The single mount. index.ts replaces its children with <chat-widget>,
+         which fills it via a 100% grid — so the three panels own the viewport. */
+      #app {
+        height: 100vh;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="/src/index.ts"></script>
+  </body>
+</html>

@@ -15,6 +15,11 @@ import type { Transport, Subscription, Target } from './transport';
 import { buildEventTopic, stampContext } from './transport';
 import type { EventMap, EventClass } from './generated/EventMap';
 
+// `Subscription` is the public return type of `subscribe`, so it belongs to the
+// Events surface — re-export it here. The generated `EventApi` (sdk_codegen/events.rs)
+// imports it from `../Events`, so this is the single source that contract binds to.
+export type { Subscription } from './transport';
+
 /** Metadata delivered alongside each event (from the redone publisher frame). */
 export interface EventMeta {
   /** Monotonic per-subscription sequence — detect ordering/gaps. */
