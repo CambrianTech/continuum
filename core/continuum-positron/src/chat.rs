@@ -291,9 +291,45 @@ pub struct ChatViewState {
     pub roster: Vec<RosterSlotView>,
 }
 
+/// `ChatViewState` IS a positron `ViewState` — the type-level bridge
+/// that lets renderers (positron-lit's `LitHost`) and AI observers
+/// (the O6 perception bridge) key off the SAME contract, not a
+/// continuum-private shape. This is the "first real `ViewState`" the
+/// positron roadmap's O5 names: until now the crate only *framed*
+/// payloads into `StateEnvelope`s; here the payload gains its identity
+/// under positron's own trait.
+///
+/// The `Clone + Send + Sync + Debug + 'static` bound the trait requires
+/// is already satisfied by the struct's derives + its owned-data fields
+/// (`Uuid` / `String` / `Vec`), so no new bounds are introduced.
+impl positron_core::ViewState for ChatViewState {
+    fn kind(&self) -> &'static str {
+        // Single-source the wire string through `KnownKind` — the same
+        // "chat" the `StateEnvelope.kind` carries — so the trait's view
+        // of the kind can never drift from the envelope's. Per
+        // `[[strong-typing-across-boundaries]]`: the string is encoded
+        // once, at the typed kind seam.
+        crate::kinds::KnownKind::Chat.wire_name()
+    }
+
+    // `revision()` is intentionally the trait default (`None`): in
+    // continuum's substrate the monotonic chat revision is an
+    // ENVELOPE-level counter (`Revisions` keyed by `KnownKind`, framed
+    // in by `StateBuilder`), NOT a payload field. The `ViewState`
+    // trait's revision is satisfied at the envelope layer where the
+    // counter actually lives; carrying a copy on the payload struct
+    // would be two sources of truth for one counter (the exact drift
+    // `[[compression]]` forbids). So the standalone payload honestly
+    // reports "no self-carried revision" and the envelope supplies the
+    // real one. See `kinds::RevisionKey` for the one-counter-per-kind
+    // semantics.
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::kinds::KnownKind;
+    use positron_core::ViewState as _;
 
     #[test]
     fn sender_kind_wire_shape_is_tagged() {
@@ -424,5 +460,38 @@ mod tests {
         let json = serde_json::to_string(&state).unwrap();
         let back: ChatViewState = serde_json::from_str(&json).unwrap();
         assert_eq!(back, state);
+    }
+
+    #[test]
+    fn chat_view_state_is_a_positron_view_state() {
+        // what this catches: regression where `ChatViewState` stops
+        // being a positron `ViewState` (the impl deleted, or `kind()`
+        // hand-rolled to a literal that drifts from the wire name).
+        // Renderers (positron-lit's `LitHost`) and the O6 observer
+        // bridge route/subscribe off `ViewState::kind()`; if it stops
+        // equalling the `StateEnvelope.kind` the substrate emits
+        // (`KnownKind::Chat.wire_name()`), a widget silently receives
+        // state it can't match to a renderer. Also pins `revision()`
+        // to the trait default (`None`): the chat revision is an
+        // envelope-level counter, never a payload field — a future
+        // `revision` field on the struct would be a second source of
+        // truth for one counter.
+        let state = ChatViewState {
+            room_id: Uuid::from_u128(0xa),
+            room_name: "general".into(),
+            messages: vec![],
+            roster: vec![],
+        };
+        assert_eq!(state.kind(), "chat");
+        assert_eq!(
+            state.kind(),
+            KnownKind::Chat.wire_name(),
+            "ViewState::kind() must single-source the wire name, never a drifting literal"
+        );
+        assert_eq!(
+            state.revision(),
+            None,
+            "revision is an envelope-level counter, not a payload field"
+        );
     }
 }
