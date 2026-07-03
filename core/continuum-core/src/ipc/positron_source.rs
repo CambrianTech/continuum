@@ -414,6 +414,12 @@ fn classify(name: &str, payload: &serde_json::Value) -> Option<ProjectionInput> 
 /// `airc_bridge_directive::spawn_consumer` uses.
 pub fn spawn(rt: &tokio::runtime::Handle, bus: Arc<MessageBus>, substrate: Substrate) {
     let mut rx = bus.receiver();
+    // Demand the current roster now (#118): the presence emitter dedups and
+    // may have already fired for a stable roster before this projection
+    // subscribed. Without the cue a late/restarted chat projection holds a
+    // roster-empty view until presence next changes. `rx` is subscribed
+    // above, so the emitter's re-publish lands in our buffer.
+    crate::ipc::positron_presence::request_presence_resync(&bus);
     rt.spawn(async move {
         let mut projection = ChatProjection::new(substrate);
         loop {

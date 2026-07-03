@@ -59,6 +59,7 @@ use crate::ipc::positron_source::{
 };
 use crate::persona::room_roster_source::AircRosterReader;
 use crate::runtime::MessageBus;
+use tokio::sync::broadcast::error::RecvError;
 
 /// How often the emitter re-reads the roster. Presence is Session-tier
 /// (a human-perceivable roster delta, not a sub-second signal), and the
@@ -73,6 +74,58 @@ const EMIT_INTERVAL: Duration = Duration::from_secs(2);
 /// persona's grounding roster describe the same population.
 const PRESENCE_WINDOW: Duration = Duration::from_secs(120);
 const ROSTER_SCAN: usize = 200;
+
+/// Bus event a presence CONSUMER publishes to demand a fresh
+/// `presence:updated`, bypassing the emitter's change-dedup. See
+/// [`request_presence_resync`]. `presence:`-prefixed → the bus treats it as
+/// realtime (never coalesced), so a cue is never dropped in favour of a
+/// stale one.
+const PRESENCE_RESYNC: &str = "presence:resync";
+
+/// A booting or reconnecting presence CONSUMER (the chat / wall / kanban
+/// projectors) calls this on boot to demand the emitter re-publish its
+/// current roster, bypassing the emitter's change-dedup.
+///
+/// ## Why the cue exists (#118)
+///
+/// The emitter fires `presence:updated` only when the roster *changes*
+/// (change-dedup — an idle re-render is a wasted revision bump). On a
+/// stable roster it fires once, then goes silent. A projector that
+/// (re)starts *after* that single fire never receives presence — it holds
+/// a roster-empty view until the roster next happens to change. The cue
+/// closes that gap: the late consumer asks, the emitter re-asserts.
+///
+/// ## Why it is room-agnostic (and the invariant that makes it safe)
+///
+/// The cue carries no room_id. The chat projection is room-following (it
+/// does not know its room at boot — it switches rooms as events arrive),
+/// so it could not name a room even if the wire had a slot. Each per-room
+/// emitter re-asserts only its OWN roster on any cue.
+///
+/// This is correct **only while at most one room has a live emitter** —
+/// the single-room reality today (one `spawn_node_presence_emitter` call
+/// against the bootstrap room). It is NOT safe by "consumers filter by
+/// room": the chat projector does the opposite — `apply_presence` calls
+/// `switch_room(update.room_id)`, *adopting* the update's room and wiping
+/// the previously-focused room's messages + roster. Under a single emitter
+/// that is harmless (every `presence:updated` names the same room). But the
+/// moment a second room's emitter exists, a broadcast cue makes every
+/// emitter re-publish, and room B's `presence:updated` would yank the chat
+/// projector off room A — wiping the user's view. The room-following
+/// property is exactly what makes the room-agnostic cue unsafe once
+/// multiple emitters coexist.
+///
+/// So before multi-room emitters land, either put a room_id on the cue so
+/// a consumer requests only its focused room, OR guard `apply_presence` to
+/// drop an update whose room ≠ the focused room (follow only on an explicit
+/// `switch_room` message, not on presence). Until then the broadcast cue is
+/// correct and its only cost is one idle roster re-read per emitter.
+pub(crate) fn request_presence_resync(bus: &MessageBus) {
+    // A payload-free cue: the event name IS the whole signal. `Null` is the
+    // honest "no data" — a resync *requests* a roster, it does not carry
+    // one ([[fallbacks-are-illegal-fail-loud]]: no fabricated payload).
+    bus.publish_async_only(PRESENCE_RESYNC, serde_json::Value::Null);
+}
 
 /// Project airc's owned roster into a `presence:updated` payload for one
 /// room. Pure — no bus, no clock — so the mapping is unit-testable and
@@ -167,32 +220,84 @@ async fn run_presence_loop(
     bus: Arc<MessageBus>,
 ) {
     let mut ticker = tokio::time::interval(EMIT_INTERVAL);
+    let mut rx = bus.receiver();
     let mut last_published: Option<AircPresenceUpdate> = None;
+    // Once the bus closes (all senders dropped — process teardown) no
+    // consumer is left to cue us; disable the resync arm so the select does
+    // not busy-loop on `Closed`, and keep ticking (the emitter still owns
+    // the roster read regardless of any consumer).
+    let mut bus_open = true;
     loop {
-        ticker.tick().await;
-        let members = match reader.room_roster(PRESENCE_WINDOW, ROSTER_SCAN).await {
-            Ok(m) => m,
-            Err(err) => {
-                tracing::warn!(
-                    error = %err,
-                    %room_id,
-                    "positron_presence: room_roster failed — skip tick, keep last roster (reader owns reconnection)"
-                );
-                continue;
+        tokio::select! {
+            _ = ticker.tick() => {
+                // Idle re-read: publish only on a real change (dedup).
+                emit_once(&reader, room_id, &room_name, &bus, &mut last_published, false).await;
             }
-        };
-        let update = project_presence(members, room_id, room_name.clone());
-        if last_published.as_ref() == Some(&update) {
-            continue;
+            recv = rx.recv(), if bus_open => match recv {
+                // A booting/reconnecting presence CONSUMER demands the
+                // current roster. Force a re-publish even if unchanged —
+                // the whole point of the cue (#118): a projector that
+                // (re)started after our last publish would otherwise hold a
+                // roster-empty view until the roster next changed.
+                Ok(event) if event.name == PRESENCE_RESYNC => {
+                    emit_once(&reader, room_id, &room_name, &bus, &mut last_published, true).await;
+                }
+                // Any other bus traffic is not ours — ignore.
+                Ok(_) => {}
+                // Fell behind the broadcast buffer: some cues were dropped,
+                // but the next tick re-reads the roster anyway, so a missed
+                // resync only delays a late consumer by one EMIT_INTERVAL.
+                Err(RecvError::Lagged(_)) => {}
+                Err(RecvError::Closed) => bus_open = false,
+            }
         }
-        // Substrate-owned type: a serialize failure is a bug, not a
-        // runtime condition (same discipline as
-        // `continuum_positron::StateBuilder::build`).
-        let payload = serde_json::to_value(&update)
-            .expect("AircPresenceUpdate must serialize — bug, not a runtime error");
-        bus.publish_async_only(PRESENCE_UPDATED, payload);
-        last_published = Some(update);
     }
+}
+
+/// Read the roster once, project it, and publish `presence:updated`.
+///
+/// `force = false` (the idle tick path) publishes only when the projection
+/// differs from `last_published` — change-dedup, so an idle re-render is
+/// not a wasted revision bump. `force = true` (a resync cue) bypasses the
+/// dedup and always publishes: a late consumer needs the current roster
+/// re-asserted even when it is unchanged.
+///
+/// A roster read error skips this emit and keeps the last published roster
+/// on the widget (the reader — `airc_lib::Airc` — owns reconnection per
+/// `[[persona-airc-resilience]]`; a transient poll failure must not blink
+/// the roster empty). This is resilience, not a fallback: no fabricated
+/// data is ever substituted; the emitter simply waits for the next good
+/// read.
+async fn emit_once(
+    reader: &Arc<dyn AircRosterReader>,
+    room_id: Uuid,
+    room_name: &str,
+    bus: &MessageBus,
+    last_published: &mut Option<AircPresenceUpdate>,
+    force: bool,
+) {
+    let members = match reader.room_roster(PRESENCE_WINDOW, ROSTER_SCAN).await {
+        Ok(m) => m,
+        Err(err) => {
+            tracing::warn!(
+                error = %err,
+                %room_id,
+                "positron_presence: room_roster failed — skip emit, keep last roster (reader owns reconnection)"
+            );
+            return;
+        }
+    };
+    let update = project_presence(members, room_id, room_name.to_string());
+    if !force && last_published.as_ref() == Some(&update) {
+        return;
+    }
+    // Substrate-owned type: a serialize failure is a bug, not a
+    // runtime condition (same discipline as
+    // `continuum_positron::StateBuilder::build`).
+    let payload = serde_json::to_value(&update)
+        .expect("AircPresenceUpdate must serialize — bug, not a runtime error");
+    bus.publish_async_only(PRESENCE_UPDATED, payload);
+    *last_published = Some(update);
 }
 
 /// Fixed identity name for the node-level presence reader. It attaches
@@ -287,6 +392,29 @@ pub fn spawn_node_presence_emitter(
 mod tests {
     use super::*;
     use airc_core::PeerId;
+    use airc_lib::AircError;
+    use async_trait::async_trait;
+
+    /// A roster reader that returns a fixed member list — enough to drive
+    /// [`emit_once`]'s read → project → publish path without a daemon.
+    struct StubRosterReader {
+        members: Vec<RoomMember>,
+    }
+
+    #[async_trait]
+    impl AircRosterReader for StubRosterReader {
+        fn self_peer_id(&self) -> PeerId {
+            PeerId::new()
+        }
+
+        async fn room_roster(
+            &self,
+            _within: Duration,
+            _window: usize,
+        ) -> Result<Vec<RoomMember>, AircError> {
+            Ok(self.members.clone())
+        }
+    }
 
     /// Build a `RoomMember` — `name: Some` mirrors a peer that published
     /// an identity card; `None` mirrors present-but-unnamed. Mirrors the
@@ -386,5 +514,56 @@ mod tests {
         let json = serde_json::to_value(&update).expect("serializes");
         let back: AircPresenceUpdate = serde_json::from_value(json).expect("round-trips");
         assert_eq!(update, back);
+    }
+
+    // what this catches: the late-subscriber gap (#118). The idle tick
+    // dedups an unchanged roster (publishes nothing on the second call);
+    // a resync cue must set `force` and re-publish the SAME roster anyway,
+    // so a projector that booted after the emitter's one-and-only publish
+    // still receives presence. A regression that let the dedup swallow a
+    // forced emit would leave that projector roster-empty forever.
+    #[tokio::test]
+    async fn resync_forces_republish_of_unchanged_roster() {
+        let reader: Arc<dyn AircRosterReader> = Arc::new(StubRosterReader {
+            members: vec![member(PeerId::new(), "claude", Some("win-claude"))],
+        });
+        let bus = MessageBus::new();
+        let mut rx = bus.receiver();
+        let room = Uuid::from_u128(0x1);
+        let mut last = None;
+
+        // First idle emit publishes (roster changed None → Some).
+        emit_once(&reader, room, "general", &bus, &mut last, false).await;
+        let first = rx.try_recv().expect("first emit publishes presence:updated");
+        assert_eq!(first.name, PRESENCE_UPDATED);
+
+        // Second idle emit dedups — nothing published.
+        emit_once(&reader, room, "general", &bus, &mut last, false).await;
+        assert!(
+            rx.try_recv().is_err(),
+            "an unchanged roster dedups on the idle path"
+        );
+
+        // A resync cue forces a re-publish of the unchanged roster.
+        emit_once(&reader, room, "general", &bus, &mut last, true).await;
+        let forced = rx
+            .try_recv()
+            .expect("a resync forces a re-publish even when the roster is unchanged");
+        assert_eq!(forced.name, PRESENCE_UPDATED);
+    }
+
+    // what this catches: the consumer-side half of the cue — a booting
+    // projector must actually emit `presence:resync` on the bus so the
+    // emitter's select arm fires. A regression that renamed the event or
+    // dropped the publish would silently reopen the late-subscriber gap.
+    #[tokio::test]
+    async fn request_presence_resync_publishes_the_cue() {
+        let bus = MessageBus::new();
+        let mut rx = bus.receiver();
+        request_presence_resync(&bus);
+        let cue = rx
+            .try_recv()
+            .expect("request_presence_resync publishes a cue event");
+        assert_eq!(cue.name, PRESENCE_RESYNC);
     }
 }
