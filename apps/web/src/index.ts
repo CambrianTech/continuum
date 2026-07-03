@@ -69,17 +69,47 @@ async function main(): Promise<void> {
   };
   widget.sendHandler = sendHandler;
 
+  // Visible connection diagnostics — a stuck "Connecting…" with no on-screen
+  // reason is undebuggable. Surface the WS lifecycle so a blank/stuck tab tells
+  // you WHY (socket closed / connected-but-no-snapshot / connect failed).
+  const banner = document.createElement('div');
+  banner.style.cssText =
+    'position:fixed;top:0;left:0;right:0;z-index:9;padding:6px 12px;font:12px ui-monospace,monospace;background:#2a2a30;color:#cdcdd3;border-bottom:1px solid #3a3a42';
+  const setStatus = (msg: string, warn = false): void => {
+    banner.textContent = `positron: ${msg}`;
+    banner.style.background = warn ? '#4a2a2a' : '#2a2a30';
+    banner.style.color = warn ? '#f7b7b7' : '#cdcdd3';
+    if (!banner.isConnected) document.body.appendChild(banner);
+  };
+  setStatus(`connecting to ${config.wsUrl} …`);
+
   // READ socket: subscribe to chat state, merge each envelope into the widget.
+  let gotState = false;
   const state = new StateConnection(config.wsUrl);
   state.on(CHAT_KIND, (envelope: StateEnvelope) => {
+    gotState = true;
+    banner.remove();
     latest = chatStateFromEnvelope(envelope);
     widget.state = latest;
   });
   state.onClose((reason) => {
     // Never silently freeze: a dropped state feed is a stale-UI signal.
     console.error(`chat state feed closed: ${reason}`);
+    setStatus(`state feed CLOSED: ${reason}`, true);
   });
-  await state.connect();
+  try {
+    await state.connect();
+    setStatus(`socket open to ${config.wsUrl} — awaiting first room snapshot…`);
+  } catch (err) {
+    setStatus(`socket connect FAILED: ${err instanceof Error ? err.message : String(err)}`, true);
+    throw err;
+  }
+  // Opened but no snapshot ⇒ a subscribe/snapshot problem, not a connect one.
+  setTimeout(() => {
+    if (!gotState) {
+      setStatus(`connected to ${config.wsUrl} but NO room snapshot arrived in 4s — subscribe/snapshot issue`, true);
+    }
+  }, 4000);
 }
 
 main().catch((err: unknown) => {
