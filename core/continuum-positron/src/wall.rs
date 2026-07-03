@@ -62,7 +62,7 @@ use crate::chat::{Provenance, SenderKind};
 /// `post_id`, `room_id`, `author_id` are continuum's substrate UUIDs
 /// rendered as strings on the wire (the ts-rs default for `Uuid`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[ts(export, export_to = "../../../protocol/typescript/positron/WallPostView.ts")]
 pub struct WallPostView {
     /// Stable id across this post's supersede chain — the anchor a
     /// renderer keys a board row on. A revision generates a NEW
@@ -125,7 +125,7 @@ pub struct WallPostView {
 /// a stale merged entry — the same "full snapshot, replace not merge"
 /// discipline the chat roster uses for presence.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[ts(export, export_to = "../../../protocol/typescript/positron/WallViewState.ts")]
 pub struct WallViewState {
     #[ts(type = "string")]
     pub room_id: Uuid,
