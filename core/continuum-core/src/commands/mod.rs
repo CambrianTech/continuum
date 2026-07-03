@@ -23,6 +23,7 @@ pub mod cognition;
 pub mod command;
 pub mod data;
 pub mod dataset;
+pub mod desktop;
 pub mod embedding;
 pub mod events;
 pub mod focus;
