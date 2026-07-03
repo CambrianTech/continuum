@@ -117,6 +117,7 @@ pub mod cache;
 pub mod chat;
 pub mod connection;
 pub mod dispatch;
+pub mod kanban;
 pub mod kinds;
 pub mod observer;
 pub mod revisions;
@@ -131,6 +132,10 @@ pub use cache::SubstrateStateCache;
 pub use chat::{ChatMessageView, ChatViewState, Provenance, RosterSlotView, SenderKind};
 pub use connection::Connection;
 pub use dispatch::{apply_command, CommandDispatch};
+pub use kanban::{
+    KanbanCardState, KanbanCardView, KanbanLaneState, KanbanLaneView, KanbanPriority,
+    KanbanPullRequest, KanbanViewState,
+};
 pub use kinds::{KnownKind, RevisionKey};
 pub use observer::{apply_observe, ObserverRegistration};
 pub use revisions::Revisions;
