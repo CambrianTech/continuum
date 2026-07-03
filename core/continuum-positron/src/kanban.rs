@@ -97,8 +97,11 @@ pub enum KanbanLaneState {
 }
 
 /// A card's priority — mirrors airc's `Priority` (P0 highest … P3
-/// lowest; P2 the airc default). Kept as the same 4-level ordinal so a
-/// renderer can sort/badge without inventing a mapping.
+/// lowest; P2 the airc default). Kept as the same 4-level scale (P0
+/// highest) in the same declaration order so a renderer can sort/badge
+/// off the wire strings without inventing a mapping. (This is a
+/// wire-vocabulary contract, not a Rust `Ord` one — ordering never
+/// crosses the boundary; the consumer sorts on the string values.)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 #[ts(export)]
