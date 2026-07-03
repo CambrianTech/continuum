@@ -32,6 +32,10 @@
 pub enum KnownKind {
     /// `"chat"` — room chat: messages, roster, typing-in-progress.
     Chat,
+    /// `"wall"` — the room's pinned shared documents (plan, rules,
+    /// agenda, recipe): a supersede-projected board keyed by open
+    /// consumer-defined category. See [`crate::wall::WallViewState`].
+    Wall,
 }
 
 impl KnownKind {
@@ -42,6 +46,7 @@ impl KnownKind {
     pub fn wire_name(self) -> &'static str {
         match self {
             KnownKind::Chat => "chat",
+            KnownKind::Wall => "wall",
         }
     }
 }
@@ -78,5 +83,6 @@ mod tests {
         // changes the on-wire kind string. The renderer side routes
         // by this exact string; a silent change breaks the widget.
         assert_eq!(KnownKind::Chat.wire_name(), "chat");
+        assert_eq!(KnownKind::Wall.wire_name(), "wall");
     }
 }

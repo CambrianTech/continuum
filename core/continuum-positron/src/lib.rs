@@ -124,6 +124,7 @@ pub mod session;
 pub mod session_task;
 pub mod state;
 pub mod substrate;
+pub mod wall;
 
 pub use broadcast::Broadcast;
 pub use cache::SubstrateStateCache;
@@ -137,6 +138,7 @@ pub use session::{apply_subscribe, Subscription};
 pub use session_task::run_session;
 pub use state::StateBuilder;
 pub use substrate::Substrate;
+pub use wall::{WallPostView, WallViewState};
 
 // Re-export positron's wire + session types so consumers get them
 // under one path. The typed payloads in this crate fill
