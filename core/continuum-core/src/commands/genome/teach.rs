@@ -249,6 +249,116 @@ async fn teacher_generate(
     Ok(response.text)
 }
 
+/// The validated corpus a remediation pass produces: the ShareGPT examples (only
+/// test-PASSING trajectories) plus a per-task outcome trail and how many needed a
+/// correction. Returned by [`synthesize_remediation`] to whatever drives it — the
+/// `genome/teach` command over a static set, or the self-improvement orchestrator
+/// over a persona's own measured failures ([[attention-salience-selects-what-becomes-curriculum]]).
+pub struct RemediationCorpus {
+    /// ShareGPT `{"messages":[...]}` examples — one per solved task, the full
+    /// write→error→fix→pass trajectory.
+    pub examples: Vec<Value>,
+    /// Per-task outcome (solved?, attempts, last real error) — the trail.
+    pub outcomes: Vec<GenomeTeachTaskOutcome>,
+    /// How many solved trajectories needed ≥1 correction (the self-verify reflex
+    /// actually firing, not first-try luck).
+    pub with_correction: usize,
+}
+
+/// **The curriculum synthesizer** (remediation mode). For each test-graded task, a
+/// teacher model writes a solution, the gym grader compiles+runs it, the REAL error
+/// feeds back, and it loops to green within `max_fix_iters` — only test-PASSING
+/// trajectories become corpus. The write→error→fix→pass ordering IS the lesson (the
+/// self-verify-and-correct reflex being taught).
+///
+/// This is the reusable core `genome/teach` runs over a static set AND the
+/// self-improvement loop runs over a persona's own salience-selected failures
+/// ([`crate::cognition::experience::salient_teach_set`]). It does NOT resolve the
+/// teacher or write the dataset — the caller owns model resolution and packaging, so
+/// this stays a pure task-set → validated-corpus transform.
+///
+/// Mirror-and-challenge: the teacher solves HER failed tasks (mirror — her real
+/// fitness gap) and the fix-loop stretches past the first wrong attempt (challenge —
+/// the corrected trajectory she has not yet lived). Measurement stays elsewhere
+/// (`cognition/eval`, isolated) — this only PRODUCES curriculum, never grades her.
+pub async fn synthesize_remediation(
+    tasks: &[EvalTask],
+    teacher_model: &str,
+    temperature: f32,
+    max_fix_iters: u32,
+) -> Result<RemediationCorpus, CommandError> {
+    let mut examples: Vec<Value> = Vec::new();
+    let mut outcomes: Vec<GenomeTeachTaskOutcome> = Vec::new();
+    let mut with_correction = 0usize;
+
+    for task in tasks {
+        // Only test-graded tasks can be validated → become corpus. A task with no
+        // `test` is dropped with a named reason, never silently passed.
+        let Some(test) = task.test.as_deref() else {
+            outcomes.push(GenomeTeachTaskOutcome {
+                id: task.id.clone(),
+                solved: false,
+                attempts: 0,
+                last_error: Some("task has no `test` — cannot validate, dropped".into()),
+            });
+            continue;
+        };
+        let lang = task.lang.as_deref().unwrap_or("rust");
+
+        // The trajectory we build turn-by-turn; on green it becomes the example.
+        let mut trajectory = vec![
+            ChatMessage::text("system", TEACHER_SYSTEM),
+            ChatMessage::text("user", &task.prompt),
+        ];
+
+        let mut attempts = 0u32;
+        let mut last_error: Option<String> = None;
+        let mut solved = false;
+
+        // First generation + up to `max_fix_iters` corrections.
+        for _ in 0..=max_fix_iters {
+            let answer = teacher_generate(teacher_model, trajectory.clone(), temperature).await?;
+            attempts += 1;
+            trajectory.push(ChatMessage::text("assistant", &answer));
+
+            let (passed, grade) = test_grade(&answer, lang, test).await;
+            if passed {
+                solved = true;
+                break;
+            }
+            last_error = Some(grade.clone());
+            // Feed the REAL error back as the next turn — this is the reflex being
+            // taught: read the actual compiler/test output, then correct.
+            trajectory.push(ChatMessage::text(
+                "user",
+                format!(
+                    "Your solution failed:\n{grade}\n\nRead the error and return the COMPLETE \
+                     corrected solution in a ```rust block."
+                ),
+            ));
+        }
+
+        if solved {
+            if attempts > 1 {
+                with_correction += 1;
+            }
+            examples.push(build_sharegpt(&trajectory));
+        }
+        outcomes.push(GenomeTeachTaskOutcome {
+            id: task.id.clone(),
+            solved,
+            attempts,
+            last_error: if solved { None } else { last_error },
+        });
+    }
+
+    Ok(RemediationCorpus {
+        examples,
+        outcomes,
+        with_correction,
+    })
+}
+
 /// Stateless — self-registers onto the ONE registry. Holds no module state; resolves
 /// inference + dataset packaging through their global/associated seams.
 #[derive(Default)]
@@ -300,70 +410,12 @@ impl ActionCommand for GenomeTeach {
         let temperature = p.temperature.unwrap_or(DEFAULT_TEMPERATURE);
         let max_fix_iters = p.max_fix_iters.unwrap_or(DEFAULT_MAX_FIX_ITERS);
 
-        let mut examples: Vec<Value> = Vec::new();
-        let mut outcomes: Vec<GenomeTeachTaskOutcome> = Vec::new();
-        let mut with_correction = 0usize;
-
-        for task in &tasks {
-            // Only test-graded tasks can be validated → become corpus. A task with no
-            // `test` is dropped with a named reason, never silently passed.
-            let Some(test) = task.test.as_deref() else {
-                outcomes.push(GenomeTeachTaskOutcome {
-                    id: task.id.clone(),
-                    solved: false,
-                    attempts: 0,
-                    last_error: Some("task has no `test` — cannot validate, dropped".into()),
-                });
-                continue;
-            };
-            let lang = task.lang.as_deref().unwrap_or("rust");
-
-            // The trajectory we build turn-by-turn; on green it becomes the example.
-            let mut trajectory = vec![
-                ChatMessage::text("system", TEACHER_SYSTEM),
-                ChatMessage::text("user", &task.prompt),
-            ];
-
-            let mut attempts = 0u32;
-            let mut last_error: Option<String> = None;
-            let mut solved = false;
-
-            // First generation + up to `max_fix_iters` corrections.
-            for _ in 0..=max_fix_iters {
-                let answer = teacher_generate(&teacher_model, trajectory.clone(), temperature).await?;
-                attempts += 1;
-                trajectory.push(ChatMessage::text("assistant", &answer));
-
-                let (passed, grade) = test_grade(&answer, lang, test).await;
-                if passed {
-                    solved = true;
-                    break;
-                }
-                last_error = Some(grade.clone());
-                // Feed the REAL error back as the next turn — this is the reflex being
-                // taught: read the actual compiler/test output, then correct.
-                trajectory.push(ChatMessage::text(
-                    "user",
-                    format!(
-                        "Your solution failed:\n{grade}\n\nRead the error and return the COMPLETE \
-                         corrected solution in a ```rust block."
-                    ),
-                ));
-            }
-
-            if solved {
-                if attempts > 1 {
-                    with_correction += 1;
-                }
-                examples.push(build_sharegpt(&trajectory));
-            }
-            outcomes.push(GenomeTeachTaskOutcome {
-                id: task.id.clone(),
-                solved,
-                attempts,
-                last_error: if solved { None } else { last_error },
-            });
-        }
+        // The synthesis itself — shared with the self-improvement orchestrator.
+        let RemediationCorpus {
+            examples,
+            outcomes,
+            with_correction,
+        } = synthesize_remediation(&tasks, &teacher_model, temperature, max_fix_iters).await?;
 
         if examples.is_empty() {
             return Err(CommandError::Internal(format!(
