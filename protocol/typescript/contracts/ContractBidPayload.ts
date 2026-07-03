@@ -3,7 +3,12 @@
 /**
  * `contract:bid` — an executor's offer to take on a proposed contract.
  */
-export type ContractBidPayload = { contractId: string, bidderId: string, bidAmount: bigint, 
+export type ContractBidPayload = { contractId: string, bidderId: string, 
+/**
+ * `number` per the `ContractProposedPayload::max_bid` note — JSON wire
+ * carries a number, `bigint` breaks `JSON.stringify`, bids stay < 2^53.
+ */
+bidAmount: number, 
 /**
  * Bidder's promised SLA (max latency in ms). Proposer uses this
  * in the bid-selection policy (lower latency + lower bid wins,
@@ -12,5 +17,6 @@ export type ContractBidPayload = { contractId: string, bidderId: string, bidAmou
 maxLatencyMs: number, 
 /**
  * Bidder's expiry — how long this bid is honored if accepted.
+ * `number` per the `max_bid` note — Unix-ms timestamps stay below 2^53.
  */
-bidExpiryUnixMs: bigint, };
+bidExpiryUnixMs: number, };

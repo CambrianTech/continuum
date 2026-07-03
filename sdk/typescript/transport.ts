@@ -68,18 +68,20 @@ export function stampContext<T>(value: T, contextId?: string): T {
   return value;
 }
 
-/** Raw (JSON-string) command handler — the facade's inbound-handler shape. */
+/** Raw (JSON-string) command handler — the facade's inbound-handler shape.
+ *  A callback slot (function property, not a `this`-bound method) so a handler
+ *  can be passed detached without losing binding. */
 export interface RawCommandHandler {
-  handle(paramsJson: string): Promise<string>;
+  handle: (paramsJson: string) => Promise<string>;
 }
 
 /** Raw (JSON-string) event handlers — the facade's `EventCallback` shape. The
  *  `sequence` is the redone AircEventPublisher's monotonic per-subscription
  *  counter — lets subscribers detect ordering/gaps (multi-hop, any link emits). */
 export interface RawEventHandlers {
-  onEvent(json: string, sequence: number): void;
-  onError?(message: string): void;
-  onClosed?(): void;
+  onEvent: (json: string, sequence: number) => void;
+  onError?: (message: string) => void;
+  onClosed?: () => void;
 }
 
 /** A live subscription; `unsubscribe()` tears it down (facade Drop). */

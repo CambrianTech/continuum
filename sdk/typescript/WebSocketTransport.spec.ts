@@ -8,7 +8,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { WebSocketTransport, type WebSocketLike, type WebSocketCtor } from './WebSocketTransport';
+import { WebSocketTransport, type WebSocketLike } from './WebSocketTransport';
 import type { WsClientMessage } from './generated/wire/transport/WsClientMessage';
 
 /** A scriptable WebSocket: records sent frames, exposes the lifecycle triggers. */
@@ -39,7 +39,15 @@ class FakeWebSocket implements WebSocketLike {
 }
 
 /** Flush microtasks so post-`await ensureConnected()` sends land. */
-const flush = () => new Promise((r) => setTimeout(r, 0));
+const flush = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
+
+/** The last constructed socket, fail-loud if the transport never made one — the
+ *  test's precondition, surfaced instead of a bare non-null assertion. */
+const lastSocket = (): FakeWebSocket => {
+  const s = FakeWebSocket.last;
+  if (!s) throw new Error('FakeWebSocket: no socket constructed yet');
+  return s;
+};
 
 const idOf = (frame: string): number => (JSON.parse(frame) as WsClientMessage).id;
 const pathOf = (frame: string): string => (JSON.parse(frame) as WsClientMessage).request.path;
@@ -49,12 +57,12 @@ describe('WebSocketTransport', () => {
   // the UNWRAPPED result JSON (AircCommandResponse.Ok.result), not the envelope —
   // Commands.execute JSON.parses this directly.
   it('unwraps an ok response to the plain result json', async () => {
-    const t = new WebSocketTransport('ws://x', FakeWebSocket as unknown as WebSocketCtor);
+    const t = new WebSocketTransport('ws://x', FakeWebSocket);
     const p = t.execute('health/ping', '{}');
-    FakeWebSocket.last!.open();
+    lastSocket().open();
     await flush();
-    const id = idOf(FakeWebSocket.last!.sent[0]);
-    FakeWebSocket.last!.deliver({ type: 'response', id, response: { status: 'ok', result: { pong: true } } });
+    const id = idOf(lastSocket().sent[0]);
+    lastSocket().deliver({ type: 'response', id, response: { status: 'ok', result: { pong: true } } });
     expect(JSON.parse(await p)).toEqual({ pong: true });
   });
 
@@ -62,12 +70,12 @@ describe('WebSocketTransport', () => {
   // when replies arrive out of order — the whole reason the envelope carries a
   // correlation id. A regression that resolved by arrival-order would swap these.
   it('correlates concurrent replies by id regardless of arrival order', async () => {
-    const t = new WebSocketTransport('ws://x', FakeWebSocket as unknown as WebSocketCtor);
+    const t = new WebSocketTransport('ws://x', FakeWebSocket);
     const pOne = t.execute('a/one', '{}');
     const pTwo = t.execute('a/two', '{}');
-    FakeWebSocket.last!.open();
+    lastSocket().open();
     await flush();
-    const ws = FakeWebSocket.last!;
+    const ws = lastSocket();
     expect(ws.sent).toHaveLength(2);
     const byPath = new Map(ws.sent.map((f) => [pathOf(f), idOf(f)]));
     // reply to two FIRST, then one
@@ -80,23 +88,23 @@ describe('WebSocketTransport', () => {
   // what this catches: an error response must REJECT with the server's message —
   // never resolve with an error-shaped object that a caller would treat as success.
   it('rejects an error response with the server message', async () => {
-    const t = new WebSocketTransport('ws://x', FakeWebSocket as unknown as WebSocketCtor);
+    const t = new WebSocketTransport('ws://x', FakeWebSocket);
     const p = t.execute('data/list', '{}');
-    FakeWebSocket.last!.open();
+    lastSocket().open();
     await flush();
-    const id = idOf(FakeWebSocket.last!.sent[0]);
-    FakeWebSocket.last!.deliver({ type: 'response', id, response: { status: 'error', message: 'policy denied' } });
+    const id = idOf(lastSocket().sent[0]);
+    lastSocket().deliver({ type: 'response', id, response: { status: 'error', message: 'policy denied' } });
     await expect(p).rejects.toThrow('policy denied');
   });
 
   // what this catches: a mid-flight connection close must REJECT pending commands
   // loudly, never leave a promise hung forever (fail-loud on terminal drop).
   it('rejects in-flight commands when the socket closes', async () => {
-    const t = new WebSocketTransport('ws://x', FakeWebSocket as unknown as WebSocketCtor);
+    const t = new WebSocketTransport('ws://x', FakeWebSocket);
     const p = t.execute('a/slow', '{}');
-    FakeWebSocket.last!.open();
+    lastSocket().open();
     await flush();
-    FakeWebSocket.last!.close();
+    lastSocket().close();
     await expect(p).rejects.toThrow(/closed/);
   });
 
@@ -104,16 +112,18 @@ describe('WebSocketTransport', () => {
   // ingress yet — they must fail loud (named cause), never a silent no-op that a
   // caller mistakes for a working subscription.
   it('fails loud on unsupported serve/publish/subscribe', async () => {
-    const t = new WebSocketTransport('ws://x', FakeWebSocket as unknown as WebSocketCtor);
-    expect(() => t.provide('x/y', { handle: async () => '{}' })).toThrow(/not supported/);
-    expect(() => t.subscribe('some:event', { onEvent: () => {} })).toThrow(/not supported/);
+    const t = new WebSocketTransport('ws://x', FakeWebSocket);
+    expect(() => t.provide('x/y', { handle: () => Promise.resolve('{}') })).toThrow(/not supported/);
+    expect(() => t.subscribe('some:event', { onEvent: () => { /* unreachable: throws first */ } })).toThrow(
+      /not supported/,
+    );
     await expect(t.emit('some:event', '{}')).rejects.toThrow(/not supported/);
   });
 
   // what this catches: an unauthenticated WS socket is Provisional — session()
   // must be empty, never a fabricated identity.
   it('reports an empty session (unauthenticated Provisional)', () => {
-    const t = new WebSocketTransport('ws://x', FakeWebSocket as unknown as WebSocketCtor);
+    const t = new WebSocketTransport('ws://x', FakeWebSocket);
     expect(t.session()).toEqual({});
   });
 });

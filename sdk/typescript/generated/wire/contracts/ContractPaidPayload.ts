@@ -5,7 +5,13 @@
  * zero-cost household tier this is still emitted (audit completeness)
  * with `amount: 0`.
  */
-export type ContractPaidPayload = { contractId: string, payerId: string, payeeId: string, amount: bigint, currency: string, 
+export type ContractPaidPayload = { contractId: string, payerId: string, payeeId: string, 
+/**
+ * `number` per the `ContractProposedPayload::max_bid` note — the JSON wire
+ * carries a number, `bigint` breaks `JSON.stringify`, and settlement
+ * amounts never approach 2^53 (household tier settles `amount: 0`).
+ */
+amount: number, currency: string, 
 /**
  * Optional settlement reference (chain tx hash, internal ledger
  * entry id, etc.). Not load-bearing for replay; just provenance.

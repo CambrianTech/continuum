@@ -28,9 +28,9 @@ export interface EventMeta {
 
 /** Typed event handlers — payload + meta typed from the class. */
 export interface EventHandlers<K extends EventClass> {
-  onEvent(event: EventMap[K], meta: EventMeta): void;
-  onError?(message: string): void;
-  onClosed?(): void;
+  onEvent: (event: EventMap[K], meta: EventMeta) => void;
+  onError?: (message: string) => void;
+  onClosed?: () => void;
 }
 
 /** Where the events come FROM (omitted = local), and an optional server-side
@@ -70,7 +70,7 @@ export class Events {
     return this.transport.subscribe(
       topic,
       {
-        onEvent: (json, sequence) => handlers.onEvent(JSON.parse(json) as EventMap[K], { sequence }),
+        onEvent: (json, sequence) => { handlers.onEvent(JSON.parse(json) as EventMap[K], { sequence }); },
         onError: handlers.onError,
         onClosed: handlers.onClosed,
       },

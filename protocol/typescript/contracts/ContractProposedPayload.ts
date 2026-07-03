@@ -19,12 +19,19 @@ alloyHash: string,
  * Currency/escrow terms. Zero-cost ("household") tier = empty
  * `bid_currency` + zero `max_bid`.
  */
-bidCurrency: string, maxBid: bigint, 
+bidCurrency: string, 
+/**
+ * `#[ts(type = "number")]`: the JSON wire carries a number; ts-rs's default
+ * `bigint` for 64-bit ints breaks `JSON.stringify` (throws) and numeric
+ * fixtures. Escrow amounts never approach 2^53.
+ */
+maxBid: number, 
 /**
  * Expiry (Unix ms). After this point the proposal is dead even
- * if no `:accepted` was ever emitted.
+ * if no `:accepted` was ever emitted. `number` per the `max_bid` note —
+ * Unix-ms timestamps stay far below 2^53.
  */
-expiryUnixMs: bigint, 
+expiryUnixMs: number, 
 /**
  * Required executor capability tag — matches the L1-4
  * `presence:peer-manifest` capability index format.

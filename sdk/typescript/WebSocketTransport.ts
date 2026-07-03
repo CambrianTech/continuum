@@ -129,10 +129,12 @@ export class WebSocketTransport implements Transport {
   }
 
   /** Event PUBLISH — not carried by the WS ingress yet. */
-  async emit(eventClass: string, _payloadJson: string): Promise<void> {
-    throw new Error(
-      `WebSocketTransport: emit('${eventClass}') is not supported — the WS ingress ` +
-        'carries no event-publish frame yet (a later task #29 layer).',
+  emit(eventClass: string, _payloadJson: string): Promise<void> {
+    return Promise.reject(
+      new Error(
+        `WebSocketTransport: emit('${eventClass}') is not supported — the WS ingress ` +
+          'carries no event-publish frame yet (a later task #29 layer).',
+      ),
     );
   }
 
@@ -180,7 +182,7 @@ export class WebSocketTransport implements Transport {
         this.connecting = undefined;
         this.failPending(new Error(`WebSocketTransport: connection to ${this.url} closed`));
       };
-      socket.onmessage = (ev) => this.onMessage(ev.data);
+      socket.onmessage = (ev) => { this.onMessage(ev.data); };
     });
     return this.connecting;
   }
@@ -197,25 +199,23 @@ export class WebSocketTransport implements Transport {
       return;
     }
 
-    // Single-variant today (`response`); the switch is exhaustive so a future
-    // server→client frame (e.g. event delivery) surfaces as a compile error here
-    // rather than a silent drop.
-    switch (msg.type) {
-      case 'response': {
-        const pending = this.pending.get(msg.id);
-        if (!pending) {
-          console.error(`WebSocketTransport: reply for unknown correlation id ${msg.id}`);
-          return;
-        }
-        this.pending.delete(msg.id);
-        const response = msg.response;
-        if (response.status === 'ok') {
-          pending.resolve(JSON.stringify(response.result));
-        } else {
-          pending.reject(new Error(response.message));
-        }
-        return;
-      }
+    // `WsServerMessage` is single-variant (`response`) today — a runtime switch on
+    // `msg.type` would be a comparison that is always true. The future-proofing is
+    // therefore a COMPILE-TIME guard: this destructure reads `id`/`response` off
+    // the frame, so the day a second server→client variant (e.g. event delivery)
+    // is added to the union — one that lacks those fields — this line stops
+    // compiling and forces a real dispatch here rather than a silent drop.
+    const { id, response } = msg;
+    const pending = this.pending.get(id);
+    if (!pending) {
+      console.error(`WebSocketTransport: reply for unknown correlation id ${id}`);
+      return;
+    }
+    this.pending.delete(id);
+    if (response.status === 'ok') {
+      pending.resolve(JSON.stringify(response.result));
+    } else {
+      pending.reject(new Error(response.message));
     }
   }
 
