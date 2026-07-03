@@ -95,18 +95,31 @@ const PRESENCE_RESYNC: &str = "presence:resync";
 /// a roster-empty view until the roster next happens to change. The cue
 /// closes that gap: the late consumer asks, the emitter re-asserts.
 ///
-/// ## Why it is room-agnostic
+/// ## Why it is room-agnostic (and the invariant that makes it safe)
 ///
 /// The cue carries no room_id. The chat projection is room-following (it
 /// does not know its room at boot — it switches rooms as events arrive),
 /// so it could not name a room even if the wire had a slot. Each per-room
-/// emitter re-asserts only its OWN roster on any cue, and every consumer
-/// already filters presence by room, so a broadcast cue is correct: the
-/// only cost is one idle roster re-read per *other* room's emitter, cheap
-/// and bounded by the (small) room count. Precise per-room routing is a
-/// premature optimization for the single-room reality — add a room_id to
-/// the cue when multi-room emitters make those idle re-reads matter, not
-/// before.
+/// emitter re-asserts only its OWN roster on any cue.
+///
+/// This is correct **only while at most one room has a live emitter** —
+/// the single-room reality today (one `spawn_node_presence_emitter` call
+/// against the bootstrap room). It is NOT safe by "consumers filter by
+/// room": the chat projector does the opposite — `apply_presence` calls
+/// `switch_room(update.room_id)`, *adopting* the update's room and wiping
+/// the previously-focused room's messages + roster. Under a single emitter
+/// that is harmless (every `presence:updated` names the same room). But the
+/// moment a second room's emitter exists, a broadcast cue makes every
+/// emitter re-publish, and room B's `presence:updated` would yank the chat
+/// projector off room A — wiping the user's view. The room-following
+/// property is exactly what makes the room-agnostic cue unsafe once
+/// multiple emitters coexist.
+///
+/// So before multi-room emitters land, either put a room_id on the cue so
+/// a consumer requests only its focused room, OR guard `apply_presence` to
+/// drop an update whose room ≠ the focused room (follow only on an explicit
+/// `switch_room` message, not on presence). Until then the broadcast cue is
+/// correct and its only cost is one idle roster re-read per emitter.
 pub(crate) fn request_presence_resync(bus: &MessageBus) {
     // A payload-free cue: the event name IS the whole signal. `Null` is the
     // honest "no data" — a resync *requests* a roster, it does not carry
