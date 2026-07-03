@@ -1804,27 +1804,54 @@ pub fn start_server(
                     .map(|p| p.fits_on_gpu)
                     .unwrap_or(false);
                 if plan_ready {
-                    attempt += 1;
-                    let summary = supervisor
-                        .spawn_all(&mut provider, Some(tool_executor.clone()))
-                        .await;
-                    if summary.hosted > 0 {
-                        tracing::info!(
-                            hosted = summary.hosted,
-                            failed = summary.failed(),
-                            attempts = attempt,
-                            "🌐 Substrate boot composition complete (slice 13.5) — \
-                             citizen(s) hosted, event-driven on serving-plan readiness"
+                    // `fits_on_gpu` is a RESOURCE decision (the model fits VRAM) — it does
+                    // NOT prove the lane can DECODE. A lane can fit yet fail EVERY
+                    // generation with `500 "Compute error."` while `/health` still answers
+                    // 200 — e.g. spawned with a flag that forces embedding/non-causal mode
+                    // (the live-2026-07-03 `--embeddings` outage), a bad LoRA, or a wedged
+                    // Metal context. Hosting personas onto such a lane makes every turn
+                    // 500 SILENTLY. So gate the spawn on the DECODE-VERIFIED serving
+                    // snapshot: `ServingSnapshot.ready` is published only on a serve/adopt
+                    // outcome that passed the 1-token decode smoke-probe. `await_ready_serving`
+                    // parks on the serving snapshot until the lane proves it can think, or
+                    // the deadline lapses. On timeout we do NOT spawn (a can't-decode lane
+                    // is a loud, novel failure — never a silent per-turn 500); we park and
+                    // retry on the next serving edge, self-healing once the lane recovers.
+                    if crate::inference::llama_server::await_ready_serving(
+                        std::time::Duration::from_secs(120),
+                    )
+                    .await
+                    .is_none()
+                    {
+                        tracing::warn!(
+                            "serving plan fits on GPU but the lane is NOT decode-ready \
+                             within 120s — /health may be 200 while every generation 500s \
+                             (a broken spawn flag / wedged compute context). NOT hosting \
+                             personas onto a lane that cannot generate; retrying on the \
+                             next serving edge."
                         );
-                        break;
+                    } else {
+                        attempt += 1;
+                        let summary = supervisor
+                            .spawn_all(&mut provider, Some(tool_executor.clone()))
+                            .await;
+                        if summary.hosted > 0 {
+                            tracing::info!(
+                                hosted = summary.hosted,
+                                failed = summary.failed(),
+                                attempts = attempt,
+                                "🌐 Substrate boot composition complete (slice 13.5) — \
+                                 citizen(s) hosted, event-driven on serving-plan readiness"
+                            );
+                            break;
+                        }
+                        tracing::warn!(
+                            failed = summary.failed(),
+                            attempt,
+                            "persona spawn found a decode-ready serving lane but no citizen \
+                             materialized — will retry on the next serving-plan edge"
+                        );
                     }
-                    tracing::warn!(
-                        failed = summary.failed(),
-                        attempt,
-                        "persona spawn found a fitting serving plan but no citizen \
-                         materialized (gateway likely still loading the model) — \
-                         will retry on the next serving-plan edge"
-                    );
                 }
                 // Park until the serving daemon republishes (every tick, or
                 // sooner on a pressure edge). `changed()` errs only if the

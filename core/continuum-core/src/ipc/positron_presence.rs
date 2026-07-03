@@ -18,7 +18,7 @@
 //! Per `[[positron-identity-security-first-class]]`: identity is a
 //! property that must hold at every seam, woven in as each seam is built,
 //! never bolted on after. So every projected slot carries a
-//! [`Provenance`] — the member's verifiable origin. Today that is airc's
+//! [`Provenance`](continuum_positron::Provenance) — the member's verifiable origin. Today that is airc's
 //! self-reported `runtime` class, carried **verbatim** (the one
 //! accountability axis airc surfaces now); trust tier + cryptographic
 //! verification join the same struct later with no wire break (growable
@@ -29,34 +29,31 @@
 //! ## The one wire contract, defined once
 //!
 //! Per the compression principle: the emitter builds and serializes the
-//! SAME [`AircPresenceUpdate`] / [`AircPresenceSlot`] structs the consumer
-//! deserializes (both live in `positron_source`, `pub(crate)` +
-//! `Serialize`/`Deserialize`). Both sides agree by construction, not by a
-//! hand-copied JSON literal — a round-trip test in `positron_source` pins
-//! the emitter's output against the consumer's `classify` path.
+//! SAME [`AircPresenceUpdate`] struct the consumer deserializes, and its
+//! roster rows ARE the neutral `RosterSlotView` (no hand-copied twin — the
+//! shared [`roster_slot_from_member`] projection produces the identical slot
+//! both the widget and the persona grounding read). Both sides agree by
+//! construction, not by a hand-copied JSON literal — a round-trip test in
+//! `positron_source` pins the emitter's output against the consumer's
+//! `classify` path.
 //!
 //! ## kind is derived coarsely; runtime is the truth
 //!
-//! `RoomMember` carries no author `kind` — the emitter derives one from
-//! `runtime` via [`SenderKind::from_runtime`], a *coarse styling hint*
+//! `RoomMember` carries no author `kind` — the shared projection derives one
+//! from `runtime` via [`SenderKind::from_runtime`](continuum_positron::SenderKind::from_runtime), a *coarse styling hint*
 //! (`"interactive"` → Human, else → Agent). The authoritative,
 //! unabridged origin rides `provenance.runtime`. This is deliberate: a
 //! richer `runtime → kind` table would be the string-matching smell
 //! (task #70); the coarse projection stays honest by keeping the full
 //! string in provenance for anyone who needs to discriminate.
 
-use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
 use airc_lib::RoomMember;
 use uuid::Uuid;
 
-use continuum_positron::{Provenance, SenderKind};
-
-use crate::ipc::positron_source::{
-    provisional_sender_name, AircPresenceSlot, AircPresenceUpdate, PRESENCE_UPDATED,
-};
+use crate::ipc::positron_source::{roster_slot_from_member, AircPresenceUpdate, PRESENCE_UPDATED};
 use crate::persona::room_roster_source::AircRosterReader;
 use crate::runtime::MessageBus;
 use tokio::sync::broadcast::error::RecvError;
@@ -141,47 +138,21 @@ pub(crate) fn project_presence(
     room_id: Uuid,
     room_name: String,
 ) -> AircPresenceUpdate {
-    let roster = members.into_iter().map(project_member).collect();
+    // ONE projection for both rails — the WS widget roster and the persona's
+    // grounding roster are the same neutral `RosterSlotView`, built here by
+    // the shared [`roster_slot_from_member`] (the convergence #8/#13). No
+    // local twin: this emitter is now purely "read airc → project → publish".
+    //
+    // Unlike the persona-grounding source (which drops `self` because it
+    // grounds a persona in "who is NOT me"), the widget roster shows EVERY
+    // present member including self — a chat roster you are absent from would
+    // be wrong. Self-exclusion is the persona source's own post-projection
+    // policy, never baked into the shared projection.
+    let roster = members.iter().map(roster_slot_from_member).collect();
     AircPresenceUpdate {
         room_id,
         room_name,
         roster,
-    }
-}
-
-/// One `RoomMember` → one identity card. Derives the coarse `kind`
-/// *before* moving `runtime` into `provenance` (the verbatim
-/// accountability truth).
-fn project_member(member: RoomMember) -> AircPresenceSlot {
-    // Coarse styling hint from the free-form runtime class; the full
-    // string is preserved in `provenance` below (never string-match on
-    // runtime here — that is task #70's smell).
-    let kind = SenderKind::from_runtime(&member.runtime);
-    // airc resolved the name; a present-but-unnamed peer gets the SAME
-    // short-peer label the consumer uses provisionally — one label form,
-    // never a silently-invisible citizen.
-    let display_name = member
-        .display_name
-        .unwrap_or_else(|| provisional_sender_name(member.peer_id.as_uuid()));
-    AircPresenceSlot {
-        member_id: member.peer_id.as_uuid(),
-        display_name,
-        kind,
-        // airc's `RoomMember` carries no cross-system badge map yet (airc
-        // gap): integrations stays empty until airc surfaces the
-        // `Identity.integrations` card on presence. Empty is the honest
-        // "no badges known", not a fabricated one
-        // ([[fallbacks-are-illegal-fail-loud]]).
-        integrations: BTreeMap::new(),
-        // The accountability truth airc DOES surface today, carried
-        // verbatim. Trust tier + verification join here later (task #38)
-        // with no wire break.
-        provenance: Provenance {
-            runtime: member.runtime,
-        },
-        // airc excludes `Leaving` peers from the roster, so every member
-        // returned is present → active.
-        active: true,
     }
 }
 
@@ -394,6 +365,10 @@ mod tests {
     use airc_core::PeerId;
     use airc_lib::AircError;
     use async_trait::async_trait;
+    // The module proper no longer names `SenderKind` (the coarse kind is
+    // derived inside the shared `roster_slot_from_member` projection now);
+    // the tests still assert on the projected slot's `kind`.
+    use continuum_positron::SenderKind;
 
     /// A roster reader that returns a fixed member list — enough to drive
     /// [`emit_once`]'s read → project → publish path without a daemon.

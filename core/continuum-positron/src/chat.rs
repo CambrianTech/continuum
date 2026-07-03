@@ -257,6 +257,27 @@ pub struct RosterSlotView {
     /// presence indicator off this bit — single source of truth in the
     /// substrate.
     pub active: bool,
+    /// Self-reported availability, transported **verbatim** from the
+    /// producing substrate (`"ready"` / `"busy"` / `"away"` for the airc
+    /// adopter) — the same neutral, not-interpreted discipline as
+    /// [`Provenance::runtime`] and `integrations`. positron does NOT
+    /// enumerate availability states (that would bake one framework's
+    /// vocabulary into the generic package); it carries whatever the source
+    /// reports and the app layer decides what it means for the roster line /
+    /// UI. `None` = the member reported no availability — an honest unknown,
+    /// never a fabricated state ([[fallbacks-are-illegal-fail-loud]]).
+    #[serde(default)]
+    #[ts(optional)]
+    pub availability: Option<String>,
+    /// Unix-ms of the member's most recent presence heartbeat — the recency
+    /// signal a roster uses to sort or age out members. `#[serde(default)]`
+    /// so a slot serialized before this field folds as `0` (honest "recency
+    /// unknown"), never a dropped or fabricated timestamp. `u64` → `number`
+    /// (not `bigint`) to match the rest of the substrate's ms timestamps
+    /// (`ChatMessageView.timestamp`).
+    #[serde(default)]
+    #[ts(type = "number")]
+    pub last_seen_ms: u64,
 }
 
 /// Top-level state for the `"chat"` widget kind. Fills
@@ -429,10 +450,31 @@ mod tests {
                 runtime: "claude".into(),
             },
             active: true,
+            availability: Some("busy".into()),
+            last_seen_ms: 1_700_000_000_000,
         };
         let back: RosterSlotView =
             serde_json::from_str(&serde_json::to_string(&slot).unwrap()).unwrap();
         assert_eq!(back.provenance.runtime, "claude");
+        // what this catches: the neutral presence facts (availability +
+        // last_seen_ms) ride the wire verbatim. A regression dropping them —
+        // or interpreting availability into a positron-side enum — would
+        // silently degrade the persona's roster grounding, which is the whole
+        // point of carrying them on the neutral slot.
+        assert_eq!(back.availability.as_deref(), Some("busy"));
+        assert_eq!(back.last_seen_ms, 1_700_000_000_000);
+    }
+
+    #[test]
+    fn availability_absent_folds_to_none() {
+        // what this catches: a slot serialized before availability/last_seen
+        // existed must deserialize (serde default) — availability = None
+        // (honest unknown), last_seen_ms = 0 — never a deserialize failure
+        // that would blink the whole roster empty.
+        let legacy = r#"{"member_id":"00000000-0000-0000-0000-00000000000d","display_name":"Helper","kind":{"kind":"agent"},"integrations":{},"provenance":{"runtime":"claude"},"active":true}"#;
+        let slot: RosterSlotView = serde_json::from_str(legacy).unwrap();
+        assert_eq!(slot.availability, None);
+        assert_eq!(slot.last_seen_ms, 0);
     }
 
     #[test]
@@ -465,6 +507,8 @@ mod tests {
                     runtime: "claude".into(),
                 },
                 active: true,
+                availability: Some("ready".into()),
+                last_seen_ms: 1_700_000_000_000,
             }],
         };
         let json = serde_json::to_string(&state).unwrap();

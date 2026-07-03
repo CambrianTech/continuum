@@ -75,6 +75,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast::error::RecvError;
 use uuid::Uuid;
 
+use airc_lib::{AgentAvailabilityState, RoomMember};
 use continuum_positron::{
     ChatMessageView, ChatViewState, Provenance, RosterSlotView, SenderKind, StateBuilder,
     Substrate,
@@ -155,38 +156,122 @@ struct AircChatPosted {
 /// struct — one wire shape defined once, both sides agree by
 /// construction rather than by a hand-copied JSON literal (compression
 /// principle). The emitter/consumer round-trip is pinned by a test.
+///
+/// The roster rows ARE [`RosterSlotView`] — the neutral positron slot — not
+/// a hand-copied twin. That copy (`AircPresenceSlot`) used to exist "so both
+/// sides agree by construction"; but `RosterSlotView` already derives
+/// `Serialize`/`Deserialize`, so the neutral view IS the wire shape and the
+/// twin was pure duplication (the exact compression violation this
+/// convergence removes — #8/#13). One slot type now flows from the airc
+/// projection ([`roster_slot_from_member`]) all the way to the widget.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct AircPresenceUpdate {
     pub(crate) room_id: Uuid,
     pub(crate) room_name: String,
-    pub(crate) roster: Vec<AircPresenceSlot>,
+    pub(crate) roster: Vec<RosterSlotView>,
 }
 
-/// One roster entry inside an [`AircPresenceUpdate`] — a member joined
-/// with its airc identity card. `kind` is the neutral author kind
-/// (`Human` / `Agent` / `System`) the presence emitter derives from the
-/// member's `runtime`; `integrations` is the opaque cross-system badge
-/// map from `Identity.integrations`, transported straight through and
-/// interpreted only at continuum's app layer (renderer reads
-/// `continuum.persona*`); `provenance` is the accountability slot (the
-/// member's verifiable origin — `runtime` today, trust tier +
-/// verification later, no wire break).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct AircPresenceSlot {
-    pub(crate) member_id: Uuid,
-    pub(crate) display_name: String,
-    pub(crate) kind: SenderKind,
-    #[serde(default)]
-    pub(crate) integrations: BTreeMap<String, String>,
-    /// The accountability half of the identity card. `#[serde(default)]`
-    /// so a slot predating the field folds as `Provenance::unresolved()`
-    /// (honest empty), symmetric with `integrations` — never a fabricated
-    /// origin ([[fallbacks-are-illegal-fail-loud]]).
-    #[serde(default)]
-    pub(crate) provenance: Provenance,
-    pub(crate) active: bool,
+/// airc's `AgentAvailabilityState` → its stable neutral wire label — airc's
+/// OWN `snake_case` serde repr (`"ready"` / `"busy"` / `"away"`), single-
+/// sourced by mirroring that vocabulary here rather than `{:?}` (Debug's
+/// CamelCase is not a contract and would drift). The exhaustive match is the
+/// fail-loud seam: if airc ever adds an availability state the compiler
+/// forces a deliberate decision here instead of silently coercing it.
+///
+/// The label is carried **verbatim** into the neutral
+/// [`RosterSlotView::availability`]; positron never interprets it (same
+/// transported-not-interpreted discipline as `provenance.runtime`).
+fn availability_label(state: AgentAvailabilityState) -> &'static str {
+    match state {
+        AgentAvailabilityState::Ready => "ready",
+        AgentAvailabilityState::Busy => "busy",
+        AgentAvailabilityState::Away => "away",
+    }
+}
+
+/// THE `RoomMember` → neutral [`RosterSlotView`] projection — one place both
+/// rails build a roster slot from an airc member, so the WS widget and the
+/// persona's grounding can never drop different fields (the divergence
+/// #8/#13 removes: Rail A used to keep `availability`/`last_seen_ms` while
+/// Rail B silently dropped them). Pure and total — no self-exclusion, no
+/// budget, no ordering: those are per-consumer policies the caller applies
+/// to the projected slots, not part of the shared projection.
+///
+/// `pub(crate)` so `crate::ipc::positron_presence` (the WS emitter) and
+/// `crate::persona::room_roster_source` (the persona grounding source) call
+/// the identical function.
+pub(crate) fn roster_slot_from_member(member: &RoomMember) -> RosterSlotView {
+    // Coarse styling hint from the free-form runtime class; the full string
+    // is preserved verbatim in `provenance` (never string-match on runtime
+    // to pick behavior — that is task #70's smell).
+    let kind = SenderKind::from_runtime(&member.runtime);
+    // airc resolved the name; a present-but-unnamed peer gets the SAME
+    // provisional short-peer label the consumer uses when a card has not
+    // folded in — one provisional-label decision, never a silently-invisible
+    // citizen and never a second fallback form.
+    let display_name = member
+        .display_name
+        .clone()
+        .unwrap_or_else(|| provisional_sender_name(member.peer_id.as_uuid()));
+    RosterSlotView {
+        member_id: member.peer_id.as_uuid(),
+        display_name,
+        kind,
+        // airc's `RoomMember` carries no cross-system badge map (the richer
+        // `room_roster_cards` path would fill this); empty is the honest "no
+        // badges known", not a fabricated one.
+        integrations: BTreeMap::new(),
+        // The accountability truth airc surfaces today, carried verbatim.
+        // Trust tier + verification join here later (task #38), no wire break.
+        provenance: Provenance {
+            runtime: member.runtime.clone(),
+        },
+        // airc excludes `Leaving` peers from the roster, so every member it
+        // returns is present → active.
+        active: true,
+        // Neutral presence facts carried straight through — the fields Rail B
+        // used to drop. `availability` is airc's stable label (or `None` when
+        // unreported); `last_seen_ms` is the raw recency signal.
+        availability: member.availability.map(availability_label).map(str::to_owned),
+        last_seen_ms: member.last_seen_ms,
+    }
+}
+
+/// Test-only: serialize a `presence:updated` bus payload from the REAL typed
+/// [`AircPresenceUpdate`] (roster = neutral [`RosterSlotView`]s). Tests build
+/// the payload from the struct, NEVER a hand-authored JSON literal — so a
+/// test's wire can never drift from the type's field names (the "agree by
+/// construction" contract, enforced instead of hoped for). Shared by the chat
+/// / wall / kanban projector test mods: one wire-shape source, even in tests.
+#[cfg(test)]
+pub(crate) fn test_presence_payload(
+    room: Uuid,
+    roster: Vec<RosterSlotView>,
+) -> serde_json::Value {
+    serde_json::to_value(AircPresenceUpdate {
+        room_id: room,
+        room_name: "general".to_string(),
+        roster,
+    })
+    .expect("AircPresenceUpdate serializes")
+}
+
+/// Test-only: one neutral roster slot — present + active, empty badges,
+/// unresolved provenance, no availability/recency. Tests override any field
+/// via struct-update (`RosterSlotView { active: false, ..test_roster_slot(..) }`).
+#[cfg(test)]
+pub(crate) fn test_roster_slot(member: Uuid, name: &str, kind: SenderKind) -> RosterSlotView {
+    RosterSlotView {
+        member_id: member,
+        display_name: name.to_string(),
+        kind,
+        integrations: BTreeMap::new(),
+        provenance: Provenance::unresolved(),
+        active: true,
+        availability: None,
+        last_seen_ms: 0,
+    }
 }
 
 /// A sender's identity resolved from the roster — name + neutral kind +
@@ -236,25 +321,10 @@ pub(crate) fn resolve_identity(roster: &[RosterSlotView], id: Uuid) -> ResolvedS
     }
 }
 
-/// Project a presence snapshot's roster into the renderer-shaped
-/// [`RosterSlotView`] rows. Shared by the chat projection (which stores
-/// them on the `ChatViewState`) and the wall projection (which holds them
-/// only as its author-resolution lookup table) — one wire-shape
-/// conversion, one place ([[compression]]).
-pub(crate) fn roster_slots_from(update: &AircPresenceUpdate) -> Vec<RosterSlotView> {
-    update
-        .roster
-        .iter()
-        .map(|s| RosterSlotView {
-            member_id: s.member_id,
-            display_name: s.display_name.clone(),
-            kind: s.kind,
-            integrations: s.integrations.clone(),
-            provenance: s.provenance.clone(),
-            active: s.active,
-        })
-        .collect()
-}
+// `roster_slots_from` is gone: `AircPresenceUpdate.roster` IS already
+// `Vec<RosterSlotView>`, so the old slot→slot copy was an identity map on a
+// duplicated type. Consumers that need the roster (chat / wall / kanban) take
+// `update.roster` directly — one slot type, no conversion.
 
 /// Accumulates airc room events into the renderer-shaped
 /// [`ChatViewState`] and writes each transition to the [`Substrate`].
@@ -339,8 +409,10 @@ impl ChatProjection {
     /// arrived) now that the card is known.
     fn apply_presence(&mut self, update: AircPresenceUpdate) {
         self.switch_room(update.room_id);
-        self.roster = roster_slots_from(&update);
         self.room_name = update.room_name;
+        // The update's roster IS the neutral slot type — move it in directly,
+        // no per-field copy through a twin struct.
+        self.roster = update.roster;
         self.reresolve_messages();
         self.store();
     }
@@ -467,8 +539,9 @@ mod tests {
         })
     }
 
-    /// A `presence:updated` payload for `room` with a single member
-    /// carrying `kind` + `integrations`.
+    /// A `presence:updated` payload for `room` with a single member carrying
+    /// `kind` + `integrations` — serialized from the real typed slot via the
+    /// shared [`test_presence_payload`], never a hand-authored JSON literal.
     fn presence_one(
         room: Uuid,
         member: Uuid,
@@ -476,19 +549,15 @@ mod tests {
         kind: &str,
         integrations: serde_json::Value,
     ) -> serde_json::Value {
-        json!({
-            "roomId": room,
-            "roomName": "general",
-            "roster": [
-                {
-                    "memberId": member,
-                    "displayName": name,
-                    "kind": { "kind": kind },
-                    "integrations": integrations,
-                    "active": true,
-                }
-            ],
-        })
+        let kind: SenderKind = serde_json::from_value(json!({ "kind": kind })).unwrap();
+        let integrations: BTreeMap<String, String> = serde_json::from_value(integrations).unwrap();
+        test_presence_payload(
+            room,
+            vec![RosterSlotView {
+                integrations,
+                ..test_roster_slot(member, name, kind)
+            }],
+        )
     }
 
     fn current_chat(substrate: &Substrate) -> ChatViewState {
@@ -604,26 +673,21 @@ mod tests {
         let substrate = Substrate::new();
         let mut p = ChatProjection::new(substrate.clone());
         let room = Uuid::from_u128(0xa);
-        let payload = json!({
-            "roomId": room,
-            "roomName": "general",
-            "roster": [
-                {
-                    "memberId": Uuid::from_u128(0xd),
-                    "displayName": "Helper",
-                    "kind": { "kind": "agent" },
-                    "integrations": { "continuum.persona_id": "helper-1" },
-                    "active": true,
+        let mut helper_badges = BTreeMap::new();
+        helper_badges.insert("continuum.persona_id".to_string(), "helper-1".to_string());
+        let payload = test_presence_payload(
+            room,
+            vec![
+                RosterSlotView {
+                    integrations: helper_badges,
+                    ..test_roster_slot(Uuid::from_u128(0xd), "Helper", SenderKind::Agent)
                 },
-                {
-                    "memberId": Uuid::from_u128(0xe),
-                    "displayName": "Joel",
-                    "kind": { "kind": "human" },
-                    "integrations": {},
-                    "active": false,
+                RosterSlotView {
+                    active: false,
+                    ..test_roster_slot(Uuid::from_u128(0xe), "Joel", SenderKind::Human)
                 },
             ],
-        });
+        );
         match classify(PRESENCE_UPDATED, &payload).unwrap() {
             ProjectionInput::Presence(u) => p.apply_presence(u),
             _ => panic!("presence:updated must classify as Presence"),
@@ -667,20 +731,15 @@ mod tests {
             "unresolved provenance is empty, not fabricated"
         );
         // Presence folds the card carrying a runtime origin.
-        let presence = json!({
-            "roomId": room,
-            "roomName": "general",
-            "roster": [
-                {
-                    "memberId": sender,
-                    "displayName": "Helper",
-                    "kind": { "kind": "agent" },
-                    "integrations": {},
-                    "provenance": { "runtime": "claude" },
-                    "active": true,
-                }
-            ],
-        });
+        let presence = test_presence_payload(
+            room,
+            vec![RosterSlotView {
+                provenance: Provenance {
+                    runtime: "claude".to_string(),
+                },
+                ..test_roster_slot(sender, "Helper", SenderKind::Agent)
+            }],
+        );
         if let ProjectionInput::Presence(u) = classify(PRESENCE_UPDATED, &presence).unwrap() {
             p.apply_presence(u);
         }
