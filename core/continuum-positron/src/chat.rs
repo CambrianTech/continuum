@@ -302,33 +302,43 @@ pub struct ChatViewState {
 /// The `Clone + Send + Sync + Debug + 'static` bound the trait requires
 /// is already satisfied by the struct's derives + its owned-data fields
 /// (`Uuid` / `String` / `Vec`), so no new bounds are introduced.
+impl ChatViewState {
+    /// The on-wire `kind` string this view is published under — the value
+    /// `StateEnvelope.kind` carries and the renderer side routes on.
+    /// Owned by the view itself (open self-registration, like a
+    /// self-routing command), NOT enumerated in a central catalog: adding
+    /// a view kind adds a file, never edits a shared `enum`. An unknown
+    /// kind on the wire fails loud at the dispatch seam ("no
+    /// renderer/builder registered for kind X"), never coerced to a
+    /// default — `[[fallbacks-are-illegal-fail-loud]]` preserved without a
+    /// closed enum.
+    pub const KIND: &'static str = "chat";
+}
+
 impl positron_core::ViewState for ChatViewState {
     fn kind(&self) -> &'static str {
-        // Single-source the wire string through `KnownKind` — the same
-        // "chat" the `StateEnvelope.kind` carries — so the trait's view
-        // of the kind can never drift from the envelope's. Per
-        // `[[strong-typing-across-boundaries]]`: the string is encoded
-        // once, at the typed kind seam.
-        crate::kinds::KnownKind::Chat.wire_name()
+        // Single-source the wire string through the view's own `KIND`
+        // const — the same "chat" `StateEnvelope.kind` carries — so the
+        // trait's view of the kind can never drift from the envelope's
+        // ([[strong-typing-across-boundaries]]: encoded once, on the type).
+        Self::KIND
     }
 
     // `revision()` is intentionally the trait default (`None`): in
     // continuum's substrate the monotonic chat revision is an
-    // ENVELOPE-level counter (`Revisions` keyed by `KnownKind`, framed
+    // ENVELOPE-level counter (`Revisions` keyed by the kind string, framed
     // in by `StateBuilder`), NOT a payload field. The `ViewState`
     // trait's revision is satisfied at the envelope layer where the
     // counter actually lives; carrying a copy on the payload struct
     // would be two sources of truth for one counter (the exact drift
     // `[[compression]]` forbids). So the standalone payload honestly
     // reports "no self-carried revision" and the envelope supplies the
-    // real one. See `kinds::RevisionKey` for the one-counter-per-kind
-    // semantics.
+    // real one. See `Revisions` for the one-counter-per-kind semantics.
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::kinds::KnownKind;
     use positron_core::ViewState as _;
 
     #[test]
@@ -470,12 +480,13 @@ mod tests {
         // Renderers (positron-lit's `LitHost`) and the O6 observer
         // bridge route/subscribe off `ViewState::kind()`; if it stops
         // equalling the `StateEnvelope.kind` the substrate emits
-        // (`KnownKind::Chat.wire_name()`), a widget silently receives
+        // (`ChatViewState::KIND`), a widget silently receives
         // state it can't match to a renderer. Also pins `revision()`
         // to the trait default (`None`): the chat revision is an
         // envelope-level counter, never a payload field — a future
         // `revision` field on the struct would be a second source of
-        // truth for one counter.
+        // truth for one counter. The kind is the view's own `KIND`
+        // const (open self-registration), never a central enum.
         let state = ChatViewState {
             room_id: Uuid::from_u128(0xa),
             room_name: "general".into(),
@@ -485,8 +496,8 @@ mod tests {
         assert_eq!(state.kind(), "chat");
         assert_eq!(
             state.kind(),
-            KnownKind::Chat.wire_name(),
-            "ViewState::kind() must single-source the wire name, never a drifting literal"
+            ChatViewState::KIND,
+            "ViewState::kind() must single-source the view's own KIND const, never a drifting literal"
         );
         assert_eq!(
             state.revision(),

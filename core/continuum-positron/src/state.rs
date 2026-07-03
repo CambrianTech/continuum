@@ -20,12 +20,23 @@
 //! `builder.session(ChatViewState { ... })` can't accidentally
 //! re-stringify a kind or forget a revision bump.
 //!
+//! ## The kind comes from the payload, not a separate argument
+//!
+//! The builder takes `P: ViewState + Serialize` and reads the kind
+//! string from `payload.kind()` — the view's own `KIND` const (open
+//! self-registration; there is no central kind enum). This makes a
+//! kind/payload mismatch structurally impossible: you cannot frame a
+//! `ChatViewState` under the "wall" kind because you never name the
+//! kind at the call site — the payload names itself. A new view kind
+//! is a new `ViewState` impl in consumer code; the builder needs no
+//! edit to frame it.
+//!
 //! ## Doctrine
 //!
 //! Per `[[strong-typing-across-boundaries]]`: the typed `Payload`
-//! generic is `Serialize` AND ts-rs-exported. The widget side reads
-//! the same struct shape; mis-typing on either side is a compile
-//! error.
+//! generic is `ViewState + Serialize` AND ts-rs-exported. The widget
+//! side reads the same struct shape; mis-typing on either side is a
+//! compile error.
 //!
 //! Per `[[no-fallbacks-ever]]`: if `serde_json::to_value` fails on a
 //! payload, that's a substrate bug at compile-test time, not a
@@ -35,9 +46,9 @@
 use std::sync::Arc;
 
 use positron_core::wire::{StateEnvelope, StateLayer};
+use positron_core::ViewState;
 use serde::Serialize;
 
-use crate::kinds::KnownKind;
 use crate::revisions::Revisions;
 
 /// Frames typed substrate state into wire-shaped `StateEnvelope`s.
@@ -70,64 +81,73 @@ impl StateBuilder {
     /// human reads: new chat message, roster delta, room switched.
     ///
     /// Caller's `Payload` type is consumer-defined (e.g.
-    /// [`crate::chat::ChatViewState`]); only the JSON wire shape
-    /// crosses positron.
-    pub fn session<P: Serialize>(&self, kind: KnownKind, payload: P) -> StateEnvelope {
-        self.build(kind, StateLayer::Session, payload)
+    /// [`crate::chat::ChatViewState`]) and names its own kind via
+    /// `ViewState::kind()`; only the JSON wire shape crosses positron.
+    pub fn session<P: ViewState + Serialize>(&self, payload: P) -> StateEnvelope {
+        self.build(StateLayer::Session, payload)
     }
 
     /// Frame `payload` as a Persistent-tier update — long-lived
     /// state (< 1 Hz). Profile edits, theme changes.
-    pub fn persistent<P: Serialize>(&self, kind: KnownKind, payload: P) -> StateEnvelope {
-        self.build(kind, StateLayer::Persistent, payload)
+    pub fn persistent<P: ViewState + Serialize>(&self, payload: P) -> StateEnvelope {
+        self.build(StateLayer::Persistent, payload)
     }
 
     /// Frame `payload` as an Ephemeral-tier update — sub-second
     /// cadence (≤ 60 Hz). Typing indicators, hover state. AI
     /// observers should NOT subscribe to this layer; the substrate
     /// quantizes aggressively under load.
-    pub fn ephemeral<P: Serialize>(&self, kind: KnownKind, payload: P) -> StateEnvelope {
-        self.build(kind, StateLayer::Ephemeral, payload)
+    pub fn ephemeral<P: ViewState + Serialize>(&self, payload: P) -> StateEnvelope {
+        self.build(StateLayer::Ephemeral, payload)
     }
 
     /// Frame `payload` as a Semantic-tier update — pull-oriented,
     /// AI-tier meaning extraction. "The conversation shifted topic."
     /// Cognition produces these; renderers don't subscribe.
-    pub fn semantic<P: Serialize>(&self, kind: KnownKind, payload: P) -> StateEnvelope {
-        self.build(kind, StateLayer::Semantic, payload)
+    pub fn semantic<P: ViewState + Serialize>(&self, payload: P) -> StateEnvelope {
+        self.build(StateLayer::Semantic, payload)
     }
 
     /// Lower-level escape hatch when the call site already has a
     /// `StateLayer` value (e.g. forwarding from another layer-aware
     /// source). Prefer the named methods above for clarity at the
     /// call site.
-    pub fn build<P: Serialize>(
+    ///
+    /// The kind is read from `payload.kind()` — the view's own `KIND`
+    /// const — so it can never disagree with the payload type.
+    pub fn build<P: ViewState + Serialize>(
         &self,
-        kind: KnownKind,
         layer: StateLayer,
         payload: P,
     ) -> StateEnvelope {
+        // Read the kind from the payload itself (its `KIND` const)
+        // before we consume `payload` into JSON. `kind()` is a
+        // `&'static str`, which is exactly the key `Revisions` wants —
+        // zero allocation on the hot path, and no way to stamp a kind
+        // that disagrees with the payload's type.
+        let kind = payload.kind();
         // Per `[[no-fallbacks-ever]]`: a substrate-owned `Payload`
         // type that fails to serialize is a programming bug, not a
         // runtime condition. Test coverage in the consumer module
         // (`chat::tests::chat_view_state_round_trips`) pins each
         // payload's serde shape.
-        let payload = serde_json::to_value(payload)
+        let payload_json = serde_json::to_value(payload)
             .expect("substrate payload must serialize — this is a bug, not a runtime error");
         let revision = self.revisions.next(kind);
         StateEnvelope {
-            kind: kind.wire_name().to_string(),
+            kind: kind.to_string(),
             revision: Some(revision),
             layer,
-            payload,
+            payload: payload_json,
         }
     }
 
     /// Read the current revision for `kind` without advancing.
     /// Used by the wire-session layer: a resubscribe with
     /// `last_seen.revision < revisions.current(kind)` triggers
-    /// replay.
-    pub fn current_revision(&self, kind: KnownKind) -> Option<u64> {
+    /// replay. Takes a `&str` because the cursor arrives from the wire
+    /// as a plain kind string, not a `'static` const.
+    pub fn current_revision(&self, kind: &str) -> Option<u64> {
         self.revisions.current(kind)
     }
 }
@@ -165,8 +185,8 @@ mod tests {
         // revision. Both load-bearing.
         let b = StateBuilder::standalone();
         let room = Uuid::from_u128(7);
-        let env1 = b.session(KnownKind::Chat, empty_chat(room));
-        let env2 = b.session(KnownKind::Chat, empty_chat(room));
+        let env1 = b.session(empty_chat(room));
+        let env2 = b.session(empty_chat(room));
         assert_eq!(env1.kind, "chat");
         assert_eq!(env1.layer, StateLayer::Session);
         assert_eq!(env1.revision, Some(1));
@@ -182,9 +202,9 @@ mod tests {
         // same chat-revision counter.
         let b = StateBuilder::standalone();
         let room = Uuid::from_u128(7);
-        let s = b.session(KnownKind::Chat, empty_chat(room));
-        let e = b.ephemeral(KnownKind::Chat, empty_chat(room));
-        let s2 = b.session(KnownKind::Chat, empty_chat(room));
+        let s = b.session(empty_chat(room));
+        let e = b.ephemeral(empty_chat(room));
+        let s2 = b.session(empty_chat(room));
         assert_eq!(s.revision, Some(1));
         assert_eq!(e.revision, Some(2), "ephemeral shares the chat counter");
         assert_eq!(s2.revision, Some(3));
@@ -199,8 +219,8 @@ mod tests {
         // envelope, the wire layer would replay forever.
         let b = StateBuilder::standalone();
         let room = Uuid::from_u128(7);
-        assert_eq!(b.current_revision(KnownKind::Chat), None);
-        let env = b.session(KnownKind::Chat, empty_chat(room));
-        assert_eq!(b.current_revision(KnownKind::Chat), env.revision);
+        assert_eq!(b.current_revision(ChatViewState::KIND), None);
+        let env = b.session(empty_chat(room));
+        assert_eq!(b.current_revision(ChatViewState::KIND), env.revision);
     }
 }

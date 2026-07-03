@@ -61,7 +61,9 @@
 //! same room the presence emitter serves. A `wall:changed` /
 //! `presence:updated` for any other room is ignored (a defensive room
 //! guard; today the node observes exactly this room). Per-room instancing
-//! is the same deferred `RevisionKey` note the chat projection carries.
+//! is the same deferred note the chat projection carries: the revision key
+//! would extend from the bare kind string to a `(room_id, kind)` tuple
+//! (see `continuum-positron/src/revisions.rs`).
 
 use std::sync::Arc;
 
@@ -70,7 +72,7 @@ use tokio::sync::broadcast::error::RecvError;
 use uuid::Uuid;
 
 use continuum_positron::{
-    KnownKind, RosterSlotView, StateBuilder, Substrate, WallPostView, WallViewState,
+    RosterSlotView, StateBuilder, Substrate, WallPostView, WallViewState,
 };
 use serde::Deserialize;
 
@@ -199,7 +201,7 @@ impl WallProjection {
             posts,
         };
         self.substrate
-            .store(self.builder.persistent(KnownKind::Wall, view));
+            .store(self.builder.persistent(view));
     }
 }
 
@@ -444,7 +446,7 @@ mod tests {
     fn current_wall(substrate: &Substrate) -> WallViewState {
         let env = substrate
             .cache()
-            .get(KnownKind::Wall.wire_name())
+            .get(WallViewState::KIND)
             .expect("a wall envelope must be stored");
         serde_json::from_value(env.payload.clone()).expect("payload is a WallViewState")
     }
@@ -563,13 +565,13 @@ mod tests {
         let reader = StubReader::new(vec![post(room, author, "plan", "v1")]);
         let mut p = WallProjection::new(substrate.clone(), room.as_uuid(), reader);
         p.reload().await;
-        let r1 = substrate.cache().get(KnownKind::Wall.wire_name()).unwrap().revision;
+        let r1 = substrate.cache().get(WallViewState::KIND).unwrap().revision;
         // A presence fold re-projects → a second store, revision advances.
         let presence = presence_one(room.as_uuid(), author.as_uuid(), "Asha", "agent");
         if let WallInput::Presence(_, roster) = classify(PRESENCE_UPDATED, &presence).unwrap() {
             p.apply_roster(roster);
         }
-        let r2 = substrate.cache().get(KnownKind::Wall.wire_name()).unwrap().revision;
+        let r2 = substrate.cache().get(WallViewState::KIND).unwrap().revision;
         assert!(r2 > r1, "revision must advance: {r1:?} -> {r2:?}");
     }
 

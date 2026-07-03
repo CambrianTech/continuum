@@ -259,26 +259,34 @@ pub struct KanbanViewState {
 /// The `Clone + Send + Sync + Debug + 'static` bound the trait requires
 /// is already satisfied by the struct's derives + its owned-data fields,
 /// so no new bounds are introduced.
+impl KanbanViewState {
+    /// The on-wire `kind` string this view is published under. Owned by
+    /// the view (open self-registration), NOT a central enum: a new view
+    /// adds a file, never edits a shared catalog. Unknown kind on the
+    /// wire fails loud at the dispatch seam — `[[fallbacks-are-illegal-fail-loud]]`
+    /// preserved without a closed enum.
+    pub const KIND: &'static str = "kanban";
+}
+
 impl positron_core::ViewState for KanbanViewState {
     fn kind(&self) -> &'static str {
-        // Single-source the wire string through `KnownKind` — the same
-        // "kanban" the `StateEnvelope.kind` carries — so the trait's view
-        // of the kind can never drift from the envelope's
-        // ([[strong-typing-across-boundaries]]).
-        crate::kinds::KnownKind::Kanban.wire_name()
+        // Single-source the wire string through the view's own `KIND`
+        // const — the same "kanban" `StateEnvelope.kind` carries — so the
+        // trait's view of the kind can never drift from the envelope's
+        // ([[strong-typing-across-boundaries]]: encoded once, on the type).
+        Self::KIND
     }
 
     // `revision()` is intentionally the trait default (`None`), for the
     // same reason as `WallViewState`: the monotonic kanban revision is an
-    // ENVELOPE-level counter (`Revisions` keyed by `KnownKind`, framed in
-    // by `StateBuilder`), NOT a payload field. Carrying a copy here would
-    // be two sources of truth for one counter (`[[compression]]`).
+    // ENVELOPE-level counter (`Revisions` keyed by the kind string, framed
+    // in by `StateBuilder`), NOT a payload field. Carrying a copy here
+    // would be two sources of truth for one counter (`[[compression]]`).
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::kinds::KnownKind;
 
     fn sample_card() -> KanbanCardView {
         KanbanCardView {
@@ -404,7 +412,7 @@ mod tests {
         // to a literal that drifts from the wire name). Renderers and the O6
         // observer bridge route/subscribe off `ViewState::kind()`; if it
         // stops equalling the `StateEnvelope.kind` the substrate emits
-        // (`KnownKind::Kanban.wire_name()`), the kanban widget silently
+        // (`KanbanViewState::KIND`), the kanban widget silently
         // receives state it can't match to a renderer. Also pins
         // `revision()` to the trait default (`None`): the kanban revision is
         // an envelope-level counter, never a payload field. Mirrors
@@ -418,8 +426,8 @@ mod tests {
         assert_eq!(state.kind(), "kanban");
         assert_eq!(
             state.kind(),
-            KnownKind::Kanban.wire_name(),
-            "ViewState::kind() must single-source the wire name, never a drifting literal"
+            KanbanViewState::KIND,
+            "ViewState::kind() must single-source the view's own KIND const, never a drifting literal"
         );
         assert_eq!(state.revision(), None);
     }

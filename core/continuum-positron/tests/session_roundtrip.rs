@@ -21,7 +21,7 @@
 //! ## What the smoke proves end-to-end
 //!
 //! 1. Substrate produces a typed `ChatViewState`.
-//! 2. `StateBuilder::session(KnownKind::Chat, chat)` stamps the
+//! 2. `StateBuilder::session(chat)` stamps the
 //!    right kind tag + monotonic revision + Session layer onto a
 //!    `StateEnvelope`.
 //! 3. `SubstrateStateCache` stores it; `apply_subscribe` retrieves
@@ -52,8 +52,8 @@
 use std::sync::Arc;
 
 use continuum_positron::{
-    apply_subscribe, ChatMessageView, ChatViewState, ClientMessage, KindRevision, KnownKind,
-    Provenance, Revisions, RosterSlotView, SenderKind, ServerMessage, StateBuilder, StateLayer,
+    apply_subscribe, ChatMessageView, ChatViewState, ClientMessage, KindRevision, Provenance,
+    Revisions, RosterSlotView, SenderKind, ServerMessage, StateBuilder, StateLayer,
     SubstrateStateCache,
 };
 use std::collections::BTreeMap;
@@ -113,7 +113,7 @@ fn typed_payload_round_trips_through_subscribe_snapshot() {
     let original = build_chat_state("hello world");
 
     // 2. StateBuilder frames it as a wire envelope.
-    let envelope = builder.session(KnownKind::Chat, original.clone());
+    let envelope = builder.session(original.clone());
     assert_eq!(envelope.kind, "chat");
     assert_eq!(envelope.revision, Some(1));
     assert_eq!(envelope.layer, StateLayer::Session);
@@ -173,7 +173,7 @@ fn skip_rule_works_end_to_end_on_resubscribe() {
     let cache = SubstrateStateCache::new();
 
     let chat = build_chat_state("first message");
-    let envelope = builder.session(KnownKind::Chat, chat);
+    let envelope = builder.session(chat);
     cache.store(envelope);
 
     // Renderer subscribes the first time, gets snapshot, renders
@@ -226,7 +226,7 @@ fn substrate_restart_resync_works_end_to_end() {
 
     // Fresh substrate, first-ever build → rev=1.
     let chat = build_chat_state("post-restart hello");
-    let envelope = builder.session(KnownKind::Chat, chat.clone());
+    let envelope = builder.session(chat.clone());
     assert_eq!(envelope.revision, Some(1));
     cache.store(envelope);
 
@@ -276,7 +276,7 @@ fn two_subscribers_share_envelope_bytes_per_doctrine() {
     let cache = SubstrateStateCache::new();
 
     let chat = build_chat_state("shared snapshot");
-    let envelope = builder.session(KnownKind::Chat, chat);
+    let envelope = builder.session(chat);
     cache.store(envelope);
 
     let make_subscribe = || {
@@ -316,11 +316,12 @@ fn three_kinds_independently_partitioned() {
     let builder = StateBuilder::new(revisions);
     let cache = SubstrateStateCache::new();
 
-    // Only Chat is a KnownKind today; for the partition test we
-    // bypass KnownKind and write directly to cache using arbitrary
-    // kinds. (Production would have typed builders for each kind
-    // KnownKind grows — that's the slot for future widget kinds.)
-    let chat_env = builder.session(KnownKind::Chat, build_chat_state("chat hi"));
+    // Only ChatViewState ships a typed builder today; for the partition
+    // test we write two extra kinds directly to the cache using arbitrary
+    // kind strings. (Kinds are open + self-registered — a new widget kind
+    // is a new `ViewState` impl owning its `KIND` const, not an enum edit;
+    // these synthetic strings stand in for those future kinds.)
+    let chat_env = builder.session(build_chat_state("chat hi"));
     cache.store(chat_env);
 
     // Synthesize two more kinds inline for the partition test.
