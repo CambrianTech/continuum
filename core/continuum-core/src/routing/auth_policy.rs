@@ -118,6 +118,52 @@ pub enum CallerSource {
     /// until then it is honestly labeled `Ws` (distinct from `Tcp` for
     /// telemetry) but shares Tcp's Provisional ceiling.
     Ws,
+    /// The caller is an AI **observer** acting through a positron session — an
+    /// agent that PERCEIVES a human's UI (the same typed `ViewState`s the human
+    /// sees) and issues a command back through a `positron` `CommandEnvelope`
+    /// whose `source` was `Observer { observer_id }`. `observer_id` names WHICH
+    /// observer acted (provenance/audit — a confused deputy is only defensible
+    /// if you can name it).
+    ///
+    /// ## The confused-deputy clamp (why this is its own source)
+    ///
+    /// An observer rides the SAME unauthenticated socket as the human whose UI
+    /// it perceives — today a nil-peer [`Ws`](CallerSource::Ws) connection. If
+    /// it inherited that transport's identity, then the moment a GH-auth
+    /// handshake (task #29) elevated the human's socket, the AI observing that
+    /// human's screen would silently inherit the human's elevated authority —
+    /// the textbook confused-deputy escalation. So an observer is stamped with
+    /// its OWN source that resolves to a FIXED [`TrustLevel::Provisional`](crate::modules::grid::node::TrustLevel::Provisional)
+    /// ceiling which NEVER consults the trust bridge (see
+    /// [`grid_trust_policy`](crate::routing::grid_trust_policy)). The human's
+    /// authority can rise; the AI watching the human cannot ride it up.
+    ///
+    /// Today `Ws` and `PositronObserver` both resolve to `Provisional`, so the
+    /// ceilings are equal — but the divergence is STRUCTURAL: it activates as
+    /// soon as socket authentication elevates the human's `Ws` ceiling above
+    /// Provisional.
+    ///
+    /// ## Precondition: the source declaration must be authenticated (task #29)
+    ///
+    /// This `CallerSource` is locally minted — the ONLY place it is stamped is
+    /// the local positron dispatch path
+    /// ([`CallerIdentity::positron_observer`], via `caller_for_source`); the
+    /// inbound airc/ws pumps stamp [`Airc`](CallerSource::Airc)/[`Ws`](CallerSource::Ws).
+    /// But WHICH identity that path mints is selected by the positron
+    /// `CommandEnvelope`'s `source` discriminant, which is a client-declared,
+    /// wire-deserialized field. So the clamp presumes an HONEST source: a
+    /// compromised observer that self-labels `source: Human` would be minted
+    /// `Ws`, not `PositronObserver`. This is harmless while `Ws` == `Provisional`
+    /// (both floors), but the clamp is only COMPLETE once that source
+    /// declaration is authenticated — the same task #29 handshake that raises
+    /// the `Ws` ceiling must also bind the positron principal so `Human` can't be
+    /// forged. Until then this is a tracked precondition, NOT an "unforgeable
+    /// over the wire" guarantee.
+    PositronObserver {
+        /// Which positron observer issued the command (audit/provenance). Does
+        /// NOT affect the trust ceiling — every observer is clamped identically.
+        observer_id: String,
+    },
 }
 
 /// Caller identity passed to the auth gate. Cross-grid dispatches
@@ -203,6 +249,22 @@ impl CallerIdentity {
         Self {
             peer_id,
             source: CallerSource::Ws,
+            granted_capabilities: Vec::new(),
+        }
+    }
+
+    /// Construct a POSITRON-OBSERVER caller identity — an AI observer acting
+    /// through a positron session over an unauthenticated socket. `peer_id` is
+    /// the socket's peer (nil today, same as the human's `ws` connection);
+    /// `observer_id` names which observer acted (audit). Resolves to a FIXED
+    /// [`Provisional`](crate::modules::grid::node::TrustLevel::Provisional)
+    /// ceiling that NEVER rises with socket authentication — the confused-deputy
+    /// defense (see [`CallerSource::PositronObserver`]). Only the local positron
+    /// dispatch path calls this; a remote peer can't present it.
+    pub fn positron_observer(peer_id: PeerId, observer_id: String) -> Self {
+        Self {
+            peer_id,
+            source: CallerSource::PositronObserver { observer_id },
             granted_capabilities: Vec::new(),
         }
     }
@@ -457,6 +519,27 @@ mod tests {
         let local = CallerIdentity::local(id);
         assert_eq!(local.peer_id, id);
         assert!(matches!(local.source, CallerSource::Local));
+    }
+
+    #[test]
+    fn positron_observer_carries_its_observer_id_and_no_grants() {
+        // what this catches: regression where the positron-observer constructor
+        // (a) loses the observer_id that names WHICH AI acted (audit/provenance
+        // for confused-deputy accountability), or (b) starts populating
+        // granted_capabilities — which would be an unverified escalation, since
+        // an observer presents no owner-signed grant. The trust CLAMP itself is
+        // pinned in grid_trust_policy; here we pin the identity's shape.
+        let id = PeerId::new();
+        let obs = CallerIdentity::positron_observer(id, "asha-brain".to_string());
+        assert_eq!(obs.peer_id, id);
+        assert!(
+            matches!(&obs.source, CallerSource::PositronObserver { observer_id } if observer_id == "asha-brain"),
+            "observer_id must survive into the source for audit"
+        );
+        assert!(
+            obs.granted_capabilities.is_empty(),
+            "an observer presents no verified grant — capabilities stay empty"
+        );
     }
 
     #[test]
