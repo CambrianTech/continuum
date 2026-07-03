@@ -58,7 +58,7 @@
 //! Substrate code that produces new state pushes to BOTH:
 //!
 //! ```ignore
-//! let env = builder.session(KnownKind::Chat, chat_state);
+//! let env = builder.session(chat_state);
 //! cache.store(env.clone());
 //! broadcast.send(Arc::new(env));
 //! ```

@@ -9,8 +9,16 @@
 //!
 //! Revisions are per-kind (not per `(kind, layer)`) because
 //! `ViewState::revision()` is one counter per state instance. Layer
-//! classifies an UPDATE's cadence, not state identity. See
-//! [`crate::kinds::RevisionKey`] for the design discussion.
+//! classifies an UPDATE's cadence, not state identity.
+//!
+//! The key is the kind STRING itself (`&'static str`, e.g. `"chat"`) —
+//! each `ViewState` owns its `KIND` const (open self-registration), so
+//! there is no central enum of kinds. A new view registers a counter
+//! simply by publishing under its own kind; nothing here enumerates the
+//! set. Insertion is always driven by a `ViewState`'s `'static` kind, so
+//! keying on `&'static str` is zero-allocation and the map never needs
+//! an owned `String`. Reads (`current`) accept any `&str` (a wire-
+//! supplied cursor) via borrow.
 //!
 //! Per `[[no-fallbacks-ever]]`: there is no "did we drop a revision?"
 //! recovery. The counter is monotonic and substrate-owned. If a
@@ -20,8 +28,6 @@
 
 use std::collections::HashMap;
 use std::sync::Mutex;
-
-use crate::kinds::{KnownKind, RevisionKey};
 
 /// In-process monotonic revision generator. Cheap to share via `Arc`.
 ///
@@ -35,7 +41,7 @@ use crate::kinds::{KnownKind, RevisionKey};
 /// lock is hot, swap to `DashMap` without touching the public API.
 #[derive(Debug, Default)]
 pub struct Revisions {
-    next: Mutex<HashMap<RevisionKey, u64>>,
+    next: Mutex<HashMap<&'static str, u64>>,
 }
 
 impl Revisions {
@@ -48,7 +54,7 @@ impl Revisions {
     /// `1`, then `2`, etc. (Revisions start at 1 so a `Some(0)` from
     /// a buggy subscriber can't pretend it has seen "the empty state"
     /// by accident.)
-    pub fn next(&self, kind: KnownKind) -> u64 {
+    pub fn next(&self, kind: &'static str) -> u64 {
         let mut next = self.next.lock().expect("Revisions mutex poisoned");
         let slot = next.entry(kind).or_insert(0);
         *slot += 1;
@@ -58,10 +64,11 @@ impl Revisions {
     /// Read the current revision for `kind` without advancing.
     /// Returns `None` if no revision has been allocated for this key
     /// yet — useful for the session-resume path so a subscriber's
-    /// `last_seen` can be checked against current state.
-    pub fn current(&self, kind: KnownKind) -> Option<u64> {
+    /// `last_seen` (a wire-supplied `&str`) can be checked against
+    /// current state.
+    pub fn current(&self, kind: &str) -> Option<u64> {
         let next = self.next.lock().expect("Revisions mutex poisoned");
-        next.get(&kind).copied()
+        next.get(kind).copied()
     }
 }
 
@@ -77,10 +84,25 @@ mod tests {
         // jumped back to 5 means "drop everything from 5 to 42 again
         // on reconnect" or "skip 5-42 entirely". Both break §6.
         let r = Revisions::new();
-        assert_eq!(r.next(KnownKind::Chat), 1);
-        assert_eq!(r.next(KnownKind::Chat), 2);
-        assert_eq!(r.next(KnownKind::Chat), 3);
-        assert_eq!(r.current(KnownKind::Chat), Some(3));
+        assert_eq!(r.next("chat"), 1);
+        assert_eq!(r.next("chat"), 2);
+        assert_eq!(r.next("chat"), 3);
+        assert_eq!(r.current("chat"), Some(3));
+    }
+
+    #[test]
+    fn counters_are_independent_per_kind_string() {
+        // what this catches: regression where two different kind
+        // strings collide onto one counter (e.g. a stray `&str`
+        // interning bug or a `HashMap` keyed on something coarser than
+        // the full kind). Each open-registered kind must own its own
+        // monotonic sequence — "wall" advancing must never bump "chat".
+        let r = Revisions::new();
+        assert_eq!(r.next("chat"), 1);
+        assert_eq!(r.next("wall"), 1);
+        assert_eq!(r.next("chat"), 2);
+        assert_eq!(r.current("chat"), Some(2));
+        assert_eq!(r.current("wall"), Some(1));
     }
 
     #[test]
@@ -91,6 +113,6 @@ mod tests {
         // for a kind means no revision — the wire `Option<u64>` is
         // honest about that.
         let r = Revisions::new();
-        assert_eq!(r.current(KnownKind::Chat), None);
+        assert_eq!(r.current("chat"), None);
     }
 }

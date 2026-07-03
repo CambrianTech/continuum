@@ -26,7 +26,7 @@
 //!
 //! ## Which airc streams map to `kind="chat"`
 //!
-//! Two bus streams fold onto the single existing `KnownKind::Chat`, and
+//! Two bus streams fold onto the single existing `ChatViewState::KIND`, and
 //! the split between them mirrors airc's own message/identity split:
 //!
 //! - **`chat:posted`** — a posted message. Deserialized into the **thin**
@@ -40,7 +40,7 @@
 //!
 //! Wall / coordination / kanban / widget state (task #89) are *different*
 //! kinds and are deliberately out of scope here — they get their own
-//! `KnownKind` + payload structs when those renderers land. This slice
+//! `KIND` const + payload structs when those renderers land. This slice
 //! projects exactly the chat surface, no more.
 //!
 //! ## The input contract, and why missing fields are skipped not faked
@@ -65,7 +65,8 @@
 //! event whose `room_id` differs from the accumulator's current room, the
 //! projection resets to the new room (clears ring + roster). Per-room
 //! instancing (many rooms cached at once) is kind-instancing, deferred
-//! with the same `RevisionKey` note in `continuum-positron/src/kinds.rs`.
+//! — the revision key would extend from the bare kind string to a
+//! `(room_id, kind)` tuple (see `continuum-positron/src/revisions.rs`).
 
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::Arc;
@@ -75,7 +76,7 @@ use tokio::sync::broadcast::error::RecvError;
 use uuid::Uuid;
 
 use continuum_positron::{
-    ChatMessageView, ChatViewState, KnownKind, Provenance, RosterSlotView, SenderKind, StateBuilder,
+    ChatMessageView, ChatViewState, Provenance, RosterSlotView, SenderKind, StateBuilder,
     Substrate,
 };
 
@@ -375,7 +376,7 @@ impl ChatProjection {
             roster: self.roster.clone(),
         };
         self.substrate
-            .store(self.builder.session(KnownKind::Chat, view));
+            .store(self.builder.session(view));
     }
 }
 
@@ -487,7 +488,7 @@ mod tests {
     fn current_chat(substrate: &Substrate) -> ChatViewState {
         let env = substrate
             .cache()
-            .get(KnownKind::Chat.wire_name())
+            .get(ChatViewState::KIND)
             .expect("a chat envelope must be stored");
         serde_json::from_value(env.payload.clone()).expect("payload is a ChatViewState")
     }
@@ -783,7 +784,7 @@ mod tests {
         }
         let r1 = substrate
             .cache()
-            .get(KnownKind::Chat.wire_name())
+            .get(ChatViewState::KIND)
             .unwrap()
             .revision;
         if let ProjectionInput::Message(m) =
@@ -793,7 +794,7 @@ mod tests {
         }
         let r2 = substrate
             .cache()
-            .get(KnownKind::Chat.wire_name())
+            .get(ChatViewState::KIND)
             .unwrap()
             .revision;
         assert!(r2 > r1, "revision must advance: {r1:?} -> {r2:?}");

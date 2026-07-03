@@ -70,11 +70,17 @@
 //!
 //! - `[[strong-typing-across-boundaries]]`: payload variants are typed,
 //!   not stringly-tagged. `ChatViewState { messages, roster, … }` not
-//!   `Value::Object`. `(kind, layer)` is a typed key for revisions, not
-//!   a `String`-concatenation.
-//! - `[[no-fallbacks-ever]]`: a kind without a registered builder is
-//!   refused at compile time (the typed kind enum is exhaustive), not
-//!   silently coerced to `Other`.
+//!   `Value::Object`. The kind is the view's own `KIND` const (a
+//!   `&'static str` owned by the type), single-sourced through
+//!   `ViewState::kind()` — never re-stringified at a call site.
+//! - `[[fallbacks-are-illegal-fail-loud]]`: kinds are OPEN and self-
+//!   registered — each `ViewState` owns its `KIND`, like a self-routing
+//!   command; there is NO central kind enum to edit when a view is
+//!   added (that closed catalog was the same central-registry anti-
+//!   pattern the command layer already deleted). A kind without a
+//!   registered renderer/builder fails loud at the dispatch seam ("no
+//!   renderer registered for kind X"), never silently coerced to a
+//!   default.
 //! - `[[shared-decode-per-persona-perspective]]`: the substrate decode
 //!   (event → typed payload) runs ONCE per arrival; per-observer
 //!   perspective (which observer subscribes which layer) is the cheap
@@ -118,7 +124,6 @@ pub mod chat;
 pub mod connection;
 pub mod dispatch;
 pub mod kanban;
-pub mod kinds;
 pub mod observer;
 pub mod revisions;
 pub mod session;
@@ -136,7 +141,6 @@ pub use kanban::{
     KanbanCardState, KanbanCardView, KanbanLaneState, KanbanLaneView, KanbanPriority,
     KanbanPullRequest, KanbanViewState,
 };
-pub use kinds::{KnownKind, RevisionKey};
 pub use observer::{apply_observe, ObserverRegistration};
 pub use revisions::Revisions;
 pub use session::{apply_subscribe, Subscription};
