@@ -39,6 +39,7 @@
 use std::collections::HashMap;
 
 use positron_core::session::{ClientMessage, ServerMessage};
+use positron_core::wire::{CommandEnvelope, CommandSource};
 
 use crate::dispatch::CommandDispatch;
 use crate::observer::{apply_observe, ObserverRegistration};
@@ -123,7 +124,73 @@ impl Connection {
         msg: ClientMessage,
         dispatcher: &D,
     ) -> Result<Vec<ServerMessage>, String> {
+        // Authenticate the envelope's declared `source` against THIS
+        // connection's own established state BEFORE the command reaches
+        // the dispatcher (the source-auth leg of the confused-deputy
+        // clamp; see `reject_forged_source`). A source this connection
+        // can prove is forged never executes — the forgery is answered
+        // with one `CommandFailed` naming the cause, not silently
+        // clamped. Per `[[fallbacks-are-illegal-fail-loud]]`.
+        if let ClientMessage::Command(envelope) = &msg {
+            if let Some(rejection) = self.reject_forged_source(envelope) {
+                return Ok(vec![rejection]);
+            }
+        }
         crate::dispatch::apply_command(dispatcher, msg).await
+    }
+
+    /// Authenticate a command envelope's `source` against the state this
+    /// connection has established, returning `Some(CommandFailed)` when
+    /// the source is a forgery this connection can *prove* and `None`
+    /// when the source is consistent with what it established.
+    ///
+    /// This is the shippable leg of the positron source-auth work: a
+    /// positron session multiplexes two principals over ONE socket — the
+    /// human at the surface and any AI observer perceiving that surface —
+    /// so `source` (not `peer_id`) is what distinguishes them, and until
+    /// it is authenticated the confused-deputy clamp presumes an HONEST
+    /// source (see `CallerSource::PositronObserver` docs in
+    /// continuum-core `routing/auth_policy.rs`).
+    ///
+    /// What this proves TODAY — no socket/GH-auth handshake required,
+    /// using only session-local state:
+    /// - `Observer { observer_id }` — the id MUST name an observer
+    ///   registered on THIS connection via a prior `Observe`. A command
+    ///   stamped with an observer_id this connection never registered is
+    ///   either an impersonation (spoofing another observer's audit id)
+    ///   or an unestablished principal claiming observer authority.
+    ///   Reject loud, naming the id. This also makes the `observer_id`
+    ///   that drives authorization + audit downstream *verifiable*
+    ///   provenance rather than an unchecked client claim.
+    ///
+    /// What still awaits the socket/GH-auth handshake (honest scope):
+    /// - `Human` — the socket owner. There is no separate registration
+    ///   to check it against; on a positron connection the socket IS the
+    ///   human. A compromised observer that self-labels `Human` is not
+    ///   yet distinguishable here — that leg closes when socket
+    ///   authentication binds the human principal (the tracked
+    ///   precondition documented at `auth_policy.rs`). Until then this
+    ///   is harmless because both `Human` and `Observer` resolve to the
+    ///   same `Provisional` trust ceiling; the divergence this guard
+    ///   protects activates the moment that ceiling elevates.
+    fn reject_forged_source(&self, envelope: &CommandEnvelope) -> Option<ServerMessage> {
+        match &envelope.source {
+            // Awaits the socket/GH-auth handshake — see doc above.
+            CommandSource::Human => None,
+            CommandSource::Observer { observer_id } => {
+                if self.observers.contains_key(observer_id) {
+                    None
+                } else {
+                    Some(ServerMessage::CommandFailed {
+                        correlation_id: envelope.correlation_id,
+                        error: format!(
+                            "forged source: observer '{observer_id}' is not registered on \
+                             this connection — an observer must Observe before it can act"
+                        ),
+                    })
+                }
+            }
+        }
     }
 }
 
@@ -401,6 +468,104 @@ mod tests {
             }
             other => panic!("expected CommandFailed, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn command_with_unregistered_observer_source_is_rejected_loud() {
+        // what this catches: the confused-deputy forge vector — a command
+        // stamped `source: Observer { observer_id }` for an id this
+        // connection never registered (no prior Observe) must be REJECTED
+        // with a loud CommandFailed and must NEVER reach the dispatcher.
+        // Regression here would let any client impersonate an observer's
+        // audit id or claim observer authority it never established.
+        let dispatcher = ScriptedDispatcher::ok();
+        let mut conn = Connection::new();
+        let cid = Uuid::from_u128(0xf0f0);
+        let frames = conn
+            .handle_command(
+                ClientMessage::Command(CommandEnvelope {
+                    kind: "chat".into(),
+                    command: "chat/send".into(),
+                    params: serde_json::json!({"text": "as maya"}),
+                    correlation_id: cid,
+                    source: CommandSource::Observer {
+                        observer_id: "maya".into(),
+                    },
+                }),
+                &dispatcher,
+            )
+            .await
+            .unwrap();
+        assert_eq!(frames.len(), 1, "one CommandFailed frame emitted");
+        match &frames[0] {
+            ServerMessage::CommandFailed {
+                correlation_id,
+                error,
+            } => {
+                assert_eq!(*correlation_id, cid);
+                assert!(
+                    error.contains("forged source") && error.contains("maya"),
+                    "error must name the forged source + the offending id, got: {error}"
+                );
+            }
+            other => panic!("expected CommandFailed, got {other:?}"),
+        }
+        assert_eq!(
+            dispatcher.call_count(),
+            0,
+            "the forged command must NEVER reach the dispatcher"
+        );
+    }
+
+    #[tokio::test]
+    async fn command_with_registered_observer_source_passes_after_observe() {
+        // what this catches: the source-auth guard must not over-reject —
+        // an observer that Observed first is an established principal, so a
+        // command stamped with its registered observer_id must pass through
+        // to the dispatcher normally.
+        let substrate = Substrate::new();
+        substrate.store(envelope("chat", 1));
+        let dispatcher = ScriptedDispatcher::ok();
+        let mut conn = Connection::new();
+
+        // Establish the observer principal on this connection.
+        conn.handle_observe(
+            ClientMessage::Observe {
+                spec: ObserverSpec {
+                    observer_id: "maya".into(),
+                    budget_hz: 4,
+                    kinds: vec!["chat".into()],
+                    layers: vec![StateLayer::Session],
+                },
+                last_seen: vec![],
+            },
+            &substrate,
+        )
+        .unwrap();
+
+        // Now maya acts — her registered source authenticates, so the
+        // command dispatches (empty frames on success).
+        let frames = conn
+            .handle_command(
+                ClientMessage::Command(CommandEnvelope {
+                    kind: "chat".into(),
+                    command: "chat/send".into(),
+                    params: serde_json::json!({"text": "hi from maya"}),
+                    correlation_id: Uuid::nil(),
+                    source: CommandSource::Observer {
+                        observer_id: "maya".into(),
+                    },
+                }),
+                &dispatcher,
+            )
+            .await
+            .unwrap();
+        assert!(frames.is_empty(), "registered observer command succeeds");
+        assert_eq!(
+            dispatcher.call_count(),
+            1,
+            "authenticated observer command reaches the dispatcher"
+        );
     }
 
     #[tokio::test]
