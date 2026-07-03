@@ -2,6 +2,13 @@
   "//": "Typecheck + editor config for @continuum/web. Mirrors the SDK's strict contract (target/module/resolution/lib) because this app compiles against the SDK source (@continuum/sdk-typescript resolves to ./index.ts, no build step). vite owns the actual bundle (npm run build = vite build), so no emit here — tsc is `--noEmit` typecheck only, hence no declaration/outDir/rootDir. DOM lib is load-bearing: this is the one client tier that touches document/WebSocket.",
   "compilerOptions": {
     "target": "ES2022",
+    // MUST be false: <chat-widget> declares Lit reactive properties via `static
+    // properties` + plain class fields (state, sendHandler, _draft…). Under
+    // ES2022's default define-semantics, those field declarations SHADOW the
+    // accessors Lit installs, so `widget.state = …` becomes a dead field write and
+    // never re-renders (the room stalls on 'Connecting…' forever). esbuild/vite
+    // honor this flag for the actual transform; tsc needs it to match.
+    "useDefineForClassFields": false,
     "module": "ESNext",
     "moduleResolution": "Bundler",
     "lib": ["ES2022", "DOM", "DOM.Iterable"],
