@@ -13,7 +13,7 @@
 import type { Transport, Target, SessionIdentity } from './transport';
 import { Commands } from './Commands';
 import { Events } from './Events';
-import { Handle, handleFrom } from './Handle';
+import { type Handle, handleFrom } from './Handle';
 import type { CommandMap, CommandName } from './generated/CommandMap';
 
 export class Continuum {

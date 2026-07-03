@@ -5,13 +5,13 @@
 // means a warning is a failure, the way `cargo clippy -D warnings` won't let a
 // Rust change through with a lint outstanding.
 //
-// Scope: packages/**, apps/web, apps/tui — the hand-written client code this
-// gate owns. sdk/typescript is deliberately out of scope for now: it carries a
-// pre-existing ts-rs codegen drift (u64 fields generated as `bigint` instead of
-// the CLAUDE.md-canonical `#[ts(type="number")]` → `number`), which is a
-// Rust-side regen fix tracked separately — not something to lint-gate around
-// here. Fold the SDK in once that regen lands. Generated bindings and build
-// output are excluded — we lint hand-written source, not machine output.
+// Scope: packages/**, apps/web, apps/tui, sdk/typescript — the hand-written
+// client code this gate owns. The SDK is now folded in: the ts-rs u64/i64→bigint
+// drift on the contract payloads is fixed at the Rust source (`#[ts(type =
+// "number")]`, the CLAUDE.md-canonical mapping), so the vendored wire types are
+// `number` and the SDK typechecks + lints clean. Generated bindings
+// (`sdk/typescript/generated/**`) stay excluded — that is machine output carrying
+// a `// Do not edit` header; we lint hand-written source, not codegen.
 
 import js from '@eslint/js';
 import tseslint from 'typescript-eslint';
@@ -28,7 +28,10 @@ export default tseslint.config(
       'core/**',
       'tools/**',
       'scripts/**',
-      'sdk/**',
+      // Machine-generated ts-rs bindings (vendored wire + views + positron) carry
+      // a `// Do not edit` header — typechecked (they're in the SDK tsconfig) but
+      // never linted. Hand-written SDK source is linted (see files glob below).
+      'sdk/typescript/generated/**',
       '**/*.js',
       '**/*.mjs',
       '**/*.cjs',
@@ -42,7 +45,7 @@ export default tseslint.config(
   ...tseslint.configs.stylisticTypeChecked,
 
   {
-    files: ['packages/**/*.ts', 'apps/web/**/*.ts', 'apps/tui/**/*.ts'],
+    files: ['packages/**/*.ts', 'apps/web/**/*.ts', 'apps/tui/**/*.ts', 'sdk/typescript/**/*.ts'],
     languageOptions: {
       // projectService auto-resolves each file to its nearest tsconfig, so one
       // config type-checks four packages with four different lib/target sets.

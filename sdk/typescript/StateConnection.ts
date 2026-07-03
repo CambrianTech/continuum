@@ -125,7 +125,7 @@ export class StateConnection {
     this.sinks.set(kind, sink);
     // Already live → widen the subscription to include the new kind.
     if (this.socket) {
-      void this.sendSubscribe(this.socket);
+      this.sendSubscribe(this.socket);
     }
     return {
       off: () => {
@@ -161,7 +161,7 @@ export class StateConnection {
       this.layers = options.layers;
     }
     const socket = await this.ensureConnected();
-    await this.sendSubscribe(socket);
+    this.sendSubscribe(socket);
   }
 
   /** Close the socket. Registered sinks are kept — a later {@link connect}
@@ -186,7 +186,7 @@ export class StateConnection {
     };
   }
 
-  private async sendSubscribe(socket: WebSocketLike): Promise<void> {
+  private sendSubscribe(socket: WebSocketLike): void {
     if (this.sinks.size === 0) {
       throw new Error(
         'StateConnection: connect() with no registered kinds. Call on(kind, sink) ' +
@@ -224,7 +224,7 @@ export class StateConnection {
         // — a silent reconnect would mask a persistently-dead core).
         this.onCloseCb?.(`StateConnection: connection to ${this.url} closed`);
       };
-      socket.onmessage = (ev) => this.onMessage(ev.data);
+      socket.onmessage = (ev) => { this.onMessage(ev.data); };
     });
     return this.connecting;
   }

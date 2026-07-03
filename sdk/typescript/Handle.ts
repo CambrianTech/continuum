@@ -20,17 +20,19 @@ import type { Transport, Subscription, RawEventHandlers } from './transport';
 /** Typed handler for a handle's event stream (payload typing is per-resource;
  *  generated handle maps refine this — kept `unknown` here at the generic base). */
 export interface HandleEventHandlers {
-  onEvent(event: unknown, sequence: number): void;
-  onError?(message: string): void;
-  onClosed?(): void;
+  onEvent: (event: unknown, sequence: number) => void;
+  onError?: (message: string) => void;
+  onClosed?: () => void;
 }
 
 export class Handle {
   /** The resource's airc:// URI — the routing key for every op + its event stream. */
   constructor(readonly uri: string, private readonly transport: Transport) {}
 
-  /** Run a handle-scoped subcommand, routed to the handle's URI (write/read/…). */
-  async execute<P, R>(subcommand: string, params: P): Promise<R> {
+  /** Run a handle-scoped subcommand, routed to the handle's URI (write/read/…).
+   *  `params` is a JSON object body; per-resource typing is refined by the
+   *  generated handle maps over this generic base. */
+  async execute<R>(subcommand: string, params: Record<string, unknown>): Promise<R> {
     const resultJson = await this.transport.execute(
       `${this.uri}/${subcommand}`,
       JSON.stringify(params),
@@ -41,7 +43,7 @@ export class Handle {
   /** Subscribe to the handle's event stream — fed by any link across the grid. */
   on(eventClass: string, handlers: HandleEventHandlers): Subscription {
     const raw: RawEventHandlers = {
-      onEvent: (json, sequence) => handlers.onEvent(JSON.parse(json), sequence),
+      onEvent: (json, sequence) => { handlers.onEvent(JSON.parse(json), sequence); },
       onError: handlers.onError,
       onClosed: handlers.onClosed,
     };

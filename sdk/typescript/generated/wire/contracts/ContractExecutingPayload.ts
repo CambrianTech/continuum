@@ -5,4 +5,9 @@
  * Optional event (the chain stays valid without it) but used by the
  * router daemon to mark a routing slot as in-use.
  */
-export type ContractExecutingPayload = { contractId: string, executorId: string, startedAtUnixMs: bigint, };
+export type ContractExecutingPayload = { contractId: string, executorId: string, 
+/**
+ * `number` per the `max_bid` note — Unix-ms timestamps stay below 2^53,
+ * and `bigint` would break `JSON.stringify` on the wire.
+ */
+startedAtUnixMs: number, };

@@ -40,28 +40,28 @@ import type {
  * native twins implement the same double over their facade's seam.
  */
 class MockTransport implements Transport {
-  executed: Array<{ command: string; paramsJson: string }> = [];
+  executed: { command: string; paramsJson: string }[] = [];
   provided = new Map<string, RawCommandHandler>();
-  subscribed: Array<{ topic: string; filterJson?: string }> = [];
+  subscribed: { topic: string; filterJson?: string }[] = [];
   unsubscribed = 0;
-  emitted: Array<{ eventClass: string; payloadJson: string }> = [];
+  emitted: { eventClass: string; payloadJson: string }[] = [];
   lastHandlers?: RawEventHandlers;
   identity: SessionIdentity = {};
   private nextResult = '{}';
 
-  willReturn(json: string) {
+  willReturn(json: string): void {
     this.nextResult = json;
   }
-  withIdentity(identity: SessionIdentity) {
+  withIdentity(identity: SessionIdentity): this {
     this.identity = identity;
     return this;
   }
   session(): SessionIdentity {
     return this.identity;
   }
-  async execute(command: string, paramsJson: string): Promise<string> {
+  execute(command: string, paramsJson: string): Promise<string> {
     this.executed.push({ command, paramsJson });
-    return this.nextResult;
+    return Promise.resolve(this.nextResult);
   }
   provide(command: string, handler: RawCommandHandler): Registration {
     this.provided.set(command, handler);
@@ -72,9 +72,18 @@ class MockTransport implements Transport {
     this.lastHandlers = handlers;
     return { unsubscribe: () => { this.unsubscribed += 1; } };
   }
-  async emit(eventClass: string, payloadJson: string): Promise<void> {
+  emit(eventClass: string, payloadJson: string): Promise<void> {
     this.emitted.push({ eventClass, payloadJson });
+    return Promise.resolve();
   }
+}
+
+/** Fail-loud unwrap for test preconditions — surfaces WHICH lookup was empty
+ *  (a recorded frame / handler that must exist by this point) instead of a bare
+ *  non-null assertion that would throw an opaque `undefined` deref. */
+function must<T>(value: T | undefined | null, what: string): T {
+  if (value == null) throw new Error(`conformance: expected ${what} to exist`);
+  return value;
 }
 
 // ─── 1. Addressing ────────────────────────────────────────────────────────────
@@ -163,13 +172,13 @@ describe('2. Commands — execute (call) + provide (serve)', () => {
   it('provide: registers the platform adapter; routed call runs it + serializes back', async () => {
     const t = new MockTransport();
     const c = Continuum.connect(t);
-    c.commands.provide('interface/screenshot', async (p) => ({
+    c.commands.provide('interface/screenshot', (p) => Promise.resolve({
       success: true,
       dataUrl: `shot:${p.querySelector}`,
       width: 1,
       height: 1,
     }));
-    const handler = t.provided.get('interface/screenshot')!;
+    const handler = must(t.provided.get('interface/screenshot'), 'provided screenshot handler');
     const out = await handler.handle('{"querySelector":"body"}');
     expect(JSON.parse(out)).toEqual({ success: true, dataUrl: 'shot:body', width: 1, height: 1 });
   });
@@ -177,7 +186,7 @@ describe('2. Commands — execute (call) + provide (serve)', () => {
   it('provide: Registration.remove() deregisters the adapter', () => {
     const t = new MockTransport();
     const c = Continuum.connect(t);
-    const reg = c.commands.provide('interface/screenshot', async () => ({ success: true, dataUrl: '', width: 0, height: 0 }));
+    const reg = c.commands.provide('interface/screenshot', () => Promise.resolve({ success: true, dataUrl: '', width: 0, height: 0 }));
     expect(t.provided.has('interface/screenshot')).toBe(true);
     reg.remove();
     expect(t.provided.has('interface/screenshot')).toBe(false);
@@ -202,14 +211,14 @@ describe('3. Events — subscribe (listen) + emit (publish)', () => {
   it('subscribe: local class = bare topic, no filter', () => {
     const t = new MockTransport();
     const c = Continuum.connect(t);
-    c.events.subscribe('contract:proposed', { onEvent: () => {} });
+    c.events.subscribe('contract:proposed', { onEvent: () => { /* sink: this clause asserts addressing/teardown, not delivery */ } });
     expect(t.subscribed[0]).toEqual({ topic: 'contract:proposed', filterJson: undefined });
   });
 
   it('subscribe: source addressing + server-side filter + typed sequence delivery', () => {
     const t = new MockTransport();
     const c = Continuum.connect(t);
-    const seen: Array<[unknown, number]> = [];
+    const seen: [unknown, number][] = [];
     c.events.subscribe(
       'contract:proposed',
       { onEvent: (e, meta) => seen.push([e, meta.sequence]) },
@@ -218,7 +227,7 @@ describe('3. Events — subscribe (listen) + emit (publish)', () => {
     expect(t.subscribed[0].topic).toBe('airc://p1/events/contract:proposed');
     expect(t.subscribed[0].filterJson).toBe('{"proposerId":"p1"}');
     // drive a delivery through the recorded raw handler: parse-once + sequence
-    t.lastHandlers!.onEvent('{"contractId":"c9","proposerId":"p1"}', 7);
+    must(t.lastHandlers, 'recorded raw event handlers').onEvent('{"contractId":"c9","proposerId":"p1"}', 7);
     expect(seen).toEqual([[{ contractId: 'c9', proposerId: 'p1' }, 7]]);
   });
 
@@ -228,12 +237,13 @@ describe('3. Events — subscribe (listen) + emit (publish)', () => {
     let err: string | undefined;
     let closed = false;
     c.events.subscribe('contract:proposed', {
-      onEvent: () => {},
+      onEvent: () => { /* sink: this clause asserts addressing/teardown, not delivery */ },
       onError: (m) => { err = m; },
       onClosed: () => { closed = true; },
     });
-    t.lastHandlers!.onError?.('route lost');
-    t.lastHandlers!.onClosed?.();
+    const handlers = must(t.lastHandlers, 'recorded raw event handlers');
+    handlers.onError?.('route lost');
+    handlers.onClosed?.();
     expect(err).toBe('route lost');
     expect(closed).toBe(true);
   });
@@ -241,7 +251,7 @@ describe('3. Events — subscribe (listen) + emit (publish)', () => {
   it('subscribe: Subscription.unsubscribe() tears down', () => {
     const t = new MockTransport();
     const c = Continuum.connect(t);
-    const sub = c.events.subscribe('contract:proposed', { onEvent: () => {} });
+    const sub = c.events.subscribe('contract:proposed', { onEvent: () => { /* sink: this clause asserts addressing/teardown, not delivery */ } });
     sub.unsubscribe();
     expect(t.unsubscribed).toBe(1);
   });
@@ -273,15 +283,15 @@ describe('4. Handle — ops + event stream + close all route to one URI', () => 
     expect(conn.uri).toBe('airc://p1/live/conn-42');
 
     t.willReturn('{"accepted":true}');
-    const ack = await conn.execute<{ sdp: string }, { accepted: boolean }>('offer', { sdp: 's' });
-    expect(t.executed.at(-1)!.command).toBe('airc://p1/live/conn-42/offer');
+    const ack = await conn.execute<{ accepted: boolean }>('offer', { sdp: 's' });
+    expect(must(t.executed.at(-1), 'last executed command').command).toBe('airc://p1/live/conn-42/offer');
     expect(ack).toEqual({ accepted: true });
 
-    conn.on('signal', { onEvent: () => {} });
-    expect(t.subscribed.at(-1)!.topic).toBe('airc://p1/live/conn-42/events/signal');
+    conn.on('signal', { onEvent: () => { /* sink: this clause asserts addressing/teardown, not delivery */ } });
+    expect(must(t.subscribed.at(-1), 'last subscribed topic').topic).toBe('airc://p1/live/conn-42/events/signal');
 
     await conn.close();
-    expect(t.executed.at(-1)!.command).toBe('airc://p1/live/conn-42/close');
+    expect(must(t.executed.at(-1), 'last executed command').command).toBe('airc://p1/live/conn-42/close');
   });
 });
 
@@ -358,7 +368,7 @@ describe('6. sessions — session() identity + scoped(context)', () => {
     expect(JSON.parse(t.executed[0].paramsJson)).toEqual({ message: 'hi' });
   });
 
-  it('scoped: carries identity forward + leaves the parent unscoped', async () => {
+  it('scoped: carries identity forward + leaves the parent unscoped', () => {
     const t = new MockTransport().withIdentity({ userId: 'u1', sessionId: 's1' });
     const c = Continuum.connect(t);
     const room = c.scoped('room-7');
