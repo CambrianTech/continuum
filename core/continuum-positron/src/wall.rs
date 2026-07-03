@@ -135,9 +135,37 @@ pub struct WallViewState {
     pub posts: Vec<WallPostView>,
 }
 
+/// `WallViewState` is a first-class positron `ViewState` — the SAME
+/// contract renderers (positron-lit's `LitHost`) and the O6 observer
+/// bridge key off for chat, so the wall widget routes through the
+/// identical seam, not a continuum-private shape. Sibling of
+/// `ChatViewState`'s impl: a `kind="wall"` top-level payload is a
+/// `ViewState` exactly as `kind="chat"` is.
+///
+/// The `Clone + Send + Sync + Debug + 'static` bound the trait requires
+/// is already satisfied by the struct's derives + its owned-data fields
+/// (`Uuid` / `String` / `Vec`), so no new bounds are introduced.
+impl positron_core::ViewState for WallViewState {
+    fn kind(&self) -> &'static str {
+        // Single-source the wire string through `KnownKind` — the same
+        // "wall" the `StateEnvelope.kind` carries — so the trait's view
+        // of the kind can never drift from the envelope's. Per
+        // `[[strong-typing-across-boundaries]]`: the string is encoded
+        // once, at the typed kind seam.
+        crate::kinds::KnownKind::Wall.wire_name()
+    }
+
+    // `revision()` is intentionally the trait default (`None`), for the
+    // same reason as `ChatViewState`: the monotonic wall revision is an
+    // ENVELOPE-level counter (`Revisions` keyed by `KnownKind`, framed in
+    // by `StateBuilder`), NOT a payload field. Carrying a copy here would
+    // be two sources of truth for one counter (`[[compression]]`).
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::kinds::KnownKind;
 
     fn sample_post() -> WallPostView {
         WallPostView {
@@ -187,5 +215,31 @@ mod tests {
         let back: WallViewState = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(state, back);
         assert!(back.posts.is_empty());
+    }
+
+    #[test]
+    fn wall_view_state_is_a_positron_view_state() {
+        // what this catches: regression where `WallViewState` stops being
+        // a positron `ViewState` (the impl deleted, or `kind()` hand-rolled
+        // to a literal that drifts from the wire name). Renderers
+        // (positron-lit's `LitHost`) and the O6 observer bridge
+        // route/subscribe off `ViewState::kind()`; if it stops equalling the
+        // `StateEnvelope.kind` the substrate emits (`KnownKind::Wall.wire_name()`),
+        // the wall widget silently receives state it can't match to a
+        // renderer. Also pins `revision()` to the trait default (`None`):
+        // the wall revision is an envelope-level counter, never a payload
+        // field. Mirrors chat::tests::chat_view_state_is_a_positron_view_state.
+        use positron_core::ViewState;
+        let state = WallViewState {
+            room_id: Uuid::from_u128(9),
+            posts: vec![],
+        };
+        assert_eq!(state.kind(), "wall");
+        assert_eq!(
+            state.kind(),
+            KnownKind::Wall.wire_name(),
+            "ViewState::kind() must single-source the wire name, never a drifting literal"
+        );
+        assert_eq!(state.revision(), None);
     }
 }
