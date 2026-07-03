@@ -2,13 +2,14 @@
   "name": "@continuum/tui",
   "version": "0.1.0",
   "private": true,
-  "description": "Terminal chat client for Continuum — the maximally-different outlier that validates the SDK client seam (StateConnection READ + chat/send SEND) against Node/ANSI, proving the same seam apps/web's Lit widget uses fits a non-DOM renderer without forcing. UI-only: no substrate logic; the who/what/where projection is @continuum/chat-view, shared with the web widget. Runs on Node ≥22's global WebSocket with zero extra deps.",
+  "description": "Terminal chat client for Continuum — the maximally-different outlier that validates the SDK client seam (StateConnection READ + chat/send SEND) against Node/ANSI, proving the same seam apps/web's Lit widget uses fits a non-DOM renderer without forcing. UI-only: no substrate logic; the who/what/where projection is @continuum/chat-view, shared with the web widget. Zero RUNTIME deps — the transport is Node ≥22's global WebSocket (no `ws` package); tsx is the dev-time TS loader (Node's --experimental-strip-types only resolves explicit .ts extensions, not the SDK's normal imports). `npm start` runs the interactive client; `npm run frame` draws one live snapshot and exits (headless read-path smoke).",
   "type": "module",
   "bin": {
     "continuum-tui": "./src/index.ts"
   },
   "scripts": {
-    "start": "node --experimental-strip-types src/index.ts",
+    "start": "tsx src/index.ts",
+    "frame": "tsx src/liveFrame.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest"
@@ -19,6 +20,7 @@
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
+    "tsx": "^4.19.0",
     "typescript": "^5.6.0",
     "vitest": "^2.1.0"
   }
