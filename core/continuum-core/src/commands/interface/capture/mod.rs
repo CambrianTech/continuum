@@ -94,8 +94,22 @@ pub fn capture_root() -> std::io::Result<PathBuf> {
     Ok(home.join(".continuum").join("captures"))
 }
 
+/// Capture-dir scope for a caller: a persona's `peer_id`, or `"local"` for the
+/// owner-by-locality operator. The local Unix-socket `cu` path carries no persona
+/// identity ([[handle_client]] stamps `None` — "the operator on the box"), yet the
+/// operator is a first-class caller who can `cu interface/capture` any interface
+/// from a CLI call. A remote (TCP) caller always carries a `peer_id`, so `"local"`
+/// only ever names the trusted local socket. Not a fallback
+/// ([[fallbacks-are-illegal-fail-loud]]): the operator is a real caller, just not a
+/// persona — so we name their scope, never mint a ghost citizen or silently no-op.
+fn capture_scope(caller: Option<&crate::routing::auth_policy::CallerIdentity>) -> String {
+    caller
+        .map(|c| c.peer_id.to_string())
+        .unwrap_or_else(|| "local".to_string())
+}
+
 /// `interface/capture` — drive a target and screenshot it. AiSafe; scopes output
-/// to the caller's own persona id.
+/// to the caller (a persona's peer_id, or `"local"` for the box operator).
 #[derive(Default)]
 pub struct Capture;
 
@@ -113,15 +127,9 @@ impl ActionCommand for Capture {
     type Output = CaptureResult;
 
     async fn run(&self, ctx: &Ctx, params: CaptureParams) -> Result<CaptureResult, CommandError> {
-        let persona_id = ctx
-            .caller
-            .as_ref()
-            .map(|c| c.peer_id)
-            .ok_or_else(|| {
-                CommandError::Invalid(
-                    "interface/capture needs an authenticated caller to scope captures to".into(),
-                )
-            })?;
+        // Scope the capture to the caller — a persona's peer_id, or "local" for the
+        // owner-by-locality operator (`cu interface/capture` from the box).
+        let scope = capture_scope(ctx.caller.as_ref());
 
         // Resolve the adapter — fails loud listing valid targets on a typo.
         let adapter = screenshotter::resolve(&params.target).map_err(CommandError::Invalid)?;
@@ -132,10 +140,10 @@ impl ActionCommand for Capture {
             return Err(CommandError::Invalid(reason));
         }
 
-        // Per-persona capture dir = the scope.
+        // Caller-scoped capture dir = the scope.
         let dir = capture_root()
             .map_err(|e| CommandError::Internal(e.to_string()))?
-            .join(persona_id.to_string());
+            .join(&scope);
         tokio::fs::create_dir_all(&dir)
             .await
             .map_err(|e| CommandError::Internal(format!("create capture dir: {e}")))?;
@@ -177,21 +185,18 @@ mod tests {
         assert_eq!(Capture::NAME, "interface/capture");
     }
 
-    // what this catches: with no authenticated caller there is no persona to scope
-    // captures to — it must refuse before touching any adapter or the filesystem.
-    #[tokio::test]
-    async fn refuses_without_a_caller() {
-        let err = Capture
-            .run(
-                &Ctx::default(),
-                CaptureParams {
-                    target: "web".into(),
-                    ..Default::default()
-                },
-            )
-            .await
-            .expect_err("must refuse");
-        assert!(matches!(err, CommandError::Invalid(_)));
+    // what this catches: capture scoping — a persona scopes to its peer_id, and the
+    // owner-by-locality operator (no persona caller, the local `cu` path) scopes to
+    // "local" instead of being refused. That "local" scope is what lets
+    // `cu interface/capture` screenshot any interface from a CLI call.
+    #[test]
+    fn caller_scope_is_persona_id_or_local() {
+        assert_eq!(capture_scope(None), "local");
+        let pid = Uuid::from_u128(7);
+        let persona = crate::routing::auth_policy::CallerIdentity::local_persona(
+            crate::identity::PeerId::from_uuid(pid),
+        );
+        assert_eq!(capture_scope(Some(&persona)), pid.to_string());
     }
 
     // what this catches: an unknown target is rejected with a named, listing

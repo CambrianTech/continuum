@@ -36,6 +36,16 @@ const CAPTURE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
 /// How often to check whether the screenshot file has been written + settled.
 const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(150);
 
+/// Let an async / single-page app settle before the screenshot. Headless Chrome
+/// captures at the load event by default — far too early for a JS app that mounts,
+/// opens a WebSocket, waits for the first state frame, and only THEN renders (an
+/// empty page otherwise — the failure this fixes). `--virtual-time-budget` advances
+/// the page's timers/microtasks and holds the screenshot until the budget is spent
+/// or the page goes idle, so the RENDERED content is what lands in the PNG. 3s is
+/// ample for a localhost socket round-trip + first paint; a genuinely stuck page
+/// still bounds out via `CAPTURE_TIMEOUT`.
+const RENDER_SETTLE_MS: u64 = 3000;
+
 /// Where a Chromium-family browser typically lives, in probe order. macOS app
 /// bundles first (no `$PATH` entry), then the Linux bare names resolved via
 /// `$PATH`. All are the same engine and honor `--headless=new --screenshot`; the
@@ -111,6 +121,9 @@ impl Screenshotter for WebShot {
             .arg("--headless=new")
             .arg("--disable-gpu")
             .arg("--hide-scrollbars")
+            // Wait for the app to render (mount → WS connect → first frame) before
+            // the screenshot fires — otherwise we capture a blank pre-render page.
+            .arg(format!("--virtual-time-budget={RENDER_SETTLE_MS}"))
             .arg(format!("--window-size={},{}", req.width, req.height))
             .arg(format!("--screenshot={out}"))
             .arg(url)
