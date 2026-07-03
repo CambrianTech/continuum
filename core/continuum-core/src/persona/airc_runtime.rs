@@ -54,7 +54,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use airc_core::{EventId, RoomId};
-use airc_lib::{Airc, AircError};
+use airc_lib::{Airc, AircError, HeartbeatTask, DEFAULT_HEARTBEAT_INTERVAL};
 use tokio::task::JoinHandle;
 use tracing::{info, warn};
 use uuid::Uuid;
@@ -154,6 +154,16 @@ pub struct PersonaAircRuntime {
     /// `[[no-fallbacks-ever]]`, never declaring a silently-
     /// unaddressable persona ready.
     command_pump: Option<crate::persona::command_inbound_pump::PersonaCommandInboundPump>,
+    /// The airc `Alive` heartbeat pump (`start_agent_heartbeat`). A persona is
+    /// only PRESENT in another citizen's `room_roster` while it emits `Alive`
+    /// heartbeats — airc's `active_agents` reduces heartbeat events, NOT `say()`
+    /// messages. Holding this handle keeps the pump running for the persona's
+    /// lifetime; dropping it on teardown aborts the pump, so the persona ages
+    /// out of the roster within the presence window — the honest "no longer
+    /// here" signal. `None` only on `from_attached` paths (tests/demo) that opt
+    /// out of presence. Without it, co-resident personas never see each other in
+    /// `[Present in this room]` — the roster-grounding-goes-dark bug.
+    heartbeat: Option<HeartbeatTask>,
     /// Where this citizen's identity came from — resumed from disk
     /// vs freshly minted. Carried for the lifetime of the runtime so
     /// telemetry surfaces (list/get IPC, future status panels) can
@@ -404,6 +414,43 @@ impl PersonaAircRuntime {
             ),
         }
 
+        // Presence contract: a persona is PRESENT in another citizen's
+        // `room_roster` only while it emits `Alive` heartbeats — airc's
+        // `active_agents` reduces heartbeat events, not `say()` messages.
+        // Publishing the identity card alone (above) resolves the persona's
+        // NAME but leaves it absent from `active_agents`, so co-resident
+        // personas never see each other in the `[Present in this room]`
+        // grounding block. Start the `Alive` pump (runtime "persona") so the
+        // persona is a visible present citizen. WARN-and-continue, symmetric
+        // with publish_identity: a persona that can't heartbeat is
+        // live-but-roster-invisible — degraded, not dead — never a silent
+        // fallback ([[fallbacks-are-illegal-fail-loud]]: the cause is named).
+        let heartbeat = match airc_arc
+            .start_agent_heartbeat("persona", None, DEFAULT_HEARTBEAT_INTERVAL)
+            .await
+        {
+            Ok(task) => {
+                info!(
+                    persona_id = %persona_id,
+                    agent_name = %agent_name,
+                    interval_s = DEFAULT_HEARTBEAT_INTERVAL.as_secs(),
+                    "PersonaAircRuntime bootstrap: Alive heartbeat pump started — persona \
+                     is a present citizen in room rosters"
+                );
+                Some(task)
+            }
+            Err(source) => {
+                warn!(
+                    persona_id = %persona_id,
+                    agent_name = %agent_name,
+                    error = %source,
+                    "PersonaAircRuntime bootstrap: start_agent_heartbeat failed — persona is \
+                     live but will NOT appear present in other citizens' room rosters"
+                );
+                None
+            }
+        };
+
         Ok(Self {
             persona_id,
             agent_name,
@@ -412,6 +459,7 @@ impl PersonaAircRuntime {
             default_room,
             inbound_handle: None,
             command_pump: Some(command_pump),
+            heartbeat,
             source,
         })
     }
@@ -466,6 +514,11 @@ impl PersonaAircRuntime {
             // automatically; this seam is for tests + demo binaries
             // that want fine-grained control.
             command_pump: None,
+            // Presence is opt-out here for the same reason as the command pump:
+            // `from_attached` is sync and `start_agent_heartbeat` is async. The
+            // live `bootstrap` path always starts the pump; test/demo callers
+            // that want roster presence start it themselves after construction.
+            heartbeat: None,
             source,
         }
     }

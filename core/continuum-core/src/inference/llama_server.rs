@@ -1024,10 +1024,18 @@ impl LlamaServerControl for LlamaServerProcess {
             // pure optimization flag: absent it we just re-prefill (correct, slow);
             // present it we reuse (correct, fast) — no fallback, no behavior change.
             .arg("--cache-reuse")
-            .arg("256")
-            // Serve embeddings from the same process so the embedder doesn't
-            // need a second server. Personas' embedding adapter points here too.
-            .arg("--embeddings");
+            .arg("256");
+        // `--embeddings` is deliberately NOT set on this GENERATION lane. On the
+        // current llama.cpp build it puts the server in embedding (non-causal)
+        // mode, which makes generation fail with `500 "Compute error."` on EVERY
+        // request — every persona turn went dark (and OAI /v1/embeddings still
+        // 400s with "pooling type 'none'", so it wasn't even serving embeddings
+        // correctly). One server cannot serve both causal generation and
+        // non-causal embeddings. Verified 2026-07-03: the base GGUF generates
+        // cleanly the instant this flag is removed. llama-server-hosted
+        // embeddings need their OWN lane (`--embeddings --pooling mean/last` on a
+        // separate port) — a follow-up; the live embedding path today is the
+        // fastembed/ONNX provider, unaffected by this lane.
         // Placement: CPU lanes pin every layer to RAM so they never contend for
         // the GPU VRAM a living lane already holds (the Metal decode-time OOM that
         // muted the eval). GPU lanes omit the flag — llama-server offloads all it
