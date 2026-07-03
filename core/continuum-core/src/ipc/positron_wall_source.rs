@@ -61,7 +61,9 @@
 //! same room the presence emitter serves. A `wall:changed` /
 //! `presence:updated` for any other room is ignored (a defensive room
 //! guard; today the node observes exactly this room). Per-room instancing
-//! is the same deferred `RevisionKey` note the chat projection carries.
+//! is the same deferred note the chat projection carries: the revision key
+//! would extend from the bare kind string to a `(room_id, kind)` tuple
+//! (see `continuum-positron/src/revisions.rs`).
 
 use std::sync::Arc;
 

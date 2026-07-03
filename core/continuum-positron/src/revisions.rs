@@ -9,7 +9,10 @@
 //!
 //! Revisions are per-kind (not per `(kind, layer)`) because
 //! `ViewState::revision()` is one counter per state instance. Layer
-//! classifies an UPDATE's cadence, not state identity.
+//! classifies an UPDATE's cadence, not state identity. When a kind gains
+//! multiple live instances (per-room widgets), the key extends from the
+//! bare kind string to a `(room_id, kind)` tuple — the projectors' doc
+//! notes flag this as the single deferred multi-instance seam.
 //!
 //! The key is the kind STRING itself (`&'static str`, e.g. `"chat"`) —
 //! each `ViewState` owns its `KIND` const (open self-registration), so
