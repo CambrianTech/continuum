@@ -112,6 +112,57 @@ Disciplines that keep the dream honest (not a pretty hallucination):
 - **The distilled curriculum still has to produce measured lift** — a dream you cannot
   score is a dream you cannot trust (the measurement spine below).
 
+## What becomes a class — attention/salience is the selection signal
+
+The dream mines experience — but *not all experience deserves a class.* A thousand routine
+turns warrant none; a single **dramatic** one — a surprising failure, a struggled-through
+task, an anxious dead-end — can warrant a whole curriculum. That is the flashbulb asymmetry:
+emotionally-salient episodes consolidate deep while the mundane washes out. So the loop needs
+a **selector** in front of the teacher: *which lived experience is worth turning into a class?*
+
+**Attention is that selector — one signal doing two jobs.** The same attention that routes
+in-the-moment cognition (the workspace arbiter, `Contribution.salience` per faculty bid) is
+what tags an episode as consolidation-worthy. What the mind *attended to strongly* — because
+it was surprising, error-laden, effortful, or dramatic — is what deserves to become
+curriculum. This generalizes "replay directed by the fitness gap" (above): an eval failure is
+just **one** kind of salient experience (a mistake); the live stream carries the rest.
+
+**"Anxiety — detectable?" — the honest verdict.** Salience is a *composite* of proxies, and
+the substrate exposes them unevenly today. The first cut keys only on what is **real now**;
+the rest are named extension points, never faked (a salience signal you cannot measure is a
+class trigger you cannot trust — the measurement-spine discipline applied to the *input*):
+
+| Salience proxy | Detectable today | Signal in the substrate |
+|---|---|---|
+| **error** | **yes (built)** | eval grade strings + `gym_grader::test_grade`; `SettleOutcome.inference_error`; `Contribution.fault` (infra-fail vs wrong-answer) |
+| **attention** | **yes (built)** | `WorkspaceCaptureSink`/`WorkspaceTrace` — per-tick bids carry ML-derived `Contribution.salience`; the attention competition is fully captured |
+| **struggle** | **partial** | `SettleOutcome.acts` (effort/iteration count) + `TurnMetrics` + budget-exhaustion are surfaced; the spin/repeat detector (`all_calls_already_satisfied`) is *computed but not surfaced* — needs a field |
+| **arousal** | **partial / proxy** | `PersonaState.{energy,attention,mood}` live via `cognition/get-state`, but arousal is only `Mood::Overwhelmed` (queue depth, not task difficulty); `FacultyId::Affect` is a *defined-but-empty* faculty seam |
+| **surprise** | **no (design-only)** | no prediction-error/novelty scorer; `FacultyId::Volition` unimplemented; workspace explicitly refuses to "invent a novelty metric prematurely" |
+| **uncertainty** | **no (absent)** | no logprobs/entropy on `TextGenerationResponse` or the llama-server adapter; `reasoning` (CoT) is the only depth proxy |
+
+So a truthful first detector keys on **error + attention + struggle** (all tappable via
+`WorkspaceCaptureSink` + `SettleOutcome` + eval grades); **surprise, uncertainty, arousal**
+are the frontier that unlocks as the Affect/Volition faculties + logprob plumbing land.
+
+**The seam (three parts, generalizing what already exists).** `genome/teach` is already a
+working curriculum synthesizer (write→grade→fix→pass, packaged through the shared
+`DatasetService::split_and_write` — the one forge pipe). What it lacks is a salience-driven
+input. So:
+- **`SalienceDetector`** — scores a lived episode for class-worthiness (error+attention+struggle now). *This is the new frontier this section defines.*
+- **`ExperienceRecord`** — the retained rich episode the class is woven from. Today a failed
+  `EvalTaskResult` throws the trajectory away (`answer` is **truncated to 200 chars**); you
+  cannot synthesize a curriculum from a stub. Retaining the full act→observe series is the
+  concrete first build item.
+- **`CurriculumSynthesizer`** — generalizes `genome/teach`'s loop with an **expansion** mode
+  (counterfactuals, harder variants, "what if it had gone worse") so one dramatic shot becomes
+  the thousands of §"single-shot → thousands", not just a single fix. Stamps
+  `TrainingSource::TeacherSynthesized`.
+
+Outlier A = Asha's discovery-eval failures (remediation). Outlier B = a single dramatic live
+episode off the `WorkspaceCaptureSink` stream (expansion) — the maximally-different input that
+validates "even one shot if it was dramatic."
+
 ## The class loop (the mechanism)
 
 ```

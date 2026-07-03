@@ -42,6 +42,7 @@ pub mod deliberation_prompt;
 pub mod dream_consolidation;
 pub mod embedding;
 pub mod eval;
+pub mod experience;
 pub mod inference_session;
 pub mod generate_recipe;
 pub mod generate_response;
