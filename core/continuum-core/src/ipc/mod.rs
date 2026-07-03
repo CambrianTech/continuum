@@ -2357,17 +2357,23 @@ pub fn start_server(
         }
     }
 
-    // WebSocket listener for the thin-client fleet (task #29). Additive,
-    // env-gated by `CONTINUUM_CORE_WS=<port>` (bind host shared with TCP via
-    // `CONTINUUM_CORE_BIND`, default 127.0.0.1). Browsers can't speak the
-    // length-prefixed IPC frame format, so thin clients (`sdk/typescript`
+    // WebSocket listener for the thin-client fleet (task #29). ON BY DEFAULT on
+    // localhost:`DEFAULT_WS_PORT` so web + terminal clients connect out-of-the-box
+    // with zero setup — override the port with `CONTINUUM_CORE_WS`, change the
+    // bind host with `CONTINUUM_CORE_BIND` (default 127.0.0.1), or set
+    // `CONTINUUM_CORE_WS=0` to disable the ingress entirely. Browsers can't speak
+    // the length-prefixed IPC frame format, so thin clients (`sdk/typescript`
     // WebSocketTransport) speak WebSocket + the multiplexed
     // WsClientMessage/WsServerMessage envelope. Every frame dispatches through
     // the SAME `CommandRequestHandler::execute_command_request` owner the airc
     // peer path uses, stamped `CallerSource::Ws` → Provisional ceiling (see
     // ipc::ws module docs + the TCP SECURITY note above; same unauthenticated
-    // AiSafe surface, do NOT bind 0.0.0.0 on an untrusted network).
-    if let Ok(ws_port_str) = std::env::var("CONTINUUM_CORE_WS") {
+    // AiSafe surface, 127.0.0.1 by default — do NOT bind 0.0.0.0 on an untrusted
+    // network).
+    const DEFAULT_WS_PORT: u16 = 8974;
+    let ws_port_str =
+        std::env::var("CONTINUUM_CORE_WS").unwrap_or_else(|_| DEFAULT_WS_PORT.to_string());
+    {
         if let Ok(port) = ws_port_str.parse::<u16>() {
             if port > 0 {
                 let bind_host = std::env::var("CONTINUUM_CORE_BIND")
