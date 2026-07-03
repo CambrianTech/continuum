@@ -192,11 +192,67 @@ pub(crate) struct AircPresenceSlot {
 /// opaque badges + accountability provenance. A struct (not an
 /// ever-widening tuple) so adding the next identity axis is a field, not
 /// a re-thread of every call site.
-struct ResolvedSender {
-    name: String,
-    kind: SenderKind,
-    integrations: BTreeMap<String, String>,
-    provenance: Provenance,
+///
+/// `pub(crate)` because the wall projection
+/// (`crate::ipc::positron_wall_source`) resolves a pinned post's AUTHOR
+/// the same way this projection resolves a message's SENDER — one
+/// identity-resolution decision, one place ([[compression]]).
+pub(crate) struct ResolvedSender {
+    pub(crate) name: String,
+    pub(crate) kind: SenderKind,
+    pub(crate) integrations: BTreeMap<String, String>,
+    pub(crate) provenance: Provenance,
+}
+
+/// Resolve an identity (a message sender OR a wall-post author) from the
+/// room roster. A member present in the roster (its `presence:updated`
+/// card folded in) resolves richly — name, neutral kind, opaque badges,
+/// accountability provenance. A member whose card has not folded in yet
+/// resolves **provisionally**: a short peer-id label, neutral `Human`,
+/// empty badges, unresolved provenance — a provisional projection pending
+/// authoritative truth, never a fabricated identity
+/// ([[fallbacks-are-illegal-fail-loud]]). Upgraded in place the instant
+/// the card lands (see `reresolve_messages`, and the wall projector's
+/// re-render on presence).
+///
+/// A free function over `&[RosterSlotView]` (not a method) so both the
+/// chat and wall projections share the exact resolution — the compression
+/// point of extracting it.
+pub(crate) fn resolve_identity(roster: &[RosterSlotView], id: Uuid) -> ResolvedSender {
+    match roster.iter().find(|s| s.member_id == id) {
+        Some(slot) => ResolvedSender {
+            name: slot.display_name.clone(),
+            kind: slot.kind,
+            integrations: slot.integrations.clone(),
+            provenance: slot.provenance.clone(),
+        },
+        None => ResolvedSender {
+            name: provisional_sender_name(id),
+            kind: SenderKind::Human,
+            integrations: BTreeMap::new(),
+            provenance: Provenance::unresolved(),
+        },
+    }
+}
+
+/// Project a presence snapshot's roster into the renderer-shaped
+/// [`RosterSlotView`] rows. Shared by the chat projection (which stores
+/// them on the `ChatViewState`) and the wall projection (which holds them
+/// only as its author-resolution lookup table) — one wire-shape
+/// conversion, one place ([[compression]]).
+pub(crate) fn roster_slots_from(update: &AircPresenceUpdate) -> Vec<RosterSlotView> {
+    update
+        .roster
+        .iter()
+        .map(|s| RosterSlotView {
+            member_id: s.member_id,
+            display_name: s.display_name.clone(),
+            kind: s.kind,
+            integrations: s.integrations.clone(),
+            provenance: s.provenance.clone(),
+            active: s.active,
+        })
+        .collect()
 }
 
 /// Accumulates airc room events into the renderer-shaped
@@ -248,31 +304,6 @@ impl ChatProjection {
         }
     }
 
-    /// Resolve a sender's display name / kind / badges / provenance from
-    /// the roster. The roster is airc presence joined with identity cards
-    /// (`presence:updated`); a sender present there renders richly. A
-    /// sender whose card has not folded in yet renders **provisionally**
-    /// — a short peer-id label, neutral `Human`, empty badges, unresolved
-    /// provenance — upgraded in place the instant presence lands. This is
-    /// a provisional projection pending authoritative truth, never a
-    /// fabricated identity ([[fallbacks-are-illegal-fail-loud]]).
-    fn resolve_sender(&self, sender_id: Uuid) -> ResolvedSender {
-        match self.roster.iter().find(|s| s.member_id == sender_id) {
-            Some(slot) => ResolvedSender {
-                name: slot.display_name.clone(),
-                kind: slot.kind,
-                integrations: slot.integrations.clone(),
-                provenance: slot.provenance.clone(),
-            },
-            None => ResolvedSender {
-                name: provisional_sender_name(sender_id),
-                kind: SenderKind::Human,
-                integrations: BTreeMap::new(),
-                provenance: Provenance::unresolved(),
-            },
-        }
-    }
-
     /// Fold a posted message into the view and store the new snapshot.
     /// Idempotent on `message_id`: a redelivered event (the bus is
     /// best-effort) does not double-append. Identity is resolved from the
@@ -282,7 +313,7 @@ impl ChatProjection {
         if self.messages.iter().any(|m| m.id == msg.message_id) {
             return;
         }
-        let resolved = self.resolve_sender(msg.sender_id);
+        let resolved = resolve_identity(&self.roster, msg.sender_id);
         self.messages.push_back(ChatMessageView {
             id: msg.message_id,
             room_id: msg.room_id,
@@ -307,19 +338,8 @@ impl ChatProjection {
     /// arrived) now that the card is known.
     fn apply_presence(&mut self, update: AircPresenceUpdate) {
         self.switch_room(update.room_id);
+        self.roster = roster_slots_from(&update);
         self.room_name = update.room_name;
-        self.roster = update
-            .roster
-            .into_iter()
-            .map(|s| RosterSlotView {
-                member_id: s.member_id,
-                display_name: s.display_name,
-                kind: s.kind,
-                integrations: s.integrations,
-                provenance: s.provenance,
-                active: s.active,
-            })
-            .collect();
         self.reresolve_messages();
         self.store();
     }

@@ -110,6 +110,7 @@ pub mod diagnostics;
 pub mod positron_dispatch;
 pub mod positron_presence;
 pub mod positron_source;
+pub mod positron_wall_source;
 pub mod protocol;
 pub mod ws;
 
@@ -2384,18 +2385,43 @@ pub fn start_server(
                 // fallback — an honestly-disabled projection).
                 match node_presence_deps.clone().zip(persona_bootstrap_room_name.clone()) {
                     Some(((daemon_socket, room_id), room_name)) => {
-                        let node_home =
-                            crate::modules::persona_instance_manager::resolve_continuum_root()
-                                .join("citizens")
-                                .join("node")
-                                .join("presence")
-                                .join("airc");
+                        let continuum_root =
+                            crate::modules::persona_instance_manager::resolve_continuum_root();
+                        let node_home = continuum_root
+                            .join("citizens")
+                            .join("node")
+                            .join("presence")
+                            .join("airc");
                         positron_presence::spawn_node_presence_emitter(
                             &state.rt_handle,
-                            daemon_socket,
+                            daemon_socket.clone(),
                             node_home,
                             room_id.as_uuid(),
+                            room_name.clone(),
+                            projection_bus.clone(),
+                        );
+
+                        // Wall projector: the consuming half of `wall:changed`.
+                        // A dedicated node reader (own home + identity, distinct
+                        // from the presence lurker) re-reads the airc-owned
+                        // supersede-projected board on each change and stores it
+                        // as `kind="wall"`, so a chat window shows its pinned
+                        // board with zero resident personas. Same (socket, room)
+                        // precondition as presence — an empty roster would leave
+                        // wall authors provisionally labelled, but the board
+                        // itself still renders.
+                        let wall_home = continuum_root
+                            .join("citizens")
+                            .join("node")
+                            .join("wall")
+                            .join("airc");
+                        positron_wall_source::spawn_node_wall_projector(
+                            &state.rt_handle,
+                            daemon_socket,
+                            wall_home,
+                            room_id.as_uuid(),
                             room_name,
+                            ws_substrate.clone(),
                             projection_bus,
                         );
                     }
