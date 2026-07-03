@@ -113,6 +113,17 @@ pub async fn publish_transcript_event(
             // ours here → skip. Classification, never a fallback — a
             // non-matching kind fabricates nothing.
             if let Some((name, payload)) = chat_posted_from_message(event) {
+                // task #84: the persona-turn / plain-airc-message stream into
+                // the room. This is the seam a client's live read surface
+                // (positron ChatViewState) is fed from — probe it so the turn
+                // stream is glass-box (did the say traverse daemon→attach→bus?).
+                crate::probe!(
+                    class = "airc.chat.projected",
+                    sender_id = %event.peer_id.as_uuid(),
+                    room_id = %event.room_id.as_uuid(),
+                    event_id = %event.event_id.as_uuid(),
+                    "plain airc message projected to chat:posted for positron"
+                );
                 bus.publish_async_only(name, payload);
             } else if let Some((name, payload)) = wall_changed_from_event(event) {
                 bus.publish_async_only(name, payload);
