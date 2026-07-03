@@ -686,6 +686,23 @@ pub async fn materialize_adapters(
                 runtime.clone(),
             ));
 
+        // Room-board source: grounds the persona in the CURRENT ROOM's WHOLE
+        // work board — every card, its column, priority, and owner — read live
+        // from the same airc board a human's kanban widget renders (the desktop
+        // app projects it into a KanbanViewState; this reads airc DIRECTLY, one
+        // shared board, two faces, never through each other). The Observer
+        // perceiving the shared plan, the complement to the active-work source's
+        // own-claims-only view: whole-board-this-room vs own-claims-cross-room.
+        // Reads the persona's own airc handle (upcasts to `RoomBoardReader`, a
+        // supertrait of AircCitizen). Enriching framing, NOT a participation
+        // gate — bound brain-only + defer-tolerant like the active-work + wall
+        // sources. Task #117 O6.
+        let room_board_source: Arc<dyn crate::persona::rag_budget::RagSource> =
+            Arc::new(crate::persona::room_board_source::RoomBoardSource::new(
+                identity.peer_id.as_uuid(),
+                runtime.clone(),
+            ));
+
         // Disk-backed, per-persona memory: open <home>/engrams.sqlite and
         // rehydrate prior engrams + recall metadata, so memory SURVIVES restart.
         // Without this, admission is in-memory only (NoopSink) and the persona is
@@ -790,6 +807,15 @@ pub async fn materialize_adapters(
                     // wrong one.
                     crate::cognition::persona_workspace::GroundingSource::framing(wall_source)
                         .defer_tolerant(),
+                    // The room's WHOLE work board (airc kanban) as enriching
+                    // framing — every card/column/owner, so the persona can
+                    // coordinate against the shared plan, not just its own
+                    // claims. Defer-tolerant: a first-tick miss costs one
+                    // under-grounded turn, not a wrong one. Task #117 O6.
+                    crate::cognition::persona_workspace::GroundingSource::framing(
+                        room_board_source,
+                    )
+                    .defer_tolerant(),
                 ],
                 // The persona's HANDS — built by the caller for THIS persona's
                 // identity (None → speak-only). What turns "talks" into "acts".

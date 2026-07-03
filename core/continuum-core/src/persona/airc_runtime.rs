@@ -631,6 +631,16 @@ impl crate::persona::active_work_source::AircWorkReader for PersonaAircRuntime {
 }
 
 #[async_trait::async_trait]
+impl crate::persona::room_board_source::RoomBoardReader for PersonaAircRuntime {
+    /// The current room's WHOLE work board — every card/column/owner. Delegates
+    /// to the inner airc handle's single board fold (`work_board_complete` →
+    /// snapshot), the same read the desktop-app kanban projector makes.
+    async fn work_board(&self) -> Result<airc_work::BoardSnapshot, AircError> {
+        crate::persona::room_board_source::RoomBoardReader::work_board(self.airc.as_ref()).await
+    }
+}
+
+#[async_trait::async_trait]
 impl crate::persona::airc_citizen::AircCitizen for PersonaAircRuntime {
     fn peer_id(&self) -> Uuid {
         self.airc.peer_id().as_uuid()
