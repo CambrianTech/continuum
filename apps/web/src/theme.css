@@ -1,0 +1,94 @@
+/**
+ * Continuum design tokens — the shared, reusable look-and-feel foundation.
+ *
+ * This is the `base` theme (the signature dark-gradient + cyan aesthetic),
+ * brought forward from the old JTAG widget system's theme vocabulary
+ * (src/widgets/shared/themes/base/theme.css). Every widget — chat now, wall /
+ * kanban / code / avatar next — styles itself ENTIRELY from these semantic
+ * tokens, never hardcoded colors, so:
+ *   - a theme swap (classic / cyberpunk / light / monochrome / retro-mac) is one
+ *     `:root` override, not a per-widget edit;
+ *   - the token NAMES are the portable contract — web maps them to CSS custom
+ *     properties (here); a future mobile / terminal surface maps the same names
+ *     to native styles. One vocabulary, many outputs.
+ *
+ * CSS custom properties pierce shadow DOM, so `:root` tokens reach every Lit
+ * widget's shadow styles for free. Graduating this to a shared `@continuum/theme`
+ * package (values as data both web + native consume) is the next foundational
+ * step; the vocabulary is already stable.
+ */
+
+:root {
+  /* Spacing scale */
+  --spacing-xs: 4px;
+  --spacing-sm: 8px;
+  --spacing-md: 12px;
+  --spacing-lg: 16px;
+  --spacing-xl: 24px;
+
+  /* Radius scale */
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+  --radius-xl: 12px;
+
+  /* Content (text) */
+  --content-primary: #e0e6ed;
+  --content-secondary: #8a92a5;
+  --content-accent: #00d4ff;
+  --content-success: #00ff88;
+  --content-warning: #ff6b35;
+  --content-error: #ff5050;
+
+  /* Backgrounds */
+  --background-primary: linear-gradient(135deg, rgba(15, 20, 25, 1) 0%, rgba(20, 25, 35, 1) 100%);
+  --widget-surface-solid: #1a1f2e;
+  --widget-content-background: rgba(25, 30, 40, 0.8);
+  --widget-header-background: linear-gradient(90deg, #0066cc, #004499);
+  --widget-input-area-background: rgba(20, 25, 35, 0.9);
+  --sidebar-background: rgba(20, 25, 35, 0.95);
+
+  /* Borders */
+  --border-subtle: rgba(255, 255, 255, 0.1);
+  --border-strong: rgba(255, 255, 255, 0.2);
+  --border-accent: rgba(0, 212, 255, 0.4);
+  --widget-border: rgba(0, 212, 255, 0.3);
+
+  /* Presence / status */
+  --status-online: #00ff88;
+  --status-away: #ffaa00;
+  --status-busy: #ff4444;
+  --status-offline: #666666;
+
+  /* Input */
+  --input-background: rgba(40, 45, 55, 0.8);
+  --input-border: rgba(255, 255, 255, 0.15);
+  --input-border-focus: rgba(0, 212, 255, 0.5);
+  --input-text: #ffffff;
+  --input-placeholder: #8a92a5;
+
+  /* Buttons */
+  --button-primary-background: linear-gradient(135deg, #00d4ff, #0099cc);
+  --button-primary-background-hover: linear-gradient(135deg, #00b8e6, #0088bb);
+  --button-primary-text: #000000;
+  --button-secondary-background: rgba(255, 255, 255, 0.1);
+
+  /* Messages */
+  --message-user-background: rgba(0, 212, 255, 0.15);
+  --message-user-border: rgba(0, 212, 255, 0.3);
+  --message-assistant-background: rgba(255, 255, 255, 0.05);
+  --message-assistant-border: rgba(255, 255, 255, 0.1);
+
+  /* Typography */
+  --font-primary: 'SF Pro Display', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --font-mono: 'SF Mono', 'Monaco', 'Inconsolata', 'Roboto Mono', monospace;
+}
+
+/* The document shell adopts the primary surface so the app fills the viewport
+ * in-theme even before the widget mounts (no flash of an off-theme background). */
+html,
+body {
+  background: var(--background-primary);
+  color: var(--content-primary);
+  font-family: var(--font-primary);
+}

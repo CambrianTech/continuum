@@ -17,6 +17,7 @@
  * owns the view ([[headless-core-many-clients]], [[persona-is-a-client]]).
  */
 
+import './theme.css';
 import {
   Continuum,
   WebSocketTransport,

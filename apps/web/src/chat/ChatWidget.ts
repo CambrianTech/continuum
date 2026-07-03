@@ -46,34 +46,39 @@ export class ChatWidget extends LitElement {
   private _sendError = '';
 
   static override styles = css`
+    /* Styled ENTIRELY from the shared design tokens (apps/web/src/theme.css) — no
+     * hardcoded colors, so a theme swap is a :root override and the same token
+     * names port to other surfaces. */
     :host {
       display: grid;
       grid-template-rows: auto 1fr auto;
       height: 100%;
-      font: 14px/1.4 system-ui, sans-serif;
-      color: #e8e8ea;
-      background: #16161a;
+      font: 14px/1.45 var(--font-primary, system-ui, sans-serif);
+      color: var(--content-primary, #e0e6ed);
+      background: var(--widget-surface-solid, #1a1f2e);
     }
     header.room {
       display: flex;
       align-items: baseline;
       justify-content: space-between;
-      padding: 10px 14px;
-      border-bottom: 1px solid #2a2a30;
+      padding: var(--spacing-md) var(--spacing-lg);
+      border-bottom: 1px solid var(--border-subtle);
+      background: var(--widget-input-area-background);
     }
     .room-name {
       font-weight: 600;
       font-size: 15px;
+      color: var(--content-accent);
     }
     .room-meta {
       display: flex;
-      gap: 10px;
-      color: #9a9aa2;
+      gap: var(--spacing-sm);
+      color: var(--content-secondary);
       font-size: 12px;
     }
     .room-id {
       opacity: 0.5;
-      font-family: ui-monospace, monospace;
+      font-family: var(--font-mono);
     }
     .panels {
       display: grid;
@@ -81,9 +86,10 @@ export class ChatWidget extends LitElement {
       min-height: 0;
     }
     .who {
-      border-right: 1px solid #2a2a30;
+      border-right: 1px solid var(--border-subtle);
       overflow-y: auto;
-      padding: 8px 0;
+      padding: var(--spacing-sm) 0;
+      background: var(--sidebar-background);
     }
     ul {
       list-style: none;
@@ -94,17 +100,18 @@ export class ChatWidget extends LitElement {
       display: flex;
       align-items: center;
       gap: 6px;
-      padding: 5px 12px;
+      padding: 5px var(--spacing-md);
     }
     .member .dot {
       width: 7px;
       height: 7px;
       border-radius: 50%;
-      background: #444;
+      background: var(--status-offline);
       flex: none;
     }
     .member.active .dot {
-      background: #38c172;
+      background: var(--status-online);
+      box-shadow: 0 0 6px var(--status-online);
     }
     .member.idle {
       opacity: 0.55;
@@ -117,22 +124,23 @@ export class ChatWidget extends LitElement {
     .runtime {
       font-size: 10px;
       padding: 1px 5px;
-      border-radius: 6px;
-      background: #2a2a30;
-      color: #b7b7c0;
+      border-radius: var(--radius-md);
+      background: var(--button-secondary-background);
+      color: var(--content-accent);
+      border: 1px solid var(--border-accent);
     }
     .what {
       overflow-y: auto;
-      padding: 10px 14px;
+      padding: var(--spacing-md) var(--spacing-lg);
     }
     .empty {
-      color: #77777f;
-      padding: 24px 4px;
+      color: var(--content-secondary);
+      padding: var(--spacing-xl) var(--spacing-xs);
       text-align: center;
     }
     .messages .msg {
       display: flex;
-      gap: 8px;
+      gap: var(--spacing-sm);
       padding: 6px 0;
     }
     .msg-glyph {
@@ -141,41 +149,55 @@ export class ChatWidget extends LitElement {
     .msg-head {
       display: flex;
       align-items: baseline;
-      gap: 8px;
+      gap: var(--spacing-sm);
     }
     .sender {
       font-weight: 600;
     }
     .time {
-      color: #77777f;
+      color: var(--content-secondary);
       font-size: 11px;
     }
     .content {
       white-space: pre-wrap;
       word-break: break-word;
+      background: var(--message-assistant-background);
+      border: 1px solid var(--message-assistant-border);
+      border-radius: var(--radius-lg);
+      padding: var(--spacing-sm) var(--spacing-md);
+      margin-top: 3px;
     }
     form.compose {
       display: flex;
-      gap: 8px;
-      padding: 10px 14px;
-      border-top: 1px solid #2a2a30;
+      gap: var(--spacing-sm);
+      padding: var(--spacing-md) var(--spacing-lg);
+      border-top: 1px solid var(--border-subtle);
+      background: var(--widget-input-area-background);
     }
     input {
       flex: 1;
-      padding: 8px 10px;
-      border: 1px solid #2a2a30;
-      border-radius: 8px;
-      background: #1e1e24;
-      color: inherit;
+      padding: var(--spacing-sm) var(--spacing-md);
+      border: 1px solid var(--input-border);
+      border-radius: var(--radius-lg);
+      background: var(--input-background);
+      color: var(--input-text);
       font: inherit;
     }
+    input:focus {
+      outline: none;
+      border-color: var(--input-border-focus);
+    }
+    input::placeholder {
+      color: var(--input-placeholder);
+    }
     button {
-      padding: 8px 14px;
+      padding: var(--spacing-sm) var(--spacing-lg);
       border: 0;
-      border-radius: 8px;
-      background: #4a6cf7;
-      color: white;
+      border-radius: var(--radius-lg);
+      background: var(--button-primary-background);
+      color: var(--button-primary-text);
       font: inherit;
+      font-weight: 600;
       cursor: pointer;
     }
     button[disabled] {
@@ -183,14 +205,14 @@ export class ChatWidget extends LitElement {
       cursor: default;
     }
     .send-error {
-      color: #f77;
+      color: var(--content-error);
       font-size: 12px;
-      padding: 0 14px 8px;
+      padding: 0 var(--spacing-lg) var(--spacing-sm);
     }
     .connecting {
       display: grid;
       place-items: center;
-      color: #77777f;
+      color: var(--content-secondary);
     }
   `;
 
