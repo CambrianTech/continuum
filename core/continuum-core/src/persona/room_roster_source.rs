@@ -54,7 +54,9 @@ use std::time::Duration;
 use airc_core::PeerId;
 use airc_lib::{AircError, RoomMember};
 use async_trait::async_trait;
+use continuum_positron::RosterSlotView;
 
+use crate::ipc::positron_source::roster_slot_from_member;
 use crate::persona::rag_budget::{
     ContinuationCursor, RagContext, RagDelivery, RagItem, RagSource, ResolutionPreference,
 };
@@ -139,46 +141,47 @@ impl RoomRosterSource {
         Self { persona_id, reader }
     }
 
-    /// Short, stable fallback label when a peer has no alias — the first
-    /// 8 hex chars of its uuid. Never empty, never panics.
-    fn short_peer_label(peer: PeerId) -> String {
-        let s = peer.as_uuid().to_string();
-        s.chars().take(8).collect()
-    }
-
-    /// Format one present citizen as a roster line. The line is
-    /// human-readable on its own; the structured parts also ride in
-    /// metadata so prompt-assembly and sentinel verifiers can render /
-    /// trace without re-parsing the string.
+    /// Format one present citizen as a roster grounding line from the neutral
+    /// [`RosterSlotView`] the shared projection produced. The line is
+    /// human-readable on its own; the structured parts also ride in metadata
+    /// so prompt-assembly and sentinel verifiers can render / trace without
+    /// re-parsing the string.
     ///
-    /// Shape: `<name> [<runtime>]` plus ` — <availability>` when the
-    /// peer reported one. Examples: `Aria [persona]`,
-    /// `win-claude [claude] — Busy`.
-    fn format_line(name: &str, runtime: &str, availability: Option<String>) -> String {
+    /// Shape: `<name> [<runtime>]` plus ` — <availability>` when the peer
+    /// reported one. Examples: `Aria [persona]`, `win-claude [claude] — busy`
+    /// (availability is airc's neutral label, carried through the slot).
+    fn format_line(name: &str, runtime: &str, availability: Option<&str>) -> String {
         match availability {
             Some(avail) => format!("{name} [{runtime}] — {avail}"),
             None => format!("{name} [{runtime}]"),
         }
     }
 
-    fn make_item(
-        peer: PeerId,
-        name: String,
-        runtime: String,
-        availability: Option<String>,
-        last_seen_ms: u64,
-    ) -> RagItem {
-        let content = Self::format_line(&name, &runtime, availability.clone());
+    /// One present citizen → a grounding [`RagItem`], built from the SAME
+    /// neutral [`RosterSlotView`] the WS widget roster is built from (the
+    /// convergence #8/#13). Display name, runtime origin, availability and
+    /// recency are read off the slot — never re-derived here — so the persona
+    /// grounding and the widget roster can never disagree about who is present
+    /// or drop different fields.
+    fn make_item(slot: &RosterSlotView) -> RagItem {
+        let content = Self::format_line(
+            &slot.display_name,
+            &slot.provenance.runtime,
+            slot.availability.as_deref(),
+        );
         let tokens = estimate_tokens(&content);
         RagItem {
             content,
             tokens,
+            // The service-loop projection reads metadata["display_name"] to
+            // populate other_persona_names (single-party history-drop): keep
+            // the bare name here, matching the transcript sender name.
             metadata: serde_json::json!({
-                "peer_id": peer.as_uuid().to_string(),
-                "display_name": name,
-                "runtime": runtime,
-                "availability": availability,
-                "last_seen_ms": last_seen_ms,
+                "peer_id": slot.member_id.to_string(),
+                "display_name": slot.display_name,
+                "runtime": slot.provenance.runtime,
+                "availability": slot.availability,
+                "last_seen_ms": slot.last_seen_ms,
             }),
         }
     }
@@ -234,29 +237,23 @@ impl RagSource for RoomRosterSource {
         let mut items: Vec<RagItem> = Vec::new();
         let mut tokens_used: u32 = 0;
         for member in members {
-            // Exclude self — the roster grounds the persona in who is
-            // NOT itself. (room_roster includes self by design.)
+            // Exclude self — the roster grounds the persona in who is NOT
+            // itself. (room_roster includes self by design.) Self-exclusion is
+            // THIS source's own policy, applied before the shared projection —
+            // never baked into it (the widget roster keeps self).
             if member.peer_id == self_peer {
                 continue;
             }
-            // airc resolved the name; fall back to a short peer label for
-            // a present-but-unnamed peer so a citizen is never invisible.
-            let name = member
-                .display_name
-                .unwrap_or_else(|| Self::short_peer_label(member.peer_id));
-            let availability = member.availability.map(|a| format!("{a:?}"));
-            let item = Self::make_item(
-                member.peer_id,
-                name,
-                member.runtime,
-                availability,
-                member.last_seen_ms,
-            );
+            // The ONE `RoomMember` → neutral slot projection, the same the WS
+            // widget roster uses. Name fallback, runtime origin, availability
+            // label and recency all resolve there, once.
+            let slot = roster_slot_from_member(&member);
+            let item = Self::make_item(&slot);
             if tokens_used.saturating_add(item.tokens) > budget {
-                // Budget exhausted. Roster is unordered presence; we
-                // stop rather than paginate (atomic unit = one present
-                // citizen, no continuation). A truncated roster is
-                // still truthful for the citizens it names.
+                // Budget exhausted. Roster is unordered presence; we stop
+                // rather than paginate (atomic unit = one present citizen, no
+                // continuation). A truncated roster is still truthful for the
+                // citizens it names.
                 break;
             }
             tokens_used += item.tokens;
@@ -384,6 +381,39 @@ mod tests {
         assert!(delivery.continuation.is_none());
     }
 
+    // what this catches: THE convergence guarantee — the persona grounding now
+    // carries availability + recency (the liveness the WS widget rail used to
+    // DROP through `AircPresenceSlot`), because both rails build from the one
+    // shared `roster_slot_from_member`. A regression that stopped threading
+    // these through the shared projection would silently blind the persona to
+    // who is busy/away and how recently they were seen. Availability is airc's
+    // neutral snake_case label (`busy`), not Debug's `Busy`.
+    #[tokio::test]
+    async fn availability_and_recency_carry_through_shared_projection() {
+        use airc_lib::AgentAvailabilityState;
+        let me = PeerId::new();
+        let other = PeerId::new();
+        let busy = RoomMember {
+            peer_id: other,
+            display_name: Some("win-claude".to_string()),
+            runtime: "claude".to_string(),
+            availability: Some(AgentAvailabilityState::Busy),
+            last_seen_ms: 1_700_000_000_000,
+        };
+        let reader = Arc::new(StubReader::new(me, vec![busy]));
+        let source = RoomRosterSource::new(persona(), reader);
+        let delivery = source
+            .deliver(&ctx(), 1_000, ResolutionPreference::Raw)
+            .await;
+        assert_eq!(delivery.items.len(), 1);
+        assert_eq!(delivery.items[0].content, "win-claude [claude] — busy");
+        assert_eq!(delivery.items[0].metadata["availability"], "busy");
+        assert_eq!(
+            delivery.items[0].metadata["last_seen_ms"],
+            1_700_000_000_000_u64
+        );
+    }
+
     // what this catches: the persona must NOT appear in its own roster —
     // the block is "who is NOT me". A self-entry would re-introduce the
     // self/other confusion the source exists to remove.
@@ -406,11 +436,13 @@ mod tests {
         );
     }
 
-    // what this catches: a peer with no alias is still surfaced (short
-    // peer label), never silently dropped — an unnamed citizen is worse
-    // than a uuid-labelled one for grounding.
+    // what this catches: a peer with no alias is still surfaced, never
+    // silently dropped — an unnamed citizen is worse than a labelled one for
+    // grounding. After the convergence it uses the SAME provisional label the
+    // WS widget projection uses (`peer-XXXXXXXX`, via the shared
+    // roster_slot_from_member) — one fallback-label decision, not a second form.
     #[tokio::test]
-    async fn peer_without_alias_falls_back_to_short_label() {
+    async fn peer_without_alias_uses_shared_provisional_label() {
         let me = PeerId::new();
         let other = PeerId::new();
         let reader = Arc::new(StubReader::new(me, vec![member(other, "codex", None)]));
@@ -419,13 +451,13 @@ mod tests {
             .deliver(&ctx(), 1_000, ResolutionPreference::Raw)
             .await;
         assert_eq!(delivery.items.len(), 1);
-        let expected = other
-            .as_uuid()
-            .to_string()
-            .chars()
-            .take(8)
-            .collect::<String>();
-        assert!(delivery.items[0].content.contains(&expected));
+        let simple = other.as_uuid().simple().to_string();
+        let expected_label = format!("peer-{}", &simple[..8]);
+        assert_eq!(
+            delivery.items[0].content,
+            format!("{expected_label} [codex]"),
+            "unnamed peer uses the shared provisional label + its runtime origin"
+        );
     }
 
     // what this catches: empty room → empty delivery, no panic.

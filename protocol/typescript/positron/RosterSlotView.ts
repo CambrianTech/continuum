@@ -43,4 +43,25 @@ provenance: Provenance,
  * presence indicator off this bit — single source of truth in the
  * substrate.
  */
-active: boolean, };
+active: boolean, 
+/**
+ * Self-reported availability, transported **verbatim** from the
+ * producing substrate (`"ready"` / `"busy"` / `"away"` for the airc
+ * adopter) — the same neutral, not-interpreted discipline as
+ * [`Provenance::runtime`] and `integrations`. positron does NOT
+ * enumerate availability states (that would bake one framework's
+ * vocabulary into the generic package); it carries whatever the source
+ * reports and the app layer decides what it means for the roster line /
+ * UI. `None` = the member reported no availability — an honest unknown,
+ * never a fabricated state ([[fallbacks-are-illegal-fail-loud]]).
+ */
+availability?: string, 
+/**
+ * Unix-ms of the member's most recent presence heartbeat — the recency
+ * signal a roster uses to sort or age out members. `#[serde(default)]`
+ * so a slot serialized before this field folds as `0` (honest "recency
+ * unknown"), never a dropped or fabricated timestamp. `u64` → `number`
+ * (not `bigint`) to match the rest of the substrate's ms timestamps
+ * (`ChatMessageView.timestamp`).
+ */
+last_seen_ms: number, };

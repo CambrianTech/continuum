@@ -76,9 +76,7 @@ use continuum_positron::{
 };
 use serde::Deserialize;
 
-use crate::ipc::positron_source::{
-    resolve_identity, roster_slots_from, AircPresenceUpdate, PRESENCE_UPDATED,
-};
+use crate::ipc::positron_source::{resolve_identity, AircPresenceUpdate, PRESENCE_UPDATED};
 use crate::persona::wall_source::WallReader;
 use crate::runtime::{BusEvent, MessageBus};
 
@@ -226,7 +224,7 @@ fn classify(name: &str, payload: &serde_json::Value) -> Option<WallInput> {
             .map(|c| WallInput::Changed(c.room_id)),
         PRESENCE_UPDATED => serde_json::from_value::<AircPresenceUpdate>(body.clone())
             .ok()
-            .map(|u| WallInput::Presence(u.room_id, roster_slots_from(&u))),
+            .map(|u| WallInput::Presence(u.room_id, u.roster)),
         _ => None,
     }
 }
@@ -385,7 +383,8 @@ mod tests {
     use super::*;
     use airc_core::{PeerId, RoomId};
     use async_trait::async_trait;
-    use continuum_positron::SenderKind;
+    use crate::ipc::positron_source::{test_presence_payload, test_roster_slot};
+    use continuum_positron::{Provenance, SenderKind};
     use serde_json::json;
     use std::sync::Mutex;
 
@@ -434,20 +433,22 @@ mod tests {
     }
 
     fn presence_one(room: Uuid, member: Uuid, name: &str, kind: &str) -> serde_json::Value {
-        json!({
-            "roomId": room,
-            "roomName": "general",
-            "roster": [
-                {
-                    "memberId": member,
-                    "displayName": name,
-                    "kind": { "kind": kind },
-                    "integrations": { "continuum.persona_id": "asha-1" },
-                    "provenance": { "runtime": "claude" },
-                    "active": true,
-                }
-            ],
-        })
+        // Serialize the REAL typed slot via the shared helper — never a
+        // hand-authored JSON literal, so the test wire can't drift from
+        // `RosterSlotView`'s field names.
+        let kind: SenderKind = serde_json::from_value(json!({ "kind": kind })).unwrap();
+        let mut integrations = std::collections::BTreeMap::new();
+        integrations.insert("continuum.persona_id".to_string(), "asha-1".to_string());
+        test_presence_payload(
+            room,
+            vec![RosterSlotView {
+                integrations,
+                provenance: Provenance {
+                    runtime: "claude".to_string(),
+                },
+                ..test_roster_slot(member, name, kind)
+            }],
+        )
     }
 
     fn current_wall(substrate: &Substrate) -> WallViewState {
