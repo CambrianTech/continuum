@@ -108,6 +108,7 @@ impl IpcStream for TcpStream {
 
 pub mod diagnostics;
 pub mod positron_dispatch;
+pub mod positron_kanban_source;
 pub mod positron_presence;
 pub mod positron_source;
 pub mod positron_wall_source;

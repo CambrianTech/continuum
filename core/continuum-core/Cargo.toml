@@ -98,6 +98,12 @@ airc-protocol.workspace = true
 # is what the v5 owner-core migration (task #82) consumes today; the
 # rest of airc-lib is tree-shaken away from the build.
 airc-lib.workspace = true
+# airc-work: the work-board domain. The positron kanban projector
+# (`ipc/positron_kanban_source.rs`) reads `Airc::work_board()` and maps
+# airc's `WorkCard`/`LaneRecord`/`CardState` → the neutral
+# `KanbanViewState` contract. continuum-core is the ONLY crate that may
+# depend on airc-work; `continuum-positron` mirrors the enums instead.
+airc-work.workspace = true
 
 async-trait.workspace = true
 chrono.workspace = true
