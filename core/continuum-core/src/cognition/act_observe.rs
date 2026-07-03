@@ -25,7 +25,7 @@
 
 use uuid::Uuid;
 
-use super::workspace::{Decision, TurnMetrics, WorkspaceCycle};
+use super::workspace::{Burst, Decision, TurnFraming, TurnMetrics, WorkspaceCycle};
 use crate::ai::types::ToolCall;
 use crate::persona::types::{InboxMessage, SenderType};
 
@@ -66,6 +66,60 @@ pub struct SettleOutcome {
     /// to the accuracy grade — the same number a live turn could surface for the
     /// serving governor.
     pub metrics: TurnMetrics,
+    /// `Some(cause)` when the settle loop stopped because the deliberation model
+    /// call FAILED (timeout, 5xx, a serving lane refusing a model it isn't hosting)
+    /// rather than settling on a verdict. The grader MUST treat this as an
+    /// infrastructure failure — NOT a wrong answer — so an inference hiccup never
+    /// corrupts the accuracy metric ([[self-improvement-is-a-control-loop]]: the
+    /// reward is only as trustworthy as the metric). `None` on every settled turn.
+    pub inference_error: Option<String>,
+}
+
+/// The tail of the working-memory buffer SINCE the persona last settled (produced an
+/// utterance). Everything before the most recent [`WM_SETTLEMENT_PREFIX`] boundary
+/// belongs to a concern she already ANSWERED — an identical tool call over there is
+/// not a spin, so re-issuing it for the current concern is legitimate. This is the
+/// scope that separates "how many commands?" → answer → "list them again" (both emit
+/// `commands/list({})`, legitimately) from re-issuing the SAME call within one
+/// unanswered settling (the spin). Mirrors the `responded_through` boundary the
+/// `ActThenSpeak` test faculty tracks — content-driven, not a turn counter.
+fn entries_since_last_settlement(recent: &[String]) -> &[String] {
+    match recent
+        .iter()
+        .rposition(|e| e.starts_with(crate::cognition::working_memory::WM_SETTLEMENT_PREFIX))
+    {
+        Some(i) => &recent[i + 1..],
+        None => recent,
+    }
+}
+
+/// True when EVERY call in this batch has ALREADY been carried out SINCE THE LAST
+/// SETTLEMENT — the identical `(name, args)` already appears as a satisfied `I ran …`
+/// trace in the not-yet-answered tail of the working-memory recency channel. Keyed on
+/// the SAME `name(args)` rendering [`apply_act`] records below (`I ran {name}({args})`),
+/// so detection and recording can never drift; scoped to the current concern by
+/// [`entries_since_last_settlement`] so an identical call the mind already answered in
+/// a PRIOR concern (still lingering in the volatile buffer) does not false-trigger.
+///
+/// This is content-driven proprioception, NOT an iteration counter: it fires only on a
+/// byte-identical re-request whose result the mind already holds THIS concern —
+/// precisely the signal the `[action #n]` stamp shift was MEANT to convey but
+/// empirically does not. A greedy instruct model re-emits the identical `Act` despite
+/// the shifted window (proven live 2026-07-02 via `cognition/prompt`, nil-room eval:
+/// working memory carried `commands/list` + its full result and she re-issued
+/// `commands/list` on every act, never converting the result to an answer). A MIXED
+/// batch — any genuinely new call — is NOT a repeat: the new call yields new
+/// perception and must run.
+fn all_calls_already_satisfied(recent: &[String], calls: &[ToolCall]) -> bool {
+    if calls.is_empty() {
+        return false;
+    }
+    let scope = entries_since_last_settlement(recent);
+    calls.iter().all(|call| {
+        let args = serde_json::to_string(&call.input).unwrap_or_else(|_| "{}".to_string());
+        let signature = format!("I ran {}({})", call.name, args);
+        scope.iter().any(|trace| trace.contains(&signature))
+    })
 }
 
 /// Execute ONE `Act` verdict: run its calls through the persona's hands, admit
@@ -88,6 +142,44 @@ pub async fn apply_act(
     room_id: Uuid,
 ) -> Option<String> {
     let body = cycle.acting()?; // no hands → cannot act (and tools were never offered)
+
+    // Repeat-perception (proprioception, content-driven — NOT an agentic counter).
+    // If this exact batch was ALREADY carried out this settle, its result is already
+    // in working memory. Re-running it burns a tool round-trip + a redundant (content-
+    // deduped, so no-op) engram and returns byte-identical perception — off which a
+    // greedy instruct model re-emits the identical `Act` forever. The `[action #n]`
+    // stamp shift was supposed to break this and does not (see
+    // `all_calls_already_satisfied`). So do NOT re-execute: record an EXPLICIT
+    // "already satisfied — answer now" trace so the redundancy is PERCEIVED rather
+    // than merely present, and let the caller re-perceive. This decides nothing about
+    // WHAT she answers; it only stops her being blind to the fact she already acted —
+    // symmetric to the recency channel itself and the loop-filler dedup (context
+    // hygiene, not cognition steering; [[no-hardcoded-heuristics-to-steer-cognition]]).
+    let recent = body.working_memory.recent();
+    if all_calls_already_satisfied(&recent, calls) {
+        let names = calls
+            .iter()
+            .map(|c| {
+                let args = serde_json::to_string(&c.input).unwrap_or_else(|_| "{}".to_string());
+                format!("{}({})", c.name, args)
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        let nudge = format!(
+            "I already ran {names} this turn — the result is in my working memory above. \
+             Running it again returns nothing new. I have what I need; I should ANSWER the \
+             question now from that result instead of acting again."
+        );
+        body.working_memory.record_action(&nudge);
+        crate::probe!(
+            class = "persona.act.repeat_short_circuited",
+            persona = %body.persona_name,
+            room_id = %room_id,
+            calls = calls.len(),
+            "identical act already satisfied this turn — recorded answer-now proprioception, skipped re-execution"
+        );
+        return Some(nudge);
+    }
 
     let ctx = crate::cognition::tool_executor::ToolExecutionContext {
         persona_id: body.persona_id,
@@ -207,12 +299,12 @@ pub async fn apply_act(
 /// returned and the grader scores it as unfinished — never a fabricated answer.
 pub async fn drive_to_settle(
     cycle: &WorkspaceCycle,
-    world_state: impl Into<String>,
+    burst: impl Into<Burst>,
     room_id: Uuid,
     max_acts: usize,
-    directed: bool,
+    framing: TurnFraming,
 ) -> SettleOutcome {
-    let world = world_state.into();
+    let burst: Burst = burst.into();
     let mut acts = 0usize;
     // Fold each tick's deliberation cost in, so the settled outcome reports the
     // task's TOTAL speed/latency (a multi-act task pays for every generation).
@@ -225,7 +317,7 @@ pub async fn drive_to_settle(
         // `may_act = acts < max_acts` gates ACTING (not speaking): past the budget
         // she may still settle into a Speak, but a fresh Act is returned un-driven.
         let (step, step_metrics) =
-            settle_step(cycle, world.clone(), room_id, acts < max_acts, directed).await;
+            settle_step(cycle, burst.clone(), room_id, acts < max_acts, framing).await;
         if let Some(m) = step_metrics {
             metrics.accumulate(m);
         }
@@ -235,8 +327,9 @@ pub async fn drive_to_settle(
                     spoken: Some(text.clone()),
                     decision: Decision::Speak { text },
                     acts,
-                    world_state: world,
+                    world_state: burst.rendered.clone(),
                     metrics,
+                    inference_error: None,
                 };
             }
             SettleStep::Acted { .. } => {
@@ -260,8 +353,9 @@ pub async fn drive_to_settle(
                     decision: Decision::Act { calls, intent },
                     spoken: None,
                     acts,
-                    world_state: world,
+                    world_state: burst.rendered.clone(),
                     metrics,
+                    inference_error: None,
                 };
             }
             SettleStep::Passed => {
@@ -269,8 +363,24 @@ pub async fn drive_to_settle(
                     decision: Decision::Pass,
                     spoken: None,
                     acts,
-                    world_state: world,
+                    world_state: burst.rendered.clone(),
                     metrics,
+                    inference_error: None,
+                };
+            }
+            // The model call FAILED — no verdict this task. Return LOUD: carry the
+            // cause so the grader scores an infra failure, never a fabricated answer
+            // and never a silent `Pass` ([[fallbacks-are-illegal-fail-loud]]). We do
+            // not loop/retry here — the grader owns retry policy; the settle loop's
+            // job is to report the truth of THIS attempt.
+            SettleStep::InferenceFailed { error } => {
+                return SettleOutcome {
+                    decision: Decision::Pass,
+                    spoken: None,
+                    acts,
+                    world_state: burst.rendered.clone(),
+                    metrics,
+                    inference_error: Some(error),
                 };
             }
         }
@@ -298,6 +408,49 @@ pub enum SettleStep {
     /// She reached for an act that could NOT be carried out (no hands / executor
     /// error). No utterance; the intent rides along for honest logging/grading.
     ActUnfulfilled { calls: Vec<ToolCall>, intent: String },
+    /// The deliberation model call itself FAILED — a timeout, a 5xx, or the serving
+    /// lane refusing a model it isn't hosting (the swept-model bug). NO verdict was
+    /// produced. This is NOT a `Passed`: a failed model is not a chosen silence
+    /// ([[fallbacks-are-illegal-fail-loud]]). Every caller surfaces the cause LOUD —
+    /// the command reports `inferenceFailed`, the live heartbeat logs + retries next
+    /// tick, the eval grades it an infra failure — never a serene no-op that hides a
+    /// broken lane. `error` names the cause verbatim from the adapter.
+    InferenceFailed { error: String },
+}
+
+impl SettleStep {
+    /// Project a fully-driven [`SettleOutcome`] back onto the SAME `SettleStep` the
+    /// live heartbeat already handles — so a DIRECTED live turn can `drive_to_settle`
+    /// (converge to an answer in-turn, exactly as the eval path does) and feed the
+    /// result through the one existing turn handler, no parallel match.
+    ///
+    /// The mapping is total and lossless for the live handler's purposes:
+    ///   • `inference_error` present → `InferenceFailed` (a failed model is never a
+    ///     chosen silence — [[fallbacks-are-illegal-fail-loud]]);
+    ///   • `Speak`/`RaiseUnprompted` → `Spoke` (the prose reaches the room);
+    ///   • `Act` → `Acted` — the drive spent its whole act budget without settling on
+    ///     speech; the results are already in memory, so the live handler `continue`s
+    ///     and the metronome re-perceives next tick (the honest long-tail degrade, and
+    ///     the ONLY case a directed turn still leans on the tick loop);
+    ///   • `Pass` → `Passed` (she declined in her own words).
+    /// `drive_to_settle` collapses `WouldAct`/`ActUnfulfilled` into `Decision::Act`
+    /// before returning, so those never surface here — an over-budget or un-carried
+    /// act both land on `Acted`, which the live handler treats as "re-perceive next
+    /// tick", the correct move either way.
+    pub fn from_settled(outcome: SettleOutcome) -> (SettleStep, Option<TurnMetrics>) {
+        let metrics = Some(outcome.metrics);
+        if let Some(error) = outcome.inference_error {
+            return (SettleStep::InferenceFailed { error }, metrics);
+        }
+        let step = match outcome.decision {
+            Decision::Speak { text } | Decision::RaiseUnprompted { text } => {
+                SettleStep::Spoke(text)
+            }
+            Decision::Act { calls, intent } => SettleStep::Acted { calls, intent },
+            Decision::Pass => SettleStep::Passed,
+        };
+        (step, metrics)
+    }
 }
 
 /// ONE step of settlement — the single place a `Decision` becomes speech-or-action,
@@ -313,24 +466,39 @@ pub enum SettleStep {
 /// WouldAct`] without executing, so the budget gates acting while still letting a
 /// later step settle into a Speak.
 ///
-/// `directed` says whether this turn is addressed TO the persona (a question put to
-/// her — the eval exam, a direct @mention, a DM). It only reframes the silence
-/// affordance (see [`Workspace::directed_at_self`]): a directed turn withholds the
-/// bare-PASS escape so she does not ghost a question, while ambient turns keep
-/// silence first-class. The per-step motion is otherwise identical.
+/// [`TurnFraming`] says how this turn is framed: whether it is addressed TO the
+/// persona (a question put to her — the eval exam, a direct @mention, a DM) and
+/// whether it is her own self-initiated heartbeat. It only reshapes the system
+/// prompt (the silence affordance — see [`Workspace::directed_at_self`] — and the
+/// "your own time" framing); the per-step motion is otherwise identical. The
+/// burst itself is `impl Into<Burst>`: an attributed `Burst` (live/eval, carries
+/// authorship) or a raw `String`/`&str` (collapses to one opaque turn).
 pub async fn settle_step(
     cycle: &WorkspaceCycle,
-    world: String,
+    burst: impl Into<Burst>,
     room_id: Uuid,
     may_act: bool,
-    directed: bool,
+    framing: TurnFraming,
 ) -> (SettleStep, Option<TurnMetrics>) {
-    let ws = cycle.run_directed(world, room_id, directed).await;
+    let ws = cycle.run_framed(burst, room_id, framing).await;
     // The cost of THIS tick's deliberation generation — latency + tokens of the
     // model call behind the verdict. Carried out alongside the step so the caller
     // (the eval driver, or the live heartbeat) can accumulate per-turn speed and
     // latency without re-timing the brain. `None` when no verdict carried metrics.
     let metrics = ws.metrics();
+    // A FAILED model call is not a verdict and not a silence — surface it LOUD so no
+    // failure ever masquerades as a chosen `Pass` ([[fallbacks-are-illegal-fail-loud]]).
+    // Checked BEFORE the decision so a fault can never collapse into `Passed` (the
+    // swept-model bug: reassign changed the served model, the faculty still requested
+    // the old one, the lane refused, and the refusal read as serene silence).
+    if let Some(error) = ws.deliberation_fault() {
+        return (
+            SettleStep::InferenceFailed {
+                error: error.to_string(),
+            },
+            metrics,
+        );
+    }
     let step = match ws.decision().cloned() {
         Some(Decision::Act { calls, intent }) => {
             if !may_act {
@@ -343,6 +511,16 @@ pub async fn settle_step(
             }
         }
         Some(Decision::Speak { text }) | Some(Decision::RaiseUnprompted { text }) => {
+            // Mark the settlement in the volatile buffer: she produced an utterance, so
+            // the current concern is answered. This boundary is what lets the next
+            // concern legitimately re-issue a tool call identical to one used here
+            // without the repeat-perception guard mistaking it for a spin (and it reads
+            // as honest proprioception — "I already answered this" — next tick). Only
+            // when she has hands; a handless persona never spins on a tool.
+            if let Some(body) = cycle.acting() {
+                let head: String = text.chars().take(WM_ACTION_HEAD_CHARS).collect();
+                body.working_memory.record_settlement(&head);
+            }
             SettleStep::Spoke(text)
         }
         Some(Decision::Pass) | None => SettleStep::Passed,
@@ -683,7 +861,7 @@ mod tests {
         .with_acting(body_with_wm(exec.clone(), adm.clone(), Arc::clone(&wm)));
 
         let outcome =
-            drive_to_settle(&cycle, "[eval]\npeer: what is 2+2?", Uuid::new_v4(), 8, false).await;
+            drive_to_settle(&cycle, "[eval]\npeer: what is 2+2?", Uuid::new_v4(), 8, TurnFraming::ambient()).await;
 
         assert_eq!(outcome.acts, 1, "acted exactly once before settling");
         assert_eq!(outcome.spoken.as_deref(), Some("the answer is 4"));
@@ -704,7 +882,7 @@ mod tests {
         let cycle = WorkspaceCycle::new(vec![Arc::new(AlwaysAct)], Arc::new(SalienceArbiter), 8)
             .with_acting(body(exec.clone(), adm.clone()));
 
-        let outcome = drive_to_settle(&cycle, "go", Uuid::new_v4(), 2, false).await;
+        let outcome = drive_to_settle(&cycle, "go", Uuid::new_v4(), 2, TurnFraming::ambient()).await;
 
         assert_eq!(outcome.acts, 2, "spent exactly the observer's budget");
         assert!(
@@ -733,7 +911,7 @@ mod tests {
         let cycle = WorkspaceCycle::new(vec![Arc::new(AlwaysAct)], Arc::new(SalienceArbiter), 8)
             .with_acting(body(exec.clone(), adm.clone()));
 
-        let (deferred, _) = settle_step(&cycle, "go".into(), Uuid::new_v4(), false, false).await;
+        let (deferred, _) = settle_step(&cycle, "go", Uuid::new_v4(), false, TurnFraming::ambient()).await;
         assert!(
             matches!(deferred, SettleStep::WouldAct { .. }),
             "may_act=false defers the act"
@@ -743,7 +921,7 @@ mod tests {
             "a deferred act NEVER touches the executor"
         );
 
-        let (ran, _) = settle_step(&cycle, "go".into(), Uuid::new_v4(), true, false).await;
+        let (ran, _) = settle_step(&cycle, "go", Uuid::new_v4(), true, TurnFraming::ambient()).await;
         assert!(matches!(ran, SettleStep::Acted { .. }), "may_act=true runs it");
         assert!(
             exec.seen_context.lock().unwrap().is_some(),
@@ -913,7 +1091,7 @@ mod tests {
             "[eval]\npeer: where does the program start and what does it call?",
             Uuid::new_v4(),
             8,
-            false,
+            TurnFraming::ambient(),
         )
         .await;
 
@@ -936,6 +1114,56 @@ mod tests {
             adm.engram_count(),
             2,
             "each discovery became a durable memory the mind perceived next tick"
+        );
+    }
+
+    // what this catches: the repeat-perception short-circuit. An IDENTICAL, already-
+    // satisfied call this turn must NOT re-execute — the greedy re-emission that spun
+    // `commands/list` forever in the nil-room eval (proven live 2026-07-02): working
+    // memory already carried the result, yet the model re-issued the byte-identical
+    // call every act and never answered. `apply_act` now detects the satisfied
+    // `(name, args)` in working memory, skips the hand, and records an explicit
+    // "already ran it; answer now" proprioception so the redundancy is PERCEIVED rather
+    // than merely present via a stamp shift the greedy decode ignores. A MIXED batch (a
+    // genuinely new call) still runs — proven by
+    // `the_hands_change_the_mind_across_a_multi_act_investigation` (two DISTINCT calls
+    // both execute). Content-driven, not an iteration counter
+    // ([[persona-tool-loop-act-then-report]], [[no-hardcoded-heuristics-to-steer-cognition]]).
+    #[tokio::test]
+    async fn identical_already_satisfied_act_does_not_re_execute() {
+        // Two queued results: only the FIRST may ever be popped. If the identical
+        // second act reached the hand, the queue would drain by one more — the length
+        // assertion below catches exactly that.
+        let exec = Arc::new(ScriptedExecutor::new(["4\n", "SECOND-MUST-NOT-POP"]));
+        let adm = admission();
+        let wm = Arc::new(WorkingMemory::new(4));
+        let cycle = WorkspaceCycle::new(Vec::new(), Arc::new(SalienceArbiter), 8)
+            .with_acting(body_with_wm(exec.clone(), adm.clone(), Arc::clone(&wm)));
+        let room = Uuid::new_v4();
+
+        // First act genuinely runs; its result lands in working memory.
+        let first = apply_act(&cycle, &[tool_call()], "check the math", room)
+            .await
+            .expect("first act runs");
+        assert!(first.contains("code/run"), "first act names the tool it ran");
+        assert_eq!(
+            exec.results.lock().unwrap().len(),
+            1,
+            "first act popped exactly one result off the hand"
+        );
+
+        // Second, byte-identical act: already satisfied → short-circuit, no re-run.
+        let second = apply_act(&cycle, &[tool_call()], "check the math", room)
+            .await
+            .expect("short-circuit still returns Some — it counts as an act, honestly");
+        assert!(
+            second.contains("already ran"),
+            "records explicit answer-now proprioception instead of another result: {second}"
+        );
+        assert_eq!(
+            exec.results.lock().unwrap().len(),
+            1,
+            "the identical call NEVER reached the hand a second time (queue undrained)"
         );
     }
 
@@ -971,13 +1199,13 @@ mod tests {
         let room = Uuid::new_v4();
 
         // Concern A: act → observe → settle on a Speak.
-        let a = drive_to_settle(&cycle, "[eval]\npeer: concern A?", room, 8, false).await;
+        let a = drive_to_settle(&cycle, "[eval]\npeer: concern A?", room, 8, TurnFraming::ambient()).await;
         assert_eq!(a.acts, 1, "settled concern A after one act→observe");
         assert!(a.spoken.is_some(), "concern A got a spoken answer");
         assert_eq!(adm.engram_count(), 1, "concern A left exactly one memory");
 
         // Concern B on the SAME living mind — it must wake again, not stay halted.
-        let b = drive_to_settle(&cycle, "[eval]\npeer: a totally different concern B?", room, 8, false).await;
+        let b = drive_to_settle(&cycle, "[eval]\npeer: a totally different concern B?", room, 8, TurnFraming::ambient()).await;
         assert_eq!(
             b.acts, 1,
             "the mind RE-AWAKENED and acted on the new concern — not stuck post-settle"
@@ -987,6 +1215,76 @@ mod tests {
             adm.engram_count(),
             2,
             "continuity of self: concern-A memory persisted, concern B added its own"
+        );
+    }
+
+    /// what this catches: `SettleStep::from_settled` mis-projecting a driven
+    /// `SettleOutcome` onto the live turn handler — the seam that lets a DIRECTED
+    /// live turn `drive_to_settle` and feed the ONE existing turn match (no parallel
+    /// handler). A regression here would route a settled Speak to silence, hide an
+    /// inference failure behind a serene Pass ([[fallbacks-are-illegal-fail-loud]]),
+    /// or drop an over-budget Act instead of re-perceiving next tick.
+    fn outcome_with(decision: Decision, inference_error: Option<String>) -> SettleOutcome {
+        SettleOutcome {
+            spoken: match &decision {
+                Decision::Speak { text } | Decision::RaiseUnprompted { text } => {
+                    Some(text.clone())
+                }
+                _ => None,
+            },
+            decision,
+            acts: 0,
+            world_state: String::new(),
+            metrics: TurnMetrics::default(),
+            inference_error,
+        }
+    }
+
+    #[test]
+    fn from_settled_projects_every_terminal_outcome_onto_the_live_handler() {
+        // Speak → Spoke (the prose reaches the room).
+        let (step, m) = SettleStep::from_settled(outcome_with(
+            Decision::Speak {
+                text: "hello".into(),
+            },
+            None,
+        ));
+        assert!(matches!(step, SettleStep::Spoke(t) if t == "hello"));
+        assert!(m.is_some(), "metrics always carry through");
+
+        // RaiseUnprompted also speaks — initiative is still an utterance.
+        let (step, _) = SettleStep::from_settled(outcome_with(
+            Decision::RaiseUnprompted {
+                text: "idea".into(),
+            },
+            None,
+        ));
+        assert!(matches!(step, SettleStep::Spoke(t) if t == "idea"));
+
+        // Budget-spent Act → Acted (results already in memory; live handler
+        // re-perceives next tick — the honest long-tail degrade).
+        let (step, _) = SettleStep::from_settled(outcome_with(
+            Decision::Act {
+                calls: vec![],
+                intent: "kept gathering".into(),
+            },
+            None,
+        ));
+        assert!(matches!(step, SettleStep::Acted { .. }));
+
+        // Pass → Passed (chosen silence, honored).
+        let (step, _) = SettleStep::from_settled(outcome_with(Decision::Pass, None));
+        assert!(matches!(step, SettleStep::Passed));
+
+        // inference_error present → InferenceFailed, REGARDLESS of decision — a
+        // failed model is never a chosen silence.
+        let (step, _) = SettleStep::from_settled(outcome_with(
+            Decision::Pass,
+            Some("lane refused model".into()),
+        ));
+        assert!(
+            matches!(step, SettleStep::InferenceFailed { error } if error == "lane refused model"),
+            "an inference failure must surface LOUD, never collapse to Passed"
         );
     }
 }

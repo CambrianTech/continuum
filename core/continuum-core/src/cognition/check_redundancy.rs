@@ -68,7 +68,7 @@ const DEFAULT_REDUNDANCY_TEMPERATURE: f32 = 0.2;
 
 /// IPC request: ask the cognition service whether a draft response is
 /// redundant given the conversation so far.
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 #[ts(
     export,

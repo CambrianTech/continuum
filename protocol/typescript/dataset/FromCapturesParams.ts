@@ -31,4 +31,11 @@ personaId?: string,
 /**
  * Only convert captures from this room id.
  */
-roomId?: string, };
+roomId?: string, 
+/**
+ * Only convert turns on this skill axis: `"operational"` (the turn ACTED —
+ * emitted a tool call) or `"domain"` (prose/answer only). Omit for both. The
+ * chat-prose bridge passes `"domain"`; the dev-task/self-verify loop passes
+ * `"operational"`.
+ */
+skillAxis?: string, };

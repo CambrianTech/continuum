@@ -35,14 +35,21 @@ phase is a hypothesis — build it first.*
 **DONE — slice 1:** `cognition/eval` test-grades a task by RUNNING the model's code
 (`test_grade`, commit 64eadafe5); proven 3/3 on `docs/genome/coder-gym.jsonl`
 (add/reverse/fizzbuzz). **Reuse, don't reinvent (Joel):** load REAL benchmark task
-DATA via HuggingFace `datasets` (5.0.0, installed — the layer unsloth itself uses):
-HumanEval/MBPP/SWE-bench ship `{prompt, test, entry_point}` mapping straight onto our
-gym `{prompt, test}`. Offload dataset management + training (forge→unsloth) + the
-bare-model A/B (the gateway) to those systems; OURS is only the harness that runs the
-*persona* and test-grades it. **Remaining slices:** (a) HumanEval-via-HF-datasets
-loader → gym; (b) variance (×N) + bare-model A/B lane; (c) SANDBOX the code execution
-(container/seccomp) before any untrusted/public task — `test_grade` is temp-dir+timeout
-only today.
+DATA via HuggingFace `datasets` (the layer unsloth itself uses). Offload dataset
+management + training (forge→unsloth) + the bare-model A/B (the gateway) to those
+systems; OURS is only the harness that runs the *persona* and test-grades it.
+**DONE — slice (a):** `tools/scripts/prepare-humaneval-rs-gym.py` pulls the STANDARD
+HumanEval benchmark via HF `datasets` and emits `docs/genome/humaneval-rs.jsonl` (156
+`EvalTask`s), run by `cognition/eval --eval-set …` with no rebuild. **The language
+correction (don't re-assume):** the gym grades RUST (`gym_grader::test_grade` compiles
+with `rustc` — the persona ships Rust, codes on continuum which is Rust), so HumanEval
+maps on by SHAPE (`{prompt, test}`) but NOT by language. We therefore use MultiPL-E's
+Rust translation (`nuprl/MultiPL-E`, `humaneval-rs`) — comparable to that project's
+published per-model Rust pass@1, and it measures the skill she actually uses. Mapping
++ grader proven end-to-end offline (correct solution → exit 0; wrong → assert panic).
+**Remaining slices:** (b) variance (×N) + bare-model A/B lane + the first real persona
+baseline NUMBER on this set; (c) SANDBOX the code execution (container/seccomp) before
+any untrusted/public task — `test_grade` is temp-dir+timeout only today.
 
 ## P2 — The Causal Brain + Reliability (kill the barrier)
 

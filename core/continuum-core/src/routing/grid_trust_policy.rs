@@ -138,8 +138,11 @@ impl GridTrustAuthPolicy {
                 // Privileged→Trusted tier) but capped below Owner, so the most
                 // destructive ops stay the human operator's. Unforgeable remotely.
                 CallerSource::LocalPersona => TrustLevel::Trusted,
-                CallerSource::Airc | CallerSource::Tcp => {
-                    match self.trust_source.as_ref().and_then(|s| s.trust_of(c.peer_id)) {
+                // WS thin-client callers share the remote (non-owner) path: an
+                // unauthenticated socket carries a nil peer_id → no registered
+                // trust → Provisional. A future GH-auth handshake raises this.
+                CallerSource::Airc | CallerSource::Tcp | CallerSource::Ws => {
+                    match self.trust_source.as_ref().and_then(|s| s.trust_of(c.peer_id.as_uuid())) {
                         Some(registered) => registered.min(REMOTE_TRUST_CEILING),
                         None => TrustLevel::Provisional,
                     }
@@ -184,6 +187,10 @@ pub fn caller_trust(caller: Option<&CallerIdentity>) -> TrustLevel {
             // 2026-06-21). Stricter-than-airc (it has no verified peer) is a future
             // refinement; non-owner is the load-bearing guarantee.
             CallerSource::Tcp => AIRC_CALLER_CEILING,
+            // A WS thin-client caller is an unauthenticated socket — same remote
+            // Provisional ceiling as TCP (AiSafe surface, never Owner-gated) until
+            // the GH-auth handshake (task #29) authenticates the socket.
+            CallerSource::Ws => AIRC_CALLER_CEILING,
         },
     }
 }
@@ -247,7 +254,7 @@ mod tests {
     #[test]
     fn airc_caller_may_generate_but_not_privileged() {
         let policy = GridTrustAuthPolicy::new();
-        let airc = CallerIdentity::airc(Uuid::new_v4());
+        let airc = CallerIdentity::airc(crate::identity::PeerId::new());
 
         assert_eq!(
             policy.gate(&decision("ai/generate"), Some(&airc)),
@@ -299,7 +306,7 @@ mod tests {
         let policy = GridTrustAuthPolicy::with_trust_source(Arc::new(MockTrust(m)));
 
         // (1) Blocked peer — denied everything, INCLUDING ai/generate and ping.
-        let b = CallerIdentity::airc(blocked);
+        let b = CallerIdentity::airc(crate::identity::PeerId::from_uuid(blocked));
         assert!(matches!(
             policy.gate(&decision("ai/generate"), Some(&b)),
             Verdict::Forbidden { .. }
@@ -311,7 +318,7 @@ mod tests {
 
         // (2) Trusted peer — graduated (≥ Provisional), but Owner commands are
         // local-only: still forbidden data/delete.
-        let t = CallerIdentity::airc(trusted);
+        let t = CallerIdentity::airc(crate::identity::PeerId::from_uuid(trusted));
         assert_eq!(policy.gate(&decision("ai/generate"), Some(&t)), Verdict::Allowed);
         assert!(matches!(
             policy.gate(&decision("data/delete"), Some(&t)),
@@ -320,7 +327,7 @@ mod tests {
 
         // Owner-REGISTERED remote peer is CAPPED at Trusted → still forbidden the
         // Owner-only command. The owner is the operator on the box, never a peer.
-        let o = CallerIdentity::airc(owner_peer);
+        let o = CallerIdentity::airc(crate::identity::PeerId::from_uuid(owner_peer));
         assert!(
             matches!(policy.gate(&decision("data/delete"), Some(&o)), Verdict::Forbidden { .. }),
             "a remote peer is capped at Trusted — Owner-gated commands stay local-only"
@@ -328,7 +335,7 @@ mod tests {
 
         // (3) Unknown peer (not in the bridge) → Provisional default: ai/generate
         // allowed, Owner denied — the cross-grid default is preserved.
-        let u = CallerIdentity::airc(Uuid::new_v4());
+        let u = CallerIdentity::airc(crate::identity::PeerId::new());
         assert_eq!(policy.gate(&decision("ai/generate"), Some(&u)), Verdict::Allowed);
         assert!(matches!(
             policy.gate(&decision("data/delete"), Some(&u)),
@@ -345,7 +352,7 @@ mod tests {
     fn tcp_caller_is_remote_not_owner() {
         use crate::modules::grid::node::TrustLevel;
         let policy = GridTrustAuthPolicy::new();
-        let tcp = CallerIdentity::tcp(Uuid::new_v4());
+        let tcp = CallerIdentity::tcp(crate::identity::PeerId::new());
 
         assert_eq!(
             caller_trust(Some(&tcp)),
@@ -379,7 +386,7 @@ mod tests {
 
         // Baseline: a plain remote caller is denied ai/embedding (outside the
         // Provisional ai/generate namespace grant).
-        let plain = CallerIdentity::airc(Uuid::new_v4());
+        let plain = CallerIdentity::airc(crate::identity::PeerId::new());
         assert!(matches!(
             policy.gate(&decision("ai/embedding"), Some(&plain)),
             Verdict::Forbidden { .. }
@@ -387,7 +394,7 @@ mod tests {
 
         // Same caller, now carrying a verified grant conferring ai/embedding → the
         // signed contract authorizes it.
-        let granted = CallerIdentity::airc(Uuid::new_v4())
+        let granted = CallerIdentity::airc(crate::identity::PeerId::new())
             .with_granted_capabilities(vec!["ai/embedding".to_string()]);
         assert_eq!(
             policy.gate(&decision("ai/embedding"), Some(&granted)),
@@ -427,7 +434,7 @@ mod tests {
         m.insert(blocked, TrustLevel::Blocked);
         let policy = GridTrustAuthPolicy::with_trust_source(Arc::new(MockTrust(m)));
 
-        let b = CallerIdentity::airc(blocked)
+        let b = CallerIdentity::airc(crate::identity::PeerId::from_uuid(blocked))
             .with_granted_capabilities(vec!["ai/embedding".to_string()]);
         assert!(
             matches!(
@@ -448,7 +455,7 @@ mod tests {
     #[test]
     fn local_persona_is_trusted_runs_shell_but_not_owner_ops() {
         let policy = GridTrustAuthPolicy::new();
-        let asha = CallerIdentity::local_persona(Uuid::new_v4());
+        let asha = CallerIdentity::local_persona(crate::identity::PeerId::new());
 
         assert_eq!(
             caller_trust(Some(&asha)),
@@ -471,7 +478,7 @@ mod tests {
         );
 
         // A remote Provisional airc peer must NOT get bash — the RCE boundary.
-        let remote = CallerIdentity::airc(Uuid::new_v4());
+        let remote = CallerIdentity::airc(crate::identity::PeerId::new());
         assert!(
             matches!(policy.gate(&decision("code/shell"), Some(&remote)), Verdict::Forbidden { .. }),
             "a remote Provisional peer is denied shell — no cross-grid RCE"
@@ -488,7 +495,7 @@ mod tests {
         // None = substrate's own code.
         assert_eq!(policy.gate(&decision("data/delete"), None), Verdict::Allowed);
         // Local caller.
-        let local = CallerIdentity::local(Uuid::new_v4());
+        let local = CallerIdentity::local(crate::identity::PeerId::new());
         assert_eq!(
             policy.gate(&decision("data/delete"), Some(&local)),
             Verdict::Allowed
@@ -507,7 +514,7 @@ mod tests {
     #[test]
     fn ai_generate_is_a_provisional_namespace_grant() {
         let policy = GridTrustAuthPolicy::new();
-        let airc = CallerIdentity::airc(Uuid::new_v4());
+        let airc = CallerIdentity::airc(crate::identity::PeerId::new());
         for granted in ["ai/generate", "ai/generate/stream"] {
             assert_eq!(
                 policy.gate(&decision(granted), Some(&airc)),

@@ -602,6 +602,16 @@ impl crate::persona::room_doctrine_source::AircDoctrineReader for PersonaAircRun
 }
 
 #[async_trait::async_trait]
+impl crate::persona::wall_source::WallReader for PersonaAircRuntime {
+    async fn wall_posts(
+        &self,
+    ) -> Result<Vec<airc_core::doctrine::WallPostPublished>, AircError> {
+        // Whole board (all categories); the source filters/labels per post.
+        self.airc.wall_posts(None).await
+    }
+}
+
+#[async_trait::async_trait]
 impl crate::persona::active_work_source::AircWorkReader for PersonaAircRuntime {
     /// This persona's claimed cards, read from airc's work roster and filtered to
     /// its own peer — grounding reflects what IT owns, board-wide (all rooms).

@@ -203,7 +203,8 @@ mod tests {
     //! Each test corresponds to a "what if a future PR drifts this
     //! curve?" failure mode.
     use super::*;
-    use crate::genome::recall::{AcquireSource, PeerId};
+    use crate::genome::recall::AcquireSource;
+    use crate::identity::PeerId;
     use uuid::Uuid;
 
     // ─── grid_penalty curve ────────────────────────────────────
@@ -382,7 +383,7 @@ mod tests {
         assert!((tier_proximity_for(&local) - 0.3).abs() < 1e-6);
 
         let grid = ResidencyHint::GridPeer {
-            peer: PeerId::new(Uuid::nil()),
+            peer: PeerId::from_uuid(Uuid::nil()),
             est_latency_ms: 50,
         };
         let grid_score = tier_proximity_for(&grid);

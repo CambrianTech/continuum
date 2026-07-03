@@ -347,6 +347,19 @@ pub struct Model {
     /// Absent for cloud models.
     #[serde(default)]
     pub gguf_hint: Option<String>,
+    /// HF safetensors repo id for the *trainable* form of this model.
+    /// The GGUF (`gguf_hint` / `gguf_local_path`) is the SERVING artifact;
+    /// MLX/PEFT fine-tuning needs the original safetensors weights instead.
+    /// One canonical registry id (the row's `id`, GGUF-resolvable) threads all
+    /// three consumers: serving resolves the GGUF off this row, while training
+    /// (`mlx_lm.lora --model`) and the forge custodian's HF→PEFT→GGUF convert
+    /// resolve the safetensors dir THROUGH this field. Without it there is no
+    /// bridge from the canonical id to the HF cache and the training/convert
+    /// lanes can't locate base weights. Absent for cloud models (they expose
+    /// no local trainable form) and for serving-only local rows.
+    /// Example: "unsloth/Qwen2.5-0.5B-Instruct".
+    #[serde(default)]
+    pub hf_source: Option<String>,
     /// Resolved local filesystem path to the GGUF. Populated at registry
     /// load by the artifact resolver from `gguf_hint`, local model roots,
     /// or an explicit path if one exists. TOML should normally leave this
@@ -401,6 +414,18 @@ pub struct Model {
     /// EOS id in the GGUF at next bake; until then this is the bridge.
     #[serde(default)]
     pub stop_sequences: Vec<String>,
+    /// Total trained parameter count, as the artifact itself declares it
+    /// (`general.parameter_count` in the GGUF header, or the provider
+    /// `/v1/models` listing where one exposes it). `0` is the absent
+    /// sentinel — hydrated once at registry load from the authoritative
+    /// source and kept on the row, NEVER re-derived from a name substring
+    /// (`"4b"`, `"7b"`) at a call site. This is the size fact model-fit
+    /// selection reads to pick "the largest model that fits this host":
+    /// param count × bytes-per-param (the quant) is the weight footprint.
+    /// Cloud models whose API doesn't report a count stay at `0` — an
+    /// honest "unknown", not a guess.
+    #[serde(default)]
+    pub parameter_count: u64,
 }
 
 impl Model {
@@ -409,6 +434,13 @@ impl Model {
     /// check — see CLAUDE.md's adapter axiom.
     pub fn has(&self, cap: Capability) -> bool {
         self.capabilities.contains(&cap)
+    }
+
+    /// Parameter count expressed in billions for display / fit math, or
+    /// `None` when the count is the absent sentinel (`0`). Derived from the
+    /// stored authoritative count — never parsed from the model name.
+    pub fn parameter_count_billions(&self) -> Option<f32> {
+        (self.parameter_count > 0).then(|| self.parameter_count as f32 / 1e9)
     }
 }
 

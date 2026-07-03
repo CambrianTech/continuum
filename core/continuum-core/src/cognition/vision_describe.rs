@@ -30,7 +30,7 @@ use crate::model_registry::{self, Capability};
 use crate::runtime;
 
 /// Request shape for the `cognition/vision-describe` IPC.
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[ts(
     export,
     export_to = "../../../protocol/typescript/cognition/VisionDescribeRequest.ts"
@@ -49,7 +49,7 @@ pub struct VisionDescribeRequest {
 
 /// Per-call describe knobs. All optional — defaults give a concise prose
 /// description with no structured-extraction prompts.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[ts(
     export,
     export_to = "../../../protocol/typescript/cognition/VisionDescribeOptions.ts"

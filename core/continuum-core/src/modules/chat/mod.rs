@@ -44,16 +44,17 @@
 //! pattern from `MODULE-ARCHITECTURE.md` §5: commands call commands;
 //! modules don't know about each other beyond the command surface.
 
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use serde_json::{json, Value};
 use uuid::Uuid;
 
 use crate::runtime::{
-    command_executor::CommandExecutor,
-    CommandRequest, CommandResponse, CommandResult, ModuleConfig, ModulePriority, ServiceModule,
+    command_executor::CommandExecutor, CommandResult, LateBound, ModuleConfig, ModulePriority,
+    ServiceModule,
 };
+use crate::sdk_codegen::DynCommand;
 
 pub mod types;
 
@@ -84,7 +85,7 @@ pub struct ChatModule {
     /// via `install_executor` (the same path every other module uses).
     /// `with_executor` lets tests inject a custom chain without
     /// installing into the global registry.
-    executor_slot: RwLock<Option<Arc<CommandExecutor>>>,
+    executor_slot: Arc<LateBound<CommandExecutor>>,
 }
 
 impl ChatModule {
@@ -92,7 +93,7 @@ impl ChatModule {
     /// `start_server` via `ServiceModule::install_executor` (task #224).
     pub fn new() -> Self {
         Self {
-            executor_slot: RwLock::new(None),
+            executor_slot: Arc::new(LateBound::new("chat::executor")),
         }
     }
 
@@ -102,9 +103,22 @@ impl ChatModule {
     /// real cross-module call path without going through `start_server`.
     #[cfg(test)]
     pub fn with_executor(executor: Arc<CommandExecutor>) -> Self {
-        Self {
-            executor_slot: RwLock::new(Some(executor)),
-        }
+        let executor_slot = Arc::new(LateBound::new("chat::executor"));
+        executor_slot.install(executor);
+        Self { executor_slot }
+    }
+
+    /// Rebuild a chat module over an EXISTING late-bound executor slot.
+    /// A `ChatModule` is stateless apart from that slot, so the typed
+    /// `chat/*` [`ActionCommand`](crate::sdk_codegen::ActionCommand)s
+    /// capture the slot at `commands()` time and reconstruct the module
+    /// per call to reach the canonical [`poll`](Self::poll) /
+    /// [`send`](Self::send) implementation — there is ONE body, shared by
+    /// the command surface and the module's own tests. The slot is an
+    /// `Arc`, so this is a pointer clone, and it stays the SAME slot
+    /// `start_server` installs the executor into.
+    pub(crate) fn from_slot(executor_slot: Arc<LateBound<CommandExecutor>>) -> Self {
+        Self { executor_slot }
     }
 
     /// Resolve the executor for the current call. Panics if the
@@ -114,15 +128,11 @@ impl ChatModule {
     /// the panic message names the contract so the operator sees
     /// the actual problem.
     fn executor(&self) -> Arc<CommandExecutor> {
-        self.executor_slot
-            .read()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone()
-            .expect(
-                "ChatModule: CommandExecutor not installed — \
-                 start_server must call install_executor_on_all \
-                 before any chat command can dispatch (task #224)",
-            )
+        self.executor_slot.cloned().expect(
+            "ChatModule: CommandExecutor not installed — \
+             start_server must call install_executor_on_all \
+             before any chat command can dispatch (task #224)",
+        )
     }
 
     /// `chat/poll` — return recent messages, optionally filtered by
@@ -465,25 +475,24 @@ impl ServiceModule for ChatModule {
         command: &str,
         params: Value,
     ) -> Result<CommandResult, String> {
+        let _ = params;
         match command {
-            // ── Migrated commands ───────────────────────────────────
+            // ── Migrated to the typed object registry ───────────────
             //
-            // Every arm follows the same three-line pattern:
-            //   1. parse the envelope
-            //   2. run the typed handler
-            //   3. materialize the typed response
-
-            "chat/poll" | "collaboration/chat/poll" => {
-                let req = CommandRequest::<ChatPollParams>::from_value(params)?;
-                let result = self.poll(req.params).await?;
-                CommandResponse::ok(result).into_command_result()
-            }
-
-            "chat/send" | "collaboration/chat/send" => {
-                let req = CommandRequest::<ChatSendParams>::from_value(params)?;
-                let result = self.send(req.params).await?;
-                CommandResponse::ok(result).into_command_result()
-            }
+            // `chat/poll` + `chat/send` are now typed self-routing
+            // `ActionCommand`s (see `crate::commands::chat`) that route
+            // via `route_object` — the module contributes them through
+            // `commands()`, capturing this module's shared executor slot.
+            // Reaching this legacy path means a descriptor failed to
+            // register; fail loud naming the canonical command rather
+            // than silently re-handling. (Retired wholesale when
+            // Registry A's trait default becomes fail-loud — #63.)
+            "chat/poll" | "collaboration/chat/poll" | "chat/send"
+            | "collaboration/chat/send" => Err(format!(
+                "'{command}' is a migrated, typed chat command (chat/poll, chat/send) — it \
+                 must route via the object registry (route_object), not the legacy \
+                 handle_command path. Reaching here means its descriptor failed to register."
+            )),
 
             // ── Staged migration stubs ──────────────────────────────
             //
@@ -517,14 +526,23 @@ impl ServiceModule for ChatModule {
     }
 
     fn install_executor(&self, executor: Arc<CommandExecutor>) {
-        // Don't clobber a `with_executor()`-injected test executor.
-        let mut slot = self
-            .executor_slot
-            .write()
-            .unwrap_or_else(|e| e.into_inner());
-        if slot.is_none() {
-            *slot = Some(executor);
-        }
+        // `LateBound::install` silently no-ops when the slot is already
+        // filled, so a `with_executor()`-injected test executor is never
+        // clobbered — the original install wins, same contract as before.
+        self.executor_slot.install(executor);
+    }
+
+    /// The migrated `chat/poll` + `chat/send` commands as typed
+    /// self-routing objects on the ONE registry. Both capture this
+    /// module's shared late-bound executor slot (they reach `data/*` +
+    /// `airc/*` through it at run time) and delegate to the canonical
+    /// [`ChatModule::poll`] / [`ChatModule::send`] bodies. Their
+    /// `CommandSpec` descriptors flow into `command_registry()` → the
+    /// persona tool surface + grid ACL. (`chat/analyze` + `chat/export`
+    /// still own their TS implementations until their own follow-up PRs
+    /// — they are NOT contributed here.)
+    fn commands(&self) -> Vec<Arc<dyn DynCommand>> {
+        crate::commands::chat::command_objects(self.executor_slot.clone())
     }
 
     fn as_any(&self) -> &dyn std::any::Any {
@@ -868,48 +886,81 @@ mod tests {
         );
     }
 
-    // ── chat/poll: handler-level envelope wiring ──────────────────────
+    // ── chat/poll + chat/send: the typed object registry path ─────────
+    //
+    // These commands now route via `route_object` as typed
+    // `ActionCommand`s (`crate::commands::chat`), NOT the legacy
+    // `handle_command` envelope. The tests below prove the module
+    // contributes exactly those two objects, that invoking one reaches
+    // the shared executor slot and runs the canonical `ChatModule::poll`
+    // body, and that the retired legacy arms fail loud.
+
+    #[test]
+    fn commands_contributes_poll_and_send_objects() {
+        // what this catches: a regression that drops a command from the
+        // module's `commands()` (so it never reaches `command_registry()`,
+        // the persona tool surface, or the ACL) — or renames its wire key
+        // away from the canonical `chat/poll` / `chat/send`.
+        let names: Vec<&str> = ChatModule::new()
+            .commands()
+            .iter()
+            .map(|c| c.name())
+            .collect();
+        assert!(names.contains(&"chat/poll"), "missing chat/poll: {names:?}");
+        assert!(names.contains(&"chat/send"), "missing chat/send: {names:?}");
+        assert_eq!(
+            names.len(),
+            2,
+            "chat contributes exactly poll + send: {names:?}"
+        );
+    }
 
     #[tokio::test]
-    async fn handle_command_routes_chat_poll_through_typed_envelope() {
+    async fn typed_chat_poll_object_invokes_over_shared_slot() {
+        // what this catches: the typed `chat/poll` object must resolve the
+        // module's shared late-bound executor (via `from_slot`) and delegate
+        // to the canonical `ChatModule::poll` body — a regression that broke
+        // the shared slot (empty executor) or the delegation would fail here.
         let chat = chat_with_stubs(vec![Arc::new(StubDataModule::query_only(|_p| {
             json!({ "success": true, "data": [] })
         }))]);
+        let poll = chat
+            .commands()
+            .into_iter()
+            .find(|c| c.name() == "chat/poll")
+            .expect("chat/poll object must be contributed");
 
-        let raw = json!({
-            "limit": 7,
-        });
-        let result = chat
-            .handle_command("chat/poll", raw)
+        let result = poll
+            .invoke(json!({ "limit": 7 }), None)
             .await
-            .expect("typed dispatch must succeed");
-
+            .expect("typed chat/poll must succeed");
         let CommandResult::Json(value) = result else {
             panic!("chat/poll must return CommandResult::Json");
         };
-        assert_eq!(value["success"], true);
         assert_eq!(value["count"], 0);
         assert!(value["messages"].is_array());
     }
 
     #[tokio::test]
-    async fn handle_command_accepts_legacy_collaboration_prefix() {
-        let chat = chat_with_stubs(vec![Arc::new(StubDataModule::query_only(|_p| {
-            json!({ "success": true, "data": [] })
-        }))]);
-
-        // The legacy `collaboration/chat/poll` path must route to the
-        // same handler — that's the back-compat contract that lets TS
-        // consumers keep their existing wire calls working through the
-        // migration window.
-        let result = chat
-            .handle_command("collaboration/chat/poll", json!({}))
-            .await
-            .expect("legacy prefix must work");
-        let CommandResult::Json(value) = result else {
-            panic!("must return Json variant");
-        };
-        assert_eq!(value["success"], true);
+    async fn legacy_chat_arms_fail_loud() {
+        // what this catches: the legacy `handle_command` path for the
+        // migrated verbs must fail loud naming the command (never silently
+        // re-handle), so a descriptor that failed to register surfaces
+        // instead of a second implementation forking off the typed object.
+        let chat = ChatModule::new();
+        for command in [
+            "chat/poll",
+            "collaboration/chat/poll",
+            "chat/send",
+            "collaboration/chat/send",
+        ] {
+            let err = chat
+                .handle_command(command, json!({}))
+                .await
+                .expect_err("migrated chat arm must fail loud");
+            assert!(err.contains("migrated"), "got {err}");
+            assert!(err.contains(command), "got {err}");
+        }
     }
 
     // ════════════════════════════════════════════════════════════════
@@ -1361,61 +1412,10 @@ mod tests {
         );
     }
 
-    // ── End-to-end through handle_command ────────────────────────────
-
-    #[tokio::test]
-    async fn handle_command_routes_chat_send_through_typed_envelope() {
-        let chat = chat_with_stubs(vec![
-            Arc::new(StubDataModule::new(|_cmd, _p| Ok(json!({ "success": true })))),
-            Arc::new(StubAircModule::ok(airc_ok_response("evt-dispatch-001"))),
-        ]);
-
-        let raw = json!({
-            "roomId": Uuid::new_v4().to_string(),
-            "senderId": Uuid::new_v4().to_string(),
-            "text": "via handle_command",
-        });
-        let result = chat
-            .handle_command("chat/send", raw)
-            .await
-            .expect("typed dispatch must succeed");
-
-        let CommandResult::Json(value) = result else {
-            panic!("chat/send must return CommandResult::Json");
-        };
-        assert_eq!(value["success"], true);
-        assert!(
-            value["messageId"].as_str().is_some(),
-            "messageId at top level (flattened from ChatSendResult)"
-        );
-        assert_eq!(value["eventId"], "evt-dispatch-001");
-        assert!(
-            value.get("warning").is_none(),
-            "no warning on happy path: {value}"
-        );
-    }
-
-    #[tokio::test]
-    async fn handle_command_chat_send_accepts_legacy_collaboration_prefix() {
-        let chat = chat_with_stubs(vec![
-            Arc::new(StubDataModule::new(|_cmd, _p| Ok(json!({ "success": true })))),
-            Arc::new(StubAircModule::ok(airc_ok_response("evt-legacy-001"))),
-        ]);
-
-        let raw = json!({
-            "roomId": Uuid::new_v4().to_string(),
-            "senderId": Uuid::new_v4().to_string(),
-            "text": "via legacy prefix",
-        });
-        let result = chat
-            .handle_command("collaboration/chat/send", raw)
-            .await
-            .expect("legacy prefix must work for chat/send too");
-        let CommandResult::Json(value) = result else {
-            panic!("must return Json variant");
-        };
-        assert_eq!(value["success"], true);
-    }
+    // The `chat/send` typed-object path (module `commands()` contribution,
+    // shared-slot invocation, legacy fail-loud) is proven alongside `chat/poll`
+    // in the "typed object registry path" block above — both verbs share the
+    // same `command_objects` family and the same `handle_command` fail-loud arm.
 
     // ════════════════════════════════════════════════════════════════
     // Multi-persona concurrency stress tests — gated behind the

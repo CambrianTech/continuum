@@ -21,6 +21,7 @@ use crate::sdk_codegen::{ActionCommand, CommandError, Ctx, DynCommand};
 
 pub mod cpu;
 pub mod docker_tier_stats;
+pub mod launch_mode;
 pub mod memory;
 pub mod memory_budget;
 pub mod memory_gate;

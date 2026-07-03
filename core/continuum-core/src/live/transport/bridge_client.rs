@@ -351,6 +351,38 @@ impl LiveKitAgentManager {
         }
     }
 
+    /// Publish an RGBA avatar frame through a persona's LiveKit video track.
+    ///
+    /// The bridge lazily creates the `NativeVideoSource` + `LocalVideoTrack` on
+    /// the first frame (see `Agent::publish_video_frame`), so no explicit track
+    /// setup is needed here — the pump just streams frames as the Bevy renderer
+    /// produces them. RGBA→I420 conversion happens bridge-side (the only process
+    /// that links webrtc). Binary payload = raw RGBA bytes; the bridge trusts
+    /// `width`/`height` to interpret them.
+    pub async fn publish_video_frame(
+        &self,
+        call_id: &str,
+        user_id: &str,
+        rgba: &[u8],
+        width: u32,
+        height: u32,
+    ) -> Result<(), String> {
+        let resp = self.send_command(
+            BridgeCommand::PublishVideoFrame {
+                call_id: call_id.to_string(),
+                user_id: user_id.to_string(),
+                width,
+                height,
+            },
+            Some(rgba),
+        )?;
+        if resp.success {
+            Ok(())
+        } else {
+            Err(resp.error.unwrap_or_default())
+        }
+    }
+
     pub async fn add_ambient_source(
         &self,
         call_id: &str,

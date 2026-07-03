@@ -6,6 +6,16 @@ import type { CommandInfo } from "./CommandInfo";
  */
 export type CommandsListResult = { 
 /**
+ * How many commands matched — declared FIRST so it serializes at the head of
+ * the JSON (`{"total":N,...}`). A broad `commands/list` result is large and the
+ * act→observe fold truncates it to `RESULT_FOLD_MAX_CHARS`; putting the count
+ * first means "how many commands are available?" is answerable straight from the
+ * result head even when the `commands` array is clipped. Compute-once, present
+ * legibly (the compression principle) — never make the reader tally the array,
+ * which a smaller persona model cannot do reliably from a truncated dump.
+ */
+total: number, 
+/**
  * Every command in the registry (optionally filtered), sorted by name.
  */
 commands: Array<CommandInfo>, };

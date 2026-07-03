@@ -25,11 +25,22 @@
 //!   answer [`ReclaimStatus::Released`] with the exact footprint, and the
 //!   governor shrinks the lease by that scan-confirmed delta.
 //!
-//! This is whole-lease-granular by construction: serving's lease *is* the active
-//! model, and suppress frees the whole thing. A future tier-down (swap to a
-//! smaller base under pressure and report [`ReclaimStatus::Partial`]) is the
-//! upgrade/downgrade seam noted in [`crate::resources`]; it slots in here without
-//! changing the trait, but suppress-and-unload is the honest first lever.
+//! # The gentler lever: tier-down instead of going dark
+//!
+//! Suppress-and-unload is whole-lease-granular — serving goes dark until a
+//! re-load. Under [`Pressure`] there is a gentler answer: re-home to a SMALLER
+//! base ([`pin`] the target so the daemon's reconcile swaps to it, #105), keep
+//! answering, and report [`ReclaimStatus::Partial`] with only the freed delta
+//! (old resident − new resident). WHICH smaller model — if any — is a decision,
+//! and it is not baked in here: an injected [`TierDownPolicy`] chooses, and the
+//! same async handshake carries out whatever it picks (decline → full unload;
+//! choose → pin + Partial). See [`super::serving_tier_down`]. `Shutdown` and
+//! `Rebalance` skip the policy — both want the lease gone from this box, which a
+//! smaller model here does not serve.
+//!
+//! [`Pressure`]: crate::resources::ReclaimReason::Pressure
+//! [`pin`]: ServingConsumer::pin_model
+//! [`TierDownPolicy`]: super::serving_tier_down::TierDownPolicy
 //!
 //! # No new task, no parallel allocator
 //!
@@ -48,57 +59,93 @@ use parking_lot::Mutex;
 use tokio::sync::watch;
 
 use crate::inference::llama_server::ServingSnapshot;
+use crate::modules::serving_tier_down::{TierDownContext, TierDownPolicy};
 use crate::resources::{
     ConsumerFootprint, ReclaimOutcome, ReclaimReason, ReclaimRequest, ReclaimStatus,
     ResourceConsumer, ResourceKind,
 };
 
-/// Resolves an active model id to its resident VRAM bytes. The daemon supplies
-/// this from its live catalog + footprint estimator (the same numbers that feed
-/// the serving plan — one footprint authority, not two). Injectable so the
-/// consumer is testable without a populated registry.
-pub type FootprintFn = Arc<dyn Fn(&str) -> u64 + Send + Sync>;
+/// Resolves an active model id + its live serving shape (served per-slot window,
+/// lane count) to its TOTAL resident VRAM bytes — weights PLUS the KV-cache of
+/// every lane at that window (#79). The daemon supplies this from its live
+/// catalog + footprint estimator (the same numbers that feed the serving plan —
+/// one footprint authority, not two). The window/lanes come from the
+/// [`ServingSnapshot`] (llama.cpp's own `/props` truth), never a recomputed plan
+/// value. Injectable so the consumer is testable without a populated registry.
+pub type FootprintFn = Arc<dyn Fn(&str, u32, u32) -> u64 + Send + Sync>;
 
 /// The `consumer_id` serving's leases carry. Matches the id the acquire-on-load
 /// half will mint leases under, so the authority's asks route back here.
 pub const SERVING_CONSUMER_ID: &str = "serving";
 
+/// A reclaim serving has scheduled and is waiting for the snapshot to confirm.
+/// Keyed (in [`ServingConsumer::pending`]) by the OLD model id that must vanish
+/// from the snapshot before we report freed — a full unload clears it; a
+/// tier-down swaps it for the smaller model, so either way the old id leaving is
+/// the confirmation that the async cleanup landed.
+struct Pending {
+    /// Bytes to report freed once it lands. Full unload → the whole footprint;
+    /// tier-down → the delta (old resident − new resident, since serving still
+    /// holds the smaller model).
+    freed_on_land: u64,
+    /// The terminal disposition once it lands. `Released` when serving now holds
+    /// nothing (unload); `Partial` when it shrank but still holds the smaller
+    /// model (tier-down).
+    status_on_land: ReclaimStatus,
+}
+
 /// Serving's [`ResourceConsumer`] adapter — see the module docs.
 pub struct ServingConsumer {
     /// Live serving state: which model is active + ready. Read (never blocks) to
-    /// report footprint and to confirm an unload actually landed.
+    /// report footprint and to confirm an unload/swap actually landed.
     serving: watch::Receiver<ServingSnapshot>,
-    /// The free seam: insert an id → the daemon unloads it next reconcile.
+    /// The full-unload seam: insert an id → the daemon unloads it next reconcile.
     suppress: watch::Sender<Arc<HashSet<String>>>,
-    /// active model id → resident VRAM bytes.
+    /// The re-home seam: set a smaller model id → the daemon's reconcile swaps to
+    /// it (candidates intersect to the pin), freeing the delta without going dark
+    /// (#105). The tier-down lever.
+    pin: watch::Sender<Option<String>>,
+    /// active model id + live shape → resident VRAM bytes (weights + per-lane KV).
     footprint_of: FootprintFn,
-    /// Models we've suppressed and are waiting to confirm freed, with the bytes
-    /// we expect to reclaim once the snapshot shows them gone. Brief-locked; no
+    /// The swappable intelligence that chooses whether/where to tier down under
+    /// pressure. `DeclineTierDown` until a real selection policy is authored — the
+    /// consumer's handshake is identical regardless.
+    tier_down: Arc<dyn TierDownPolicy>,
+    /// Reclaims we've scheduled and are waiting to confirm freed. Brief-locked; no
     /// await is ever held across this guard.
-    pending: Mutex<HashMap<String, u64>>,
+    pending: Mutex<HashMap<String, Pending>>,
 }
 
 impl ServingConsumer {
     pub fn new(
         serving: watch::Receiver<ServingSnapshot>,
         suppress: watch::Sender<Arc<HashSet<String>>>,
+        pin: watch::Sender<Option<String>>,
         footprint_of: FootprintFn,
+        tier_down: Arc<dyn TierDownPolicy>,
     ) -> Self {
         Self {
             serving,
             suppress,
+            pin,
             footprint_of,
+            tier_down,
             pending: Mutex::new(HashMap::new()),
         }
     }
 
-    /// The model the box is serving right now, if any is fully live. `None` while
+    /// The model the box is serving right now WITH the shape needed to size its
+    /// residency: `(model_id, served_per_slot_window, lanes)`. `None` while
     /// nothing is loaded or a load is still coming ready — in both cases serving
-    /// holds no reclaimable VRAM yet.
-    fn active_ready(&self) -> Option<String> {
+    /// holds no reclaimable VRAM yet. The window + lane count are the process's
+    /// own truth (from the snapshot's `/props` read), so the KV term is charged
+    /// against what is actually resident, never a recomputed plan value.
+    fn active_ready(&self) -> Option<(String, u32, u32)> {
         let snap = self.serving.borrow();
         if snap.ready {
-            snap.active_model.clone()
+            snap.active_model
+                .clone()
+                .map(|id| (id, snap.served_context_window, snap.lanes))
         } else {
             None
         }
@@ -116,6 +163,17 @@ impl ServingConsumer {
             }
         });
     }
+
+    /// Force-pin `id` (the re-home target), so the daemon's reconcile intersects
+    /// its candidates to that one model and swaps to it — the tier-down carry-out.
+    /// Unlike suppress this does NOT go dark: the daemon serves the smaller model.
+    fn pin_model(&self, id: &str) {
+        self.pin.send_modify(|p| {
+            if p.as_deref() != Some(id) {
+                *p = Some(id.to_string());
+            }
+        });
+    }
 }
 
 #[async_trait]
@@ -126,12 +184,12 @@ impl ResourceConsumer for ServingConsumer {
 
     fn footprint(&self) -> Vec<ConsumerFootprint> {
         match self.active_ready() {
-            Some(id) => {
-                let bytes = (self.footprint_of)(&id);
+            Some((id, window, lanes)) => {
+                let bytes = (self.footprint_of)(&id, window, lanes);
                 vec![ConsumerFootprint {
                     kind: ResourceKind::Vram,
                     bytes,
-                    detail: format!("{id} weights resident"),
+                    detail: format!("{id} weights+KV resident ({lanes} lane(s) × {window} ctx)"),
                 }]
             }
             None => Vec::new(),
@@ -148,49 +206,116 @@ impl ResourceConsumer for ServingConsumer {
             ));
         }
 
-        // First: did an unload we already scheduled now land? If the snapshot no
-        // longer shows a model we suppressed, the GPU released it — report the
-        // exact footprint we cached and clear it. This is the Deferred→Released
-        // transition the authority re-asks for.
+        // First: did a reclaim we already scheduled now land? If the snapshot no
+        // longer shows the OLD model (unload cleared it, or a tier-down swapped it
+        // for the smaller one), the async cleanup landed — report the cached freed
+        // bytes with its cached disposition and clear it. This is the
+        // Deferred→(Released|Partial) transition the authority re-asks for.
         {
             let mut pending = self.pending.lock();
             if !pending.is_empty() {
                 let active = self.active_ready();
+                let active_id = active.as_ref().map(|(id, _, _)| id.as_str());
                 let landed: Vec<String> = pending
                     .keys()
-                    .filter(|id| active.as_deref() != Some(id.as_str()))
+                    .filter(|id| active_id != Some(id.as_str()))
                     .cloned()
                     .collect();
                 if !landed.is_empty() {
-                    let freed: u64 = landed.iter().filter_map(|id| pending.remove(id)).sum();
+                    let mut freed = 0u64;
+                    // Released only if EVERY landed reclaim fully released; a
+                    // tier-down landing means serving still holds the smaller
+                    // model, so the honest aggregate is Partial.
+                    let mut status = ReclaimStatus::Released;
+                    for id in &landed {
+                        if let Some(p) = pending.remove(id) {
+                            freed = freed.saturating_add(p.freed_on_land);
+                            if p.status_on_land == ReclaimStatus::Partial {
+                                status = ReclaimStatus::Partial;
+                            }
+                        }
+                    }
+                    let detail = match status {
+                        ReclaimStatus::Partial => "tier-down landed — VRAM partially freed",
+                        _ => "unload landed — VRAM released",
+                    };
                     return ReclaimOutcome {
                         freed_bytes: freed,
-                        status: ReclaimStatus::Released,
-                        detail: Some("unload landed — VRAM released".into()),
+                        status,
+                        detail: Some(detail.into()),
                     };
                 }
                 // Still in flight — honest backpressure, re-ask next tick.
                 return ReclaimOutcome {
                     freed_bytes: 0,
                     status: ReclaimStatus::Deferred,
-                    detail: Some("unload in flight".into()),
+                    detail: Some("cleanup in flight".into()),
                 };
             }
         }
 
-        // Nothing pending → start an unload of the active model to free its whole
-        // footprint. Whole-lease-granular: serving's lease IS the active model.
-        let Some(active) = self.active_ready() else {
+        // Nothing pending → decide the lever. We need the active model + its live
+        // shape to size what we hold.
+        let Some((active, window, lanes)) = self.active_ready() else {
             // We hold nothing reclaimable — already free, honestly zero.
             return ReclaimOutcome::released(0);
         };
-        let expect = (self.footprint_of)(&active);
-        self.suppress_model(&active);
-        self.pending.lock().insert(active.clone(), expect);
+        let current = (self.footprint_of)(&active, window, lanes);
 
-        // Shutdown wants everything gone but the unload is still async — Deferred
-        // is the honest first answer regardless of reason; the GPU has not
-        // released yet. The authority re-asks and gets Released once it lands.
+        // Under Pressure another peer needs room NOW but serving need not go dark:
+        // offer the tier-down policy the chance to re-home to a smaller base and
+        // free only the delta. Shutdown wants everything gone; Rebalance is moving
+        // the lease OFF this box — a smaller model here serves neither, so both
+        // skip straight to the full unload.
+        if request.reason == ReclaimReason::Pressure {
+            let ctx = TierDownContext {
+                active_model: &active,
+                current_bytes: current,
+                served_window: window,
+                lanes,
+                request: &request,
+            };
+            if let Some(td) = self.tier_down.choose(&ctx) {
+                // Trust the policy's target but VERIFY it is a genuine shrink to a
+                // real model — never carry out a phantom or a lateral/up "tier
+                // down" (fail loud by declining to the honest full unload).
+                if !td.target_model.is_empty() && td.resident_after < current {
+                    let freed = current - td.resident_after;
+                    self.pin_model(&td.target_model);
+                    self.pending.lock().insert(
+                        active.clone(),
+                        Pending {
+                            freed_on_land: freed,
+                            status_on_land: ReclaimStatus::Partial,
+                        },
+                    );
+                    return ReclaimOutcome {
+                        freed_bytes: 0,
+                        status: ReclaimStatus::Deferred,
+                        detail: Some(format!(
+                            "tier-down {active} → {} scheduled (frees {freed} bytes)",
+                            td.target_model
+                        )),
+                    };
+                }
+                // Non-shrinking proposal → ignore it, fall through to full unload.
+            }
+        }
+
+        // No tier-down → unload the active model to free its whole footprint.
+        // Whole-lease-granular: serving's lease IS the active model.
+        self.suppress_model(&active);
+        self.pending.lock().insert(
+            active.clone(),
+            Pending {
+                freed_on_land: current,
+                status_on_land: ReclaimStatus::Released,
+            },
+        );
+
+        // The unload is still async — Deferred is the honest first answer
+        // regardless of reason; the GPU has not released yet. The authority
+        // re-asks and gets Released once it lands.
         let detail = match request.reason {
             ReclaimReason::Shutdown => "shutdown unload scheduled",
             _ => "unload scheduled",
@@ -206,22 +331,51 @@ impl ResourceConsumer for ServingConsumer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::modules::serving_tier_down::{DeclineTierDown, TierDown};
 
     // A hand-driven serving snapshot + suppress pair, standing in for the daemon.
     // The test plays the daemon's role: when it sees a model suppressed, it
     // "unloads" by clearing the snapshot — exactly what the real reconcile does,
-    // minus the multi-second llama-server kill.
+    // minus the multi-second llama-server kill. Wired with `DeclineTierDown`, so
+    // the only lever is a full unload — the tier-down path has its own rig below.
     fn rig(active: &str, bytes: u64) -> (ServingConsumer, watch::Sender<ServingSnapshot>) {
         let (serving_tx, serving_rx) = watch::channel(ServingSnapshot {
             active_model: Some(active.to_string()),
             ready: true,
             base_url: "http://localhost:0/v1".into(),
             adapters: Vec::new(),
+            served_context_window: 11008,
+            lanes: 4,
         });
         let (suppress_tx, _srx) = watch::channel(Arc::new(HashSet::new()));
-        let footprint_of: FootprintFn = Arc::new(move |_id: &str| bytes);
-        let consumer = ServingConsumer::new(serving_rx, suppress_tx, footprint_of);
+        let (pin_tx, _prx) = watch::channel(None);
+        // Flat resident estimate — the shape (window, lanes) is ignored here so the
+        // reclaim handshake tests assert against a stable footprint. The test that
+        // the window/lanes actually REACH this fn lives separately below.
+        let footprint_of: FootprintFn = Arc::new(move |_id: &str, _window: u32, _lanes: u32| bytes);
+        let consumer = ServingConsumer::new(
+            serving_rx,
+            suppress_tx,
+            pin_tx,
+            footprint_of,
+            Arc::new(DeclineTierDown),
+        );
         (consumer, serving_tx)
+    }
+
+    /// A tier-down policy that always proposes re-homing to a fixed smaller model
+    /// at a fixed resident size — the outlier that exercises the Partial handshake.
+    struct AlwaysTierDown {
+        target: String,
+        resident_after: u64,
+    }
+    impl TierDownPolicy for AlwaysTierDown {
+        fn choose(&self, _ctx: &TierDownContext) -> Option<TierDown> {
+            Some(TierDown {
+                target_model: self.target.clone(),
+                resident_after: self.resident_after,
+            })
+        }
     }
 
     fn ask() -> ReclaimRequest {
@@ -258,6 +412,59 @@ mod tests {
         assert!(consumer.footprint().is_empty());
     }
 
+    // what this catches: the served per-slot window AND lane count from the live
+    // snapshot reach the FootprintFn, so serving's residency is charged as
+    // weights + lanes × KV(window) — not weights alone (the pre-#79 under-report
+    // that let serving's own KV masquerade as external contention on the board).
+    // If active_ready() dropped either the window or the lanes, the resident
+    // estimate would collapse back to weights-only and this fails.
+    #[tokio::test]
+    async fn footprint_passes_served_window_and_lanes_to_resolver() {
+        let seen: Arc<Mutex<Option<(String, u32, u32)>>> = Arc::new(Mutex::new(None));
+        let seen_w = seen.clone();
+        let (serving_tx, serving_rx) = watch::channel(ServingSnapshot {
+            active_model: Some("coder-14b".into()),
+            ready: true,
+            base_url: "http://localhost:0/v1".into(),
+            adapters: Vec::new(),
+            served_context_window: 11008,
+            lanes: 3,
+        });
+        let footprint_of: FootprintFn = Arc::new(move |id: &str, window: u32, lanes: u32| {
+            *seen_w.lock() = Some((id.to_string(), window, lanes));
+            // weights(1000) + lanes × kv_per_token(10) × window
+            1000 + lanes as u64 * 10 * window as u64
+        });
+        let (suppress_tx, _srx) = watch::channel(Arc::new(HashSet::new()));
+        let (pin_tx, _prx) = watch::channel(None);
+        let consumer = ServingConsumer::new(
+            serving_rx,
+            suppress_tx,
+            pin_tx,
+            footprint_of,
+            Arc::new(DeclineTierDown),
+        );
+
+        let fp = consumer.footprint();
+        assert_eq!(fp.len(), 1);
+        assert_eq!(
+            *seen.lock(),
+            Some(("coder-14b".into(), 11008, 3)),
+            "the snapshot's window + lane count must reach the resolver"
+        );
+        assert_eq!(fp[0].bytes, 1000 + 3 * 10 * 11008, "resident folds per-lane KV");
+        assert!(fp[0].detail.contains("3 lane(s) × 11008 ctx"));
+
+        // A re-home to a single lane at a smaller window shrinks the charged KV.
+        serving_tx.send_modify(|s| {
+            s.lanes = 1;
+            s.served_context_window = 4096;
+        });
+        let fp = consumer.footprint();
+        assert_eq!(*seen.lock(), Some(("coder-14b".into(), 4096, 1)));
+        assert_eq!(fp[0].bytes, 1000 + 1 * 10 * 4096);
+    }
+
     // what this catches: the honest Deferred→Released handshake across an async
     // unload. Serving must NOT claim bytes freed on the first ask (the VRAM is
     // still resident until the reconcile lands) — claiming early is exactly the
@@ -291,6 +498,129 @@ mod tests {
         let fourth = consumer.reclaim(ask()).await;
         assert_eq!(fourth.status, ReclaimStatus::Released);
         assert_eq!(fourth.freed_bytes, 0);
+    }
+
+    // Build a consumer with an injected tier-down policy, exposing the pin
+    // receiver so the test can watch the re-home target the consumer sets. Plays
+    // the daemon's role by hand — no llama-server, no catalog.
+    fn tier_down_rig(
+        active: &str,
+        current: u64,
+        policy: Arc<dyn TierDownPolicy>,
+    ) -> (
+        ServingConsumer,
+        watch::Sender<ServingSnapshot>,
+        watch::Receiver<Option<String>>,
+    ) {
+        let (serving_tx, serving_rx) = watch::channel(ServingSnapshot {
+            active_model: Some(active.to_string()),
+            ready: true,
+            base_url: "http://localhost:0/v1".into(),
+            adapters: Vec::new(),
+            served_context_window: 11008,
+            lanes: 4,
+        });
+        let (suppress_tx, _srx) = watch::channel(Arc::new(HashSet::new()));
+        let (pin_tx, pin_rx) = watch::channel(None);
+        let footprint_of: FootprintFn = Arc::new(move |_id: &str, _w: u32, _l: u32| current);
+        let consumer =
+            ServingConsumer::new(serving_rx, suppress_tx, pin_tx, footprint_of, policy);
+        (consumer, serving_tx, pin_rx)
+    }
+
+    // what this catches: THE tier-down lever (#79) — under Pressure, when a policy
+    // chooses to re-home to a smaller base, serving PINS that model (does not go
+    // dark via suppress), defers across the async swap, and reports Partial with
+    // the freed DELTA (old − new) once the snapshot shows the smaller model
+    // active. Reporting Released, or the whole footprint, or suppressing instead
+    // of pinning would each be a lie: serving still holds the smaller model.
+    #[tokio::test]
+    async fn pressure_tier_down_pins_smaller_then_reports_partial() {
+        // active holds 18_000; policy re-homes to "coder-7b" resident at 6_000 →
+        // freed delta = 12_000, and serving keeps serving the 6_000 model.
+        let policy = Arc::new(AlwaysTierDown {
+            target: "coder-7b".into(),
+            resident_after: 6_000,
+        });
+        let (consumer, serving_tx, pin_rx) = tier_down_rig("coder-30b", 18_000, policy);
+
+        // First ask under Pressure: pins the smaller model, defers, frees nothing
+        // yet (the swap is async), and does NOT suppress (never goes dark).
+        let first = consumer.reclaim(ask()).await;
+        assert_eq!(first.status, ReclaimStatus::Deferred);
+        assert_eq!(first.freed_bytes, 0);
+        assert_eq!(pin_rx.borrow().as_deref(), Some("coder-7b"), "re-home pinned");
+        assert!(
+            !consumer.suppress.borrow().contains("coder-30b"),
+            "tier-down pins, never suppresses — serving must not go dark"
+        );
+
+        // Re-ask while the old model is still active (reconcile not done): deferred.
+        let second = consumer.reclaim(ask()).await;
+        assert_eq!(second.status, ReclaimStatus::Deferred);
+
+        // The daemon's reconcile swaps to the smaller model → snapshot shows it.
+        serving_tx.send_modify(|s| s.active_model = Some("coder-7b".into()));
+
+        // Now the ask resolves Partial with the freed DELTA (18_000 − 6_000).
+        let third = consumer.reclaim(ask()).await;
+        assert_eq!(third.status, ReclaimStatus::Partial);
+        assert_eq!(third.freed_bytes, 12_000);
+
+        // Cleared — a further ask starts fresh (would tier down the 7b next time).
+        let fourth = consumer.reclaim(ask()).await;
+        assert_eq!(fourth.status, ReclaimStatus::Deferred, "new cycle, not stuck");
+    }
+
+    // what this catches: reason gating. Shutdown wants EVERYTHING gone and
+    // Rebalance is moving the lease OFF this box — a smaller model here serves
+    // neither, so the tier-down policy is not even consulted; both go straight to
+    // the full-unload (suppress) path. If tier-down fired on Shutdown, serving
+    // would keep holding a smaller model when the authority needs it fully gone.
+    #[tokio::test]
+    async fn shutdown_and_rebalance_skip_tier_down_and_fully_unload() {
+        for reason in [ReclaimReason::Shutdown, ReclaimReason::Rebalance] {
+            let policy = Arc::new(AlwaysTierDown {
+                target: "coder-7b".into(),
+                resident_after: 6_000,
+            });
+            let (consumer, _tx, pin_rx) = tier_down_rig("coder-30b", 18_000, policy);
+            let out = consumer
+                .reclaim(ReclaimRequest {
+                    kind: ResourceKind::Vram,
+                    target_bytes: 8_000,
+                    deadline_ms: 1_000,
+                    reason,
+                })
+                .await;
+            assert_eq!(out.status, ReclaimStatus::Deferred);
+            assert!(pin_rx.borrow().is_none(), "{reason:?} must not pin/tier-down");
+            assert!(
+                consumer.suppress.borrow().contains("coder-30b"),
+                "{reason:?} suppresses for a full unload"
+            );
+        }
+    }
+
+    // what this catches: the phantom-guard. A policy that proposes a NON-shrinking
+    // target (resident_after >= current, or an empty id) is ignored and the
+    // consumer falls through to the honest full unload — it never carries out a
+    // lateral/up "tier-down" that would free nothing while claiming it did.
+    #[tokio::test]
+    async fn non_shrinking_tier_down_is_ignored_and_falls_through_to_unload() {
+        // resident_after (20_000) > current (18_000): not a shrink.
+        let policy = Arc::new(AlwaysTierDown {
+            target: "bigger-not-smaller".into(),
+            resident_after: 20_000,
+        });
+        let (consumer, _tx, pin_rx) = tier_down_rig("coder-30b", 18_000, policy);
+        let out = consumer.reclaim(ask()).await;
+        assert_eq!(out.status, ReclaimStatus::Deferred);
+        assert!(pin_rx.borrow().is_none(), "non-shrink proposal must not pin");
+        assert!(
+            consumer.suppress.borrow().contains("coder-30b"),
+            "falls through to full unload"
+        );
     }
 
     // what this catches: an ask for a kind serving doesn't hold is refused with a

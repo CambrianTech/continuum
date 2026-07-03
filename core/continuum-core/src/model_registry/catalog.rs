@@ -496,6 +496,10 @@ pub fn models() -> Vec<Model> {
                 Capability::Streaming,
             ],
             gguf_hint: Some("huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF"),
+            // Trainable safetensors base for the L3 genome loop. The `-GGUF` repo
+            // above is serving-only; MLX/PEFT fine-tuning + the custodian convert
+            // resolve THIS HF repo (cached, MLX-ready) through the canonical id.
+            hf_source: Some("unsloth/Qwen2.5-0.5B-Instruct"),
             gguf_local_path: Some(
                 "~/.continuum/genome/models/qwen2.5-0.5b-instruct/qwen2.5-0.5b-instruct-q4_k_m.gguf",
             ),
@@ -690,13 +694,23 @@ pub fn providers() -> Vec<Provider> {
             // Native is correct ONLY because the template sidecar is present; if a
             // future model ships without one, the GGUF's stripped template would
             // silently ignore tools — the forge MUST write the sidecar (#32/#52).
-            // Its forged 4B reasoner rambles unless thinking is suppressed, it
-            // serves OpenAI-compatible embeddings, and it holds ONE resident model
-            // (so the adapter pre-flights activation). These flags are what the
-            // adapter reads instead of branching on the provider id (#55).
+            // It is a REASONING model: thinking is its primary feature and the
+            // persona's interiority, never suppressed by default. (We once set
+            // `suppress_thinking: true` because the forged 4B rambled/looped its
+            // `<think>` block to the token budget — but that is a fitness/sampling
+            // gap to train away (genome loop #32) and to bound with the forwarded
+            // `repeat_penalty`, NOT a feature to amputate. Suppressing it also
+            // routed thinking-trained genes' answers into `reasoning_content`,
+            // reading 0 in eval; the real fix is to let her think and read the
+            // post-`</think>` answer from `content`.) Operator may still force
+            // suppression per-run with the adapter's ThinkingMode override; the
+            // gateway default is to THINK. It serves OpenAI-compatible embeddings
+            // and holds ONE resident model (so the adapter pre-flights
+            // activation). These flags are what the adapter reads instead of
+            // branching on the provider id (#55).
             capabilities: ProviderCapabilities {
                 tool_protocol: ToolProtocol::NativeFunctionCalling,
-                suppress_thinking: true,
+                suppress_thinking: false,
                 // Embeddings are a MODEL fact: the resident forged GGUF row
                 // declares `Capability::Embedding` (llama-server serves
                 // /v1/embeddings from it via `--embedding`); the adapter
@@ -740,6 +754,8 @@ struct ModelSpec {
     cost_input_per_1k: f32,
     cost_output_per_1k: f32,
     gguf_hint: Option<&'static str>,
+    /// HF safetensors repo id for the trainable form (see `Model::hf_source`).
+    hf_source: Option<&'static str>,
     gguf_local_path: Option<&'static str>,
     mmproj_local_path: Option<&'static str>,
     chat_template: Option<&'static str>,
@@ -761,6 +777,7 @@ impl Default for ModelSpec {
             cost_input_per_1k: 0.0,
             cost_output_per_1k: 0.0,
             gguf_hint: None,
+            hf_source: None,
             gguf_local_path: None,
             mmproj_local_path: None,
             chat_template: None,
@@ -783,11 +800,17 @@ fn model(spec: ModelSpec) -> Model {
         cost_input_per_1k: spec.cost_input_per_1k,
         cost_output_per_1k: spec.cost_output_per_1k,
         gguf_hint: spec.gguf_hint.map(str::to_string),
+        hf_source: spec.hf_source.map(str::to_string),
         gguf_local_path: spec.gguf_local_path.map(PathBuf::from),
         mmproj_local_path: spec.mmproj_local_path.map(PathBuf::from),
         chat_template: spec.chat_template.map(str::to_string),
         multi_party_strategy: spec.multi_party_strategy,
         stop_sequences: spec.stop_sequences.iter().map(|s| s.to_string()).collect(),
+        // Not a hand-authored fact: the size comes from the artifact's own
+        // `general.parameter_count` header, hydrated once at registry load
+        // ([`super::hydrate`]). The `ModelSpec` deliberately omits it so no
+        // human types "4B" into a row — the sentinel `0` means "ask the GGUF".
+        parameter_count: 0,
     }
 }
 

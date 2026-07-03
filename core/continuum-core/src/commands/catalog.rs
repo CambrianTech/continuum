@@ -59,6 +59,15 @@ pub struct CommandInfo {
 #[serde(rename_all = "camelCase")]
 #[ts(export, export_to = "../../../protocol/typescript/commands/CommandsListResult.ts")]
 pub struct CommandsListResult {
+    /// How many commands matched — declared FIRST so it serializes at the head of
+    /// the JSON (`{"total":N,...}`). A broad `commands/list` result is large and the
+    /// act→observe fold truncates it to `RESULT_FOLD_MAX_CHARS`; putting the count
+    /// first means "how many commands are available?" is answerable straight from the
+    /// result head even when the `commands` array is clipped. Compute-once, present
+    /// legibly (the compression principle) — never make the reader tally the array,
+    /// which a smaller persona model cannot do reliably from a truncated dump.
+    #[ts(type = "number")]
+    pub total: usize,
     /// Every command in the registry (optionally filtered), sorted by name.
     pub commands: Vec<CommandInfo>,
 }
@@ -108,8 +117,11 @@ impl ActionCommand for CommandsList {
                 params_type: d.params.name.clone(),
                 params_schema: d.params_schema.clone(),
             })
-            .collect();
-        Ok(CommandsListResult { commands })
+            .collect::<Vec<_>>();
+        Ok(CommandsListResult {
+            total: commands.len(),
+            commands,
+        })
     }
 }
 crate::register_stateless_command!(CommandsList);
@@ -150,6 +162,19 @@ mod tests {
             "filter narrows by name substring"
         );
         assert!(!filtered.commands.is_empty());
+
+        // what this catches: `total` is the head-of-result count that answers "how
+        // many commands are available?" without tallying a (possibly fold-truncated)
+        // array — it must equal the returned set for both the broad and filtered
+        // views, so a persona reasons from it instead of guessing. Regression guard
+        // for the live dogfood quirk where a 14B persona could not count commands
+        // from the raw JSON dump and confabulated "I can't execute tools".
+        assert_eq!(out.total, out.commands.len(), "total == broad set size");
+        assert_eq!(
+            filtered.total,
+            filtered.commands.len(),
+            "total == filtered set size"
+        );
     }
 
     // what this catches: LISTED == CALLABLE, BY IDENTITY. A local owner (caller
@@ -170,7 +195,7 @@ mod tests {
             .await
             .unwrap();
         let airc_ctx = Ctx {
-            caller: Some(CallerIdentity::airc(Uuid::new_v4())),
+            caller: Some(CallerIdentity::airc(crate::identity::PeerId::new())),
             ..Default::default()
         };
         let provisional = CommandsList

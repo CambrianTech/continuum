@@ -44,6 +44,21 @@ traitKind: string,
  */
 dataset: TrainingDataset, 
 /**
+ * The gym that MEASURES this trait — a JSONL eval-set path (the
+ * `cognition/eval` `eval_set`). The dataset and this gym are two
+ * projections of the same recipe: train on the data, measure on
+ * the gym. The automatic adoption path
+ * ([`crate::modules::training_completion_sentinel`]) passes this
+ * verbatim to `cognition/eval`; when `None` the sentinel REFUSES to
+ * adopt rather than measuring against an arbitrary default gym —
+ * a gene the substrate can't fairly measure is never paged into a
+ * live persona ([[fallbacks-are-illegal-fail-loud]]). The
+ * `cognition/eval` command keeps its own coder-eval default for
+ * manual spot-checks; that default is a command affordance, not an
+ * adoption gate.
+ */
+evalSet: string | null, 
+/**
  * LoRA-specific hyperparams (rank, alpha, dropout, target
  * modules). `None` lets the adapter pick its provider defaults —
  * `Some` overrides them.

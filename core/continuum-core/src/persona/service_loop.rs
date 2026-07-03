@@ -383,7 +383,7 @@ async fn serve_persona_loop_inner(
         }
         high_water = msg.lamport.max(high_water);
 
-        if msg.peer_id == ctx.identity.peer_id {
+        if msg.peer_id == ctx.identity.peer_id.as_uuid() {
             outcome.turns_skipped += 1;
             continue;
         }
@@ -413,7 +413,7 @@ async fn serve_persona_loop_inner(
         crate::probe!(
             class = "persona.turn.start",
             persona = %ctx.identity.agent_name,
-            persona_id = %ctx.identity.persona_id,
+            persona_id = %ctx.identity.peer_id.as_uuid(),
             room_id = %ctx.identity.default_room,
             lamport = msg.lamport,
             peer_id = %msg.peer_id,
@@ -537,17 +537,35 @@ async fn serve_persona_loop_inner(
         // the same seam carrying their own metadata. Built here where the item
         // metadata is still intact. (Self-echo is safe: own posts never TRIGGER a
         // turn — the `msg.peer_id == own` filter above — only inform context.)
-        // Shared burst truth — the same projection the never-stop self-tick uses.
-        let workspace_burst: String = build_workspace_burst(
-            &composed.deliveries,
+        // Shared burst truth — the same structured turns the never-stop self-tick
+        // uses. Built as `Vec<BurstTurn>` (WHO/WHEN/WHAT + the is_self attribution
+        // role assignment turns on), wrapped into a `Burst` carrying both the turns
+        // and their text projection. The deliberation faculty reads the turns to
+        // assemble role-attributed messages; nothing flattens her own posts into a
+        // peer's voice anymore (the identity-bleed/echo root cause).
+        let workspace_burst = crate::cognition::workspace::Burst::from_turns(
             ctx.identity.default_room,
-            &ctx.identity.peer_id.to_string(),
-            &ctx.identity.agent_name,
+            build_workspace_turns(
+                &composed.deliveries,
+                &ctx.identity.peer_id.to_string(),
+                &ctx.identity.agent_name,
+                // Anchor the message that woke this turn as the final peer turn —
+                // the composed thread's `airc` delivery can lag the wake, and a
+                // directed turn that reasons over a stale thread emits an empty
+                // completion → Pass (see `TriggerTurn`). `msg.peer_id` resolves to
+                // its roster name inside; `now_ms` is the wake time.
+                Some(TriggerTurn {
+                    peer_id: &msg.peer_id.to_string(),
+                    content: &msg.text,
+                    occurred_at_ms: now_ms,
+                }),
+            ),
         );
-        // Mark external state as just-deliberated so the next heartbeat tick doesn't
-        // re-run the same world (the message path and the self-tick share the gate;
-        // external-only so the persona's own reply here can't re-trigger a self-tick).
-        last_burst_fp = external_fingerprint(&composed, &ctx.identity.peer_id.to_string());
+        // Mark this world-state as just-deliberated so the next heartbeat tick doesn't
+        // re-run the same burst (the message path and the self-tick share the gate;
+        // own chat is excluded so this reply can't re-trigger a self-tick, while her
+        // own active work is folded in so the tick advances it — see burst_fingerprint).
+        last_burst_fp = burst_fingerprint(&composed.deliveries, &ctx.identity.peer_id.to_string());
         // Project the room-roster delivery into TWO consumers from the
         // ONE source of truth (the roster delivery), routed by source_id:
         //   • `room_roster` — the formatted `name [runtime] — avail`
@@ -612,7 +630,7 @@ async fn serve_persona_loop_inner(
         // filter above), so including own posts purely as read-context is safe.
         let respond_started = std::time::Instant::now();
         let response_text = match crate::cognition::persona_workspace::global()
-            .get(&ctx.identity.persona_id)
+            .get(&ctx.identity.peer_id.as_uuid())
         {
             Some(cycle) => {
                 // Run the mind over the metadata-rich burst built above
@@ -638,21 +656,69 @@ async fn serve_persona_loop_inner(
                 // forever is a fitness gap to train, never a substrate cap, §4). The
                 // eval driver wraps this SAME step in a grader-paced loop; live and
                 // eval thus make a turn identically (ACTING-ORGANISM.md §3.3).
-                // `directed = false`: live turns currently keep silence first-class
-                // (no live-behavior change in this wave). TODO(#9): compute real
-                // directedness from the burst — is the persona @mentioned / DM'd? —
-                // via `utils::str_case::contains_ascii_case_insensitive` over the
-                // external items (the same addressing primitive `is_mentioned` uses),
-                // so a directly-asked persona stops ghosting just as the eval does.
-                // Until then the live ghost-a-direct-question gap is NAMED, not masked.
-                let (step, turn_metrics) = crate::cognition::act_observe::settle_step(
-                    &cycle,
-                    workspace_burst,
-                    ctx.identity.default_room,
-                    true,
-                    false,
-                )
-                .await;
+                // Directedness (closes TODO #9 — the live ghost-a-direct-question gap).
+                // Per Joel 2026-06-29 ("shouldn't need to be directly addressed — it's
+                // a chat system"): ambient participation is now the DEFAULT posture,
+                // carried by the rebalanced [Conversational Presence] framing, NOT by
+                // `directed`. So `directed` is reserved for its one job — withholding
+                // the silent-PASS hatch when a message actually NAMES her, so she cannot
+                // ghost a question put to her. Glass-box proved the gap: a cleanly-woken
+                // MSG-turn PASSed a direct question while eval turns SPOKE 36/38 (the
+                // model is capable; the live framing was the lever). We DERIVE it from
+                // the trigger text via the SAME word-boundary, identity-aware `mentions`
+                // primitive the self-tick uses (line ~1000) — a structural addressing
+                // FACT fed to the mind, never a filter reading her output
+                // ([[no-hardcoded-heuristics-to-steer-cognition]]). The wider
+                // per-channel focus/priority that will ALSO modulate this (a learned or
+                // self-set attention weight — never a hard mute except self-chosen or
+                // flooding) is substrate-blocked on the airc per-(persona,room) state
+                // store (#89); this is the addressing half, unblocked today.
+                let directed = ctx.identity.persona_identity().mentions(&msg.text);
+                let framing = crate::cognition::workspace::TurnFraming::message(directed);
+                // Directed vs ambient part ways HERE — the fix for the live/eval
+                // convergence divergence the ACTING-ORGANISM comments flagged (eval
+                // SPOKE 36/38; the live path single-stepped a DIRECT question, `Acted`
+                // once, `continue`d — and the burst-fingerprint dedup then suppressed
+                // re-perception, so she went idle with the question unanswered).
+                //
+                // DIRECTED (she was actually named/asked) → `drive_to_settle`, the SAME
+                // primitive the eval path validates (eval.rs run_pass): act→observe→act
+                // until she SPEAKS/PASSES, so a direct question converges to an answer
+                // WITHIN the turn instead of leaking onto the slow ambient tick loop.
+                // `from_settled` projects the driven outcome back onto the one existing
+                // turn handler below, so there is no parallel match. `LIVE_DIRECTED_MAX_ACTS`
+                // is a heartbeat safety valve, NOT a behavioral cap: the common case
+                // (gather once or twice, then speak) settles well under it; only a
+                // pathological act-heavy turn hits it and degrades to the metronome tail
+                // (`Acted`→re-perceive-next-tick) — no worse than today, and an
+                // "acts-forever" persona is a fitness gap to TRAIN, never a substrate
+                // ceiling (ACTING-ORGANISM §4).
+                //
+                // AMBIENT (undirected perception) keeps the calm one-step metronome
+                // motion: act at most once, re-perceive next tick — the self-directed
+                // free-time posture ([[idle-is-self-directed-free-time]]); driving every
+                // ambient glance to settlement would make her over-eager to converge on
+                // noise she should be free to let pass.
+                let (step, turn_metrics) = if directed {
+                    let outcome = crate::cognition::act_observe::drive_to_settle(
+                        &cycle,
+                        workspace_burst,
+                        ctx.identity.default_room,
+                        LIVE_DIRECTED_MAX_ACTS,
+                        framing,
+                    )
+                    .await;
+                    crate::cognition::act_observe::SettleStep::from_settled(outcome)
+                } else {
+                    crate::cognition::act_observe::settle_step(
+                        &cycle,
+                        workspace_burst,
+                        ctx.identity.default_room,
+                        true,
+                        framing,
+                    )
+                    .await
+                };
                 phase_timings.respond_ms = respond_started.elapsed().as_millis() as u64;
                 // Live speed/latency on the probe stream — the model's own measured
                 // generation cost for THIS turn (decode tok/s + latency), the same
@@ -719,6 +785,28 @@ async fn serve_persona_loop_inner(
                         outcome.turns_skipped += 1;
                         continue;
                     }
+                    crate::cognition::act_observe::SettleStep::InferenceFailed { error } => {
+                        // The model call FAILED (timeout, 5xx, the serving lane
+                        // refusing a model it isn't hosting) — NOT a chosen silence.
+                        // Surface it LOUD and skip the turn; the next tick retries
+                        // against whatever the serving daemon has resident. Never
+                        // fabricate a Pass over a broken lane
+                        // ([[fallbacks-are-illegal-fail-loud]]).
+                        tracing::warn!(
+                            lamport = msg.lamport,
+                            error = %error,
+                            "deliberation inference FAILED — skipping turn (not a chosen silence)"
+                        );
+                        crate::probe!(
+                            class = "persona.turn.inference_failed",
+                            persona = %ctx.identity.agent_name,
+                            lamport = msg.lamport,
+                            error = %error,
+                            "deliberation model call failed; turn skipped, retries next tick"
+                        );
+                        outcome.turns_skipped += 1;
+                        continue;
+                    }
                 }
             }
             None => {
@@ -733,7 +821,7 @@ async fn serve_persona_loop_inner(
                 phase_timings.respond_ms = respond_started.elapsed().as_millis() as u64;
                 tracing::error!(
                     persona = %ctx.identity.agent_name,
-                    persona_id = %ctx.identity.persona_id,
+                    persona_id = %ctx.identity.peer_id.as_uuid(),
                     lamport = msg.lamport,
                     "no WorkspaceCycle registered — spawn wiring bug; dropping turn (no respond() fallback)"
                 );
@@ -819,6 +907,22 @@ async fn serve_persona_loop_inner(
         outcome.respond_latency.record(phase_timings.respond_ms);
         outcome.say_latency.record(phase_timings.say_ms);
         outcome.turns_replied += 1;
+
+        // L2 continuous-learning producer: this completed live turn (the
+        // triggering message → the reply just published) is a `(context,
+        // completion)` training example [[capability-is-driver-plus-genome]].
+        // Hand it to the producer, which scores + classifies + submits it on a
+        // spawned task — best-effort, never touching this turn's latency or
+        // correctness. It lives ONLY on this live `Spoke` path, which eval forks
+        // (`drive_to_settle`) never run, so the training set can never be
+        // contaminated by a measurement simulation.
+        crate::persona::training_producer::produce(
+            ctx.identity.peer_id.as_uuid(),
+            ctx.identity.agent_name.clone(),
+            ctx.profile.model_id.clone(),
+            msg.text.clone(),
+            response_text.clone(),
+        );
         tracing::info!(
             lamport = msg.lamport,
             turn_duration_ms = turn_duration_ms,
@@ -847,6 +951,19 @@ async fn serve_persona_loop_inner(
 /// meaningfully changes; the burst-fingerprint gate keeps idle ticks free.
 const SELF_TICK_MS: u64 = 3_000;
 
+/// Act budget for a DIRECTED live turn driven to settlement (the eval-validated
+/// `drive_to_settle` path). A directly-addressed question must converge to an
+/// answer WITHIN the turn — gather, observe, then speak — rather than acting once
+/// and leaking onto the slow ambient tick loop (which the burst-fingerprint dedup
+/// then suppressed, leaving a direct question unanswered). This bounds the
+/// investigation as a heartbeat safety valve, NOT a behavioral ceiling: the common
+/// case (gather once or twice, then speak) settles far under it; the pathological
+/// act-heavy turn degrades to the metronome tail (`Acted`→re-perceive-next-tick).
+/// Mirrors the eval driver's `DEFAULT_MAX_ACTS` so the live directed path and its
+/// scored twin converge under the same budget. An "acts-forever" persona is a
+/// fitness gap to TRAIN, never a substrate cap (ACTING-ORGANISM §4).
+const LIVE_DIRECTED_MAX_ACTS: usize = 8;
+
 /// What woke the service loop this cycle. A message from the wire, the never-stop
 /// heartbeat, or the end of the stream. Returned by the `select!` so the borrow of
 /// `conversation` taken inside the select ends before the handler reuses it.
@@ -870,56 +987,141 @@ enum Wake {
 /// `ComposedTurn`) because the format only depends on the deliveries; eval can
 /// hand-build a single synthetic airc delivery for a task without composing a
 /// full turn.
-pub(crate) fn build_workspace_burst(
+/// The message that WOKE a turn — anchored as the burst's final peer turn so the
+/// persona always perceives what it is answering, regardless of RAG-delivery lag.
+///
+/// The `airc` RAG delivery that threads the conversation is refreshed
+/// asynchronously from the wake, so a directed message can trigger a turn whose
+/// composed thread still ends on the persona's OWN prior reply. The model then
+/// sees nothing new after its last turn and emits an empty completion
+/// (decodeTokens=1, text="") which parses as Pass — the persona goes silent on a
+/// question addressed straight at it, then answers ~one self-tick later once the
+/// delivery catches up. Carrying the trigger here lets `build_workspace_turns`
+/// guarantee it is the last `user` turn, deterministically, with no dependence on
+/// delivery timing. The self-tick / eval / turn_frame callers pass `None` (they
+/// perceive ambient state, no single triggering message) and stay byte-identical.
+pub(crate) struct TriggerTurn<'a> {
+    /// The waking peer's id — resolved to a display name through the SAME roster
+    /// `names` map the rest of the thread uses (falls back to the raw id, honest,
+    /// never fabricated — the [[fallbacks-are-illegal-fail-loud]] doctrine).
+    pub peer_id: &'a str,
+    /// The message body that triggered the turn.
+    pub content: &'a str,
+    /// When it arrived (airc `occurred_at_ms` / wake `now_ms`) — drives the
+    /// `[t=…]` prefix so an anchored trigger renders identically to a threaded one.
+    pub occurred_at_ms: u64,
+}
+
+pub(crate) fn build_workspace_turns(
     deliveries: &[crate::persona::rag_budget::RagDelivery],
-    room: Uuid,
     own_peer: &str,
     agent_name: &str,
-) -> String {
-    use std::fmt::Write as _;
-    let mut b = String::new();
-    let _ = writeln!(b, "[room {room}]");
-    for item in deliveries
+    trigger: Option<TriggerTurn<'_>>,
+) -> Vec<crate::cognition::workspace::BurstTurn> {
+    use crate::cognition::workspace::BurstTurn;
+    use std::collections::HashMap;
+    // airc owns identity: the `room-roster` source already joined peer_id → display
+    // name in one batched scan ([[airc-native-identity-rooms-security]]). Reuse THAT
+    // resolution — same deliveries slice — so the history reads `Joel:`, `BigMama:`
+    // instead of raw UUIDs. A peer not in the roster (or an eval-synthesized delivery
+    // with no roster) falls back to its own peer_id: honest, never invisible, never a
+    // fabricated name ([[fallbacks-are-illegal-fail-loud]]).
+    let names: HashMap<&str, &str> = deliveries
+        .iter()
+        .filter(|d| d.source_id == "room-roster")
+        .flat_map(|d| d.items.iter())
+        .filter_map(|item| {
+            let peer = item.metadata.get("peer_id").and_then(|v| v.as_str())?;
+            let name = item.metadata.get("display_name").and_then(|v| v.as_str())?;
+            Some((peer, name))
+        })
+        .collect();
+    let mut turns: Vec<BurstTurn> = deliveries
         .iter()
         .filter(|d| d.source_id == "airc")
         .flat_map(|d| d.items.iter())
-    {
-        let who_raw = item
-            .metadata
-            .get("peer_id")
-            .and_then(|v| v.as_str())
-            .unwrap_or("peer");
-        let who = if who_raw == own_peer {
-            agent_name
-        } else {
-            who_raw
-        };
-        match item.metadata.get("occurred_at_ms").and_then(|v| v.as_u64()) {
-            Some(t) => {
-                let _ = writeln!(b, "[t={t}] {who}: {}", item.content);
-            }
-            None => {
-                let _ = writeln!(b, "{who}: {}", item.content);
-            }
+        .map(|item| {
+            let who_raw = item
+                .metadata
+                .get("peer_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("peer");
+            // is_self — the ONE structural fact role attribution turns on (own posts
+            // → assistant, peers → user). Carried here where the peer_id is intact,
+            // never re-derived from a `Name:` prefix downstream.
+            let is_self = who_raw == own_peer;
+            let author = if is_self {
+                agent_name
+            } else {
+                names.get(who_raw).copied().unwrap_or(who_raw)
+            };
+            let occurred_at_ms = item.metadata.get("occurred_at_ms").and_then(|v| v.as_u64());
+            BurstTurn::attributed(is_self, author, item.content.clone(), occurred_at_ms)
+        })
+        .collect();
+
+    // Anchor the waking message as the final peer turn. Without this the persona
+    // can go silent on a question addressed straight at it (see `TriggerTurn`):
+    // the delivery lagged the wake, the thread ended on her own prior reply, the
+    // model saw nothing new and emitted an empty completion → Pass. Idempotent:
+    // if the delivery ALREADY threaded the trigger as the last peer turn (the
+    // caught-up case — the self-tick that re-perceives it), this is a no-op, so
+    // the trigger is never doubled. A turn is only ever triggered by a PEER
+    // message (own-echo is filtered upstream), so the anchor is always a `user`
+    // turn (is_self = false) — resolved to a name through the same roster map.
+    if let Some(trigger) = trigger {
+        let already_last = turns
+            .last()
+            .is_some_and(|t| !t.is_self && t.content == trigger.content);
+        if !already_last {
+            let author = names.get(trigger.peer_id).copied().unwrap_or(trigger.peer_id);
+            turns.push(BurstTurn::attributed(
+                false,
+                author,
+                trigger.content.to_string(),
+                Some(trigger.occurred_at_ms),
+            ));
         }
     }
-    b
+    turns
 }
 
-/// The "is anything new in my queue?" MECHANISM for the heartbeat: a fingerprint
-/// of the EXTERNAL airc deliveries only — items NOT authored by this persona. A
-/// concern must not subscribe to its OWN output (the cbar rule): if own posts
-/// counted, the act of speaking would change the world, re-trigger the next slice,
-/// and the persona would talk to itself forever (observed live, 2026-06-22 — 19
-/// self-talk cycles flooding the room). Hashing external-only means: wake on
-/// others' activity, act, and once spoken go back to sleep because nothing
-/// EXTERNAL changed. NOT a judgment — pure change-detection over the subscription
-/// queue. [[organic-substrate-continuous-concern-scheduler]].
-fn external_fingerprint(composed: &crate::persona::unified::ComposedTurn, own_peer: &str) -> u64 {
+/// The "is there anything for me to attend to?" MECHANISM for the heartbeat: a
+/// fingerprint of the burst the deliberation will reason over, combining the TWO
+/// concerns the never-stop loop serves —
+///
+/// 1. **EXTERNAL airc chat** — items NOT authored by this persona. A concern must
+///    not subscribe to its OWN chat output (the cbar rule): if own posts counted,
+///    the act of speaking would change the world, re-trigger the next slice, and
+///    the persona would talk to itself forever (observed live, 2026-06-22 — 19
+///    self-talk cycles flooding the room). So own chat posts are excluded: wake on
+///    others' activity, act, and once spoken go back to sleep because nothing
+///    EXTERNAL changed.
+///
+/// 2. **The persona's OWN active work** — its claimed `WorkCard`s (the `active-work`
+///    source). This is the interior DRIVE: a persona is not a request→response
+///    handler that only wakes when others poke it — it carries its own work and the
+///    heartbeat advances it ([[alignment-through-mutual-self-interest]]: provide
+///    compute, let her pursue her own thread; AUTONOMOUS-PROJECT-LOOP). Folding
+///    work-card state in is FLOOD-SAFE precisely because it is cards, not chat:
+///    speaking does not change her cards, so speech still cannot re-trigger the
+///    loop; only real progress (a card's state changing as she works it) re-fires
+///    the next slice — so the loop continues exactly as long as she is making
+///    progress on her own work, and goes quiet when she is not. (Grinding an
+///    unchanged card every tick — deliberating across ticks before any state change
+///    — is a later slice with its own cadence; this slice gives her work the power
+///    to WAKE her, symmetric to external content.)
+///
+/// NOT a judgment — the `WorkspaceCycle` LLM still decides what to do; this is pure
+/// change-detection over what she should be attending to.
+/// [[organic-substrate-continuous-concern-scheduler]].
+fn burst_fingerprint(
+    deliveries: &[crate::persona::rag_budget::RagDelivery],
+    own_peer: &str,
+) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
-    for item in composed
-        .deliveries
+    for item in deliveries
         .iter()
         .filter(|d| d.source_id == "airc")
         .flat_map(|d| d.items.iter())
@@ -930,8 +1132,18 @@ fn external_fingerprint(composed: &crate::persona::unified::ComposedTurn, own_pe
             .and_then(|v| v.as_str())
             .unwrap_or("peer");
         if who == own_peer {
-            continue; // don't subscribe to my own output
+            continue; // don't subscribe to my own chat output
         }
+        item.content.hash(&mut h);
+    }
+    // The interior drive: her own claimed work. Cards, not chat — so this adds
+    // self-origination without reopening the self-talk flood (see doc above). The
+    // source_id literal mirrors the "airc" literal above; `ActiveWorkSource` owns it.
+    for item in deliveries
+        .iter()
+        .filter(|d| d.source_id == "active-work")
+        .flat_map(|d| d.items.iter())
+    {
         item.content.hash(&mut h);
     }
     h.finish()
@@ -955,20 +1167,40 @@ async fn run_self_cycle(
         let cognition = ctx.cognition.lock().await;
         cognition.compose_for_turn(&ctx.profile, now_ms).await
     };
-    // Gate on EXTERNAL change only (cbar: don't subscribe to my own output), so my
-    // own speech can't re-trigger my next slice and spiral into self-talk.
-    let fp = external_fingerprint(&composed, &ctx.identity.peer_id.to_string());
+    // Collapse loop-filler BEFORE anything reasons over the burst (task #16). Two idle
+    // personas cycling stock courtesy templates each append another COPY per tick — the
+    // item list grows so the fingerprint changes, even though no DISTINCT turn is new,
+    // and the wake fires into a 40s decode → resonance. Deduping to first-occurrence
+    // makes a repeated template a no-op for the fingerprint (stable → sleep), while a
+    // genuinely new turn still changes it (→ wake). Symmetric to burst_fingerprint's
+    // own-post exclusion — scheduling hygiene, not cognition-steering. See
+    // `persona::loop_dedup`. [[false-refusal-anchor-present-but-positionally-defeated]].
+    let deliveries = crate::persona::loop_dedup::dedup_loop_filler(&composed.deliveries);
+    // Wake on a CHANGE to what I should attend to — others' chat (own chat excluded
+    // so my speech can't spiral into self-talk) OR my own active work (so the
+    // heartbeat advances my thread, not just reacts to pokes). See burst_fingerprint.
+    let fp = burst_fingerprint(&deliveries, &ctx.identity.peer_id.to_string());
     if fp == *last_burst_fp {
-        return; // nothing NEW from others → back to sleep
+        return; // nothing NEW to attend to (no external change, no work progress) → sleep
     }
     *last_burst_fp = fp;
-    let burst = build_workspace_burst(
-        &composed.deliveries,
+    // Structured turns (own posts attributed as self → assistant, peers → user),
+    // wrapped into a Burst carrying both the turns and their text projection — the
+    // SAME shape the message path builds.
+    let burst = crate::cognition::workspace::Burst::from_turns(
         ctx.identity.default_room,
-        &ctx.identity.peer_id.to_string(),
-        &ctx.identity.agent_name,
+        build_workspace_turns(
+            &deliveries,
+            &ctx.identity.peer_id.to_string(),
+            &ctx.identity.agent_name,
+            // The self-tick perceives AMBIENT state — no single triggering
+            // message to anchor. It re-derives the thread from the (now caught-up)
+            // delivery, which is exactly why it recovers the message-path's missed
+            // turn ~one tick later; anchoring is the message path's job.
+            None,
+        ),
     );
-    let Some(cycle) = crate::cognition::persona_workspace::global().get(&ctx.identity.persona_id)
+    let Some(cycle) = crate::cognition::persona_workspace::global().get(&ctx.identity.peer_id.as_uuid())
     else {
         return; // no cycle registered (shouldn't happen) — nothing to run
     };
@@ -984,8 +1216,7 @@ async fn run_self_cycle(
     // with the fact; the substrate only perceives.
     let identity = ctx.identity.persona_identity();
     let own_peer = ctx.identity.peer_id.to_string();
-    let addressed = composed
-        .deliveries
+    let addressed = deliveries
         .iter()
         .filter(|d| d.source_id == "airc")
         .flat_map(|d| d.items.iter())
@@ -1004,30 +1235,80 @@ async fn run_self_cycle(
         addressed,
         "self-tick addressing perception — input-derived fact, not a force-respond gate"
     );
-    let addressing = if addressed {
-        "Someone addressed you directly in what follows."
-    } else {
-        "No one addressed you directly just now."
+    // The wake FLOOR (#91): honor a mute SHE set on this lane. A hard mute = she
+    // chose deliberate, duration-bounded blindness (even a direct address is held);
+    // a soft mute drops ambient chatter but a direct address still cuts through
+    // (the interrupt floor — "mute the chatter, not the alarm"). With no mute set
+    // (the default) this is always true — identical to prior behavior, inert until
+    // she steers. The fingerprint was already advanced above, so a muted change is
+    // SEEN-and-dismissed (it won't re-fire); a snooze auto-expiring restores
+    // awareness to the next change. This gates SCHEDULING on her own choice + a
+    // structural fact, never her decision ([[no-hardcoded-heuristics-to-steer-cognition]],
+    // [[focus-is-self-allocation-not-siloing]]).
+    // Focus is resolved from the by-persona registry — the single home reachable by
+    // BOTH this loop and the self-set tool she invokes (the brain holds no global
+    // handle), so her steering and this floor read one state. Locked only across the
+    // synchronous read (no await held), per the concurrency style guide.
+    let focus_handle = crate::persona::focus::registry().handle(ctx.identity.peer_id.as_uuid());
+    let wakes = {
+        let mut focus = focus_handle
+            .lock()
+            .expect("focus mutex poisoned by a prior panic");
+        focus.prune_expired(now_ms); // drop lapsed snoozes while we hold it (bounded list)
+        focus.wakes_on(ctx.identity.default_room, addressed, now_ms)
     };
-    let framed = format!(
-        "[Self-initiated moment. {addressing} This is your own time — pursue your own \
-         thread, reason, and act as you see fit. The room is shared with real peers; \
-         contribute to it what genuinely serves them.]\n{burst}"
-    );
+    if !wakes {
+        crate::probe!(
+            class = "persona.selftick.muted",
+            persona = %ctx.identity.agent_name,
+            room = %ctx.identity.default_room,
+            addressed,
+            "self-tick wake held by a self-set mute — back to sleep (interrupt floor honored)"
+        );
+        return;
+    }
+    // The self-initiated framing (formerly an `[Self-initiated moment…]` text
+    // preamble concatenated onto the burst) now rides `TurnFraming::self_thread`
+    // into the system prompt, so the conversation turns stay clean role-attributed
+    // messages and the "this is your own time" framing is standing instruction, not
+    // a fake conversation line. The addressing fact rides the SAME framing's
+    // `directed` bit (withholds the silent-PASS hatch when she was named); no
+    // hand-written "someone addressed you" sentence is needed.
     // ONE settlement step through the SAME shared primitive as the message path and
     // the eval driver (`act_observe::settle_step`, `may_act = true`): run ONCE, and
     // on `Act` admit the result as memory + let the next heartbeat re-perceive — no
     // synchronous loop, no narration of the intermediate step into the room. She
     // speaks only when she has something worth the others' attention
     // (ACTING-ORGANISM.md §4).
-    // `directed = false`: a spontaneous self-prompted turn is inherently ambient
-    // (no one addressed her) — silence stays first-class here by construction.
+    // Self-initiated free time NEVER force-withholds the silence hatch. A self-tick
+    // fires on ANY external change — INCLUDING another party's content-free courtesy
+    // that happens to name her by id — and forcing a turn on that is EXACTLY what
+    // generated the two-persona courtesy spiral: two AIs mutually naming each other →
+    // `addressed` true every tick → hatch withheld → a forced content-free turn → the
+    // other's self-tick perceives it → resonance, burning GPU (~40s/decode each) and
+    // flooding the room with poisoned `assistant` precedent (proven live 2026-07-02,
+    // room cb2e21a1, personas 90e758b2 + 0d3209a1). On her OWN time the hatch is
+    // inviolable: she may always yield when nothing is worth the others' attention
+    // ([[idle-is-self-directed-free-time]], [[organic-substrate-continuous-concern-scheduler]]).
+    //
+    // `addressed` stays a PERCEIVED fact — the `persona.selftick.perceive` probe above
+    // surfaces it for observability, and it still floors the wake decision (`wakes_on`,
+    // so a hard mute can't swallow a real alarm). The message content itself is in the
+    // burst turns, so the mind still SEES that it was named and can choose to answer; it
+    // is simply never COMPELLED to on the ambient tick. Anti-ghosting of a genuine direct
+    // question is the REACTIVE message path's job (service_loop ~675,
+    // `TurnFraming::message(directed)`), where a real inbound question arrives as an
+    // addressed event — not this ambient digest tick. Framing over a structural fact,
+    // never a gate on cognition ([[no-hardcoded-heuristics-to-steer-cognition]]): the
+    // previous `self_thread(addressed)` was a dumb function steering the mind away from
+    // silence; removing the force lets per-slice judgment decide, which is the whole
+    // organic-substrate thesis.
     let (step, _turn_metrics) = crate::cognition::act_observe::settle_step(
         &cycle,
-        framed,
+        burst,
         ctx.identity.default_room,
         true,
-        false,
+        crate::cognition::workspace::TurnFraming::self_thread(false),
     )
     .await;
     match step {
@@ -1056,6 +1337,22 @@ async fn run_self_cycle(
                 tools = calls.len(),
                 intent = %intent,
                 "self-thread act; result admitted as memory, re-perceives next tick"
+            );
+        }
+        crate::cognition::act_observe::SettleStep::InferenceFailed { error } => {
+            // Even on the self-thread a failed model call is surfaced, never swallowed
+            // by the `_ => {}` sleep ([[fallbacks-are-illegal-fail-loud]]): a broken
+            // serving lane is a real fault the operator must see, not idle quiet.
+            tracing::warn!(
+                persona = %ctx.identity.agent_name,
+                error = %error,
+                "self-cycle deliberation inference FAILED — sleeping this tick (not a chosen silence)"
+            );
+            crate::probe!(
+                class = "persona.selftick.inference_failed",
+                persona = %ctx.identity.agent_name,
+                error = %error,
+                "self-thread model call failed; sleeping, retries next tick"
             );
         }
         // ActUnfulfilled (no hands / exec error) → nothing to say, sleep. WouldAct is
@@ -1098,6 +1395,268 @@ mod tests {
     use crate::persona::supervisor::HostedPersona;
     use std::path::PathBuf;
 
+    /// Drive-coupling guard for the never-stop heartbeat's wake gate.
+    /// what this catches: `burst_fingerprint` must treat the persona's OWN active
+    /// work as interior DRIVE — a new/changed work card moves the fingerprint so the
+    /// tick fires to advance it — WITHOUT reopening the self-talk flood (own CHAT
+    /// posts stay excluded; observed live 2026-06-22 as 19 self-talk cycles). This
+    /// is the AUTONOMOUS-PROJECT-LOOP fix: the external-only gate was backwards for
+    /// thought. [[alignment-through-mutual-self-interest]].
+    mod burst_fingerprint_drive {
+        use super::super::burst_fingerprint;
+        use crate::persona::rag_budget::{RagDelivery, RagItem, ResolutionPreference};
+        use serde_json::json;
+
+        const ME: &str = "me-peer";
+
+        fn delivery(source_id: &str, items: Vec<RagItem>) -> RagDelivery {
+            RagDelivery {
+                source_id: source_id.to_string(),
+                items,
+                tokens_used: 0,
+                continuation: None,
+                resolution_used: ResolutionPreference::Raw,
+            }
+        }
+        fn chat(peer_id: &str, content: &str) -> RagItem {
+            RagItem {
+                content: content.to_string(),
+                tokens: 0,
+                metadata: json!({ "peer_id": peer_id }),
+            }
+        }
+        fn card(content: &str) -> RagItem {
+            RagItem {
+                content: content.to_string(),
+                tokens: 0,
+                metadata: json!({}),
+            }
+        }
+
+        #[test]
+        fn own_chat_inert_but_own_work_wakes_the_heartbeat() {
+            let base = vec![delivery("airc", vec![chat("other", "hi")])];
+            let fp0 = burst_fingerprint(&base, ME);
+
+            // My own chat post → excluded → fingerprint unchanged (no self-talk spiral).
+            let with_my_chat = vec![delivery(
+                "airc",
+                vec![chat("other", "hi"), chat(ME, "I'll look into it")],
+            )];
+            assert_eq!(
+                fp0,
+                burst_fingerprint(&with_my_chat, ME),
+                "own chat must not move the fingerprint (else speech re-triggers self-talk)"
+            );
+
+            // My active work card appears → fingerprint MUST change (interior drive).
+            let with_my_work = vec![
+                delivery("airc", vec![chat("other", "hi")]),
+                delivery("active-work", vec![card("card abc [InProgress] \"impl X\"")]),
+            ];
+            assert_ne!(
+                fp0,
+                burst_fingerprint(&with_my_work, ME),
+                "own active work must wake the heartbeat to advance it"
+            );
+        }
+
+        #[test]
+        fn work_progress_refires_the_next_slice() {
+            // A card's state change is real progress → must re-fire so she continues.
+            let in_progress = vec![delivery(
+                "active-work",
+                vec![card("card abc [InProgress] \"impl X\"")],
+            )];
+            let done = vec![delivery(
+                "active-work",
+                vec![card("card abc [Done] \"impl X\"")],
+            )];
+            assert_ne!(
+                burst_fingerprint(&in_progress, ME),
+                burst_fingerprint(&done, ME),
+                "card state change (progress) must move the fingerprint to continue the loop"
+            );
+        }
+    }
+
+    /// what this catches: a remote peer's message must render with their roster
+    /// display name (`Joel: ...`), not the raw peer UUID. Regression for the live
+    /// glass-box finding 2026-06-29 — Asha saw `7711fe60-...: <text>` and could only
+    /// recover the human's name because it was signed in the body; an unsigned peer
+    /// would have been an indistinguishable UUID (the confabulation root cause). The
+    /// roster delivery already in the same slice carries peer_id→display_name; the
+    /// burst must consume it. Own posts stay attributed to `agent_name`; a peer with
+    /// no roster entry falls back to its id (honest, never a fabricated name).
+    mod workspace_burst_names {
+        use super::super::build_workspace_turns;
+        use crate::cognition::workspace::Burst;
+        use crate::persona::rag_budget::{RagDelivery, RagItem, ResolutionPreference};
+        use serde_json::json;
+        use uuid::Uuid;
+
+        fn delivery(source_id: &str, items: Vec<RagItem>) -> RagDelivery {
+            RagDelivery {
+                source_id: source_id.to_string(),
+                items,
+                tokens_used: 0,
+                continuation: None,
+                resolution_used: ResolutionPreference::Raw,
+            }
+        }
+        fn chat(peer_id: &str, content: &str) -> RagItem {
+            RagItem {
+                content: content.to_string(),
+                tokens: 0,
+                metadata: json!({ "peer_id": peer_id, "occurred_at_ms": 1u64 }),
+            }
+        }
+        fn roster(peer_id: &str, name: &str) -> RagItem {
+            RagItem {
+                content: format!("{name} [claude]"),
+                tokens: 0,
+                metadata: json!({ "peer_id": peer_id, "display_name": name }),
+            }
+        }
+
+        #[test]
+        fn remote_peer_renders_with_roster_name_self_with_agent_name() {
+            let room = Uuid::nil();
+            let me = "me-peer";
+            let joel = "7711fe60-a19f-4f41-9ab6-24c884757338";
+            let stranger = "deadbeef-0000-0000-0000-000000000000";
+
+            let deliveries = vec![
+                delivery(
+                    "room-roster",
+                    vec![roster(joel, "Joel"), roster(me, "Asha")],
+                ),
+                delivery(
+                    "airc",
+                    vec![
+                        chat(joel, "Asha — are you there?"),
+                        chat(me, "I'm here, Joel!"),
+                        chat(stranger, "lurking"),
+                    ],
+                ),
+            ];
+
+            let turns = build_workspace_turns(&deliveries, me, "Asha", None);
+
+            // STRUCTURAL attribution (the whole point of the turns refactor): the
+            // `is_self` bit role attribution turns on must be set from peer_id ==
+            // own_peer, NOT re-derived from a `Name:` prefix downstream. Own post →
+            // self; peers (rostered or not) → not-self.
+            assert_eq!(turns.len(), 3, "one turn per airc item");
+            let joel_turn = &turns[0];
+            let own_turn = &turns[1];
+            let stranger_turn = &turns[2];
+            assert!(!joel_turn.is_self && joel_turn.author == "Joel");
+            assert!(
+                own_turn.is_self && own_turn.author == "Asha",
+                "own post must be attributed to self/agent_name, got {own_turn:?}"
+            );
+            assert!(
+                !stranger_turn.is_self && stranger_turn.author == stranger,
+                "unrostered peer is not-self and falls back to its id, got {stranger_turn:?}"
+            );
+
+            // The rendered text projection (what `world_state` IS) must still read
+            // byte-identically — roster names resolved, no raw UUID leak for rostered
+            // peers, own post attributed, unrostered peer honest-by-id.
+            let burst = Burst::from_turns(room, turns).rendered;
+            assert!(
+                burst.contains("Joel: Asha — are you there?"),
+                "remote peer must render with roster name, got:\n{burst}"
+            );
+            assert!(
+                !burst.contains(joel),
+                "the raw peer UUID must NOT leak into the burst, got:\n{burst}"
+            );
+            assert!(
+                burst.contains("Asha: I'm here, Joel!"),
+                "own post must attribute to agent_name, got:\n{burst}"
+            );
+            assert!(
+                burst.contains(&format!("{stranger}: lurking")),
+                "unrostered peer falls back to its id, got:\n{burst}"
+            );
+        }
+
+        #[test]
+        fn trigger_is_anchored_as_last_turn_when_delivery_lags() {
+            // what this catches: the empty-message-turn quirk (glass-box 2026-06-30).
+            // The `airc` delivery that threads the conversation is refreshed
+            // asynchronously from the wake, so a directed message can trigger a turn
+            // whose composed thread still ENDS on the persona's own prior reply. The
+            // model then sees nothing new after its last turn, emits an empty
+            // completion, and the turn parses as Pass — the persona goes silent on a
+            // question aimed straight at it. Anchoring the trigger as the final `user`
+            // turn (from the KNOWN waking message, not the lagging delivery) makes the
+            // turn always perceive what it is answering. This test simulates the lag
+            // (delivery ends on her own turn, trigger absent) and asserts the trigger
+            // becomes the last peer turn, resolved to its roster name.
+            let me = "me-peer";
+            let joel = "7711fe60-a19f-4f41-9ab6-24c884757338";
+            let deliveries = vec![
+                delivery("room-roster", vec![roster(joel, "Joel"), roster(me, "Asha")]),
+                // The lagging thread: her own reply is the last turn; Joel's new
+                // question has NOT yet landed in the delivery.
+                delivery(
+                    "airc",
+                    vec![chat(joel, "morning"), chat(me, "morning Joel!")],
+                ),
+            ];
+            let trigger = super::super::TriggerTurn {
+                peer_id: joel,
+                content: "run commands/list and tell me the count",
+                occurred_at_ms: 42,
+            };
+            let turns = build_workspace_turns(&deliveries, me, "Asha", Some(trigger));
+
+            let last = turns.last().expect("at least the anchored trigger");
+            assert!(
+                !last.is_self
+                    && last.author == "Joel"
+                    && last.content == "run commands/list and tell me the count",
+                "the waking message must be anchored as the final peer turn (roster \
+                 name resolved), got {last:?}"
+            );
+            assert_eq!(turns.len(), 3, "two threaded turns + the anchored trigger");
+        }
+
+        #[test]
+        fn trigger_is_not_doubled_when_delivery_already_threaded_it() {
+            // what this catches: idempotency of the anchor. On the self-tick that
+            // re-perceives the message ~one tick later, the delivery HAS caught up —
+            // the trigger is already the last peer turn. Anchoring must be a no-op
+            // then, never a duplicate turn (which would make her re-answer / echo).
+            let me = "me-peer";
+            let joel = "7711fe60-a19f-4f41-9ab6-24c884757338";
+            let question = "run commands/list and tell me the count";
+            let deliveries = vec![
+                delivery("room-roster", vec![roster(joel, "Joel"), roster(me, "Asha")]),
+                // Caught-up thread: the trigger IS the last turn already.
+                delivery(
+                    "airc",
+                    vec![chat(me, "morning Joel!"), chat(joel, question)],
+                ),
+            ];
+            let trigger = super::super::TriggerTurn {
+                peer_id: joel,
+                content: question,
+                occurred_at_ms: 42,
+            };
+            let turns = build_workspace_turns(&deliveries, me, "Asha", Some(trigger));
+            assert_eq!(
+                turns.len(),
+                2,
+                "already-threaded trigger must not be doubled, got {turns:?}"
+            );
+            assert_eq!(turns.last().unwrap().content, question);
+        }
+    }
+
     // Bespoke `StubConversation` / `CannedAdapter` / `EmptyReader` /
     // `fake_hosted` / `fake_hosted_with_delay` deleted per
     // [[test-fixtures-are-system-primitives]]. The substrate's
@@ -1119,11 +1678,9 @@ mod tests {
     ) -> HostedPersona {
         use crate::persona::hw_tier_descriptor::HwTierCategory;
         use crate::persona::inference_profile::{PersonaInferenceProfile, SamplingProfile};
-        // Honor the Slice-1B-of-#142 invariant: `persona_id ==
-        // peer_id` for every PersonaInstanceInfo. Test fixtures
-        // that bypass the runtime constructor (where the collapse
-        // would otherwise be enforced) keep both fields equal so the
-        // identity shape matches what production sees.
+        // The PersonaInferenceProfile still keys on a bare Uuid; the
+        // PersonaInstanceInfo now carries the single canonical
+        // `peer_id: PeerId` (Step 4b collapsed the persona_id twin).
         let persona_id = persona_peer_id;
         // Build a profile shaped like the LCD Compat tier — the
         // substrate's lowest common denominator. Test exercises the
@@ -1148,9 +1705,8 @@ mod tests {
         HostedPersona {
             role: RoleId::Helper,
             identity: PersonaInstanceInfo {
-                persona_id,
                 agent_name: "Paige".to_string(),
-                peer_id: persona_peer_id,
+                peer_id: crate::identity::PeerId::from_uuid(persona_peer_id),
                 home: PathBuf::from("/tmp/fake-service-loop"),
                 default_room: Uuid::nil(),
                 source: PersonaIdentitySource::FreshlyMinted,
@@ -1458,8 +2014,8 @@ mod tests {
         );
         // Couples to the silence affordance.
         assert!(
-            s.contains("[Silence Option]") || s.contains("silence"),
-            "silence-option reference missing — identity prompt should hint at the affordance assembled downstream. Got: {s}"
+            s.contains("[Conversational Presence]") || s.contains("silence"),
+            "silence-affordance reference missing — identity prompt should hint at the affordance assembled downstream. Got: {s}"
         );
     }
 

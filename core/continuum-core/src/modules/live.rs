@@ -205,6 +205,36 @@ impl ServiceModule for VoiceModule {
                                         display_name,
                                         &agent_call_id[..8.min(agent_call_id.len())]
                                     );
+
+                                    // Stream this persona's Bevy-rendered avatar into
+                                    // its LiveKit video track. Spawned (not awaited) so
+                                    // the ~5s slot allocation runs in parallel with the
+                                    // next agent's staggered creation. The pump owns its
+                                    // slot guard and self-terminates (fail loud → drop
+                                    // guard → recycle slot) when the agent is removed at
+                                    // session end. See `spawn_avatar_video_pump`.
+                                    let pump_manager = agent_manager.clone();
+                                    let pump_call_id = agent_call_id.clone();
+                                    let pump_user_id = user_id.clone();
+                                    let pump_display = display_name.clone();
+                                    tokio::spawn(async move {
+                                        if let Err(e) = crate::live::avatar::spawn_avatar_video_pump(
+                                            pump_manager,
+                                            pump_call_id,
+                                            pump_user_id,
+                                            pump_display.clone(),
+                                        )
+                                        .await
+                                        {
+                                            log_error!(
+                                                "module",
+                                                "voice_register_session",
+                                                "Failed to start video pump for '{}': {}",
+                                                pump_display,
+                                                e
+                                            );
+                                        }
+                                    });
                                 }
                                 Err(e) => {
                                     log_error!(

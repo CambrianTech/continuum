@@ -42,12 +42,17 @@
 //! persona at boot, before any of them have necessarily attached to
 //! their rooms yet.
 
+use crate::airc::realtime::{AircRealtimePayload, AircRealtimeSchema};
+use crate::airc::realtime_wire::envelope_from_event;
 use crate::persona::airc_citizen::AircCitizen;
 use crate::persona::service_loop::{IncomingMessage, PersonaConversation};
+use airc_core::TranscriptEvent;
 use airc_lib::EventStream;
 use async_trait::async_trait;
 use futures::StreamExt;
+use serde_json::Value;
 use std::sync::Arc;
+use uuid::Uuid;
 
 /// Wraps an [`AircCitizen`] and projects it onto the substrate's
 /// [`PersonaConversation`] contract. Owns the airc subscribe stream
@@ -200,20 +205,25 @@ impl PersonaConversation for AircPersonaConversation {
                     return Err(format!("live stream lag: {lag}"));
                 }
                 Some(Ok(event)) => {
-                    if event.peer_id.as_uuid() == self.own_peer_id {
+                    // Recover a perceptual room turn. Two on-wire shapes
+                    // reach a persona's subscribe stream and both are
+                    // messages it must hear: a peer's plain-text `say()`
+                    // (`Body::Text`) and a `chat/send` from a human / the
+                    // web client / any non-`say` caller (the continuum
+                    // realtime envelope as `Body::Json`, `chat_transcript`
+                    // schema). `perceptual_from_event` decodes both; a
+                    // `None` means the event is not a room turn (presence,
+                    // event-bridge, media-control, binary) — skip it.
+                    let Some(message) = perceptual_from_event(&event) else {
+                        continue;
+                    };
+                    // Skip our own turn, matched on the RESOLVED sender so a
+                    // self-authored chat_transcript is caught too — not just
+                    // a self `say()` (whose transport peer is us).
+                    if message.peer_id == self.own_peer_id {
                         continue;
                     }
-                    let Some(body) = event.body.as_ref() else {
-                        continue;
-                    };
-                    let Some(text) = body.as_text() else {
-                        continue;
-                    };
-                    return Ok(Some(IncomingMessage {
-                        lamport: event.lamport,
-                        peer_id: event.peer_id.as_uuid(),
-                        text: text.to_string(),
-                    }));
+                    return Ok(Some(message));
                 }
             }
         }
@@ -226,6 +236,66 @@ impl PersonaConversation for AircPersonaConversation {
             .map(|_event_id| ())
             .map_err(|e| format!("say failed: {e}"))
     }
+}
+
+/// Project a live airc [`TranscriptEvent`] onto the substrate's
+/// [`IncomingMessage`] contract — the ONE place that decides what counts
+/// as a perceptual room turn for a persona.
+///
+/// Two on-wire shapes carry a room message:
+///
+/// 1. **Plain text** — a peer persona's [`AircCitizen::say`] emits a
+///    `Body::Text`. Attribution is the transport `peer_id`.
+/// 2. **`chat_transcript` envelope** — `chat/send` (a human, the web
+///    client, any non-`say` caller) publishes the continuum realtime
+///    envelope as `Body::Json`. `body.as_text()` is `None`, so a naive
+///    text-only filter drops it — which made human chat structurally
+///    invisible to locally-hosted personas (glass-box confirmed: the
+///    event reached the subscribe stream with `as_text() == None`). Here
+///    we decode the envelope and recover both the text and the TRUE
+///    logical sender (`inline.senderId`), not the core's transport peer
+///    that relayed the publish.
+///
+/// Everything else — presence, event-bridge, media-control, binary — is
+/// not a room turn and yields `None` (the caller skips it). This is the
+/// receive half of the send/receive asymmetry noted in task #8
+/// (converge broadcast == RAG context): the sender keeps the rich
+/// `chat_transcript` envelope for the web/replay/durable consumers; the
+/// persona learns to read it rather than forcing a lossy plain-text
+/// downgrade on the send side.
+fn perceptual_from_event(event: &TranscriptEvent) -> Option<IncomingMessage> {
+    // Path 1 — a peer's plain-text say().
+    if let Some(text) = event.body.as_ref().and_then(|b| b.as_text()) {
+        return Some(IncomingMessage {
+            lamport: event.lamport,
+            peer_id: event.peer_id.as_uuid(),
+            text: text.to_string(),
+        });
+    }
+
+    // Path 2 — a structured chat_transcript envelope (chat/send).
+    let envelope = envelope_from_event(event).ok().flatten()?;
+    let AircRealtimePayload::ExistingSchema { payload } = &envelope.payload else {
+        return None;
+    };
+    if payload.schema != AircRealtimeSchema::ChatTranscript {
+        return None;
+    }
+    let inline = payload.inline.as_ref()?;
+    let text = inline.get("text").and_then(Value::as_str)?;
+    // Prefer the logical sender the envelope carries; fall back to the
+    // transport peer that relayed the publish. Both are real identities —
+    // this is attribution recovery, not a fabricated default.
+    let peer_id = inline
+        .get("senderId")
+        .and_then(Value::as_str)
+        .and_then(|s| Uuid::parse_str(s).ok())
+        .unwrap_or_else(|| event.peer_id.as_uuid());
+    Some(IncomingMessage {
+        lamport: event.lamport,
+        peer_id,
+        text: text.to_string(),
+    })
 }
 
 #[cfg(test)]
@@ -253,5 +323,126 @@ mod tests {
             err.contains("prime"),
             "error must name the missing call: {err}"
         );
+    }
+
+    /// Perception of the two on-wire room-turn shapes. These lock the
+    /// human→persona WAKE path fixed after the glass-box diagnosis showed
+    /// a `chat/send` reaching the subscribe stream but being dropped as
+    /// `as_text() == None`.
+    mod perceptual {
+        use super::super::perceptual_from_event;
+        use crate::airc::realtime::AircRealtimeEnvelope;
+        use crate::airc::realtime_wire::{body_for_envelope, headers_for_envelope};
+        use airc_core::{
+            Body, ClientId, EventId, Headers, MentionTarget, PeerId, RoomId, TranscriptEvent,
+            TranscriptKind,
+        };
+        use serde_json::json;
+        use uuid::Uuid;
+
+        fn event(peer: PeerId, body: Option<Body>, headers: Headers) -> TranscriptEvent {
+            TranscriptEvent {
+                event_id: EventId::from_u128(1),
+                room_id: RoomId::from_u128(2),
+                peer_id: peer,
+                client_id: ClientId::from_u128(4),
+                kind: TranscriptKind::Message,
+                occurred_at_ms: 100,
+                lamport: 7,
+                target: MentionTarget::All,
+                headers,
+                body,
+                attachment: None,
+                receipt: None,
+                metadata: serde_json::Value::Null,
+            }
+        }
+
+        /// Encode an envelope exactly as `chat/send` → `airc/realtime-publish`
+        /// would put it on the wire (Body::Json + continuum body-hint header),
+        /// so the test exercises the real production decode.
+        fn wire_event(peer: PeerId, envelope_json: serde_json::Value) -> TranscriptEvent {
+            let envelope: AircRealtimeEnvelope =
+                serde_json::from_value(envelope_json).expect("valid realtime envelope");
+            let body = body_for_envelope(&envelope).expect("encode body");
+            let headers = headers_for_envelope(&envelope);
+            event(peer, Some(body), headers)
+        }
+
+        // what this catches: a peer's plain-text say() is perceived and
+        // attributed to its transport peer_id — the direct path must keep
+        // working (persona↔persona was never broken).
+        #[test]
+        fn plain_text_say_is_perceived() {
+            let peer = PeerId::from_u128(42);
+            let ev = event(peer, Some(Body::text("hello from a peer")), Headers::new());
+            let msg = perceptual_from_event(&ev).expect("text body is a room turn");
+            assert_eq!(msg.text, "hello from a peer");
+            assert_eq!(msg.peer_id, peer.as_uuid());
+            assert_eq!(msg.lamport, 7);
+        }
+
+        // what this catches: THE bug. chat/send arrives as a Body::Json
+        // chat_transcript envelope (as_text()==None). It MUST be perceived,
+        // and attributed to the true logical sender (inline.senderId), not
+        // the core transport peer that relayed the publish.
+        #[test]
+        fn chat_transcript_envelope_is_perceived_with_true_sender() {
+            let relay_peer = PeerId::from_u128(7711); // the core's publish peer
+            let human_sender = Uuid::from_u128(0xB0B);
+            let ev = wire_event(
+                relay_peer,
+                json!({
+                    "eventId": Uuid::from_u128(9).to_string(),
+                    "roomId": Uuid::from_u128(2).to_string(),
+                    "sourceId": human_sender.to_string(),
+                    "createdAtMs": 100u64,
+                    "delivery": "durable",
+                    "payload": {
+                        "kind": "existing_schema",
+                        "payload": {
+                            "schema": "chat_transcript",
+                            "inline": {
+                                "messageId": Uuid::from_u128(3).to_string(),
+                                "text": "Asha, are you there?",
+                                "senderId": human_sender.to_string(),
+                                "replyToId": null,
+                            }
+                        }
+                    }
+                }),
+            );
+            let msg = perceptual_from_event(&ev).expect("chat_transcript is a room turn");
+            assert_eq!(msg.text, "Asha, are you there?");
+            assert_eq!(
+                msg.peer_id, human_sender,
+                "attribution must be the logical sender, not the relay peer"
+            );
+        }
+
+        // what this catches: a non-message envelope (event-bridge, also
+        // as_text()==None) must NOT be surfaced as a room turn — only actual
+        // chat is perceptual, not every Json body on the stream.
+        #[test]
+        fn event_bridge_envelope_is_not_a_room_turn() {
+            let ev = wire_event(
+                PeerId::from_u128(5),
+                json!({
+                    "eventId": Uuid::from_u128(9).to_string(),
+                    "roomId": Uuid::from_u128(2).to_string(),
+                    "sourceId": "continuum-peer",
+                    "createdAtMs": 100u64,
+                    "delivery": "durable",
+                    "payload": {
+                        "kind": "existing_schema",
+                        "payload": {
+                            "schema": "event_bridge_payload",
+                            "inline": { "eventName": "data:users:created", "id": "x" }
+                        }
+                    }
+                }),
+            );
+            assert!(perceptual_from_event(&ev).is_none());
+        }
     }
 }

@@ -61,6 +61,7 @@ pub mod resources;
 pub mod routing;
 pub mod runtime;
 pub mod sdk_codegen;
+pub mod sensory;
 pub mod secrets;
 pub mod system_resources;
 pub mod tool_parsing;

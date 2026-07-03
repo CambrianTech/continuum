@@ -4,7 +4,20 @@ import type { SenderType } from "./SenderType";
 /**
  * Full evaluation request — ONE IPC call replaces 5 TS gates.
  */
-export type FullEvaluateRequest = { persona_id: string, persona_name: string, persona_unique_id: string, message_id: string, room_id: string, sender_id: string, sender_name: string, sender_type: SenderType, content: string, timestamp: number, is_voice: boolean, voice_session_id?: string, sender_is_human: boolean, 
+export type FullEvaluateRequest = { persona_id: string, persona_name: string, 
+/**
+ * Defaults to `""` when the caller omits it — matches the legacy
+ * `p.str_or("persona_unique_id", "")` read the typed command replaces.
+ */
+persona_unique_id: string, message_id: string, room_id: string, sender_id: string, sender_name: string, sender_type: SenderType, content: string, timestamp: number, 
+/**
+ * Defaults to `false` when omitted — matches the legacy `p.bool_or("is_voice", false)`.
+ */
+is_voice: boolean, voice_session_id?: string, 
+/**
+ * Defaults to `false` when omitted — matches the legacy `p.bool_or("sender_is_human", false)`.
+ */
+sender_is_human: boolean, 
 /**
  * Pre-computed topic similarity for sleep mode (optional).
  * If not provided and sleep mode is until_topic, we compute inline.

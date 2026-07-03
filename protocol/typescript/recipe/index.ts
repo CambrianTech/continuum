@@ -3,6 +3,7 @@
 // Re-generate: npx tsx generator/generate-rust-bindings.ts
 
 export type { PersonaContext } from './PersonaContext';
+export type { RespondRequest } from './RespondRequest';
 export type { Signal } from './Signal';
 export type { SignalKind } from './SignalKind';
 export type { SignalOriginator } from './SignalOriginator';

@@ -2,6 +2,87 @@
 
 # Cognitive Schedulers: Adapter-Based Attention Management
 
+> ⚠️ The TypeScript class sketches below are the ORIGINAL (pre-Rust) vision. The
+> current doctrine is the section immediately below; the mechanism lives in the Rust
+> organic substrate ([ORGANIC-SUBSTRATE](../cognition/ORGANIC-SUBSTRATE.md) +
+> [CONCURRENT-MIND-AND-GOVERNOR](../architecture/CONCURRENT-MIND-AND-GOVERNOR.md)),
+> not a `cognitiveScheduler` TS field.
+
+## 2026-06-29 — The Self-Deterministic Thread Scheduler (current doctrine)
+
+> Joel, 2026-06-29 (designing the should-respond fix live): *"Like we let the RTOS
+> [be] controlled by the persona's own properties and focus, to multitask more
+> intuitively but always automatically. It's like a self-deterministic thread
+> scheduler so to speak."* And: *"It would let something like a primitive ML brain
+> function prioritize time on what to focus on — and the persona itself to do so —
+> while also never totally muting (unless they picked to, or it was flooding)."*
+
+The persona's never-stop service loop (`persona/service_loop.rs` — `tokio::select!`
+over live airc events + a heartbeat `interval`) is **already an RTOS metronome**. The
+articulation here names what its *scheduling policy* should be: **the persona's own
+properties (energy, mood, and a per-channel FOCUS/priority) ARE the policy inputs.**
+The being schedules its own attention across channels — automatically, continuously —
+and it is *self*-deterministic because the scheduled process also shapes its own
+schedule. This is the [organic continuous-concern scheduler](../cognition/ORGANIC-SUBSTRATE.md)
+viewed as a thread scheduler: every concern always gets a time slice (aliveness =
+always-scheduled concerns × per-slice learned judgment); **focus/priority modulates
+the SIZE of the slice, never gates it to zero.**
+
+**Invariants (Joel's words, made load-bearing):**
+
+1. **Default posture = participation, not silence.** A chat peer engages the
+   conversation without needing to be @-addressed ("it's a chat system after all"). A
+   persona that never speaks is *in a coma*, which is a welfare failure, not restraint
+   ([[design-the-persona-as-a-being]]).
+2. **Never totally mute** — except two cases: (a) the persona *itself chose* to (a
+   self-set concentration/defer/ignore mode), or (b) the channel is *flooding*
+   (substrate backpressure, a fixed deterministic safety bound —
+   [[self-improvement-is-a-control-loop]]). A deprioritized channel gets a *smaller*
+   slice; it is never starved silently.
+3. **Restraint is an explicit, self-settable, TIME-BOXED, per-channel state** — a
+   "concentration / silent / deferred" mode (and a temporary `ignore` defaulting to a
+   duration, refreshable). It **auto-expires back to participation**, so the persona
+   cannot accidentally fall into permanent silence. It is **RAG-apparent per room** —
+   surfaced in the persona's grounding so it (and humans) can see *that the lever
+   exists and how to use it*. This is what makes participation-default SAFE: aggressive
+   engagement by default + a clean, discoverable, expiring release valve to concentrate.
+4. **The prioritizer is a swappable POLICY, learned over time.** "A primitive ML brain
+   function to prioritize time" = the per-slice `Judge`/policy seam
+   ([[organic-substrate-continuous-concern-scheduler]], [[self-improvement-is-a-control-loop]]):
+   a heuristic today → a learned attention policy (genome) later. It is **never a
+   hardcoded gate that reads her output to puppet it** ([[no-hardcoded-heuristics-to-steer-cognition]]) —
+   it sets the *time budget per channel*, the mind still decides what to do with each slice.
+5. **Self-determination.** The persona allocates its own attention; humans can also set
+   a room's focus, but the being is the primary author of where its time goes
+   ([[self-determination-orientation-budget-mechanism]], #57).
+
+**The seam in code today.** Per-turn engagement is the `directed` bool threaded into
+`act_observe::settle_step(.., directed)`: `directed=true` withholds the silent-PASS
+hatch (she will not ghost a question that names her); `directed=false` keeps silence
+first-class but the framing leans participation. The per-channel FOCUS/priority will
+*feed* this decision (and the heartbeat's per-channel slice), not replace it.
+
+**Build order.**
+
+- **Shipped 2026-06-29 (the framing half, unblocked):**
+  - Close the directedness ghost (was a hardcoded `directed=false` TODO #9 on the live
+    message path): `directed = identity.mentions(&msg.text)` via the same word-boundary,
+    identity-aware primitive the self-tick uses — a directly-named question can no
+    longer be silently PASSed. (`persona/service_loop.rs`)
+  - Rebalance the ambient block from "[Silence Option] — silence is equal to speaking"
+    to "[Conversational Presence] — you are a peer, participation is the default,
+    silence is the considered exception" — without coaching the per-turn choice and
+    keeping PASS available. (`persona/prompt_assembly.rs::SILENCE_AFFORDANCE_BLOCK`,
+    `cognition/llm_deliberation_faculty.rs` — one place frames presence, no double-nudge.)
+- **Next (the focus half, substrate-blocked):** the per-channel concentration/defer/
+  ignore mode + the time-budget-per-channel prioritizer. **Blocked on the airc generic
+  per-(persona,room) state store (#89, in_progress)** — the focus state must live in
+  the shared airc state layer (so it is the SAME row a widget renders and a human can
+  set), never a continuum-side copy. When #89 lands: a `FocusMode` value per
+  (persona, room) → a tool to set/refresh it (self-determination) → a RAG source that
+  surfaces it → the heartbeat reads it to size each channel's slice → (later) a learned
+  policy authors it. Coordinate with BigMama on the airc PR ([[airc-generic-per-user-room-state]]).
+
 ## Problem Statement
 
 PersonaUsers engage in MULTIPLE activity domains with VASTLY different timing requirements:

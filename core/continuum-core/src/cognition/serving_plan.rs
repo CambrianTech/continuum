@@ -99,6 +99,21 @@ impl ModelFootprint {
     pub fn kv_at(&self, ctx: u32) -> u64 {
         self.kv_per_token.saturating_mul(ctx as u64)
     }
+
+    /// Total on-device residency for a live server: the weights (shared across
+    /// lanes) PLUS the KV-cache of every lane at the served per-slot window.
+    /// `served_window` is the REAL per-slot context the process serves (the
+    /// value on `ServingSnapshot`, read from llama.cpp `/props`), and `lanes` is
+    /// the `--parallel` slot count — llama.cpp allocates one full KV window per
+    /// slot, so resident KV = `lanes × kv_at(served_window)`. This is the honest
+    /// number serving reports to the resource authority as its `footprint()`:
+    /// weights-only under-reports, and the missing KV then masquerades as
+    /// external/contention on the board. `lanes.max(1)` so a snapshot that has
+    /// not yet stamped its lane count still charges one lane's KV, never zero.
+    pub fn resident_bytes(&self, served_window: u32, lanes: u32) -> u64 {
+        self.weights_bytes
+            .saturating_add(self.kv_at(served_window).saturating_mul(lanes.max(1) as u64))
+    }
 }
 
 /// The serving decision for this host.
@@ -268,44 +283,64 @@ pub fn plan_serving_stable(
     candidates: &[ModelFootprint],
     incumbent: Option<&str>,
 ) -> Option<ServingPlan> {
-    let fresh = plan_serving(host, candidates)?;
+    // NB: do NOT `?`-bail here. A deep transient dip can leave `plan_serving`
+    // with nothing fitting the depressed budget (`fresh` = None) while a model
+    // is STILL resident and serving fine — its memory is its own. Tearing that
+    // down to "nothing" is the exact harm we're guarding against, so `fresh` is
+    // an Option we fall back to only when the incumbent genuinely can't hold.
+    let fresh = plan_serving(host, candidates);
     let Some(inc_id) = incumbent else {
-        return Some(fresh);
+        return fresh;
     };
-    // Fresh already chose the incumbent → nothing to stabilize.
-    if fresh.base_model_id == inc_id {
-        return Some(fresh);
+    // Fresh already chose the incumbent (or nothing else fits and fresh IS the
+    // incumbent) → nothing to stabilize.
+    if fresh.as_ref().map(|p| p.base_model_id.as_str()) == Some(inc_id) {
+        return fresh;
     }
-    // Is the incumbent still present AND still fits at least one lane?
-    let inc = candidates.iter().find(|m| {
-        m.model_id == inc_id
-            && m.weights_bytes.saturating_add(m.kv_at(MIN_SERVE_CTX)) <= host.usable_bytes
-    });
-    let Some(inc) = inc else {
-        // Incumbent gone or no longer fits → forced switch to `fresh`.
-        return Some(fresh);
+    // Incumbent dropped off disk entirely → honour whatever `fresh` chose
+    // (possibly None = nothing servable).
+    let Some(inc) = candidates.iter().find(|m| m.model_id == inc_id) else {
+        return fresh;
     };
-    // Incumbent still fits. Switch UP to `fresh` ONLY if it is strictly more
-    // capable AND fits with headroom (so a transient budget bump doesn't flap).
+    // The incumbent is ALREADY resident: its own weights read as "used" in live
+    // free memory, which is exactly what depresses `usable_bytes` while it loads.
+    // Measure it against the AT-REST budget — credit its committed weights back —
+    // so a model's OWN load/residency can never flap it out for a smaller model.
+    // A genuine EXTERNAL squeeze (another consumer grabbing VRAM) is NOT credited
+    // back, so a real over-commit still forces the down-switch to `fresh`.
+    let at_rest = HostBudget {
+        usable_bytes: host.usable_bytes.saturating_add(inc.weights_bytes),
+        perf_cores: host.perf_cores,
+    };
+    // Even crediting its own residency, can the incumbent still hold a lane? If
+    // not, a real squeeze has genuinely evicted it → take `fresh`.
+    if inc.weights_bytes.saturating_add(inc.kv_at(MIN_SERVE_CTX)) > at_rest.usable_bytes {
+        return fresh;
+    }
+    // Switch UP to `fresh` ONLY if it is strictly more capable AND fits the REAL
+    // (un-credited) budget with headroom — loading a bigger NEW model needs actual
+    // free memory, so this test uses `host`, not `at_rest`, and the headroom stops
+    // a transient budget bump from flapping up.
     let headroom_budget = (host.usable_bytes as f64 * (1.0 - SWITCH_UP_HEADROOM)) as u64;
-    let upgrade_worth_it = candidates
-        .iter()
-        .find(|c| c.model_id == fresh.base_model_id)
+    let upgrade_worth_it = fresh
+        .as_ref()
+        .and_then(|f| candidates.iter().find(|c| c.model_id == f.base_model_id))
         .is_some_and(|f| {
             f.capability_rank > inc.capability_rank
                 && f.weights_bytes.saturating_add(f.kv_at(MIN_SERVE_CTX)) <= headroom_budget
         });
     if upgrade_worth_it {
-        return Some(fresh);
+        return fresh;
     }
-    // Keep the incumbent: re-rank it to the top so `plan_serving` selects it
-    // and recomputes lanes + resident against the live budget — reusing all the
-    // fit/lane/pack logic instead of duplicating it here.
+    // Keep the incumbent: re-rank it to the top so `plan_serving` selects it and
+    // recomputes lanes + resident against the AT-REST budget (so its own residency
+    // doesn't shrink its own window/lanes) — reusing all the fit/lane/pack logic
+    // instead of duplicating it here.
     let mut promoted: Vec<ModelFootprint> = candidates.to_vec();
     if let Some(m) = promoted.iter_mut().find(|m| m.model_id == inc_id) {
         m.capability_rank = u8::MAX;
     }
-    plan_serving(host, &promoted)
+    plan_serving(at_rest, &promoted)
 }
 
 fn bytes_gb(bytes: u64) -> f64 {
@@ -336,6 +371,23 @@ mod tests {
             fp("qwen3.5-4b", 3, 30_000, 262_144, 2), // good general (47 tok/s on M5)
             fp("coder-sentinel-14b", 9, 90_000, 262_144, 3), // rich coding model — more RAM each
         ]
+    }
+
+    // what this catches: resident_bytes folds weights + per-lane KV × lanes into
+    // ONE honest residency — the number serving reports as its footprint(). If it
+    // dropped the lane multiply (or the KV term entirely, the pre-#79 bug), the
+    // board would under-count serving and the missing bytes would masquerade as
+    // external contention. 9GB weights + 4 lanes × (90_000 × 11_008) KV.
+    #[test]
+    fn resident_folds_weights_plus_per_lane_kv() {
+        let f = fp("coder-sentinel-14b", 9, 90_000, 262_144, 3);
+        let per_lane_kv = 90_000u64 * 11_008; // kv_at(11_008)
+        assert_eq!(f.kv_at(11_008), per_lane_kv);
+        assert_eq!(f.resident_bytes(11_008, 4), 9 * GB + per_lane_kv * 4);
+        // A lane-less snapshot (lanes == 0) still charges one lane's KV, never zero.
+        assert_eq!(f.resident_bytes(11_008, 0), 9 * GB + per_lane_kv);
+        // No window served yet → weights only (KV term is zero).
+        assert_eq!(f.resident_bytes(0, 4), 9 * GB);
     }
 
     // what this catches: an 8GB Air must NOT be handed the 14B (won't fit) and
@@ -461,12 +513,43 @@ mod tests {
         assert_eq!(stable.base_model_id, "big", "more capable + ample headroom → upgrade");
     }
 
-    // what this catches: forced switch DOWN — when the incumbent no longer fits
-    // the (shrunken) budget, we drop to what fits instead of clinging to it.
+    // what this catches: forced switch when the incumbent has DROPPED OFF DISK
+    // (no longer among candidates) — we can't keep serving a model whose weights
+    // vanished, so we fall to whatever is actually present. This is the genuine
+    // forced-down path now that a RESIDENT incumbent is credited its own weights
+    // (memory-pressure eviction of a resident model for a smaller one is provably
+    // unreachable: room for the smaller model's full weights implies room for the
+    // incumbent's tiny KV floor).
     #[test]
-    fn stable_forced_down_when_incumbent_no_longer_fits() {
-        let host = HostBudget { usable_bytes: 2 * GB, perf_cores: 2 }; // big (9.7) can't fit
-        let stable = plan_serving_stable(host, &pair(), Some("big")).unwrap();
-        assert_eq!(stable.base_model_id, "small", "incumbent evicted — forced down to what fits");
+    fn stable_forced_down_when_incumbent_gone_from_disk() {
+        let host = HostBudget { usable_bytes: 20 * GB, perf_cores: 6 };
+        let only_small = vec![fp("small", 1, 4_000, 32_768, 1)]; // "big" no longer on disk
+        let stable = plan_serving_stable(host, &only_small, Some("big")).unwrap();
+        assert_eq!(stable.base_model_id, "small", "incumbent gone from disk → serve what's present");
+    }
+
+    // what this catches: THE boot-load flap (this session's live bug). While the
+    // incumbent loads, its own ~9GB of weights read as "used" in live free memory,
+    // so the reported budget craters (35GB → 8GB) and a plain plan would drop the
+    // incumbent for a smaller model that "fits" the depressed budget — tearing down
+    // the healthy lane mid-deliberation (14b → 4b → 14b). Crediting the incumbent's
+    // OWN weights back (it is already resident) keeps it selected across its own
+    // load. regression for the 14b→4b→14b flap at boot.
+    #[test]
+    fn stable_survives_its_own_load_dip_no_flap() {
+        // Mid-load the monitor reports only 8GB free because the 9GB incumbent's
+        // weights are paging in; steady-state would be far higher.
+        let dipped = HostBudget { usable_bytes: 8 * GB, perf_cores: 6 };
+        // Plain plan at the depressed budget WOULD flap: big (9GB) no longer "fits"
+        // 8GB, so fresh prefers the smaller model.
+        assert_eq!(
+            plan_serving(dipped, &pair()).unwrap().base_model_id,
+            "small",
+            "depressed-budget plain plan would flap to the smaller model"
+        );
+        // With the incumbent credited its own weights back, the resident big stays.
+        let stable = plan_serving_stable(dipped, &pair(), Some("big")).unwrap();
+        assert_eq!(stable.base_model_id, "big", "incumbent survives its OWN load dip — no flap");
+        assert!(stable.lanes >= 1, "kept model still gets ≥1 lane");
     }
 }

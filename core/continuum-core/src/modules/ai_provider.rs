@@ -569,19 +569,32 @@ impl AIProviderModule {
                     "Registering in-process llama.cpp adapter for model `{}`",
                     model_meta.id
                 ));
-                // Clamp to 32768 tokens. Models like qwen3.5-4b advertise
-                // n_ctx_train=262144, which would allocate a multi-GB F16
-                // KV cache per seq on load and reliably fail first-decode
-                // with `llama_decode returned -3` on any Mac that can't
-                // fit ~50GB of scratch. 32768 matches DMR's default and
-                // comfortably exceeds every persona RAG we currently
-                // build. Raise after footprint_registry reports real KV
-                // bytes and we have telemetry proving headroom.
+                // Serve at min(model's trained context, a conservative
+                // device-independent KV ceiling). The trained context comes
+                // from the Model row (`context_window`, hydrated from the
+                // GGUF `context_length` header) — never a per-model constant
+                // baked in here. A model advertising a very large trained
+                // window would otherwise allocate a multi-GB F16 KV cache
+                // per seq on load and reliably fail first-decode with
+                // `llama_decode returned -3` on any device that can't fit
+                // tens of GB of scratch, so we cap it; a model whose trained
+                // window is already below the ceiling serves at its real
+                // value rather than a fictitious larger one.
+                //
+                // The ceiling is a placeholder for the real budget: available
+                // VRAM (via the ResourceGovernor lease) divided by THIS
+                // model's KV bytes/token (derivable from ModelArchConfig) —
+                // see task #79. Until that lands, KV_SAFE_CONTEXT_CEILING is
+                // the conservative floor-of-safety that fits the smallest
+                // target device and comfortably exceeds every persona RAG we
+                // currently build.
+                const KV_SAFE_CONTEXT_CEILING: u32 = 32_768;
+                let effective_context = model_meta.context_window.min(KV_SAFE_CONTEXT_CEILING);
                 let adapter_base = crate::inference::LlamaCppAdapter::with_model_id(
                     gguf_path.clone(),
                     model_meta.id.clone(),
                 )
-                .with_context_length(32768);
+                .with_context_length(effective_context);
 
                 // Probe the GGUF architecture at registration time and
                 // enable multi-seq continuous batching when safe (per

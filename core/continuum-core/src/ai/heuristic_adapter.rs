@@ -705,7 +705,8 @@ mod tests {
     /// [[inference-is-an-adapter-always-in-the-loop]].
     #[tokio::test]
     async fn routes_through_inference_llm_request_command_surface() {
-        use crate::genome::working_set::{ArtifactId, PersonaId};
+        use crate::genome::working_set::ArtifactId;
+        use crate::identity::PeerId;
         use crate::inference::llm_module::{
             CompositionPlan, GenerationBudget, InferenceRequest, InferenceRequestId,
             SamplingParams,
@@ -720,7 +721,7 @@ mod tests {
 
         let request = InferenceRequest {
             request_id: InferenceRequestId::new(Uuid::from_u128(7)),
-            persona: PersonaId::new(Uuid::from_u128(8)),
+            persona: PeerId::from_uuid(Uuid::from_u128(8)),
             composition: CompositionPlan(ArtifactId::new(Uuid::from_u128(9))),
             prompt_tokens: vec![],
             prompt_text: Some("integration prompt for heuristic adapter".to_string()),

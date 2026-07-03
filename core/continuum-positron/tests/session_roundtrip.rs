@@ -53,17 +53,18 @@ use std::sync::Arc;
 
 use continuum_positron::{
     apply_subscribe, ChatMessageView, ChatViewState, ClientMessage, KindRevision, KnownKind,
-    PersonaSlotView, Revisions, SenderKind, ServerMessage, StateBuilder, StateLayer,
+    Provenance, Revisions, RosterSlotView, SenderKind, ServerMessage, StateBuilder, StateLayer,
     SubstrateStateCache,
 };
+use std::collections::BTreeMap;
 use uuid::Uuid;
 
-/// Helper: build a ChatViewState with a single message + one persona
+/// Helper: build a ChatViewState with a single message + one member
 /// in the roster. Reused across tests so each one stays focused on
 /// the property under test.
 fn build_chat_state(content: &str) -> ChatViewState {
     let room_id = Uuid::from_u128(0xa);
-    let persona_id = Uuid::from_u128(0xb);
+    let member_id = Uuid::from_u128(0xb);
     let message_id = Uuid::from_u128(0xc);
     let sender_id = Uuid::from_u128(0xd);
     ChatViewState {
@@ -75,12 +76,21 @@ fn build_chat_state(content: &str) -> ChatViewState {
             sender_id,
             sender_name: "Joel".into(),
             sender_kind: SenderKind::Human,
+            integrations: BTreeMap::new(),
+            provenance: Provenance {
+                runtime: "interactive".into(),
+            },
             content: content.into(),
             timestamp: 1_700_000_000_000,
         }],
-        roster: vec![PersonaSlotView {
-            persona_id,
+        roster: vec![RosterSlotView {
+            member_id,
             display_name: "Helper".into(),
+            kind: SenderKind::Agent,
+            integrations: BTreeMap::new(),
+            provenance: Provenance {
+                runtime: "claude".into(),
+            },
             active: true,
         }],
     }

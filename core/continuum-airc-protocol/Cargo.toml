@@ -8,6 +8,13 @@ description = "Wire-shape types for the substrate's airc command + event protoco
 serde = { workspace = true }
 serde_json = { workspace = true }
 uuid = { workspace = true }
+# ts-rs generates the TypeScript mirror of the wire envelopes into
+# protocol/typescript/. The thin-client WS transport (continuum-core
+# ipc::ws ↔ the TS WebSocketTransport) is the first time these shapes
+# cross to TypeScript, so the envelope + WS-frame types derive `TS`
+# here — one owner of the wire shape, generated (never hand-written)
+# on the client side.
+ts-rs = { workspace = true }
 # airc primitives the shared wire helpers consume (Body, Headers,
 # MentionTarget, PeerId, TranscriptEvent). Lets the
 # resolve_subscribe / decode_deliver_frame / matches_subscription
@@ -15,3 +22,11 @@ uuid = { workspace = true }
 # wire-shape source of truth that both substrate AND
 # continuum-client consume.
 airc-core = { workspace = true }
+# positron-core owns the cross-language UI contract's session frames
+# (Subscribe/Observe/State + StateEnvelope/StateLayer/ObserverSpec/
+# KindRevision). The thin-client WS envelope multiplexes those state-
+# subscription frames alongside the RPC Command/Response pair, so the
+# WS-frame types reference positron's field types directly — one source
+# of truth, no re-mirrored Subscribe/Observe shapes. Same pin as
+# continuum-positron (the substrate side of the same contract).
+positron-core = { git = "https://github.com/CambrianTech/positron", tag = "v0.1.1" }

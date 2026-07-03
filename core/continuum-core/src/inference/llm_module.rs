@@ -51,7 +51,8 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 use uuid::Uuid;
 
-use crate::genome::working_set::{ArtifactId, PageRef, PersonaId};
+use crate::genome::working_set::{ArtifactId, PageRef};
+use crate::identity::PeerId;
 
 // ─── ID newtype ─────────────────────────────────────────────────
 
@@ -203,7 +204,8 @@ pub enum FinishReason {
 )]
 pub struct InferenceRequest {
     pub request_id: InferenceRequestId,
-    pub persona: PersonaId,
+    #[ts(type = "string")]
+    pub persona: PeerId,
     pub composition: CompositionPlan,
     /// Tokenized prompt for raw-token engines. PR-1 ships this as
     /// the canonical input; PR-4 adds `prompt_text` for adapter-
@@ -240,7 +242,8 @@ pub struct InferenceRequest {
 )]
 pub struct InferenceComplete {
     pub request_id: InferenceRequestId,
-    pub persona: PersonaId,
+    #[ts(type = "string")]
+    pub persona: PeerId,
     /// Tokens emitted by the model. Raw-token engines populate
     /// directly; adapter-based engines (PR-4) populate empty Vec
     /// + the actual output goes in `completion_text` because the
@@ -283,7 +286,8 @@ pub struct InferenceComplete {
 )]
 pub struct FirstTokenEmitted {
     pub request_id: InferenceRequestId,
-    pub persona: PersonaId,
+    #[ts(type = "string")]
+    pub persona: PeerId,
     /// Microseconds from request receipt to first token emission.
     /// Microsecond precision because sub-ms TTFT is achievable on
     /// hot-path warm models.
@@ -308,7 +312,8 @@ pub struct FirstTokenEmitted {
 )]
 pub struct ResidencyFault {
     pub request_id: InferenceRequestId,
-    pub persona: PersonaId,
+    #[ts(type = "string")]
+    pub persona: PeerId,
     pub missing_page: PageRef,
     /// Loud reason per Joel's never-swallow-errors rule. Examples:
     /// "page evicted mid-turn by Bench LFU policy", "foundry
@@ -324,8 +329,8 @@ mod tests {
     use super::*;
     use crate::genome::working_set::{PageKind, PageOffset};
 
-    fn sample_persona() -> PersonaId {
-        PersonaId::new(Uuid::from_u128(1))
+    fn sample_persona() -> PeerId {
+        PeerId::from_uuid(Uuid::from_u128(1))
     }
     fn sample_request_id() -> InferenceRequestId {
         InferenceRequestId::new(Uuid::from_u128(42))

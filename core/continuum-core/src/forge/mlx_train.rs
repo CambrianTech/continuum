@@ -91,6 +91,15 @@ pub struct MlxTrainSpec {
     pub learning_rate: f64,
     /// `--max-seq-length`.
     pub max_seq_length: u32,
+    /// `--grad-checkpoint`: recompute layer activations in the backward pass
+    /// instead of holding them all in memory. Output-EQUIVALENT (same gradients,
+    /// recomputed not stored) — it trades ~20-30% compute for a large drop in
+    /// peak working-set. On Apple-Silicon unified memory the binding constraint
+    /// is the Metal command-buffer working set (peak ∝ num_layers × seq_len at
+    /// the backward step), NOT total RAM — so all-layer LoRA at a useful seq_len
+    /// OOMs without this even with most of system RAM free. Default ON for the
+    /// genome loop (memory is the constraint, the weights are identical).
+    pub grad_checkpoint: bool,
     /// `--fine-tune-type` — "lora" (the genome layer) by default.
     pub fine_tune_type: String,
     /// EXPLICIT normalizations a GGUF-published base's HF form may need before
@@ -146,19 +155,31 @@ pub struct MlxTrainOutput {
 /// invariant is pinned independently of a real run. Everything else rides as an
 /// explicit CLI flag (see [`build_train_args`]).
 pub fn build_lora_config_yaml(spec: &MlxTrainSpec) -> String {
+    render_lora_parameters_yaml(spec.rank, spec.scale, spec.dropout, &spec.target_keys)
+}
+
+/// The pure `lora_parameters` YAML block — the ONE place the substrate encodes the
+/// mlx_lm LoRA knobs that have NO CLI flag (`rank`/`scale`/`dropout`/`keys`). EVERY
+/// training path renders through here — the forge primitive above AND the genome
+/// [`crate::genome::fine_tuning`] `FineTuningAdapter` — so the scale~2 invariant
+/// (NEVER mlx_lm's built-in default 20.0, which over-bakes a gene ~10×) holds
+/// uniformly. Without a `-c` config carrying these, mlx_lm silently substitutes its
+/// own defaults: that is exactly the bug this seam exists to prevent.
+///
+/// `keys` EMPTY → no `keys:` line, leaving mlx_lm on its own default target set
+/// (the explicit "let the trainer decide" escape hatch); a non-empty set pins the
+/// convert-safe targets (see [`MlxTrainSpec::target_keys`]).
+pub fn render_lora_parameters_yaml(rank: u32, scale: f64, dropout: f64, keys: &[String]) -> String {
     // Render scale/dropout as floats even when integral (`2` → `2.0`) so the YAML
     // is unambiguously numeric and self-documenting about being a scale, not a count.
     let mut yaml = format!(
         "lora_parameters:\n  rank: {}\n  scale: {:.1}\n  dropout: {}\n",
-        spec.rank, spec.scale, spec.dropout
+        rank, scale, dropout
     );
-    // The convert-safe target set (see `MlxTrainSpec::target_keys`). EMPTY leaves
-    // mlx_lm on its default set — which produces unconvertible attention genes for
-    // qwen3.5; the genome-loop caller always supplies the MLP set. Rendered as a
-    // YAML flow list of quoted suffixes (mlx_lm matches them against module names).
-    if !spec.target_keys.is_empty() {
-        let quoted = spec
-            .target_keys
+    // Rendered as a YAML flow list of quoted suffixes (mlx_lm matches them against
+    // module names).
+    if !keys.is_empty() {
+        let quoted = keys
             .iter()
             .map(|k| format!("\"{k}\""))
             .collect::<Vec<_>>()
@@ -172,7 +193,7 @@ pub fn build_lora_config_yaml(spec: &MlxTrainSpec) -> String {
 /// continuum runs is pinned without spawning a trainer. `config_path` is the YAML
 /// from [`build_lora_config_yaml`].
 pub fn build_train_args(spec: &MlxTrainSpec, config_path: &Path) -> Vec<String> {
-    vec![
+    let mut args = vec![
         "-m".into(),
         "mlx_lm".into(),
         "lora".into(),
@@ -197,7 +218,13 @@ pub fn build_train_args(spec: &MlxTrainSpec, config_path: &Path) -> Vec<String> 
         spec.adapter_out.to_string_lossy().into_owned(),
         "-c".into(),
         config_path.to_string_lossy().into_owned(),
-    ]
+    ];
+    // `--grad-checkpoint` is a presence flag (no value). Appended last so the
+    // ordered-prefix assertions in the arg tests stay stable.
+    if spec.grad_checkpoint {
+        args.push("--grad-checkpoint".into());
+    }
+    args
 }
 
 /// Apply the EXPLICIT, caller-supplied [`MlxBasePrep`] normalizations to an HF
@@ -390,6 +417,7 @@ mod tests {
             iters: 100,
             learning_rate: 2e-4,
             max_seq_length: 2048,
+            grad_checkpoint: true,
             fine_tune_type: "lora".into(),
             base_prep: MlxBasePrep::default(),
         }
@@ -436,6 +464,20 @@ mod tests {
         assert!(!y.contains("keys:"), "empty target set must omit keys: {y}");
     }
 
+    // what this catches: the SHARED render seam the genome FineTuningAdapter emits
+    // through (genome/fine_tuning/mlx_lora_adapter.rs::lora_config_yaml). Both paths
+    // MUST land the same scale~2 invariant; a regression here that dropped the scale
+    // line (or rounded it to an int count) would let mlx_lm fall back to its built-in
+    // scale 20.0 on the genome path — the over-bake that served gibberish and got a
+    // good gene wrongly rejected. Empty keys → no `keys:` line (genome default).
+    #[test]
+    fn render_seam_pins_scale_and_omits_empty_keys() {
+        let y = render_lora_parameters_yaml(8, 2.0, 0.0, &[]);
+        assert!(y.contains("rank: 8"), "yaml: {y}");
+        assert!(y.contains("scale: 2.0"), "yaml: {y}");
+        assert!(!y.contains("keys:"), "empty keys must omit the line: {y}");
+    }
+
     // what this catches: the argv mirrors the mlx_lm.lora CLI contract — train mode,
     // the base model, the data dir, lora fine-tune type, and the config carrying the
     // LoRA hyperparameters. A drift in any flag name silently no-ops the trainer or
@@ -453,6 +495,26 @@ mod tests {
         assert!(joined.contains("--adapter-path /out"));
         assert!(joined.contains("-c /out/mlx_train_config.yaml"));
         assert!(joined.contains("--num-layers -1"));
+        // spec() defaults grad_checkpoint = true → the presence flag is appended.
+        assert!(joined.contains("--grad-checkpoint"));
+    }
+
+    // what this catches: --grad-checkpoint is a PRESENCE flag gated on the spec bool —
+    // emitted when on, absent when off (mlx_lm rejects `--grad-checkpoint false`, so it
+    // must never appear with a value). The OOM fix depends on it being passed; turning it
+    // off must drop it entirely, not pass a falsey value.
+    #[test]
+    fn grad_checkpoint_is_a_gated_presence_flag() {
+        let cfg = PathBuf::from("/out/mlx_train_config.yaml");
+        let mut off = spec();
+        off.grad_checkpoint = false;
+        assert!(!build_train_args(&off, &cfg).iter().any(|a| a == "--grad-checkpoint"));
+        let mut on = spec();
+        on.grad_checkpoint = true;
+        let on_args = build_train_args(&on, &cfg);
+        assert!(on_args.iter().any(|a| a == "--grad-checkpoint"));
+        // never paired with a value token
+        assert!(!on_args.iter().any(|a| a == "false" || a == "true"));
     }
 
     // what this catches: run_mlx_train fails loud (not silently) when the train base

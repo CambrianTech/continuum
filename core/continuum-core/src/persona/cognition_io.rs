@@ -47,7 +47,7 @@ use uuid::Uuid;
 /// Hint about what kind of event produced this signal. The pipeline
 /// executor may use it for routing decisions (e.g., a game pipeline
 /// only acts on `FrameUpdate` or `AutonomousTick`).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[ts(export, export_to = "../../../protocol/typescript/recipe/SignalKind.ts")]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum SignalKind {
@@ -70,7 +70,7 @@ pub enum SignalKind {
 /// Who emitted the signal — used for system-prompt composition + for
 /// pipelines that filter by originator (e.g., a recipe step that
 /// only responds to humans, not other personas).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[ts(
     export,
     export_to = "../../../protocol/typescript/recipe/SignalOriginator.ts"
@@ -95,7 +95,7 @@ pub enum SignalOriginator {
 /// Input to the cognition layer — the host's raw event, pre-cognition.
 /// Open enough that ANY domain (chat, voice, video, code, game, AR)
 /// emits the same shape.
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[ts(export, export_to = "../../../protocol/typescript/recipe/Signal.ts")]
 #[serde(rename_all = "camelCase")]
 pub struct Signal {
@@ -131,7 +131,7 @@ pub struct Signal {
 /// for O(1) membership checks. Conversion happens once per
 /// `build_respond_input` call — negligible vs the inference work
 /// that follows.
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[ts(
     export,
     export_to = "../../../protocol/typescript/recipe/PersonaContext.ts"
@@ -192,6 +192,32 @@ impl PersonaContext {
             display_name: self.display_name.clone(),
         }
     }
+}
+
+// ─── Respond request envelope ────────────────────────────────────────
+
+/// Wire envelope for `cognition/respond`: the host's raw event
+/// ([`Signal`]) plus the per-persona stable context ([`PersonaContext`]).
+///
+/// The legacy `handle_command` arm read these as two separate top-level
+/// params (`signal` + `personaContext`); this struct deserializes the
+/// same `{ signal, personaContext }` payload in one step. No `recipe`
+/// field — recipes are JSON data the host walks, not something the
+/// cognition layer projects; an old-shape caller that still sends a
+/// `recipe` key has it ignored (serde drops unknown fields), matching
+/// the arm's documented "extra `recipe` field ignored" behavior.
+#[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/recipe/RespondRequest.ts"
+)]
+#[serde(rename_all = "camelCase")]
+pub struct RespondRequest {
+    /// The host's raw pre-cognition event.
+    pub signal: Signal,
+    /// The persona's stable per-turn context (identity, model, caps,
+    /// history, room). Field serializes as `personaContext` on the wire.
+    pub persona_context: PersonaContext,
 }
 
 // ─── Projection ──────────────────────────────────────────────────────

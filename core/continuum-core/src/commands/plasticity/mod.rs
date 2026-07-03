@@ -5,8 +5,9 @@
 //! plasticity engine holds no per-instance state, so each command self-registers
 //! via the unit-struct `action_command!` form and needs no module `commands()`
 //! wiring. The topology-construction domain logic stays in
-//! [`crate::modules::plasticity`] (`build_topology`, `infer_hidden_size`, the
-//! arch table); these command bodies orchestrate over it.
+//! [`crate::modules::plasticity`] (`build_topology`); architecture dims are sourced
+//! from the base model artifact via [`crate::model_registry::ModelArchConfig::from_artifact`]
+//! — never guessed from the model name. These command bodies orchestrate over it.
 //!
 //! All five are `access: Privileged`: they read/write arbitrary filesystem paths
 //! and perform heavy model surgery (head pruning, mixed-precision quantization,

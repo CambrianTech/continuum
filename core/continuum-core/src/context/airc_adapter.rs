@@ -70,6 +70,16 @@ impl crate::persona::room_doctrine_source::AircDoctrineReader for AircHandleAdap
 }
 
 #[async_trait]
+impl crate::persona::wall_source::WallReader for AircHandleAdapter {
+    async fn wall_posts(
+        &self,
+    ) -> Result<Vec<airc_core::doctrine::WallPostPublished>, AircError> {
+        // Whole board (all categories); the source filters/labels per post.
+        self.inner.wall_posts(None).await
+    }
+}
+
+#[async_trait]
 impl crate::persona::active_work_source::AircWorkReader for AircHandleAdapter {
     async fn active_claims(&self) -> Result<Vec<airc_lib::WorkCard>, AircError> {
         let status = self

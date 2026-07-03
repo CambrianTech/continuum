@@ -3,8 +3,8 @@
 //!
 //! Holds:
 //! - `Vec<Box<dyn TierStore>>` — the tier chain, ordered Fast → Frozen
-//! - `RwLock<HashMap<PersonaId, WorkingSet>>` — per-persona working sets
-//! - `RwLock<HashMap<PageRef, PersonaId>>` — page-ownership map for
+//! - `RwLock<HashMap<PeerId, WorkingSet>>` — per-persona working sets
+//! - `RwLock<HashMap<PageRef, PeerId>>` — page-ownership map for
 //!   the MMU-style `audit_access` enforcement
 //!
 //! Page-in walks the tier chain from highest (Fast) to lowest (Frozen),
@@ -49,9 +49,10 @@ use super::manager::WorkingSetManager;
 use super::store::TierStore;
 use super::tier::{TierError, TierRole};
 use super::working_set::{
-    AccessDenied, PageFault, PageHandle, PageRef, PersonaId, ResidentPage, WorkingSet,
+    AccessDenied, PageFault, PageHandle, PageRef, ResidentPage, WorkingSet,
     WorkingSetCapacity,
 };
+use crate::identity::PeerId;
 use crate::runtime::message_bus::MessageBus;
 use crate::runtime::registry::ModuleRegistry;
 
@@ -87,12 +88,12 @@ pub struct LocalWorkingSetManager {
     /// Per-persona working set state. RwLock because read-heavy
     /// (every audit_access + working_set query) with occasional
     /// write (page_in / page_out modifications).
-    working_sets: RwLock<HashMap<PersonaId, WorkingSet>>,
+    working_sets: RwLock<HashMap<PeerId, WorkingSet>>,
     /// Page-ownership map for cross-persona compartmentalization.
     /// `audit_access` denies if `persona != owner`. PR-3 populates
     /// this via `register_page_owner`; PR-4 may move to a typed
     /// genome-region-keyed table per GENOME-FOUNDRY-SENTINEL Part 4.
-    page_owners: RwLock<HashMap<PageRef, PersonaId>>,
+    page_owners: RwLock<HashMap<PageRef, PeerId>>,
     /// Optional bus hook for auto-publishing events. `None` = bus-less
     /// mode (PR-3 behavior, no publishing). `Some` = wire every typed
     /// event to the artifact dispatch path via the genome::bus
@@ -148,7 +149,7 @@ impl LocalWorkingSetManager {
     /// `page_in` to an unregistered persona returns a `PageFault`
     /// with `from_role: None` (the page never existed for that
     /// persona because the persona itself doesn't exist yet).
-    pub fn register_persona(&self, persona: PersonaId, capacity: WorkingSetCapacity) {
+    pub fn register_persona(&self, persona: PeerId, capacity: WorkingSetCapacity) {
         let ws = WorkingSet::new(persona, capacity);
         self.working_sets.write().insert(persona, ws);
     }
@@ -157,7 +158,7 @@ impl LocalWorkingSetManager {
     /// `audit_access(other_persona, page)` returns `AccessDenied`.
     /// Pages not registered here are treated as substrate-shared
     /// (no owner; anyone can access).
-    pub fn register_page_owner(&self, page: PageRef, owner: PersonaId) {
+    pub fn register_page_owner(&self, page: PageRef, owner: PeerId) {
         self.page_owners.write().insert(page, owner);
     }
 
@@ -170,7 +171,7 @@ impl LocalWorkingSetManager {
 
 #[async_trait]
 impl WorkingSetManager for LocalWorkingSetManager {
-    async fn page_in(&self, persona: PersonaId, page: PageRef) -> Result<PageHandle, PageFault> {
+    async fn page_in(&self, persona: PeerId, page: PageRef) -> Result<PageHandle, PageFault> {
         // Already resident? — fast path.
         {
             let working_sets = self.working_sets.read();
@@ -258,7 +259,7 @@ impl WorkingSetManager for LocalWorkingSetManager {
 
     async fn page_out(
         &self,
-        persona: PersonaId,
+        persona: PeerId,
         page: PageRef,
         to: TierRole,
     ) -> Result<(), TierError> {
@@ -297,7 +298,7 @@ impl WorkingSetManager for LocalWorkingSetManager {
         Err(TierError::RoleNotConfigured { role: to })
     }
 
-    fn working_set(&self, _persona: PersonaId) -> Option<&WorkingSet> {
+    fn working_set(&self, _persona: PeerId) -> Option<&WorkingSet> {
         // PR-3 cannot return a borrow through the RwLock without
         // exposing the lock guard type — that breaks the trait
         // signature. PR-4 will introduce a `Snapshot` type that
@@ -315,7 +316,7 @@ impl WorkingSetManager for LocalWorkingSetManager {
         None
     }
 
-    fn audit_access(&self, persona: PersonaId, page: PageRef) -> Result<(), AccessDenied> {
+    fn audit_access(&self, persona: PeerId, page: PageRef) -> Result<(), AccessDenied> {
         let result: Result<(), AccessDenied> = match self.page_owners.read().get(&page).copied() {
             Some(owner) if owner != persona => Err(AccessDenied {
                 actor: persona,
@@ -341,7 +342,7 @@ impl LocalWorkingSetManager {
     /// Test/diagnostic helper: snapshot the working set for a persona.
     /// Clones — not for hot path. Used by tests + future telemetry
     /// modules to inspect state without holding the read lock.
-    pub fn working_set_snapshot(&self, persona: PersonaId) -> Option<WorkingSet> {
+    pub fn working_set_snapshot(&self, persona: PeerId) -> Option<WorkingSet> {
         self.working_sets.read().get(&persona).cloned()
     }
 }
@@ -507,8 +508,8 @@ mod tests {
         }
     }
 
-    fn make_persona(low_bits: u128) -> PersonaId {
-        PersonaId::new(Uuid::from_u128(low_bits))
+    fn make_persona(low_bits: u128) -> PeerId {
+        PeerId::from_uuid(Uuid::from_u128(low_bits))
     }
 
     fn capacity_uma() -> WorkingSetCapacity {

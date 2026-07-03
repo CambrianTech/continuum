@@ -18,14 +18,18 @@ use std::time::Instant;
 use ts_rs::TS;
 
 /// A recent AI response to check for adequacy.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/persona/RecentResponse.ts"
+)]
 pub struct RecentResponse {
     pub sender_name: String,
     pub text: String,
 }
 
 /// Result of the post-inference adequacy check.
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[ts(
     export,
     export_to = "../../../protocol/typescript/persona/AdequacyResult.ts"

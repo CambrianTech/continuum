@@ -440,6 +440,14 @@ impl GpuMemoryManager {
         self.subsystems[GpuSubsystem::Inference.index()].budget()
     }
 
+    /// Bytes currently allocated to one subsystem — the same atomic `stats()`
+    /// reports, in bytes rather than a rounded MB float. This is the honest,
+    /// measured residency source a `ResourceConsumer::footprint()` reads (e.g.
+    /// the voice consumer reporting its resident TTS weights).
+    pub fn used_bytes(&self, subsystem: GpuSubsystem) -> u64 {
+        self.subsystems[subsystem.index()].used()
+    }
+
     /// Inference subsystem budget in MB.
     pub fn inference_budget_mb(&self) -> f32 {
         self.inference_budget_bytes() as f32 / (1024.0 * 1024.0)

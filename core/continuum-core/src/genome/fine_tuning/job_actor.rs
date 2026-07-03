@@ -53,7 +53,7 @@ use super::lora_module::{LoRAError, LoRAModule};
 use super::safetensors_io::{write_lora_safetensors, SafetensorsIoError};
 use super::training_loop::{DataLoader, LoRATrainer, TrainingError};
 use super::types::{
-    JobMetrics, LoRAHyperparams, ScheduleParams, TrainingArtifact, TrainingDataset,
+    ArtifactFormat, JobMetrics, LoRAHyperparams, ScheduleParams, TrainingArtifact, TrainingDataset,
     TrainingStatus,
 };
 
@@ -367,6 +367,10 @@ fn run_actor(
                 .unwrap_or_default()
         ),
         local_path: Some(output_path),
+        // The Candle skeleton (#231-#233) writes a synthetic-base LoRA
+        // safetensors — not yet a gene loadable against a real base, so the
+        // completion sentinel will refuse to page it in until that path is real.
+        format: ArtifactFormat::CandleSafetensors,
         metrics: JobMetrics {
             trained_tokens,
             final_loss: final_train_loss.map(|v| v as f64),

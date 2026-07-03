@@ -17,7 +17,7 @@ use ts_rs::TS;
 const GATING_PROVIDER: &str = "groq";
 const DEFAULT_GATING_MODEL: &str = "llama-3.1-8b-instant";
 
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 #[ts(
     export,
@@ -34,7 +34,7 @@ pub struct AIDecisionContext {
     pub system_prompt: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 #[ts(
     export,
@@ -46,7 +46,7 @@ pub struct GatingTriggerMessage {
     pub content: GatingMessageContent,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 #[ts(
     export,
@@ -56,7 +56,7 @@ pub struct GatingMessageContent {
     pub text: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 #[ts(
     export,
@@ -72,7 +72,7 @@ pub struct GatingRagContext {
     pub metadata: GatingRagMetadata,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 #[ts(
     export,
@@ -84,7 +84,7 @@ pub struct GatingRagMetadata {
     pub recipe_name: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 #[ts(
     export,
@@ -101,7 +101,7 @@ pub struct GatingConversationMessage {
     pub timestamp: Option<u64>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 #[ts(
     export,
@@ -147,7 +147,7 @@ pub struct AIGatingDecision {
     pub factors: Option<AIGatingDecisionFactors>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 #[ts(
     export,

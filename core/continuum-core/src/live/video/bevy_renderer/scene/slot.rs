@@ -37,9 +37,9 @@ pub struct RenderSlot {
     /// of the live head position so breathing/sway don't bob the camera.
     pub camera_head_y: Option<f32>,
     /// All objects in this scene, keyed by a stable string ID.
-    /// For avatars, the key is typically the persona identity.
-    /// For props/environments, application-defined.
-    pub objects: HashMap<String, SceneObject>,
+    /// For avatars, the key is the persona identity.
+    /// For props, application-defined. The key IS the object's id.
+    pub objects: HashMap<String, Box<dyn SceneObject>>,
 }
 
 impl RenderSlot {
@@ -73,20 +73,45 @@ impl RenderSlot {
         self.avatars().any(|(_, a)| a.is_speaking())
     }
 
-    // --- Typed avatar accessors ---
+    // --- Generic typed accessors (the ONE downcast seam) ---
+
+    /// Borrow an object of concrete type `T` by id, if present and of that type.
+    pub fn object_as<T: 'static>(&self, id: &str) -> Option<&T> {
+        self.objects.get(id).and_then(|obj| obj.as_any().downcast_ref::<T>())
+    }
+
+    /// Mutably borrow an object of concrete type `T` by id.
+    pub fn object_as_mut<T: 'static>(&mut self, id: &str) -> Option<&mut T> {
+        self.objects
+            .get_mut(id)
+            .and_then(|obj| obj.as_any_mut().downcast_mut::<T>())
+    }
+
+    /// Iterate all objects of concrete type `T` in this scene, with their ids.
+    pub fn objects_of<T: 'static>(&self) -> impl Iterator<Item = (&str, &T)> {
+        self.objects
+            .iter()
+            .filter_map(|(id, obj)| obj.as_any().downcast_ref::<T>().map(|t| (id.as_str(), t)))
+    }
+
+    /// Mutably iterate all objects of concrete type `T` in this scene.
+    pub fn objects_of_mut<T: 'static>(&mut self) -> impl Iterator<Item = (&str, &mut T)> {
+        self.objects.iter_mut().filter_map(|(id, obj)| {
+            obj.as_any_mut().downcast_mut::<T>().map(|t| (id.as_str(), t))
+        })
+    }
+
+    // --- Typed avatar accessors (thin wrappers over the generic seam;
+    //     signatures preserved so existing call sites are untouched) ---
 
     /// Iterate all avatars in this scene.
     pub fn avatars(&self) -> impl Iterator<Item = (&str, &AvatarObject)> {
-        self.objects
-            .iter()
-            .filter_map(|(id, obj)| obj.as_avatar().map(|a| (id.as_str(), a)))
+        self.objects_of::<AvatarObject>()
     }
 
     /// Mutably iterate all avatars in this scene.
     pub fn avatars_mut(&mut self) -> impl Iterator<Item = (&str, &mut AvatarObject)> {
-        self.objects
-            .iter_mut()
-            .filter_map(|(id, obj)| obj.as_avatar_mut().map(|a| (id.as_str(), a)))
+        self.objects_of_mut::<AvatarObject>()
     }
 
     /// Get the primary (first) avatar. For single-avatar slots this is THE avatar.
@@ -98,17 +123,17 @@ impl RenderSlot {
     pub fn primary_avatar_mut(&mut self) -> Option<&mut AvatarObject> {
         self.objects
             .values_mut()
-            .find_map(|obj| obj.as_avatar_mut())
+            .find_map(|obj| obj.as_any_mut().downcast_mut::<AvatarObject>())
     }
 
     /// Get a specific avatar by its object ID.
     pub fn avatar(&self, id: &str) -> Option<&AvatarObject> {
-        self.objects.get(id).and_then(|obj| obj.as_avatar())
+        self.object_as::<AvatarObject>(id)
     }
 
     /// Get a specific avatar mutably.
     pub fn avatar_mut(&mut self, id: &str) -> Option<&mut AvatarObject> {
-        self.objects.get_mut(id).and_then(|obj| obj.as_avatar_mut())
+        self.object_as_mut::<AvatarObject>(id)
     }
 
     /// Count of loaded avatars in this scene.
@@ -119,12 +144,16 @@ impl RenderSlot {
     // --- Generic object management ---
 
     /// Add an object to this scene. Returns the previous object at that ID, if any.
-    pub fn add_object(&mut self, id: String, object: SceneObject) -> Option<SceneObject> {
+    pub fn add_object(
+        &mut self,
+        id: String,
+        object: Box<dyn SceneObject>,
+    ) -> Option<Box<dyn SceneObject>> {
         self.objects.insert(id, object)
     }
 
     /// Remove an object from the scene. Caller must despawn its entity.
-    pub fn remove_object(&mut self, id: &str) -> Option<SceneObject> {
+    pub fn remove_object(&mut self, id: &str) -> Option<Box<dyn SceneObject>> {
         self.objects.remove(id)
     }
 

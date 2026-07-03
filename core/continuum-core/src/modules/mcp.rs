@@ -15,7 +15,6 @@ use crate::runtime::{
     CommandResult, CommandSchema, ModuleConfig, ModuleContext, ModulePriority, ParamSchema,
     ServiceModule,
 };
-use crate::utils::params::Params;
 use async_trait::async_trait;
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
@@ -24,6 +23,7 @@ use std::any::Any;
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
+use std::sync::Arc;
 use ts_rs::TS;
 
 /// MCP tool definition (matches MCP protocol)
@@ -63,7 +63,13 @@ struct ToolCategory {
     description: &'static str,
 }
 
-pub struct MCPModule {
+/// The MCP tool catalog: the shared state both the module's `initialize`
+/// (which builds the cache from the live registry) and the typed
+/// `commands/mcp/*` verbs (which read it) hold via `Arc`. Extracted from the
+/// old monolithic `MCPModule` so the catalog-reading commands can migrate onto
+/// the typed [`ActionCommand`](crate::sdk_codegen::ActionCommand) path — the
+/// [`CodeState`](crate::modules::code::CodeState) dep-holding pattern.
+pub(crate) struct McpCatalog {
     /// Cached tools (refreshed on first request or when stale)
     tools_cache: RwLock<Option<Vec<MCPTool>>>,
     /// Path to TypeScript generated schemas
@@ -72,14 +78,14 @@ pub struct MCPModule {
     categories: HashMap<&'static str, ToolCategory>,
 }
 
-impl Default for MCPModule {
+impl Default for McpCatalog {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl MCPModule {
-    pub fn new() -> Self {
+impl McpCatalog {
+    pub(crate) fn new() -> Self {
         // Compute schemas path relative to the binary location
         // In development, this is: workers/continuum-core -> ../../generated/command-schemas.json
         let schemas_path = std::env::current_dir()
@@ -466,8 +472,23 @@ impl MCPModule {
         tools
     }
 
+    /// Clone the built tool catalog, or fail loud if `initialize` never ran (the
+    /// commands read a pre-built cache; an empty cache is a boot-ordering bug, not
+    /// a silent empty result).
+    pub(crate) fn list(&self) -> Result<Vec<MCPTool>, crate::sdk_codegen::CommandError> {
+        self.tools_cache
+            .read()
+            .as_ref()
+            .cloned()
+            .ok_or_else(|| {
+                crate::sdk_codegen::CommandError::Internal(
+                    "MCP tools cache not initialized".to_string(),
+                )
+            })
+    }
+
     /// Search tools by keyword
-    fn search_tools(&self, tools: &[MCPTool], query: &str, limit: usize) -> Vec<Value> {
+    pub(crate) fn search_tools(&self, tools: &[MCPTool], query: &str, limit: usize) -> Vec<Value> {
         let query_lower = query.to_lowercase();
         let mut results: Vec<(i32, &MCPTool)> = Vec::new();
 
@@ -513,7 +534,7 @@ impl MCPModule {
     }
 
     /// Get help for a specific tool
-    fn get_tool_help(&self, tools: &[MCPTool], tool_name: &str) -> Option<Value> {
+    pub(crate) fn get_tool_help(&self, tools: &[MCPTool], tool_name: &str) -> Option<Value> {
         // Normalize tool name
         let normalized = tool_name.replace('/', "_").replace("mcp__jtag__", "");
 
@@ -551,6 +572,30 @@ impl MCPModule {
     }
 }
 
+/// Thin [`ServiceModule`] wrapper over the shared [`McpCatalog`]. Owns the
+/// module lifecycle (build the catalog cache at `initialize` from the live
+/// registry) and contributes the typed `mcp/*` commands, which share the same
+/// `Arc<McpCatalog>` — the [`CodeModule`](crate::modules::code::CodeModule)
+/// shape. `command_schemas` stays so the module still self-advertises its verbs
+/// into the catalog it builds during the Registry-A→B transition.
+pub struct MCPModule {
+    catalog: Arc<McpCatalog>,
+}
+
+impl Default for MCPModule {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl MCPModule {
+    pub fn new() -> Self {
+        Self {
+            catalog: Arc::new(McpCatalog::new()),
+        }
+    }
+}
+
 #[async_trait]
 impl ServiceModule for MCPModule {
     fn config(&self) -> ModuleConfig {
@@ -567,11 +612,12 @@ impl ServiceModule for MCPModule {
 
     async fn initialize(&self, ctx: &ModuleContext) -> Result<(), String> {
         // Pre-build tools cache
-        let tools = self.build_tools(ctx);
-        *self.tools_cache.write() = Some(tools);
+        let tools = self.catalog.build_tools(ctx);
+        *self.catalog.tools_cache.write() = Some(tools);
         tracing::info!(
             "MCPModule initialized with {} tools",
-            self.tools_cache
+            self.catalog
+                .tools_cache
                 .read()
                 .as_ref()
                 .map(|t| t.len())
@@ -580,69 +626,22 @@ impl ServiceModule for MCPModule {
         Ok(())
     }
 
-    async fn handle_command(&self, command: &str, params: Value) -> Result<CommandResult, String> {
-        match command {
-            "mcp/list-tools" => {
-                let tools = self.tools_cache.read();
-                let tools = tools.as_ref().ok_or("Tools cache not initialized")?;
+    fn commands(&self) -> Vec<Arc<dyn crate::sdk_codegen::DynCommand>> {
+        crate::commands::mcp::command_objects(self.catalog.clone())
+    }
 
-                Ok(CommandResult::Json(json!({
-                    "success": true,
-                    "tools": tools,
-                    "count": tools.len()
-                })))
-            }
-
-            "mcp/search-tools" => {
-                let p = Params::new(&params);
-                let query = p.str("query")?;
-                let limit = p.u64_or("limit", 10) as usize;
-
-                let tools = self.tools_cache.read();
-                let tools = tools.as_ref().ok_or("Tools cache not initialized")?;
-
-                let results = self.search_tools(tools, query, limit);
-
-                Ok(CommandResult::Json(json!({
-                    "success": true,
-                    "query": query,
-                    "count": results.len(),
-                    "tools": results
-                })))
-            }
-
-            "mcp/tool-help" => {
-                let p = Params::new(&params);
-                let tool_name = p.str("tool")?;
-
-                let tools = self.tools_cache.read();
-                let tools = tools.as_ref().ok_or("Tools cache not initialized")?;
-
-                match self.get_tool_help(tools, tool_name) {
-                    Some(help) => Ok(CommandResult::Json(json!({
-                        "success": true,
-                        "help": help
-                    }))),
-                    None => Ok(CommandResult::Json(json!({
-                        "success": false,
-                        "error": format!("Tool not found: {}", tool_name),
-                        "hint": "Use mcp/search-tools to find available tools"
-                    }))),
-                }
-            }
-
-            "mcp/refresh" => {
-                // Force refresh the tools cache
-                // Note: We can't access ctx here, so this is a no-op for now
-                // The tools will be refreshed on next server restart
-                Ok(CommandResult::Json(json!({
-                    "success": true,
-                    "message": "Tools will be refreshed on next initialization"
-                })))
-            }
-
-            _ => Err(format!("Unknown MCP command: {}", command)),
-        }
+    async fn handle_command(&self, command: &str, _params: Value) -> Result<CommandResult, String> {
+        // Every `mcp/*` verb is now a typed `ActionCommand` that routes via
+        // `route_object` (the catalog family in `crate::commands::mcp` + the
+        // stateless `mcp/refresh`). Reaching this legacy path at all means a
+        // descriptor failed to register — fail loud naming the command rather than
+        // silently re-handling it. (This whole impl is retired wholesale when
+        // Registry A's trait default becomes fail-loud — #63.)
+        Err(format!(
+            "'{command}' is a migrated, typed mcp command — it must route via the \
+             object registry (route_object), not the legacy handle_command path. \
+             Reaching here means its descriptor failed to register."
+        ))
     }
 
     fn command_schemas(&self) -> Vec<CommandSchema> {
@@ -690,12 +689,17 @@ impl ServiceModule for MCPModule {
 
 #[cfg(test)]
 mod tests {
-    //! Per-module TDD for the MCP catalog, via `ModuleHarness` — the module is
-    //! booted in ISOLATION (registry + context + executor, no monolith) and
-    //! initialized (its tool cache builds from its own command_schemas), then
-    //! driven through the real dispatch chain. Assertions pin only the STABLE
-    //! surface (the hardcoded meta-tools), so they're deterministic regardless of
-    //! whatever `generated/command-schemas.json` happens to be present.
+    //! Per-module integration TDD for the MCP catalog, via `ModuleHarness` — the
+    //! module is booted in ISOLATION (registry + context + executor, no monolith)
+    //! and initialized (its tool cache builds from its own command_schemas), then
+    //! driven through the REAL dispatch chain. Post-migration this exercises the
+    //! typed `commands/mcp/*` verbs end to end (the executor's `route_object` wins),
+    //! which is why it lives here and not in the command files: the success paths
+    //! need a live `ModuleContext` to build the cache, which only the harness
+    //! provides. Assertions pin only the STABLE surface (the hardcoded meta-tools),
+    //! so they're deterministic regardless of whatever `generated/command-schemas.json`
+    //! happens to be present. The command files hold the uninitialized-cache
+    //! fail-loud unit tests.
 
     use super::*;
     use crate::runtime::module_harness::ModuleHarness;
@@ -708,12 +712,12 @@ mod tests {
 
     // what this catches: mcp/list-tools returns the catalog, including the
     // always-present meta-tools — proving the harness initialized the module (its
-    // cache built) and dispatched the command in isolation.
+    // cache built) and dispatched the typed command in isolation. `count` must
+    // equal the array length (the parity field the migration preserved).
     #[tokio::test]
     async fn list_tools_includes_the_meta_tools() {
         let h = harness().await;
         let out = h.execute_json("mcp/list-tools", json!({})).await.unwrap();
-        assert_eq!(out["success"], true);
         let tools = out["tools"].as_array().expect("tools array");
         let names: Vec<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
         assert!(names.contains(&"mcp_search_tools"), "meta-tool present: {names:?}");
@@ -722,7 +726,7 @@ mod tests {
     }
 
     // what this catches: mcp/search-tools scores + filters by keyword — searching
-    // "search" surfaces mcp_search_tools.
+    // "search" surfaces mcp_search_tools, and each hit carries the typed shape.
     #[tokio::test]
     async fn search_tools_finds_by_keyword() {
         let h = harness().await;
@@ -730,18 +734,19 @@ mod tests {
             .execute_json("mcp/search-tools", json!({ "query": "search" }))
             .await
             .unwrap();
-        assert_eq!(out["success"], true);
-        let names: Vec<&str> = out["tools"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .filter_map(|t| t["name"].as_str())
-            .collect();
+        let hits = out["tools"].as_array().unwrap();
+        let names: Vec<&str> = hits.iter().filter_map(|t| t["name"].as_str()).collect();
         assert!(names.contains(&"mcp_search_tools"), "keyword match: {names:?}");
+        assert_eq!(out["count"], hits.len(), "count matches the hit array");
+        assert!(
+            hits.iter().all(|h| h["jtag_command"].is_string()),
+            "each hit carries the jtag form: {hits:?}"
+        );
     }
 
     // what this catches: mcp/search-tools requires `query` — a missing required
-    // param is a loud refusal (the substrate error string), not a panic/empty.
+    // param is a loud refusal (the typed-param deserialization error), not a
+    // panic/empty.
     #[tokio::test]
     async fn search_tools_requires_query() {
         let h = harness().await;
@@ -749,9 +754,9 @@ mod tests {
         assert!(!err.is_empty(), "missing query must refuse, got: {err:?}");
     }
 
-    // what this catches: mcp/tool-help returns typed params for a known tool, and
-    // a clean not-found (with a hint) for an unknown one — both success-shaped,
-    // never a panic.
+    // what this catches: mcp/tool-help returns typed params for a known tool
+    // (found:true + help), and a clean not-found (found:false + hint) for an
+    // unknown one — both Ok-shaped, never a panic (the not-found-as-Ok contract).
     #[tokio::test]
     async fn tool_help_known_and_unknown() {
         let h = harness().await;
@@ -760,7 +765,7 @@ mod tests {
             .execute_json("mcp/tool-help", json!({ "tool": "mcp_search_tools" }))
             .await
             .unwrap();
-        assert_eq!(known["success"], true, "help for a known tool: {known}");
+        assert_eq!(known["found"], true, "help for a known tool: {known}");
         let params: Vec<&str> = known["help"]["params"]
             .as_array()
             .map(|a| a.iter().filter_map(|p| p["name"].as_str()).collect())
@@ -771,7 +776,7 @@ mod tests {
             .execute_json("mcp/tool-help", json!({ "tool": "definitely-not-a-tool" }))
             .await
             .unwrap();
-        assert_eq!(unknown["success"], false);
+        assert_eq!(unknown["found"], false);
         assert!(unknown["hint"].is_string(), "not-found carries a hint");
     }
 }

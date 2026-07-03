@@ -13,7 +13,7 @@ use uuid::Uuid;
 //=============================================================================
 
 /// Type of entity sending a message
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, TS, schemars::JsonSchema)]
 #[serde(rename_all = "lowercase")]
 #[ts(export, export_to = "../../../protocol/typescript/persona/SenderType.ts")]
 pub enum SenderType {

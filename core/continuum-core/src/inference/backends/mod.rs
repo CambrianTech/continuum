@@ -619,44 +619,35 @@ pub fn read_gguf_metadata(path: &Path) -> Result<GgufMetadata, String> {
     // route a qwen/mistral/phi/etc. model through the wrong backend and produce
     // garbage output or outright crash. Rule-2 violation (fallbacks are illegal)
     // fixed 2026-04-23. If a GGUF is missing this metadata, that's a broken file,
-    // not a thing to paper over.
-    let architecture = content
-        .metadata
-        .get("general.architecture")
-        .and_then(|v| v.to_string().ok())
-        .cloned()
-        .ok_or_else(|| {
+    // not a thing to paper over. Read via the ONE shared canonical-key reader.
+    let architecture = crate::inference_capability::gguf_keys::architecture(&content).ok_or_else(
+        || {
             format!(
                 "GGUF {} is missing required metadata key 'general.architecture' — cannot \
              determine backend. Silent fallback to 'llama' has been removed; fix the \
              GGUF file or re-export it with proper metadata.",
                 path.display()
             )
-        })?;
+        },
+    )?;
 
-    // Try architecture-specific key first, then llama fallback for the context_length
-    // key only (some older tools wrote 'llama.context_length' regardless of actual
-    // architecture). If neither exists, that's a broken GGUF, not a thing to guess 4096 for.
-    let context_length = content
-        .metadata
-        .get(&format!("{architecture}.context_length"))
-        .or_else(|| content.metadata.get("llama.context_length"))
-        .and_then(|v| v.to_u32().ok())
-        .map(|v| v as usize)
-        .ok_or_else(|| {
-            format!(
-                "GGUF {} (architecture={architecture}) is missing context_length metadata \
+    // context_length via the shared reader: architecture-specific key first,
+    // then the historical `llama.context_length` fallback — the ONE place that
+    // policy is defined. If neither exists, that's a broken GGUF, not a thing
+    // to guess 4096 for.
+    let context_length =
+        crate::inference_capability::gguf_keys::context_length(&content, &architecture)
+            .map(|v| v as usize)
+            .ok_or_else(|| {
+                format!(
+                    "GGUF {} (architecture={architecture}) is missing context_length metadata \
              (tried '{architecture}.context_length' and 'llama.context_length'). Silent \
              fallback to 4096 has been removed; fix the GGUF file.",
-                path.display()
-            )
-        })?;
+                    path.display()
+                )
+            })?;
 
-    let model_name = content
-        .metadata
-        .get("general.name")
-        .and_then(|v| v.to_string().ok())
-        .cloned();
+    let model_name = crate::inference_capability::gguf_keys::general_name(&content);
 
     Ok(GgufMetadata {
         architecture,

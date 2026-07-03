@@ -1,22 +1,21 @@
 //! Working set + page types — `PageKind`, `PageOffset`, `PageRef`,
 //! `ResidentPage`, `WorkingSet`, `WorkingSetCapacity`, `PageFault`,
-//! `AccessDenied`, and the placeholder ID types (`PersonaId`,
-//! `ArtifactId`, `PageHandle`).
+//! `AccessDenied`, and the placeholder ID type `ArtifactId` plus
+//! `PageHandle`.
 //!
 //! Per GENOME-FOUNDRY-SENTINEL Parts 3 (paging) and 4 (compartments).
 //!
-//! ## ID type policy in PR-1
+//! ## ID type policy
 //!
-//! `PersonaId` and `ArtifactId` are `uuid::Uuid` newtypes here. The
-//! broader codebase uses raw `Uuid` in places (e.g. `live::types::user_id`)
-//! and bare `String` in others (e.g. `modules::sentinel::esc.parent_persona_id`).
-//! PR-1 picks `Uuid` because the substrate contract (CLAUDE.md: "IDs
-//! are UUID — never plain string for identity fields") names it
-//! explicitly, and because typed wrappers make `audit_access(persona,
-//! page)` impossible to call with the arguments swapped. When a
-//! follow-up PR unifies the persona-id type across crates, these
-//! definitions get rehomed; the wire format (a UUID string) stays
-//! stable so the rehoming is internal-only.
+//! The per-persona identifier was previously a local `PersonaId(pub Uuid)`
+//! newtype here; it has been collapsed onto `crate::identity::PeerId`
+//! (the canonical airc actor id, `airc_core::PeerId`). Only `ArtifactId`
+//! remains a local newtype in this module (content-addressed, unrelated
+//! to actor identity). `ArtifactId` is a `uuid::Uuid` newtype because the
+//! substrate contract (CLAUDE.md: "IDs are UUID — never plain string for
+//! identity fields") names it explicitly, and because typed wrappers make
+//! `audit_access(persona, page)` impossible to call with the arguments
+//! swapped. The wire format (a UUID string) stays stable.
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -24,33 +23,12 @@ use ts_rs::TS;
 use uuid::Uuid;
 
 use super::tier::{EvictionRecord, TierRole};
-
-/// Stable per-persona identifier. UUID-shaped so it can't be confused
-/// with `ArtifactId` (same primitive, different type — the type system
-/// catches swapped arguments). See module docstring for the rehoming
-/// plan.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
-#[serde(transparent)]
-#[ts(
-    export,
-    export_to = "../../../protocol/typescript/genome/PersonaId.ts",
-    type = "string"
-)]
-pub struct PersonaId(pub Uuid);
-
-impl PersonaId {
-    pub fn new(uuid: Uuid) -> Self {
-        Self(uuid)
-    }
-    pub fn as_uuid(&self) -> Uuid {
-        self.0
-    }
-}
+use crate::identity::PeerId;
 
 /// Stable per-artifact identifier. Content-addressed (the value IS
 /// the SHA-256-derived UUID of the artifact bytes), so two callers
 /// computing the ID independently arrive at the same value. Typed
-/// wrapper distinct from `PersonaId`.
+/// wrapper distinct from `crate::identity::PeerId`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
 #[serde(transparent)]
 #[ts(
@@ -216,7 +194,8 @@ pub struct WorkingSetCapacity {
 #[serde(rename_all = "camelCase")]
 #[ts(export, export_to = "../../../protocol/typescript/genome/WorkingSet.ts")]
 pub struct WorkingSet {
-    pub persona: PersonaId,
+    #[ts(type = "string")]
+    pub persona: PeerId,
     /// All resident pages for this persona, keyed by a stringified
     /// `PageRef`. On the wire this serializes as a JSON object with
     /// string keys (serde's HashMap → object behavior). The TS side
@@ -228,7 +207,7 @@ pub struct WorkingSet {
 impl WorkingSet {
     /// Fresh working set for a persona with the given capacity. No
     /// pages resident yet.
-    pub fn new(persona: PersonaId, capacity: WorkingSetCapacity) -> Self {
+    pub fn new(persona: PeerId, capacity: WorkingSetCapacity) -> Self {
         Self {
             persona,
             pages: HashMap::new(),
@@ -277,7 +256,8 @@ pub struct PageFault {
     pub from_role: Option<TierRole>,
     /// Where the page lives after the fault is serviced.
     pub to_role: TierRole,
-    pub persona: PersonaId,
+    #[ts(type = "string")]
+    pub persona: PeerId,
     /// Time spent servicing the fault (tier lookup + transfer +
     /// eviction-if-any). Drives sentinel's "is this page worth
     /// pre-fetching" calculus.
@@ -305,7 +285,8 @@ pub struct PageFault {
 #[ts(export, export_to = "../../../protocol/typescript/genome/AccessDenied.ts")]
 pub struct AccessDenied {
     /// Which persona attempted the access.
-    pub actor: PersonaId,
+    #[ts(type = "string")]
+    pub actor: PeerId,
     /// Which page was attempted.
     pub page: PageRef,
     /// Which persona OWNS that page (whose private region was it
@@ -313,7 +294,8 @@ pub struct AccessDenied {
     /// substrate-controlled (e.g. foundry-imported)" and the denial
     /// is for a different reason (license, policy, etc.).
     #[ts(optional)]
-    pub owner: Option<PersonaId>,
+    #[ts(type = "string")]
+    pub owner: Option<PeerId>,
     /// Human-readable reason. Per Joel's "never swallow errors" rule:
     /// loud, specific, debuggable.
     pub reason: String,
@@ -348,8 +330,8 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    fn sample_persona() -> PersonaId {
-        PersonaId(Uuid::nil())
+    fn sample_persona() -> PeerId {
+        PeerId(Uuid::nil())
     }
 
     fn sample_artifact() -> ArtifactId {
@@ -364,12 +346,12 @@ mod tests {
         }
     }
 
-    /// What this catches: PersonaId + ArtifactId both serialize as
+    /// What this catches: PeerId + ArtifactId both serialize as
     /// bare UUID strings (transparent) — not `{"id": "..."}` objects.
     /// Wire stability: downstream consumers parse them as strings.
     #[test]
     fn id_types_serialize_transparent_as_uuid_string() {
-        let pid = PersonaId(Uuid::nil());
+        let pid = PeerId(Uuid::nil());
         let aid = ArtifactId(Uuid::nil());
         let pj = serde_json::to_string(&pid).unwrap();
         let aj = serde_json::to_string(&aid).unwrap();
@@ -377,14 +359,14 @@ mod tests {
         assert_eq!(aj, "\"00000000-0000-0000-0000-000000000000\"");
     }
 
-    /// What this catches: the type system distinguishes PersonaId vs
+    /// What this catches: the type system distinguishes PeerId vs
     /// ArtifactId even though both wrap Uuid. Compile-time only —
     /// passing one where the other is expected fails to compile. This
     /// test exists to pin that the distinction is preserved (changing
     /// either to a type alias would let them silently substitute).
     #[test]
     fn persona_id_and_artifact_id_are_distinct_types() {
-        let pid: PersonaId = sample_persona();
+        let pid: PeerId = sample_persona();
         let aid: ArtifactId = sample_artifact();
         // Both are Copy + Eq with Uuid underneath, but ResidentPage
         // ownership of fields is via the typed wrappers — accidentally

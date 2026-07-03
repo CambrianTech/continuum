@@ -34,6 +34,7 @@ use crate::persona::hw_tier_descriptor::HwTierCategory;
 use crate::model_registry::live::{Availability, CatalogSnapshot, ModelCatalog};
 use crate::model_registry::types::{Capability, Model};
 use crate::resources::{ResourceDaemon, ResourceKind};
+use super::serving_consumer::{FootprintFn, ServingConsumer, SERVING_CONSUMER_ID};
 use crate::runtime::message_bus::MessageBus;
 use crate::runtime::{CommandResult, ModuleConfig, ModuleContext, ModulePriority, ServiceModule};
 use crate::system_resources::SystemResourceMonitor;
@@ -258,6 +259,37 @@ impl ServingDaemonModule {
         self.serving_tx.subscribe()
     }
 
+    /// Register serving as a MEASURED [`ResourceConsumer`] with the one
+    /// per-machine authority (#79) — monitor-not-reserve. Serving does NOT
+    /// acquire a lease here; it keeps loading through its own plan/reconcile
+    /// loop. It hands the governor exactly the two handles the authority needs:
+    ///
+    /// - the serving snapshot + a footprint resolver, so the governor's reconcile
+    ///   tick background-polls serving's resident VRAM and *attributes* it on the
+    ///   board (the fix for the `granted:0 while the GPU is full` blindness), and
+    /// - the suppress-set writer, so when a peer needs the bytes the authority can
+    ///   ASK serving to free the active model (whole-lease-granular unload), and
+    ///   serving answers honestly across the async unload.
+    ///
+    /// `available = capacity − granted` is untouched — this only surfaces the
+    /// measured axis. The footprint resolver is the SAME catalog + footprint
+    /// estimator that feeds the serving plan, so there is ONE footprint authority
+    /// on the box, not two.
+    fn register_as_consumer(&self) {
+        let consumer = ServingConsumer::new(
+            self.subscribe_serving(),
+            self.suppress_sender(),
+            self.pin_sender(),
+            serving_footprint_fn(self.catalog.clone()),
+            // No tier-down selection intelligence is authored yet, so the only
+            // lever is a full unload. `DeclineTierDown` is that honest current
+            // capability — swapping in a catalog/persona/ML policy is a one-line
+            // change here, with zero change to the consumer's handshake (#79).
+            Arc::new(crate::modules::serving_tier_down::DeclineTierDown),
+        );
+        self.resource_daemon.add_consumer(Arc::new(consumer));
+    }
+
     /// Honest serving budget for this host, RIGHT NOW — from the live free
     /// memory the monitor reports, capped at the device's physical VRAM. This
     /// is the organic signal: free memory drops under load, the budget shrinks,
@@ -469,12 +501,48 @@ impl ServingDaemonModule {
         let bus = self.bus.get().cloned();
         Some(tokio::spawn(async move {
             let outcome = ensure_model_serving(server.as_ref(), &target).await;
-            let snapshot = snapshot_from_outcome(&outcome, &desired, &desired_adapter_paths);
+            // For a ready outcome, read the REAL per-slot window the running
+            // server serves from its own `/props` — the authoritative model
+            // metadata every persona budgets its prompt to. llama.cpp pads the
+            // launch per-slot `-c/--parallel` window UP to a 256-multiple
+            // internally, and the planner RE-computes its own window each tick
+            // against live memory, drifting ABOVE the running server's frozen
+            // slot; budgeting to that drifted value overflows the slot (500
+            // "Compute error"). So we pass the process's own truth through, not
+            // the plan's `served_ctx`. A read failure on a ready server yields 0,
+            // which `snapshot_from_outcome` turns into "publish the gap" (not a
+            // ready snapshot with a guessed window) — it self-heals next tick.
+            let served_window = match &outcome {
+                EnsureOutcome::AlreadyServing | EnsureOutcome::Spawned { .. } => {
+                    match server.served_context_window().await {
+                        Ok(n) => n,
+                        Err(e) => {
+                            crate::probe!(
+                                class = "serving.reconcile",
+                                desired = desired.as_str(),
+                                error = %e,
+                                "server ready but /props served window unreadable — \
+                                 publishing the gap (no guessed window; retries next tick)",
+                            );
+                            0
+                        }
+                    }
+                }
+                EnsureOutcome::Degraded { .. } => 0,
+            };
+            let snapshot = snapshot_from_outcome(
+                &outcome,
+                &desired,
+                &desired_adapter_paths,
+                served_window,
+                target.lanes,
+            );
             crate::probe!(
                 class = "serving.reconcile",
                 desired = desired.as_str(),
                 ready = snapshot.ready,
                 active = snapshot.active_model.as_deref().unwrap_or("<none>"),
+                served_window = snapshot.served_context_window,
                 "serving reconcile complete",
             );
             // Emit on the bus first (fan-out to every subscriber + the grid),
@@ -586,6 +654,27 @@ fn perf_cores() -> u32 {
 /// Refine when the registry carries arch internals (layers × kv_heads ×
 /// head_dim) and a real capability score; the classifier consumes whatever
 /// precision we give it without changing shape.
+/// The [`FootprintFn`] serving hands the [`ResourceGovernor`](crate::resources):
+/// resolve an active model id + its live serving shape (served per-slot window,
+/// lane count) → total resident bytes in VRAM, from the SAME live catalog +
+/// [`footprint_for`] estimator the serving plan uses (one footprint authority,
+/// not two). An id the catalog doesn't know, or a model with no on-disk weights,
+/// resolves to `0` — nothing resident to attribute. This reports the FULL
+/// residency: weights PLUS the KV-cache of every lane at the served window
+/// (`weights + lanes × kv_at(served_window)`, #79). Folding in the KV term is
+/// what stops serving's own KV from masquerading as external/contention on the
+/// board — the governor's drift probe now sees serving's true footprint.
+fn serving_footprint_fn(catalog: Arc<ModelCatalog>) -> FootprintFn {
+    Arc::new(move |id: &str, served_window: u32, lanes: u32| {
+        catalog
+            .snapshot()
+            .get(id)
+            .and_then(|live| footprint_for(&live.model))
+            .map(|fp| fp.resident_bytes(served_window, lanes))
+            .unwrap_or(0)
+    })
+}
+
 pub fn footprint_for(model: &Model) -> Option<ModelFootprint> {
     let path = crate::model_registry::artifacts::resolve_gguf_for_model(model)?;
     let weights_bytes = std::fs::metadata(&path).ok()?.len();
@@ -688,24 +777,50 @@ pub fn detect_tier(gpu_name: &str) -> (HwCapabilityTier, HwTierCategory, &'stati
     (HwCapabilityTier::CpuOnly, HwTierCategory::Compat, "compat")
 }
 
-/// Map a reconcile [`EnsureOutcome`] to the published [`ServingSnapshot`].
-/// Pure (no IO) so the mapping is unit-tested directly. A live/spawned model is
-/// `ready` with the served base url; a degraded reconcile publishes "nothing
-/// live" — never a half-true "ready but no model" ([[fallbacks-are-illegal-fail-loud]]).
+/// Map a reconcile [`EnsureOutcome`] (+ the real per-slot window read from
+/// `/props`) to the published [`ServingSnapshot`]. Pure (no IO) so the mapping
+/// is unit-tested directly. A live/spawned model is `ready` with the served base
+/// url AND the real served window; a degraded reconcile — OR a ready server whose
+/// window we could not read (`served_context_window == 0`) — publishes "nothing
+/// live" rather than a half-true "ready but no/guessed window"
+/// ([[fallbacks-are-illegal-fail-loud]]). The window-0 guard is what keeps a
+/// persona from ever binding a broken prompt budget: it would rather see the gap
+/// (and the next tick re-reads `/props` via `AlreadyServing` → self-heals) than
+/// budget against a zero window.
 fn snapshot_from_outcome(
     outcome: &EnsureOutcome,
     desired: &str,
     adapters: &[String],
+    served_context_window: u32,
+    lanes: u32,
 ) -> ServingSnapshot {
     match outcome {
-        EnsureOutcome::AlreadyServing | EnsureOutcome::Spawned { .. } => ServingSnapshot {
-            active_model: Some(desired.to_string()),
-            ready: true,
-            base_url: serving_v1_url(),
-            // The genome set now live — feeds the next reconcile's relaunch guard
-            // and gives readers the active genome without probing the process.
-            adapters: adapters.to_vec(),
-        },
+        EnsureOutcome::AlreadyServing | EnsureOutcome::Spawned { .. }
+            if served_context_window > 0 =>
+        {
+            ServingSnapshot {
+                active_model: Some(desired.to_string()),
+                ready: true,
+                base_url: serving_v1_url(),
+                // The genome set now live — feeds the next reconcile's relaunch
+                // guard and gives readers the active genome without probing.
+                adapters: adapters.to_vec(),
+                // The real per-slot window the process serves — every persona
+                // budgets its prompt to THIS (task #50, the drift fix).
+                served_context_window,
+                // The `--parallel` slot count — lets a reader (the resource
+                // authority's footprint(), a grid allocator) charge total resident
+                // KV as `lanes × kv_at(served_context_window)` (#79).
+                lanes,
+            }
+        }
+        // Ready outcome but the served window was unreadable (0) → do NOT publish
+        // a ready snapshot with a zero window; that would poison every binding
+        // persona's budget. Publish "nothing live"; the server stays up and the
+        // next reconcile re-reads /props.
+        EnsureOutcome::AlreadyServing | EnsureOutcome::Spawned { .. } => {
+            ServingSnapshot::empty()
+        }
         EnsureOutcome::Degraded { .. } => ServingSnapshot::empty(),
     }
 }
@@ -732,6 +847,23 @@ impl ServiceModule for ServingDaemonModule {
         // free functions + adapters read "what's live" as a pointer instead of
         // each probing /v1/models. Set-once (singleton daemon).
         let _ = crate::inference::llama_server::install_serving_state(self.subscribe_serving());
+        // Register serving as a MEASURED ResourceConsumer with the one per-machine
+        // authority (#79). See `register_as_consumer` — this is monitor-not-reserve:
+        // no lease acquired, `available` math untouched, the authority simply stops
+        // being blind to the ~multi-GB model actually resident.
+        self.register_as_consumer();
+        // Reap orphaned llama-server lanes left by a crashed/SIGKILLed predecessor
+        // BEFORE reconciling to the new plan — a mid-eval crash leaves ephemeral
+        // lanes (their own scanned ports, no pidfile) holding ~6 GB each with zero
+        // reclaim record but the registry. Sweeping first frees that VRAM so the
+        // new live lane comes up without competing against dead siblings.
+        for outcome in crate::inference::lane_registry::sweep_orphans() {
+            crate::probe!(
+                class = "serving.lane_registry.sweep",
+                outcome = format!("{outcome:?}").as_str(),
+                "boot lane-registry sweep",
+            );
+        }
         // Plan once at boot so the decision is published before the first tick,
         // then kick the first reconcile so the server comes up promptly rather
         // than waiting a full tick interval. The reconcile runs detached.
@@ -936,6 +1068,18 @@ mod tests {
                 Err(LlamaServerError::Spawn("test boom".into()))
             }
         }
+        async fn served_context_window(&self) -> Result<u32, LlamaServerError> {
+            // After a successful (test) serve the daemon reads the real per-slot
+            // window; a fixed non-zero value stands in for the live `/props` read
+            // so the reconcile publishes a READY snapshot carrying a real window.
+            Ok(11008)
+        }
+        async fn decode_smoke_ok(&self) -> bool {
+            // The daemon-wiring tests never adopt an orphan (active_model is
+            // Unreachable → always serve), so this is only reached if the adopt
+            // path is exercised; a healthy fake decodes.
+            true
+        }
     }
 
     /// A minimal [`Model`] for reconcile-wiring tests — only `id` is load-bearing
@@ -955,11 +1099,13 @@ mod tests {
             cost_input_per_1k: 0.0,
             cost_output_per_1k: 0.0,
             gguf_hint: None,
+            hf_source: None,
             gguf_local_path: None,
             chat_template: None,
             stop_sequences: Vec::new(),
             multi_party_strategy: MultiPartyChatStrategy::ProperChatMlSingleParty,
             mmproj_local_path: None,
+            parameter_count: 0,
         }
     }
 
@@ -1118,8 +1264,11 @@ mod tests {
     }
 
     // what this catches: the EnsureOutcome → ServingSnapshot mapping. A live or
-    // spawned model is ready with the served base url; a degraded reconcile
-    // publishes "nothing live", never a half-true ready-with-no-model.
+    // spawned model is ready with the served base url AND the real per-slot window
+    // it carries through to personas; a degraded reconcile — OR a ready server
+    // whose served window was unreadable (0) — publishes "nothing live", never a
+    // half-true ready-with-no-model or ready-with-zero-window (the drift fix:
+    // budgeting against a zero/guessed window is exactly what we refuse).
     #[test]
     fn snapshot_mapping_is_honest() {
         let genes = vec!["/genes/a.gguf".to_string()];
@@ -1127,20 +1276,49 @@ mod tests {
             &EnsureOutcome::Spawned { model: "m".into() },
             "coder-14b",
             &genes,
+            11008,
+            4,
         );
         assert_eq!(up.active_model.as_deref(), Some("coder-14b"));
         assert!(up.ready);
         assert!(up.base_url.ends_with("/v1"));
         assert_eq!(up.adapters, genes, "live snapshot carries the loaded genome set");
+        assert_eq!(
+            up.served_context_window, 11008,
+            "ready snapshot carries the real per-slot window personas budget to"
+        );
+        assert_eq!(
+            up.lanes, 4,
+            "ready snapshot carries the --parallel lane count for total-KV accounting"
+        );
 
-        let already = snapshot_from_outcome(&EnsureOutcome::AlreadyServing, "coder-14b", &genes);
+        let already =
+            snapshot_from_outcome(&EnsureOutcome::AlreadyServing, "coder-14b", &genes, 11008, 4);
         assert_eq!(already.active_model.as_deref(), Some("coder-14b"));
         assert!(already.ready);
+        assert_eq!(already.served_context_window, 11008);
+        assert_eq!(already.lanes, 4);
+
+        // Ready outcome but the served window was unreadable (0) → publish the gap,
+        // NOT a ready snapshot with a zero window a persona would budget against.
+        let windowless = snapshot_from_outcome(
+            &EnsureOutcome::Spawned { model: "m".into() },
+            "coder-14b",
+            &genes,
+            0,
+            4,
+        );
+        assert_eq!(windowless.active_model, None, "ready-but-no-window → nothing live");
+        assert!(!windowless.ready);
+        assert_eq!(windowless.served_context_window, 0);
+        assert_eq!(windowless.lanes, 0, "empty snapshot carries no lanes");
 
         let degraded = snapshot_from_outcome(
             &EnsureOutcome::Degraded { reason: "x".into() },
             "coder-14b",
             &genes,
+            11008,
+            4,
         );
         assert_eq!(degraded.active_model, None, "degraded → nothing live");
         assert!(!degraded.ready);
@@ -1183,6 +1361,8 @@ mod tests {
             ready: true,
             base_url: serving_v1_url(),
             adapters: Vec::new(),
+            served_context_window: 11008,
+            lanes: 4,
         });
         let budget = HostBudget { usable_bytes: 45 * GB, perf_cores: 6 };
         let candidates = vec![footprint_from_parts("coder-14b", 9 * GB, 8192, true).unwrap()];
@@ -1206,6 +1386,8 @@ mod tests {
             ready: true,
             base_url: serving_v1_url(),
             adapters: Vec::new(),
+            served_context_window: 11008,
+            lanes: 4,
         });
         let budget = HostBudget { usable_bytes: 45 * GB, perf_cores: 6 };
         daemon.publish_plan(budget, &[]); // no candidates → plan None
@@ -1263,5 +1445,81 @@ mod tests {
         let snap: ServingSnapshot = serde_json::from_value(event.payload).unwrap();
         assert_eq!(snap.active_model.as_deref(), Some("coder-14b"));
         assert!(snap.ready, "emitted snapshot reflects the live model");
+    }
+
+    // what this catches: the footprint resolver serving hands the authority reads
+    // the SAME live catalog + estimator the serving plan uses (one footprint
+    // authority) — a Ready model resolves to its real on-disk weights, and an id
+    // the catalog doesn't know resolves to 0 (nothing resident to attribute, never
+    // a phantom the governor would over-account). If this drifted from the plan's
+    // footprint the board would attribute a different number than the planner sized
+    // against.
+    #[test]
+    fn serving_footprint_fn_resolves_live_catalog_weights() {
+        use crate::model_registry::live::ModelStatus;
+        use std::io::Write;
+
+        let catalog = test_catalog();
+        let id = "footprint-probe";
+        catalog.register(
+            fake_model(id),
+            ModelStatus {
+                availability: Availability::NotDownloaded,
+                verified: None,
+            },
+        );
+        let resolve = serving_footprint_fn(catalog.clone());
+
+        // NotDownloaded (no on-disk weights) → nothing resident yet. Window/lanes
+        // are the live serving shape; with no weights they resolve to 0 anyway.
+        assert_eq!(resolve(id, 8192, 2), 0, "no weights on disk → nothing to attribute");
+        // An id the catalog has never heard of → 0, never a phantom.
+        assert_eq!(resolve("never-registered", 8192, 2), 0);
+
+        // Land the artifact: real bytes on disk, flips Ready.
+        let mut gguf = tempfile::Builder::new()
+            .suffix(".gguf")
+            .tempfile()
+            .expect("temp gguf");
+        gguf.write_all(&[0u8; 4096]).expect("write weights");
+        gguf.flush().expect("flush");
+        assert!(catalog.attach_local_artifact(id, gguf.path().to_path_buf(), None));
+
+        // Same resolver, same live catalog → now reports the real resident bytes:
+        // weights (4096) PLUS the KV of every lane at the served window. kv_per_token
+        // floors at 20_000, so 2 lanes × 20_000 × 8192 tokens of KV on top of 4096
+        // weights. Charging that KV is what stops it masquerading as external (#79).
+        let kv_per_token = 20_000u64; // (4096 / 20_000).max(20_000)
+        let expect = 4096 + 2 * kv_per_token * 8192;
+        assert_eq!(
+            resolve(id, 8192, 2),
+            expect,
+            "resolves real weights + per-lane KV at the served window, no reboot"
+        );
+        // A no-window snapshot (nothing served yet) charges weights only.
+        assert_eq!(resolve(id, 0, 2), 4096, "no served window → weights only");
+    }
+
+    // what this catches: THE slice-1 production-wiring gap — ServingConsumer was
+    // defined + unit-tested but never CONSTRUCTED in the boot path, so the
+    // authority polled nothing and stayed blind to serving's multi-GB residency.
+    // register_as_consumer (called from initialize) must register a consumer under
+    // SERVING_CONSUMER_ID with the one per-machine authority. Regresses deleting
+    // that registration — which would silently reopen the granted:0-while-full hole.
+    #[tokio::test]
+    async fn register_as_consumer_wires_serving_into_the_authority() {
+        let gpu = Arc::new(GpuMemoryManager::simulated("Apple M5 Pro", 53 * GB));
+        let system = Arc::new(SystemResourceMonitor::new());
+        let daemon = ServingDaemonModule::new(gpu, system, test_resource_daemon(), test_catalog());
+
+        assert!(
+            !daemon.resource_daemon.consumer_ids().contains(&SERVING_CONSUMER_ID.to_string()),
+            "not registered until the daemon wires itself in"
+        );
+        daemon.register_as_consumer();
+        assert!(
+            daemon.resource_daemon.consumer_ids().contains(&SERVING_CONSUMER_ID.to_string()),
+            "serving must register itself as a measured consumer with the authority"
+        );
     }
 }

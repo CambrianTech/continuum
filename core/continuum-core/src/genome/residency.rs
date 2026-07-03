@@ -38,7 +38,8 @@ use uuid::Uuid;
 
 use super::local_manager::LocalWorkingSetManager;
 use super::manager::WorkingSetManager;
-use super::working_set::{ArtifactId, PageKind, PageOffset, PageRef, PersonaId, WorkingSetCapacity};
+use super::working_set::{ArtifactId, PageKind, PageOffset, PageRef, WorkingSetCapacity};
+use crate::identity::PeerId;
 use crate::runtime::artifact_handle::{ArtifactKey, ArtifactSelector};
 use crate::runtime::governor_bus::{PersonaScheduled, PERSONA_SCHEDULED_KEY};
 use crate::runtime::service_module::{CommandResult, ModuleConfig, ModulePriority, ServiceModule};
@@ -127,7 +128,7 @@ impl ServiceModule for GenomeResidencyModule {
     ) -> Result<(), String> {
         let event: PersonaScheduled = serde_json::from_value(payload)
             .map_err(|e| format!("residency: malformed PersonaScheduled: {e}"))?;
-        let persona = PersonaId::new(event.persona);
+        let persona = PeerId::from_uuid(event.persona);
 
         // Self-manage registration: a being heard-of for the first time
         // gets a working set at the default budget. Idempotent — never
@@ -361,14 +362,14 @@ mod tests {
 
         // Reaction: her overlay is resident in the shared working set.
         let ws = manager
-            .working_set_snapshot(PersonaId::new(asha))
+            .working_set_snapshot(PeerId::from_uuid(asha))
             .expect("a scheduled being has a working set");
         assert_eq!(ws.pages.len(), 1, "exactly her overlay is resident");
 
         // Trace: the page-fault reached the bus, tagged with her id.
         let seen = faults.lock().clone();
         assert_eq!(seen.len(), 1, "one fault on the wire");
-        assert_eq!(seen[0].persona, PersonaId::new(asha));
+        assert_eq!(seen[0].persona, PeerId::from_uuid(asha));
         assert_eq!(seen[0].page, GenomeResidencyModule::persona_overlay(asha));
     }
 
@@ -397,7 +398,7 @@ mod tests {
 
         // Still exactly one overlay resident (warmed, not duplicated).
         let ws = manager
-            .working_set_snapshot(PersonaId::new(nova))
+            .working_set_snapshot(PeerId::from_uuid(nova))
             .expect("resident");
         assert_eq!(ws.pages.len(), 1);
 
@@ -438,7 +439,7 @@ mod tests {
         // No starvation: every being in the society is resident.
         for &being in &society {
             let ws = manager
-                .working_set_snapshot(PersonaId::new(being))
+                .working_set_snapshot(PeerId::from_uuid(being))
                 .unwrap_or_else(|| panic!("being {being} was starved — no working set"));
             // Isolation: her set holds exactly her overlay…
             assert_eq!(ws.pages.len(), 1, "being {being} holds one overlay");
@@ -488,7 +489,7 @@ mod tests {
 
         // Welcomed: she got a working set despite having no overlay…
         let ws = manager
-            .working_set_snapshot(PersonaId::new(stranger))
+            .working_set_snapshot(PeerId::from_uuid(stranger))
             .expect("a stranger is still registered (welcomed)");
         // …but nothing is resident — a cold miss records no page.
         assert!(ws.pages.is_empty(), "no genome → nothing resident yet");
@@ -496,7 +497,7 @@ mod tests {
         // Honest: the fault on the wire is a true cold miss.
         let seen = faults.lock().clone();
         assert_eq!(seen.len(), 1, "one fault — the cold miss");
-        assert_eq!(seen[0].persona, PersonaId::new(stranger));
+        assert_eq!(seen[0].persona, PeerId::from_uuid(stranger));
         assert_eq!(
             seen[0].from_role, None,
             "from_role: None == honest 'no genome yet, base-only'"

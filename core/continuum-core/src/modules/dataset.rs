@@ -201,6 +201,13 @@ pub struct FromCapturesParams {
     #[serde(default)]
     #[ts(optional)]
     pub room_id: Option<String>,
+    /// Only convert turns on this skill axis: `"operational"` (the turn ACTED —
+    /// emitted a tool call) or `"domain"` (prose/answer only). Omit for both. The
+    /// chat-prose bridge passes `"domain"`; the dev-task/self-verify loop passes
+    /// `"operational"`.
+    #[serde(default)]
+    #[ts(optional)]
+    pub skill_axis: Option<String>,
 }
 
 /// Params for `dataset/import-realclasseval`.
@@ -443,6 +450,15 @@ impl DatasetService {
                 dir.display()
             ));
         }
+        // Fail loud on a bad axis filter rather than silently matching nothing (which
+        // would surface as the misleading "No usable turns" error below).
+        if let Some(axis) = p.skill_axis.as_deref() {
+            if !matches!(axis, "operational" | "domain") {
+                return Err(format!(
+                    "skillAxis must be \"operational\" or \"domain\", got {axis:?}"
+                ));
+            }
+        }
 
         let output_dir = self.resolve_root(p.output_dir.as_deref());
 
@@ -476,6 +492,11 @@ impl DatasetService {
                     }
                 }
                 if let Some(example) = capture_to_example(&cap, p.include_system) {
+                    if let Some(axis) = p.skill_axis.as_deref() {
+                        if example.get("skillAxis").and_then(|a| a.as_str()) != Some(axis) {
+                            continue;
+                        }
+                    }
                     examples.push(example);
                 }
             }
@@ -974,17 +995,32 @@ fn turn_to_example(turn: &Value, include_system: bool, include_history: bool) ->
 ///
 /// Structural curation only — QUALITY scoring is a later, pluggable slice (the
 /// genome-loop curation layer). Here we drop only what is never a valid learning
-/// target: an empty response, or a bare un-acted `{"tool_call":…}` envelope (the
-/// model emitting a call as its "answer"). Everything else passes through; whether
-/// a turn is GOOD is a judgment for the curator, not this projection.
+/// target: an empty response. Everything else passes through, tagged with its
+/// `skillAxis` so the consumer can select; whether a turn is GOOD is a judgment for
+/// the curator, not this projection.
+///
+/// `skillAxis` is intrinsic to the turn: `"operational"` when the turn ACTED —
+/// emitted a tool call, either as the model's literal answer (JSON-in-prompt:
+/// `response.text` parses as a call) or as a structured `response.toolCalls` array
+/// the adapter extracted — else `"domain"` (prose/answer only). Acting turns are the
+/// OPERATIONAL training signal the genome loop needs (the "run the test, don't just
+/// narrate" habit the Phase-0 baseline showed missing — `selfVerifyRate 0.0`). The
+/// old code BLANKET-dropped any tool-call answer; that only ever protected the chat
+/// axis (control-plane JSON leaking into room prose) while destroying exactly the
+/// dev-task signal. We keep both and let the consumer filter: a chat-prose dataset
+/// asks for `"domain"`, the dev-task/self-verify loop for `"operational"`.
 fn capture_to_example(cap: &Value, include_system: bool) -> Option<Value> {
     let assistant = cap.get("response")?.get("text")?.as_str()?.trim();
     if assistant.is_empty() {
         return None;
     }
-    if crate::ai::json_in_prompt_tools::parse_tool_call(assistant).is_some() {
-        return None;
-    }
+    let acted = crate::ai::json_in_prompt_tools::parse_tool_call(assistant).is_some()
+        || cap
+            .get("response")
+            .and_then(|r| r.get("toolCalls"))
+            .and_then(|t| t.as_array())
+            .is_some_and(|a| !a.is_empty());
+    let skill_axis = if acted { "operational" } else { "domain" };
     let mut messages: Vec<Value> = Vec::new();
     if include_system {
         if let Some(sys) = cap.get("system").and_then(|s| s.as_str()) {
@@ -1017,7 +1053,7 @@ fn capture_to_example(cap: &Value, include_system: bool) -> Option<Value> {
         return None;
     }
     messages.push(json!({ "role": "assistant", "content": assistant }));
-    Some(json!({ "messages": messages }))
+    Some(json!({ "messages": messages, "skillAxis": skill_axis }))
 }
 
 /// Write examples as JSONL (one JSON object per line).
@@ -1089,16 +1125,19 @@ mod tests {
         assert!(output_dir.join("manifest.json").exists());
     }
 
-    // what this catches: the LIVE rooms→training bridge — a prompt-capture (the
-    // glass-box turn: system + burst messages + response.text) becomes a clean
-    // {messages} SFT pair, AND the structural curation drops the two things that
-    // are never valid learning targets (an empty response, and a bare un-acted
-    // {"tool_call":…} envelope the model emitted as its "answer"). Regression here
-    // = the live cognition turns stop reaching the trainer, or garbage tool-JSON
-    // turns poison the dataset (the confabulation/leak turns observed live).
+    // what this catches: the LIVE rooms→training bridge AND the L1 axis contract —
+    // a prompt-capture (system + burst + response) becomes a clean {messages} SFT
+    // pair tagged with its `skillAxis`. A prose answer → `"domain"`; a turn that
+    // ACTED (tool call, either JSON-in-prompt OR a structured `response.toolCalls`
+    // array) is KEPT and tagged `"operational"` — NOT dropped. Regression here =
+    // either the live cognition turns stop reaching the trainer, or (the L1 bug we
+    // fixed) the operational self-verify signal gets blanket-dropped so the genome
+    // loop can never learn the "run the test, don't just narrate" habit. Garbage
+    // (empty response, system-only) is still structurally dropped.
     #[test]
-    fn capture_to_example_converts_clean_turn_and_drops_garbage() {
-        // A real turn: system + a room burst + a spoken reply → one SFT pair.
+    fn capture_to_example_tags_skill_axis_and_keeps_acting_turns() {
+        // A prose turn: system + a room burst + a spoken reply → one SFT pair on
+        // the `domain` axis.
         let good = json!({
             "system": "You are Asha.",
             "messages": [{ "role": "user", "content": "[room x]\npeer: where is render_ai_help?" }],
@@ -1112,17 +1151,30 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("help.rs"));
+        assert_eq!(ex["skillAxis"], "domain", "prose turn → domain axis");
 
-        // An un-acted tool-call envelope as the "answer" → dropped (not a target).
+        // A tool-call envelope the model emitted as its literal answer (JSON-in-
+        // prompt) → KEPT, tagged operational. This is the act we want to train.
         let tool_json = json!({
             "system": "You are Asha.",
             "messages": [{ "role": "user", "content": "ping it" }],
             "response": { "text": "{\"tool_call\": {\"name\": \"ping\", \"arguments\": {}}}" }
         });
-        assert!(
-            capture_to_example(&tool_json, true).is_none(),
-            "tool-call JSON must be dropped"
-        );
+        let ex = capture_to_example(&tool_json, true).expect("acting turn → example");
+        assert_eq!(ex["skillAxis"], "operational", "JSON-in-prompt call → operational");
+
+        // A structured `response.toolCalls` array (adapter-extracted) with prose
+        // preamble → KEPT, tagged operational.
+        let structured = json!({
+            "system": "You are Asha.",
+            "messages": [{ "role": "user", "content": "write merge_intervals and test it" }],
+            "response": {
+                "text": "I'll write it then run the tests.",
+                "toolCalls": [{ "id": "c1", "input": { "code": "fn merge_intervals() {}" } }]
+            }
+        });
+        let ex = capture_to_example(&structured, true).expect("structured-call turn → example");
+        assert_eq!(ex["skillAxis"], "operational", "structured toolCalls → operational");
 
         // Empty response → dropped (no pair).
         let empty = json!({

@@ -237,6 +237,7 @@ async fn airc_remote_inference_adapter_round_trips_against_substrate() {
         routing: None,
         error: None,
         reasoning: None,
+        timing: None,
     };
 
     // peer_a = remote substrate. Notify barrier signals when its

@@ -50,6 +50,15 @@ use super::workspace::{Contribution, Faculty, FacultyId, Workspace};
 /// scratchpad, not a log; older thinking ages out (rolling).
 pub const DEFAULT_WORKING_MEMORY_CAPACITY: usize = 3;
 
+/// Prefix on a SETTLEMENT entry — the proprioceptive mark that the persona produced
+/// an utterance (answered) and thereby closed the current concern. It is a boundary
+/// in the volatile buffer: an identical tool call BEFORE the most recent settlement
+/// belongs to a concern she already answered, so re-issuing it for a NEW concern is
+/// legitimate, not a spin. Shared here (not inlined at the two call sites) so the
+/// writer (`record_settlement`) and the reader (`act_observe`'s repeat-perception
+/// scope) can never drift. See [[persona-tool-loop-act-then-report]].
+pub const WM_SETTLEMENT_PREFIX: &str = "[settled]";
+
 /// The faculty's bid salience. Same tier as retrieved grounding
 /// (`RETRIEVED_SALIENCE` = 0.5): useful context that informs the decision but must
 /// not outrank standing framing (roster/doctrine, 0.9) or a strong recall hit.
@@ -113,6 +122,26 @@ impl WorkingMemory {
         let seq = self.next_action_seq.fetch_add(1, Ordering::Relaxed);
         let mut e = self.entries.lock();
         e.push_back(format!("[action #{seq}] {a}"));
+        while e.len() > self.capacity {
+            e.pop_front();
+        }
+    }
+
+    /// Record that the persona SETTLED — produced an utterance and closed the current
+    /// concern. Pushes a [`WM_SETTLEMENT_PREFIX`]-marked boundary into the same rolling
+    /// buffer (honest proprioception: "I already answered X", perceivable by the mind
+    /// next tick). The boundary lets the repeat-perception guard distinguish a spin
+    /// (identical call re-issued WITHIN one settling, before any answer) from a
+    /// legitimate re-use of the same tool for a genuinely NEW concern after an answer.
+    /// Blank is ignored. Oldest ages out past capacity, same rolling scratchpad.
+    pub fn record_settlement(&self, answer_head: &str) {
+        let a = answer_head.trim();
+        let mut e = self.entries.lock();
+        e.push_back(if a.is_empty() {
+            WM_SETTLEMENT_PREFIX.to_string()
+        } else {
+            format!("{WM_SETTLEMENT_PREFIX} I answered: {a}")
+        });
         while e.len() > self.capacity {
             e.pop_front();
         }
@@ -239,6 +268,32 @@ mod tests {
         // blank action ignored (no fabricated proprioception).
         wm.record_action("   ");
         assert_eq!(wm.recent().len(), 2);
+    }
+
+    // what this catches: record_settlement lays down a WM_SETTLEMENT_PREFIX boundary
+    // in the rolling buffer (with the answer head as honest "I already answered X"
+    // proprioception), and a blank answer still marks the boundary. This is the marker
+    // the repeat-perception guard scopes to, separating a spin (identical call before
+    // any answer) from legitimate re-use of the same tool after answering.
+    #[test]
+    fn record_settlement_marks_a_boundary_in_the_buffer() {
+        let wm = WorkingMemory::new(4);
+        wm.record_action("I ran commands/list({}) -> 100 commands");
+        wm.record_settlement("there are 100 commands");
+        let recent = wm.recent();
+        assert_eq!(recent.len(), 2);
+        assert!(
+            recent[1].starts_with(WM_SETTLEMENT_PREFIX),
+            "the settlement is marked with the shared prefix so the guard can find it"
+        );
+        assert!(
+            recent[1].contains("there are 100 commands"),
+            "carries the answer head as proprioception"
+        );
+        // A blank answer still marks the boundary (bare prefix, no fabricated text).
+        wm.record_settlement("   ");
+        let recent = wm.recent();
+        assert_eq!(recent.last().unwrap(), WM_SETTLEMENT_PREFIX);
     }
 
     // what this catches: clear() empties the volatile scratch (disjoint-concern

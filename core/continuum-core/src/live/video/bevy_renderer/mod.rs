@@ -33,6 +33,8 @@ mod animation;
 mod api;
 mod app;
 mod commands;
+mod coordinate;
+mod mesh_fixup;
 mod readback;
 pub(crate) mod scene;
 mod setup;

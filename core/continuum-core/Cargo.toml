@@ -46,6 +46,7 @@ path = "src/bin/forge_custodian.rs"
 tokio.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+ron = "0.12"     # RON scene descriptions (Bevy-idiomatic on-disk format)
 uuid.workspace = true
 # JSON Schema generation from serde types — the runtime param schema every SDK
 # (CLI/web/mobile/RAG-tools) adapts from. Derived automatically by the command
@@ -56,6 +57,14 @@ schemars = { version = "0.8", features = ["uuid1"] }
 # dev loop tight (no version juggle while the macro evolves).
 continuum-orm-derive = { path = "../continuum-orm-derive" }
 continuum-airc-protocol = { path = "../continuum-airc-protocol" }
+# The positron substrate side (task #29 Layer 1): `Substrate` (snapshot +
+# live broadcast), `run_session` (the transport-generic live session task),
+# and the `CommandDispatch` seam. The WS ingress owns the transport: it
+# decodes `WsClientMessage::{Subscribe,Observe}` onto `run_session`'s inbound
+# channel and serializes its `ServerMessage::State` output back as
+# `WsServerMessage`. The `CommandDispatch` seam keeps continuum-positron free
+# of a continuum-core dependency (no cycle — this crate implements the trait).
+continuum-positron = { path = "../continuum-positron" }
 # The client SDK. `InProcessTransport` (runtime/in_process_transport.rs)
 # implements `continuum_client::Transport` so an in-core citizen (persona,
 # foundry) holds the SAME `Connection` every external client uses — citizens

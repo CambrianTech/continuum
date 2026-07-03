@@ -42,7 +42,20 @@ pub enum ResourceClass {
     Background,
 }
 
-#[derive(Debug, Clone, Copy, Eq, PartialEq, Ord, PartialOrd, Hash, Serialize, Deserialize, TS)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    Eq,
+    PartialEq,
+    Ord,
+    PartialOrd,
+    Hash,
+    Serialize,
+    Deserialize,
+    TS,
+    schemars::JsonSchema,
+)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 #[ts(
     export,

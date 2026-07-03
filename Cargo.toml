@@ -88,11 +88,50 @@ members = [
 # the issuance half: an owner node signs a CapabilityGrant with its own key (key
 # never leaves airc) so a grantee can present it. Powers grid/grant/issue + the
 # end-to-end contracted-grid loop. Additive.
-airc-core = { git = "https://github.com/CambrianTech/airc", rev = "55790e1" }
-airc-protocol = { git = "https://github.com/CambrianTech/airc", rev = "55790e1" }
-airc-ipc = { git = "https://github.com/CambrianTech/airc", rev = "55790e1" }
-airc-lib = { git = "https://github.com/CambrianTech/airc", rev = "55790e1" }
-airc-wire = { git = "https://github.com/CambrianTech/airc", rev = "55790e1" }
+#
+# 2026-06-29 bump 55790e1 → 17b238c (feat/airc-scoped-state, task #89): adopts
+# the generic scoped-state store (airc-store `scoped_state` key→JSON +
+# `ScopeRef` domain layer + `Airc::{get,set,list,delete}_scoped_state` facade +
+# `airc state` CLI) — the private/local sibling of the room wall — AND the wall
+# split-brain fix: `publish_wall_post` routes through the daemon when attached
+# (was client-local only, invisible to the daemon-backed read) and `wall_posts`
+# discriminates on the self-describing body, not the coarse bus kind the daemon
+# read path flattens to `System`. This unblocks the WallSource `[room-board]`
+# grounding A/B. Additive to the API surface continuum uses. NOTE: this SHA is
+# on the scoped-state working branch, not canary — reconcile to the canary SHA
+# when the airc PR lands; re-validate persona attach + wall publish on bump.
+#
+# 2026-06-29 bump 3b5368b → 9e23fa0 (fix/durable-peer-identity-index): adopts the
+# daemon-aware peer-identity-card read. 3b5368b built the WRITE path (daemon
+# indexes foreign peers' IdentityPublished cards into scoped_state
+# `user:<peer>`/`identity.card`); 9e23fa0 adds the READ path an ATTACHED client
+# needs — `peer_identity_card` branches on `is_daemon_attached()` to query the
+# daemon's authoritative index via the new `PeerIdentityCard` IPC op (modeled on
+# `room_tip`), and `peer_alias` delegates to it. Without this, an attached
+# persona resolved peer names from its LOCAL home store — which only ever holds
+# its own card — so it rendered raw UUIDs and confabulated names. Additive IPC op
+# (new Request/Response variant); ABI is decode-compatible for ops continuum
+# already uses. Also: `airc identity set --name`. Re-validate persona attach on bump.
+#
+# 2026-06-29 bump 9e23fa0 → 305c319 (fix/durable-peer-identity-index): completes
+# the same fix. 9e23fa0 added the daemon-aware READ branch, but the index was
+# still EMPTY: `record_peer_identity_card` wrote the per-peer identity index to
+# the scope-local `event_store` (the persona's own home), while every reader —
+# the daemon's IPC index AND daemon-less self-resolution — reads the
+# machine-account `coordinator_store`. So the daemon's `coordinator_store` had
+# zero `identity.card` rows and the attached persona still saw raw UUIDs /
+# confabulated names. 305c319 routes the index write + the daemon-less read
+# through `coordinator_store` (the one shared machine-account events.sqlite), so
+# any scope that records a card writes it to the single index every sibling
+# scope and the daemon read. Regression test:
+# `peer_identity_index_converges_across_scopes_via_coordinator_store`. The
+# general scope-home scoped_state (tool.mode/wall/coordination) is unchanged.
+# Additive — no ABI change. Re-validate persona attach on bump.
+airc-core = { git = "https://github.com/CambrianTech/airc", rev = "70c6d55" }
+airc-protocol = { git = "https://github.com/CambrianTech/airc", rev = "70c6d55" }
+airc-ipc = { git = "https://github.com/CambrianTech/airc", rev = "70c6d55" }
+airc-lib = { git = "https://github.com/CambrianTech/airc", rev = "70c6d55" }
+airc-wire = { git = "https://github.com/CambrianTech/airc", rev = "70c6d55" }
 
 # Candle ML framework — patched via [patch.crates-io] below.
 # Fixes: Metal buffer pool leak (#2271), RoPE NEOX convention (#3410)

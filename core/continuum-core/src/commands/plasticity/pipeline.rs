@@ -5,10 +5,9 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use ts_rs::TS;
 
+use crate::model_registry::ModelArchConfig;
 use crate::modules::plasticity::types::{AnalysisResult, CompactionConfig, CompactionResult};
-use crate::modules::plasticity::{
-    build_topology, compactor, infer_hidden_size, quantizer, scoring, topology,
-};
+use crate::modules::plasticity::{build_topology, compactor, quantizer, scoring, topology};
 
 use super::effective_config;
 
@@ -104,8 +103,10 @@ fn run_pipeline(
         utilization.num_steps
     );
 
-    // Compute topology.
-    let topo = build_topology(&utilization, config);
+    // Compute topology. Architecture dims come from the base model artifact — never
+    // guessed from the model name.
+    let arch = ModelArchConfig::from_artifact(Path::new(model_path))?;
+    let topo = build_topology(&utilization, config, &arch);
 
     eprintln!(
         "[plasticity/pipeline] Optimization plan: {:.1}% parameter reduction, profile: removed={} ternary={} q2={} q4={} q8={} bf16={}",
@@ -139,8 +140,7 @@ fn run_pipeline(
     };
 
     // Save analysis summary alongside.
-    let hidden_size = infer_hidden_size(&utilization);
-    let (orig_bytes, quant_bytes) = quantizer::estimate_total_savings(&topo, hidden_size);
+    let (orig_bytes, quant_bytes) = quantizer::estimate_total_savings(&topo, arch.hidden_size);
     let layer_summaries = scoring::compute_layer_summaries(&utilization, &topo.layers, config);
 
     let analysis = AnalysisResult {

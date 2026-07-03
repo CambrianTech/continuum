@@ -655,7 +655,7 @@ mod tests {
     use crate::genome::recall_trait::{
         CapabilityQuery, DemandAlignedRecall, DomainHint, RecallBudget, RecallContext, RecallTrace,
     };
-    use crate::genome::working_set::PersonaId;
+    use crate::identity::PeerId;
     use parking_lot::Mutex;
 
     /// Stub CandidateSource: returns a pre-set Vec on every call,
@@ -704,8 +704,8 @@ mod tests {
         }
     }
 
-    fn sample_persona() -> PersonaId {
-        PersonaId::new(Uuid::from_u128(100))
+    fn sample_persona() -> PeerId {
+        PeerId::from_uuid(Uuid::from_u128(100))
     }
 
     /// What this catches: trait impl exists + is object-safe.

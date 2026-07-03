@@ -112,7 +112,7 @@ pub struct ToolOutcome {
 /// Minimal `MediaItem` shape the executor needs to pass around. Full
 /// type lives in TS `ChatMessageEntity`; Rust doesn't need every field,
 /// just enough to route the item through the pipeline.
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[ts(
     export,
     export_to = "../../../protocol/typescript/cognition/MediaItemLite.ts"

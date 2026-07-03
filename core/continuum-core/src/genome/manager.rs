@@ -37,7 +37,8 @@
 use async_trait::async_trait;
 
 use super::tier::{TierError, TierRole};
-use super::working_set::{AccessDenied, PageFault, PageHandle, PageRef, PersonaId, WorkingSet};
+use super::working_set::{AccessDenied, PageFault, PageHandle, PageRef, WorkingSet};
+use crate::identity::PeerId;
 
 /// The single trait every working-set implementation satisfies. The
 /// PR-3 implementor will be a per-substrate-process singleton holding
@@ -61,7 +62,7 @@ pub trait WorkingSetManager: Send + Sync {
     /// as success-with-trace-event. A future PR may relax this
     /// signature (e.g. return `Result<(PageHandle, Option<PageFault>),
     /// TierError>`) if downstream feedback wants both.
-    async fn page_in(&self, persona: PersonaId, page: PageRef) -> Result<PageHandle, PageFault>;
+    async fn page_in(&self, persona: PeerId, page: PageRef) -> Result<PageHandle, PageFault>;
 
     /// Demote a page out of the working set toward the named tier
     /// role. Used by composition when it's done with a page (e.g.
@@ -75,7 +76,7 @@ pub trait WorkingSetManager: Send + Sync {
     /// for unpinning before demoting.
     async fn page_out(
         &self,
-        persona: PersonaId,
+        persona: PeerId,
         page: PageRef,
         to: TierRole,
     ) -> Result<(), TierError>;
@@ -91,7 +92,7 @@ pub trait WorkingSetManager: Send + Sync {
     /// bugs). The Part-3 spec uses `&WorkingSet` without the option;
     /// PR-2's narrower contract is a pragmatic refinement that catches
     /// the misuse case earlier.
-    fn working_set(&self, persona: PersonaId) -> Option<&WorkingSet>;
+    fn working_set(&self, persona: PeerId) -> Option<&WorkingSet>;
 
     /// MMU-style audit: the named persona is asking for the named
     /// page. Returns `Err(AccessDenied)` if the page is private to a
@@ -102,7 +103,7 @@ pub trait WorkingSetManager: Send + Sync {
     /// log, regardless of whether the calling persona caught + logged
     /// it itself. Compartmentalization audit trail per
     /// GENOME-FOUNDRY-SENTINEL Part 4.
-    fn audit_access(&self, persona: PersonaId, page: PageRef) -> Result<(), AccessDenied>;
+    fn audit_access(&self, persona: PeerId, page: PageRef) -> Result<(), AccessDenied>;
 }
 
 #[cfg(test)]
@@ -123,16 +124,16 @@ mod tests {
     /// per-persona HashMap of "pages this persona owns" the audit_access
     /// check uses.
     struct StubManager {
-        working_sets: HashMap<PersonaId, WorkingSet>,
+        working_sets: HashMap<PeerId, WorkingSet>,
         /// (page, owner) — audit_access denies if `persona != owner`.
-        page_owners: HashMap<PageRef, PersonaId>,
+        page_owners: HashMap<PageRef, PeerId>,
     }
 
     #[async_trait]
     impl WorkingSetManager for StubManager {
         async fn page_in(
             &self,
-            _persona: PersonaId,
+            _persona: PeerId,
             page: PageRef,
         ) -> Result<PageHandle, PageFault> {
             // Stub: every page_in succeeds with a fresh handle. The
@@ -147,18 +148,18 @@ mod tests {
 
         async fn page_out(
             &self,
-            _persona: PersonaId,
+            _persona: PeerId,
             _page: PageRef,
             _to: TierRole,
         ) -> Result<(), TierError> {
             Ok(())
         }
 
-        fn working_set(&self, persona: PersonaId) -> Option<&WorkingSet> {
+        fn working_set(&self, persona: PeerId) -> Option<&WorkingSet> {
             self.working_sets.get(&persona)
         }
 
-        fn audit_access(&self, persona: PersonaId, page: PageRef) -> Result<(), AccessDenied> {
+        fn audit_access(&self, persona: PeerId, page: PageRef) -> Result<(), AccessDenied> {
             match self.page_owners.get(&page) {
                 Some(owner) if *owner != persona => Err(AccessDenied {
                     actor: persona,
@@ -171,10 +172,10 @@ mod tests {
         }
     }
 
-    fn sample_persona(low_bits: u128) -> PersonaId {
+    fn sample_persona(low_bits: u128) -> PeerId {
         // Build a deterministic UUID from the low bits so tests can
         // construct distinct personas without depending on randomness.
-        PersonaId::new(Uuid::from_u128(low_bits))
+        PeerId::from_uuid(Uuid::from_u128(low_bits))
     }
 
     fn sample_page() -> PageRef {

@@ -43,10 +43,12 @@ use uuid::Uuid;
 use super::types::{
     NativeBatchOutcome, ParsedToolBatch, ToolError, ToolExecutionContext, ToolOutcome,
 };
+use super::spill;
 use super::ToolExecutor;
 use crate::ai::types::{ToolCall as NativeToolCall, ToolResult as NativeToolResult};
 use crate::routing::CallerIdentity;
 use crate::runtime::{CommandExecutor, InProcessTransport};
+use crate::sdk_codegen::{command_registry, AccessLevel};
 use continuum_client::{ClientError, Connection};
 use std::sync::Arc;
 
@@ -87,7 +89,12 @@ impl CommandToolExecutor {
         // peer: it carries `LocalPersona` identity → resolves to `Trusted` at the
         // gate (file/shell access), capped below Owner. Unforgeable remotely (the
         // airc inbound pump stamps `Airc`); only this local spawn path mints it.
-        let transport = InProcessTransport::new(executor, Some(CallerIdentity::local_persona(persona)));
+        // `persona` is the persona's bare-Uuid id; the gate identity is the canonical
+        // PeerId (== peer_id by invariant). Convert at this spawn boundary.
+        let transport = InProcessTransport::new(
+            executor,
+            Some(CallerIdentity::local_persona(crate::identity::PeerId::from_uuid(persona))),
+        );
         Self::new(Connection::new(transport))
     }
 }
@@ -106,6 +113,156 @@ fn truncate_on_boundary(mut s: String, max: usize) -> String {
     s.truncate(end);
     s.push_str("\n…[truncated]");
     s
+}
+
+/// Bound a tool RESULT for re-injection, keeping BOTH ends and naming the cut.
+///
+/// A tool that floods — a build log, a giant file, a chatty command (an Xcode or
+/// cargo build is the canonical case) — must never blow the persona's context
+/// window. The cap (`max_result_chars`) is that protection. But a naive head-keep
+/// throws away exactly the part she needs for log-shaped output: the verdict (the
+/// errors, the failing target, the summary) lives at the END. So this keeps the
+/// HEAD (where a read/listing/JSON starts) AND the TAIL (where a build/test/log
+/// concludes), eliding the middle with a marker that (a) names how much was
+/// dropped and (b) reinforces the narrowing affordance — re-run the tool SCOPED,
+/// or grep with `code/search`, so she asks for less next time instead of drowning.
+///
+/// Like the failure-feedback translation, this is affordance quality, not output
+/// steering: it shapes what the tool layer hands back, never reads her generation.
+///
+/// When `spill` is `Some`, the FULL result was first persisted (tier 2) and the
+/// elision marker names the handle so she can grep/page the whole thing via
+/// `tool/output` — Joel's "even if it blows up, all is not lost". When it's
+/// `None` (small output, or the spill itself failed), the marker reinforces the
+/// re-run-scoped / `code/search` narrowing affordance instead.
+fn truncate_tool_output(s: String, max: usize, spill: Option<&spill::SpillRef>) -> String {
+    if s.len() <= max {
+        return s;
+    }
+    // Split the visible budget between the two ends — the head of a read/listing
+    // and the tail of a build/log are both load-bearing (~60/40 toward the head).
+    let head_budget = max * 3 / 5;
+    let tail_budget = max - head_budget;
+
+    let mut head_end = head_budget.min(s.len());
+    while head_end > 0 && !s.is_char_boundary(head_end) {
+        head_end -= 1;
+    }
+    let mut tail_start = s.len().saturating_sub(tail_budget);
+    while tail_start < s.len() && !s.is_char_boundary(tail_start) {
+        tail_start += 1;
+    }
+    // Degenerate tiny budget where the ends would overlap: fall back to head-only.
+    if tail_start <= head_end {
+        return truncate_on_boundary(s, max);
+    }
+    let dropped = tail_start - head_end;
+    let recovery = match spill {
+        // The whole result is recoverable — point her at the handle, and at the
+        // failure-hunting path specifically (grep for the error), per Joel: the
+        // build hands spit out a lot of crap and the job is finding the error.
+        Some(r) => format!(
+            "the FULL {} lines were saved as output `{}`. Find the part you need \
+             with `tool/output` — e.g. grep for the failure with \
+             `{{\"handle\":\"{}\",\"pattern\":\"error|panic|failed\"}}`, or read a \
+             line range with `startLine`/`endLine`",
+            r.lines, r.handle, r.handle,
+        ),
+        // Not recoverable — narrow at the source instead.
+        None => "Re-run the tool SCOPED to what you need (a narrower argument, e.g. \
+                 `filter`/`package`/`path`), or grep with `code/search`, instead of \
+                 reading it all"
+            .to_string(),
+    };
+    format!(
+        "{}\n…[{dropped} chars elided — this result is large. {recovery}. The start \
+         and end are kept below.]…\n{}",
+        &s[..head_end],
+        &s[tail_start..],
+    )
+}
+
+/// Bound a tool result for re-injection, spilling the FULL output to disk first
+/// when it overflows so nothing is lost (tier 2). The returned preview names the
+/// spill handle (when the spill succeeded) so the persona can grep/page it.
+///
+/// Spilling is best-effort: if it fails (no home dir, disk full) we STILL bound
+/// the output — context safety is non-negotiable — she just loses the recover-it
+/// affordance for that one result. We never fabricate a handle we couldn't write.
+fn fold_with_recovery(full: String, max: usize, persona_id: Uuid) -> String {
+    if full.len() <= max {
+        return full;
+    }
+    match spill::spill(persona_id, &full) {
+        Ok(r) => truncate_tool_output(full, max, Some(&r)),
+        Err(_) => truncate_tool_output(full, max, None),
+    }
+}
+
+/// Translate a raw substrate failure into feedback a PERSONA can act on.
+///
+/// The substrate's own error strings are written for a developer caller. The
+/// worst offender: an unknown command returns a paragraph about the disabled
+/// "TS-bridge fallthrough", `execute_ts_json`, and "register a `ServiceModule`"
+/// — noise to a persona, which can do none of those. A persona's only recovery
+/// affordances are `commands/list` (find the right name) and `commands/help`
+/// (get the exact call format), so failure feedback must point THERE, in her
+/// own paradigm. A near-miss where she dropped the category prefix
+/// (`cargo/check` → `code/cargo/check`) gets a concrete did-you-mean drawn from
+/// the live registry, restricted to `AiSafe` names she can actually call (those
+/// are already in her catalog, so nothing about the surface leaks).
+///
+/// This is affordance/feedback quality — like a good compiler error or a CLI's
+/// "did you mean" — NOT output steering: it never reads her generated text to
+/// puppet her, it only rewrites what the tool layer hands back when a call she
+/// already made could not run. [[no-hardcoded-heuristics-to-steer-cognition]]
+fn persona_tool_error(attempted: &str, raw: String) -> String {
+    // The dispatched (slash) form is what the registry knows; she may have
+    // emitted the underscore form, so normalize before matching/suggesting.
+    let normalized = attempted.replace('_', "/");
+
+    // Unknown command: the substrate's dev-facing message is useless to her.
+    if raw.contains("no Rust module handles command") || raw.starts_with("no command") {
+        // A command whose full name ends with `/<attempted>` is almost certainly
+        // what she meant — she dropped the leading category (`cargo/check` →
+        // `code/cargo/check`). Suggest only AiSafe names (the surface she can
+        // call), deduped and ordered for a stable, leak-free hint.
+        let suffix = format!("/{normalized}");
+        let mut suggestions: Vec<&'static str> = command_registry()
+            .into_iter()
+            .filter(|d| d.access_level == AccessLevel::AiSafe && d.name.ends_with(&suffix))
+            .map(|d| d.name)
+            .collect();
+        suggestions.sort_unstable();
+        suggestions.dedup();
+        let did_you_mean = match suggestions.as_slice() {
+            [] => String::new(),
+            [one] => format!(" Did you mean `{one}`?"),
+            many => format!(
+                " Did you mean one of: {}?",
+                many.iter().map(|n| format!("`{n}`")).collect::<Vec<_>>().join(", ")
+            ),
+        };
+        return format!(
+            "`{normalized}` is not a tool you can call.{did_you_mean} \
+             Call `commands/list` (optionally with a `filter` keyword) to find the \
+             right tool, then `commands/help` with its exact name to see the \
+             arguments and an example before you retry."
+        );
+    }
+
+    // Bad/missing arguments: the `[invalid]` prefix means serde already named the
+    // offending field — reinforce the manual so she gets the exact shape + example.
+    if raw.contains("[invalid]") {
+        return format!(
+            "{raw}\n→ Call `commands/help` with name \"{normalized}\" to see the \
+             exact argument names, types, and a fill-in-the-blanks example, then retry."
+        );
+    }
+
+    // Any other substrate refusal already carries its own real reason — pass it
+    // through unchanged (fail loud, name the cause). [[fallbacks-are-illegal-fail-loud]]
+    raw
 }
 
 #[async_trait]
@@ -156,26 +313,41 @@ impl ToolExecutor for CommandToolExecutor {
         let results = join_all(dispatches)
             .await
             .into_iter()
-            .map(|(tool_use_id, outcome)| match outcome {
+            .enumerate()
+            .map(|(i, (tool_use_id, outcome))| match outcome {
                 Ok(value) => NativeToolResult {
                     tool_use_id,
-                    content: truncate_on_boundary(value.to_string(), max_result_chars),
+                    // Spill-then-bound: a flood-sized result is persisted whole
+                    // (recoverable via `tool/output`) before the preview is cut.
+                    content: fold_with_recovery(
+                        value.to_string(),
+                        max_result_chars,
+                        ctx.persona_id,
+                    ),
                     is_error: None,
                 },
                 // A failed tool call is NOT a batch failure — it's fed back to the
                 // model as an error result so it can recover (retry, fix args,
                 // pick another tool). Batch-level `Err` is reserved for the
-                // executor/transport itself being unavailable. Surface the
-                // substrate's OWN reason (e.g. "Unknown command: …"), not the
-                // client-wrapper prefix, so the model recovers on the real message.
+                // executor/transport itself being unavailable. Take the substrate's
+                // OWN reason (e.g. "no Rust module handles command: …") and translate
+                // it into PERSONA-actionable feedback — naming the problem AND
+                // reinforcing `commands/help`/`commands/list` — so she recovers on a
+                // message in her own paradigm, not a developer-internal one.
                 Err(e) => {
-                    let content = match e {
+                    let raw = match e {
                         ClientError::Refused { reason, .. } => reason,
                         other => other.to_string(),
                     };
+                    // Index back to the call that failed (the OK path never pays
+                    // this — names are only needed to build recovery guidance).
+                    let attempted = calls.get(i).map(|c| c.name.as_str()).unwrap_or("");
                     NativeToolResult {
                         tool_use_id,
-                        content: truncate_on_boundary(content, max_result_chars),
+                        content: truncate_on_boundary(
+                            persona_tool_error(attempted, raw),
+                            max_result_chars,
+                        ),
                         is_error: Some(true),
                     }
                 }
@@ -272,6 +444,117 @@ mod tests {
                 auto_load_media: false,
                 supported_media_types: vec![],
             },
+        }
+    }
+
+    // what this catches: the developer-internal unknown-command paragraph (TS-bridge
+    // fallthrough, "register a ServiceModule") must NEVER reach the persona — she gets
+    // a paradigm-native message pointing at commands/list + commands/help instead.
+    #[test]
+    fn unknown_command_feedback_is_persona_actionable_not_dev_noise() {
+        let raw = "no Rust module handles command: 'frobnicate'. \
+                   The implicit TS-bridge fallthrough is disabled per [[no-fallbacks-ever]]. \
+                   register a `ServiceModule` whose `command_prefixes` covers it."
+            .to_string();
+        let out = persona_tool_error("frobnicate", raw);
+        assert!(!out.contains("ServiceModule"), "dev noise leaked to persona: {out}");
+        assert!(!out.contains("TS-bridge"), "dev noise leaked to persona: {out}");
+        assert!(out.contains("commands/list"), "must point her at discovery: {out}");
+        assert!(out.contains("commands/help"), "must reinforce the manual: {out}");
+        assert!(out.contains("`frobnicate`"), "must name what she tried: {out}");
+    }
+
+    // what this catches: a dropped category prefix (the most common near-miss) gets a
+    // concrete did-you-mean drawn from the live registry — `cargo/check` is a real
+    // suffix of the AiSafe `code/cargo/check`, so she's handed the exact name.
+    #[test]
+    fn unknown_command_offers_did_you_mean_on_dropped_prefix() {
+        let raw = "no Rust module handles command: 'cargo/check'.".to_string();
+        let out = persona_tool_error("cargo/check", raw);
+        assert!(
+            out.contains("Did you mean") && out.contains("code/cargo/check"),
+            "should suggest the full AiSafe name: {out}"
+        );
+    }
+
+    // what this catches: a bad-args refusal keeps the substrate's own field-naming
+    // reason AND appends the commands/help reinforcement — feedback that names the
+    // problem and the fix, in her paradigm.
+    #[test]
+    fn invalid_params_feedback_reinforces_help() {
+        let raw = "code/write: [invalid] missing field `filePath`".to_string();
+        let out = persona_tool_error("code/write", raw);
+        assert!(out.contains("missing field `filePath`"), "keeps the real cause: {out}");
+        assert!(out.contains("commands/help"), "reinforces the manual: {out}");
+        assert!(out.contains("code/write"), "names the tool to look up: {out}");
+    }
+
+    // what this catches: a refusal that already carries a real, persona-readable
+    // reason (e.g. an authorization denial) passes through unchanged — we don't
+    // bury a genuine cause under boilerplate. [[fallbacks-are-illegal-fail-loud]]
+    #[test]
+    fn other_refusals_pass_through_unchanged() {
+        let raw = "data/delete: refused — requires Owner trust".to_string();
+        let out = persona_tool_error("data/delete", raw.clone());
+        assert_eq!(out, raw);
+    }
+
+    // what this catches: a flood-sized tool result (a build log) is bounded AND
+    // keeps the END — where the verdict/errors live — not just the head, and the
+    // elision marker reinforces narrowing (re-run scoped / code/search grep).
+    #[test]
+    fn huge_output_keeps_both_ends_and_suggests_narrowing() {
+        let body = format!(
+            "BUILD START\n{}\nerror: linker failed — THE VERDICT AT THE END",
+            "compiling module …\n".repeat(5000)
+        );
+        // None spill ref → the narrow-at-source affordance (re-run scoped / grep).
+        let out = truncate_tool_output(body, 600, None);
+        assert!(out.len() < 1200, "stays bounded near the cap: {} chars", out.len());
+        assert!(out.contains("BUILD START"), "keeps the head: {out}");
+        assert!(out.contains("THE VERDICT AT THE END"), "keeps the tail (the verdict): {out}");
+        assert!(out.contains("code/search"), "reinforces grep/narrowing: {out}");
+        assert!(out.contains("elided"), "names that output was cut: {out}");
+    }
+
+    // what this catches: when the full result was spilled, the elision marker
+    // names the recovery handle AND points at the failure-hunting path
+    // (grep the error via `tool/output`) — Joel's "all is not lost" affordance.
+    #[test]
+    fn spilled_output_marker_names_the_handle_and_recovery() {
+        let body = format!("BUILD START\n{}\nerror: boom", "noise\n".repeat(5000));
+        let fake = spill::SpillRef {
+            handle: "deadbeefcafe0001".to_string(),
+            path: std::path::PathBuf::from("/tmp/x.log"),
+            bytes: body.len(),
+            lines: body.lines().count(),
+        };
+        let out = truncate_tool_output(body, 600, Some(&fake));
+        assert!(out.contains("deadbeefcafe0001"), "names the handle: {out}");
+        assert!(out.contains("tool/output"), "names the recovery tool: {out}");
+        assert!(out.contains("error|panic|failed"), "points at the failure hunt: {out}");
+    }
+
+    // what this catches: output within budget is returned verbatim — no marker,
+    // no elision when nothing was dropped.
+    #[test]
+    fn small_output_is_returned_verbatim() {
+        let out = truncate_tool_output("ok: 2 passed".to_string(), 16_000, None);
+        assert_eq!(out, "ok: 2 passed");
+    }
+
+    // what this catches: a multi-byte body never slices mid-codepoint (would panic),
+    // at both a normal and a pathologically tiny budget — the head/tail boundary
+    // walks must land on char boundaries on both ends.
+    #[test]
+    fn multibyte_body_never_panics_at_any_budget() {
+        let body = "αβγδε".repeat(2000); // 2-byte chars, well over any cap
+        for max in [8usize, 64, 600, 4096] {
+            let out = truncate_tool_output(body.clone(), max, None);
+            // round-trips as valid UTF-8 (the assertions themselves would panic on
+            // a mid-codepoint slice) and stays near the requested budget.
+            assert!(out.chars().count() > 1, "valid UTF-8 at max={max}");
+            assert!(out.contains("elided"), "marks the cut at max={max}: {out}");
         }
     }
 

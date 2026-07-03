@@ -59,6 +59,7 @@ use serde_json::Value;
 use ts_rs::TS;
 use uuid::Uuid;
 
+use crate::identity::PeerId;
 use crate::persona::identity_provider::{PersonaIdentityIntent, PersonaIdentitySource};
 use crate::persona::resume_or_mint_provider::now_ms;
 use crate::persona::seed::ensure_seed;
@@ -73,29 +74,26 @@ use crate::runtime::{
 /// Compact info about a registered persona — what the IPC surface
 /// returns for list/get/bootstrap responses.
 ///
-/// ## INVARIANT (Slice 1B of #142)
+/// ## Identity (Slice 1B of #142, collapsed in Step 4b)
 ///
-/// `persona_id == peer_id`. Both fields hold the airc Ed25519
-/// keypair's Uuid; the runtime constructor collapses them per
-/// [[persona-identity-derives-from-source-id]] (the cryptographic
-/// keypair IS the substrate identity). The two fields exist
-/// side-by-side for API back-compat; a future cleanup may collapse
-/// to a single `peer_id` field once external consumers no longer
-/// reference `persona_id`.
+/// `peer_id` is the canonical [`crate::identity::PeerId`] — the airc
+/// Ed25519 keypair's id, the substrate's one universal actor
+/// identifier. Previously this struct carried a SECOND `persona_id:
+/// Uuid` field holding the same value ("named twice for API
+/// compatibility"); the runtime already collapses `persona_id :=
+/// peer_id` ([`PersonaAircRuntime::from_attached`] /`bootstrap`
+/// reseat it to `airc.peer_id()`), so the twin was pure redundancy —
+/// one logical identity in two fields, exactly the divergence-prone
+/// shape [[identity-one-canonical-newtype-not-bare-uuid]] warns
+/// against. Collapsed to the single canonical field.
 ///
-/// Test fixtures that bypass `from_runtime` (e.g.
-/// `supervisor::tests::fake_instance`, `service_loop` test fixture)
-/// honor this invariant by convention: `persona_id` and `peer_id`
-/// are set to the same Uuid even when the keypair is stubbed.
+/// Serde-transparent → the wire shape is unchanged (a string), so TS
+/// consumers see the same `peerId` they always did; the dropped
+/// `personaId` was a duplicate of it.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 #[ts(export, export_to = "../../../protocol/typescript/persona/PersonaInstanceInfo.ts")]
 pub struct PersonaInstanceInfo {
-    /// The persona's airc peer_id (Ed25519 keypair Uuid) — the
-    /// substrate's universal actor identifier per Slice 1B of #142.
-    /// Equals `peer_id` field by invariant.
-    #[ts(type = "string")]
-    pub persona_id: Uuid,
     /// The persona's airc agent_name. NOTE: currently derived from
     /// the historical pre-bootstrap Uuid (before peer_id existed),
     /// not from peer_id per the doctrine. A future slice routes
@@ -103,11 +101,17 @@ pub struct PersonaInstanceInfo {
     /// personas are stable (stored in seed.json + Identity) but do
     /// not derive from `peer_id`.
     pub agent_name: String,
-    /// The persona's airc peer_id. Equals `persona_id` post-
-    /// Slice-1B (same Uuid, named twice for API compatibility).
-    /// The cryptographic identity airc routes on.
+    /// The persona's airc peer_id — the canonical
+    /// [`crate::identity::PeerId`], the cryptographic identity airc
+    /// routes on and the substrate's universal actor id.
+    ///
+    /// `PeerId` is serde-transparent over its `Uuid` (a string on the
+    /// wire) but derives neither ts-rs `TS` nor `schemars::JsonSchema`,
+    /// so both projections are pinned to `string` explicitly — the same
+    /// shape the field has always had.
     #[ts(type = "string")]
-    pub peer_id: Uuid,
+    #[schemars(with = "String")]
+    pub peer_id: PeerId,
     /// Absolute path to the persona's airc home dir.
     #[ts(type = "string")]
     pub home: PathBuf,
@@ -126,9 +130,10 @@ pub struct PersonaInstanceInfo {
 impl PersonaInstanceInfo {
     pub(crate) fn from_runtime(runtime: &PersonaAircRuntime) -> Self {
         Self {
-            persona_id: runtime.persona_id(),
             agent_name: runtime.agent_name().to_string(),
-            peer_id: runtime.airc().peer_id().as_uuid(),
+            // The runtime already collapses persona_id := peer_id, so this
+            // single canonical field is the whole identity (was a twin).
+            peer_id: runtime.airc().peer_id(),
             home: runtime.home().to_path_buf(),
             default_room: runtime.default_room().as_uuid(),
             source: runtime.source(),
@@ -145,7 +150,7 @@ impl PersonaInstanceInfo {
     /// `PersonaIdentity` is cheap to clone, so returning an owned value
     /// is fine on the per-tick service loop.
     pub fn persona_identity(&self) -> crate::persona::persona_identity::PersonaIdentity {
-        crate::persona::persona_identity::PersonaIdentity::new(self.persona_id, &self.agent_name)
+        crate::persona::persona_identity::PersonaIdentity::new(self.peer_id.as_uuid(), &self.agent_name)
     }
 }
 

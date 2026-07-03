@@ -390,7 +390,7 @@ async fn gate_sees_callers_airc_verified_peer_id_not_a_claimed_one() {
         );
 
     assert_eq!(
-        observed.peer_id, peer_b_id,
+        observed.peer_id.as_uuid(), peer_b_id,
         "the caller identity surfaced to the gate must match peer_b's \
          airc-verified peer_id, not a header-claimable shape. If this \
          fires, a hostile peer can substitute identities by rewriting \

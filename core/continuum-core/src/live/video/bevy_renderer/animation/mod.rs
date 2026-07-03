@@ -7,6 +7,9 @@
 //!
 //! NO global HashMap<u8, State> resources. NO slot IDs in animation logic.
 
+use bevy::prelude::*;
+
+pub mod animator;
 mod blinking;
 mod body_gestures;
 mod breathing;
@@ -17,11 +20,32 @@ mod expression;
 mod eye_gaze;
 mod idle_gestures;
 mod morph_discovery;
+pub mod pose;
 pub(super) mod prng;
+mod procedural;
+pub mod registry;
 mod speaking;
 
 // The animation Components — attach to any entity to animate it.
 pub(super) use components::*;
+
+// The Animator seam (Slice 2): the applier + per-slot registry + supervisor.
+// `ExternalPose` is re-exported here for the built-in writers' `Without<>` filter.
+pub(super) use pose::{apply_external_pose, ExternalPose};
+pub(super) use registry::{drive_animators, select_animator_for_identity, AnimatorRegistry};
+
+/// Ordered animation phases. `Intent` (supervisor decides pose vs built-in) →
+/// `Pose` (built-in writers + `apply_external_pose` write Transforms/morphs) →
+/// `Readback` (capture the rendered frame). `.chain()`ed for a total order
+/// between phases, with parallelism preserved *within* each phase. This replaces
+/// the old unordered `Update` tuple, whose last-writer-wins only worked because
+/// the built-in writers happened to touch disjoint bones.
+#[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(super) enum AnimationSet {
+    Intent,
+    Pose,
+    Readback,
+}
 
 // Re-export system functions for app.rs registration.
 pub(super) use blinking::animate_blinking;

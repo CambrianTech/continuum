@@ -19,7 +19,7 @@ use ts_rs::TS;
 // =============================================================================
 
 /// Request to select the best model for a persona given optional task context.
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[ts(
     export,
     export_to = "../../../protocol/typescript/persona/ModelSelectionRequest.ts"
@@ -78,7 +78,7 @@ pub enum ModelSelectionError {
 
 /// Adapter info synced from TypeScript to Rust.
 /// Lightweight: only what's needed for model selection decisions.
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[ts(export, export_to = "../../../protocol/typescript/persona/AdapterInfo.ts")]
 pub struct AdapterInfo {
     /// Adapter name (e.g. "typescript-expertise", "conversational")

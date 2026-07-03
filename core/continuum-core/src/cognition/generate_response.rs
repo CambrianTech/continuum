@@ -106,7 +106,7 @@ static GENERATE_RESPONSE_TEST_LOCK: LazyLock<std::sync::Mutex<()>> =
 
 /// IPC request: ask the cognition service to assemble a response-prompt
 /// and (in PR-2) run it through the local inference provider.
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 #[ts(
     export,
@@ -147,7 +147,7 @@ pub struct GenerateResponseRequest {
 /// Per-call local-generation admission policy. This is the contract a
 /// host uses to ask Rust for response-generation capacity instead of
 /// owning slots itself.
-#[derive(Debug, Clone, Serialize, Deserialize, TS, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS, PartialEq, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 #[ts(
     export,

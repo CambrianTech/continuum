@@ -44,6 +44,8 @@ use std::sync::Arc;
 use async_trait::async_trait;
 
 use crate::ai::adapter::AIProviderAdapter;
+use crate::context::citizens_kind_dir;
+use crate::identity::IdentityKind;
 use crate::persona::airc_source::AircTranscriptReader;
 use crate::persona::seed::read_seed;
 
@@ -99,9 +101,14 @@ impl FilesystemPersonaResolver {
 
     /// Compute the airc home for a persona — exposed for tests +
     /// the production demo binary that needs the same path.
+    ///
+    /// Derives the scan root from `citizens_kind_dir` — the single
+    /// source of truth for the citizen layout — so this read path
+    /// can never drift from the Slice-4 write path again (the seed
+    /// lives at `citizens/personas/<name>/`, NOT the pre-Slice-4
+    /// `personas/<name>/` this file used to hardcode).
     pub fn airc_home_for(continuum_root: &Path, agent_name: &str) -> PathBuf {
-        continuum_root
-            .join("personas")
+        citizens_kind_dir(continuum_root, IdentityKind::Persona)
             .join(agent_name)
             .join("airc")
     }
@@ -152,8 +159,12 @@ impl PersonaResolver for FilesystemPersonaResolver {
 }
 
 fn seed_path_for(continuum_root: &Path, agent_name: &str) -> PathBuf {
-    continuum_root
-        .join("personas")
+    // Single source of truth for the citizen layout — mirrors the Slice-4
+    // write path (`citizens/personas/<name>/seed.json`). Re-literaling
+    // `join("personas")` here is exactly the drift `citizens_kind_dir`'s
+    // doc comment forbids: the write moved, this read didn't, and the
+    // glass-box inspector silently 404'd on every live persona.
+    citizens_kind_dir(continuum_root, IdentityKind::Persona)
         .join(agent_name)
         .join("seed.json")
 }
@@ -164,10 +175,14 @@ mod tests {
     use crate::persona::seed::PersonaSeedFile;
     use uuid::Uuid;
 
+    // Write through the SAME `seed_path_for` the resolver reads — so a
+    // future move of the on-disk layout can never let the test's write
+    // path drift from production's read path (which is exactly the bug
+    // this file just fixed: seeds moved to `citizens/personas/`, the
+    // reader still looked in `personas/`).
     fn write_seed_file(root: &Path, agent_name: &str, seed: &PersonaSeedFile) {
-        let dir = root.join("personas").join(agent_name);
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("seed.json");
+        let path = seed_path_for(root, agent_name);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         let json = serde_json::to_string_pretty(seed).unwrap();
         std::fs::write(path, json).unwrap();
     }
@@ -208,9 +223,9 @@ mod tests {
     #[tokio::test]
     async fn read_persona_seed_malformed_returns_typed_error() {
         let tmp = tempfile::tempdir().unwrap();
-        let dir = tmp.path().join("personas").join("Garbage");
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("seed.json"), "{ not valid json ").unwrap();
+        let seed_path = seed_path_for(tmp.path(), "Garbage");
+        std::fs::create_dir_all(seed_path.parent().unwrap()).unwrap();
+        std::fs::write(&seed_path, "{ not valid json ").unwrap();
 
         let err = FilesystemPersonaResolver::read_persona_seed(tmp.path(), "Garbage")
             .await
@@ -222,13 +237,16 @@ mod tests {
 
     // ── path helpers ────────────────────────────────────────────
 
+    // what this catches: the read path must track the Slice-4 write path
+    // (`citizens/personas/<name>/`). Before the fix these asserted the dead
+    // `personas/<name>/` layout, so the inspector 404'd on every live persona.
     #[test]
     fn airc_home_for_matches_canonical_layout() {
         let root = PathBuf::from("/Users/joel/.continuum");
         let home = FilesystemPersonaResolver::airc_home_for(&root, "Paige");
         assert_eq!(
             home,
-            PathBuf::from("/Users/joel/.continuum/personas/Paige/airc")
+            PathBuf::from("/Users/joel/.continuum/citizens/personas/Paige/airc")
         );
     }
 
@@ -238,7 +256,7 @@ mod tests {
         let p = seed_path_for(&root, "Paige");
         assert_eq!(
             p,
-            PathBuf::from("/Users/joel/.continuum/personas/Paige/seed.json")
+            PathBuf::from("/Users/joel/.continuum/citizens/personas/Paige/seed.json")
         );
     }
 

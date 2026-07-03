@@ -54,7 +54,7 @@ use uuid::Uuid;
 // =============================================================================
 
 /// Full evaluation request — ONE IPC call replaces 5 TS gates.
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[ts(
     export,
     export_to = "../../../protocol/typescript/persona/FullEvaluateRequest.ts"
@@ -63,6 +63,9 @@ pub struct FullEvaluateRequest {
     #[ts(type = "string")]
     pub persona_id: Uuid,
     pub persona_name: String,
+    /// Defaults to `""` when the caller omits it — matches the legacy
+    /// `p.str_or("persona_unique_id", "")` read the typed command replaces.
+    #[serde(default)]
     pub persona_unique_id: String,
     #[ts(type = "string")]
     pub message_id: Uuid,
@@ -75,9 +78,13 @@ pub struct FullEvaluateRequest {
     pub content: String,
     #[ts(type = "number")]
     pub timestamp: u64,
+    /// Defaults to `false` when omitted — matches the legacy `p.bool_or("is_voice", false)`.
+    #[serde(default)]
     pub is_voice: bool,
     #[ts(optional, type = "string")]
     pub voice_session_id: Option<Uuid>,
+    /// Defaults to `false` when omitted — matches the legacy `p.bool_or("sender_is_human", false)`.
+    #[serde(default)]
     pub sender_is_human: bool,
     /// Pre-computed topic similarity for sleep mode (optional).
     /// If not provided and sleep mode is until_topic, we compute inline.

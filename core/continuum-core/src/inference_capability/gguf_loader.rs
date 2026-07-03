@@ -86,35 +86,27 @@ fn parse_qwen_metadata_from_content(
     path: &Path,
 ) -> Result<QwenModelMetadata, String> {
     // architecture: required (same posture as backends::read_gguf_metadata).
-    let architecture = content
-        .metadata
-        .get("general.architecture")
-        .and_then(|v| v.to_string().ok())
-        .cloned()
-        .ok_or_else(|| {
+    // Read through the ONE shared canonical-key reader; this consumer's
+    // policy is "refuse if absent".
+    let architecture = crate::inference_capability::gguf_keys::architecture(content).ok_or_else(
+        || {
             format!(
                 "GGUF {} is missing required 'general.architecture' — refuse rather than \
                  guess. Same rule as backends::read_gguf_metadata (Joel 2026-04-23).",
                 path.display()
             )
-        })?;
+        },
+    )?;
 
     // model_name: optional; fall back to file stem (recoverable, doesn't
     // affect gate correctness; only display).
-    let model_name = content
-        .metadata
-        .get("general.name")
-        .and_then(|v| v.to_string().ok())
-        .cloned()
-        .unwrap_or(fallback_name);
+    let model_name =
+        crate::inference_capability::gguf_keys::general_name(content).unwrap_or(fallback_name);
 
     // block_count: required. The {arch}.block_count key is the canonical
     // GGUF layer count. Without it, the residency gate's layer-count
     // evidence is missing — refuse rather than fake.
-    let layer_count = content
-        .metadata
-        .get(&format!("{architecture}.block_count"))
-        .and_then(|v| v.to_u32().ok())
+    let layer_count = crate::inference_capability::gguf_keys::block_count(content, &architecture)
         .ok_or_else(|| {
             format!(
                 "GGUF {} (arch={architecture}) is missing required '{architecture}.block_count' \
@@ -150,10 +142,7 @@ fn parse_qwen_metadata_from_content(
     // The fallback is loud — comment in the QwenModelMetadata field documents
     // that bytes_per_parameter_quantized is the input to the estimate, so a
     // user who sees "30B Q4_K_M = 17GB" can sanity-check.
-    let parameter_count_billions = content
-        .metadata
-        .get("general.parameter_count")
-        .and_then(|v| v.to_u64().ok())
+    let parameter_count_billions = crate::inference_capability::gguf_keys::parameter_count(content)
         .map(|n| n as f64 / 1.0e9)
         .unwrap_or_else(|| {
             // Fallback: derive from file size. Approximate — GGUF includes

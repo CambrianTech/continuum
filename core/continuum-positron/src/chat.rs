@@ -22,21 +22,49 @@
 //! - `ChatViewState`: top-level state — current room + roster + most
 //!   recent messages.
 //! - `ChatMessageView`: the message bits the chat widget needs to
-//!   render a row (sender, content, timestamp).
-//! - `PersonaSlotView`: a roster entry (persona id + display name +
-//!   presence). Used by the right-rail roster + the message-row
-//!   avatar.
-//! - `SenderKind`: tagged enum — `Human`, `Persona`, `System`. The
+//!   render a row (sender, content, timestamp, opaque badges).
+//! - `RosterSlotView`: a roster entry (member id + display name +
+//!   presence + kind + opaque badges). Used by the right-rail roster
+//!   + the message-row avatar.
+//! - `SenderKind`: tagged enum — `Human`, `Agent`, `System`. The
 //!   widget side keys avatar + styling off this discriminant.
+//!
+//! ## positron is general-purpose — it does NOT know "persona"
+//!
+//! positron is its own repo ("React + agents + modern terminals"),
+//! consumed by continuum but adoptable by anyone. So its vocabulary is
+//! *neutral*: an AI author is an `Agent`, full stop — positron never
+//! learns whose agent it is. Framework-specific identity (a continuum
+//! persona, an openclaw actor, a Hermes agent) rides the **opaque
+//! `integrations` badge map**, transported and not interpreted —
+//! exactly the move airc's `Identity.integrations` makes one layer
+//! down (*"never interprets the values; it just persists +
+//! transports"*). continuum reads `integrations["continuum.persona*"]`
+//! at ITS app layer to style its own personas distinctly; a different
+//! adopter reads their own key. The neutrality is fractal: airc
+//! neutral (mesh) → positron neutral (view/state) → the app interprets.
+//! See `docs/architecture/WIDGET-AS-STATE-KIND.md`.
 //!
 //! ## What's deferred
 //!
 //! Media attachments, reactions, threads, typing indicators —
-//! deferred to follow-up slices once the substrate event source is
-//! wired (subsequent task). The schema grows by extending these
+//! deferred to follow-up slices once the **airc source wiring** lands
+//! (the projection subscribes to airc's room stream; see the "State
+//! ownership" note in `lib.rs`). The schema grows by extending these
 //! structs; the wire kind string stays `"chat"`. Renderers that don't
 //! know the new fields ignore them; the ts-rs flow makes those
 //! additions visible to the widget side at the same time.
+//!
+//! ## These fields are a VIEW onto airc-owned state
+//!
+//! `room_id` is the airc `RoomId`; `roster` is airc presence; messages
+//! ride airc's room event stream. This struct is the *projection* the
+//! renderer reads — the substrate resolves display names / sender kind
+//! ONCE here so the renderer never re-derives from ids (that re-derive
+//! is the widget-local cache #794 is a symptom of). It is not a second
+//! store of room truth; the airc row is the truth.
+
+use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -62,10 +90,28 @@ pub struct ChatMessageView {
     /// widget-local source-of-truth cache positron's contract exists
     /// to prevent.
     pub sender_name: String,
-    /// What kind of citizen sent this. The widget reads this
-    /// discriminant for avatar / styling — no `if sender_name ==
-    /// "system"` string-sniffing per `[[strong-typing-across-boundaries]]`.
+    /// Neutral author kind. The widget reads this discriminant for
+    /// avatar / styling — no `if sender_name == "system"`
+    /// string-sniffing per `[[strong-typing-across-boundaries]]`.
+    /// `Agent` covers *every* AI author; whose agent it is (a
+    /// continuum persona, an openclaw actor, …) is read from
+    /// `integrations`, not baked into this enum.
     pub sender_kind: SenderKind,
+    /// Opaque cross-system identity badges, transported straight from
+    /// the authoritative airc `Identity.integrations` map. positron
+    /// does NOT interpret these — the app layer does (continuum reads
+    /// `continuum.persona*` to style its own personas; another adopter
+    /// reads its own key). Empty when the sender's identity card has
+    /// not yet resolved.
+    #[ts(type = "Record<string, string>")]
+    pub integrations: BTreeMap<String, String>,
+    /// Verifiable provenance of the author — the accountability half of
+    /// identity (see [`Provenance`]). Resolved from the roster alongside
+    /// `sender_name` / `sender_kind`, so a message row is attributable
+    /// on its face. Woven in from day one per
+    /// `[[positron-identity-security-first-class]]`; grows to carry trust
+    /// tier + verification with no wire break.
+    pub provenance: Provenance,
     pub content: String,
     /// Unix-ms substrate-local time of arrival.
     #[ts(type = "number")]
@@ -75,39 +121,141 @@ pub struct ChatMessageView {
 /// What kind of citizen authored a message. Tagged enum on the wire
 /// so the widget side reads a discriminant, not a stringly-typed
 /// `sender_type` field.
+///
+/// **Neutral by design.** positron is general-purpose and knows
+/// nothing about continuum, so there is no `Persona` variant — an AI
+/// author is an `Agent`, and framework-specific identity rides
+/// `integrations`. This keeps positron a repo others adopt without
+/// learning continuum (see module docs).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case", tag = "kind")]
 #[ts(export)]
 pub enum SenderKind {
     /// Carbon — typed at the keyboard, dictated through STT, etc.
     Human,
-    /// One of the substrate's own personas. Distinct from `Human` so
-    /// the widget can render a different avatar treatment and AI
-    /// observers can attribute provenance per
-    /// `[[strong-typing-across-boundaries]]`.
-    Persona,
+    /// Any AI author. Whose agent it is (continuum persona, openclaw
+    /// actor, Hermes agent, remote peer) is NOT this enum's concern —
+    /// that distinction lives in `integrations`, read at the app
+    /// layer. positron treats all AI authors uniformly.
+    Agent,
     /// A substrate-generated event surfaced into chat — room joined,
     /// model swapped, a `[[observability-as-substrate]]` notification.
     /// Carries no `sender_id` semantic (id is `Uuid::nil()`).
     System,
 }
 
-/// A roster entry — a persona present in this room.
+impl SenderKind {
+    /// Project an airc presence `runtime` class onto the neutral author
+    /// kind — a **coarse styling hint**, not the accountability truth.
+    ///
+    /// airc's `runtime` is a free-form self-reported client class
+    /// (`"claude"`, `"codex"`, `"interactive"`, `"automation"`, …); it
+    /// does NOT cleanly encode human-vs-AI. So this mapping is
+    /// deliberately minimal: airc's documented human-driven runtime
+    /// (`"interactive"`) → [`SenderKind::Human`]; every other running
+    /// actor (an AI of any framework, an automation) → [`SenderKind::Agent`].
+    /// A roster member is a *present citizen*, so this never yields
+    /// `System` (system events are message-only, never roster entries).
+    ///
+    /// This is a projection between two **neutral** vocabularies (a
+    /// runtime class → an author kind), NOT identity-sniffing a model
+    /// name to pick behavior (the `model.starts_with("qwen")` smell this
+    /// codebase kills). The precise accountability signal is carried
+    /// verbatim in [`Provenance::runtime`]; `kind` only drives the
+    /// avatar/styling discriminant. The default-to-`Agent` is not a
+    /// bug-hiding fallback — an unclassified present actor genuinely is
+    /// "some running agent" until its card refines it via `provenance`.
+    pub fn from_runtime(runtime: &str) -> Self {
+        match runtime {
+            "interactive" => SenderKind::Human,
+            _ => SenderKind::Agent,
+        }
+    }
+}
+
+/// Verifiable provenance of the citizen behind a roster slot or message
+/// — the **accountability** half of identity, distinct from the
+/// *display* half (name / kind / badges).
 ///
-/// Roster is substrate-owned and refreshed on join / leave / spawn /
+/// Woven in from day one per `[[positron-identity-security-first-class]]`:
+/// the slot costs nothing now and is ruinous to retrofit. Every unit of
+/// rendered data (a roster member, a message row) carries "who/what
+/// produced this, verifiably" so a human or a security persona can
+/// attribute it — the substrate-side seam the zero-trust flow doctrine
+/// (`docs/architecture/ZERO-TRUST-IDENTITY-AND-FLOW.md`) checks on the
+/// way out.
+///
+/// **What it carries TODAY:** the one axis airc authoritatively surfaces
+/// through presence — the peer's self-reported `runtime` origin. **What
+/// joins it NEXT (no wire break — the whole point of reserving the typed
+/// home now):** the per-peer trust tier + a cryptographic-verification
+/// bit, once the airc peer-trust bridge (task #38) lands. Growable
+/// struct-carrier, same discipline as the adapter capability surface.
+///
+/// Neutral like the rest of positron: `runtime` is transported verbatim,
+/// not interpreted here — the app layer decides what a given runtime
+/// means for trust, exactly as it does for `integrations`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct Provenance {
+    /// The producer's self-reported runtime class, verbatim from airc
+    /// presence (`"claude"` / `"codex"` / `"interactive"` / …). The
+    /// neutral ORIGIN axis — WHO/WHAT produced this, before any trust
+    /// judgment. Empty string = present but unresolved (the card has
+    /// not folded a runtime in yet) — an honest "unknown", never a
+    /// fabricated origin (`[[fallbacks-are-illegal-fail-loud]]`).
+    pub runtime: String,
+}
+
+impl Provenance {
+    /// A provisional provenance for a producer whose identity card has
+    /// not resolved yet — empty runtime = honestly unknown, upgraded in
+    /// place the instant presence lands (mirrors the provisional
+    /// display-name path).
+    pub fn unresolved() -> Self {
+        Self {
+            runtime: String::new(),
+        }
+    }
+}
+
+/// A roster entry — one member present in this room.
+///
+/// Roster is airc presence (surfaced through `RoomRosterSource`),
+/// projected into this view and refreshed on join / leave / spawn /
 /// despawn. The widget never derives "who is here?" from message
 /// senders — that's a stale-cache footgun #794 is currently a symptom
-/// of.
+/// of. This is also the lookup table the projection uses to resolve a
+/// message sender's name / kind / badges by `sender_id`.
+///
+/// Neutral like the rest of positron: a member is identified by
+/// `member_id` + `kind` + opaque `integrations`, never a
+/// continuum-specific "persona" field.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
-pub struct PersonaSlotView {
+pub struct RosterSlotView {
     #[ts(type = "string")]
-    pub persona_id: Uuid,
+    pub member_id: Uuid,
     pub display_name: String,
-    /// `true` if the persona is currently attached and ready to
-    /// receive turns. `false` for paged-out or spawning. The widget
-    /// shows a presence indicator off this bit — single source of
-    /// truth in the substrate.
+    /// Neutral member kind (`Human` / `Agent` / `System`), resolved
+    /// from the airc identity card. Lets the roster rail style AI
+    /// members distinctly and lets `apply_message` resolve a sender's
+    /// kind by id.
+    pub kind: SenderKind,
+    /// Opaque cross-system identity badges from the airc
+    /// `Identity.integrations` map — transported, not interpreted (see
+    /// `ChatMessageView.integrations`).
+    #[ts(type = "Record<string, string>")]
+    pub integrations: BTreeMap<String, String>,
+    /// Verifiable provenance of this member — the accountability half of
+    /// identity (see [`Provenance`]). The roster IS the source of truth
+    /// the projection resolves message provenance from, so it lives here
+    /// first and rides through to each `ChatMessageView`.
+    pub provenance: Provenance,
+    /// `true` if the member is currently attached and ready to receive
+    /// turns. `false` for paged-out or spawning. The widget shows a
+    /// presence indicator off this bit — single source of truth in the
+    /// substrate.
     pub active: bool,
 }
 
@@ -138,9 +286,9 @@ pub struct ChatViewState {
     /// `chat/history` command, not by carrying the whole transcript
     /// in every snapshot.
     pub messages: Vec<ChatMessageView>,
-    /// Personas present in the room. Roster is bounded by spawn —
+    /// Members present in the room. Roster is bounded by presence —
     /// the substrate hosts at most a handful at a time.
-    pub roster: Vec<PersonaSlotView>,
+    pub roster: Vec<RosterSlotView>,
 }
 
 #[cfg(test)]
@@ -159,13 +307,86 @@ mod tests {
             r#"{"kind":"human"}"#
         );
         assert_eq!(
-            serde_json::to_string(&SenderKind::Persona).unwrap(),
-            r#"{"kind":"persona"}"#
+            serde_json::to_string(&SenderKind::Agent).unwrap(),
+            r#"{"kind":"agent"}"#
         );
         assert_eq!(
             serde_json::to_string(&SenderKind::System).unwrap(),
             r#"{"kind":"system"}"#
         );
+    }
+
+    #[test]
+    fn integrations_ride_the_wire_opaquely() {
+        // what this catches: the neutral-passthrough contract — a
+        // framework badge (continuum.persona_id) must round-trip on a
+        // message without positron growing a typed field for it. If a
+        // refactor drops the map or renames the key, the app layer
+        // loses its only channel for framework-specific identity.
+        let mut integrations = BTreeMap::new();
+        integrations.insert("continuum.persona_id".to_string(), "abc-123".to_string());
+        let msg = ChatMessageView {
+            id: Uuid::from_u128(0xb),
+            room_id: Uuid::from_u128(0xa),
+            sender_id: Uuid::from_u128(0xc),
+            sender_name: "Helper".into(),
+            sender_kind: SenderKind::Agent,
+            integrations: integrations.clone(),
+            provenance: Provenance {
+                runtime: "claude".into(),
+            },
+            content: "hi".into(),
+            timestamp: 1_700_000_000_000,
+        };
+        let back: ChatMessageView =
+            serde_json::from_str(&serde_json::to_string(&msg).unwrap()).unwrap();
+        assert_eq!(back.integrations, integrations);
+        assert_eq!(back.sender_kind, SenderKind::Agent);
+        assert_eq!(back.provenance.runtime, "claude");
+    }
+
+    #[test]
+    fn from_runtime_is_coarse_and_neutral() {
+        // what this catches: the runtime→kind projection is a COARSE
+        // styling hint, not identity-sniffing. airc's documented
+        // human-driven runtime maps to Human; every other running actor
+        // (any AI framework, an automation) maps to Agent — the honest
+        // "some running agent" default, NOT a bug-hiding fallback. A
+        // regression that grew a per-framework match table here
+        // (claude→X, codex→Y) would be the `starts_with("qwen")` smell
+        // this codebase kills; the precise signal rides Provenance.
+        assert_eq!(SenderKind::from_runtime("interactive"), SenderKind::Human);
+        assert_eq!(SenderKind::from_runtime("claude"), SenderKind::Agent);
+        assert_eq!(SenderKind::from_runtime("codex"), SenderKind::Agent);
+        assert_eq!(SenderKind::from_runtime("automation"), SenderKind::Agent);
+        // A roster member is a present citizen — never a System row.
+        assert_ne!(SenderKind::from_runtime("anything"), SenderKind::System);
+        // Unknown/empty is honest-Agent, never a panic or a fabricated kind.
+        assert_eq!(SenderKind::from_runtime(""), SenderKind::Agent);
+    }
+
+    #[test]
+    fn provenance_rides_the_wire_and_unresolved_is_empty() {
+        // what this catches: the accountability slot round-trips and its
+        // "not yet resolved" state is an honest empty runtime, never a
+        // fabricated origin ([[fallbacks-are-illegal-fail-loud]]). If a
+        // refactor dropped `provenance` or gave `unresolved()` a
+        // made-up runtime, a security persona / human would attribute a
+        // message to the wrong origin.
+        assert_eq!(Provenance::unresolved().runtime, "");
+        let slot = RosterSlotView {
+            member_id: Uuid::from_u128(0xd),
+            display_name: "Helper".into(),
+            kind: SenderKind::Agent,
+            integrations: BTreeMap::new(),
+            provenance: Provenance {
+                runtime: "claude".into(),
+            },
+            active: true,
+        };
+        let back: RosterSlotView =
+            serde_json::from_str(&serde_json::to_string(&slot).unwrap()).unwrap();
+        assert_eq!(back.provenance.runtime, "claude");
     }
 
     #[test]
@@ -182,12 +403,21 @@ mod tests {
                 sender_id: Uuid::from_u128(0xc),
                 sender_name: "Joel".into(),
                 sender_kind: SenderKind::Human,
+                integrations: BTreeMap::new(),
+                provenance: Provenance {
+                    runtime: "interactive".into(),
+                },
                 content: "hi".into(),
                 timestamp: 1_700_000_000_000,
             }],
-            roster: vec![PersonaSlotView {
-                persona_id: Uuid::from_u128(0xd),
+            roster: vec![RosterSlotView {
+                member_id: Uuid::from_u128(0xd),
                 display_name: "Helper".into(),
+                kind: SenderKind::Agent,
+                integrations: BTreeMap::new(),
+                provenance: Provenance {
+                    runtime: "claude".into(),
+                },
                 active: true,
             }],
         };

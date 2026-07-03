@@ -46,6 +46,14 @@ pub struct SubmitParams {
     pub trait_kind: String,
     pub examples: Vec<TrainingExample>,
     pub source: TrainingSource,
+    /// The gym that MEASURES this trait — the `cognition/eval` `eval_set` JSONL path.
+    /// First-arrival pins it for the bucket; a later submit with a divergent gym is
+    /// rejected `InconsistentBucket`. Rides onto the dispatched `TrainingJobRequest`
+    /// so the L3 sentinel measures the gene on its OWN declared gym; `None` means no
+    /// gym → the sentinel refuses to adopt ([[fallbacks-are-illegal-fail-loud]]).
+    #[serde(default)]
+    #[ts(optional)]
+    pub eval_set: Option<String>,
     #[serde(default)]
     #[ts(optional)]
     pub lora: Option<LoRAHyperparams>,
@@ -230,6 +238,7 @@ crate::action_command! {
                 preferred_provider: p.preferred_provider.clone(),
                 min_examples,
                 validation_split,
+                eval_set: p.eval_set.clone(),
             });
 
             // Coherence checks for hyperparam fields NOT in the BucketKey. `base_model`
@@ -272,6 +281,12 @@ crate::action_command! {
                     entry.preferred_provider, p.preferred_provider
                 )));
             }
+            if entry.eval_set != p.eval_set {
+                return Ok(SubmitOutcome::inconsistent(format!(
+                    "bucket has eval_set={:?}; submit gave eval_set={:?}",
+                    entry.eval_set, p.eval_set
+                )));
+            }
 
             entry.examples.extend(p.examples.into_iter());
 
@@ -301,6 +316,7 @@ crate::action_command! {
                 preferred_provider: entry.preferred_provider.clone(),
                 min_examples: entry.min_examples,
                 validation_split: entry.validation_split,
+                eval_set: entry.eval_set.clone(),
             }
         };
 
@@ -837,8 +853,8 @@ mod tests {
             FineTuningAdapter, FineTuningCapabilities, FineTuningError, TrainerHardware,
         };
         use crate::genome::fine_tuning::types::{
-            JobHandle, JobMetrics, TrainingArtifact, TrainingExample, TrainingJobRequest,
-            TrainingStatus,
+            ArtifactFormat, JobHandle, JobMetrics, TrainingArtifact, TrainingExample,
+            TrainingJobRequest, TrainingStatus,
         };
         use crate::genome::fine_tuning::FineTuningRegistry;
         use crate::modules::genome::GenomeModule;
@@ -903,6 +919,7 @@ mod tests {
                     artifact: TrainingArtifact {
                         model_id: handle.provider_job_id.clone(),
                         local_path: None,
+                        format: ArtifactFormat::ProviderHosted,
                         metrics: JobMetrics::default(),
                     },
                 })

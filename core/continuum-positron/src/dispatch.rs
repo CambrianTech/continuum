@@ -91,8 +91,8 @@ pub trait CommandDispatch: Send + Sync {
 ///
 /// Returns `Err` if `msg` is NOT a `Command` variant — single-purpose
 /// handler per `[[no-fallbacks-ever]]`. Callers route by variant.
-pub async fn apply_command(
-    dispatcher: &dyn CommandDispatch,
+pub async fn apply_command<D: CommandDispatch + ?Sized>(
+    dispatcher: &D,
     msg: ClientMessage,
 ) -> Result<Vec<ServerMessage>, String> {
     let envelope = match msg {

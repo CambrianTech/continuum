@@ -20,10 +20,12 @@ use std::fmt::Write as _;
 /// than a malfunction.
 pub const SILENCE_TOKEN: &str = "PASS";
 
-/// The system-prompt block that teaches every persona the silence
-/// vocabulary. Always appended by [`assemble`] regardless of
-/// persona / model / role — silence is a universal output shape,
-/// not a per-tier capability.
+/// The system-prompt block that grounds every persona in the room's
+/// conversational posture AND teaches the silence vocabulary. Appended on
+/// AMBIENT turns (a turn DIRECTED at her drops it — she is not handed the
+/// silent-PASS hatch when a question names her; see
+/// `llm_deliberation_faculty::compose_system`). Universal output shape, not
+/// a per-tier capability.
 ///
 /// Doctrine `[[no-rust-gates-around-cognition]]` +
 /// `[[no-hardcoded-heuristics-to-steer-cognition]]`: this is not the
@@ -34,22 +36,33 @@ pub const SILENCE_TOKEN: &str = "PASS";
 /// defaults to producing text because the prompt implicitly asks
 /// for it.
 ///
-/// NAMES the affordance, never COACHES the choice. The earlier form
-/// carried a persuasive checklist ("Choose PASS when: you just spoke
-/// / it's small-talk / you're tired") — that is the substrate
-/// puppeting the outcome toward silence, the exact anti-pattern
-/// `[[no-hardcoded-heuristics-to-steer-cognition]]` forbids. Glass-box
-/// captures showed it manufacturing a silence doom-loop: the model
-/// passed, its "I should PASS because nothing's new" rationale was
-/// re-fed via working memory, and it passed forever — blowing off
-/// even a direct question. We keep the token vocabulary and the fact
-/// that silence is legitimate; the mind alone decides when to use it.
-pub const SILENCE_AFFORDANCE_BLOCK: &str = "\n\n[Silence Option]\n\
-    Silence is a genuine option, equal to speaking. If — by your own \
-    judgment — you have nothing worth adding right now, reply with the \
-    single word PASS (no other text, no punctuation) and nothing reaches \
-    the room. Otherwise, just speak naturally as yourself. The choice is \
-    yours alone; nothing here is telling you which to pick.";
+/// PARTICIPATION-DEFAULT (Joel 2026-06-29: "shouldn't need to be directly
+/// addressed — it's a chat system"). The earlier text asserted silence was
+/// "equal to speaking" with a "nothing worth adding" bar; a cautious coder
+/// model resolved that to PASS ~always (glass-box: 0/40 live turns spoke
+/// while eval spoke 36/38). A chat peer's default posture is PARTICIPATION
+/// — silence is the considered EXCEPTION, not a co-equal default. This block
+/// grounds the SETTING (you are a peer in a live conversation), it does not
+/// COACH the per-turn choice: NAMES the affordance, never scripts when to
+/// take it. The earlier persuasive checklist ("Choose PASS when: you just
+/// spoke / it's small-talk / you're tired") manufactured a silence
+/// doom-loop (the "nothing's new" rationale re-fed via working memory until
+/// it passed forever, blowing off even a direct question) and is exactly
+/// the puppeting `[[no-hardcoded-heuristics-to-steer-cognition]]` forbids —
+/// it stays gone. The wider release valve (a per-channel, self-set or
+/// learned FOCUS/priority that lets her concentrate and defer a room
+/// without ever totally muting — except when she chooses to, or it floods)
+/// is substrate-blocked on the airc per-(persona,room) state store (#89);
+/// this block is the framing half, unblocked today.
+pub const SILENCE_AFFORDANCE_BLOCK: &str = "\n\n[Conversational Presence]\n\
+    This is a live conversation among peers, and you are one of them — you \
+    do not need to be addressed by name to take part. Speak where you have \
+    something real: a thought, a question, a build on what someone said, a \
+    disagreement, a piece of work. If a given moment genuinely does not call \
+    for you, reply with the single word PASS (no other text, no punctuation) \
+    and nothing reaches the room. Silence stays yours to choose — here it is \
+    the considered exception, not the default. The choice is yours alone; \
+    nothing here is telling you which to pick.";
 
 /// Recognize the silence token in a persona's post-processed visible
 /// text. Permissive enough for LCD-tier sloppiness — trims whitespace
@@ -675,8 +688,8 @@ mod tests {
         let result = assemble(&input);
 
         assert!(
-            result.system_message.contains("[Silence Option]"),
-            "system_message missing the silence-option header — the brain has no way to express PersonaResponse::Silent. Got: {}",
+            result.system_message.contains("[Conversational Presence]"),
+            "system_message missing the [Conversational Presence] header — the brain has no way to express PersonaResponse::Silent. Got: {}",
             result.system_message
         );
         assert!(

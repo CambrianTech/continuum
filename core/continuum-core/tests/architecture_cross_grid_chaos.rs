@@ -377,6 +377,7 @@ async fn transport_remains_callable_after_peer_timeout() {
         routing: None,
         error: None,
         reasoning: None,
+        timing: None,
     };
 
     let handler = build_handler(Arc::clone(loop_back.peer_a()));

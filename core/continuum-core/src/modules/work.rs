@@ -51,7 +51,7 @@ fn persona_airc(
     let peer = ctx
         .caller
         .as_ref()
-        .map(|c| c.peer_id)
+        .map(|c| c.peer_id.as_uuid())
         .ok_or_else(|| CommandError::Denied("work commands require a persona caller".into()))?;
     let rt = registry
         .get(peer)

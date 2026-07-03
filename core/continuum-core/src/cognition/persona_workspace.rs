@@ -225,12 +225,25 @@ pub fn build_workspace_cycle(cfg: PersonaBrainConfig) -> WorkspaceCycle {
             LexicalEmbedder::new(),
         )))
     });
+    // Working memory: the persona's recent chain-of-thought AND the head of what its
+    // hands just did, carried forward across turns. The deliberator WRITES its
+    // reasoning here after each verdict; the perception-tier `WorkingMemoryFaculty`
+    // (pushed below) READS it into the next tick — so the persona resumes its train of
+    // thought instead of re-deriving it cold. Volatile scratchpad, distinct from the
+    // long-term engram store; self-activates only when thinking is enabled (suppressed
+    // turns record nothing). Built HERE (before recall) so recall can share it in and
+    // suppress an engram the recency channel already carries — see below.
+    let working_memory = Arc::new(WorkingMemory::new(DEFAULT_WORKING_MEMORY_CAPACITY));
     let recall = RecallFaculty::new(cfg.persona_id, cfg.admission)
         .with_embedder(embedder)
         // Budget recall by the served model's capability: a tight 4B window
         // gets fewer memories (and a closest-match floor drops topically-
         // irrelevant high-salience nags) so attention isn't spent on noise.
-        .with_context_window(cfg.context_window);
+        .with_context_window(cfg.context_window)
+        // Share in the recency channel so recall drops a just-happened act the
+        // working-memory head already carries — no double-surface of the same act
+        // (head in [working-memory], full body in [recall]); recency→semantic handoff.
+        .with_working_memory(Arc::clone(&working_memory));
     // Recall is speculative prefetch (Joel's CPU branch-prediction analogy): on
     // the live paths we run it OFF the hot path so the per-turn output never
     // waits on a neural-embed + vector-search round-trip. The worker computes
@@ -247,13 +260,9 @@ pub fn build_workspace_cycle(cfg: PersonaBrainConfig) -> WorkspaceCycle {
         faculties.push(Arc::new(recall));
     }
 
-    // Working memory: the persona's recent chain-of-thought, carried forward across
-    // turns. The deliberator WRITES its reasoning here after each verdict; this
-    // perception-tier faculty READS it into the next tick — so the persona resumes
-    // its train of thought instead of re-deriving it cold. Volatile scratchpad,
-    // distinct from the long-term engram store; self-activates only when thinking is
-    // enabled (suppressed turns record nothing). See `working_memory` module.
-    let working_memory = Arc::new(WorkingMemory::new(DEFAULT_WORKING_MEMORY_CAPACITY));
+    // The perception-tier reader of the working memory built above: each tick it bids
+    // the recent reasoning + act heads into the workspace so the deliberator conditions
+    // on them. (The buffer itself is created before recall so recall can share it in.)
     faculties.push(Arc::new(WorkingMemoryFaculty::new(Arc::clone(
         &working_memory,
     ))));
@@ -295,16 +304,30 @@ pub fn build_workspace_cycle(cfg: PersonaBrainConfig) -> WorkspaceCycle {
     // window's greedy flip on the cycle is seen by the faculty's next generation,
     // exactly like the genome handle. `None` in live cognition (her lived warmth).
     let decoding = super::llm_deliberation_faculty::relaxed_decoding();
+    // The persona's model binding — adapter + requested model + served window,
+    // shared (one ArcSwap, two holders) so a served-model change (`serving/pin` or
+    // a grid failover) swaps all three atomically into the faculty's NEXT
+    // generation without rebuilding the cycle (genome + memory carried across).
+    // Model-load-as-paging: the base-model sibling of the genome page-in above,
+    // frequent and on grid demand. `model: None` → the adapter's own default model,
+    // matching the boot binding; the re-home sets it explicitly. Initial window is
+    // `cfg.context_window` (task #50 — the served window for a Local persona).
+    let adapter = cfg.adapter;
+    let model_binding = super::llm_deliberation_faculty::model_binding(
+        Arc::clone(&adapter),
+        None,
+        cfg.context_window,
+    );
     let mut deliberation = LlmDeliberationFaculty::new(
         cfg.persona_id,
         cfg.persona_name,
         cfg.system_prompt,
-        cfg.adapter,
+        adapter,
     )
     .with_working_memory(Arc::clone(&working_memory))
     .with_genome(Arc::clone(&genome))
     .with_decoding(Arc::clone(&decoding))
-    .with_context_window(cfg.context_window);
+    .with_model_binding(Arc::clone(&model_binding));
     if tool_executor.is_some() {
         // Offer EXACTLY what this persona is authorized to run (offer ==
         // authorized) — never a tool the gate would refuse. A local persona is the
@@ -344,7 +367,8 @@ pub fn build_workspace_cycle(cfg: PersonaBrainConfig) -> WorkspaceCycle {
         cfg.capacity.unwrap_or(DEFAULT_WORKSPACE_CAPACITY),
     )
     .with_genome(genome)
-    .with_decoding(decoding);
+    .with_decoding(decoding)
+    .with_model_binding(model_binding);
 
     // Give the mind its BODY when it has hands. The act→observe driver reads this
     // to execute a `Decision::Act`, admit the result into `admission_for_body` (the
@@ -527,6 +551,35 @@ impl PersonaWorkspaceRegistry {
             .iter()
             .map(|(id, cycle)| (*id, cycle.acting().map(|b| b.persona_name.clone())))
             .collect()
+    }
+
+    /// Re-home EVERY resident persona onto a newly served model — atomically swap
+    /// the shared {adapter, model, context_window} binding on each cycle (see
+    /// [`WorkspaceCycle::rebind_model`]). On a single-serve host ALL personas share
+    /// the ONE served model (INFERENCE-LANES-REALISTIC: "one base model, N persona
+    /// lanes"), so a served-model change re-homes them together through the ONE
+    /// shared `adapter` — no per-persona HTTP init. Each mind's genome + working
+    /// memory + admission + hippocampus are UNTOUCHED (flip-in-place, not rebuild):
+    /// the same continuous personas now deliberate through the new model. Returns
+    /// how many minds were re-homed. Driven by the serving-snapshot reconciler
+    /// (`ipc/mod.rs`) ONLY on an actual model change. The store is a wait-free
+    /// `ArcSwap` under the cycles lock — NO await held across it.
+    /// See [[seamless-persona-failover-model-and-genome]].
+    pub fn re_home_all(
+        &self,
+        adapter: Arc<dyn AIProviderAdapter>,
+        model: Option<String>,
+        context_window: u32,
+    ) -> usize {
+        let cycles = self.cycles.lock().unwrap();
+        for cycle in cycles.values() {
+            cycle.rebind_model(super::llm_deliberation_faculty::ModelBinding {
+                adapter: Arc::clone(&adapter),
+                model: model.clone(),
+                context_window,
+            });
+        }
+        cycles.len()
     }
 
     /// How many persona minds are resident.
@@ -777,20 +830,18 @@ mod tests {
         }
 
         // ---- EXACTLY what the LLM was fed (reconstruct the pre-deliberation ws) ----
-        let context_ws = Workspace {
-            world_state: burst.to_string(),
-            room_id: trace.room_id,
-            cycle: crate::cognition::workspace::CycleId::UNSTAMPED,
-            broadcast: trace.context_broadcast.clone(),
-            // The trace does not yet record the turn's directedness; reconstruct as
-            // ambient (the live default). TODO(#9): carry directedness on the trace so
-            // a replayed directed turn shows the silence escape withheld as it was.
-            directed_at_self: false,
-        };
+        // Route through the constructor (opaque single-turn burst) so this can't
+        // drift as Workspace gains fields; then graft on the recorded context
+        // broadcast the decider actually saw. The trace does not yet record the
+        // turn's directedness or self-initiation; reconstruct as ambient /
+        // message-driven (the live defaults). TODO(#9): carry directedness on the
+        // trace so a replayed directed turn shows the silence escape withheld as it was.
+        let mut context_ws = Workspace::in_room(burst.to_string(), trace.room_id);
+        context_ws.broadcast = trace.context_broadcast.clone();
         let view = delib.prompt_view(&context_ws);
         eprintln!("\n--------------- WHAT THE LLM WAS FED ---------------");
         eprintln!("[SYSTEM]\n{}\n", view.system);
-        eprintln!("[USER]\n{}", view.user);
+        eprintln!("[CONVERSATION]\n{}", view.user_text());
 
         eprintln!("\n--------------- Ivar's DECISION ---------------");
         match ws.decision() {

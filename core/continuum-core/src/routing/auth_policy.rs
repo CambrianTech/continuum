@@ -47,10 +47,16 @@
 //!
 //! ```ignore
 //! pub struct CallerIdentity {
-//!     pub peer_id: Uuid,
+//!     pub peer_id: PeerId,
 //!     pub source: CallerSource,
 //! }
 //! ```
+//!
+//! `peer_id` is the canonical [`crate::identity::PeerId`] (airc's universal
+//! actor id), NOT a bare `Uuid` — the same type the airc envelope carries and
+//! the same type every other identity surface uses. The boundary to the
+//! airc-address-keyed trust authority (`trust_of(Uuid)`) converts via
+//! [`PeerId::as_uuid`] at the call, marking that one remaining address-space seam.
 //!
 //! Local dispatches today pass `None` for the caller — this substrate's
 //! own code invoking commands on itself, which the default
@@ -64,7 +70,7 @@
 
 use std::sync::Arc;
 
-use uuid::Uuid;
+use crate::identity::PeerId;
 
 use super::{DeferredReason, ForbiddenReason, RouteDecision, Verdict};
 
@@ -103,6 +109,15 @@ pub enum CallerSource {
     /// signed envelope, so it must NOT be treated as local/owner: it is gated
     /// at the remote (non-owner) trust ceiling like any cross-grid caller.
     Tcp,
+    /// The caller arrived over the core's WebSocket ingress — a thin client
+    /// (browser/desktop/mobile) reaching the core over WS. Like [`Tcp`](CallerSource::Tcp)
+    /// there is no signed envelope yet, so it is gated at the SAME remote
+    /// (non-owner) trust ceiling: unauthenticated WS callers reach only the
+    /// AiSafe surface. A GitHub-identity handshake (task #29) will later
+    /// authenticate the socket and raise the ceiling per authenticated user;
+    /// until then it is honestly labeled `Ws` (distinct from `Tcp` for
+    /// telemetry) but shares Tcp's Provisional ceiling.
+    Ws,
 }
 
 /// Caller identity passed to the auth gate. Cross-grid dispatches
@@ -114,7 +129,7 @@ pub enum CallerSource {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct CallerIdentity {
-    pub peer_id: Uuid,
+    pub peer_id: PeerId,
     pub source: CallerSource,
     /// Capability tags a transport boundary has CRYPTOGRAPHICALLY VERIFIED this
     /// caller may exercise for THIS dispatch — the conferred capabilities of an
@@ -136,7 +151,7 @@ impl CallerIdentity {
     /// Construct an airc-sourced caller identity. Used by the
     /// airc transport when it extracts the sender's peer_id
     /// from a verified envelope.
-    pub fn airc(peer_id: Uuid) -> Self {
+    pub fn airc(peer_id: PeerId) -> Self {
         Self {
             peer_id,
             source: CallerSource::Airc,
@@ -147,7 +162,7 @@ impl CallerIdentity {
     /// Construct a local-sourced caller identity. Used by tests
     /// that want to exercise non-trivial policies against a
     /// known peer_id.
-    pub fn local(peer_id: Uuid) -> Self {
+    pub fn local(peer_id: PeerId) -> Self {
         Self {
             peer_id,
             source: CallerSource::Local,
@@ -160,7 +175,7 @@ impl CallerIdentity {
     /// Resolves to `Trusted` at the gate (file/shell/git), capped below
     /// `Owner`. Only the local spawn path calls this; a remote peer can't
     /// present it (see [`CallerSource::LocalPersona`]).
-    pub fn local_persona(peer_id: Uuid) -> Self {
+    pub fn local_persona(peer_id: PeerId) -> Self {
         Self {
             peer_id,
             source: CallerSource::LocalPersona,
@@ -171,10 +186,23 @@ impl CallerIdentity {
     /// Construct a TCP-sourced (unauthenticated remote socket) caller identity.
     /// The IPC server stamps this on connections from the TCP listener so they
     /// are gated as remote (non-owner), never as local/owner.
-    pub fn tcp(peer_id: Uuid) -> Self {
+    pub fn tcp(peer_id: PeerId) -> Self {
         Self {
             peer_id,
             source: CallerSource::Tcp,
+            granted_capabilities: Vec::new(),
+        }
+    }
+
+    /// Construct a WS-sourced (unauthenticated thin-client socket) caller
+    /// identity. The WS ingress stamps this on every connection until a
+    /// GitHub-identity handshake authenticates the socket. Gated as remote
+    /// (non-owner) at the same Provisional ceiling as [`tcp`](Self::tcp) —
+    /// AiSafe surface only — never as local/owner.
+    pub fn ws(peer_id: PeerId) -> Self {
+        Self {
+            peer_id,
+            source: CallerSource::Ws,
             granted_capabilities: Vec::new(),
         }
     }
@@ -305,6 +333,9 @@ pub fn defer_path_prefix(
 mod tests {
     use super::*;
     use crate::routing::{route, CommandUri, EnvironmentId};
+    // Room ids in synthetic URIs are still plain Uuids (not actor identity); PeerId
+    // arrives via `use super::*`.
+    use uuid::Uuid;
 
     fn local_decision(path: &str) -> RouteDecision {
         route(&CommandUri::local(path))
@@ -336,11 +367,11 @@ mod tests {
         let decision = local_decision("x/y");
         assert_eq!(policy.gate(&decision, None), Verdict::Allowed);
         assert_eq!(
-            policy.gate(&decision, Some(&CallerIdentity::airc(Uuid::new_v4()))),
+            policy.gate(&decision, Some(&CallerIdentity::airc(PeerId::new()))),
             Verdict::Allowed
         );
         assert_eq!(
-            policy.gate(&decision, Some(&CallerIdentity::local(Uuid::new_v4()))),
+            policy.gate(&decision, Some(&CallerIdentity::local(PeerId::new()))),
             Verdict::Allowed
         );
     }
@@ -407,18 +438,18 @@ mod tests {
         let decision = local_decision("anything");
         assert_eq!(policy.gate(&decision, None), Verdict::Allowed);
         assert_eq!(
-            policy.gate(&decision, Some(&CallerIdentity::local(Uuid::new_v4()))),
+            policy.gate(&decision, Some(&CallerIdentity::local(PeerId::new()))),
             Verdict::Allowed
         );
         assert!(matches!(
-            policy.gate(&decision, Some(&CallerIdentity::airc(Uuid::new_v4()))),
+            policy.gate(&decision, Some(&CallerIdentity::airc(PeerId::new()))),
             Verdict::Forbidden { .. }
         ));
     }
 
     #[test]
     fn caller_identity_constructors_set_source_correctly() {
-        let id = Uuid::new_v4();
+        let id = PeerId::new();
         let airc = CallerIdentity::airc(id);
         assert_eq!(airc.peer_id, id);
         assert!(matches!(airc.source, CallerSource::Airc));

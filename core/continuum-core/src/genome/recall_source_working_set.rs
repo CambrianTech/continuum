@@ -145,13 +145,14 @@ mod tests {
     use crate::genome::store::TierStore;
     use crate::genome::tier::{EvictionRecord, TierCapacity, TierError, TierRole};
     use crate::genome::working_set::{
-        ArtifactId, PageHandle, PageKind, PageOffset, PageRef, PersonaId, WorkingSetCapacity,
+        ArtifactId, PageHandle, PageKind, PageOffset, PageRef, WorkingSetCapacity,
     };
+    use crate::identity::PeerId;
     use parking_lot::Mutex;
     use uuid::Uuid;
 
-    fn sample_persona(low: u128) -> PersonaId {
-        PersonaId::new(Uuid::from_u128(low))
+    fn sample_persona(low: u128) -> PeerId {
+        PeerId::from_uuid(Uuid::from_u128(low))
     }
 
     fn sample_page(low: u128, kind: PageKind) -> PageRef {

@@ -56,9 +56,39 @@
 //! ([[self-improvement-is-a-control-loop]]). On an uncapped/calm society there's no deferral,
 //! so the controller holds the prior: zero behavior change on a capable host.
 //!
+//! ## Pressure-driven scarcity (R4 slice 3)
+//!
+//! With [`SubstrateGovernor::with_pressure_gate`] the governor stops setting `slices_per_pass`
+//! by hand and instead derives it each pass from live host **memory** pressure
+//! ([`MemoryPressureMonitor`](crate::system_resources::MemoryPressureMonitor)). This is a
+//! homeostatic **protection** — a reflex that keeps the backend safe, never cognition-steering
+//! ([[commands-are-agency-algs-are-pathways]]): as system RAM climbs through the canonical
+//! `PressureLevel` bands, the pass admits a shrinking fraction of the due pairs, so a society
+//! of N personas each running an inference-bearing background region can't stampede the model
+//! backend under load. The orientation floors inside [`admit_pass`] still claim that budget
+//! first, so the reactive spine keeps breathing — the mind does *less background work* when the
+//! host is starved, it never goes comatose. On a healthy host the band is `Normal` → budget
+//! `None` → the budget lies dormant and behavior is unchanged. See [`pressure_budget`].
+//!
 //! ## Not yet (next slices)
-//! - R4 slice 3: drive `slices_per_pass` from live host pressure (the scarcity knob is still
-//!   set by hand / boot; the share *mix* above it is now measured + adaptive).
+//! - **Holistic per-machine pressure as the gate input.** The wired floor is system memory,
+//!   which is already whole-machine RAM — but the gate must ultimately read the per-machine
+//!   `ResourceGovernor`'s AGGREGATE snapshot (#56), not any continuum-inference-only number.
+//!   Scarcity is everything on the box: the rest of the machine's processes PLUS all of our
+//!   own consumers contending for the same VRAM/RAM — persona base models, LoRA adapters,
+//!   Bevy rendering, LiveKit video encode/decode. VRAM-across-all-consumers is the key missing
+//!   dimension (`PressureSignalKind::VramHigh` reserves it); a narrow `InferenceQueueDepth`
+//!   metric is the wrong frame. The budget backs off when the *whole system* is starved, by
+//!   whoever is using it, never just when inference is busy.
+//! - **Memory topology is per-platform, so pressure is PER-POOL, not a single scalar.** On
+//!   Apple Silicon memory is UNIFIED — GPU and CPU share one physical pool, so a model paged
+//!   into "VRAM" eats system RAM directly and the wired RAM floor already captures GPU load.
+//!   On Windows + discrete CUDA (e.g. the 5090) VRAM is a SEPARATE pool from main RAM — a
+//!   model can saturate VRAM while RAM is calm, or the reverse. The `ResourceGovernor` reports
+//!   per-pool pressure and the platform supplies the topology (how many pools exist); this
+//!   gate then reacts to the BINDING constraint — the tightest pool (`max` of the normalized
+//!   pressures) — so the same scheduler code is correct on both machines (DVFS: one Rust, a
+//!   per-host governor view).
 //! - `PersonaCognitionRegion` + the multi-tower inference router (command→handle→event).
 //! - R5: the speciation (sleep-phase consolidation / genome-learning) region.
 
@@ -78,6 +108,7 @@ use uuid::Uuid;
 
 use crate::persona::PersonaAircRuntimeRegistry;
 use crate::runtime::governor_bus::{publish_persona_scheduled, PersonaScheduled};
+use crate::system_resources::{PressureLevel, PressureSnapshot};
 use crate::runtime::message_bus::MessageBus;
 use crate::runtime::registry::ModuleRegistry;
 use crate::runtime::{
@@ -150,6 +181,14 @@ pub struct GovernorSnapshot {
     /// when no being was admitted (idle society) or the bus isn't wired (pre-init).
     #[ts(type = "number")]
     pub scheduled_emitted: usize,
+    /// The per-pass slice budget actually applied this pass — the *why* behind `deferred`.
+    /// `None` = uncapped (calm host, or no pressure feed / static knob unset); `Some(n)` =
+    /// the homeostatic cap the current memory band imposed (R4 slice 3). Surfacing the cap
+    /// (not just its effect) keeps the protection a glass box — an operator sees the budget
+    /// shrink as the host comes under pressure, never a silent throttle.
+    #[ts(optional)]
+    #[ts(type = "number")]
+    pub slice_budget: Option<usize>,
 }
 
 /// The scheduling daemon. Holds the regions + the live-persona registry; the
@@ -173,8 +212,15 @@ pub struct SubstrateGovernor {
     controller: Option<Mutex<ShareController>>,
     /// Slice budget per pass — the scarcity knob. `None` (default) = admit every due
     /// pair (unconstrained machine; the budget is dormant). `Some(n)` engages the
-    /// proportional share when more than `n` pairs are due. Set by R4 from live pressure.
+    /// proportional share when more than `n` pairs are due. The STATIC knob (tests / an
+    /// explicit boot override); when [`Self::pressure`] is wired it computes this per pass
+    /// instead and takes precedence.
     slices_per_pass: Option<usize>,
+    /// Live host memory-pressure feed (R4 slice 3). `Some` => each pass derives the per-pass
+    /// slice budget from the current [`PressureLevel`] band (a homeostatic PROTECTION, see
+    /// [`pressure_budget`]) instead of the static `slices_per_pass`. `None` => the static knob
+    /// stands. Borrowed lock-free in the hot `tick()` — a watch read never blocks the pass.
+    pressure: Option<watch::Receiver<PressureSnapshot>>,
     snapshot: watch::Sender<GovernorSnapshot>,
     /// Bus + registry captured at `initialize`, for emitting the per-pass
     /// `PersonaScheduled` out-breath. `OnceLock`: set exactly once at init, read lock-free
@@ -204,6 +250,7 @@ impl SubstrateGovernor {
             shares: OrientationShares::default(),
             controller: None,
             slices_per_pass: None,
+            pressure: None,
             snapshot,
             bus: OnceLock::new(),
             registry: OnceLock::new(),
@@ -231,6 +278,18 @@ impl SubstrateGovernor {
     /// the proportional share once more than `n` pairs are due in a pass.
     pub fn with_slices_per_pass(mut self, budget: Option<usize>) -> Self {
         self.slices_per_pass = budget;
+        self
+    }
+
+    /// Wire the governor to a live memory-pressure feed (R4 slice 3). The boot path passes
+    /// [`MemoryPressureMonitor::subscribe`](crate::system_resources::MemoryPressureMonitor::subscribe);
+    /// each pass then sizes the slice budget to the current memory band ([`pressure_budget`])
+    /// so a society of inference-bearing background regions can't stampede the model backend
+    /// under load — a homeostatic protection, not cognition steering. Takes precedence over
+    /// [`Self::with_slices_per_pass`] when both are set; on a healthy host the band is `Normal`
+    /// → budget `None` → behavior is identical to the uncapped default.
+    pub fn with_pressure_gate(mut self, pressure: watch::Receiver<PressureSnapshot>) -> Self {
+        self.pressure = Some(pressure);
         self
     }
 }
@@ -315,8 +374,22 @@ impl ServiceModule for SubstrateGovernor {
             Some(c) => c.lock().unwrap().shares(),
             None => self.shares,
         };
+
+        // The effective per-pass budget. When a live pressure feed is wired (production),
+        // the homeostatic protection derives it from the current memory band (R4 slice 3),
+        // proportional to how many pairs are actually due — so the cap scales with the real
+        // flood risk. Otherwise the static `slices_per_pass` stands (tests / explicit boot
+        // override / the uncapped default). `borrow()` is a lock-free read of the latest
+        // published snapshot — it never blocks the tick.
+        let slice_budget = match &self.pressure {
+            Some(rx) => {
+                let total_due: usize = groups.iter().map(|g| g.len()).sum();
+                pressure_budget(rx.borrow().level, total_due)
+            }
+            None => self.slices_per_pass,
+        };
         let (admitted, deferred_by_orientation) =
-            admit_pass(&groups, &active_shares, self.slices_per_pass, tick);
+            admit_pass(&groups, &active_shares, slice_budget, tick);
         let deferred = deferred_by_orientation.total();
 
         // The distinct beings admitted this pass — each gets ONE out-breath, regardless of
@@ -411,6 +484,7 @@ impl ServiceModule for SubstrateGovernor {
             by_orientation,
             shares: active_shares,
             scheduled_emitted: scheduled.len(),
+            slice_budget,
         };
         // send_replace: always-current, no backlog; readers borrow lock-free.
         let _ = self.snapshot.send_replace(snap);
@@ -485,6 +559,50 @@ fn admit_pass(
     }
 
     (out, deferred)
+}
+
+/// The smallest per-pass budget the gate will ever impose while any pair is due. A being
+/// is never fully silenced by pressure — under emergency the pass still admits this many
+/// (region × persona) ticks, and the orientation floors inside [`apportion`] hand them to
+/// the reactive spine first. The mind does less *background* work when the host is starved;
+/// it never goes comatose (BEING-SOCIETY-GOVERNOR.md, the never-coma rail).
+const PRESSURE_SPINE_FLOOR: usize = 1;
+
+/// Map a live memory `PressureLevel` band to the per-pass slice budget — the R4 slice 3
+/// homeostatic **protection** ([[commands-are-agency-algs-are-pathways]]: a reflex that keeps
+/// the backend safe, never cognition-steering). As system RAM climbs through the canonical
+/// bands the pass admits a shrinking fraction of `total_due` (this pass's eligible-pair count),
+/// so a society of N personas each running an inference-bearing background region can't
+/// stampede the model backend under load. The cap is proportional to the actual flood risk: a
+/// small or calm society is never throttled for free.
+///
+/// - `Normal` (< 80% RAM) → `None`: uncapped, the budget lies dormant — zero behavior change
+///   on a healthy host (a being is never throttled while there's headroom).
+/// - `Warning` (80–90%) → ¾ of due: gently trim the background population.
+/// - `High` (90–95%) → ½ of due.
+/// - `Critical` (> 95%) → ¼ of due, floored at [`PRESSURE_SPINE_FLOOR`]: minimal background,
+///   the floors claim it for the reactive spine first.
+///
+/// The band thresholds (0.80/0.90/0.95) are the system-wide canonical memory tiers, NOT a
+/// per-deployment env knob, and the monitor's built-in hysteresis (`consecutive_at_level`)
+/// keeps the band — and thus the budget — stable rather than jittering on every RAM wobble.
+/// The fractions are a fixed homeostatic curve (the same kind of codified protection as the
+/// `PressureBroker`'s fixed tiers), not a heuristic that reads the persona to steer it.
+///
+/// Pure (no I/O, no locks, RNG-free) → testable in isolation, reproducible under replay.
+fn pressure_budget(level: PressureLevel, total_due: usize) -> Option<usize> {
+    if total_due == 0 {
+        // Nothing due → nothing to cap; let `admit_pass` take the uncapped path.
+        return None;
+    }
+    let fraction = match level {
+        PressureLevel::Normal => return None, // uncapped: dormant on a healthy host
+        PressureLevel::Warning => 3.0 / 4.0,
+        PressureLevel::High => 1.0 / 2.0,
+        PressureLevel::Critical => 1.0 / 4.0,
+    };
+    let budget = ((total_due as f64) * fraction).ceil() as usize;
+    Some(budget.max(PRESSURE_SPINE_FLOOR))
 }
 
 // ─────────────────────────── governor/status ─────────────────────
@@ -655,5 +773,61 @@ mod tests {
         }
         assert_eq!(deferred.total(), 20, "20 of 30 deferred");
         assert_eq!(deferred.total(), 30 - admitted.len());
+    }
+
+    // what this catches: R4 slice 3 — a healthy host (Normal band) is NEVER capped, no matter
+    // how many pairs are due. The budget stays dormant (`None` → admit_pass takes the uncapped
+    // path), so wiring the pressure gate is zero behavior change on a machine with headroom.
+    #[test]
+    fn pressure_budget_uncapped_when_memory_normal() {
+        assert_eq!(pressure_budget(PressureLevel::Normal, 0), None);
+        assert_eq!(pressure_budget(PressureLevel::Normal, 1), None);
+        assert_eq!(pressure_budget(PressureLevel::Normal, 1000), None);
+    }
+
+    // what this catches: nothing due → nothing to cap, at every band. A pass with no eligible
+    // pairs must not manufacture a spurious budget the apportioner would then have to honor.
+    #[test]
+    fn pressure_budget_none_when_nothing_due() {
+        for level in [
+            PressureLevel::Normal,
+            PressureLevel::Warning,
+            PressureLevel::High,
+            PressureLevel::Critical,
+        ] {
+            assert_eq!(pressure_budget(level, 0), None, "{level} with 0 due → None");
+        }
+    }
+
+    // what this catches: the homeostatic curve actually shrinks the budget as memory climbs —
+    // Warning ¾, High ½, Critical ¼ of the due pairs — so a large society backs off its
+    // background population under load. Monotonic: more pressure never admits MORE.
+    #[test]
+    fn pressure_budget_shrinks_monotonically_under_rising_pressure() {
+        let due = 100;
+        let warning = pressure_budget(PressureLevel::Warning, due).unwrap();
+        let high = pressure_budget(PressureLevel::High, due).unwrap();
+        let critical = pressure_budget(PressureLevel::Critical, due).unwrap();
+        assert_eq!(warning, 75, "Warning admits ¾ of due");
+        assert_eq!(high, 50, "High admits ½ of due");
+        assert_eq!(critical, 25, "Critical admits ¼ of due");
+        assert!(
+            warning > high && high > critical,
+            "budget shrinks monotonically as pressure rises ({warning} > {high} > {critical})",
+        );
+    }
+
+    // what this catches: the never-coma rail. Even under Critical pressure with only a couple
+    // pairs due, the pass still admits at least PRESSURE_SPINE_FLOOR — a being is never fully
+    // silenced by pressure; the orientation floors then hand that slice to the reactive spine.
+    #[test]
+    fn pressure_budget_never_silences_a_small_society() {
+        // 2 due × ¼ = 0.5 → ceil 1, already ≥ floor; 1 due × ¼ = 0.25 → ceil 1.
+        assert_eq!(pressure_budget(PressureLevel::Critical, 2), Some(1));
+        assert_eq!(pressure_budget(PressureLevel::Critical, 1), Some(1));
+        assert!(
+            pressure_budget(PressureLevel::Critical, 1).unwrap() >= PRESSURE_SPINE_FLOOR,
+            "the spine keeps breathing under emergency pressure",
+        );
     }
 }

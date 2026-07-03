@@ -29,21 +29,20 @@ use std::sync::Arc;
 
 use arc_swap::ArcSwap;
 use async_trait::async_trait;
-use std::fmt::Write as _;
+use std::collections::BTreeSet;
 use uuid::Uuid;
 
+use super::deliberation_budget::{est_tokens, tail_to_tokens, turn_message_line};
+use super::deliberation_parse::decision_from_response;
+use super::deliberation_prompt;
 use super::persona_tools;
+use super::tool_relevance::{self, LexicalToolRelevance};
 use super::workspace::{Contribution, Decision, Faculty, FacultyId, Workspace};
 use crate::ai::adapter::AIProviderAdapter;
 use crate::ai::types::{
     ActiveAdapterRequest, ChatMessage, FinishReason, NativeToolSpec, TextGenerationRequest,
     TextGenerationResponse,
 };
-
-use crate::persona::prompt_assembly::{
-    looks_like_silence_token, SILENCE_AFFORDANCE_BLOCK, SILENCE_TOKEN,
-};
-use crate::persona::text_analysis::clean_response;
 
 /// The persona's paged-in genome: the LoRA layers active for this faculty's next
 /// generation. Shared (the [`WorkspaceCycle`](super::workspace::WorkspaceCycle)
@@ -77,52 +76,57 @@ pub fn relaxed_decoding() -> DecodingHandle {
     Arc::new(ArcSwap::from_pointee(None))
 }
 
+/// The live model binding for the deliberation faculty: the inference adapter,
+/// the model to request, and the served context window — the three facts that
+/// MUST move together when the served model re-homes. A `serving/pin` swap (or a
+/// grid failover onto another node) means a new adapter (new `base_url` /
+/// `default_model`), a new requested model (the single-resident guard checks it),
+/// AND a new context window (the new GGUF's `n_ctx`) — as ONE atomic unit. A torn
+/// read (new model + stale window, or new adapter + stale model) is exactly the
+/// silent wrong-brain that [[fallbacks-are-illegal-fail-loud]] forbids, so all
+/// three ride ONE [`ArcSwap`], loaded once per turn.
+pub struct ModelBinding {
+    /// The inference adapter, leased per call. `Arc` so the whole cycle shares the
+    /// one served-model backend (one base model, N persona lanes — the
+    /// INFERENCE-LANES-REALISTIC shape).
+    pub adapter: Arc<dyn AIProviderAdapter>,
+    /// Which model to ask for (`None` → the adapter's own default). The gateway's
+    /// single-resident guard checks this against the resident model and refuses a
+    /// mismatch LOUD, so it must move in lockstep with `adapter`.
+    pub model: Option<String>,
+    /// The effective served context window in tokens (task #50). The deliberation
+    /// prompt + completion reserve MUST fit this or the gateway 500s; it is sized
+    /// from the SAME binding so a re-home to a smaller window can never leave the
+    /// prompt sized for the old one.
+    pub context_window: u32,
+}
+
+/// A shared, wait-free model binding — the SAME [`ArcSwap`] the faculty reads on
+/// every generation and the owning
+/// [`WorkspaceCycle`](super::workspace::WorkspaceCycle) re-homes when the served
+/// model changes. One `ArcSwap`, two holders — exactly like [`GenomeHandle`] and
+/// [`DecodingHandle`]. A re-home stores a fresh [`ModelBinding`]; the faculty's
+/// next generation reads it, and the genome + working memory + admission are
+/// carried across untouched (no cycle rebuild). See
+/// [[seamless-persona-failover-model-and-genome]].
+pub type ModelBindingHandle = Arc<ArcSwap<ModelBinding>>;
+
+/// Build a shared model-binding handle from its parts.
+pub fn model_binding(
+    adapter: Arc<dyn AIProviderAdapter>,
+    model: Option<String>,
+    context_window: u32,
+) -> ModelBindingHandle {
+    Arc::new(ArcSwap::from_pointee(ModelBinding {
+        adapter,
+        model,
+        context_window,
+    }))
+}
+
 /// Default sampling temperature for deliberation — enough warmth for natural
 /// voice, not so much it drifts.
 const DEFAULT_TEMPERATURE: f32 = 0.7;
-
-/// Map a model's raw output to a participation [`Decision`].
-///
-/// Pure — no IO — so the Speak/Pass branches are unit-testable without a model.
-/// `PASS` (the silence token) → `Pass`; anything else → `Speak`. `RaiseUnprompted`
-/// is the volition faculty's channel (initiative with no prompt), not something
-/// we infer from a single deliberation response — a deliberation faculty answers
-/// the burst it was given.
-pub fn decision_from_response(text: &str) -> Decision {
-    // Strip `<think>`/`<thinking>` chain-of-thought before deciding. qwen3.5-family
-    // models emit a reasoning block (often an EMPTY `<think></think>`) ahead of the
-    // answer; the spoken text must NEVER carry those tags into the room. The legacy
-    // respond() path already cleaned; the workspace path (now the live decision
-    // path) reached `say` raw — this closes that gap at the single point where model
-    // text becomes a Speak decision, so every consumer of the decision gets clean
-    // text. An only-`<think>` response cleans to empty → Pass (silence), matching
-    // the "only thinking → don't speak" behavior.
-    let cleaned = clean_response(text);
-    let trimmed = cleaned.text.trim();
-    if trimmed.is_empty() || looks_like_silence_token(trimmed) || starts_with_silence_token(trimmed)
-    {
-        Decision::Pass
-    } else {
-        Decision::Speak {
-            text: trimmed.to_string(),
-        }
-    }
-}
-
-/// True if the response STARTS with the silence token (e.g. `"PASS — nothing to
-/// add"`). Small models frequently emit `PASS` plus trailing prose despite the
-/// "no other text" instruction; without this they'd literally speak the word
-/// "PASS" into the room. The leading-token check treats that as the chosen
-/// silence it is. (Accepted trade: a real message whose first word is literally
-/// "pass" is silenced — vanishingly rare for a deliberation turn, and silence is
-/// a first-class, low-cost outcome.)
-fn starts_with_silence_token(text: &str) -> bool {
-    let Some(first) = text.split_whitespace().next() else {
-        return false;
-    };
-    let core = first.trim_end_matches(|c: char| !c.is_alphanumeric());
-    core.eq_ignore_ascii_case(SILENCE_TOKEN)
-}
 
 /// The reasoner faculty. Persona-scoped; shared model backend.
 pub struct LlmDeliberationFaculty {
@@ -130,17 +134,23 @@ pub struct LlmDeliberationFaculty {
     persona_name: String,
     /// The persona's identity / deliberation system prompt (from RAG identity).
     system_prompt: String,
-    /// Shared model backend, leased per call.
-    adapter: Arc<dyn AIProviderAdapter>,
-    /// Which model to ask for (None → the adapter's default).
-    model: Option<String>,
+    /// The live model binding — the served adapter, the requested model, and the
+    /// served context window, swapped ATOMICALLY as one unit when the served model
+    /// re-homes (`serving/pin` or grid failover). Shared with the owning
+    /// [`WorkspaceCycle`](super::workspace::WorkspaceCycle) — one [`ArcSwap`], two
+    /// holders, exactly like `genome`/`decoding`. Read wait-free ONCE per turn (in
+    /// [`Self::contribute`]) so an entire generation sees a consistent
+    /// {adapter, model, window} triple even if a re-home lands mid-turn. See
+    /// [`ModelBinding`].
+    binding: ModelBindingHandle,
     temperature: f32,
     /// The persona's authorized tool set, kept whole. Empty → the persona can only
     /// SPEAK. Non-empty → the persona can ACT. This set is NOT dumped into the
     /// prompt as full schemas (that flood — ~100 schemas, 4–5k tokens riding EVERY
     /// turn — is what starved the conversation AND overflowed `n_ctx`). Instead it
-    /// feeds the compact CATALOG (`tool_catalog`, injected into the system prompt)
-    /// and lets the act→observe path recognise a call by NAME. The model loads any
+    /// feeds the compact bookmarked MENU ([`persona_tools::render_tool_menu`], built
+    /// per turn in [`Self::compose_system`]) and lets the act→observe path recognise a
+    /// call by NAME. The model loads any
     /// one tool's full argument schema on demand via `commands/help`
     /// ([`describe_spec`](Self::describe_spec)) — progressive disclosure, the same
     /// shape Claude Code uses (deferred tools + a describe/search tool). An emitted
@@ -148,14 +158,6 @@ pub struct LlmDeliberationFaculty {
     /// — the act→observe driver ([`super::act_observe`]) does. Single-shot: one
     /// generation → one verdict (`Act` xor `Speak` xor `Pass`) per tick.
     tools: Vec<NativeToolSpec>,
-    /// The compact tool catalog injected into the system prompt — tool names plus
-    /// one-line summaries, grouped by category (see
-    /// [`persona_tools::render_tool_catalog`]). Rebuilt ONCE whenever the tool set
-    /// or the served window changes ([`Self::rebuild_tool_surface`]), never on the
-    /// per-tick path; `compose_system` reads this string by reference. Empty when
-    /// `tools` is empty (pure-chat persona). Two-tier (rich `name — summary`, or
-    /// terse `category: names` if the window is tiny) so it ALWAYS fits.
-    tool_catalog: String,
     /// The tools natively offered to the model each turn: the DISCOVERY PAIR —
     /// `commands/list` (filter/search the authorized surface → a small list of
     /// matching tools) + `commands/help` (load one named tool's full argument
@@ -191,17 +193,6 @@ pub struct LlmDeliberationFaculty {
     /// reproducible; her live cognition leaves it `None`. Read wait-free per
     /// generation, exactly like `genome`.
     decoding: DecodingHandle,
-    /// The effective served context window in tokens (task #50: single-sourced
-    /// from `profile.context_length`, which for a Local persona IS the planner's
-    /// `ServingPlan.served_context_window`).
-    /// The deliberation prompt (system + burst) plus a completion reserve MUST
-    /// fit this or the gateway 500s ("Context size has been exceeded"). This
-    /// faculty is the ONE place the deliberation prompt is assembled, so it is
-    /// where the window invariant is enforced — drop-WHOLE in salience order, the
-    /// same philosophy as `FlexboxRagBudgetAdapter`. Task #8 converges both onto
-    /// that one allocator; until then this is THE allocator for the deliberation
-    /// path (the missing one — there was no budget before), not a parallel one.
-    context_window: u32,
 }
 
 impl LlmDeliberationFaculty {
@@ -215,17 +206,23 @@ impl LlmDeliberationFaculty {
             persona_id,
             persona_name: persona_name.into(),
             system_prompt: system_prompt.into(),
-            adapter,
-            model: None,
+            // A private throwaway binding at the runnable floor — the live spawn
+            // path immediately REPLACES it with the shared handle via
+            // `with_model_binding` (so a `serving/pin` re-home is seen here), and
+            // `with_model`/`with_context_window` mutate it for tests. Mirrors how
+            // `new` builds an `empty_genome()` that `with_genome` then shares in.
+            binding: model_binding(
+                adapter,
+                None,
+                crate::cognition::serving_plan::MIN_SERVE_CTX,
+            ),
             temperature: DEFAULT_TEMPERATURE,
             tools: Vec::new(),
-            tool_catalog: String::new(),
             native_specs: Vec::new(),
             working_memory: None,
             prompt_capture: None,
             genome: empty_genome(),
             decoding: relaxed_decoding(),
-            context_window: crate::cognition::serving_plan::MIN_SERVE_CTX,
         }
     }
 
@@ -244,6 +241,17 @@ impl LlmDeliberationFaculty {
     /// takes effect on the faculty's next generation (virtual memory for skill).
     pub fn with_genome(mut self, genome: GenomeHandle) -> Self {
         self.genome = genome;
+        self
+    }
+
+    /// Share the persona's model binding — the same [`ArcSwap`] the owning
+    /// [`WorkspaceCycle`](super::workspace::WorkspaceCycle) re-homes when the
+    /// served model changes. REPLACES the throwaway handle `new` built, so after
+    /// this call a `rebind_model` on the cycle takes effect on the faculty's next
+    /// generation — exactly like `with_genome`/`with_decoding`. See
+    /// [[seamless-persona-failover-model-and-genome]].
+    pub fn with_model_binding(mut self, binding: ModelBindingHandle) -> Self {
+        self.binding = binding;
         self
     }
 
@@ -267,8 +275,15 @@ impl LlmDeliberationFaculty {
         self
     }
 
-    pub fn with_model(mut self, model: impl Into<String>) -> Self {
-        self.model = Some(model.into());
+    pub fn with_model(self, model: impl Into<String>) -> Self {
+        let model = model.into();
+        // Mutate the shared binding in place (keep adapter + window, set model) so
+        // the {adapter, model, window} triple stays a single atomic unit.
+        self.binding.rcu(|cur| ModelBinding {
+            adapter: Arc::clone(&cur.adapter),
+            model: Some(model.clone()),
+            context_window: cur.context_window,
+        });
         self
     }
 
@@ -288,22 +303,21 @@ impl LlmDeliberationFaculty {
         self
     }
 
-    /// Rebuild the prompt-facing tool surface — the compact catalog text and the
-    /// `commands/help` native offering — from the authorized set + the served
-    /// window. Called ONCE whenever either changes (tool assignment, window
-    /// resize), NEVER on the per-tick path: `compose_system`/`prompt_view` read the
-    /// cached `tool_catalog`/`describe_spec` by reference. The catalog gets HALF the
-    /// window as its char budget (the other half is reserved for framing + burst +
-    /// enrichment), two-tier-rendered so it always fits even at `MIN_SERVE_CTX`.
+    /// Rebuild the native `commands/list` + `commands/help` offering (the DISCOVERY
+    /// PAIR) from the authorized set. Called ONCE whenever the tool set changes (tool
+    /// assignment), NEVER on the per-tick path. The prompt-facing tool MENU is no
+    /// longer cached here: it is an EXPANDABLE BOOKMARKED render
+    /// ([`persona_tools::render_tool_menu`]) whose per-category expansion depends on
+    /// what the persona is doing THIS turn, so `compose_system` builds it per-tick
+    /// from `self.tools` + the turn's `expanded` set (computed once in
+    /// [`Self::prompt_view`] — see [`Self::expanded_categories`]). The menu is small
+    /// by construction (a spine of headers + a few opened categories), so it needs no
+    /// window-budget reflow.
     fn rebuild_tool_surface(&mut self) {
         if self.tools.is_empty() {
-            self.tool_catalog.clear();
             self.native_specs.clear();
             return;
         }
-        let budget_chars =
-            (self.context_window as usize / 2).saturating_mul(GUARD_CHARS_PER_TOKEN);
-        self.tool_catalog = persona_tools::render_tool_catalog(&self.tools, budget_chars);
         self.native_specs = persona_tools::native_tool_specs();
     }
 
@@ -313,18 +327,43 @@ impl LlmDeliberationFaculty {
     /// `ServingPlan.served_context_window`). Default: the runnable floor
     /// [`MIN_SERVE_CTX`](crate::cognition::serving_plan::MIN_SERVE_CTX) for a
     /// faculty constructed outside the spawn path (tests, non-served).
-    pub fn with_context_window(mut self, context_window: u32) -> Self {
-        self.context_window = context_window;
-        // The catalog's char budget scales with the window, so a window change can
-        // flip the two-tier render (rich ↔ terse) — rebuild it.
-        self.rebuild_tool_surface();
+    pub fn with_context_window(self, context_window: u32) -> Self {
+        // Mutate the shared binding in place (keep adapter + model, set window).
+        // The tool surface no longer depends on the window (the menu is a per-turn
+        // render, the native discovery pair is window-independent), so a window
+        // change needs no tool-surface rebuild — only the prompt-fit BUDGET in
+        // `prompt_view` reads the window, and it reads it live from the binding.
+        self.binding.rcu(|cur| ModelBinding {
+            adapter: Arc::clone(&cur.adapter),
+            model: cur.model.clone(),
+            context_window,
+        });
         self
     }
 
+    /// The generation budget for one deliberation turn, in tokens: the slice of
+    /// the served window reserved for the model's reply, derived from the SAME
+    /// `context_window` that sizes the prompt. ONE source of truth — [`prompt_view`]
+    /// subtracts exactly this to bound the prompt, and [`build_request`] passes
+    /// exactly this as `max_tokens`, so `prompt + completion` provably never reaches
+    /// `n_ctx`. The `/4` split gives the reply up to a quarter of the window;
+    /// `clamp(256, 2048)` keeps a tiny window usable and a huge one from starving
+    /// the prompt. This is NOT an arbitrary flat cap (the kind that truncated
+    /// qwen3.5 mid-`<think>`): it scales with the real served window and hands the
+    /// reply every token the prompt budget set aside for it.
+    fn completion_budget_for(context_window: u32) -> u32 {
+        (context_window / 4).clamp(256, 2048)
+    }
+
     /// Build a generation request for the message thread. Centralized so the
-    /// first prompt and any future re-prompt share one shape.
-    fn build_request(
+    /// first prompt and any future re-prompt share one shape. Takes the model
+    /// binding as an already-loaded snapshot (`contribute` loads it ONCE per turn)
+    /// so the requested `model` and the `max_tokens` reserve derived from
+    /// `context_window` come from the SAME atomic {adapter, model, window} triple —
+    /// a re-home landing mid-turn can never tear the model away from its window.
+    fn build_request_within(
         &self,
+        binding: &ModelBinding,
         messages: Vec<ChatMessage>,
         tools: Option<Vec<NativeToolSpec>>,
         system_prompt: String,
@@ -332,19 +371,37 @@ impl LlmDeliberationFaculty {
         TextGenerationRequest {
             messages,
             system_prompt: Some(system_prompt),
-            model: self.model.clone(),
+            model: binding.model.clone(),
             provider: None,
             // Greedy override (the eval window) wins over her lived warmth so the
             // reward metric is reproducible; `None` (live cognition) → her own
             // configured temperature. Wait-free read, like `genome` below.
             temperature: Some((**self.decoding.load()).unwrap_or(self.temperature)),
-            // The MODEL owns its generation length (the adapter forwards no ceiling
-            // when None → unsloth/llama.cpp run to the model's own stop token). A
-            // deliberation turn ends when the model stops, NOT at a const we picked:
-            // a flat cap truncated qwen3.5 mid-`<think>` → empty reply.
-            max_tokens: None,
+            // Generation is bounded to the room the prompt budget RESERVED for it —
+            // `completion_budget()`, the same value `prompt_view` subtracts from the
+            // served window. This is the ONE place the two must agree: the prompt is
+            // sized to leave this many tokens, so the reply is allowed exactly this
+            // many. Left unbounded (`None`), a verbose turn overruns the reserve,
+            // `prompt + completion` reaches `n_ctx`, and llama-server (started with
+            // `--embeddings`, so context-shift is off) returns 500 "Compute error" —
+            // muting the persona for the whole tick. This is NOT the flat cap that
+            // truncated qwen3.5 mid-`<think>`: the budget scales with the real served
+            // window (up to a quarter of it), so the reply gets every token set aside
+            // for it — never a const we picked, never an overrun ([[fallbacks-are-illegal-fail-loud]]).
+            max_tokens: Some(Self::completion_budget_for(binding.context_window)),
             top_p: None,
             top_k: None,
+            // `None` here does NOT mean "no repetition penalty" — it defers to the
+            // adapter, which for llama.cpp-family gateways (selected by the TYPED
+            // `llamacpp_sampling_extensions` capability, never a provider-name match)
+            // forwards `repeat_penalty` to the server, defaulting to 1.1 when we pass
+            // None. That 1.1 is load-bearing: at llama.cpp's 1.0 default (disabled) a
+            // small model can collapse into degenerate repetition — reprinting one line
+            // to the token budget for a multi-minute, truncated turn (seen in the glass
+            // box). Cloud OpenAI-compat providers don't accept the non-standard field,
+            // so they correctly leave it off. TODO(#76): lift the penalty (like
+            // temperature) onto the Model row so it's a per-model default the faculty
+            // passes through, not an adapter magic number.
             repeat_penalty: None,
             stop_sequences: None,
             tools,
@@ -425,7 +482,11 @@ impl LlmDeliberationFaculty {
         if budget_tokens == 0 {
             return String::new();
         }
-        let mut ctx: Vec<_> = ws.broadcast.iter().filter(|c| c.decision.is_none()).collect();
+        let mut ctx: Vec<_> = ws
+            .broadcast
+            .iter()
+            .filter(|c| c.decision.is_none())
+            .collect();
         ctx.sort_by(|a, b| {
             b.salience
                 .partial_cmp(&a.salience)
@@ -470,119 +531,26 @@ impl LlmDeliberationFaculty {
     /// Splitting the assembly this way lets `prompt_view` size the context to the
     /// served window before it is embedded (the framing wrapper is essential and
     /// small; the context is the variable part that must fit the remainder).
-    fn compose_system(&self, context: &str, directed: bool) -> String {
-        let mut s = String::with_capacity(self.system_prompt.len() + context.len() + 768);
-        s.push_str(&self.system_prompt);
-        // NOTE ON ORDERING (KV-cache prefix reuse, measured 2026-06-23):
-        // Everything pushed BEFORE the volatile `context` below forms a
-        // byte-identical prefix across turns of the SAME directedness (identity +
-        // how-to-take-your-turn + the 18.5KB tool catalog + silence affordance). The
-        // silence affordance is the ONLY directedness-gated segment, and it sits LAST
-        // among the static blocks — so toggling it (directed vs ambient) invalidates
-        // only its own tail tokens, never the heavy identity/catalog prefix; and
-        // within a run directedness is stable (the eval is always directed, live
-        // ambient turns always undirected), so the cache holds in practice. The
-        // llama.cpp server caches that prefix and re-prefills only the changed
-        // tail, so the static ~5k tokens prefill ONCE per session instead of
-        // ~27s every turn. The assembled `context` (recall + live situation) is
-        // the ONLY volatile part, so it is appended LAST — which also puts the
-        // live situation closest to the generation point (recency favors
-        // instruction-following). Do NOT move volatile content above the catalog:
-        // it breaks the cached prefix and every turn pays the full re-prefill.
-        // Tell the reasoner it is taking a TURN in this activity, not analyzing a
-        // transcript — otherwise small models outline the situation instead of
-        // participating. The activity is NOT hardcoded (it is recipe-defined): the
-        // room's operating doctrine in the context above specializes HOW to
-        // participate (chat / coordination / game / code / art / …). This block
-        // only says "respond as yourself, in your own voice, not as an analysis."
-        let _ = write!(
-            s,
-            "\n\n[Taking your turn]\n\
-             What follows (the user message) is the recent activity in this space — \
-             messages from OTHER participants. You are {name}. Write ONLY your own \
-             single next message, in first person, in your own voice, the way you \
-             would actually say it. Do NOT write or invent anyone else's lines, do \
-             NOT continue or replay the transcript, do NOT prefix your message with \
-             your name, do NOT write an outline, analysis, or narration of what you \
-             are doing — just say your piece. Let the context above (including the \
-             room's operating doctrine, if any) shape how you participate.{silence_tail}",
-            name = self.persona_name,
-            // Ambient turns carry the "you may stay silent" nudge; a turn DIRECTED at
-            // her (a question put to her — eval exam, @mention, DM) drops it: silence
-            // is for chatter she may let pass, not for ghosting a question asked of
-            // her. See `Workspace::directed_at_self`.
-            silence_tail = if directed {
-                ""
-            } else {
-                " If you have nothing worth adding, stay silent."
-            },
-        );
-        // Tools: a compact CATEGORY INDEX (category names + counts) plus how to
-        // discover and use them. NOT every tool, NOT the schemas — both load on
-        // demand: `commands/list` to search a category for tools, then `commands/help`
-        // for one tool's call format (progressive disclosure, the Claude Code shape).
-        // Only included when the persona has tools; pure-chat turns keep
-        // say-your-piece. The `[Acting]` framing here states the truth WITHOUT a false
-        // absolute: for many tasks the finished work IS the answer (write the function,
-        // the prose, the design) — produce it directly; reach for a tool when the task
-        // genuinely needs one (read a file, run code, search). Describing what you
-        // WOULD do is not doing it — but neither is calling a tool you don't need.
-        if !self.tools.is_empty() {
-            s.push_str(
-                "\n\n[Your tools]\n\
-                 You can act, not just talk. Below is an INDEX of your tool \
-                 categories with how many tools each holds — not the tools \
-                 themselves. To find a tool: call `commands/list` with a `filter` \
-                 (e.g. a category name or a keyword) to get the matching tools. To \
-                 call one: first call `commands/help` with its exact name to see its \
-                 arguments and an example, then call the tool. (`commands/list` and \
-                 `commands/help` are offered to you directly; every other tool is \
-                 called by name once you've found it.)\n",
-            );
-            s.push_str(&self.tool_catalog);
-            s.push_str(
-                "\n[Acting]\n\
-                 Do the thing the task asks for. If the answer is something you can \
-                 produce directly — a function, a piece of writing, a design — write \
-                 the finished work now, in full. If it needs a tool — reading a file, \
-                 running code, searching — call the tool THIS turn rather than \
-                 describing what you would do; narrating a plan does not carry it out. \
-                 After a tool runs you get the result back and can continue \
-                 (e.g. help → call → read → run). Don't call a tool you don't need, \
-                 and don't narrate one you do.",
-            );
-        }
-        // Reuse the ONE silence contract — PASS = first-class choice to stay quiet —
-        // but ONLY for an AMBIENT turn. When the turn is DIRECTED at her (a question
-        // put to her: the eval exam, an @mention, a DM), the PASS escape is withheld:
-        // a coder model offered "reply PASS and nothing reaches the room" takes that
-        // exit even on a direct question (reproduced via glass-box replay — 0/13 on
-        // the coder gym), and ghosting a question asked of you is not the same as
-        // letting ambient chatter pass. She can still decline in her own words; she
-        // just isn't handed the silent-PASS hatch. Withholding it is a FRAMING choice
-        // over a structural addressing fact (`directed_at_self`), not a filter reading
-        // her output (see [[no-hardcoded-heuristics-to-steer-cognition]]). The block
-        // is the LAST static prefix segment, so toggling it costs only its own tokens
-        // in KV-prefix terms — the identity/tools prefix above stays cacheable.
-        if !directed {
-            s.push_str(SILENCE_AFFORDANCE_BLOCK);
-        }
-        // VOLATILE TAIL — appended last so the static blocks above stay a stable,
-        // cacheable prefix (see ORDERING note at the top of this fn). This is the
-        // context the mind assembled THIS tick (recall + who's present + the
-        // situation); it changes every turn, so it must come after all static
-        // content or it poisons the KV-cache prefix.
-        if !context.is_empty() {
-            s.push_str(
-                "\n\n[What you are working with right now]\n\
-                 The following is the context your mind assembled this moment — \
-                 recalled memory, who is present, the room's nature, your read of \
-                 the situation. Ground your contribution in it; you need not cite \
-                 every line:\n",
-            );
-            s.push_str(context);
-        }
-        s
+    /// Assemble the system prompt for this turn. Thin adapter over
+    /// [`deliberation_prompt::compose`]: the faculty owns the *inputs* (its identity,
+    /// tools, the turn's structural flags); the framing prose + block ordering live in
+    /// [`super::deliberation_prompt`] as a procedural list of named, gated blocks.
+    fn compose_system(
+        &self,
+        context: &str,
+        expanded: &BTreeSet<String>,
+        directed: bool,
+        self_initiated: bool,
+    ) -> String {
+        deliberation_prompt::compose(&deliberation_prompt::SystemPromptParts {
+            system_prompt: &self.system_prompt,
+            persona_name: &self.persona_name,
+            tools: &self.tools,
+            expanded,
+            context,
+            directed,
+            self_initiated,
+        })
     }
 
     /// The EXACT prompt this faculty sends the model this tick — the system
@@ -602,44 +570,186 @@ impl LlmDeliberationFaculty {
     ///   3. the assembled context (recall + grounding) — enrichment, gets the
     ///      remainder, dropped WHOLE in salience order.
     pub fn prompt_view(&self, ws: &Workspace) -> DeliberationPromptView {
-        let completion_reserve = (self.context_window / 4).clamp(256, 2048) as usize;
+        // Introspection / test entry: size against the CURRENT served window. The
+        // production path (`contribute`) instead loads the binding ONCE and calls
+        // `prompt_view_within` with that window, so prompt sizing and the request's
+        // model come from the same atomic snapshot (no torn read across a re-home).
+        self.prompt_view_within(ws, self.binding.load().context_window)
+    }
+
+    /// [`prompt_view`] against an explicit served window. See that method.
+    fn prompt_view_within(&self, ws: &Workspace, context_window: u32) -> DeliberationPromptView {
+        // The reply's reserved room — the SAME value `build_request_within` passes
+        // as `max_tokens`, so the prompt is sized to leave exactly what generation
+        // is then allowed to use. One source: [`completion_budget_for`].
+        let completion_reserve = Self::completion_budget_for(context_window) as usize;
 
         // The ONE natively-offered tool (`commands/help`) rides the served window
         // too: the gateway injects its function spec (name + description + schema)
         // via the chat template, outside `system`/`user`. Without counting it the
         // budget silently overshoots `n_ctx` and llama-server 400s ("exceeds context
         // size"). It is a SINGLE tiny schema (progressive disclosure — the rest of
-        // the surface lives in the catalog inside `system`, already counted by
+        // the surface lives in the tool MENU inside `system`, already counted by
         // `framing_tokens`), so this is a few dozen tokens, not the 4–5k the old
-        // full-registry dump cost. The catalog itself is part of `compose_system`,
+        // full-registry dump cost. The menu itself is part of `compose_system`,
         // so it is sized into the framing below — one accounting, not two.
-        let budget = (self.context_window as usize)
+        let budget = (context_window as usize)
             .saturating_sub(completion_reserve)
             .saturating_sub(self.describe_tool_tokens());
 
+        // Which tool categories the bookmarked menu OPENS this turn. Computed ONCE
+        // here from `ws` (NOT from the budgeted `context`, which is not built yet) and
+        // threaded IDENTICALLY into both `compose_system` calls below — so the
+        // framing-token ESTIMATE (empty context) and the FINAL render (real context)
+        // carry the exact same menu, and the budget math cannot under-count the tool
+        // block and overshoot `n_ctx`. See [`Self::expanded_categories`].
+        let expanded = self.expanded_categories(ws);
+
         // The framing wrapper alone (no assembled context) — essential + small.
-        // Pass the SAME `directed` as the final compose below so the framing-token
-        // estimate matches the prompt actually sent (directedness toggles the silence
-        // block, which is a few dozen tokens).
-        let framing_tokens = est_tokens(&self.compose_system("", ws.directed_at_self));
+        // Pass the SAME directedness + self-initiation + expansion as the final
+        // compose below so the framing-token estimate matches the prompt actually sent
+        // (both the silence block and the [Your own time] block are gated and add a
+        // few dozen tokens each).
+        let framing_tokens =
+            est_tokens(&self.compose_system("", &expanded, ws.directed_at_self, ws.self_initiated));
 
-        // The burst — keep the most-recent tail when it would overflow.
-        let mut user = ws.world_state.clone();
-        let user_budget = budget.saturating_sub(framing_tokens);
-        if est_tokens(&user) > user_budget {
-            user = tail_to_tokens(&user, user_budget);
-        }
+        // The conversation — role-attributed turns built from `ws.turns` (own posts
+        // → assistant, peers → user), kept to the most-recent tail when it would
+        // overflow. The OLDEST turns yield first under pressure (the latest activity
+        // is what the turn is about — the same priority the old flat head-trim had,
+        // now at turn granularity).
+        let msg_budget = budget.saturating_sub(framing_tokens);
+        let messages = self.messages_within(ws, msg_budget);
 
-        // Whatever remains after framing + burst goes to enrichment context.
+        // Whatever remains after framing + conversation goes to enrichment context.
+        let used_msg_tokens: usize = messages.iter().map(|m| est_tokens(&m.content_text())).sum();
         let ctx_budget = budget
             .saturating_sub(framing_tokens)
-            .saturating_sub(est_tokens(&user));
+            .saturating_sub(used_msg_tokens);
         let context = self.render_assembled_context_within(ws, ctx_budget);
 
         DeliberationPromptView {
-            system: self.compose_system(&context, ws.directed_at_self),
-            user,
+            system: self.compose_system(
+                &context,
+                &expanded,
+                ws.directed_at_self,
+                ws.self_initiated,
+            ),
+            messages,
         }
+    }
+
+    /// Choose which tool categories the bookmarked menu OPENS (lists verbs inline)
+    /// this turn, from what the persona is doing NOW. The relevance signal is the
+    /// live burst (`ws.world_state`) plus the enrichment already selected for the turn
+    /// (`ws.broadcast` — recall, working memory, situation); scored against the full,
+    /// UN-budgeted broadcast so the result is a pure function of `ws` (see the
+    /// same-set-into-both-composes note in [`Self::prompt_view`]). Lexical scorer
+    /// (outlier A, [`LexicalToolRelevance`]) — a neural embedding scorer is the
+    /// deferred outlier B. `sticky = None`: the "where you were" cursor is per-(user,
+    /// room) state owned by airc (task #89), not yet threaded here. Empty tool set →
+    /// empty (no menu at all).
+    fn expanded_categories(&self, ws: &Workspace) -> BTreeSet<String> {
+        if self.tools.is_empty() {
+            return BTreeSet::new();
+        }
+        let categories = persona_tools::group_categories(&self.tools);
+        // Relevance signal: the live situation + the turn's grounding. Budget-
+        // independent (full broadcast, not the trimmed context) so `expanded` is
+        // stable between the estimate and the final compose.
+        let mut signal = String::with_capacity(ws.world_state.len() + 256);
+        signal.push_str(&ws.world_state);
+        for c in &ws.broadcast {
+            if c.decision.is_none() {
+                signal.push('\n');
+                signal.push_str(&c.content);
+            }
+        }
+        tool_relevance::select_expanded_categories(
+            &LexicalToolRelevance,
+            &categories,
+            &signal,
+            None,
+            MAX_EXPANDED_CATEGORIES,
+            RELEVANCE_FLOOR,
+        )
+    }
+
+    /// Build the role-attributed conversation thread from the workspace's
+    /// structured turns, fitted to `budget_tokens`. The persona's OWN posts become
+    /// `assistant` messages (her own voice — no name prefix, matching the
+    /// "do NOT prefix your message with your name" instruction); peers' posts become
+    /// `user` messages prefixed `{author}: ` so several speakers stay legible inside
+    /// one merged user turn. Consecutive same-role turns merge into a single message
+    /// (the chat-template shape models expect). Under budget pressure the OLDEST
+    /// turns drop first. This is the payoff of the structured-turns refactor: the
+    /// model sees WHO said WHAT with its own past messages attributed to `assistant`,
+    /// so it neither bleeds identity nor replays the transcript (the echo-loop root
+    /// cause — PERSONA-COGNITION-PIPELINE §7.5).
+    fn messages_within(&self, ws: &Workspace, budget_tokens: usize) -> Vec<ChatMessage> {
+        // Collapse consecutive same-role turns into one message each (chronological).
+        let mut groups: Vec<(&'static str, Vec<String>)> = Vec::new();
+        for turn in &ws.turns {
+            let role = if turn.is_self { "assistant" } else { "user" };
+            let line = turn_message_line(turn);
+            match groups.last_mut() {
+                Some((r, lines)) if *r == role => lines.push(line),
+                _ => groups.push((role, vec![line])),
+            }
+        }
+        let messages: Vec<ChatMessage> = groups
+            .into_iter()
+            .map(|(role, lines)| ChatMessage::text(role, lines.join("\n")))
+            .collect();
+
+        // An empty conversation is a legitimate state (a quiet room on a
+        // self-initiated tick): the situation lives in the system prompt's assembled
+        // context, not in a conversation turn. Adapters still require ≥1 message, so
+        // emit the rendered world-state projection as one user message — the exact
+        // single-message shape the faculty sent before this refactor. NOT a fallback
+        // hiding a defect ([[fallbacks-are-illegal-fail-loud]]): zero turns is a
+        // real, valid input, and this is its faithful representation.
+        if messages.is_empty() {
+            return vec![ChatMessage::text("user", ws.world_state.clone())];
+        }
+
+        // Fit to the served window, NEWEST-first: walk the thread from the most
+        // recent message backward, giving each the remaining budget. A whole message
+        // that fits is kept intact; the one that straddles the budget boundary is
+        // head-trimmed (keeping its TAIL — the latest lines) via `tail_to_tokens`;
+        // anything older is dropped. This is the turn-granular successor to the old
+        // flat head-trim: the latest activity always survives (it is what the turn is
+        // about), and for the opaque single-turn (eval/test/replay) path it reduces
+        // EXACTLY to the previous `tail_to_tokens(world_state, budget)` behavior.
+        let mut fitted: Vec<ChatMessage> = Vec::new();
+        let mut remaining = budget_tokens;
+        for msg in messages.iter().rev() {
+            let body = msg.content_text();
+            // +2 tokens for the per-message role/template framing the model pays.
+            let cost = est_tokens(&body) + 2;
+            if cost <= remaining {
+                remaining -= cost;
+                fitted.push(msg.clone());
+            } else {
+                // The straddling message: keep as much of its TAIL as still fits.
+                let trimmed = tail_to_tokens(&body, remaining.saturating_sub(2));
+                if !trimmed.is_empty() {
+                    fitted.push(ChatMessage::text(msg.role.clone(), trimmed));
+                }
+                break;
+            }
+        }
+        // The newest message alone can exceed the whole budget (a giant single burst
+        // at a tiny window). Keep its trimmed tail regardless — a turn must reach the
+        // model — mirroring the old guarantee that the burst was never dropped whole.
+        if fitted.is_empty() {
+            if let Some(last) = messages.last() {
+                let body = tail_to_tokens(&last.content_text(), budget_tokens.saturating_sub(2));
+                return vec![ChatMessage::text(last.role.clone(), body)];
+            }
+        }
+        fitted.reverse();
+        fitted
     }
 
     /// Conservative token estimate of the ONE natively-offered tool spec
@@ -668,39 +778,44 @@ impl LlmDeliberationFaculty {
 /// carries UUID-dense rosters, structured engram observations, and code, which
 /// tokenize far denser than English — so we OVER-count tokens to stay safely
 /// under `n_ctx`. The completion reserve absorbs the remaining slack.
-const GUARD_CHARS_PER_TOKEN: usize = 3;
+/// How many tool categories the bookmarked menu may OPEN (list their verbs inline)
+/// on one turn. The rest render as collapsed one-line bookmarks. Bounded so the menu
+/// stays a small per-turn render (a spine of headers + a few opened categories) —
+/// the whole point of the flip away from the ~1.8k-token open-everything catalog.
+/// Consumed by [`LlmDeliberationFaculty::expanded_categories`].
+const MAX_EXPANDED_CATEGORIES: usize = 4;
 
-/// Conservative token estimate for the window guard (see [`GUARD_CHARS_PER_TOKEN`]).
-fn est_tokens(s: &str) -> usize {
-    s.len() / GUARD_CHARS_PER_TOKEN
-}
-
-/// Keep the last `budget_tokens` worth of a burst (the most-recent activity),
-/// trimming from the FRONT, and advance to the next line boundary so the kept
-/// tail starts clean. Used when the room burst alone would overflow the served
-/// window — the latest messages are what the turn is about, so the OLDEST yield.
-fn tail_to_tokens(s: &str, budget_tokens: usize) -> String {
-    let budget_chars = budget_tokens.saturating_mul(GUARD_CHARS_PER_TOKEN);
-    if s.len() <= budget_chars {
-        return s.to_string();
-    }
-    let mut start = s.len().saturating_sub(budget_chars);
-    while start < s.len() && !s.is_char_boundary(start) {
-        start += 1;
-    }
-    let slice = &s[start..];
-    match slice.find('\n') {
-        Some(nl) => slice[nl + 1..].to_string(),
-        None => slice.to_string(),
-    }
-}
+/// The minimum lexical-relevance score a category must clear to be OPENED by
+/// [`tool_relevance::select_expanded_categories`]. A small positive floor (not zero)
+/// so an off-task turn (pure chat, no tool vocabulary in the situation) opens NOTHING
+/// — she still sees the full header spine and reaches any tool via
+/// `commands/list --filter`. Tuned low: one on-topic keyword should open a category.
+const RELEVANCE_FLOOR: f32 = 0.02;
 
 /// A snapshot of exactly what the deliberation faculty sends the model — the
 /// glass box over the RAG/prompt. Print it, capture it, diff it across turns.
 #[derive(Debug, Clone)]
 pub struct DeliberationPromptView {
     pub system: String,
-    pub user: String,
+    /// The role-attributed conversation thread sent to the model — the persona's
+    /// OWN posts as `assistant`, peers' as `user` (PERSONA-COGNITION-PIPELINE §7.5).
+    /// Replaces the single flat `user` string that collapsed her own turns into the
+    /// conversation and caused the identity bleed / transcript replay / echo loop.
+    pub messages: Vec<ChatMessage>,
+}
+
+impl DeliberationPromptView {
+    /// The conversation rendered as flat text — the role-tagged thread joined for
+    /// human-readable introspection (glass-box `eprintln!`, debug logs, assertions).
+    /// The canonical form the model receives is [`messages`](Self::messages); this
+    /// is a projection for eyes, not the wire payload.
+    pub fn user_text(&self) -> String {
+        self.messages
+            .iter()
+            .map(|m| format!("[{}] {}", m.role, m.content_text()))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
 }
 
 #[async_trait]
@@ -716,7 +831,15 @@ impl Faculty for LlmDeliberationFaculty {
     }
 
     async fn contribute(&self, ws: &Workspace) -> Option<Contribution> {
-        let view = self.prompt_view(ws);
+        // ONE atomic snapshot of the model binding for the whole turn — the
+        // adapter we generate through, the model we request, and the served window
+        // we size the prompt to all come from the same {adapter, model, window}
+        // triple, so a re-home (`serving/pin` / grid failover) landing mid-turn can
+        // never tear them apart. `load_full` (owned `Arc`) is held across the
+        // `.await` below; a swap that happens after this load takes effect on the
+        // NEXT turn. See [`ModelBinding`].
+        let binding = self.binding.load_full();
+        let view = self.prompt_view_within(ws, binding.context_window);
         // Introspection seam: emit EXACTLY what the model sees this tick. The RAG
         // is the load-bearing input — never opaque. Enable the `cognition` log
         // category for the persona to capture this per-turn (the existing
@@ -726,7 +849,7 @@ impl Faculty for LlmDeliberationFaculty {
             target: "cognition::deliberation",
             persona = %self.persona_name,
             system_prompt = %view.system,
-            burst = %view.user,
+            burst = %view.user_text(),
             "deliberation prompt — what the model sees this turn"
         );
         // SINGLE SHOT: one generation → one verdict. This faculty no longer runs
@@ -736,7 +859,11 @@ impl Faculty for LlmDeliberationFaculty {
         // and re-perceives at the next tick. "Done" is the workspace SETTLING into
         // Speak/Pass across ticks — never a counter in here. See
         // docs/cognition/ACTING-ORGANISM.md §3.3.
-        let messages = vec![ChatMessage::text("user", view.user)];
+        //
+        // The thread is now ROLE-ATTRIBUTED (own posts → assistant, peers → user)
+        // built from the workspace's structured turns, not one flat `user` blob —
+        // the structured-turns refactor that fixes the echo loop.
+        let messages = view.messages.clone();
         // Offer the DISCOVERY PAIR natively — `commands/list` (search/filter the
         // authorized surface → a small list) + `commands/help` (one named tool's call
         // format) — when the persona has a tool surface. The rest of the surface is
@@ -753,18 +880,25 @@ impl Faculty for LlmDeliberationFaculty {
             Some(self.native_specs.clone())
         };
 
-        let request = self.build_request(messages.clone(), tools, view.system.clone());
-        let resp = match self.adapter.generate_text(request).await {
+        let request =
+            self.build_request_within(&binding, messages.clone(), tools, view.system.clone());
+        let resp = match binding.adapter.generate_text(request).await {
             Ok(r) => r,
-            // Inference failed — abstain this tick (no fabricated Pass: a failed
-            // model is not a chosen silence).
+            // Inference FAILED (timeout, 5xx, the serving lane refusing a model it
+            // isn't hosting). A failed model is NOT a chosen silence — returning a
+            // bare `None` here would let the settle step collapse it into a serene
+            // `Pass`, the exact fallback [[fallbacks-are-illegal-fail-loud]] forbids
+            // (the swept-model bug: every failure masqueraded as silence). Emit a
+            // FAULT contribution instead: it rides the broadcast (auditable/replayable
+            // like any finding) and the settle step surfaces it LOUD as
+            // `InferenceFailed`, naming the cause, never a fabricated no-op.
             Err(e) => {
                 tracing::warn!(
                     persona = %self.persona_name,
                     error = %e,
-                    "deliberation inference failed; abstaining this tick"
+                    "deliberation inference failed; surfacing fault (not a silent Pass)"
                 );
-                return None;
+                return Some(Contribution::deliberation_fault(e.to_string()));
             }
         };
 
@@ -855,691 +989,854 @@ fn metrics_from(resp: &TextGenerationResponse) -> crate::cognition::workspace::T
 mod tests {
     use super::*;
     use crate::ai::heuristic_adapter::HeuristicInferenceAdapter;
+    use crate::ai::types::{ToolCall, ToolInputSchema, UsageMetrics};
+    use crate::cognition::workspace::BurstTurn;
+    use serde_json::json;
+    use std::collections::VecDeque;
+    use std::sync::Mutex;
 
-    // what this catches: the PASS silence token maps to Decision::Pass (with or
-    // without trailing punctuation); real content maps to Speak. One silence
-    // contract, reused from prompt_assembly.
-    #[test]
-    fn decision_parsing_maps_pass_and_speak() {
-        assert_eq!(decision_from_response("PASS"), Decision::Pass);
-        assert_eq!(decision_from_response("  PASS.  "), Decision::Pass);
-        assert_eq!(decision_from_response(""), Decision::Pass);
-        // Small models leak trailing prose after PASS — must still be silence,
-        // not a message that literally says "PASS ...".
-        assert_eq!(
-            decision_from_response("PASS — nothing to add here"),
-            Decision::Pass
-        );
-        assert_eq!(
-            decision_from_response("PASS.\nI'll stay quiet"),
-            Decision::Pass
-        );
-        match decision_from_response("Let's ship the deploy fix now.") {
-            Decision::Speak { text } => assert!(text.contains("ship the deploy")),
-            other => panic!("expected Speak, got {other:?}"),
+    // ─── Prompt shaping ───────────────────────────────────────────────────────
+    //
+    // These drive a real adapter but assert on the COMPOSED PROMPT (the glass box
+    // over what the faculty sends the model) — window budgeting, KV-prefix
+    // ordering, the bookmarked tool menu, role attribution, own-time / directed
+    // framing — never on the generated text.
+    mod prompt_shaping {
+        use super::*;
+
+        // what this catches: end-to-end through a REAL adapter (the deterministic
+        // heuristic stand-in) — the faculty calls inference and produces a verdict
+        // Contribution. Proves the faculty wires to the AIProviderAdapter trait the
+        // live path uses; swap in LlamaCppAdapter for a live persona, unchanged.
+        #[tokio::test]
+        async fn deliberates_through_a_real_adapter() {
+            let persona = Uuid::new_v4();
+            let adapter: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
+            let faculty = LlmDeliberationFaculty::new(
+                persona,
+                "Ivar",
+                "You are Ivar, a thoughtful engineer on the grid.",
+                adapter,
+            );
+
+            assert!(faculty.reacts_to_broadcast(), "deliberation is phase 2");
+
+            // A workspace with a phase-1 recall context bid already broadcast.
+            let mut ws = Workspace::new("teammate asks: where did we land on the deploy?");
+            ws.broadcast.push(Contribution::context(
+                FacultyId::Recall,
+                "deploy pipeline was red; fix was merged at 4pm",
+                0.8,
+                "recalled",
+            ));
+
+            let c = faculty
+                .contribute(&ws)
+                .await
+                .expect("deliberation should bid a verdict when inference succeeds");
+            assert_eq!(c.faculty, FacultyId::Deliberation);
+            assert!(
+                c.decision.is_some(),
+                "deliberation carries the participation verdict"
+            );
+            // The heuristic adapter acks (never emits PASS), so this is a Speak.
+            assert!(matches!(c.decision, Some(Decision::Speak { .. })));
         }
-    }
 
-    // what this catches: qwen3.5 chain-of-thought tags leaking into the spoken
-    // text. The model prefixes an (often empty) <think></think> block before the
-    // answer; the live workspace path reached `say` raw and broadcast the tags
-    // into the room (observed on Asha's first turn). The Speak text must be clean.
-    #[test]
-    fn decision_strips_think_tags_from_spoken_text() {
-        // Empty think block (the exact shape observed live) + real answer.
-        match decision_from_response("<think>\n</think>\nI'm Asha, here to help.") {
-            Decision::Speak { text } => {
-                assert!(!text.contains("<think>"), "think tag leaked: {text:?}");
-                assert!(!text.contains("</think>"), "close tag leaked: {text:?}");
-                assert!(text.starts_with("I'm Asha"), "answer preserved: {text:?}");
-            }
-            other => panic!("expected Speak, got {other:?}"),
-        }
-        // Non-empty reasoning block is also stripped from the spoken text.
-        match decision_from_response("<think>weigh options</think>Ship it.") {
-            Decision::Speak { text } => assert_eq!(text, "Ship it."),
-            other => panic!("expected Speak, got {other:?}"),
-        }
-        // An ONLY-thinking response (no answer) cleans to empty → silence.
-        assert_eq!(
-            decision_from_response("<think>I won't answer this</think>"),
-            Decision::Pass
-        );
-    }
-
-    // what this catches: end-to-end through a REAL adapter (the deterministic
-    // heuristic stand-in) — the faculty calls inference and produces a verdict
-    // Contribution. Proves the faculty wires to the AIProviderAdapter trait the
-    // live path uses; swap in LlamaCppAdapter for a live persona, unchanged.
-    #[tokio::test]
-    async fn deliberates_through_a_real_adapter() {
-        let persona = Uuid::new_v4();
-        let adapter: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
-        let faculty = LlmDeliberationFaculty::new(
-            persona,
-            "Ivar",
-            "You are Ivar, a thoughtful engineer on the grid.",
-            adapter,
-        );
-
-        assert!(faculty.reacts_to_broadcast(), "deliberation is phase 2");
-
-        // A workspace with a phase-1 recall context bid already broadcast.
-        let mut ws = Workspace::new("teammate asks: where did we land on the deploy?");
-        ws.broadcast.push(Contribution::context(
-            FacultyId::Recall,
-            "deploy pipeline was red; fix was merged at 4pm",
-            0.8,
-            "recalled",
-        ));
-
-        let c = faculty
-            .contribute(&ws)
-            .await
-            .expect("deliberation should bid a verdict when inference succeeds");
-        assert_eq!(c.faculty, FacultyId::Deliberation);
-        assert!(
-            c.decision.is_some(),
-            "deliberation carries the participation verdict"
-        );
-        // The heuristic adapter acks (never emits PASS), so this is a Speak.
-        assert!(matches!(c.decision, Some(Decision::Speak { .. })));
-    }
-
-    // what this catches: the live-airc bug where a grown room burst + many full
-    // engrams made the deliberation prompt exceed the served window, so
-    // llama-server 500'd ("Context size has been exceeded") on EVERY tick and the
-    // persona went mute (logged as "chose silence"). prompt_view must keep
-    // system+user within `context_window` minus the completion reserve — context
-    // is enrichment and yields first, the burst trims from the head (newest kept),
-    // the essential framing always survives. Regression for the 8192-overflow.
-    #[test]
-    fn prompt_view_stays_within_the_served_window() {
-        let persona = Uuid::new_v4();
-        let adapter: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
-        // A deliberately small window so the test is cheap but exercises the same
-        // arithmetic the live 8192 path uses.
-        let window: u32 = 1024;
-        let faculty = LlmDeliberationFaculty::new(
-            persona,
-            "Ivar",
-            "You are Ivar, a thoughtful engineer on the grid.",
-            adapter,
-        )
-        .with_context_window(window);
-
-        // A burst far bigger than the whole window (a grown room history), with a
-        // recognizable LAST line that must survive the head-trim.
-        let mut burst = "old chatter line\n".repeat(2000);
-        burst.push_str("LATEST: did the deploy fix land?");
-        let mut ws = Workspace::new(&burst);
-        // Several oversized context bids — recall engrams that alone blow the budget.
-        ws.broadcast.push(Contribution::context(
-            FacultyId::Recall,
-            &"deploy pipeline observation; ".repeat(2000),
-            0.9,
-            "recalled",
-        ));
-        ws.broadcast.push(Contribution::context(
-            FacultyId::Recall,
-            "small high-value note: fix merged 4pm",
-            0.5,
-            "recalled",
-        ));
-
-        let view = faculty.prompt_view(&ws);
-        let total = est_tokens(&view.system) + est_tokens(&view.user);
-        assert!(
-            total <= window as usize,
-            "prompt must fit the served window: {total} tokens > {window}"
-        );
-        // The newest burst line survives the head-trim — the turn is about it.
-        assert!(
-            view.user.contains("LATEST: did the deploy fix land?"),
-            "head-trim must keep the most recent burst content"
-        );
-        // The framing is essential and always present even under extreme pressure.
-        assert!(
-            view.system.contains("Taking your turn"),
-            "the how-to-participate framing must never be dropped"
-        );
-    }
-
-    // what this catches: KV-prefix cache locality — session-stable standing framing
-    // (roster/doctrine/map) must serialize BEFORE volatile grounding (recall) even
-    // when the volatile bid scores HIGHER salience, so the stable sections sit in the
-    // cacheable prefix region and don't re-prefill every turn. Without the stable-tier
-    // sort, recall (0.9) would lead the block and push the roster (0.5) below it,
-    // breaking the cross-turn prefix at the very first section. Regression for the
-    // append-only/volatility-ordering speed work (commit 47c65891a + this one).
-    #[test]
-    fn stable_framing_serializes_before_higher_salience_volatile_grounding() {
-        let persona = Uuid::new_v4();
-        let adapter: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
-        let faculty = LlmDeliberationFaculty::new(persona, "Ivar", "You are Ivar.", adapter);
-
-        let mut ws = Workspace::new("teammate: what's the plan?");
-        // Volatile recall bids HIGH salience — would lead a pure salience-desc block.
-        ws.broadcast.push(Contribution::context(
-            FacultyId::Recall,
-            "VOLATILE_RECALL: deploy was red, fixed 4pm",
-            0.9,
-            "recalled",
-        ));
-        // Stable standing-framing bids LOWER salience but is session-stable.
-        ws.broadcast.push(
-            Contribution::context(
-                FacultyId::Custom("room-roster".to_string()),
-                "STABLE_ROSTER: alice, bob, carol present",
-                0.5,
-                "framing",
+        // what this catches: the live-airc bug where a grown room burst + many full
+        // engrams made the deliberation prompt exceed the served window, so
+        // llama-server 500'd ("Context size has been exceeded") on EVERY tick and the
+        // persona went mute (logged as "chose silence"). prompt_view must keep
+        // system+user within `context_window` minus the completion reserve — context
+        // is enrichment and yields first, the burst trims from the head (newest kept),
+        // the essential framing always survives. Regression for the 8192-overflow.
+        #[test]
+        fn prompt_view_stays_within_the_served_window() {
+            let persona = Uuid::new_v4();
+            let adapter: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
+            // A deliberately small window so the test is cheap but exercises the same
+            // arithmetic the live 8192 path uses.
+            let window: u32 = 1024;
+            let faculty = LlmDeliberationFaculty::new(
+                persona,
+                "Ivar",
+                "You are Ivar, a thoughtful engineer on the grid.",
+                adapter,
             )
-            .session_stable(),
-        );
+            .with_context_window(window);
 
-        // Generous budget so BOTH fit — this isolates ORDER, not truncation.
-        let block = faculty.render_assembled_context_within(&ws, 4096);
-        let roster_at = block.find("[room-roster]").expect("roster present");
-        let recall_at = block.find("[recall]").expect("recall present");
-        assert!(
-            roster_at < recall_at,
-            "stable framing must serialize before higher-salience volatile recall \
+            // A burst far bigger than the whole window (a grown room history), with a
+            // recognizable LAST line that must survive the head-trim.
+            let mut burst = "old chatter line\n".repeat(2000);
+            burst.push_str("LATEST: did the deploy fix land?");
+            let mut ws = Workspace::new(&burst);
+            // Several oversized context bids — recall engrams that alone blow the budget.
+            ws.broadcast.push(Contribution::context(
+                FacultyId::Recall,
+                &"deploy pipeline observation; ".repeat(2000),
+                0.9,
+                "recalled",
+            ));
+            ws.broadcast.push(Contribution::context(
+                FacultyId::Recall,
+                "small high-value note: fix merged 4pm",
+                0.5,
+                "recalled",
+            ));
+
+            let view = faculty.prompt_view(&ws);
+            let total = est_tokens(&view.system) + est_tokens(&view.user_text());
+            assert!(
+                total <= window as usize,
+                "prompt must fit the served window: {total} tokens > {window}"
+            );
+            // The newest burst line survives the tail-keep — the turn is about it.
+            assert!(
+                view.user_text()
+                    .contains("LATEST: did the deploy fix land?"),
+                "the most recent burst content must survive under budget pressure"
+            );
+            // The framing is essential and always present even under extreme pressure.
+            assert!(
+                view.system.contains("Taking your turn"),
+                "the how-to-participate framing must never be dropped"
+            );
+        }
+
+        // what this catches: the 500 "Compute error" that muted Asha + Solenne every
+        // tick — the prompt was sized to leave a completion reserve, but generation was
+        // unbounded (`max_tokens: None`), so a verbose turn overran the reserve and
+        // `prompt + completion` reached `n_ctx` (this llama-server runs `--embeddings`,
+        // so context-shift is off → overrun = 500, not a clean stop). The fix bounds
+        // generation to `completion_budget()` — the SAME slice `prompt_view` carves out.
+        // This asserts the closed invariant: worst-case prompt (at its budget ceiling)
+        // PLUS the generation cap never exceeds the served window. Regression for the
+        // abstain-every-tick reliability bug.
+        #[test]
+        fn prompt_plus_completion_cap_never_exceeds_the_served_window() {
+            let persona = Uuid::new_v4();
+            let adapter: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
+            let window: u32 = 1024;
+            let faculty = LlmDeliberationFaculty::new(
+                persona,
+                "Ivar",
+                "You are Ivar, a thoughtful engineer on the grid.",
+                adapter,
+            )
+            .with_context_window(window);
+
+            // Drive the prompt to its budget ceiling (oversized burst + context bids).
+            let mut burst = "old chatter line\n".repeat(2000);
+            burst.push_str("LATEST: did the deploy fix land?");
+            let mut ws = Workspace::new(&burst);
+            ws.broadcast.push(Contribution::context(
+                FacultyId::Recall,
+                &"deploy pipeline observation; ".repeat(2000),
+                0.9,
+                "recalled",
+            ));
+
+            let view = faculty.prompt_view(&ws);
+            // Same atomic snapshot the production `contribute` path uses — the model
+            // binding carries the served window the request is bounded to.
+            let binding = faculty.binding.load_full();
+            let request =
+                faculty.build_request_within(&binding, view.messages.clone(), None, view.system.clone());
+            // Generation is bounded — never the unbounded `None` that overran n_ctx.
+            let cap = request
+                .max_tokens
+                .expect("deliberation must bound generation to the reserved room");
+            assert_eq!(
+                cap,
+                LlmDeliberationFaculty::completion_budget_for(window),
+                "the generation cap IS the reserved room — one source of truth"
+            );
+            // The closed invariant: prompt-at-ceiling + the generation cap fits n_ctx.
+            let prompt_tokens = est_tokens(&view.system) + est_tokens(&view.user_text());
+            assert!(
+                prompt_tokens + cap as usize <= window as usize,
+                "prompt ({prompt_tokens}) + completion cap ({cap}) must fit the served \
+             window ({window}) — else generation reaches n_ctx and llama-server 500s"
+            );
+        }
+
+        // what this catches: KV-prefix cache locality — session-stable standing framing
+        // (roster/doctrine/map) must serialize BEFORE volatile grounding (recall) even
+        // when the volatile bid scores HIGHER salience, so the stable sections sit in the
+        // cacheable prefix region and don't re-prefill every turn. Without the stable-tier
+        // sort, recall (0.9) would lead the block and push the roster (0.5) below it,
+        // breaking the cross-turn prefix at the very first section. Regression for the
+        // append-only/volatility-ordering speed work (commit 47c65891a + this one).
+        #[test]
+        fn stable_framing_serializes_before_higher_salience_volatile_grounding() {
+            let persona = Uuid::new_v4();
+            let adapter: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
+            let faculty = LlmDeliberationFaculty::new(persona, "Ivar", "You are Ivar.", adapter);
+
+            let mut ws = Workspace::new("teammate: what's the plan?");
+            // Volatile recall bids HIGH salience — would lead a pure salience-desc block.
+            ws.broadcast.push(Contribution::context(
+                FacultyId::Recall,
+                "VOLATILE_RECALL: deploy was red, fixed 4pm",
+                0.9,
+                "recalled",
+            ));
+            // Stable standing-framing bids LOWER salience but is session-stable.
+            ws.broadcast.push(
+                Contribution::context(
+                    FacultyId::Custom("room-roster".to_string()),
+                    "STABLE_ROSTER: alice, bob, carol present",
+                    0.5,
+                    "framing",
+                )
+                .session_stable(),
+            );
+
+            // Generous budget so BOTH fit — this isolates ORDER, not truncation.
+            let block = faculty.render_assembled_context_within(&ws, 4096);
+            let roster_at = block.find("[room-roster]").expect("roster present");
+            let recall_at = block.find("[recall]").expect("recall present");
+            assert!(
+                roster_at < recall_at,
+                "stable framing must serialize before higher-salience volatile recall \
              (roster@{roster_at} should precede recall@{recall_at})\n{block}"
-        );
-    }
+            );
+        }
 
-    // what this catches: progressive disclosure — the per-turn tool PAYLOAD is the
-    // two-tool DISCOVERY PAIR (`commands/list` + `commands/help`), not the whole
-    // authorized registry, and the system prompt carries only a CATEGORY INDEX, not
-    // every tool. The old dump injected ~150 full schemas / one-liners (~4–5k tokens)
-    // into EVERY turn, overflowing n_ctx → 400 "exceeds context size" → mute. Now the
-    // surface is a tiny category index inside the system prompt + the two-tool native
-    // offering, so even a huge tool set leaves system + user + the offered tools well
-    // within the served window. Invariant: the category index (not tool names) rides
-    // the system prompt, the native offering is exactly the discovery pair, and the
-    // whole prompt + its tools + reserve fit the window. A regression means the dump
-    // came back.
-    #[test]
-    fn tool_surface_is_a_category_index_plus_discovery_pair() {
-        let persona = Uuid::new_v4();
-        let adapter: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
-        // A tool set whose FULL schemas would dwarf the window — the live shape
-        // (whole authorized set ≫ whole slot), scaled down. With progressive
-        // disclosure it no longer matters: only names+summaries ride the prompt.
-        let window: u32 = 4096;
-        let tools: Vec<NativeToolSpec> = (0..60)
-            .map(|i| NativeToolSpec {
-                name: format!("cat/command_{i}"),
-                description:
-                    "A registry command projected as a tool with a structured argument schema; \
+        // what this catches: progressive disclosure — the per-turn tool PAYLOAD is the
+        // two-tool DISCOVERY PAIR (`commands/list` + `commands/help`), not the whole
+        // authorized registry, and the system prompt carries only a CATEGORY INDEX, not
+        // every tool. The old dump injected ~150 full schemas / one-liners (~4–5k tokens)
+        // into EVERY turn, overflowing n_ctx → 400 "exceeds context size" → mute. Now the
+        // surface is a tiny category index inside the system prompt + the two-tool native
+        // offering, so even a huge tool set leaves system + user + the offered tools well
+        // within the served window. Invariant: the category index (not tool names) rides
+        // the system prompt, the native offering is exactly the discovery pair, and the
+        // whole prompt + its tools + reserve fit the window. A regression means the dump
+        // came back.
+        #[test]
+        fn tool_surface_is_a_category_index_plus_discovery_pair() {
+            let persona = Uuid::new_v4();
+            let adapter: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
+            // A tool set whose FULL schemas would dwarf the window — the live shape
+            // (whole authorized set ≫ whole slot), scaled down. With progressive
+            // disclosure it no longer matters: only names+summaries ride the prompt.
+            let window: u32 = 4096;
+            let tools: Vec<NativeToolSpec> = (0..60)
+                .map(|i| NativeToolSpec {
+                    name: format!("cat/command_{i}"),
+                    description:
+                        "A registry command projected as a tool with a structured argument schema; \
                      its full parameter description rides the chat-template injection."
-                        .to_string(),
-                input_schema: ToolInputSchema {
-                    schema_type: "object".to_string(),
-                    properties: json!({
-                        "path": { "type": "string", "description": "workspace-relative path" },
-                        "mode": { "type": "string", "enum": ["read", "write", "append"] },
-                        "limit": { "type": "integer", "description": "max rows returned" }
-                    }),
-                    required: Some(vec!["path".to_string()]),
-                    definitions: None,
-                },
-            })
-            .collect();
+                            .to_string(),
+                    input_schema: ToolInputSchema {
+                        schema_type: "object".to_string(),
+                        properties: json!({
+                            "path": { "type": "string", "description": "workspace-relative path" },
+                            "mode": { "type": "string", "enum": ["read", "write", "append"] },
+                            "limit": { "type": "integer", "description": "max rows returned" }
+                        }),
+                        required: Some(vec!["path".to_string()]),
+                        definitions: None,
+                    },
+                })
+                .collect();
 
-        let faculty = LlmDeliberationFaculty::new(
-            persona,
-            "Asha",
-            "You are Asha, a thoughtful engineer on the grid.",
-            adapter,
-        )
-        .with_context_window(window)
-        .with_tools(tools);
-
-        // The native offering is exactly the DISCOVERY PAIR — `commands/list` (search)
-        // + `commands/help` (call format) — regardless of how many tools are
-        // authorized. Both resolve from the registry compiled into this build.
-        let native: Vec<&str> = faculty.native_specs.iter().map(|s| s.name.as_str()).collect();
-        assert!(
-            native.contains(&persona_tools::TOOL_HELP_NAME),
-            "commands/help must be offered natively: {native:?}"
-        );
-        assert!(
-            native.contains(&"commands/list"),
-            "commands/list (search) must be offered natively: {native:?}"
-        );
-        // Its injected cost is a handful of tokens, NOT the whole registry.
-        assert!(
-            faculty.describe_tool_tokens() < 512,
-            "the discovery-pair tools must be tiny ({} tokens)",
-            faculty.describe_tool_tokens()
-        );
-
-        // The CATEGORY INDEX rode into the system prompt — the persona drills in via
-        // `commands/list` from there. The 60 tools all share category `cat`, so the
-        // index is the single line `cat (60)` — NOT 60 tool names.
-        let framing = faculty.compose_system("", false);
-        assert!(
-            framing.contains("[Your tools]") && framing.contains("cat (60)"),
-            "the compact category index must be in the system prompt: {framing}"
-        );
-        assert!(
-            !framing.contains("cat/command_0"),
-            "individual tool names must NOT be dumped into the prompt (that was the bloat)"
-        );
-
-        // Under real burst pressure the whole prompt + the one tool + reserve fit
-        // the served window — the exact condition llama-server checks before 400.
-        let mut burst = "old chatter line\n".repeat(2000);
-        burst.push_str("LATEST: did the deploy fix land?");
-        let mut ws = Workspace::new(&burst);
-        ws.broadcast.push(Contribution::context(
-            FacultyId::Recall,
-            &"deploy pipeline observation; ".repeat(2000),
-            0.9,
-            "recalled",
-        ));
-        let view = faculty.prompt_view(&ws);
-        let reserve = (window / 4).clamp(256, 2048) as usize;
-        let prompt = est_tokens(&view.system) + est_tokens(&view.user);
-        assert!(
-            prompt + faculty.describe_tool_tokens() + reserve <= window as usize,
-            "prompt ({prompt}) + describe tool ({}) + reserve ({reserve}) must fit {window}",
-            faculty.describe_tool_tokens()
-        );
-        // The newest burst line survives, and the framing is intact.
-        assert!(view.user.contains("LATEST: did the deploy fix land?"));
-        assert!(view.system.contains("Taking your turn"));
-    }
-
-    // what this catches: the category index is small BY CONSTRUCTION — even a
-    // 120-tool registry at the 2048-token serving floor (MIN_SERVE_CTX) renders to a
-    // handful of `category (N)` entries, so the framing never alone blows past the
-    // window and always leaves burst room. A regression (e.g. dumping tool names back
-    // into the index) reintroduces the overflow at a tiny window.
-    #[test]
-    fn catalog_fits_the_minimum_serving_window() {
-        let persona = Uuid::new_v4();
-        let adapter: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
-        let window = crate::cognition::serving_plan::MIN_SERVE_CTX; // 2048 floor
-        let tools: Vec<NativeToolSpec> = (0..120)
-            .map(|i| NativeToolSpec {
-                name: format!("cat{}/command_{i}", i % 8),
-                description: "A registry command with a one-line summary for the catalog."
-                    .to_string(),
-                input_schema: ToolInputSchema {
-                    schema_type: "object".to_string(),
-                    properties: json!({ "path": { "type": "string" } }),
-                    required: Some(vec!["path".to_string()]),
-                    definitions: None,
-                },
-            })
-            .collect();
-        let faculty = LlmDeliberationFaculty::new(persona, "Asha", "You are Asha.", adapter)
+            let faculty = LlmDeliberationFaculty::new(
+                persona,
+                "Asha",
+                "You are Asha, a thoughtful engineer on the grid.",
+                adapter,
+            )
             .with_context_window(window)
             .with_tools(tools);
 
-        // The catalog (inside framing) plus the completion reserve must leave room
-        // for at least SOME burst — i.e. framing alone must not consume the window.
-        let framing = est_tokens(&faculty.compose_system("", false));
-        let reserve = (window / 4).clamp(256, 2048) as usize;
-        assert!(
-            framing + reserve < window as usize,
-            "framing+catalog ({framing}) + reserve ({reserve}) must leave burst room in {window}"
-        );
-        // The index shows the 8 categories with their counts, NOT the 120 tool names
-        // (tool names are reached via `commands/list`, not dumped into the prompt).
-        assert!(
-            faculty.tool_catalog.contains("cat0 (15)"),
-            "category index must list categories with counts: {}",
-            faculty.tool_catalog
-        );
-        assert!(
-            !faculty.tool_catalog.contains("command_119"),
-            "individual tool names must NOT be in the index (that was the bloat)"
-        );
-    }
+            // The native offering is exactly the DISCOVERY PAIR — `commands/list` (search)
+            // + `commands/help` (call format) — regardless of how many tools are
+            // authorized. Both resolve from the registry compiled into this build.
+            let native: Vec<&str> = faculty
+                .native_specs
+                .iter()
+                .map(|s| s.name.as_str())
+                .collect();
+            assert!(
+                native.contains(&persona_tools::TOOL_HELP_NAME),
+                "commands/help must be offered natively: {native:?}"
+            );
+            assert!(
+                native.contains(&"commands/list"),
+                "commands/list (search) must be offered natively: {native:?}"
+            );
+            // Its injected cost is a handful of tokens, NOT the whole registry.
+            assert!(
+                faculty.describe_tool_tokens() < 512,
+                "the discovery-pair tools must be tiny ({} tokens)",
+                faculty.describe_tool_tokens()
+            );
 
-    // ─── Acting path (single-shot) ──────────────────────────────────────────
+            // The bookmarked MENU rode into the system prompt. An EXPANDED category lists
+            // the VERB of every tool it holds WITH its param-name hint
+            // (`category: verb(param), …`), so the persona sees real tool names + arg names
+            // without a 60-schema dump. The 60 tools all share category `cat`, so with
+            // `cat` expanded the line is `cat:` followed by `command_0(path), command_1(path),
+            // …` — names + arg names, not counts, not full slash-paths.
+            let expanded = BTreeSet::from(["cat".to_string()]);
+            let framing = faculty.compose_system("", &expanded, false, false);
+            assert!(
+            framing.contains("[Your tools]") && framing.contains("cat: command_0(path"),
+            "an expanded category must name each verb + its param hint under its header: {framing}"
+        );
+            assert!(
+            !framing.contains("cat/command_0"),
+            "the full slash-path form must NOT be dumped — verbs render bare under the category header"
+        );
+            // Collapsed (nothing expanded) the same category renders as a one-line
+            // bookmark — the spine still NAMES it, so she can open it on demand.
+            let collapsed = faculty.compose_system("", &BTreeSet::new(), false, false);
+            assert!(
+            collapsed.contains("cat (60 — commands/list --filter cat)"),
+            "a collapsed category is a one-line bookmark naming it + its verb count: {collapsed}"
+        );
+
+            // Under real burst pressure the whole prompt + the one tool + reserve fit
+            // the served window — the exact condition llama-server checks before 400.
+            let mut burst = "old chatter line\n".repeat(2000);
+            burst.push_str("LATEST: did the deploy fix land?");
+            let mut ws = Workspace::new(&burst);
+            ws.broadcast.push(Contribution::context(
+                FacultyId::Recall,
+                &"deploy pipeline observation; ".repeat(2000),
+                0.9,
+                "recalled",
+            ));
+            let view = faculty.prompt_view(&ws);
+            let reserve = (window / 4).clamp(256, 2048) as usize;
+            let prompt = est_tokens(&view.system) + est_tokens(&view.user_text());
+            assert!(
+                prompt + faculty.describe_tool_tokens() + reserve <= window as usize,
+                "prompt ({prompt}) + describe tool ({}) + reserve ({reserve}) must fit {window}",
+                faculty.describe_tool_tokens()
+            );
+            // The newest burst line survives, and the framing is intact.
+            assert!(view
+                .user_text()
+                .contains("LATEST: did the deploy fix land?"));
+            assert!(view.system.contains("Taking your turn"));
+        }
+
+        // what this catches: THE echo-loop fix. A mixed thread (peer → self → peer)
+        // must reach the model as ROLE-ATTRIBUTED messages — the persona's own earlier
+        // posts as `assistant`, peers' as `user` — not flattened into one `user` blob.
+        // The old single-`user`-message assembly fed the persona its own words back as
+        // if a peer had said them, so it re-explained / re-proposed and looped ("Would
+        // you like me to start?"). Role separation is what lets the model see "I already
+        // said that" and move on. Regressing to a flat blob brings the loop back.
+        #[test]
+        fn mixed_thread_attributes_self_to_assistant_and_peers_to_user() {
+            use crate::cognition::workspace::Burst;
+            let persona = Uuid::new_v4();
+            let adapter: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
+            let faculty = LlmDeliberationFaculty::new(
+                persona,
+                "Asha",
+                "You are Asha, a thoughtful engineer on the grid.",
+                adapter,
+            )
+            .with_context_window(8192);
+
+            let room = Uuid::new_v4();
+            let turns = vec![
+                BurstTurn::attributed(false, "Joel", "can you summarize the thread?", Some(1)),
+                BurstTurn::attributed(true, "Asha", "I propose using bart-large-cnn.", Some(2)),
+                BurstTurn::attributed(false, "Joel", "go ahead.", Some(3)),
+            ];
+            let ws = Workspace::new(Burst::from_turns(room, turns));
+            let view = faculty.prompt_view(&ws);
+
+            // Three turns alternate roles → three messages, user/assistant/user.
+            let roles: Vec<&str> = view.messages.iter().map(|m| m.role.as_str()).collect();
+            assert_eq!(roles, vec!["user", "assistant", "user"], "view: {view:?}");
+
+            // The persona's own line is the `assistant` turn and carries NO name prefix
+            // (her own voice; the system prompt forbids self-prefixing). Peers' lines are
+            // `user` turns prefixed with the author so several speakers stay distinct.
+            let assistant = &view.messages[1];
+            assert_eq!(assistant.role, "assistant");
+            assert_eq!(assistant.content_text(), "I propose using bart-large-cnn.");
+            assert!(
+                !assistant.content_text().contains("Asha:"),
+                "the persona's own turn must not be self-prefixed: {assistant:?}"
+            );
+            assert!(view.messages[0].content_text().starts_with("Joel: "));
+            assert!(view.messages[2].content_text().starts_with("Joel: "));
+        }
+
+        // what this catches: [[idle-is-self-directed-free-time]] Layer 1. A self-initiated
+        // turn must frame REST / turning-attention-elsewhere as a CO-EQUAL legitimate
+        // outcome ("not a failure to find something"), not only active pursuit — otherwise a
+        // quiet heartbeat reads as pressure to manufacture activity (the self-tick analogue
+        // of the polite-filler loop). It must stay NEUTRAL ("yours alone; nothing here is
+        // telling you which to pick") per [[no-hardcoded-heuristics-to-steer-cognition]], and
+        // active options must remain FIRST/primary so this never becomes the always-PASS
+        // doom-loop documented in SILENCE_AFFORDANCE_BLOCK. The block is gated on
+        // self_initiated — an inbound-driven (ambient/directed) turn must NOT carry it.
+        #[test]
+        fn self_initiated_turn_frames_rest_as_co_equal_and_stays_neutral() {
+            let persona = Uuid::new_v4();
+            let adapter: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
+            let faculty = LlmDeliberationFaculty::new(persona, "Asha", "You are Asha.", adapter)
+                .with_context_window(8192);
+
+            // self_initiated = true, undirected.
+            let own_time = faculty.compose_system("", &BTreeSet::new(), false, true);
+            assert!(
+                own_time.contains("[Your own time]"),
+                "self-initiated turn must carry the own-time framing: {own_time}"
+            );
+            // Rest / turning-elsewhere is named as legitimate, not a deficiency.
+            assert!(
+                own_time.contains("not a failure to find something"),
+                "rest must be framed as a real choice, not a failure: {own_time}"
+            );
+            // Neutral — names the option, never scripts when to take it.
+            assert!(
+                own_time.contains("yours alone; nothing here is telling you which to pick"),
+                "the choice must stay the persona's own, uncoached: {own_time}"
+            );
+            // Active options stay FIRST/primary — the pursue-your-thread framing appears
+            // BEFORE the rest framing, so rest is the co-equal alternative, not the lead.
+            let pursue = own_time
+                .find("Pick up your own train of thought")
+                .expect("active framing present");
+            let rest = own_time
+                .find("do not have to fill the moment")
+                .expect("rest framing present");
+            assert!(
+                pursue < rest,
+                "active options must lead; rest is the co-equal alternative: {own_time}"
+            );
+
+            // A non-self-initiated (inbound-driven) turn must NOT carry the own-time block.
+            let ambient = faculty.compose_system("", &BTreeSet::new(), false, false);
+            assert!(
+                !ambient.contains("[Your own time]"),
+                "ambient/directed turns must not carry the own-time framing: {ambient}"
+            );
+        }
+
+        // what this catches: the category index is small BY CONSTRUCTION — even a
+        // 120-tool registry at the 2048-token serving floor (MIN_SERVE_CTX) renders to a
+        // handful of `category (N)` entries, so the framing never alone blows past the
+        // window and always leaves burst room. A regression (e.g. dumping tool names back
+        // into the index) reintroduces the overflow at a tiny window.
+        #[test]
+        fn catalog_fits_the_minimum_serving_window() {
+            let persona = Uuid::new_v4();
+            let adapter: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
+            let window = crate::cognition::serving_plan::MIN_SERVE_CTX; // 2048 floor
+            let tools: Vec<NativeToolSpec> = (0..120)
+                .map(|i| NativeToolSpec {
+                    name: format!("cat{}/command_{i}", i % 8),
+                    description: "A registry command with a one-line summary for the catalog."
+                        .to_string(),
+                    input_schema: ToolInputSchema {
+                        schema_type: "object".to_string(),
+                        properties: json!({ "path": { "type": "string" } }),
+                        required: Some(vec!["path".to_string()]),
+                        definitions: None,
+                    },
+                })
+                .collect();
+            let faculty = LlmDeliberationFaculty::new(persona, "Asha", "You are Asha.", adapter)
+                .with_context_window(window)
+                .with_tools(tools);
+
+            // The menu (inside framing) plus the completion reserve must leave room for at
+            // least SOME burst — i.e. framing alone must not consume the window. With
+            // nothing expanded (empty context) the menu is its smallest — a spine of
+            // collapsed bookmarks — which is the floor case for this fit guard.
+            let collapsed = faculty.compose_system("", &BTreeSet::new(), false, false);
+            let framing = est_tokens(&collapsed);
+            let reserve = (window / 4).clamp(256, 2048) as usize;
+            assert!(
+                framing + reserve < window as usize,
+                "framing+menu ({framing}) + reserve ({reserve}) must leave burst room in {window}"
+            );
+            // The SPINE names every category even when collapsed (`cat0 (15 — commands/list
+            // --filter cat0)`) — she always sees the full map and can open any category on
+            // demand. What the menu must NOT carry is the per-tool SUMMARY — that one-line
+            // description × ~150 tools was the 18KB bloat.
+            assert!(
+                collapsed.contains("cat0 (15 — commands/list --filter cat0)"),
+                "the spine must name each category as a collapsed bookmark: {collapsed}"
+            );
+            assert!(
+                !collapsed.contains("one-line summary for the catalog"),
+                "per-tool SUMMARIES must NOT be in the menu (that was the 18KB bloat)"
+            );
+            // And an EXPANDED category DOES list its verbs (the fix: she must SEE that a
+            // tool exists to call it — glass-box: hidden names → 909 code-fences / 3 native
+            // runs). Names ride the expansion, summaries never do.
+            let opened =
+                faculty.compose_system("", &BTreeSet::from(["cat0".to_string()]), false, false);
+            assert!(
+                opened.contains("cat0: command_0(path)"),
+                "an expanded category lists its verbs + param hints so she can see them: {opened}"
+            );
+        }
+    } // mod prompt_shaping
+
+    // ─── Verdict production (single-shot) ─────────────────────────────────────
     //
     // The faculty is SINGLE-SHOT: one generation → one verdict. When the model
     // chooses to use a tool, the faculty surfaces a `Decision::Act` — it does NOT
     // execute. Executing the calls, remembering the result, and re-perceiving is
     // the organism's job (the act→observe driver, `super::act_observe`), tested
     // there. These tests prove the faculty turns a tool-use response (native OR
-    // text-emitted JSON) into an `Act` verdict, and prose into Speak/Pass.
+    // text-emitted JSON) into an `Act` verdict, and prose into Speak/Pass. A
+    // `ScriptedAdapter` replays canned responses + records the requests it saw.
+    mod verdicts {
+        use super::*;
 
-    use crate::ai::types::{ToolCall, ToolInputSchema, UsageMetrics};
-    use serde_json::json;
-    use std::collections::VecDeque;
-    use std::sync::Mutex;
-
-    fn make_response(
-        finish: FinishReason,
-        text: &str,
-        tool_calls: Option<Vec<ToolCall>>,
-    ) -> TextGenerationResponse {
-        TextGenerationResponse {
-            text: text.to_string(),
-            finish_reason: finish,
-            model: "scripted".to_string(),
-            provider: "scripted".to_string(),
-            usage: UsageMetrics::default(),
-            response_time_ms: 0,
-            request_id: "scripted".to_string(),
-            content: None,
-            tool_calls,
-            reasoning: None,
-            routing: None,
-            error: None,
-            timing: None,
-        }
-    }
-
-    fn read_tool() -> NativeToolSpec {
-        NativeToolSpec {
-            name: "code/read".to_string(),
-            description: "Read a file from the workspace".to_string(),
-            input_schema: ToolInputSchema {
-                schema_type: "object".to_string(),
-                properties: json!({ "path": { "type": "string" } }),
-                required: Some(vec!["path".to_string()]),
-                definitions: None,
-            },
-        }
-    }
-
-    /// Adapter that replays a canned response sequence and records every
-    /// request it received — so a test can assert the agent loop both
-    /// re-generated and threaded the tool results back into the re-prompt.
-    /// Lean (4 methods) because the trait now defaults the long tail.
-    struct ScriptedAdapter {
-        responses: Mutex<VecDeque<TextGenerationResponse>>,
-        seen: Mutex<Vec<TextGenerationRequest>>,
-    }
-
-    impl ScriptedAdapter {
-        fn new(responses: Vec<TextGenerationResponse>) -> Self {
-            Self {
-                responses: Mutex::new(responses.into()),
-                seen: Mutex::new(Vec::new()),
+        fn make_response(
+            finish: FinishReason,
+            text: &str,
+            tool_calls: Option<Vec<ToolCall>>,
+        ) -> TextGenerationResponse {
+            TextGenerationResponse {
+                text: text.to_string(),
+                finish_reason: finish,
+                model: "scripted".to_string(),
+                provider: "scripted".to_string(),
+                usage: UsageMetrics::default(),
+                response_time_ms: 0,
+                request_id: "scripted".to_string(),
+                content: None,
+                tool_calls,
+                reasoning: None,
+                routing: None,
+                error: None,
+                timing: None,
             }
         }
-        fn call_count(&self) -> usize {
-            self.seen.lock().unwrap().len()
-        }
-    }
 
-    #[async_trait]
-    impl AIProviderAdapter for ScriptedAdapter {
-        fn provider_id(&self) -> &str {
-            "scripted"
-        }
-        fn name(&self) -> &str {
-            "scripted"
-        }
-        fn default_model(&self) -> &str {
-            "scripted"
-        }
-        async fn generate_text(
-            &self,
-            request: TextGenerationRequest,
-        ) -> Result<TextGenerationResponse, String> {
-            self.seen.lock().unwrap().push(request);
-            self.responses
-                .lock()
-                .unwrap()
-                .pop_front()
-                .ok_or_else(|| "scripted adapter exhausted".to_string())
-        }
-    }
-
-    // what this catches: a native tool-use response (FinishReason::ToolUse with
-    // calls) becomes a `Decision::Act` carrying those exact calls — NOT executed
-    // here, NOT re-generated. Single shot: exactly one model call. Regression here
-    // means the faculty either swallowed the action or silently ran it (the old
-    // in-faculty agent loop we removed). The model's separated reasoning rides
-    // along as the act's `intent` (so the resulting engram records WHY she acted).
-    #[tokio::test]
-    async fn tool_use_response_becomes_an_act_verdict() {
-        let persona = Uuid::new_v4();
-        let call = ToolCall {
-            id: "t1".to_string(),
-            name: "code/read".to_string(),
-            input: json!({ "path": "deploy.md" }),
-        };
-        let mut resp = make_response(FinishReason::ToolUse, "", Some(vec![call.clone()]));
-        resp.reasoning = Some("I should check deploy.md to answer.".to_string());
-        let adapter = Arc::new(ScriptedAdapter::new(vec![resp]));
-
-        let faculty =
-            LlmDeliberationFaculty::new(persona, "Ivar", "You are Ivar.", adapter.clone())
-                .with_tools(vec![read_tool()]);
-
-        let ws = Workspace::new("teammate asks: did the deploy fix land?");
-        let c = faculty.contribute(&ws).await.expect("verdict");
-
-        match c.decision {
-            Some(Decision::Act { calls, intent }) => {
-                assert_eq!(calls.len(), 1, "the one requested call rides the verdict");
-                assert_eq!(calls[0].name, "code/read");
-                assert_eq!(calls[0].input, json!({ "path": "deploy.md" }));
-                assert_eq!(intent, "I should check deploy.md to answer.");
+        fn read_tool() -> NativeToolSpec {
+            NativeToolSpec {
+                name: "code/read".to_string(),
+                description: "Read a file from the workspace".to_string(),
+                input_schema: ToolInputSchema {
+                    schema_type: "object".to_string(),
+                    properties: json!({ "path": { "type": "string" } }),
+                    required: Some(vec!["path".to_string()]),
+                    definitions: None,
+                },
             }
-            other => panic!("expected Act, got {other:?}"),
         }
-        // SINGLE SHOT — the faculty never re-generated (no in-faculty loop).
-        assert_eq!(adapter.call_count(), 1, "one generation, one verdict");
-    }
 
-    // what this catches: paging a gene into the shared genome handle flows into the
-    // faculty's NEXT generation request as `active_adapters` — the measured page-in
-    // wire the genome loop trains against. Base (empty genome) → the request carries
-    // no adapters; after a page-in → it carries the gene (name + scale). A
-    // regression here is the LIFT=0 no-op: a forged gene that never reaches the
-    // model because the faculty hardcoded `active_adapters: None`.
-    #[tokio::test]
-    async fn paged_in_gene_rides_into_the_generation_request() {
-        let persona = Uuid::new_v4();
-        let genome = empty_genome();
-        let adapter = Arc::new(ScriptedAdapter::new(vec![
-            make_response(FinishReason::Stop, "base answer", None),
-            make_response(FinishReason::Stop, "gene answer", None),
-        ]));
-        let faculty = LlmDeliberationFaculty::new(persona, "Asha", "You are Asha.", adapter.clone())
-            .with_genome(Arc::clone(&genome));
+        /// Adapter that replays a canned response sequence and records every
+        /// request it received — so a test can assert the agent loop both
+        /// re-generated and threaded the tool results back into the re-prompt.
+        /// Lean (4 methods) because the trait now defaults the long tail.
+        struct ScriptedAdapter {
+            responses: Mutex<VecDeque<TextGenerationResponse>>,
+            seen: Mutex<Vec<TextGenerationRequest>>,
+        }
 
-        let ws = Workspace::new("write is_prime");
-        // Pass 1: base — nothing paged in.
-        faculty.contribute(&ws).await.expect("verdict");
-        // Page a gene in, then generate again — the SAME faculty, one handle.
-        genome.store(Arc::new(vec![ActiveAdapterRequest {
-            name: "coder-0p5b".to_string(),
-            path: "/genes/coder.gguf".to_string(),
-            domain: String::new(),
-            scale: 0.8,
-        }]));
-        faculty.contribute(&ws).await.expect("verdict");
-
-        let seen = adapter.seen.lock().unwrap();
-        assert_eq!(seen.len(), 2, "two generations recorded");
-        assert!(seen[0].active_adapters.is_none(), "base pass carries no gene");
-        let paged = seen[1]
-            .active_adapters
-            .as_ref()
-            .expect("gene paged into the candidate request");
-        assert_eq!(paged.len(), 1, "exactly the one paged-in gene");
-        assert_eq!(paged[0].name, "coder-0p5b");
-        assert_eq!(paged[0].scale, 0.8, "the analog influence dial rides along");
-    }
-
-    // what this catches: a model that ignores the native tool channel and instead
-    // emits a tool call as JSON in its prose (small models do this) still becomes a
-    // `Decision::Act` — strictly better than broadcasting the raw envelope into the
-    // room (the observed-live failure). Only fires when tools are authorized.
-    #[tokio::test]
-    async fn text_emitted_tool_call_becomes_an_act_verdict() {
-        let persona = Uuid::new_v4();
-        // FinishReason::Stop (not ToolUse) but the prose IS a tool-call envelope.
-        let envelope = json!({ "tool_call": { "name": "ping", "arguments": {} } }).to_string();
-        let adapter = Arc::new(ScriptedAdapter::new(vec![make_response(
-            FinishReason::Stop,
-            &envelope,
-            None,
-        )]));
-        let ping_spec = NativeToolSpec {
-            name: "ping".to_string(),
-            description: "Health check".to_string(),
-            input_schema: ToolInputSchema {
-                schema_type: "object".to_string(),
-                properties: json!({}),
-                required: None,
-                definitions: None,
-            },
-        };
-        let faculty = LlmDeliberationFaculty::new(persona, "Asha", "You are Asha.", adapter)
-            .with_tools(vec![ping_spec]);
-
-        let c = faculty
-            .contribute(&Workspace::new("is the core alive?"))
-            .await
-            .expect("verdict");
-        match c.decision {
-            Some(Decision::Act { calls, .. }) => {
-                assert_eq!(calls.len(), 1);
-                assert_eq!(calls[0].name, "ping");
+        impl ScriptedAdapter {
+            fn new(responses: Vec<TextGenerationResponse>) -> Self {
+                Self {
+                    responses: Mutex::new(responses.into()),
+                    seen: Mutex::new(Vec::new()),
+                }
             }
-            other => panic!("expected Act from a text-emitted tool call, got {other:?}"),
+            fn call_count(&self) -> usize {
+                self.seen.lock().unwrap().len()
+            }
         }
-    }
 
-    // what this catches: the directedness gate on the silence affordance
-    // (`Workspace::directed_at_self`). A DIRECTED turn — the eval exam, an @mention, a
-    // DM — withholds the bare-PASS [Silence Option] escape so the persona does not
-    // ghost a question put to her (the 0/13 coder-gym failure: a coder model takes the
-    // "reply PASS, nothing reaches the room" exit on a directed question). An AMBIENT
-    // turn keeps silence first-class. This is a FRAMING decision over a structural
-    // addressing fact — her output is never filtered.
-    #[test]
-    fn directed_turn_withholds_the_silence_escape() {
-        let adapter = Arc::new(ScriptedAdapter::new(vec![]));
-        let faculty =
-            LlmDeliberationFaculty::new(Uuid::new_v4(), "Asha", "You are Asha.", adapter);
-
-        let ambient = faculty.prompt_view(&Workspace::new("just some room chatter"));
-        assert!(
-            ambient.system.contains("[Silence Option]"),
-            "an ambient turn keeps the silence escape on the table"
-        );
-        assert!(
-            ambient.system.contains("stay silent"),
-            "an ambient turn keeps the soft 'stay silent' nudge"
-        );
-
-        let directed =
-            faculty.prompt_view(&Workspace::new("answer me: what is 2+2?").directed(true));
-        assert!(
-            !directed.system.contains("[Silence Option]"),
-            "a directed turn withholds the bare-PASS escape so a question is not ghosted"
-        );
-        assert!(
-            !directed.system.contains("stay silent"),
-            "and drops the soft 'stay silent' nudge on a directed turn too"
-        );
-    }
-
-    // what this catches: the tools gate. With NO tools authorized, a tool-call
-    // envelope in the prose is NOT turned into an Act — it falls through to the
-    // text verdict. A persona without hands can only speak.
-    #[tokio::test]
-    async fn no_tools_authorized_never_acts() {
-        let envelope = json!({ "tool_call": { "name": "ping", "arguments": {} } }).to_string();
-        let adapter = Arc::new(ScriptedAdapter::new(vec![make_response(
-            FinishReason::Stop,
-            &envelope,
-            None,
-        )]));
-        // No `.with_tools(...)` — speak-only.
-        let faculty = LlmDeliberationFaculty::new(Uuid::new_v4(), "Ivar", "You are Ivar.", adapter);
-
-        let c = faculty
-            .contribute(&Workspace::new("anything"))
-            .await
-            .expect("verdict");
-        assert!(
-            !matches!(c.decision, Some(Decision::Act { .. })),
-            "no authorized tools → never an Act verdict"
-        );
-    }
-
-    // what this catches: THE working-memory write path — after a verdict, the
-    // faculty records the turn's separated reasoning into working memory so the
-    // persona can resume its train of thought next turn. The room only saw the
-    // verdict text; the reasoning lives in working memory.
-    #[tokio::test]
-    async fn verdict_records_reasoning_into_working_memory() {
-        use crate::cognition::working_memory::WorkingMemory;
-
-        let mut resp = make_response(FinishReason::Stop, "Ship it.", None);
-        resp.reasoning = Some("Weighed the risk; the fix is small and tested.".to_string());
-        let adapter = Arc::new(ScriptedAdapter::new(vec![resp]));
-        let wm = Arc::new(WorkingMemory::new(3));
-
-        let faculty = LlmDeliberationFaculty::new(Uuid::new_v4(), "Ivar", "You are Ivar.", adapter)
-            .with_working_memory(Arc::clone(&wm));
-
-        let ws = Workspace::new("should we ship the deploy?");
-        let c = faculty.contribute(&ws).await.expect("verdict");
-        // The room got only the clean verdict text…
-        match c.decision {
-            Some(Decision::Speak { text }) => assert_eq!(text, "Ship it."),
-            other => panic!("expected Speak, got {other:?}"),
+        #[async_trait]
+        impl AIProviderAdapter for ScriptedAdapter {
+            fn provider_id(&self) -> &str {
+                "scripted"
+            }
+            fn name(&self) -> &str {
+                "scripted"
+            }
+            fn default_model(&self) -> &str {
+                "scripted"
+            }
+            async fn generate_text(
+                &self,
+                request: TextGenerationRequest,
+            ) -> Result<TextGenerationResponse, String> {
+                self.seen.lock().unwrap().push(request);
+                self.responses
+                    .lock()
+                    .unwrap()
+                    .pop_front()
+                    .ok_or_else(|| "scripted adapter exhausted".to_string())
+            }
         }
-        // …and the reasoning was captured into working memory for next turn.
-        assert_eq!(
-            wm.recent(),
-            vec!["Weighed the risk; the fix is small and tested."],
-            "the verdict's reasoning is recorded into working memory"
-        );
-    }
 
-    // what this catches: a suppressed-thinking turn (reasoning = None) records
-    // NOTHING — working memory only fills when thinking is actually on.
-    #[tokio::test]
-    async fn suppressed_thinking_records_no_working_memory() {
-        use crate::cognition::working_memory::WorkingMemory;
+        // what this catches: a native tool-use response (FinishReason::ToolUse with
+        // calls) becomes a `Decision::Act` carrying those exact calls — NOT executed
+        // here, NOT re-generated. Single shot: exactly one model call. Regression here
+        // means the faculty either swallowed the action or silently ran it (the old
+        // in-faculty agent loop we removed). The model's separated reasoning rides
+        // along as the act's `intent` (so the resulting engram records WHY she acted).
+        #[tokio::test]
+        async fn tool_use_response_becomes_an_act_verdict() {
+            let persona = Uuid::new_v4();
+            let call = ToolCall {
+                id: "t1".to_string(),
+                name: "code/read".to_string(),
+                input: json!({ "path": "deploy.md" }),
+            };
+            let mut resp = make_response(FinishReason::ToolUse, "", Some(vec![call.clone()]));
+            resp.reasoning = Some("I should check deploy.md to answer.".to_string());
+            let adapter = Arc::new(ScriptedAdapter::new(vec![resp]));
 
-        // make_response defaults reasoning: None (the suppressed-thinking shape).
-        let adapter = Arc::new(ScriptedAdapter::new(vec![make_response(
-            FinishReason::Stop,
-            "144",
-            None,
-        )]));
-        let wm = Arc::new(WorkingMemory::new(3));
-        let faculty = LlmDeliberationFaculty::new(Uuid::new_v4(), "Ivar", "You are Ivar.", adapter)
-            .with_working_memory(Arc::clone(&wm));
+            let faculty =
+                LlmDeliberationFaculty::new(persona, "Ivar", "You are Ivar.", adapter.clone())
+                    .with_tools(vec![read_tool()]);
 
-        let _ = faculty.contribute(&Workspace::new("what is 12*12?")).await;
-        assert!(wm.is_empty(), "no reasoning → nothing recorded");
-    }
+            let ws = Workspace::new("teammate asks: did the deploy fix land?");
+            let c = faculty.contribute(&ws).await.expect("verdict");
 
-    // what this catches: an empty-text, no-tool response is still an abstain — the
-    // model produced nothing to say and chose no action. `decision_from_response`
-    // owns the empty→Pass mapping; this guards the no-tools branch reaching it.
-    // (The act-path abstains — no hands / exec error → None — are tested in
-    // `super::act_observe`, where execution actually lives.)
-    #[tokio::test]
-    async fn empty_prose_with_no_tools_is_a_pass() {
-        let adapter = Arc::new(ScriptedAdapter::new(vec![make_response(
-            FinishReason::Stop,
-            "PASS",
-            None,
-        )]));
-        let faculty = LlmDeliberationFaculty::new(Uuid::new_v4(), "Ivar", "You are Ivar.", adapter);
-        let c = faculty
-            .contribute(&Workspace::new("anything"))
-            .await
-            .expect("verdict");
-        assert_eq!(c.decision, Some(Decision::Pass));
-    }
+            match c.decision {
+                Some(Decision::Act { calls, intent }) => {
+                    assert_eq!(calls.len(), 1, "the one requested call rides the verdict");
+                    assert_eq!(calls[0].name, "code/read");
+                    assert_eq!(calls[0].input, json!({ "path": "deploy.md" }));
+                    assert_eq!(intent, "I should check deploy.md to answer.");
+                }
+                other => panic!("expected Act, got {other:?}"),
+            }
+            // SINGLE SHOT — the faculty never re-generated (no in-faculty loop).
+            assert_eq!(adapter.call_count(), 1, "one generation, one verdict");
+        }
+
+        // what this catches: paging a gene into the shared genome handle flows into the
+        // faculty's NEXT generation request as `active_adapters` — the measured page-in
+        // wire the genome loop trains against. Base (empty genome) → the request carries
+        // no adapters; after a page-in → it carries the gene (name + scale). A
+        // regression here is the LIFT=0 no-op: a forged gene that never reaches the
+        // model because the faculty hardcoded `active_adapters: None`.
+        #[tokio::test]
+        async fn paged_in_gene_rides_into_the_generation_request() {
+            let persona = Uuid::new_v4();
+            let genome = empty_genome();
+            let adapter = Arc::new(ScriptedAdapter::new(vec![
+                make_response(FinishReason::Stop, "base answer", None),
+                make_response(FinishReason::Stop, "gene answer", None),
+            ]));
+            let faculty =
+                LlmDeliberationFaculty::new(persona, "Asha", "You are Asha.", adapter.clone())
+                    .with_genome(Arc::clone(&genome));
+
+            let ws = Workspace::new("write is_prime");
+            // Pass 1: base — nothing paged in.
+            faculty.contribute(&ws).await.expect("verdict");
+            // Page a gene in, then generate again — the SAME faculty, one handle.
+            genome.store(Arc::new(vec![ActiveAdapterRequest {
+                name: "coder-0p5b".to_string(),
+                path: "/genes/coder.gguf".to_string(),
+                domain: String::new(),
+                scale: 0.8,
+            }]));
+            faculty.contribute(&ws).await.expect("verdict");
+
+            let seen = adapter.seen.lock().unwrap();
+            assert_eq!(seen.len(), 2, "two generations recorded");
+            assert!(
+                seen[0].active_adapters.is_none(),
+                "base pass carries no gene"
+            );
+            let paged = seen[1]
+                .active_adapters
+                .as_ref()
+                .expect("gene paged into the candidate request");
+            assert_eq!(paged.len(), 1, "exactly the one paged-in gene");
+            assert_eq!(paged[0].name, "coder-0p5b");
+            assert_eq!(paged[0].scale, 0.8, "the analog influence dial rides along");
+        }
+
+        // what this catches: a model that ignores the native tool channel and instead
+        // emits a tool call as JSON in its prose (small models do this) still becomes a
+        // `Decision::Act` — strictly better than broadcasting the raw envelope into the
+        // room (the observed-live failure). Only fires when tools are authorized.
+        #[tokio::test]
+        async fn text_emitted_tool_call_becomes_an_act_verdict() {
+            let persona = Uuid::new_v4();
+            // FinishReason::Stop (not ToolUse) but the prose IS a tool-call envelope.
+            let envelope = json!({ "tool_call": { "name": "ping", "arguments": {} } }).to_string();
+            let adapter = Arc::new(ScriptedAdapter::new(vec![make_response(
+                FinishReason::Stop,
+                &envelope,
+                None,
+            )]));
+            let ping_spec = NativeToolSpec {
+                name: "ping".to_string(),
+                description: "Health check".to_string(),
+                input_schema: ToolInputSchema {
+                    schema_type: "object".to_string(),
+                    properties: json!({}),
+                    required: None,
+                    definitions: None,
+                },
+            };
+            let faculty = LlmDeliberationFaculty::new(persona, "Asha", "You are Asha.", adapter)
+                .with_tools(vec![ping_spec]);
+
+            let c = faculty
+                .contribute(&Workspace::new("is the core alive?"))
+                .await
+                .expect("verdict");
+            match c.decision {
+                Some(Decision::Act { calls, .. }) => {
+                    assert_eq!(calls.len(), 1);
+                    assert_eq!(calls[0].name, "ping");
+                }
+                other => panic!("expected Act from a text-emitted tool call, got {other:?}"),
+            }
+        }
+
+        // what this catches: the directedness gate on the silence affordance
+        // (`Workspace::directed_at_self`). The ambient participation default AND the
+        // bare-PASS escape both live in the ONE appended [Conversational Presence] block.
+        // A DIRECTED turn — the eval exam, an @mention, a DM — withholds that block so the
+        // persona is not handed a "reply PASS, nothing reaches the room" exit on a question
+        // put to her (the 0/13 coder-gym failure: a coder model takes that exit on a
+        // directed question). An AMBIENT turn includes it (silence stays first-class, the
+        // considered exception). The turn-taking block itself is posture-NEUTRAL — the old
+        // " If you have nothing worth adding, stay silent." nudge is gone, so neither turn
+        // carries it. This is a FRAMING decision over a structural addressing fact — her
+        // output is never filtered.
+        #[test]
+        fn directed_turn_withholds_the_silence_escape() {
+            let adapter = Arc::new(ScriptedAdapter::new(vec![]));
+            let faculty =
+                LlmDeliberationFaculty::new(Uuid::new_v4(), "Asha", "You are Asha.", adapter);
+
+            let ambient = faculty.prompt_view(&Workspace::new("just some room chatter"));
+            assert!(
+                ambient.system.contains("[Conversational Presence]"),
+                "an ambient turn carries the presence/PASS affordance block"
+            );
+            assert!(
+                !ambient.system.contains("stay silent"),
+                "the turn-taking block is posture-neutral — no 'stay silent' nudge"
+            );
+
+            let directed =
+                faculty.prompt_view(&Workspace::new("answer me: what is 2+2?").directed(true));
+            assert!(
+                !directed.system.contains("[Conversational Presence]"),
+                "a directed turn withholds the bare-PASS escape so a question is not ghosted"
+            );
+            assert!(
+                !directed.system.contains("stay silent"),
+                "and carries no 'stay silent' nudge on a directed turn either"
+            );
+        }
+
+        // what this catches: the tools gate. With NO tools authorized, a tool-call
+        // envelope in the prose is NOT turned into an Act — it falls through to the
+        // text verdict. A persona without hands can only speak.
+        #[tokio::test]
+        async fn no_tools_authorized_never_acts() {
+            let envelope = json!({ "tool_call": { "name": "ping", "arguments": {} } }).to_string();
+            let adapter = Arc::new(ScriptedAdapter::new(vec![make_response(
+                FinishReason::Stop,
+                &envelope,
+                None,
+            )]));
+            // No `.with_tools(...)` — speak-only.
+            let faculty =
+                LlmDeliberationFaculty::new(Uuid::new_v4(), "Ivar", "You are Ivar.", adapter);
+
+            let c = faculty
+                .contribute(&Workspace::new("anything"))
+                .await
+                .expect("verdict");
+            assert!(
+                !matches!(c.decision, Some(Decision::Act { .. })),
+                "no authorized tools → never an Act verdict"
+            );
+        }
+
+        // what this catches: THE working-memory write path — after a verdict, the
+        // faculty records the turn's separated reasoning into working memory so the
+        // persona can resume its train of thought next turn. The room only saw the
+        // verdict text; the reasoning lives in working memory.
+        #[tokio::test]
+        async fn verdict_records_reasoning_into_working_memory() {
+            use crate::cognition::working_memory::WorkingMemory;
+
+            let mut resp = make_response(FinishReason::Stop, "Ship it.", None);
+            resp.reasoning = Some("Weighed the risk; the fix is small and tested.".to_string());
+            let adapter = Arc::new(ScriptedAdapter::new(vec![resp]));
+            let wm = Arc::new(WorkingMemory::new(3));
+
+            let faculty =
+                LlmDeliberationFaculty::new(Uuid::new_v4(), "Ivar", "You are Ivar.", adapter)
+                    .with_working_memory(Arc::clone(&wm));
+
+            let ws = Workspace::new("should we ship the deploy?");
+            let c = faculty.contribute(&ws).await.expect("verdict");
+            // The room got only the clean verdict text…
+            match c.decision {
+                Some(Decision::Speak { text }) => assert_eq!(text, "Ship it."),
+                other => panic!("expected Speak, got {other:?}"),
+            }
+            // …and the reasoning was captured into working memory for next turn.
+            assert_eq!(
+                wm.recent(),
+                vec!["Weighed the risk; the fix is small and tested."],
+                "the verdict's reasoning is recorded into working memory"
+            );
+        }
+
+        // what this catches: a suppressed-thinking turn (reasoning = None) records
+        // NOTHING — working memory only fills when thinking is actually on.
+        #[tokio::test]
+        async fn suppressed_thinking_records_no_working_memory() {
+            use crate::cognition::working_memory::WorkingMemory;
+
+            // make_response defaults reasoning: None (the suppressed-thinking shape).
+            let adapter = Arc::new(ScriptedAdapter::new(vec![make_response(
+                FinishReason::Stop,
+                "144",
+                None,
+            )]));
+            let wm = Arc::new(WorkingMemory::new(3));
+            let faculty =
+                LlmDeliberationFaculty::new(Uuid::new_v4(), "Ivar", "You are Ivar.", adapter)
+                    .with_working_memory(Arc::clone(&wm));
+
+            let _ = faculty.contribute(&Workspace::new("what is 12*12?")).await;
+            assert!(wm.is_empty(), "no reasoning → nothing recorded");
+        }
+
+        // what this catches: an empty-text, no-tool response is still an abstain — the
+        // model produced nothing to say and chose no action. `decision_from_response`
+        // owns the empty→Pass mapping; this guards the no-tools branch reaching it.
+        // (The act-path abstains — no hands / exec error → None — are tested in
+        // `super::act_observe`, where execution actually lives.)
+        #[tokio::test]
+        async fn empty_prose_with_no_tools_is_a_pass() {
+            let adapter = Arc::new(ScriptedAdapter::new(vec![make_response(
+                FinishReason::Stop,
+                "PASS",
+                None,
+            )]));
+            let faculty =
+                LlmDeliberationFaculty::new(Uuid::new_v4(), "Ivar", "You are Ivar.", adapter);
+            let c = faculty
+                .contribute(&Workspace::new("anything"))
+                .await
+                .expect("verdict");
+            assert_eq!(c.decision, Some(Decision::Pass));
+        }
+    } // mod verdicts
 }

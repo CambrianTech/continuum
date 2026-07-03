@@ -32,6 +32,37 @@ pub fn resolve_gguf_for_model_id(model_id: &str) -> Option<PathBuf> {
     resolve_gguf(model_id, None, None)
 }
 
+/// Resolve a canonical model id to the HF safetensors repo id of its
+/// *trainable* form (`Model::hf_source`). The training lane (`mlx_lm.lora
+/// --model`) and the forge custodian's HF→PEFT→GGUF convert both need the
+/// safetensors base, NOT the serving GGUF — this is the one bridge from the
+/// canonical id (which serving/eval resolve to a GGUF) to the HF cache.
+///
+/// Fails loud (no fallback) when the id has no registry row or the row
+/// declares no `hf_source`: a missing trainable base is a real precondition
+/// gap the caller must fix (add the field to the row), never silently
+/// reinterpreted as "the id is already an HF repo".
+pub fn resolve_hf_source_for_model_id(model_id: &str) -> Result<String, String> {
+    let registry = crate::model_registry::try_global().ok_or_else(|| {
+        format!(
+            "cannot resolve hf_source for '{model_id}': model registry not initialized"
+        )
+    })?;
+    let model = registry.model(model_id).ok_or_else(|| {
+        format!(
+            "cannot resolve hf_source for '{model_id}': no such model row in the registry \
+             — training/convert require a canonical registry id, not an arbitrary string"
+        )
+    })?;
+    model.hf_source.clone().ok_or_else(|| {
+        format!(
+            "model '{model_id}' has no hf_source — it declares a serving GGUF but no \
+             trainable HF safetensors base; add `hf_source` to its registry row before \
+             training or converting against it"
+        )
+    })
+}
+
 pub fn resolve_local_model_dir_for_model_id(model_id: &str) -> Option<PathBuf> {
     resolve_from_local_model_roots(model_id).and_then(|gguf| gguf.parent().map(Path::to_path_buf))
 }
@@ -142,42 +173,60 @@ fn storage_root() -> PathBuf {
     PathBuf::from("/tmp").join(".continuum")
 }
 
+/// Split a model or directory name into normalized identity tokens: lowercase,
+/// alphanumeric runs. Purely structural — carries NO model-family knowledge, no
+/// size table, no hardcoded names. `"Qwen3-Coder-30B-A3B-compacted-19b"` →
+/// `["qwen3","coder","30b","a3b","compacted","19b"]`.
+fn identity_tokens(name: &str) -> Vec<String> {
+    name.to_lowercase()
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+/// Resolve which local directory under `root` holds the artifact for `model_id`.
+///
+/// Model-agnostic by construction: a directory qualifies when every token in its
+/// name is also a token of the requested model id (the dir name is an
+/// abbreviation of the full identity). Among qualifying dirs, the one sharing the
+/// most tokens wins — the most specific match. Size disambiguation falls out for
+/// free: a dir carrying a size token the request does NOT name (e.g. `32b` when
+/// the request is a `19b` model) is not a subset, so it's rejected — without any
+/// hardcoded `["14b","32b",...]` table or family (`qwen`/`compacted`) string.
 fn find_model_dir_in_root(model_id: &str, root: &Path) -> Option<PathBuf> {
     if !root.exists() {
         return None;
     }
 
+    let repo_name = model_id.split('/').next_back()?;
+    let wanted: std::collections::HashSet<String> = identity_tokens(repo_name).into_iter().collect();
+    if wanted.is_empty() {
+        return None;
+    }
+
+    let mut best: Option<(usize, PathBuf)> = None;
     for entry in fs::read_dir(root).ok()?.flatten() {
         let path = entry.path();
         if !path.is_dir() || first_gguf_in_dir(&path).is_none() {
             continue;
         }
-        let dir_name = path.file_name()?.to_str()?.to_lowercase();
-        let model_lower = model_id.to_lowercase();
-        if model_lower.contains("qwen")
-            && model_lower.contains("compacted")
-            && dir_name.contains("qwen")
-            && dir_name.contains("compacted")
-        {
-            let size_match = ["14b", "32b", "7b", "4b", "3b", "1b"]
-                .iter()
-                .find(|s| model_lower.contains(*s));
-            if let Some(size) = size_match {
-                if dir_name.contains(size) {
-                    return Some(path);
-                }
-            } else {
-                return Some(path);
-            }
+        let Some(dir_name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        let have = identity_tokens(dir_name);
+        // Every token of the directory name must be a token of the requested id.
+        // An extra token in the dir (a different size, a different family) breaks
+        // the subset and disqualifies it. Empty dir names never qualify.
+        if have.is_empty() || !have.iter().all(|t| wanted.contains(t)) {
+            continue;
         }
-        if let Some(repo_name) = model_id.split('/').next_back() {
-            let repo_lower = repo_name.to_lowercase().replace('.', "");
-            if dir_name.contains(&repo_lower) {
-                return Some(path);
-            }
+        let overlap = have.len();
+        if best.as_ref().is_none_or(|(best_overlap, _)| overlap > *best_overlap) {
+            best = Some((overlap, path));
         }
     }
-    None
+    best.map(|(_, path)| path)
 }
 
 fn resolve_from_huggingface_hint(hint: &str) -> Option<PathBuf> {
@@ -308,6 +357,24 @@ fn home_dir_string() -> Option<String> {
         .or_else(|| std::env::var("USERPROFILE").ok())
 }
 
+/// Write a minimal but STRUCTURALLY VALID empty GGUF (magic + v3 header +
+/// zero tensors + zero metadata) at `path`. The canonical stand-in for "a
+/// model is present here" in resolution tests: the registry hydrates every
+/// resolved GGUF's header at load (param count, arch, context, sensory caps),
+/// so a fixture standing in for a present model MUST be a parseable GGUF —
+/// `b"gguf"` is a lie that fails loud the moment hydration reads it (and,
+/// because `HOME` is a process-global the resolver reads, that lie leaks into
+/// any concurrently-running catalog-load test). One writer, one truth.
+#[cfg(test)]
+pub(crate) fn write_empty_gguf(path: &Path) {
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(b"GGUF"); // magic
+    bytes.extend_from_slice(&3u32.to_le_bytes()); // version
+    bytes.extend_from_slice(&0u64.to_le_bytes()); // tensor_count
+    bytes.extend_from_slice(&0u64.to_le_bytes()); // metadata_kv_count
+    std::fs::write(path, bytes).unwrap();
+}
+
 #[cfg(test)]
 pub(crate) fn with_test_home<T>(home: &Path, f: impl FnOnce() -> T) -> T {
     use std::sync::{Mutex, OnceLock};
@@ -365,11 +432,13 @@ mod tests {
             cost_input_per_1k: 0.0,
             cost_output_per_1k: 0.0,
             gguf_hint: hint.map(str::to_string),
+            hf_source: None,
             gguf_local_path: explicit,
             mmproj_local_path: None,
             chat_template: None,
             multi_party_strategy: Default::default(),
             stop_sequences: Vec::new(),
+            parameter_count: 0,
         }
     }
 
@@ -382,7 +451,7 @@ mod tests {
             );
             fs::create_dir_all(&cached).unwrap();
             let gguf = cached.join("qwen3.5-4b-code-forged-Q4_K_M.gguf");
-            fs::write(&gguf, b"gguf").unwrap();
+            write_empty_gguf(&gguf);
 
             let resolved = resolve_gguf_for_model(&model(
                 "continuum-ai/qwen3.5-4b-code-forged-GGUF",
@@ -400,7 +469,7 @@ mod tests {
         with_test_home(home.path(), || {
             let explicit = home.path().join("models").join("model.gguf");
             fs::create_dir_all(explicit.parent().unwrap()).unwrap();
-            fs::write(&explicit, b"gguf").unwrap();
+            write_empty_gguf(&explicit);
             let resolved = resolve_gguf_for_model(&model(
                 "continuum-ai/qwen3.5-4b-code-forged-GGUF",
                 Some("huggingface.co/continuum-ai/qwen3.5-4b-code-forged-gguf"),
@@ -408,5 +477,43 @@ mod tests {
             ));
             assert_eq!(resolved.as_deref(), Some(explicit.as_path()));
         });
+    }
+
+    // what this catches: local model-dir resolution disambiguates by size WITHOUT
+    // the deleted `["14b","32b","4b",...]` table or `qwen`/`compacted` family
+    // strings. A `19b` request must pick the `19b` dir and reject the `32b` dir
+    // purely via token-subset matching — and it must work for a NON-qwen family,
+    // proving no hardcoded model knowledge leaked back in.
+    #[test]
+    fn find_model_dir_disambiguates_size_without_a_hardcoded_table() {
+        let root = tempfile::tempdir().unwrap();
+        for dir in [
+            "qwen3-coder-30b-a3b-compacted-32b",
+            "qwen3-coder-30b-a3b-compacted-19b",
+            "llama-3-8b-instruct",
+        ] {
+            let d = root.path().join(dir);
+            fs::create_dir_all(&d).unwrap();
+            write_empty_gguf(&d.join("model-Q4_K_M.gguf"));
+        }
+
+        let resolved =
+            find_model_dir_in_root("Continuum/qwen3-coder-30b-a3b-compacted-19b-256k", root.path());
+        assert_eq!(
+            resolved.as_deref(),
+            Some(root.path().join("qwen3-coder-30b-a3b-compacted-19b").as_path()),
+            "19b request must select the 19b dir, not the 32b sibling"
+        );
+
+        // Family-agnostic: a llama request resolves its own dir with zero qwen logic.
+        let llama = find_model_dir_in_root("meta/llama-3-8b-instruct", root.path());
+        assert_eq!(
+            llama.as_deref(),
+            Some(root.path().join("llama-3-8b-instruct").as_path())
+        );
+
+        // A size the request does not name has no subset dir → no false match.
+        let absent = find_model_dir_in_root("Continuum/qwen3-coder-70b", root.path());
+        assert_eq!(absent, None, "no 70b dir exists; must not match a 32b/19b sibling");
     }
 }

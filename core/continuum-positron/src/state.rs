@@ -135,7 +135,8 @@ impl StateBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::chat::{ChatViewState, PersonaSlotView};
+    use crate::chat::{ChatViewState, Provenance, RosterSlotView, SenderKind};
+    use std::collections::BTreeMap;
     use uuid::Uuid;
 
     fn empty_chat(room_id: Uuid) -> ChatViewState {
@@ -143,9 +144,14 @@ mod tests {
             room_id,
             room_name: "general".into(),
             messages: Vec::new(),
-            roster: vec![PersonaSlotView {
-                persona_id: Uuid::from_u128(1),
+            roster: vec![RosterSlotView {
+                member_id: Uuid::from_u128(1),
                 display_name: "Helper".into(),
+                kind: SenderKind::Agent,
+                integrations: BTreeMap::new(),
+                provenance: Provenance {
+                    runtime: "claude".into(),
+                },
                 active: true,
             }],
         }

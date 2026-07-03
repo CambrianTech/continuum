@@ -62,7 +62,7 @@ use crate::runtime::daemon::{
 use crate::{clog_info, clog_warn};
 
 use super::capacity::CapacitySource;
-use super::consumer::{ReclaimOutcome, ResourceConsumer};
+use super::consumer::{ConsumerFootprint, ReclaimOutcome, ResourceConsumer};
 use super::governor::{GovernorConfig, ResourceGovernor};
 use super::ledger::LeaseBoard;
 use super::lease::{LeaseError, LeaseRequest, ReclaimPolicy, ResourceKind, ResourceLease};
@@ -105,10 +105,15 @@ impl Default for DaemonConfig {
 /// over-budget flag to keep in sync (the old hand-maintained `AtomicBool` is
 /// gone). Shared by the channel's gate derivation and any reader.
 fn board_over_budget(board: &LeaseBoard) -> bool {
+    // Over-budget is the un-inversion condition: what is REALLY spoken for —
+    // `max(granted, physical_used)` — exceeds the FIXED ceiling. Keying off
+    // `granted` alone would be blind to a game grabbing VRAM (granted stays 0 while
+    // physical usage climbs past capacity); the physical axis is exactly what makes
+    // that oversubscription visible so the reconcile can react.
     board
         .kinds
         .iter()
-        .any(|k| k.granted_bytes > k.capacity_bytes)
+        .any(|k| k.granted_bytes.max(k.physical_used_bytes) > k.capacity_bytes)
 }
 
 /// The single per-machine resource authority's runtime shell.
@@ -156,11 +161,14 @@ impl ResourceDaemon {
         config: DaemonConfig,
     ) -> Arc<Self> {
         let mut governor = ResourceGovernor::with_default_arbiter(config.governor);
-        // Prime capacity from the scan sources NOW, so the authority knows its
-        // ceilings the moment it exists — a lease acquired before the first tick
-        // is admitted against real capacity, not a boot-time zero.
+        // Prime capacity AND physical usage from the scan sources NOW, so the
+        // authority knows both its fixed ceilings and what is already resident the
+        // moment it exists — a lease acquired before the first tick is admitted
+        // against the real global remainder (`capacity − max(granted, used)`), not
+        // a boot-time zero that would over-grant into memory already spoken for.
         for src in &sources {
             governor.set_capacity(src.kind(), src.ceiling_bytes());
+            governor.set_physical_used(src.kind(), src.used_bytes());
         }
         let channel = DaemonChannel::new(governor.board(), board_over_budget);
         let (evict_tx, evict_rx) = mpsc::unbounded_channel();
@@ -237,6 +245,20 @@ impl ResourceDaemon {
         clog_info!("🧮 ResourceDaemon: consumer '{id}' registered");
     }
 
+    /// The ids of every registered leaseholder, in registration order. A cheap
+    /// read of the registry (not the accounting lock) — used to confirm a
+    /// consumer is wired in (e.g. serving registering itself at boot) and, on
+    /// the grid, to enumerate what a node measures without waiting for a board
+    /// tick. Quarantined consumers are still listed; quarantine gates polling,
+    /// not membership.
+    pub fn consumer_ids(&self) -> Vec<String> {
+        self.consumers
+            .read()
+            .iter()
+            .map(|c| c.consumer_id().to_string())
+            .collect()
+    }
+
     // ---- hot, lock-free reads ----------------------------------------------
 
     /// Latest board — a `watch` borrow via the embedded channel, never the
@@ -295,29 +317,80 @@ impl ResourceDaemon {
             }
         }
 
-        // 2. Read every ceiling OFF the accounting lock (cached monitor reads).
-        let ceilings: Vec<(ResourceKind, u64)> = self
+        // 2. Read every source's fixed ceiling AND live physical usage OFF the
+        //    accounting lock (cached monitor reads). Both feed the governor below;
+        //    the ceiling is near-constant, the usage moves with external pressure.
+        let scans: Vec<(ResourceKind, u64, u64)> = self
             .sources
             .iter()
-            .map(|s| (s.kind(), s.ceiling_bytes()))
+            .map(|s| (s.kind(), s.ceiling_bytes(), s.used_bytes()))
             .collect();
 
-        // 3. Brief lock: ingest capacity, compute per-kind pressure, plan the
-        //    reclaims, snapshot the board. No await inside.
+        // 2.5 Snapshot live (non-quarantined) consumers ONCE — reused for both the
+        //     footprint poll (this step) and the reclaim fan-out (step 4).
+        //     Quarantine only mutates in the fold at the end of this tick, so the
+        //     snapshot is stable for the whole cycle. Clone the Arcs out from under
+        //     the consumers lock BEFORE taking the quarantine lock so the two locks
+        //     never nest.
+        let all: Vec<Arc<dyn ResourceConsumer>> = self.consumers.read().iter().cloned().collect();
+        let live: Vec<(String, Arc<dyn ResourceConsumer>)> = {
+            let q = self.quarantine.lock();
+            all.into_iter()
+                .filter(|c| !q.is_quarantined(c.consumer_id()))
+                .map(|c| (c.consumer_id().to_string(), c))
+                .collect()
+        };
+
+        // Poll each live consumer's self-declared footprint OFF-lock. This is the
+        // MEASUREMENT axis — pure monitoring, EVERY tick, independent of whether
+        // any reclaim is planned. `footprint()` is a cheap synchronous read; a
+        // panicking one is isolated per-consumer so a single broken consumer can
+        // never abort the whole reconcile tick. On panic we skip that consumer
+        // (preserving its last-good measurement) rather than wiping it.
+        let measured: Vec<(String, Vec<ConsumerFootprint>)> = live
+            .iter()
+            .filter_map(|(id, c)| {
+                match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| c.footprint())) {
+                    Ok(fps) => Some((id.clone(), fps)),
+                    Err(_) => {
+                        clog_warn!(
+                            "🧮 ResourceConsumer '{id}' panicked in footprint() — keeping \
+                             last-good measurement this tick"
+                        );
+                        None
+                    }
+                }
+            })
+            .collect();
+
+        // 3. Brief lock: ingest capacity + measured footprints, compute per-kind
+        //    pressure, plan the reclaims, snapshot the board. No await inside.
         let (plans, board) = {
             let mut g = self.governor.lock();
-            for (kind, ceil) in &ceilings {
+            for (kind, ceil, used) in &scans {
                 g.set_capacity(*kind, *ceil);
+                // The un-inversion ground truth: everything physically resident,
+                // netted against the fixed ceiling to yield `available`.
+                g.set_physical_used(*kind, *used);
+            }
+            // Feed the self-declared attribution axis: each consumer's freshly-polled
+            // residency. Surfaces per-consumer on the board (the WHO); the physical
+            // total above is what drives `available`.
+            for (id, fps) in measured {
+                g.set_measured(&id, fps);
             }
 
-            // Per-kind contention for the arbiter: granted / ceiling, clamped to
-            // the [0,1] the arbiter contract expects. Precomputed into a Copy
-            // array so the reconcile closures don't borrow the guard.
+            // Per-kind contention for the arbiter: committed / ceiling, clamped to
+            // the [0,1] the arbiter contract expects. `committed` = max(granted,
+            // physical_used), so external pressure raises contention even with no
+            // lease — the arbiter weighs victims against true oversubscription, not
+            // just our own grants. Precomputed into a Copy array so the reconcile
+            // closures don't borrow the guard.
             let mut pmap = [0.0f64; 3];
             for kind in ResourceKind::ALL {
                 let ceil = g.capacity(kind);
                 if ceil > 0 {
-                    pmap[kind_idx(kind)] = (g.granted(kind) as f64 / ceil as f64).clamp(0.0, 1.0);
+                    pmap[kind_idx(kind)] = (g.committed(kind) as f64 / ceil as f64).clamp(0.0, 1.0);
                 }
             }
 
@@ -329,6 +402,25 @@ impl ResourceDaemon {
             (plans, g.board())
         };
 
+        // Drift report: per kind, measured (self-declared residency) vs granted
+        // (what leases account for). A positive drift = bytes physically held that
+        // NO lease tracks — exactly serving holding a resident model with no
+        // lease, the "0 tracked while the GPU is full" blindness this task fixes.
+        // Reporting-only through the observability seam; it steers nothing.
+        for k in &board.kinds {
+            let drift = k.measured_bytes.saturating_sub(k.granted_bytes);
+            if drift > 0 {
+                crate::probe!(
+                    class = "resource_drift",
+                    kind = k.kind.label(),
+                    measured_bytes = k.measured_bytes,
+                    granted_bytes = k.granted_bytes,
+                    drift_bytes = drift,
+                    "untracked residency: measured exceeds leased"
+                );
+            }
+        }
+
         // Publish post-plan board so readers (and the gate) stay fresh even when
         // calm.
         self.channel.publish(board);
@@ -337,20 +429,9 @@ impl ResourceDaemon {
             return;
         }
 
-        // 4. Snapshot live (non-quarantined) consumers, then fan out the reclaims
-        //    CONCURRENTLY off-lock. A plan for an unregistered/quarantined consumer
-        //    is logged, never silently dropped. We clone the Arcs out from under
-        //    the consumers lock BEFORE taking the quarantine lock, so the two
-        //    locks never nest.
-        let all: Vec<Arc<dyn ResourceConsumer>> = self.consumers.read().iter().cloned().collect();
-        let live: Vec<(String, Arc<dyn ResourceConsumer>)> = {
-            let q = self.quarantine.lock();
-            all.into_iter()
-                .filter(|c| !q.is_quarantined(c.consumer_id()))
-                .map(|c| (c.consumer_id().to_string(), c))
-                .collect()
-        };
-
+        // 4. Fan out the reclaims CONCURRENTLY off-lock over the `live` snapshot
+        //    from step 2.5. A plan for an unregistered/quarantined consumer is
+        //    logged, never silently dropped.
         let mut futs = Vec::with_capacity(plans.len());
         for plan in &plans {
             let Some((_, consumer)) = live.iter().find(|(id, _)| id == &plan.consumer_id) else {
@@ -485,9 +566,13 @@ impl ResourcePool for LeasePoolView {
     }
 
     fn usage_bytes(&self) -> u64 {
+        // The broker's pressure = usage/capacity, so this must be the honest
+        // committed number (max(granted, physical_used)), not just our grants —
+        // otherwise external VRAM pressure would read as zero usage and the broker
+        // would never ask us to relieve for a launching game.
         self.daemon
             .upgrade()
-            .map(|d| d.governor.lock().granted(self.kind))
+            .map(|d| d.governor.lock().committed(self.kind))
             .unwrap_or(0)
     }
 
@@ -782,6 +867,97 @@ mod tests {
         let settled = wait_until(&daemon, |b| b.leases.iter().map(|l| l.bytes).sum::<u64>() <= 1_000).await;
         assert!(settled, "once ready, the daemon reclaims to the ceiling");
         let _ = lease;
+    }
+
+    // what this catches: the MEASUREMENT axis wired end-to-end through the daemon
+    // tick — a consumer holding VRAM with NO lease (serving's real posture) must
+    // surface on the published board as measured_bytes + an attribution, polled
+    // from footprint() every tick, WITHOUT any lease and WITHOUT disturbing
+    // `available`. This is the "0 tracked while the GPU is full" fix: if the
+    // footprint poll or set_measured wiring is wrong, the board stays blind here.
+    #[tokio::test]
+    async fn footprint_poll_surfaces_measured_residency_without_a_lease() {
+        let src = Arc::new(MockCapacitySource::new(ResourceKind::Vram, 24_000));
+        // Holds 18GB resident (a loaded model) but leases nothing.
+        let serving = ScriptedConsumer::new("serving", 18_000, "release");
+        let daemon = ResourceDaemon::start(
+            vec![src.clone()],
+            vec![serving.clone()],
+            DaemonConfig {
+                tick_interval: Duration::from_millis(20),
+                min_reclaim_budget: Duration::from_millis(100),
+                governor: GovernorConfig { min_dwell_ms: 0, graceful_grace_ms: 50 },
+            },
+        );
+
+        // No acquire — serving holds bytes but never leased. The tick's footprint
+        // poll must still attribute the residency on the board.
+        let surfaced = wait_until(&daemon, |b| !b.attributions.is_empty()).await;
+        assert!(surfaced, "footprint poll should attribute measured residency each tick");
+
+        let board = daemon.board();
+        assert_eq!(board.attributions.len(), 1);
+        assert_eq!(board.attributions[0].consumer_id, "serving");
+        assert_eq!(board.attributions[0].bytes, 18_000);
+        assert_eq!(board.attributions[0].kind, ResourceKind::Vram);
+
+        let vram = board.kinds.iter().find(|k| k.kind == ResourceKind::Vram).unwrap();
+        assert_eq!(vram.granted_bytes, 0, "nothing leased");
+        assert_eq!(vram.measured_bytes, 18_000, "but 18GB measured-resident");
+        // available is the honest free-based remainder — capacity − granted, NOT
+        // reduced by the measured residency. Measurement reports; it never reserves.
+        assert_eq!(vram.available_bytes, 24_000, "available untouched by measurement");
+        assert!(!daemon.is_over_budget(), "measured residency is not an over-budget condition");
+    }
+
+    // what this catches: the un-inversion wired end-to-end through the daemon tick —
+    // EXTERNAL physical pressure (a game grabbing VRAM) contracts `available` even
+    // with zero leases, because the tick feeds `used_bytes()` into `physical_used`
+    // and `available = capacity − max(granted, physical_used)`. Before the
+    // un-inversion the board would read `available == capacity` here (blind to the
+    // grab) and the daemon would happily commit into memory the game already took —
+    // the OOM the whole task fixes. When the grab exceeds the FIXED ceiling the
+    // daemon goes over-budget off physical usage alone (no lease shrank), and since
+    // none of the overage is a lease we hold there is nothing safe to reclaim — the
+    // daemon stays alive and simply refuses new demand (we can't evict a game).
+    #[tokio::test]
+    async fn external_physical_pressure_contracts_available_without_a_lease() {
+        let src = Arc::new(MockCapacitySource::new(ResourceKind::Vram, 24_000));
+        let daemon = ResourceDaemon::start(
+            vec![src.clone()],
+            Vec::new(),
+            DaemonConfig {
+                tick_interval: Duration::from_millis(20),
+                min_reclaim_budget: Duration::from_millis(100),
+                governor: GovernorConfig { min_dwell_ms: 0, graceful_grace_ms: 50 },
+            },
+        );
+
+        // A game grabs 21GB of VRAM: physical_used = 21_000, ceiling fixed at 24_000.
+        src.set_used(21_000);
+        let contracted =
+            wait_until(&daemon, |b| b.kinds.iter().any(|k| k.physical_used_bytes == 21_000)).await;
+        assert!(contracted, "the tick must feed external physical usage onto the board");
+
+        let board = daemon.board();
+        let vram = board.kinds.iter().find(|k| k.kind == ResourceKind::Vram).unwrap();
+        assert_eq!(vram.capacity_bytes, 24_000, "ceiling is fixed — the grab did not move it");
+        assert_eq!(vram.granted_bytes, 0, "we hold no lease");
+        assert_eq!(vram.physical_used_bytes, 21_000, "but 21GB is physically resident");
+        assert_eq!(vram.external_bytes, 21_000, "all of it external — no consumer of ours claims it");
+        assert_eq!(vram.available_bytes, 3_000, "available = 24k − max(0, 21k) = 3k, NOT the blind 24k");
+        assert!(!daemon.is_over_budget(), "21k < 24k ceiling — tight, not over");
+
+        // The game grabs more, past the ceiling: physical_used = 26_000 > 24_000.
+        src.set_used(26_000);
+        let over = wait_until(&daemon, |_| daemon.is_over_budget()).await;
+        assert!(over, "physical usage over the fixed ceiling is an over-budget condition on its own");
+        let board = daemon.board();
+        let vram = board.kinds.iter().find(|k| k.kind == ResourceKind::Vram).unwrap();
+        assert_eq!(vram.available_bytes, 0, "committed exceeds capacity → zero to commit");
+        // Nothing safe to reclaim (no lease of ours) — the daemon stays alive and
+        // keeps publishing, it does not thrash trying to evict a game's memory.
+        assert!(daemon.board().leases.is_empty(), "no lease existed to be reclaimed");
     }
 
     // what this catches: a panicking consumer is isolated (catch_unwind) and

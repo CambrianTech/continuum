@@ -31,7 +31,7 @@ use ts_rs::TS;
 /// duplicate.
 ///
 /// `temperature` defaults to 0.7 if omitted (same default as TS).
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 #[ts(
     export,

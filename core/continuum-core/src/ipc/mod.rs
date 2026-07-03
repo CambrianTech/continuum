@@ -107,7 +107,11 @@ impl IpcStream for TcpStream {
 // here so existing call sites resolve unchanged.
 
 pub mod diagnostics;
+pub mod positron_dispatch;
+pub mod positron_presence;
+pub mod positron_source;
 pub mod protocol;
+pub mod ws;
 
 use diagnostics::{current_rss_mb, dump_memory_report, log_command_rss_delta};
 pub use protocol::InboxMessageRequest;
@@ -812,7 +816,8 @@ pub fn start_server(
         ),
     ));
 
-    // LaunchModeModule (stateless) — system/launch-mode/{get,set}. Headless-native
+    // LaunchModeModule — system/launch-mode/{get,set} as typed self-routing commands
+    // (`get` stateless, `set` dep-holding over the module bus). Headless-native
     // runtime lever for the headless-vs-UI launch preference; persists
     // CONTINUUM_LAUNCH_MODE to config.env (same key bin/continuum reads) and emits
     // system:launch-mode:changed so a running UI can attach/tear down its overlay.
@@ -945,6 +950,15 @@ pub fn start_server(
     ));
     runtime.register(serving_daemon.clone());
 
+    // #79: expose the one per-machine resource authority's accounting board as a typed
+    // read command (`resources/board`). The daemon owns its background poll + watch
+    // snapshot; this thin module wraps the same `Arc<ResourceDaemon>` so the measured
+    // per-consumer attributions + drift are readable by an operator, a persona, or a
+    // grid peer — the reporting half of "accurate footprint() drift-reporting."
+    runtime.register(Arc::new(
+        crate::modules::resources_module::ResourcesModule::new(resource_daemon.clone()),
+    ));
+
     // Phase 2 of #1239 (continuum#1299 PR-1): PressureBrokerModule.
     // Brings the cross-pool PressureBroker online — instantiates the
     // singleton, pre-registers DockerTierPool as a ResourcePool, and
@@ -1043,6 +1057,43 @@ pub fn start_server(
                 "server",
                 "no HOME — probe-jsonl FilesystemTierPool not registered"
             );
+        }
+
+        // Register a `FilesystemTierPool` for the tool-output spill dir — the
+        // space-pressure axis of tier-2 flood protection. When a build/test/read
+        // tool overflows the context budget, the executor spills the WHOLE result
+        // to `~/.continuum/tool-output/<persona_id>/<handle>.log` so the persona
+        // can grep it back with `tool/output`. Those artifacts accrete with no
+        // intrinsic bound; this pool lets the broker delete the oldest spills
+        // (recursively across persona dirs) when disk goes hot — exactly the
+        // probe-jsonl pattern above, against the spill root.
+        //
+        // Soft cap = 1 GB. Larger than the probe pool because a single Xcode /
+        // cargo build log can be tens of MB and many personas spill in parallel,
+        // but bounded so a runaway tool can't fill the disk before the broker acts.
+        // Path comes from `spill::spill_root()` — single source, no re-typed string.
+        const SPILL_POOL_SOFT_CAP_BYTES: u64 = 1024 * 1024 * 1024;
+        match crate::cognition::tool_executor::spill::spill_root() {
+            Ok(spill_dir) => {
+                broker.register(Arc::new(crate::paging::FilesystemTierPool::new(
+                    "tool-output-spill",
+                    spill_dir,
+                    SPILL_POOL_SOFT_CAP_BYTES,
+                ))
+                    as Arc<dyn crate::paging::pool::ResourcePool>);
+                log_info!(
+                    "ipc",
+                    "server",
+                    "FilesystemTierPool 'tool-output-spill' registered with PressureBroker (soft cap 1 GB)"
+                );
+            }
+            Err(e) => {
+                log_error!(
+                    "ipc",
+                    "server",
+                    "no HOME — tool-output-spill FilesystemTierPool not registered: {e}"
+                );
+            }
         }
 
         log_info!(
@@ -1165,9 +1216,7 @@ pub fn start_server(
     // Shared state for per-persona cognition (unified: engine + inbox + rate limiter + sleep + adapters + genome)
     let rag_engine = Arc::new(RagEngine::new());
     let cognition_state = Arc::new(
-        CognitionState::new(rag_engine.clone())
-            .with_gpu_manager(gpu_manager.clone())
-            .with_module_registry(runtime.registry_arc()),
+        CognitionState::new(rag_engine.clone()).with_gpu_manager(gpu_manager.clone()),
     );
     let personas = cognition_state.personas.clone();
     runtime.register(Arc::new(CognitionModule::new(cognition_state)));
@@ -1209,6 +1258,27 @@ pub fn start_server(
         livekit_manager.clone(),
         audio_pool.clone(),
     ));
+    // Voice joins the resource authority as a peer consumer (#56): under VRAM
+    // pressure it REFUSES while a call is live (never kicks a human mid-call) and
+    // sheds its idle STT/TTS models otherwise — serving tiers down first.
+    resource_daemon.add_consumer(Arc::new(
+        crate::modules::live_session_consumer::VoiceConsumer::new(
+            voice_state.resource_lifecycle.clone(),
+            gpu_manager.clone(),
+        ),
+    ));
+    // The Bevy avatar renderer joins as the third peer consumer (#56): fat and
+    // reclaimable (~3GB) when idle, but its output texture IS the LiveKit video
+    // feed during a call — so under pressure while a call is live it REFUSES
+    // (tearing it down would freeze the avatar mid-call) and sheds the renderer
+    // only when nothing is rendering. Shares the same live-session lifecycle as
+    // voice, so both sides of a call are protected together.
+    resource_daemon.add_consumer(Arc::new(
+        crate::modules::bevy_consumer::BevyConsumer::new(
+            voice_state.resource_lifecycle.clone(),
+            gpu_manager.clone(),
+        ),
+    ));
     runtime.register(Arc::new(VoiceModule::new(voice_state)));
 
     // Phase 3: CodeModule (wraps file engines and shell sessions per-persona)
@@ -1224,6 +1294,18 @@ pub fn start_server(
     // Phase 4: DataModule (database-agnostic storage via ORM adapters)
     // DB path is passed per-request from TypeScript - NO defaults
     runtime.register(Arc::new(DataModule::new()));
+
+    // ChatModule: the kernel `chat/send` + `chat/poll` surface (aliases of
+    // `collaboration/chat/*`). Unlike `search/*` these DynCommands are NOT
+    // inventory-self-registering — they carry a late-bound `CommandExecutor`
+    // (via `command_objects(executor_slot)`) so `chat/send` can dual-write to
+    // `data/*` + airc. That injected state is why the module is the required
+    // carrier. It was defined and schema-registered but never wired into boot,
+    // so `chat/send`/`chat/poll` LISTED via `commands/list` yet failed to route
+    // ("No module registered for this command prefix") — a discoverability lie.
+    // The slot is filled by `install_executor_on_all` after all registration,
+    // so ordering here is irrelevant.
+    runtime.register(Arc::new(crate::modules::chat::ChatModule::new()));
 
     // Phase 4a: LoggerModule (absorbs standalone logger worker)
     // Provides log/write, log/ping via main socket
@@ -1333,6 +1415,12 @@ pub fn start_server(
         .map(|p| p.to_path_buf())
         .zip(airc_module.default_room());
     let persona_bootstrap_room_name = airc_module.default_room_name().map(|s| s.to_string());
+    // The node-level presence emitter (WS seam below) needs the same
+    // (daemon_socket, default_room) the persona block consumes. Clone the
+    // deps here BEFORE that `if let Some(...)` moves them, so the emitter
+    // can attach a heartbeat-less node reader against the same daemon +
+    // room the citizens attach to.
+    let node_presence_deps = persona_bootstrap_deps.clone();
     runtime.register(airc_module);
 
     // A.2 [[no-fallbacks-ever]]: in `FullCitizen` or `FailFast` mode,
@@ -1408,10 +1496,17 @@ pub fn start_server(
                 crate::cognition::channel_substrate::global_channel_digest_buffer(),
             ),
         );
-        runtime.register(Arc::new(crate::runtime::SubstrateGovernor::new(
-            vec![digest_region],
-            registry.clone(),
-        )));
+        // Wire the live memory-pressure feed (R4 slice 3): each pass sizes its slice
+        // budget to the host's current memory band so a society of inference-bearing
+        // background regions can't stampede the model backend under load. A homeostatic
+        // protection, not cognition steering — and on a healthy host the band is Normal
+        // → budget None → behavior is identical to the uncapped default the digest
+        // region runs under today (the digest runs no inference, so this is the safe
+        // floor that lets the dark consolidation region go LIVE next).
+        runtime.register(Arc::new(
+            crate::runtime::SubstrateGovernor::new(vec![digest_region], registry.clone())
+                .with_pressure_gate(pressure_monitor.subscribe()),
+        ));
         let instance_manager = Arc::new(
             crate::modules::persona_instance_manager::PersonaInstanceManagerModule::new(
                 registry,
@@ -1461,12 +1556,27 @@ pub fn start_server(
         // persona: 'Paige' })` to honestly see what Paige's RAG layer would
         // surface right now. Per [[observability-is-half-the-architecture]].
         //
-        // chain_inference path stays RAG-only here (default_adapter=None)
-        // until the substrate has an Arc-shareable inference adapter pool
-        // (the current AdapterRegistry is Box-based + can't hand out Arcs
-        // without a separate refactor). The chained variant is exercised
-        // by the existing unit tests; production wiring of the inference
-        // probe is a follow-up.
+        // chain_inference path stays RAG-only here (default_adapter=None).
+        //
+        // The old reason cited on this line — "AdapterRegistry is Box-based
+        // + can't hand out Arcs" — is a STALE LIE (same class as #77): #162
+        // already moved the registry to `Arc<dyn AIProviderAdapter>` and
+        // added `get_arc`, and `global_registry()` hands out Arcs today.
+        //
+        // The REAL blocker is per-persona model resolution. The canonical
+        // live generation path (`cognition/generate_response.rs`) selects
+        // via `registry.select(DEFAULT_GENERATE_PROVIDER, Some(&session.model),
+        // Auto)` — it needs the persona's SESSION MODEL to honor the
+        // no-fallbacks `select()` guard (which refuses no-specifier
+        // auto-discovery). The FilesystemPersonaResolver only reads
+        // seed.json (persona_id + name); it has no session/model, and the
+        // substrate "doesn't yet model per-persona adapter preferences"
+        // (see FilesystemPersonaResolver::with_default_adapter). Threading
+        // the persona's live model in is the real follow-up — NOT an Arc
+        // refactor. Until then the chained variant is exercised by unit
+        // tests with an explicit adapter; RAG-only is the honest default
+        // for production callers (the recent deliveries already carry the
+        // persona's own last generations, which is what an inspector reads).
         let rag_inspect_resolver = std::sync::Arc::new(
             crate::modules::persona_rag_inspect_filesystem::FilesystemPersonaResolver::new(
                 crate::modules::persona_instance_manager::resolve_continuum_root(),
@@ -1743,6 +1853,93 @@ pub fn start_server(
         );
     }
 
+    // ── Served-model re-home reconciler ─────────────────────────────────────
+    // The base-model sibling of LoRA/genome paging: when the serving daemon
+    // publishes a NEW active model — a `serving/pin`, a re-plan under memory
+    // pressure, or a grid failover — every ALREADY-hosted persona's deliberation
+    // must rebind to it (new shared adapter + new served context window) WITHOUT
+    // losing the genome, working memory, or admission it accumulated. This task
+    // owns the serving-SNAPSHOT watch and drives `re_home_all` on an ACTUAL model
+    // change — the seam that turns `serving/pin <model>` into a no-reboot,
+    // coherent model-sweep lever AND delivers portable-self live re-home.
+    //
+    // Distinct from the boot spawn loop above (which reacts to the serving PLAN to
+    // FIRST-host personas): this reacts to the serving SNAPSHOT to re-home
+    // ALREADY-hosted personas. Both are the canonical concurrent-concern shape —
+    // own task, `watch` receiver, no lock across await, log-and-continue, exit on
+    // watch close. The swap itself is wait-free (`ArcSwap` store under the cycles
+    // lock); the only cost per model edge is ONE shared adapter HTTP-init, reused
+    // by every persona lane. See [[seamless-persona-failover-model-and-genome]].
+    {
+        let mut serving_rx = serving_daemon.subscribe_serving();
+        rt_handle.spawn(async move {
+            // The model live personas are currently bound to. `None` until the
+            // first ready snapshot: boot binds personas via the upstart factory,
+            // so the FIRST ready model is NOT a re-home (they spawn already bound
+            // to it). We adopt it as the baseline without re-homing, and re-home
+            // only on a SUBSEQUENT change — avoiding a wasteful boot-time adapter
+            // rebuild + redundant swap.
+            let mut bound: Option<String> = None;
+            loop {
+                // Park until the daemon republishes its serving snapshot.
+                if serving_rx.changed().await.is_err() {
+                    tracing::info!(
+                        "serving-snapshot watch closed — served-model re-home reconciler \
+                         exiting (substrate shutdown)"
+                    );
+                    break;
+                }
+                let snap = serving_rx.borrow_and_update().clone();
+                if !snap.ready {
+                    continue;
+                }
+                let Some(active) = snap.active_model.clone() else {
+                    continue;
+                };
+                if bound.as_deref() == Some(active.as_str()) {
+                    continue; // same model already bound — nothing to re-home.
+                }
+                if bound.is_none() {
+                    // The boot upstart already bound (or will bind) personas to
+                    // this first served model; adopt it as the baseline.
+                    bound = Some(active);
+                    continue;
+                }
+                // Build the ONE shared served-model adapter for this edge (HTTP
+                // init once, shared by every persona lane). Fail LOUD into a log —
+                // a failed re-home leaves personas on their prior (still-live)
+                // binding rather than a silent wrong-brain, and retries on the
+                // next snapshot edge ([[fallbacks-are-illegal-fail-loud]]).
+                let adapter =
+                    match crate::persona::supervisor::build_served_adapter(&snap).await {
+                        Ok(a) => a,
+                        Err(e) => {
+                            tracing::warn!(
+                                model = %active,
+                                error = %e,
+                                "served-model re-home: adapter build failed — personas stay \
+                                 on their prior binding; will retry on the next snapshot edge"
+                            );
+                            continue;
+                        }
+                    };
+                let n = crate::cognition::persona_workspace::global().re_home_all(
+                    adapter,
+                    Some(active.clone()),
+                    snap.served_context_window,
+                );
+                crate::probe!(
+                    class = "persona.rehome",
+                    model = %active,
+                    context_window = snap.served_context_window,
+                    personas = n,
+                    "served model changed — re-homed live personas onto the new binding"
+                );
+                bound = Some(active);
+            }
+        });
+    }
+
     // AIProviderModule: Unified AI provider for cloud and local inference
     // Provides ai/generate, ai/providers/list, ai/providers/health
     // Routes to DeepSeek, Anthropic, OpenAI, Together, Groq, Fireworks, XAI, Google, Mistral
@@ -1761,7 +1958,7 @@ pub fn start_server(
     // selection logic lives in the coordinator.
     {
         use crate::genome::fine_tuning::{
-            FineTuningRegistry, LocalCandleFineTuner, OpenAIFineTuningAdapter,
+            FineTuningRegistry, LocalCandleFineTuner, MlxLoraFineTuner, OpenAIFineTuningAdapter,
         };
         let ft_registry = std::sync::Arc::new(FineTuningRegistry::new());
 
@@ -1791,9 +1988,49 @@ pub fn start_server(
              track the optimizer-loop landing)"
         );
 
+        // MlxLoraFineTuner — the REAL owned trainer (#32): Apple's
+        // mlx_lm.lora on the Metal GPU → forge-custodian converts to a
+        // GGUF-lora gene → llama-server serves it. Always registered; its
+        // capability declares `requires: TrainerHardware::Metal`, so the
+        // coordinator routes here only on a Metal host, and create_job
+        // fails loud (never silently) when Metal / the mlx python env /
+        // a base model / examples are missing. Without this slot the live
+        // registry held only the synthetic Candle skeleton + conditional
+        // cloud OpenAI, so genome/job-create could never produce a
+        // real, loadable LoRA — the closed L1→L3 loop was broken here.
+        ft_registry.register(std::sync::Arc::new(MlxLoraFineTuner::new()));
+        log_info!(
+            "ipc",
+            "server",
+            "GenomeModule: registered MlxLoraFineTuner (mlx-local — real Apple-Silicon \
+             LoRA trainer; coordinator gates on a probed Metal device)"
+        );
+
+        // L3 completion sentinel shares the SAME registry — it polls the handles the
+        // trigger registers and looks the owning adapter back up here. Clone the Arc
+        // before the registry is moved into GenomeModule.
+        let completion_sentinel = Arc::new(
+            crate::modules::training_completion_sentinel::TrainingCompletionSentinel::new(
+                ft_registry.clone(),
+            ),
+        );
+
         runtime.register(Arc::new(crate::modules::genome::GenomeModule::new(
             ft_registry,
         )));
+
+        // TrainingCompletionSentinel: L3 of the dev-task continuous-learning loop.
+        // Polls in-flight training jobs (the TrainingJobBoard the trigger writes to);
+        // on completion runs `cognition/eval` and pages the gene into the live
+        // persona ONLY on lift>0 — the keystone that makes the single-machine loop
+        // automatic (`docs/genome/DEV-TASK-LOOP-CLOSURE-PLAN.md` L3). Its executor is
+        // installed below by `install_executor_on_all`.
+        runtime.register(completion_sentinel);
+        log_info!(
+            "ipc",
+            "server",
+            "TrainingCompletionSentinel: registered (L3 train-done → eval → lift>0 → page-in)"
+        );
 
         // TrainingTriggerModule: substrate-native batching coordinator
         // sitting between curriculum producers (teacher persona's
@@ -1905,6 +2142,13 @@ pub fn start_server(
     // existing commands see zero behavior change.
     let executor = Arc::new(
         crate::runtime::CommandExecutor::new(runtime.registry_arc())
+            // Share the ONE runtime bus (the same Arc every ModuleContext
+            // gets — `chat:posted` from the airc daemon-attach projector
+            // and `presence:updated` from the node presence emitter both
+            // land here). Without this the WS positron projection has no
+            // event source and `message_bus()` is None — the boot-loud
+            // panic the `CONTINUUM_CORE_WS` block asserts against.
+            .with_message_bus(runtime.bus_arc())
             .with_interceptor(Arc::new(crate::runtime::AircInterceptor::new()))
             .with_interceptor(Arc::new(crate::runtime::GridInterceptor::new(grid_state)))
             // Hard ACL gate: cross-grid (airc) + TCP callers — incl. a persona's
@@ -1924,6 +2168,13 @@ pub fn start_server(
     runtime
         .registry()
         .install_executor_on_all(Arc::clone(&executor));
+
+    // L2 continuous-learning producer: hand the same wired executor to the
+    // turn-completion training producer so a live persona reply can be scored,
+    // classified, and submitted to `genome/training-trigger` AS the persona
+    // (LocalPersona → Trusted). Late-bound because the service loop has no
+    // executor in scope; this is the one install site.
+    crate::persona::training_producer::install_executor(Arc::clone(&executor));
 
     // Round-2 verifier fix on PR #1568: now that the executor is
     // installed on every module, release the persona-supervisor task
@@ -2041,7 +2292,9 @@ pub fn start_server(
                                             // source, not the id.
                                             let caller = Some(
                                                 crate::routing::CallerIdentity::tcp(
-                                                    uuid::Uuid::nil(),
+                                                    crate::identity::PeerId::from_uuid(
+                                                        uuid::Uuid::nil(),
+                                                    ),
                                                 ),
                                             );
                                             if let Err(e) = handle_client(stream, state, caller) {
@@ -2071,6 +2324,93 @@ pub fn start_server(
                         );
                     }
                 }
+            }
+        }
+    }
+
+    // WebSocket listener for the thin-client fleet (task #29). Additive,
+    // env-gated by `CONTINUUM_CORE_WS=<port>` (bind host shared with TCP via
+    // `CONTINUUM_CORE_BIND`, default 127.0.0.1). Browsers can't speak the
+    // length-prefixed IPC frame format, so thin clients (`sdk/typescript`
+    // WebSocketTransport) speak WebSocket + the multiplexed
+    // WsClientMessage/WsServerMessage envelope. Every frame dispatches through
+    // the SAME `CommandRequestHandler::execute_command_request` owner the airc
+    // peer path uses, stamped `CallerSource::Ws` → Provisional ceiling (see
+    // ipc::ws module docs + the TCP SECURITY note above; same unauthenticated
+    // AiSafe surface, do NOT bind 0.0.0.0 on an untrusted network).
+    if let Ok(ws_port_str) = std::env::var("CONTINUUM_CORE_WS") {
+        if let Ok(port) = ws_port_str.parse::<u16>() {
+            if port > 0 {
+                let bind_host = std::env::var("CONTINUUM_CORE_BIND")
+                    .unwrap_or_else(|_| "127.0.0.1".to_string());
+                let bind_addr = format!("{bind_host}:{port}");
+                let ws_executor = Arc::clone(&executor);
+                // The positron state substrate for the thin-client fleet:
+                // one shared snapshot+broadcast cell that WS sessions
+                // subscribe against. The airc source wiring (task #29)
+                // holds this same handle and calls `Substrate::store` on
+                // each airc chat/roster change, so the projection tracks
+                // the airc-owned truth (see `ipc::positron_source`).
+                // Constructed here (not in `serve`) so the projection
+                // subscriber shares the instance the server serves.
+                let ws_substrate = continuum_positron::Substrate::new();
+
+                // airc source wiring: subscribe the chat projection to
+                // the live event bus with a clone of the served
+                // substrate. It folds `chat:posted` + `presence:updated`
+                // into the `chat` `ChatViewState` and stores each
+                // transition, which streams down to subscribed WS
+                // sessions as a `State` frame. Requires a wired bus —
+                // fail loud (not a silent skip) if the executor has none,
+                // because a WS server with no state source is a boot bug,
+                // not a runtime condition ([[fallbacks-are-illegal-fail-loud]]).
+                let projection_bus = ws_executor.message_bus().expect(
+                    "CONTINUUM_CORE_WS is set but the command executor has no message bus — \
+                     the positron chat projection has no airc source to subscribe to",
+                );
+                positron_source::spawn(
+                    &state.rt_handle,
+                    projection_bus.clone(),
+                    ws_substrate.clone(),
+                );
+
+                // Producer half of the same stream: attach a node-level
+                // roster reader and emit `presence:updated` so the consumer
+                // above has an identity source to fold in — otherwise every
+                // rendered message keeps its provisional peer-id label
+                // forever. Gated on the SAME (socket, room) precondition as
+                // persona hosting; if airc discovery gave us neither, the
+                // roster has no source and we log the skip (not a silent
+                // fallback — an honestly-disabled projection).
+                match node_presence_deps.clone().zip(persona_bootstrap_room_name.clone()) {
+                    Some(((daemon_socket, room_id), room_name)) => {
+                        let node_home =
+                            crate::modules::persona_instance_manager::resolve_continuum_root()
+                                .join("citizens")
+                                .join("node")
+                                .join("presence")
+                                .join("airc");
+                        positron_presence::spawn_node_presence_emitter(
+                            &state.rt_handle,
+                            daemon_socket,
+                            node_home,
+                            room_id.as_uuid(),
+                            room_name,
+                            projection_bus,
+                        );
+                    }
+                    None => {
+                        tracing::warn!(
+                            "positron presence emitter not started — airc discovery produced no \
+                             (daemon socket, default room, room name); the WS roster will stay \
+                             empty until airc is Healthy"
+                        );
+                    }
+                }
+
+                state.rt_handle.spawn(async move {
+                    ws::serve(bind_addr, ws_executor, ws_substrate).await;
+                });
             }
         }
     }

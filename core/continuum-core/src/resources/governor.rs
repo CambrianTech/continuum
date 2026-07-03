@@ -26,7 +26,7 @@
 //! Defer/Refuse leave the bytes held and re-surface next tick — never a yank.
 
 use super::arbiter::{LeaseArbiter, TieredArbiter};
-use super::consumer::{ReclaimOutcome, ReclaimReason, ReclaimRequest};
+use super::consumer::{ConsumerFootprint, ReclaimOutcome, ReclaimReason, ReclaimRequest};
 use super::ledger::{LeaseBoard, ResourceLeaseLedger};
 use super::lease::{LeaseError, LeaseRequest, ReclaimPolicy, ResourceKind, ResourceLease};
 
@@ -105,6 +105,39 @@ impl ResourceGovernor {
         self.ledger.set_capacity(kind, bytes);
     }
 
+    /// Daemon feeds a consumer's freshly-polled footprint each tick — the
+    /// self-declared ATTRIBUTION ingest, sibling of `set_capacity`. Surfaces on
+    /// the board (per-consumer attribution + `measured_bytes`) and the drift
+    /// probe. See [`ResourceLeaseLedger::set_measured`].
+    pub fn set_measured(&mut self, consumer_id: &str, footprints: Vec<ConsumerFootprint>) {
+        self.ledger.set_measured(consumer_id, footprints);
+    }
+
+    /// Daemon feeds physical usage for a kind each tick — `total − free` from the
+    /// monitor via [`CapacitySource::used_bytes`](super::capacity::CapacitySource).
+    /// The un-inversion's ground truth: this (not `set_measured`) is what nets
+    /// against the fixed ceiling to yield `available`.
+    pub fn set_physical_used(&mut self, kind: ResourceKind, bytes: u64) {
+        self.ledger.set_physical_used(kind, bytes);
+    }
+
+    /// Total self-declared residency of a kind across all measured consumers.
+    pub fn measured(&self, kind: ResourceKind) -> u64 {
+        self.ledger.measured(kind)
+    }
+
+    /// Bytes of a kind physically resident across everyone, as last scanned.
+    pub fn physical_used(&self, kind: ResourceKind) -> u64 {
+        self.ledger.physical_used(kind)
+    }
+
+    /// What is really spoken for of a kind: `max(granted, physical_used)`. The
+    /// daemon reads this for its per-kind contention signal, and reconcile claws
+    /// back the amount by which it exceeds the fixed ceiling.
+    pub fn committed(&self, kind: ResourceKind) -> u64 {
+        self.ledger.committed(kind)
+    }
+
     // ---- lease lifecycle (passthrough with id minting) ---------------------
 
     /// Grant a lease, minting its id. Refuses (fail-loud) if it would exceed
@@ -145,9 +178,11 @@ impl ResourceGovernor {
     // ---- the tick ----------------------------------------------------------
 
     /// The per-tick decision. For each kind, compute how many bytes must come
-    /// back: the over-budget overage (`granted − capacity`, when a scan shrank
-    /// capacity under us) OR the bytes held by overdue-expired leases — whichever
-    /// is larger, so expirations are always driven even when we are under budget.
+    /// back: the over-budget overage (`max(granted, physical_used) − capacity`,
+    /// when our grants plus everything physically resident exceed the fixed
+    /// ceiling — a game grabbing VRAM shows up here as rising `physical_used`, not
+    /// a shrinking ceiling) OR the bytes held by overdue-expired leases —
+    /// whichever is larger, so expirations are always driven even when under budget.
     /// Selects victims via the arbiter (respecting floors + dwell in the ledger)
     /// and returns a [`PlannedReclaim`] per victim. Pure: `now_ms` and the
     /// per-kind `pressure` are supplied; nothing here reads a clock or does I/O.
@@ -182,9 +217,14 @@ impl ResourceGovernor {
     ) -> Vec<PlannedReclaim> {
         let mut plans = Vec::new();
         for kind in ResourceKind::ALL {
-            let granted = self.ledger.granted(kind);
             let capacity = self.ledger.capacity(kind);
-            let overage = granted.saturating_sub(capacity);
+            // Oversubscription against the FIXED ceiling: the larger of what we
+            // granted and what is physically resident (external grabs + our
+            // unleased residency), minus the ceiling. When it is all external and
+            // none of it is a lease we hold, `select_to_reclaim` finds nothing
+            // safe to take and the daemon leaves it (refuses new demand) — we
+            // cannot reclaim a game's memory, only our own leases.
+            let overage = self.ledger.committed(kind).saturating_sub(capacity);
             let expired_bytes: u64 = self
                 .ledger
                 .expire(now_ms)

@@ -80,6 +80,60 @@ struct OpenAIModel {
     max_input_tokens: Option<u32>,
     #[serde(default)]
     max_tokens: Option<u32>,
+    /// OpenRouter-shape modality block. The base OpenAI `/v1/models` spec omits
+    /// this; capability-rich gateways (OpenRouter, some Together rows) publish
+    /// which raw modalities the model ingests/emits. Absent → no caps derived,
+    /// NOT a name guess.
+    #[serde(default)]
+    architecture: Option<OpenAiArchitecture>,
+    /// OpenRouter-shape list of accepted request params (e.g. `"tools"`,
+    /// `"response_format"`). The authoritative statement that tool-calling is
+    /// honored — the alternative to sniffing "does this id look like a
+    /// function-calling model".
+    #[serde(default)]
+    supported_parameters: Vec<String>,
+}
+
+/// The modality block some OpenAI-compatible gateways attach to each listing
+/// row. Values are the provider's own vocabulary (`"text"`, `"image"`,
+/// `"audio"`, `"file"`); we read them literally rather than inferring modality
+/// from the model id.
+#[derive(Debug, Default, Deserialize)]
+struct OpenAiArchitecture {
+    #[serde(default)]
+    input_modalities: Vec<String>,
+    #[serde(default)]
+    output_modalities: Vec<String>,
+}
+
+/// Map the authoritative fields of one OpenAI-compatible listing row to the
+/// canonical [`Capability`](crate::model_registry::types::Capability) kebab
+/// vocabulary. Reads ONLY what the API states — input `"image"`⇒`vision`,
+/// input `"audio"`⇒`audio-input`, output `"audio"`⇒`audio-output`, a
+/// `"tools"` param⇒`tool-use`. Returns `None` when the provider published
+/// nothing capability-bearing (base OpenAI spec), so the catalog/static
+/// override — not a guess — supplies caps for those models.
+fn capabilities_from_openai(model: &OpenAIModel) -> Option<Vec<String>> {
+    let mut caps = Vec::new();
+    if let Some(arch) = &model.architecture {
+        if arch.input_modalities.iter().any(|m| m == "image") {
+            caps.push("vision".to_string());
+        }
+        if arch.input_modalities.iter().any(|m| m == "audio") {
+            caps.push("audio-input".to_string());
+        }
+        if arch.output_modalities.iter().any(|m| m == "audio") {
+            caps.push("audio-output".to_string());
+        }
+    }
+    if model.supported_parameters.iter().any(|p| p == "tools") {
+        caps.push("tool-use".to_string());
+    }
+    if caps.is_empty() {
+        None
+    } else {
+        Some(caps)
+    }
 }
 
 /// Response from Google Gemini API
@@ -97,6 +151,32 @@ struct GeminiModel {
     input_token_limit: Option<u32>,
     #[serde(default)]
     output_token_limit: Option<u32>,
+    /// The generation methods the model supports (e.g. `"generateContent"`,
+    /// `"embedContent"`). Gemini's authoritative statement of what the model
+    /// DOES — the alternative to guessing "is this an embedding model" from
+    /// the id. Modalities aren't in this listing, so vision/audio caps come
+    /// from the catalog override, not a guess.
+    #[serde(default)]
+    supported_generation_methods: Vec<String>,
+}
+
+/// Map a Gemini listing row's `supportedGenerationMethods` to the canonical
+/// capability vocabulary. Only what the API states: `"embedContent"` ⇒
+/// `embedding`. Returns `None` when nothing capability-bearing is present.
+fn capabilities_from_gemini(model: &GeminiModel) -> Option<Vec<String>> {
+    let mut caps = Vec::new();
+    if model
+        .supported_generation_methods
+        .iter()
+        .any(|m| m == "embedContent")
+    {
+        caps.push("embedding".to_string());
+    }
+    if caps.is_empty() {
+        None
+    } else {
+        Some(caps)
+    }
 }
 
 /// Discover models from all providers concurrently.
@@ -198,12 +278,15 @@ async fn fetch_openai_compatible(config: &ProviderConfig) -> Result<Vec<Discover
                 return None;
             }
 
+            // Derive caps from the row's authoritative modality/param fields
+            // BEFORE moving `m.id` — absent fields yield None, never a guess.
+            let capabilities = capabilities_from_openai(&m);
             Some(DiscoveredModel {
                 model_id: m.id,
                 context_window,
                 max_output_tokens: m.max_tokens,
                 provider: config.provider_id.clone(),
-                capabilities: None,
+                capabilities,
                 cost_per_1k_tokens: None,
                 discovered_at: now,
             })
@@ -254,12 +337,13 @@ async fn fetch_gemini(config: &ProviderConfig) -> Result<Vec<DiscoveredModel>, S
                 .unwrap_or(&m.name)
                 .to_string();
 
+            let capabilities = capabilities_from_gemini(&m);
             Some(DiscoveredModel {
                 model_id,
                 context_window,
                 max_output_tokens: m.output_token_limit,
                 provider: config.provider_id.clone(),
-                capabilities: None,
+                capabilities,
                 cost_per_1k_tokens: None,
                 discovered_at: now,
             })
@@ -351,5 +435,61 @@ mod tests {
         assert_eq!(model.name, "models/gemini-2.0-flash");
         assert_eq!(model.input_token_limit, Some(1048576));
         assert_eq!(model.output_token_limit, Some(8192));
+    }
+
+    // what this catches: a capability-rich (OpenRouter-shape) listing row must
+    // yield caps from its OWN modality/param fields — image input → vision,
+    // audio in/out → audio-input/audio-output, a "tools" param → tool-use — in
+    // the canonical kebab vocabulary so they round-trip into a Model's
+    // Capability set. This is the cloud analog of mmproj hydration: the model
+    // is sighted/hearing/tool-using because the API SAID SO, not because its id
+    // looked multimodal.
+    #[test]
+    fn openai_capabilities_come_from_the_api_modality_fields() {
+        let json = r#"{
+            "id":"anthropic/claude-omni",
+            "context_length":200000,
+            "architecture":{
+                "input_modalities":["text","image","audio"],
+                "output_modalities":["text","audio"]
+            },
+            "supported_parameters":["tools","temperature"]
+        }"#;
+        let model: OpenAIModel = serde_json::from_str(json).unwrap();
+        let caps = capabilities_from_openai(&model).expect("rich row must yield caps");
+        assert!(caps.contains(&"vision".to_string()));
+        assert!(caps.contains(&"audio-input".to_string()));
+        assert!(caps.contains(&"audio-output".to_string()));
+        assert!(caps.contains(&"tool-use".to_string()));
+    }
+
+    // what this catches: a plain OpenAI-spec row (no architecture block, no
+    // supported_parameters) yields None, NOT an empty vec or a guessed cap. The
+    // registry then leans on the catalog/static override for that model rather
+    // than inventing capabilities the API never claimed — fail-honest, not
+    // fabricate.
+    #[test]
+    fn openai_bare_row_yields_no_capabilities() {
+        let json = r#"{"id":"gpt-4","context_length":128000}"#;
+        let model: OpenAIModel = serde_json::from_str(json).unwrap();
+        assert!(capabilities_from_openai(&model).is_none());
+    }
+
+    // what this catches: Gemini's authoritative capability signal is
+    // supportedGenerationMethods, not the id — an "embedContent" method makes
+    // the model an embedder. A model listing only generateContent yields no
+    // derived caps (its modalities come from the catalog, absent from the API).
+    #[test]
+    fn gemini_embedding_capability_comes_from_generation_methods() {
+        let embed = r#"{"name":"models/text-embedding-004","inputTokenLimit":2048,"supportedGenerationMethods":["embedContent"]}"#;
+        let m: GeminiModel = serde_json::from_str(embed).unwrap();
+        assert_eq!(
+            capabilities_from_gemini(&m),
+            Some(vec!["embedding".to_string()])
+        );
+
+        let chat = r#"{"name":"models/gemini-2.0-flash","inputTokenLimit":1048576,"supportedGenerationMethods":["generateContent"]}"#;
+        let m2: GeminiModel = serde_json::from_str(chat).unwrap();
+        assert!(capabilities_from_gemini(&m2).is_none());
     }
 }

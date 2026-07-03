@@ -34,6 +34,7 @@ use crate::commands::help::CommandsHelp;
 use crate::sdk_codegen::{command_registry, AccessLevel, ActionCommand, CommandDescriptor};
 use serde_json::json;
 use std::collections::BTreeMap;
+use std::fmt::Write as _;
 
 /// The command a persona calls to learn HOW to invoke one tool — the on-demand half
 /// of progressive disclosure (the catalog gives names; this gives the call format).
@@ -172,37 +173,174 @@ fn tool_summary(d: &CommandDescriptor) -> String {
     }
 }
 
-/// Render the persona's tool surface as a COMPACT CATEGORY INDEX — the categories
-/// she has and how many tools each holds — NOT every tool inline.
+/// Render the persona's tool surface as a NAMED CATALOG GROUPED BY CATEGORY — one
+/// line per category listing the verb of every tool it holds (`code: run, read,
+/// edit, write, search, …`), NOT each tool's full schema.
 ///
-/// Why: dumping all ~150 authorized tools (name + one-line summary, grouped) cost
-/// ~18KB / ~4.6k tokens EVERY turn — 79% of the whole system prompt (measured
-/// 2026-06-23). That both drowned a small model in irrelevant options and forced the
-/// server to re-prefill 4.6k tokens of static catalog each turn. The index is a few
-/// hundred chars. She DRILLS IN on demand: `commands/list` with a `filter` returns
-/// the small list of tools in a category (search → small list), then `commands/help`
-/// gives one tool's exact call format. Progressive disclosure — the same shape a
-/// capable agent runtime uses (a handful of always-on tools + a search), and the
-/// SAME single source of truth (the authorized set), just indexed instead of dumped.
-/// Dispatch is still by NAME, so any tool she names from a `commands/list` result
-/// runs. `_budget_chars` retained for call-site compatibility; the index is small by
-/// construction so it never needs a fallback tier.
+/// ## Why names, not just counts (measured 2026-06-29)
+/// Two extremes were tried and both failed. (1) Dumping all ~150 tools with a
+/// one-line SUMMARY each cost ~18KB / ~4.6k tokens every turn — 79% of the system
+/// prompt — drowning a small model and re-prefilling 4.6k static tokens per turn.
+/// (2) Collapsing to a bare category INDEX (`code (25)`) was tiny but hid every tool
+/// NAME: to run code she had to guess the category, `commands/list` it (25 results),
+/// find `code/run`, `commands/help` it, then call — a 5-hop gauntlet. Glass-box over
+/// 3351 captured turns showed the cost: native `code/run` 3×, markdown code-fences
+/// 909×, `commands/help` lookups 166× — she SHOWED code instead of RUNNING it because
+/// she couldn't SEE the tool existed. Names alone are the 80/20: most verbs
+/// (`run`, `read`, `list`, `search`) are self-evident, so seeing the name collapses
+/// discovery to 2 hops (read name → `commands/help` for args → call). The SUMMARY was
+/// the 18KB; names without summaries are ~2–3KB — small enough to ride every turn.
+///
+/// Still progressive disclosure (no full schemas inline; `commands/help` gives the
+/// call format on demand), still a pure data-driven projection of the authorized set
+/// (NOT a hardcoded list, NOT coding-specific — every category renders its verbs
+/// uniformly), still cacheable (the authorized set is stable within a session, so the
+/// catalog is a byte-stable prefix). Dispatch is by NAME, so any verb she reads here
+/// runs. `_budget_chars` retained for call-site compatibility; the named catalog is
+/// small by construction (names, not summaries) so it never needs a fallback tier.
 pub fn render_tool_catalog(tools: &[NativeToolSpec], _budget_chars: usize) -> String {
     if tools.is_empty() {
         return String::new();
     }
-    // Count tools per category, stable (BTreeMap) ordering.
-    let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
+    // Group tool VERBS (the name minus its leading category segment) under each
+    // category, each rendered `verb(param, param?)` (see [`render_param_hint`]);
+    // stable (BTreeMap + sort) ordering for a byte-stable cacheable prefix.
+    let mut by_cat: BTreeMap<&str, Vec<String>> = BTreeMap::new();
     for t in tools {
-        *counts.entry(extract_category(&t.name)).or_default() += 1;
+        let cat = extract_category(&t.name);
+        // The verb is everything after the first `/` (so `persona/instances/list`
+        // shows as `instances/list`); a name with no `/` lists under itself.
+        let verb = t.name.strip_prefix(cat).and_then(|r| r.strip_prefix('/')).unwrap_or(&t.name);
+        by_cat
+            .entry(cat)
+            .or_default()
+            .push(format!("{verb}{}", render_param_hint(&t.input_schema)));
     }
-    let mut out: String = counts
-        .iter()
-        .map(|(cat, n)| format!("{cat} ({n})"))
-        .collect::<Vec<_>>()
-        .join(", ");
-    out.push('\n');
+    let mut out = String::new();
+    for (cat, mut verbs) in by_cat {
+        verbs.sort_unstable();
+        let _ = writeln!(out, "{cat}: {}", verbs.join(", "));
+    }
     out
+}
+
+/// Render one tool's parameter FIELD NAMES as a compact `(required, optional?)`
+/// hint appended to its catalog verb — required params bare, optional params
+/// suffixed `?`. A no-param command renders as the empty string (just the verb).
+///
+/// ## Why field names ride the catalog (measured 2026-07-01, [[persona-codes-blind]])
+/// Progressive disclosure keeps full param SCHEMAS out of the always-on prompt
+/// (they cost ~4.6k tokens/turn; [`render_tool_catalog`] doc). But names-only
+/// verbs (`code: run, search, read`) left the *param* names invisible too — and a
+/// live 2-task probe on Asha + Solenne (qwen2.5-coder-14b) showed the 14B model
+/// skips the `commands/help` hop and GUESSES field names: `code/search{query}`
+/// (wants `pattern`), `code/run{path:...}` (wants `code`) → both `[invalid]
+/// CommandRequest: missing field`, burning a ~10-15s act each on the
+/// prefill-dominated Metal lane. Field NAMES are the cheap 80/20 fix: a name-list
+/// is a handful of tokens (not the typed+described schema), and it collapses the
+/// guess-fail-retry that convergence + latency compound over. Still progressive
+/// disclosure — types, descriptions, and defaults stay behind `commands/help`;
+/// this adds only which fields exist and which are required. Deterministic order
+/// (required in schema-declaration order, then optional sorted) keeps the catalog
+/// a byte-stable cacheable prefix.
+fn render_param_hint(schema: &ToolInputSchema) -> String {
+    let required: Vec<&str> = schema
+        .required
+        .as_deref()
+        .unwrap_or(&[])
+        .iter()
+        .map(String::as_str)
+        .collect();
+    // Optional = property keys not in `required`, sorted for byte-stability
+    // (`properties` object key order is not guaranteed deterministic).
+    let mut optional: Vec<&str> = schema
+        .properties
+        .as_object()
+        .map(|m| {
+            m.keys()
+                .map(String::as_str)
+                .filter(|k| !required.contains(k))
+                .collect()
+        })
+        .unwrap_or_default();
+    optional.sort_unstable();
+    if required.is_empty() && optional.is_empty() {
+        return String::new();
+    }
+    let parts: Vec<String> = required
+        .iter()
+        .map(|r| (*r).to_string())
+        .chain(optional.iter().map(|o| format!("{o}?")))
+        .collect();
+    format!("({})", parts.join(", "))
+}
+
+/// Render the tool surface as an EXPANDABLE BOOKMARKED MENU: every category HEADER
+/// is shown (the stable spine — the menu never changes shape turn to turn), but only
+/// the `expanded` categories list their verbs inline; the rest render as collapsed
+/// bookmarks (`gpu (4 — commands/list --filter gpu)`) she opens on demand.
+///
+/// This is the adaptive-but-coherent middle path (Joel 2026-06-29,
+/// [[adaptive-tool-surface-meets-you-in-the-middle]]): the spine gives her the full
+/// map every turn (never a confusing reshuffle), while [`tool_relevance`] decides
+/// which categories open for what she's doing now + the sticky "where you were"
+/// cursor (per-(user, room) state owned by airc, threaded in by slice 2). Sibling to
+/// [`render_tool_catalog`] (the open-everything render).
+///
+/// [`tool_relevance`]: crate::cognition::tool_relevance
+pub fn render_tool_menu(
+    tools: &[NativeToolSpec],
+    expanded: &std::collections::BTreeSet<String>,
+) -> String {
+    if tools.is_empty() {
+        return String::new();
+    }
+    // Same grouping as render_tool_catalog — stable (BTreeMap) order so the spine is
+    // a byte-stable prefix; only the per-category expansion differs. An expanded
+    // category renders its verbs WITH param-name hints (`verb(param, param?)`, see
+    // [`render_param_hint`]) so an expanded surface is byte-identical to the same
+    // slice of [`render_tool_catalog`] — the field-name-guessing fix (measured
+    // 2026-07-01) must not regress just because the verb rides the menu instead of
+    // the catalog. Collapsed categories carry no hints (their verbs aren't shown).
+    let mut by_cat: BTreeMap<&str, Vec<String>> = BTreeMap::new();
+    for t in tools {
+        let cat = extract_category(&t.name);
+        let verb = t.name.strip_prefix(cat).and_then(|r| r.strip_prefix('/')).unwrap_or(&t.name);
+        by_cat
+            .entry(cat)
+            .or_default()
+            .push(format!("{verb}{}", render_param_hint(&t.input_schema)));
+    }
+    let mut out = String::new();
+    for (cat, mut verbs) in by_cat {
+        verbs.sort_unstable();
+        if expanded.contains(cat) {
+            let _ = writeln!(out, "{cat}: {}", verbs.join(", "));
+        } else if verbs.len() == 1 {
+            // A singleton category isn't worth collapsing — its one verb IS the name.
+            let _ = writeln!(out, "{cat}: {} (+ commands/list --filter {cat})", verbs[0]);
+        } else {
+            let _ = writeln!(out, "{cat} ({} — commands/list --filter {cat})", verbs.len());
+        }
+    }
+    out
+}
+
+/// Group the authorized tools into `(category, verbs)` pairs — the input
+/// [`tool_relevance::select_expanded_categories`] scores to decide which categories
+/// the menu opens. Verbs are the BARE names (no param hints): they are the category's
+/// vocabulary for lexical relevance, not a render. Stable (BTreeMap) order so the
+/// scored category list matches the spine order [`render_tool_menu`] emits.
+///
+/// [`tool_relevance::select_expanded_categories`]: crate::cognition::tool_relevance::select_expanded_categories
+pub fn group_categories(tools: &[NativeToolSpec]) -> Vec<(&str, Vec<&str>)> {
+    let mut by_cat: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+    for t in tools {
+        let cat = extract_category(&t.name);
+        let verb = t.name.strip_prefix(cat).and_then(|r| r.strip_prefix('/')).unwrap_or(&t.name);
+        by_cat.entry(cat).or_default().push(verb);
+    }
+    by_cat.into_iter().collect()
 }
 
 /// The tools offered NATIVELY (as function specs) every turn: the discovery pair.
@@ -402,6 +540,86 @@ pub struct ToolSurfaceReport {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn spec(name: &str) -> NativeToolSpec {
+        NativeToolSpec {
+            name: name.to_string(),
+            description: String::new(),
+            input_schema: ToolInputSchema {
+                schema_type: "object".to_string(),
+                properties: json!({}),
+                required: None,
+                definitions: None,
+            },
+        }
+    }
+
+    // what this catches: the menu render is an expandable bookmarked menu — EVERY
+    // category appears (the stable spine), an expanded category lists its verbs
+    // inline, and a collapsed one shows only a depth + how to open it. Regression
+    // here = the menu degrading back into either a full dump or a blind index.
+    #[test]
+    fn render_tool_menu_expands_only_selected_categories() {
+        let tools = [
+            spec("code/run"),
+            spec("code/read"),
+            spec("code/edit"),
+            spec("gpu/stats"),
+            spec("gpu/pressure"),
+        ];
+        let expanded: std::collections::BTreeSet<String> = ["code".to_string()].into_iter().collect();
+        let out = render_tool_menu(&tools, &expanded);
+
+        // Spine: both categories present every turn.
+        assert!(out.contains("code"), "code header missing: {out}");
+        assert!(out.contains("gpu"), "gpu header missing (spine broken): {out}");
+        // Expanded code lists its verbs inline.
+        assert!(out.contains("code: edit, read, run"), "code not expanded: {out}");
+        // Collapsed gpu shows depth + how to open, NOT its verbs.
+        assert!(out.contains("gpu (2 — commands/list --filter gpu)"), "gpu not collapsed: {out}");
+        assert!(!out.contains("stats"), "collapsed gpu leaked verbs: {out}");
+    }
+
+    // Build a spec whose schema declares required + optional fields, so the
+    // catalog's param-name rendering can be asserted.
+    fn spec_with(name: &str, required: &[&str], optional: &[&str]) -> NativeToolSpec {
+        let mut props = serde_json::Map::new();
+        for f in required.iter().chain(optional.iter()) {
+            props.insert((*f).to_string(), json!({ "type": "string" }));
+        }
+        NativeToolSpec {
+            name: name.to_string(),
+            description: String::new(),
+            input_schema: ToolInputSchema {
+                schema_type: "object".to_string(),
+                properties: serde_json::Value::Object(props),
+                required: (!required.is_empty())
+                    .then(|| required.iter().map(|s| s.to_string()).collect()),
+                definitions: None,
+            },
+        }
+    }
+
+    // what this catches: the always-on catalog surfaces each verb's PARAM FIELD
+    // NAMES (required bare, optional suffixed `?`) so a small model stops guessing
+    // `code/search{query}`/`code/run{path}` and hitting `[invalid] CommandRequest`
+    // (2026-07-01 legibility fix, [[persona-codes-blind]]). Required order is the
+    // schema's declared order; optional is sorted; a no-param verb renders bare.
+    #[test]
+    fn catalog_renders_param_field_names() {
+        let tools = [
+            spec_with("code/search", &["pattern"], &["path"]),
+            spec_with("code/run", &["lang", "code"], &["timeout_secs"]),
+            spec("code/list"), // no params → bare verb, no parens
+        ];
+        let out = render_tool_catalog(&tools, 0);
+        // Required bare, optional suffixed `?`; required keeps declared order.
+        assert!(out.contains("run(lang, code, timeout_secs?)"), "run params wrong: {out}");
+        assert!(out.contains("search(pattern, path?)"), "search params wrong: {out}");
+        // A no-param verb renders bare — no empty `()`.
+        assert!(out.contains("list,") || out.trim_end().ends_with("list"), "list should be bare: {out}");
+        assert!(!out.contains("list()"), "no-param verb must not render empty parens: {out}");
+    }
 
     // what this catches: the tool surface is DYNAMIC and consistent — it is
     // exactly the AiSafe slice of command_registry, nothing hardcoded. If a

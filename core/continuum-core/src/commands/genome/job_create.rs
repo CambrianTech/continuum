@@ -90,18 +90,48 @@ crate::action_command! {
             }
         };
 
+        // Capture the genome-paging context BEFORE the request moves into the
+        // adapter — the L3 completion sentinel needs exactly these four facts to run
+        // the eval→page-in chain when the job completes, without re-deriving any.
+        let watched_persona_id = p.request.persona_id;
+        let watched_persona_name = p.request.persona_name.clone();
+        let watched_base_model = p.request.base_model.clone();
+        let watched_trait_kind = p.request.trait_kind.clone();
+        let watched_eval_set = p.request.eval_set.clone();
+
         // 2. Adapter creates the job. FineTuningError carries a stable errorKind
         //    slug callers branch on for retry-vs-surface.
         match adapter.create_job(p.request).await {
-            Ok(handle) => Ok(JobCreateOutcome {
-                success: true,
-                result: Some(JobCreateResult {
-                    handle,
-                    selected_provider,
-                }),
-                error: None,
-                error_kind: None,
-            }),
+            Ok(handle) => {
+                // L2→L3 seam (the ONE birth-seam): every training job is born here —
+                // the trigger's batch path dispatches THIS command, a direct
+                // `cu genome/job-create` lands here, and so will any future caller.
+                // Registering the in-flight handle on the board at this single point
+                // is what lets the completion sentinel poll it, run `cognition/eval`,
+                // and page the gene in on `lift > 0`. Without it the handle drops on
+                // the floor and the loop stops at "trained", never "measured +
+                // adopted" ([[dev-task-learning-loop-gap-map]] L3,
+                // docs/genome/DEV-TASK-LOOP-CLOSURE-PLAN.md).
+                crate::genome::fine_tuning::TrainingJobBoard::global().register(
+                    crate::genome::fine_tuning::WatchedJob {
+                        handle: handle.clone(),
+                        persona_id: watched_persona_id,
+                        persona_name: watched_persona_name,
+                        base_model: watched_base_model,
+                        trait_kind: watched_trait_kind,
+                        eval_set: watched_eval_set,
+                    },
+                );
+                Ok(JobCreateOutcome {
+                    success: true,
+                    result: Some(JobCreateResult {
+                        handle,
+                        selected_provider,
+                    }),
+                    error: None,
+                    error_kind: None,
+                })
+            }
             Err(e) => Ok(JobCreateOutcome {
                 success: false,
                 result: None,

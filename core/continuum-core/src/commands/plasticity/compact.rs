@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use ts_rs::TS;
 
+use crate::model_registry::ModelArchConfig;
 use crate::modules::plasticity::types::{CompactionConfig, CompactionResult};
 use crate::modules::plasticity::{build_topology, compactor, topology};
 
@@ -58,9 +59,10 @@ crate::action_command! {
         let gradients_path = PathBuf::from(&p.adapter_path).join("gate_gradients.json");
         let utilization = topology::load_utilization_data(&gradients_path)?;
 
-        let topo = build_topology(&utilization, &config);
-
         let model_path_buf = PathBuf::from(&p.model_path);
+        let arch = ModelArchConfig::from_artifact(&model_path_buf)?;
+        let topo = build_topology(&utilization, &config, &arch);
+
         let result = if model_path_buf.is_dir() {
             compactor::compact_model_sharded(&model_path_buf, &topo, &output_path)?
         } else {

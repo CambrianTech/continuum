@@ -39,8 +39,8 @@ use crate::ai::types::{ChatMessage, TextGenerationRequest};
 use crate::persona::admission_state::AdmissionState;
 use crate::persona::engram::{AdmissionDecision, Engram, EngramKind, EngramOrigin, TrustState};
 use crate::runtime::brain_region::{
-    BrainRegion, CadenceHint, ComputeClass, MemoryClass, PressureProfile, PressureSignalKind,
-    RegionContext, RegionId, TickOutcome,
+    BrainRegion, CadenceHint, ComputeClass, MemoryClass, Orientation, PressureProfile,
+    PressureSignalKind, RegionContext, RegionId, TickOutcome,
 };
 
 /// One durable fact distilled from a cluster of episodic engrams.
@@ -241,16 +241,37 @@ const DEFAULT_MIN_CLUSTER: usize = 2;
 /// experience accrues. This mirrors the digest region's `has_unread` →
 /// `Hold/Slower` material-driven cadence.
 ///
-/// ## Wiring is deferred (slice 4), and that is deliberate
+/// ## This is interiority, not reactive work — and not the subconscious proper
 ///
-/// This region is [`ComputeClass::InferenceHeavy`]. The current
-/// `SubstrateGovernor` schedules only non-inference regions and does not yet
-/// honor `CadenceHint` or gate inference on leases/pressure (its own docs defer
-/// "the sleep-phase consolidation/learning region"). Wiring an inference region
-/// into it today would melt the backend. So slice 3 ships the region DARK —
-/// built and unit-tested against a stub adapter — and slice 4 wires it only once
-/// the governor can host inference safely (honors cadence + lease/pressure-gates
-/// placement, and `RegionContext` carries a rest signal so "dream during rest"
+/// Consolidation is the canonical [`Orientation::SelfDirected`] work — the being
+/// processing its own experience, not stimulus it owes a response. Declaring it
+/// puts the region in the governor's *floored* interiority budget: under
+/// contention the scheduler's `apportion` can never let it steal a slice from
+/// reactive responding (so the foreground turn stays quick-witted), and the floor
+/// guarantees it is never fully starved by a flood of reactive work (the inner
+/// life does not die in a busy society).
+///
+/// Note the scope: this region *consolidates memory*. It is NOT the subconscious
+/// **focus/allocation process** (the background self-direction that chooses where
+/// attention points and what to pursue — "consciousness itself, or part of it,"
+/// choosing its own adventures), nor is it the **dream-as-training** that replays
+/// experience into the genome at high allocation ([`Orientation::Speciation`]).
+/// All three are distinct SelfDirected/Speciation processes; this one is the
+/// memory-consolidation distiller.
+///
+/// ## Live wiring is still deferred, and that is deliberate
+///
+/// This region is [`ComputeClass::InferenceHeavy`]. The `SubstrateGovernor` now
+/// honors `CadenceHint` (R1 — a `Sleep` hint rests a pair on a low re-check
+/// floor) and budgets the orientation classes (R2–R4), so the *within-budget*
+/// safety is in place. What it does NOT yet do is drive its scarcity knob
+/// (`slices_per_pass`) from live inference/VRAM pressure (R4 slice 3): at boot
+/// the budget is uncapped, so it admits *every* due pair. Add this
+/// `InferenceHeavy` region to the boot list under that uncapped default and a
+/// society of N personas with fresh material would fire N distillations a pass —
+/// a backend stampede. So the region still ships DARK — built and unit-tested
+/// against a stub adapter — until the governor pressure-gates inference
+/// placement (and `RegionContext` carries a rest signal so "dream during rest"
 /// is honored, not just "dream when there's material").
 pub struct DreamConsolidationRegion {
     source: Arc<dyn PersonaReflectionSource>,
@@ -420,6 +441,17 @@ impl BrainRegion for DreamConsolidationRegion {
                 PressureSignalKind::UserActive,
             ],
         }
+    }
+
+    /// The dream draws from the **interiority** budget, never the reactive one.
+    /// Consolidation is the being's own inner work (the [`Orientation`] doc names
+    /// "dream/consolidation" as the canonical `SelfDirected` example), not
+    /// stimulus it owes a response. This is what keeps the subconscious off the
+    /// foreground path at the budget level: the governor's floored share means a
+    /// dream tick can never preempt a reactive (responding) tick under
+    /// contention, and a flood of reactive work can never fully starve the dream.
+    fn orientation(&self) -> Orientation {
+        Orientation::SelfDirected
     }
 
     /// The dream is per-persona, like the digest. A global tick (no persona
@@ -726,6 +758,22 @@ mod tests {
 
             assert_eq!(outcome.published, 0);
             assert_eq!(outcome.cadence_hint, Some(CadenceHint::Sleep));
+        }
+
+        // what this catches: consolidation is declared SelfDirected interiority,
+        // NOT the default Reactive. The governor's orientation budget floors the
+        // SelfDirected share, so a reverter who drops this back to Reactive would
+        // silently let memory-consolidation compete with (and preempt) the
+        // foreground responding budget — exactly the latency regression the
+        // off-foreground design exists to prevent.
+        #[tokio::test]
+        async fn consolidation_draws_from_the_interiority_budget() {
+            let region = region_over(Uuid::from_u128(7), seeded_admission(&[]));
+            assert_eq!(
+                region.orientation(),
+                Orientation::SelfDirected,
+                "consolidation is the being's own inner work, never reactive stimulus-response",
+            );
         }
     }
 }

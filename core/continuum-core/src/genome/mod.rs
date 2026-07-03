@@ -82,8 +82,8 @@ pub use eviction::rank_pages_for_eviction;
 pub use local_manager::LocalWorkingSetManager;
 pub use manager::WorkingSetManager;
 pub use recall::{
-    AcquireSource, FreshnessTarget, PeerId, RecallError, RecallScope, RecallScore, ResidencyHint,
-    TaskKind, TrustClass,
+    AcquireSource, FreshnessTarget, RecallError, RecallScope, RecallScore, ResidencyHint, TaskKind,
+    TrustClass,
 };
 pub use residency::GenomeResidencyModule;
 pub use recall_trait::{
@@ -94,8 +94,8 @@ pub use recall_trait::{
 pub use store::TierStore;
 pub use tier::{EvictionPolicy, EvictionRecord, TierCapacity, TierError, TierRole};
 pub use working_set::{
-    AccessDenied, ArtifactId, PageFault, PageHandle, PageKind, PageOffset, PageRef, PersonaId,
-    ResidentPage, WorkingSet, WorkingSetCapacity,
+    AccessDenied, ArtifactId, PageFault, PageHandle, PageKind, PageOffset, PageRef, ResidentPage,
+    WorkingSet, WorkingSetCapacity,
 };
 pub mod recall_scoring;
 pub use recall_scoring::{

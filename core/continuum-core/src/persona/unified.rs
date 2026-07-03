@@ -118,6 +118,11 @@ pub struct PersonaCognition {
     pub capture_sink: Arc<dyn RagCaptureSink>,
 }
 
+// Self-determined attention allocation (#91) does NOT live on the brain: it must be
+// reachable by `persona_id` from BOTH the service loop and a self-set tool she invokes
+// through the command registry (which only knows her id, never holds `cognition.lock()`).
+// Its single home is `crate::persona::focus::registry()` — see that module.
+
 /// What [`PersonaCognition::compose_for_turn`] returns — the
 /// substrate's structured handoff between "brain composed a budgeted
 /// multi-source prompt context" and "inference adapter generates a

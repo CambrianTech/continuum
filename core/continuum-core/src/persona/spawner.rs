@@ -123,7 +123,13 @@ mod tests {
             slug,
             uuid::Uuid::new_v4()
         ));
-        std::fs::write(&path, b"fake gguf").expect("create tempfile");
+        // Must be a STRUCTURALLY VALID empty GGUF, not arbitrary bytes:
+        // `Registry::from_catalog` hydrates every resolved GGUF's header at
+        // load (#74), and `b"fake gguf"` fails loud with `unknown magic` the
+        // moment hydration reads it. `write_empty_gguf` is the one canonical
+        // "a model is present here" stand-in — parseable, zero metadata, so
+        // the row's hand-authored fields stand unchanged.
+        crate::model_registry::artifacts::write_empty_gguf(&path);
         path
     }
 
@@ -157,11 +163,13 @@ mod tests {
             cost_input_per_1k: 0.0,
             cost_output_per_1k: 0.0,
             gguf_hint: None,
+            hf_source: None,
             gguf_local_path: Some(make_fake_gguf_tempfile("lcd")),
             chat_template: Some("{% for m in messages %}".to_string()),
             stop_sequences: vec!["<|im_end|>".to_string()],
             multi_party_strategy: MultiPartyChatStrategy::ProperChatMlSingleParty,
             mmproj_local_path: None,
+            parameter_count: 0,
         };
         Arc::new(
             Registry::from_catalog(vec![qwen25_05b], vec![llamacpp_provider])

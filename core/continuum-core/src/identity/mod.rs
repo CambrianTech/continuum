@@ -60,6 +60,31 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 use uuid::Uuid;
 
+/// The substrate's ONE canonical actor-identity type: `airc_core::PeerId`.
+///
+/// Every actor on the substrate — persona, agent session, human, jtag, web —
+/// is identified by this single type. Per the module doctrine above ("your
+/// airc cryptographic identity IS your substrate identity ... the peer_id
+/// directly, not a separate continuum-side surrogate"), the canonical type is
+/// airc's OWN `PeerId`: a `#[serde(transparent)]` UUIDv4 newtype
+/// (`Copy + Hash + Eq + Display`, `from_uuid`/`as_uuid`) whose wire shape is the
+/// bare hyphenated string — identical to what a bare `Uuid` serializes to. We
+/// re-export it here so the whole crate imports identity from ONE home.
+///
+/// ## Do NOT define another `*Id(Uuid)` newtype for an actor
+///
+/// `genome::working_set::PersonaId` and `genome::recall::PeerId` were two
+/// continuum-side re-inventions of exactly this concept; both were collapsed
+/// onto this canonical type (2026-06-30, [[identity-one-canonical-newtype-not-bare-uuid]]).
+/// A third re-invention re-opens the same drift — a persona IS a peer, so its
+/// identity IS a `PeerId`; the field NAME (`persona:`, `node:`) carries the role.
+///
+/// For a ts-rs wire struct, type the field `PeerId` and annotate
+/// `#[ts(type = "string")]` — airc's `PeerId` carries no `TS` derive by design
+/// (it serializes transparently to the same string a `Uuid` would), so the
+/// generated TS shape is unchanged.
+pub use airc_core::PeerId;
+
 /// What kind of actor this identity belongs to. The substrate
 /// treats every kind symmetrically — same Identity entity, same
 /// ORM table, same airc-peer routing — but the kind tag lets

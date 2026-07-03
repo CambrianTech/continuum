@@ -261,7 +261,7 @@ impl CommandRequestHandler {
         // invalid grant → empty caps → pure tier gating (unchanged behavior).
         let granted = self.verify_presented_grant(parsed).await;
         let caller =
-            CallerIdentity::airc(parsed.caller_peer_id.0).with_granted_capabilities(granted);
+            CallerIdentity::airc(parsed.caller_peer_id).with_granted_capabilities(granted);
         Self::dispatch_request(&self.executor, parsed, caller).await
     }
 
@@ -314,7 +314,7 @@ impl CommandRequestHandler {
         executor: &CommandExecutor,
         parsed: &ParsedEnvelope,
     ) -> AircCommandResponse {
-        let caller = CallerIdentity::airc(parsed.caller_peer_id.0);
+        let caller = CallerIdentity::airc(parsed.caller_peer_id);
         Self::dispatch_request(executor, parsed, caller).await
     }
 
@@ -325,6 +325,26 @@ impl CommandRequestHandler {
     async fn dispatch_request(
         executor: &CommandExecutor,
         parsed: &ParsedEnvelope,
+        caller: CallerIdentity,
+    ) -> AircCommandResponse {
+        Self::execute_command_request(executor, &parsed.request, caller).await
+    }
+
+    /// The single owner of "an [`AircCommandRequest`] + a [`CallerIdentity`] →
+    /// an [`AircCommandResponse`]". Decodes the envelope's routing intent
+    /// (`kind`/`env`), maps the path to a local [`CommandUri`], dispatches through
+    /// the executor as `caller` (whose tier + granted capabilities the gate
+    /// honors), and encodes the [`CommandResult`] back into the wire response.
+    ///
+    /// Every remote-ingress path funnels through here — the airc peer handler
+    /// ([`dispatch_request`](Self::dispatch_request)) AND the WS ingress
+    /// (`ipc::ws`) both call this so the wire-dispatch contract has ONE owner
+    /// ([[the-compression-principle]]). Callers differ only in how they
+    /// authenticate the `caller` (airc = signed sender; WS = Provisional TCP-tier
+    /// ceiling until a GH-auth handshake lands).
+    pub async fn execute_command_request(
+        executor: &CommandExecutor,
+        request: &AircCommandRequest,
         caller: CallerIdentity,
     ) -> AircCommandResponse {
         // PR #1529 reviewer 2 BLOCK fix: the request envelope carries
@@ -342,7 +362,7 @@ impl CommandRequestHandler {
         // but no per-env service registration yet. Until then,
         // env-targeted calls hard-error so the caller knows the
         // semantics aren't wired.
-        if parsed.request.kind != continuum_airc_protocol::KIND_PEER {
+        if request.kind != continuum_airc_protocol::KIND_PEER {
             return AircCommandResponse::error(format!(
                 "remote dispatch kind={:?} not yet implemented — \
                  only kind=\"peer\" is wired. Room broadcast and \
@@ -350,10 +370,10 @@ impl CommandRequestHandler {
                  fan-out semantics (all-replies-collect vs first-reply-wins \
                  vs fire-and-forget). Per [[no-fallbacks-ever]] the \
                  handler refuses to silently substitute Local routing.",
-                parsed.request.kind
+                request.kind
             ));
         }
-        if let Some(env) = &parsed.request.env {
+        if let Some(env) = &request.env {
             return AircCommandResponse::error(format!(
                 "remote dispatch with env={:?} not yet implemented — \
                  the substrate has the EnvironmentId typed primitive \
@@ -369,10 +389,10 @@ impl CommandRequestHandler {
         // granted capabilities) and decides whether to allow — the gate's verdict
         // variants (Allowed / Forbidden / Deferred) propagate as the canonical
         // error string from execute_with_caller's Err arm.
-        let uri = CommandUri::local(&parsed.request.path);
+        let uri = CommandUri::local(&request.path);
 
         match executor
-            .execute_with_caller(uri, parsed.request.params.clone(), Some(caller))
+            .execute_with_caller(uri, request.params.clone(), Some(caller))
             .await
         {
             Ok(CommandResult::Json(value)) => AircCommandResponse::ok(value),
@@ -873,7 +893,7 @@ mod tests {
              process_request_via failed to thread the caller through",
         );
         assert_eq!(
-            observed.peer_id, sender_peer_id.0,
+            observed.peer_id, sender_peer_id,
             "caller's peer_id must match the envelope sender — \
              closes the silent-privilege-escalation seam reviewer 2 flagged"
         );

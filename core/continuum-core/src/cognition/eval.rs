@@ -37,8 +37,14 @@ use crate::inference::llama_server::LanePlacement;
 use crate::sdk_codegen::{AccessLevel, ActionCommand, CommandError, Ctx};
 
 /// The committed, discriminating coder set used when the caller passes neither
-/// inline `tasks` nor an explicit `eval_set` path. Authoring a harder/specialized
-/// eval = add lines to the JSONL, no recompile.
+/// inline `tasks` nor an explicit `eval_set` path. Resolved (not read raw)
+/// through [`super::gym::resolve_gym`], so the default — like every committed
+/// gym — comes from the embedded registry, CWD- and deployment-independent. A
+/// *custom* set still uses `--eval_set <path>` (an existing on-disk file wins);
+/// only changing a *committed* gym needs a rebuild — the right trade, since the
+/// committed gyms must be reliable. The whole class of "core launched from a
+/// different cwd → file-not-found → silent degrade" is killed by going through
+/// the resolver instead of `std::fs::read_to_string`.
 const DEFAULT_EVAL_SET: &str = "docs/genome/coder-eval.jsonl";
 
 /// How many act→observe cycles a single task may take before it counts as
@@ -52,16 +58,22 @@ const DEFAULT_MAX_ACTS: u32 = 8;
 /// only its constancy matters.
 const EVAL_EPOCH_MS: u64 = 1_700_000_000_000;
 
-/// Bounded context window for the EPHEMERAL gene-measurement lane. This is NOT the
-/// live-serving window — that comes host-fit from the serving plan (#46/#50) and
-/// must never handicap a capable model. This is a THROWAWAY second lane that has to
-/// coexist with the LIVING persona's lane while we score a copy (#59), so its KV is
-/// deliberately small: the coder-eval prompts are short and the deliberation faculty
-/// already bounds its offered tools to fit whatever window the fork carries. Always
-/// capped by the base model's own trained ceiling. Follow-up: pre-flight
-/// `plan_serving` against the live budget (thread the daemon's plan watch into this
-/// command, the way `serving/plan` does) so this lane's window is host-fit too,
-/// rather than a constant.
+/// PHYSICAL launch window (`-c`) cap for the EPHEMERAL gene-measurement lane — NOT
+/// the fork's cognition window. The fork's cognition window is read back from the
+/// lane's real `/props` after spawn (`EphemeralServingLane::served_context_window`),
+/// the SAME served-truth pin the supervisor applies to the living persona, so a
+/// measurement copy always budgets against exactly what its lane serves — never a
+/// constant fed to cognition independently of the lane
+/// ([[dreaming-mind-eval-must-match-live-cognition]], task #50). This constant only
+/// bounds how big that throwaway lane's KV may get: it has to coexist with the
+/// LIVING persona's lane while we score a copy (#59), so its `-c` is deliberately
+/// small — coder-eval prompts are short and the deliberation faculty bounds its
+/// offered tools to whatever window the fork carries. Always capped by the base
+/// model's own trained ceiling. Follow-up (env-match, not self-consistency): size
+/// this lane's `-c` host-fit via `plan_serving` against the live budget (needs a
+/// daemon-published budget watch threaded in, the way `serving/plan` reads it) so
+/// the measurement lane's geometry mirrors what production would serve THIS base —
+/// negligible for short coder prompts, but the last constant on this path.
 const EVAL_LANE_CONTEXT: u32 = 16_384;
 
 /// Base port the ephemeral eval lane scans up from for a free one. Deliberately
@@ -240,9 +252,14 @@ async fn spawn_gene_eval_lane(
             ))
         })?;
 
-    // 3. Bounded, model-capped served window for the throwaway lane (see
+    // 3. Bounded, model-capped PHYSICAL window (`-c`) for the throwaway lane (see
     //    EVAL_LANE_CONTEXT). One lane: a single measurement stream, no batching.
-    let served_ctx = base.context_window.min(EVAL_LANE_CONTEXT);
+    //    This sizes the lane's launch `-c` + its placement; the fork's COGNITION
+    //    window is read back from the lane's real `/props` after spawn (below), the
+    //    same served-truth pin the supervisor applies to the living persona — so a
+    //    measurement copy budgets against exactly what its lane serves, never this
+    //    planned value ([[dreaming-mind-eval-must-match-live-cognition]], task #50).
+    let lane_ctx = base.context_window.min(EVAL_LANE_CONTEXT);
 
     // 3b. GPU-FIRST placement (Joel: fill GPU lanes first, ~100% utilization; CPU is
     //     spillover of last resort, never the default for a coexisting lane). Probe
@@ -251,14 +268,14 @@ async fn spawn_gene_eval_lane(
     //     chosen device + headroom ride out on the result so a CPU spill is VISIBLE in
     //     the harness, not a silent slow path.
     let placement_evidence =
-        decide_eval_lane_placement(&base, served_ctx, &format!("eval-lane gene:{}", gene.name));
+        decide_eval_lane_placement(&base, lane_ctx, &format!("eval-lane gene:{}", gene.name));
 
     // 4. Bring the lane up: forged base + the gene loaded via `--lora` (loadable;
     //    the per-request `lora` field decides per turn whether it actually pages in,
     //    which is exactly the base-vs-gene A/B below).
     let target = ServingTarget {
         model: base.clone(),
-        context_window: served_ctx,
+        context_window: lane_ctx,
         lanes: 1,
         adapters: vec![AdapterEntry {
             alias: gene.name.clone(),
@@ -290,6 +307,35 @@ async fn spawn_gene_eval_lane(
         .initialize()
         .await
         .map_err(|e| CommandError::Internal(format!("eval-lane adapter failed to initialize: {e}")))?;
+
+    // The lane was launched with the gene loaded via `--lora`; probe the catalog
+    // NOW so (a) the BASE arm can neutralize it — an empty genome must serve true
+    // base, but llama.cpp applies a loaded adapter at 1.0 for any request that
+    // omits the `lora` field, so the base arm must emit an explicit 0.0 and that
+    // needs the catalog populated before the first (base) pass — and (b) a gene
+    // that failed to load fails loud HERE, not as a silent no-op mid-measurement.
+    adapter
+        .probe_lora_catalog()
+        .await
+        .map_err(|e| CommandError::Internal(format!("eval-lane LoRA catalog probe failed: {e}")))?;
+
+    // Pin the fork's cognition window to the lane's REAL served `/props` slot — the
+    // SAME served-truth discipline the supervisor applies to the living persona
+    // (`profile.context_length = snap.served_context_window`). The planned `lane_ctx`
+    // sized the launch `-c`; the SERVED value is what her cognition must budget
+    // against, so a measurement copy plans against exactly the window it runs on and
+    // training can never silently diverge from the served reality
+    // ([[dreaming-mind-eval-must-match-live-cognition]], task #50). Fail loud if the
+    // lane is up but its `/props` is unreadable — never size cognition off the
+    // planned value and diverge unseen.
+    let served_ctx = lane.served_context_window().await.map_err(|e| {
+        CommandError::Internal(format!(
+            "eval lane for gene '{}' is up but its /props served window is unreadable ({e}) — \
+             refusing to size the fork's cognition from the planned lane `-c` and silently diverge \
+             from what the lane actually serves",
+            gene.name
+        ))
+    })?;
 
     Ok((
         lane,
@@ -556,34 +602,34 @@ impl ActionCommand for CognitionEval {
                 .unwrap_or_else(|| DEFAULT_EVAL_SET.to_string())
         };
 
-        // Task source: inline → eval_set JSONL → committed default. A missing file
-        // is a loud error (don't silently grade an empty set) UNLESS it's the
-        // default path run from a non-repo cwd, where a one-task smoke set keeps the
-        // command usable.
+        // Task source: inline → a gym reference resolved through `gym::resolve_gym`
+        // (an existing on-disk file wins for a custom set; otherwise a committed gym
+        // resolves from the embedded registry — CWD- and deployment-independent;
+        // a typo'd / vanished gym FAILS LOUD naming every candidate, no silent
+        // degrade) → when no `eval_set` is given, the committed default through the
+        // SAME resolver. One JSONL line = one task. A malformed line FAILS LOUD with
+        // its line number — never silently dropped. A vanished task would shrink the
+        // gym and report a clean score over fewer tasks than intended: the same
+        // invisible-degraded-mode as a fallback, which the resolver's fail-loud kills.
+        let parse_jsonl = |text: &str, origin: &str| -> Result<Vec<EvalTask>, CommandError> {
+            text.lines()
+                .enumerate()
+                .map(|(i, l)| (i + 1, l.trim()))
+                .filter(|(_, l)| !l.is_empty())
+                .map(|(n, l)| {
+                    serde_json::from_str::<EvalTask>(l).map_err(|e| {
+                        CommandError::Invalid(format!("{origin} line {n}: malformed EvalTask: {e}"))
+                    })
+                })
+                .collect()
+        };
         let tasks: Vec<EvalTask> = if let Some(inline) = p.tasks {
             inline
         } else {
-            let path = p.eval_set.as_deref().unwrap_or(DEFAULT_EVAL_SET);
-            match std::fs::read_to_string(path) {
-                Ok(text) => text
-                    .lines()
-                    .map(str::trim)
-                    .filter(|l| !l.is_empty())
-                    .filter_map(|l| serde_json::from_str::<EvalTask>(l).ok())
-                    .collect(),
-                Err(_) if p.eval_set.is_none() => vec![EvalTask {
-                    id: "render_ai_help".into(),
-                    prompt: "Which file defines `fn render_ai_help`? Reply with just the path."
-                        .into(),
-                    expect: "help.rs".into(),
-                    ..Default::default()
-                }],
-                Err(e) => {
-                    return Err(CommandError::Invalid(format!(
-                        "eval_set '{path}' could not be read: {e}"
-                    )))
-                }
-            }
+            let reference = p.eval_set.as_deref().unwrap_or(DEFAULT_EVAL_SET);
+            let (origin, text) =
+                crate::cognition::gym::resolve_gym(reference).map_err(CommandError::Invalid)?;
+            parse_jsonl(&text, &origin)?
         };
 
         // Fork an EPHEMERAL measurement copy of her mind — the exam runs on the
@@ -649,20 +695,20 @@ impl ActionCommand for CognitionEval {
         // separate, deliberate decision, never a side effect of measuring it.
         if let Some(gene) = &p.gene {
             cycle.page_out();
-            let (base_score, _) = run_pass(&cycle, &tasks, room, max_acts).await;
+            let (base_score, _) = run_pass(&cycle, &isolation, &tasks, room, max_acts).await;
 
-            // Rewind to the pre-eval memory frame so the candidate arm starts from
-            // EXACTLY the state the base arm did — the only difference the lift
-            // measures is the genome, never the engrams the base arm just admitted.
-            isolation.rewind();
-
+            // Both arms start each task from the pre-eval memory frame — `run_pass`
+            // rewinds the admission frame before EVERY task (per-task isolation), so
+            // the candidate arm inherits none of the engrams the base arm admitted.
+            // The only difference the lift measures is the genome, paged in here.
             cycle.page_in(vec![crate::ai::types::ActiveAdapterRequest {
                 name: gene.name.clone(),
                 path: gene.path.clone(),
                 domain: String::new(),
                 scale: gene.scale.unwrap_or(1.0),
             }]);
-            let (gene_score, gene_results) = run_pass(&cycle, &tasks, room, max_acts).await;
+            let (gene_score, gene_results) =
+                run_pass(&cycle, &isolation, &tasks, room, max_acts).await;
             cycle.page_out();
 
             // Guard drops here: her memory frame + real persistence sink restored.
@@ -703,10 +749,33 @@ impl ActionCommand for CognitionEval {
             return Ok(result);
         }
 
+        // Readiness gate (single-pass on her LIVE lane): refuse to grade a COLD
+        // serving lane. After a core/llama-server relaunch the model is not resident
+        // for ~tens of seconds; firing tasks at it returns empty generations that the
+        // grader would silently record as 0-token "no match" failures — a phantom
+        // score produced in an invisible degraded mode. Wait (bounded) for the lane to
+        // actually be able to generate; fail loud if it never is, naming the cause.
+        // (The gene A/B path above stands up its own EphemeralServingLane and waits on
+        // spawn, so this guards only the live-lane single pass.)
+        {
+            const LANE_WARMUP: std::time::Duration = std::time::Duration::from_secs(90);
+            if crate::inference::llama_server::await_ready_serving(LANE_WARMUP)
+                .await
+                .is_none()
+            {
+                return Err(CommandError::Invalid(format!(
+                    "inference lane not serving-ready after {}s — refusing to grade a cold lane \
+                     (would record phantom 0-token failures). The lane warms after a \
+                     core/llama-server relaunch; retry once `/health` returns 200.",
+                    LANE_WARMUP.as_secs()
+                )));
+            }
+        }
+
         // Single pass: measure whatever genome is currently paged in (base by
         // default) — the plain coder number, no A/B. Still isolated, so a plain
         // baseline run is reproducible and leaves her memory untouched.
-        let (score, results) = run_pass(&cycle, &tasks, room, max_acts).await;
+        let (score, results) = run_pass(&cycle, &isolation, &tasks, room, max_acts).await;
         drop(isolation);
         let verify = self_verify_rate(&results);
         let agg = speed_latency_aggregates(&results);
@@ -876,6 +945,7 @@ fn append_progress_ledger(result: &CognitionEvalResult, note: Option<&str>, eval
 /// the genome). That sameness is what makes the lift a fair measurement.
 async fn run_pass(
     cycle: &crate::cognition::workspace::WorkspaceCycle,
+    isolation: &crate::cognition::workspace::EvalIsolation,
     tasks: &[EvalTask],
     room: Uuid,
     max_acts: usize,
@@ -884,14 +954,26 @@ async fn run_pass(
     let mut results = Vec::with_capacity(tasks.len());
     for t in tasks {
         // Each task is a DISJOINT concern (the grader presents them back-to-back
-        // with no temporal continuity), so reset the volatile working-memory scratch
-        // first — otherwise the prior task's proprioception (`[action #n]` traces)
-        // bleeds into this one's perception, contaminating an independent
-        // measurement. This is task-isolation, the same family as the admission
-        // rewind the `EvalIsolation` guard does between A/B arms; the perception
-        // assembly + decision path stay identical to the live heartbeat (which
-        // never resets — there concerns flow continuously and traces age naturally).
+        // with no temporal continuity), so reset BOTH memory channels to the
+        // pre-eval frame before it runs — otherwise the prior task's state bleeds
+        // into this one's perception and contaminates an independent measurement:
+        //   (1) the VOLATILE working-memory scratch — the `[action #n]`
+        //       proprioception traces (`reset_working_memory`); and
+        //   (2) the DURABLE admission frame — the Episodic engrams a task admits
+        //       by ACTING (act→observe's result-as-engram), which survive a
+        //       working-memory clear and which recall would otherwise surface next
+        //       task ("based on my earlier code search, SELF_TICK_MS is in…" leaking
+        //       into an unrelated task — observed live 2026-07-02). `isolation.rewind`
+        //       restores the admission frame to the checkpoint the guard took before
+        //       any task ran, so every task starts from the IDENTICAL clean memory.
+        // This is the SAME rewind mechanism the A/B path uses between arms, now
+        // applied at the finer per-task boundary — one rule: every task starts from
+        // the pre-eval frame. The perception assembly + decision path stay identical
+        // to the live heartbeat (which never resets — there concerns flow
+        // continuously and traces age naturally); this is exam hygiene, not a change
+        // to how she thinks.
         cycle.reset_working_memory();
+        isolation.rewind();
         // Frame the task through the SAME burst formatter the live heartbeat uses
         // (service_loop::build_workspace_burst), as a single airc room message
         // from a peer — so her deliberation perceives an examiner's question with
@@ -921,15 +1003,20 @@ async fn run_pass(
         };
         // own_peer/agent_name attribute the persona's OWN past posts; a single-task
         // exam has none, so they're inert here (the item's peer_id "peer" ≠ "").
-        let burst = crate::persona::service_loop::build_workspace_burst(
-            std::slice::from_ref(&task_delivery),
+        let burst = crate::cognition::workspace::Burst::from_turns(
             room,
-            "",
-            "",
+            crate::persona::service_loop::build_workspace_turns(
+                std::slice::from_ref(&task_delivery),
+                "",
+                "",
+                // A single-task exam IS the stimulus — the task delivery is the
+                // whole thread; there is no out-of-band trigger to anchor.
+                None,
+            ),
         );
         // `directed = true`: an exam question is put TO the persona — it is not
         // ambient room chatter she may let pass. This withholds the bare-PASS silence
-        // escape (the [Silence Option] block) for the eval turn, the same kind of
+        // escape (the [Conversational Presence] block) for the eval turn, the same kind of
         // measurement control as the greedy-temperature pin: it isolates the coding
         // *capability* signal from the *participation* decision. Without it a coder
         // model takes the "reply PASS, nothing reaches the room" exit on a directed
@@ -937,10 +1024,24 @@ async fn run_pass(
         // decline in her own words; she just isn't handed the silent hatch. The live
         // path computes directedness from real addressing (TODO #9); pinning it here
         // is the eval's exam-is-directed control. See `Workspace::directed_at_self`.
-        let settled =
-            crate::cognition::act_observe::drive_to_settle(cycle, burst, room, max_acts, true).await;
+        let settled = crate::cognition::act_observe::drive_to_settle(
+            cycle,
+            burst,
+            room,
+            max_acts,
+            crate::cognition::workspace::TurnFraming::directed(),
+        )
+        .await;
         let answer = settled.spoken.unwrap_or_default();
-        let (ok, grade) = if let Some(test) = &t.test {
+        let (ok, grade) = if let Some(cause) = &settled.inference_error {
+            // The model call FAILED (timeout, 5xx, a serving lane refusing a model it
+            // isn't hosting) — NOT a wrong answer. Grade it a named infra failure so a
+            // serving hiccup never masquerades as a capability miss and corrupts the
+            // accuracy signal ([[self-improvement-is-a-control-loop]]: the reward is
+            // only as trustworthy as the metric). `ok = false`, but the grade tells the
+            // truth instead of a misleading "no match".
+            (false, format!("inference failed: {cause}"))
+        } else if let Some(test) = &t.test {
             let lang = t.lang.as_deref().unwrap_or("rust");
             test_grade(&answer, lang, test).await
         } else {

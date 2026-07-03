@@ -459,7 +459,7 @@ pub async fn bootstrap_planned(
         .iter()
         .map(|(role, info, model_id, serving)| RosterEntry {
             role: *role,
-            persona_id: info.persona_id,
+            persona_id: info.peer_id.as_uuid(),
             persona_name: info.agent_name.clone(),
             model_id: model_id.clone(),
             serving: *serving,

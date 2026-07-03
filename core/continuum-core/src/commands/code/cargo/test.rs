@@ -96,12 +96,16 @@ fn tail(s: &str, max: usize) -> String {
 }
 
 crate::action_command! {
-    /// Run your Rust tests with `cargo test` and get back a pass/fail grade: how many
-    /// passed/failed, the NAMES of the tests that failed, and a tail of the output
-    /// with the panic/assert messages. If the workspace doesn't compile, `compiled`
-    /// is false and `diagnostics` carries the compiler errors (like `code/cargo/check`).
-    /// Scope to one package (`package`) and/or a name filter (`filter`, e.g. your
-    /// module path) to grade just what you changed — far faster than the whole suite.
+    /// Run the Rust tests of the cargo project ON DISK you are editing with `cargo
+    /// test` and get back a pass/fail grade: how many passed/failed, the NAMES of the
+    /// tests that failed, and a tail of the output with the panic/assert messages. If
+    /// the workspace doesn't compile, `compiled` is false and `diagnostics` carries the
+    /// compiler errors (like `code/cargo/check`). This runs the tests of the project in
+    /// your working directory — it CANNOT test a standalone function or snippet you have
+    /// only written in chat; for that, write a `fn main` (or `#[test]` body) around it
+    /// and run it with `code/run`. Scope to one package (`package`) and/or a name filter
+    /// (`filter`, e.g. your module path) to grade just what you changed — far faster
+    /// than the whole suite.
     pub struct CargoTest { state: Arc<CodeState> }
     name: "code/cargo/test",
     access: AiSafe,
