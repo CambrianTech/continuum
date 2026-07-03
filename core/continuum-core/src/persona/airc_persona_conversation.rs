@@ -42,15 +42,13 @@
 //! persona at boot, before any of them have necessarily attached to
 //! their rooms yet.
 
-use crate::airc::realtime::{AircRealtimePayload, AircRealtimeSchema};
-use crate::airc::realtime_wire::envelope_from_event;
+use crate::airc::realtime_wire::{chat_transcript_message, envelope_from_event};
 use crate::persona::airc_citizen::AircCitizen;
 use crate::persona::service_loop::{IncomingMessage, PersonaConversation};
 use airc_core::TranscriptEvent;
 use airc_lib::EventStream;
 use async_trait::async_trait;
 use futures::StreamExt;
-use serde_json::Value;
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -273,28 +271,19 @@ fn perceptual_from_event(event: &TranscriptEvent) -> Option<IncomingMessage> {
         });
     }
 
-    // Path 2 — a structured chat_transcript envelope (chat/send).
+    // Path 2 — a structured chat_transcript envelope (chat/send). The
+    // envelope decode + logical-sender/text recovery is the ONE
+    // `chat_transcript_message` decoder in `realtime_wire` — shared with
+    // the positron projection path (`chat_posted_from_envelope`), the
+    // receive-side symmetry of Path 1. A prior fix taught only this
+    // perception path to read the envelope; the positron read surface had
+    // the identical blindness until it too routed through this decoder.
     let envelope = envelope_from_event(event).ok().flatten()?;
-    let AircRealtimePayload::ExistingSchema { payload } = &envelope.payload else {
-        return None;
-    };
-    if payload.schema != AircRealtimeSchema::ChatTranscript {
-        return None;
-    }
-    let inline = payload.inline.as_ref()?;
-    let text = inline.get("text").and_then(Value::as_str)?;
-    // Prefer the logical sender the envelope carries; fall back to the
-    // transport peer that relayed the publish. Both are real identities —
-    // this is attribution recovery, not a fabricated default.
-    let peer_id = inline
-        .get("senderId")
-        .and_then(Value::as_str)
-        .and_then(|s| Uuid::parse_str(s).ok())
-        .unwrap_or_else(|| event.peer_id.as_uuid());
+    let (peer_id, text) = chat_transcript_message(&envelope, event.peer_id.as_uuid())?;
     Some(IncomingMessage {
         lamport: event.lamport,
         peer_id,
-        text: text.to_string(),
+        text,
     })
 }
 

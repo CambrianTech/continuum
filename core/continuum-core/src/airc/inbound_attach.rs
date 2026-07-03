@@ -12,7 +12,10 @@ use airc_ipc::{codec::read_frame, AttachRequest, AttachStart, DaemonClient, Resp
 use airc_lib::decode_wire_event;
 use tracing::warn;
 
-use crate::airc::realtime_wire::{bus_event_from_envelope, envelope_from_event};
+use crate::airc::realtime::AircRealtimeEnvelope;
+use crate::airc::realtime_wire::{
+    bus_event_from_envelope, chat_transcript_message, envelope_from_event,
+};
 use crate::ipc::positron_kanban_source::KANBAN_CHANGED;
 use crate::ipc::positron_source::CHAT_POSTED;
 use crate::ipc::positron_wall_source::WALL_CHANGED;
@@ -113,6 +116,17 @@ pub async fn publish_transcript_event(
             // ours here → skip. Classification, never a fallback — a
             // non-matching kind fabricates nothing.
             if let Some((name, payload)) = chat_posted_from_message(event) {
+                // task #84: the persona-turn / plain-airc-message stream into
+                // the room. This is the seam a client's live read surface
+                // (positron ChatViewState) is fed from — probe it so the turn
+                // stream is glass-box (did the say traverse daemon→attach→bus?).
+                crate::probe!(
+                    class = "airc.chat.projected",
+                    sender_id = %event.peer_id.as_uuid(),
+                    room_id = %event.room_id.as_uuid(),
+                    event_id = %event.event_id.as_uuid(),
+                    "plain airc message projected to chat:posted for positron"
+                );
                 bus.publish_async_only(name, payload);
             } else if let Some((name, payload)) = wall_changed_from_event(event) {
                 bus.publish_async_only(name, payload);
@@ -126,11 +140,56 @@ pub async fn publish_transcript_event(
             return Ok(());
         }
     };
-    let Some(bus_event) = bus_event_from_envelope(&envelope) else {
-        return Ok(());
-    };
-    bus.publish_async_only(&bus_event.name, bus_event.payload);
+    // Case A — a Continuum realtime envelope. Two shapes reach the bus:
+    //  - EventBridge payload → republish under its inline `eventName`.
+    //  - chat_transcript (a human `chat/send`, the web client — the
+    //    `Body::Json` shape) → project to the SAME thin `chat:posted` the
+    //    plain-text sibling emits. Without this arm, human chat lines reach
+    //    the daemon transcript and the persona (which learned to read the
+    //    envelope) but never the positron `ChatViewState` — the room would
+    //    show persona replies to structurally-invisible questions. Converge
+    //    on ONE `chat:posted`, two wire shapes, mirroring the receive-side
+    //    `perceptual_from_event`. Anything else is not ours here → skip.
+    if let Some(bus_event) = bus_event_from_envelope(&envelope) {
+        bus.publish_async_only(&bus_event.name, bus_event.payload);
+    } else if let Some((name, payload)) = chat_posted_from_envelope(&envelope, event) {
+        crate::probe!(
+            class = "airc.chat.projected",
+            sender_id = %payload["senderId"],
+            room_id = %event.room_id.as_uuid(),
+            event_id = %event.event_id.as_uuid(),
+            "chat_transcript envelope projected to chat:posted for positron"
+        );
+        bus.publish_async_only(name, payload);
+    }
     Ok(())
+}
+
+/// Project a `chat_transcript` envelope (a human `chat/send`, the web
+/// client — the `Body::Json` room-message shape) into the SAME thin
+/// `chat:posted` payload the plain-text sibling
+/// [`chat_posted_from_message`] emits. Returns `None` for any other
+/// envelope (EventBridge, presence, media-control) — it is not a chat line.
+///
+/// Identity-free like its sibling: `senderId` is the envelope's logical
+/// sender (recovered by [`chat_transcript_message`], falling back to the
+/// relaying transport peer), name/kind resolved downstream from the
+/// roster. `messageId`/`roomId`/`timestamp` are airc's transcript facts
+/// (`event_id`/`room_id`/`occurred_at_ms`) — IDENTICAL to the plain-text
+/// projection, so both wire shapes yield the same `chat:posted` identity.
+fn chat_posted_from_envelope(
+    envelope: &AircRealtimeEnvelope,
+    event: &airc_core::TranscriptEvent,
+) -> Option<(&'static str, serde_json::Value)> {
+    let (sender_id, content) = chat_transcript_message(envelope, event.peer_id.as_uuid())?;
+    let payload = serde_json::json!({
+        "messageId": event.event_id.as_uuid(),
+        "roomId": event.room_id.as_uuid(),
+        "senderId": sender_id,
+        "content": content,
+        "timestamp": event.occurred_at_ms,
+    });
+    Some((CHAT_POSTED, payload))
 }
 
 /// Project a plain airc chat message into the THIN `chat:posted` bus
@@ -278,6 +337,73 @@ mod tests {
             .unwrap();
         assert_eq!(delivered.name, "persona:ready");
         assert_eq!(delivered.payload["data"]["personaId"], "helper-ai");
+    }
+
+    /// Build the `chat_transcript` envelope exactly as `chat/send` →
+    /// `airc/realtime-publish` does: a `Body::Json` continuum envelope
+    /// whose inline carries the human message + its logical `senderId`.
+    fn chat_transcript_envelope(sender: Uuid, text: &str) -> AircRealtimeEnvelope {
+        AircRealtimeEnvelope::new(
+            "evt-1".to_string(),
+            Uuid::from_u128(2),
+            sender.to_string(),
+            100,
+            AircRealtimePayload::ExistingSchema {
+                payload: AircRealtimePayloadRef::inline(
+                    AircRealtimeSchema::ChatTranscript,
+                    json!({
+                        "messageId": Uuid::from_u128(0x3).to_string(),
+                        "text": text,
+                        "senderId": sender.to_string(),
+                        "replyToId": serde_json::Value::Null,
+                    }),
+                ),
+            },
+        )
+    }
+
+    #[tokio::test]
+    async fn chat_transcript_envelope_projects_chat_posted() {
+        // what this catches: the Case-A completeness fix (task #84). A human
+        // `chat/send` publishes a `chat_transcript` envelope (Body::Json,
+        // as_text()==None) — NOT the plain-text shape a persona `say` uses.
+        // It must project to the SAME thin `chat:posted` the plain-text
+        // sibling emits so the positron read surface carries human turns,
+        // not just persona/peer turns. A regression that reverts the
+        // `else if chat_posted_from_envelope` arm makes human questions
+        // structurally invisible in `ChatViewState` (the room shows only
+        // the persona's replies). senderId must be the envelope's LOGICAL
+        // sender, never the relaying transport peer (PeerId 3).
+        let bus = MessageBus::new();
+        let mut receiver = bus.receiver();
+        let sender = Uuid::from_u128(0x5e);
+        let envelope = chat_transcript_envelope(sender, "is anyone there?");
+        let event = transcript_event(
+            Some(Body::Json(serde_json::to_value(&envelope).unwrap())),
+            headers_for_envelope(&envelope),
+        );
+
+        publish_transcript_event(&event, &bus).await.unwrap();
+
+        let delivered = timeout(Duration::from_millis(200), receiver.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(delivered.name, "chat:posted");
+        assert_eq!(delivered.payload["content"], "is anyone there?");
+        // messageId/roomId/timestamp are airc transcript facts — identical
+        // to the plain-text projection (event_id/room_id/occurred_at_ms).
+        assert_eq!(
+            delivered.payload["messageId"],
+            Uuid::from_u128(1).to_string()
+        );
+        assert_eq!(delivered.payload["roomId"], Uuid::from_u128(2).to_string());
+        assert_eq!(delivered.payload["timestamp"], 100);
+        // the LOGICAL sender the envelope carries, not transport PeerId 3.
+        assert_eq!(delivered.payload["senderId"], sender.to_string());
+        // identity-free like its sibling: no fabricated name/kind.
+        assert!(delivered.payload.get("senderName").is_none());
+        assert!(delivered.payload.get("senderKind").is_none());
     }
 
     #[tokio::test]
