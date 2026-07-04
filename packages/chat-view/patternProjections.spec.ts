@@ -36,7 +36,7 @@ describe('chat → pattern projections', () => {
     expect(l.id).toBe('roster');
     expect(l.title).toBe('Users & Agents');
     expect(l.cells).toHaveLength(2);
-    const asha = l.cells[0]!;
+    const [asha] = l.cells;
     expect(asha).toMatchObject({
       id: 'a',
       title: 'Asha',
@@ -65,7 +65,7 @@ describe('chat → pattern projections', () => {
     const ws = chatWorkspace(vm);
     expect(ws.nav.id).toBe('rooms');
     expect(ws.left).toHaveLength(1);
-    expect(ws.left[0]!.id).toBe('roster');
+    expect(ws.left[0]?.id).toBe('roster');
     expect(ws.content.purpose).toBe('chat');
     // `WorkspaceView.content.body` is deliberately opaque (`ContentView<unknown>`) at
     // the workspace boundary; a chat-aware test narrows to the exported chat body.

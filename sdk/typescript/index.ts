@@ -50,6 +50,8 @@ export type {
   RosterSlotView,
   SenderKind,
   Provenance,
+  ForgeViewState,
+  ForgeModelView,
 } from './generated/views';
 export type { CommandMap, CommandName } from './generated/CommandMap';
 export type { EventMap, EventClass } from './generated/EventMap';

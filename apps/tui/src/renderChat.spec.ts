@@ -7,6 +7,7 @@ function vm(overrides: Partial<ChatViewModel> = {}): ChatViewModel {
   return {
     roomName: 'general',
     roomId: 'room-1',
+    purpose: 'chat',
     memberCount: 0,
     activeCount: 0,
     members: [],

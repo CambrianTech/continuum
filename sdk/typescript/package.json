@@ -13,7 +13,9 @@
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "vendor:views": "node scripts/vendor-views.mjs",
+    "vendor:views:check": "node scripts/vendor-views.mjs --check"
   },
   "devDependencies": {
     "typescript": "^5.6.0",

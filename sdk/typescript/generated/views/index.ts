@@ -20,3 +20,7 @@ export type { ChatMessageView } from './ChatMessageView';
 export type { RosterSlotView } from './RosterSlotView';
 export type { SenderKind } from './SenderKind';
 export type { Provenance } from './Provenance';
+
+// foundry widget closure (kind="foundry" → ForgeViewState + its model row)
+export type { ForgeViewState } from './ForgeViewState';
+export type { ForgeModelView } from './ForgeModelView';
