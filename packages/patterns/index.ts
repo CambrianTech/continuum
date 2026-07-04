@@ -183,6 +183,32 @@ export function mount<State, Out>(
   return source((state) => sink(target.workspace(app.project(state))));
 }
 
+/**
+ * `createRagTarget` — a reusable **RAG adaptation rule**, authored ONCE, that any app
+ * inherits. It proves the automatic-per-surface model ([[best-ux-per-portal-not-identical-projection]]):
+ * given the SAME semantic `WorkspaceView` that web renders as a three-panel and terminal as
+ * WHO/WHAT sections, this derives an entirely different, surface-appropriate output — a
+ * **concise grounding block for a persona's LLM context** — automatically, by RULE, not by
+ * per-app design. The rule: *room + who + primary content; DROP the nav, the secondary
+ * listings, the context chrome* — only what an agent needs to act now. `content` dispatches
+ * the primary body through the caller's registry (the app supplies a concise renderer).
+ */
+export function createRagTarget(content: ContentRegistry<string>): RenderTarget<string> {
+  const names = (v: ListingView): string => v.cells.map((c) => c.title).join(', ');
+  return {
+    // In a grounding block a Listing collapses to just its members' names — no rows, no chrome.
+    listing: (view: ListingView): string => names(view),
+    content: (view: ContentView): string => content.render(view),
+    // Context chrome is dropped entirely — an agent grounds on who + what, not side widgets.
+    contextPanel: (_view: ContextPanelView): string => '',
+    workspace: (ws: WorkspaceView): string => {
+      const room = ws.nav.cells[0]?.title ?? 'a room';
+      const who = ws.left[0] && ws.left[0].cells.length > 0 ? names(ws.left[0]) : 'no one else';
+      return `You are in "${room}" with ${who}.\n${content.render(ws.content)}`;
+    },
+  };
+}
+
 /** Build an empty content-dispatch table for a target. Fail-loud on unknown purpose. */
 export function createContentRegistry<Out>(): ContentRegistry<Out> {
   const table = new Map<string, ContentRenderer<Out>>();
