@@ -122,6 +122,62 @@ export interface RenderTarget<Out> {
   workspace(view: WorkspaceView): Out;
 }
 
+// ── defineApp / mount — define an app ONCE, render it on every modality ───────
+
+/**
+ * An app, **defined once**: given domain `State`, `project` it to the neutral
+ * who/what/where `WorkspaceView` — plus its `universe` (look/lore key a target maps
+ * to styling). That is the ENTIRE app: purely neutral, ZERO dependency on the SDK,
+ * the DOM, Flutter, or any target. The same `AppDefinition` mounts to web (Lit),
+ * mobile (Flutter), terminal (ANSI), and RAG — the frameworks paint, positron
+ * defines ([[three-separable-layers-recipe-positron-universe]]).
+ */
+export interface AppDefinition<State> {
+  /** Domain state → the neutral view-model. The app's "what to show". */
+  readonly project: (state: State) => WorkspaceView;
+  /** Universe key (look/lore); a target maps it to its styling. Optional. */
+  readonly universe?: string;
+}
+
+/** A live data source: pushes `State` on every change, returns an unsubscribe.
+ *  Injected at `mount` so the SAME app runs against a real core, a replay, or a test
+ *  fixture — the app never names its source ([[logical-portability-for-unknown-future-integrations]]). */
+export type AppSource<State> = (onState: (state: State) => void) => () => void;
+
+/** A surface sink: receives the target's rendered `Out` on each change and puts it on
+ *  screen (DOM replace, ANSI write, a RAG buffer). Target-specific; the app is not. */
+export type AppSink<Out> = (out: Out) => void;
+
+/**
+ * The framework seam: normalize/return a typed app definition. Identity today; the
+ * single place future validation (universe resolution, activity-coverage checks)
+ * hangs off — build now in a shape that welcomes the future.
+ */
+export function defineApp<State>(def: AppDefinition<State>): AppDefinition<State> {
+  return def;
+}
+
+/**
+ * Mount an app onto ONE modality: `source → project → target.workspace → sink`.
+ * The SAME `app` + `source` mounts to ANY `RenderTarget` — **define once, render
+ * everywhere.** Returns a teardown (unsubscribes the source).
+ *
+ * ```ts
+ * const app = defineApp({ project: chatWorkspace });          // once
+ * mount(app, sdkSource, webTarget,     el.replaceChildren);   // web (Lit)
+ * mount(app, sdkSource, flutterTarget, flutterSink);          // mobile (Flutter)
+ * mount(app, sdkSource, ragTarget,     ragBuffer);            // agents (RAG)
+ * ```
+ */
+export function mount<State, Out>(
+  app: AppDefinition<State>,
+  source: AppSource<State>,
+  target: RenderTarget<Out>,
+  sink: AppSink<Out>,
+): () => void {
+  return source((state) => sink(target.workspace(app.project(state))));
+}
+
 /** Build an empty content-dispatch table for a target. Fail-loud on unknown purpose. */
 export function createContentRegistry<Out>(): ContentRegistry<Out> {
   const table = new Map<string, ContentRenderer<Out>>();
