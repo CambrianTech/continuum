@@ -45,6 +45,11 @@ export interface ListingCell {
   readonly status?: CellStatus;
   /** Optional grouping/category key (the "bookmarked menus + categories" axis). */
   readonly group?: string;
+  /** Optional named gauges (0–100), drawn as bars/meters by a target — a member's
+   *  genome-energy vitals, a model's download %, a room's activity. Keeps the neutral
+   *  cell LOSSLESS so rich rows (the roster's ACT meters) survive the projection instead
+   *  of forcing the rich view-model across the boundary. Empty/absent = no meters. */
+  readonly meters?: Readonly<Record<string, number>>;
 }
 
 /** The `Listing` pattern — a repeating list. The SAME shape backs the users list,

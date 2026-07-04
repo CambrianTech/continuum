@@ -31,11 +31,15 @@ function kindGlyph(kind: MemberKind): string {
   }
 }
 
-/** One roster member → a `Listing` cell (the people-Listing cell template). */
+/** One roster member → a `Listing` cell (the people-Listing cell template). The
+ *  member's genome-energy vitals ride along as neutral cell `meters` so a target draws
+ *  the ACT bars from the Listing alone — the projection is LOSSLESS, no rich view-model
+ *  crosses the render boundary. */
 function rosterCell(m: RosterMemberVM): ListingCell {
   const badges = m.runtime ? [m.kind, m.runtime] : [m.kind];
   const status: CellStatus = m.active ? 'active' : 'idle';
-  return { id: m.id, title: m.name, glyph: kindGlyph(m.kind), badges, status };
+  const cell: ListingCell = { id: m.id, title: m.name, glyph: kindGlyph(m.kind), badges, status };
+  return Object.keys(m.vitals).length > 0 ? { ...cell, meters: m.vitals } : cell;
 }
 
 /** The chat activity's `who` panel projected as the `Listing` primitive. Same shape

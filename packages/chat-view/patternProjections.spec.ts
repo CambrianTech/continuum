@@ -48,6 +48,16 @@ describe('chat → pattern projections', () => {
     expect(l.cells[1]).toMatchObject({ title: 'Joel', glyph: '🧑', status: 'idle', badges: ['human'] });
   });
 
+  // what this catches: a member's vitals ride along as neutral cell `meters`, so a
+  // target draws the ACT bars from the Listing alone — the projection is LOSSLESS and
+  // the rich view-model never has to cross the render boundary. A member with no vitals
+  // carries no `meters` key (absent, not an empty object), so targets draw no meter.
+  it('carries member vitals as neutral cell meters, absent when empty', () => {
+    const cells = rosterListing(vm).cells;
+    expect(cells[0]?.meters).toEqual({ energy: 80, attention: 90 });
+    expect(cells[1]).not.toHaveProperty('meters');
+  });
+
   // what this catches: the focused room projects to the nav `Listing` (the tab
   // bar / channel-attention), carrying its purpose as the cell group.
   it('projects the focused room into the nav Listing', () => {
