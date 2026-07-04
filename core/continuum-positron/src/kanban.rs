@@ -73,7 +73,10 @@ use crate::chat::{Provenance, SenderKind};
 /// airc `CardState` → this at the seam.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
-#[ts(export, export_to = "../../../protocol/typescript/positron/KanbanCardState.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/positron/KanbanCardState.ts"
+)]
 pub enum KanbanCardState {
     Open,
     Claimed,
@@ -87,7 +90,10 @@ pub enum KanbanCardState {
 /// A lane's state — mirrors airc's `LaneState` variant-for-variant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
-#[ts(export, export_to = "../../../protocol/typescript/positron/KanbanLaneState.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/positron/KanbanLaneState.ts"
+)]
 pub enum KanbanLaneState {
     Planned,
     Active,
@@ -104,7 +110,10 @@ pub enum KanbanLaneState {
 /// crosses the boundary; the consumer sorts on the string values.)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
-#[ts(export, export_to = "../../../protocol/typescript/positron/KanbanPriority.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/positron/KanbanPriority.ts"
+)]
 pub enum KanbanPriority {
     P0,
     P1,
@@ -117,7 +126,10 @@ pub enum KanbanPriority {
 /// number); the branch pair is a build detail the board face doesn't
 /// need. `None` until a PR is opened for the card.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/positron/KanbanPullRequest.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/positron/KanbanPullRequest.ts"
+)]
 pub struct KanbanPullRequest {
     /// Repository the PR targets, as airc's `RepoId` display string
     /// (e.g. `"CambrianTech/continuum"`). Opaque to positron.
@@ -135,7 +147,10 @@ pub struct KanbanPullRequest {
 /// for `Uuid`) — airc's `WorkCardId` / `PeerId` projected to their inner
 /// UUIDs at the seam.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/positron/KanbanCardView.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/positron/KanbanCardView.ts"
+)]
 pub struct KanbanCardView {
     /// Stable id of the card across its event history — the anchor a
     /// renderer keys a board row on, and the key a lane's `card_ids`
@@ -210,7 +225,10 @@ pub struct KanbanCardView {
 /// One lane on the work board — a named grouping of cards (a swimlane /
 /// epic / milestone). Projected from airc's `LaneRecord`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/positron/KanbanLaneView.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/positron/KanbanLaneView.ts"
+)]
 pub struct KanbanLaneView {
     #[ts(type = "string")]
     pub lane_id: Uuid,
@@ -236,7 +254,10 @@ pub struct KanbanLaneView {
 /// by absence, never a stale merged entry — the same "full snapshot,
 /// replace not merge" discipline the wall board and chat roster use.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/positron/KanbanViewState.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/positron/KanbanViewState.ts"
+)]
 pub struct KanbanViewState {
     #[ts(type = "string")]
     pub room_id: Uuid,

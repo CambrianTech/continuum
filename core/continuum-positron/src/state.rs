@@ -115,11 +115,7 @@ impl StateBuilder {
     ///
     /// The kind is read from `payload.kind()` — the view's own `KIND`
     /// const — so it can never disagree with the payload type.
-    pub fn build<P: ViewState + Serialize>(
-        &self,
-        layer: StateLayer,
-        payload: P,
-    ) -> StateEnvelope {
+    pub fn build<P: ViewState + Serialize>(&self, layer: StateLayer, payload: P) -> StateEnvelope {
         // Read the kind from the payload itself (its `KIND` const)
         // before we consume `payload` into JSON. `kind()` is a
         // `&'static str`, which is exactly the key `Revisions` wants —

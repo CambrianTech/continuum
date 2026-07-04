@@ -103,10 +103,7 @@ mod tests {
         // always returns a Receiver; the value is wrapped in Option to
         // distinguish "no state yet" (None) from "state exists" (Some).
         let rx = substrate.broadcast().subscribe("chat");
-        let env = rx
-            .borrow()
-            .clone()
-            .expect("broadcast populated by store");
+        let env = rx.borrow().clone().expect("broadcast populated by store");
         assert_eq!(env.revision, Some(1));
     }
 
