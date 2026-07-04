@@ -103,7 +103,11 @@ export function chatViewModel(state: ChatState): ChatViewModel {
   return {
     roomName: state.room_name,
     roomId: state.room_id,
-    purpose: state.purpose,
+    // `purpose` is an additive field (#1757). A ChatViewState is definitionally a
+    // chat activity, and the server default is "chat", so an older/other core that
+    // omits it means "chat" — a legitimate back-compat default, not a fallback that
+    // hides a bug (a foundry room sends ForgeViewState, never a purpose-less chat).
+    purpose: state.purpose || 'chat',
     memberCount: members.length,
     activeCount: members.filter((m) => m.active).length,
     members,

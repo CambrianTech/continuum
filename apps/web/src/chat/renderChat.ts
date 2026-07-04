@@ -47,7 +47,7 @@ export function renderChat(vm: ChatViewModel): TemplateResult {
           ${vm.members.map(memberCard)}
         </ul>
       </aside>
-      <section class="what" aria-label=${ws.content.purpose}>
+      <section class="what" aria-label="conversation">
         ${webContentRegistry.render(ws.content)}
       </section>
     </div>
