@@ -91,22 +91,6 @@ export class ChatWidget extends LitElement {
       padding: var(--spacing-sm) 0;
       background: var(--sidebar-background);
     }
-    /* Responsive: below a phone breakpoint the fixed 2-column layout clips the
-       content off-screen. Collapse to a single column — the roster becomes a
-       capped, scrollable strip on top, and the content gets the full width.
-       One step toward the complex-widget-across-surfaces target; a drawer/toggle
-       can come later. (Found by dogfooding shot.mjs at 390px.) */
-    @media (max-width: 720px) {
-      .panels {
-        grid-template-columns: 1fr;
-        grid-template-rows: auto 1fr;
-      }
-      .who {
-        border-right: none;
-        border-bottom: 1px solid var(--border-subtle);
-        max-height: 30vh;
-      }
-    }
     ul {
       list-style: none;
       margin: 0;
@@ -419,6 +403,59 @@ export class ChatWidget extends LitElement {
       font-family: var(--font-mono);
       font-size: 13px;
       white-space: pre-wrap;
+    }
+
+    /* The MOBILE adaptation rule (@media modality:mobile via viewport) — LAST in the
+       sheet so it wins by source order (media queries add no specificity). The desktop
+       three-panel is wrong on a phone, so the presentation is DERIVED, not reflowed:
+       the conversation (primary) takes the screen; the roster (secondary) collapses to a
+       compact horizontal "who's here" avatar strip on top; secondary per-member detail
+       (kind badge, runtime, vitals) is DROPPED — a phone shows who's present, not a full
+       dossier per row. Best UX for THIS portal, not the desktop shrunk. */
+    @media (max-width: 720px) {
+      .panels {
+        grid-template-columns: 1fr;
+        grid-template-rows: auto 1fr;
+      }
+      .who {
+        border-right: none;
+        border-bottom: 1px solid var(--border-subtle);
+        overflow-x: auto;
+        overflow-y: hidden;
+      }
+      .who-head {
+        padding-bottom: 2px;
+      }
+      /* Roster reflows to a horizontal, thumb-scrollable avatar strip. */
+      .roster {
+        display: flex;
+        flex-direction: row;
+        gap: var(--spacing-md);
+        padding: 2px var(--spacing-md) var(--spacing-sm);
+      }
+      .member {
+        flex-direction: column;
+        align-items: center;
+        gap: 3px;
+        width: 60px;
+        flex: none;
+      }
+      .member .info {
+        align-items: center;
+        width: 60px;
+      }
+      .member .name {
+        font-size: 11px;
+        max-width: 60px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      /* Mobile drops the secondary per-member detail — presence, not a dossier. */
+      .member .meta,
+      .member .vitals {
+        display: none;
+      }
     }
   `;
 
