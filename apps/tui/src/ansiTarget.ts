@@ -77,7 +77,7 @@ export function createAnsiTarget(useColor = true): RenderTarget<string> {
       const activeCount = roster.filter((c) => c.status === 'active').length;
       const lines: string[] = [];
       lines.push(
-        `${paint('cyan', paint('bold', room?.title ?? ''))}  ${paint('dim', `${activeCount}/${roster.length} here`)} · ${paint('gray', room?.id ?? '')}`,
+        `${paint('cyan', paint('bold', room?.title ?? ''))}  ${paint('dim', `${activeCount}/${roster.length} here`)} · ${paint('green', '●')} ${paint('dim', 'live')}`,
       );
       lines.push('');
       lines.push(paint('yellow', 'WHO'));
