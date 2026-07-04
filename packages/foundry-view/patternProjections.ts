@@ -20,8 +20,10 @@ import type { ForgeModelView } from '@continuum/sdk-typescript';
 import type { ForgeState } from './ForgeState';
 
 /** One catalogue model → a `Listing` cell. The projection resolves the display
- *  fields (subtitle from params + source); a target only draws them. */
-function modelCell(m: ForgeModelView): ListingCell {
+ *  fields (subtitle from params + source); a target only draws them. Exported so a
+ *  target's foundry content renderer can reuse the SAME projection the ContextPanel
+ *  Listing uses — one model→cell decision, drawn by the generic cell renderer. */
+export function modelCell(m: ForgeModelView): ListingCell {
   // `params_b` is optional (0-is-unknown → absent, honest); label with it when known.
   const subtitle = m.params_b != null ? `${m.params_b}B · ${m.source}` : m.source;
   return {
