@@ -1,5 +1,5 @@
 {
-  "//": "Typecheck config for @continuum/chat-view. Mirrors the SDK's strict contract; compiles against the SDK source (@continuum/sdk-typescript resolves to ./index.ts, no build step). This package is framework-free and platform-neutral, so NO DOM lib — it must typecheck the same under a browser bundler (apps/web) and under Node (apps/tui). tsc is --noEmit typecheck only; each consumer's bundler/runtime owns transpilation.",
+  "//": "Typecheck config for @continuum/foundry-view. Mirrors the SDK's strict contract; compiles against the SDK source (@continuum/sdk-typescript resolves to ./index.ts, no build step). This package is framework-free and platform-neutral, so NO DOM lib — it must typecheck the same under a browser bundler (apps/web) and under Node (apps/tui). tsc is --noEmit typecheck only; each consumer's bundler/runtime owns transpilation.",
   "compilerOptions": {
     "target": "ES2022",
     "module": "ESNext",

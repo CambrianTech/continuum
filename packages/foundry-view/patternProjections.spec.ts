@@ -9,12 +9,7 @@
 
 import { describe, it, expect } from 'vitest';
 import type { ForgeState } from './ForgeState';
-import {
-  modelsListing,
-  foundryContextPanel,
-  foundryContent,
-  type ForgeContentBody,
-} from './patternProjections';
+import { modelsListing, foundryContextPanel, foundryContent } from './patternProjections';
 
 const state: ForgeState = {
   kind: 'foundry',
@@ -62,7 +57,9 @@ describe('foundry → pattern projections', () => {
   it('keys Content by the room purpose', () => {
     const content = foundryContent(state);
     expect(content.purpose).toBe('foundry');
-    const body = content.body as ForgeContentBody;
-    expect(body.models).toHaveLength(2);
+    // `foundryContent` returns `ContentView<ForgeContentBody>`, so `body` is already
+    // typed — no cast needed (unlike the chat spec, where the body is opaque at the
+    // `WorkspaceView` boundary).
+    expect(content.body.models).toHaveLength(2);
   });
 });
