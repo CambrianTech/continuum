@@ -146,6 +146,21 @@ export class ChatWidget extends LitElement {
       border-color: var(--border-accent);
       box-shadow: 0 0 6px rgba(0, 212, 255, 0.18);
     }
+    /* A slow breathing "cognition" glow on a LIVE agent — the sci-fi signal that
+     * this is a living mind present in the room, not a static row. Paired with the
+     * comet arc below; both idle out when the agent goes offline. */
+    @keyframes alive-pulse {
+      0%,
+      100% {
+        box-shadow: 0 0 5px rgba(0, 212, 255, 0.15);
+      }
+      50% {
+        box-shadow: 0 0 14px rgba(0, 212, 255, 0.4);
+      }
+    }
+    .member[data-kind='agent'].online .avatar {
+      animation: alive-pulse 3s ease-in-out infinite;
+    }
     /* …and a slow "cognition" comet arc on a live agent — the old persona-tile's
      * living ring, a quiet sign the agent is present and thinking. */
     @keyframes comet-orbit {
