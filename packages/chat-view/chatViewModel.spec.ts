@@ -23,6 +23,7 @@ const member = (over: Partial<RosterSlotView> = {}): RosterSlotView => ({
   provenance: { runtime: '' },
   active: true,
   last_seen_ms: 0,
+  vitals: {},
   ...over,
 });
 
@@ -66,6 +67,25 @@ describe('chatViewModel', () => {
     expect(vm.members.map((m) => m.id)).toEqual(['a', 'b']);
     expect(vm.messages.map((m) => m.id)).toEqual(['x', 'y']);
     expect(vm.revision).toBe(3);
+  });
+
+  // what this catches: live vitals (energy/attention/compute) must ride the
+  // roster projection so the card can draw the genome-energy meters — and an
+  // absent map (a human, a remote peer) OR an older core that omits the field
+  // entirely both fold to {} (no meters), never fabricated bars.
+  it('projects member vitals, defaulting an absent map to empty', () => {
+    const vm = chatViewModel(
+      state({
+        roster: [
+          member({ member_id: 'a', vitals: { energy: 80, attention: 90 } }),
+          member({ member_id: 'b', vitals: {} }),
+          member({ member_id: 'c', vitals: undefined as unknown as Record<string, number> }),
+        ],
+      }),
+    );
+    expect(vm.members[0].vitals).toEqual({ energy: 80, attention: 90 });
+    expect(vm.members[1].vitals).toEqual({});
+    expect(vm.members[2].vitals).toEqual({});
   });
 
   // what this catches: activeCount counts only present members — it drives the

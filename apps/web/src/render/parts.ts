@@ -39,8 +39,36 @@ export function runtimeBadge(runtime: string): TemplateResult | typeof nothing {
   return runtime ? html`<span class="runtime" title="runtime origin">${runtime}</span>` : nothing;
 }
 
-/** One member card — avatar + presence dot, name, kind/runtime — the old Users &
- *  Agents tile as the `Listing` cell (INTERFACE-PORT-MAP.md). */
+/** Short 3-letter tag for a vital key — the old persona-tile's INT/NRG/QUE label. */
+function vitalTag(key: string): string {
+  return key.slice(0, 3).toUpperCase();
+}
+
+/** The live genome-energy meters — one thin glowing bar per vital the persona
+ *  surfaces (energy/attention/compute). Renders nothing when the member reports
+ *  no vitals (a human, a remote peer) — no fabricated bars. This is the readout
+ *  that makes a persona feel *alive* in the roster (the PX target). */
+function vitalsMeters(vitals: Record<string, number>): TemplateResult | typeof nothing {
+  const entries = Object.entries(vitals);
+  if (entries.length === 0) return nothing;
+  return html`
+    <span class="vitals">
+      ${entries.map(
+        ([key, pct]) => html`
+          <span class="vital" title="${key} ${pct}%">
+            <span class="vital-label">${vitalTag(key)}</span>
+            <span class="vital-track">
+              <span class="vital-fill" style="width:${Math.max(0, Math.min(100, pct))}%"></span>
+            </span>
+          </span>
+        `,
+      )}
+    </span>
+  `;
+}
+
+/** One member card — avatar + presence dot, name, kind/runtime, live vitals —
+ *  the old Users & Agents persona-tile as the `Listing` cell (INTERFACE-PORT-MAP.md). */
 export function memberCard(m: RosterMemberVM): TemplateResult {
   return html`
     <li class="member ${m.active ? 'online' : 'idle'}" data-kind=${m.kind}>
@@ -54,6 +82,7 @@ export function memberCard(m: RosterMemberVM): TemplateResult {
           <span class="kind-badge">${kindLabel(m.kind)}</span>
           ${runtimeBadge(m.runtime)}
         </span>
+        ${vitalsMeters(m.vitals)}
       </span>
     </li>
   `;

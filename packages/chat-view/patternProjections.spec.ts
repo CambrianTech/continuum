@@ -19,8 +19,8 @@ const vm: ChatViewModel = {
   memberCount: 2,
   activeCount: 1,
   members: [
-    { id: 'a', name: 'Asha', kind: 'agent', active: true, runtime: 'persona' },
-    { id: 'j', name: 'Joel', kind: 'human', active: false, runtime: '' },
+    { id: 'a', name: 'Asha', kind: 'agent', active: true, runtime: 'persona', vitals: { energy: 80, attention: 90 } },
+    { id: 'j', name: 'Joel', kind: 'human', active: false, runtime: '', vitals: {} },
   ],
   messages: [
     { id: 'm1', senderId: 'a', senderName: 'Asha', kind: 'agent', content: 'hi', time: '00:00', runtime: 'persona' },

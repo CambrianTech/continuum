@@ -37,6 +37,7 @@ const member = (over: Partial<RosterSlotView> = {}): RosterSlotView => ({
   provenance: { runtime: '' },
   active: true,
   last_seen_ms: 0,
+  vitals: {},
   ...over,
 });
 
@@ -128,6 +129,34 @@ describe('renderChat (Lit)', () => {
     // WHAT: the turn's sender, content and time all reach the markup as values.
     expect(chunks).toContain('hi Asha');
     expect(chunks).toContain('00:00');
+  });
+
+  // what this catches: a member's live vitals must actually DRAW a meter — a
+  // labelled, width-filled bar reaches the markup — while a member reporting no
+  // vitals draws NONE (never a fabricated bar). The chatViewModel spec proves the
+  // VM carries the field; this proves the renderer turns it into a meter.
+  it('draws a genome-energy meter per vital, and none for a member without vitals', () => {
+    const withVitals = project({
+      room_id: 'room-1',
+      room_name: 'general',
+      purpose: 'chat',
+      roster: [member({ member_id: 'a', display_name: 'Asha', kind: kind('agent'), vitals: { energy: 80 } })],
+      messages: [],
+    });
+    const chunks = flatten(renderChat(withVitals));
+    expect(chunks).toContain('ENE'); // the vital label (energy → first-3, upper)
+    expect(chunks).toContain('80'); // the fill width value (single member → unambiguous)
+    expect(markup(withVitals)).toContain('vital-fill'); // the meter bar rendered
+
+    // A member reporting no vitals → no meter markup at all.
+    const noVitals = project({
+      room_id: 'room-1',
+      room_name: 'general',
+      purpose: 'chat',
+      roster: [member({ member_id: 'j', display_name: 'Joel', kind: kind('human'), vitals: {} })],
+      messages: [],
+    });
+    expect(markup(noVitals)).not.toContain('vital-fill');
   });
 
   // what this catches: an empty conversation must draw the honest empty-state
