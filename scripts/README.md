@@ -12,6 +12,7 @@
 |---|---|---|
 | **Edit → canary** | `node scripts/ship.mjs ["title" ["body"]]` | Push the current feature branch → open a PR into canary → wait for CI → squash-merge → delete branch → sync local canary. Refuses canary/main; a red PR **cannot** be merged (blocks on branch protection; never `--no-verify`/`--admin`). |
 | **See it (never blind)** | `node scripts/shot.mjs [url] [out.png]` | Headless screenshot of a running URL → PNG. OS-detected Chrome/Chromium/Edge; wall-clock guard so a live-WebSocket page can't hang the capture. Default URL `http://localhost:5173/`. |
+| **Layout truth** | `node scripts/inspect.mjs <url> <selector>` | Pixels lie; this prints the DOM box model + computed styles for a selector and its ancestor chain (pierces shadow DOM), flagging where `scrollWidth > clientWidth` — the real overflow source. Forces the viewport via CDP `Emulation` (`SHOT_SIZE=390,844` = true phone width). Built the moment `shot.mjs`'s pixels-only blind spot bit a real bug. |
 
 Typical brick: make the change → validate (cargo test / the live app) → `node scripts/shot.mjs …` to *see* it → `node scripts/ship.mjs "feat(x): …"`. Both are dogfooded (each has shipped itself).
 
@@ -32,8 +33,11 @@ The bar keeps rising; never let a tool sit at "good enough." Known next steps:
    "generators create discoverable systems" ethos).
 2. **A `boot` leg** — one command to build + start the core + web + serving so the see-it loop is
    runnable from a cold clone (today the stack must already be up). The missing third leg.
-3. **`shot` wait-conditions** — replace the wall-clock guard with a real readiness signal (a DOM
-   marker / CDP `Page.loadEventFired`) so captures are deterministic, not time-boxed.
+3. **`shot` → CDP (like `inspect`)** — two weaknesses to close together: (a) replace the wall-clock
+   guard with a real readiness signal (CDP `Page.loadEventFired` / a DOM marker) so captures are
+   deterministic, not time-boxed; (b) `--window-size` does NOT set the real viewport (inspect found it
+   renders ~500px when asked for 390) — use `Emulation.setDeviceMetricsOverride` so a "mobile" shot is
+   a *true* phone width, matching what `inspect` already does. Shared CDP helper between shot + inspect.
 4. **cu-native** — fold these into the Rust core as `cu ship` / `cu shot` commands so a **persona
    (Asha) runs the exact same factory** a human does — the endgame ([[build-the-factory-as-you-build-the-car]]).
 
