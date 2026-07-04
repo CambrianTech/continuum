@@ -180,6 +180,25 @@ spatial + sound + embodiment + tone), and make it a first-class authorable entit
 a recipe too* (THE-ORGANISM). First experience = one original universe, ruthless and coherent
 across terminal ↔ web ↔ mobile ↔ XR.
 
+**Back story / lore = a RAG layer (the elegant part — personas are IN the universe).** A universe
+is also the world's *narrative*: character backstories, dialogue scripts, world rules, tone. And
+that layer is **just RAG** — the SAME grounding that makes Asha know the codebase makes the orc know
+Warcraft lore and *speak like an orc*, because the universe's scripts/lore are a `RagSource` the
+citizen is grounded in ([[airc-to-positron-chat-projection]], the RagSource/Faculty stack). Swap the
+universe → swap the lore RAG → the citizens become in-character for the new world, **same minds
+underneath.** No new system: a universe's story is a grounding source, exactly like doctrine or the
+roster.
+
+**Fun ↔ serious is the SAME axis — and it's the business case.** A universe needn't be Tron or
+Warcraft. **A company is a universe:** its brand palette (the theme), its culture + mottos + values
+(the lore RAG), its onboarding materials + playbooks (the scripts), its team patterns. An
+onboarding-buddy persona greets a new hire in the company's voice, knows the handbook, embodies the
+culture — authored the *same way* the orc is. Same engine spans sci-fi to boring-but-real, which is
+exactly what makes it a **product**: an enterprise ships its OWN universe (brand + culture + comms
+grounding), a game studio ships a fantasy one, and both ride the identical Surface × RenderTarget ×
+Universe stack. The "portal, not a website" claim is what lets a company make its whole internal
+world one.
+
 ## 5. The test of done
 
 Not "the web page looks right." **Done is:** a human on web/mobile sees a gorgeous foundry;
