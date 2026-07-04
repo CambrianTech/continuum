@@ -96,30 +96,94 @@ export class ChatWidget extends LitElement {
       margin: 0;
       padding: 0;
     }
+    /* WHO panel header — the old "Users & Agents (N)" label. */
+    .who-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: var(--spacing-sm) var(--spacing-md) var(--spacing-xs);
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      font-size: 11px;
+      font-weight: 700;
+      color: var(--content-secondary);
+    }
+    .who-count {
+      min-width: 18px;
+      padding: 0 5px;
+      text-align: center;
+      border-radius: var(--radius-lg);
+      background: var(--button-secondary-background);
+      color: var(--content-accent);
+      font-size: 10px;
+    }
+    /* Member card — the old persona-tile: avatar + presence dot, name, meta. */
     .member {
       display: flex;
       align-items: center;
-      gap: 6px;
-      padding: 5px var(--spacing-md);
+      gap: var(--spacing-sm);
+      padding: 6px var(--spacing-md);
+      border-radius: var(--radius-md);
     }
-    .member .dot {
-      width: 7px;
-      height: 7px;
+    .member .avatar {
+      position: relative;
+      width: 34px;
+      height: 34px;
+      border-radius: 50%;
+      display: grid;
+      place-items: center;
+      font-size: 18px;
+      flex: none;
+      background: var(--border-subtle);
+      border: 1px solid var(--border-subtle);
+    }
+    /* AI members get the signature cyan-ringed avatar. */
+    .member[data-kind='agent'] .avatar {
+      border-color: var(--border-accent);
+      box-shadow: 0 0 6px rgba(0, 212, 255, 0.18);
+    }
+    .member .status-dot {
+      position: absolute;
+      bottom: -1px;
+      right: -1px;
+      width: 11px;
+      height: 11px;
       border-radius: 50%;
       background: var(--status-offline);
-      flex: none;
+      border: 2px solid var(--widget-surface-solid);
     }
-    .member.active .dot {
+    .member.online .status-dot {
       background: var(--status-online);
-      box-shadow: 0 0 6px var(--status-online);
+      box-shadow: 0 0 5px var(--status-online);
     }
     .member.idle {
-      opacity: 0.55;
+      opacity: 0.6;
+    }
+    .member .info {
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+      gap: 1px;
     }
     .member .name {
+      font-weight: 600;
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
+    }
+    .member .meta {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+    .member .kind-badge {
+      font-size: 9px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      padding: 1px 5px;
+      border-radius: var(--radius-sm);
+      background: var(--button-secondary-background);
+      color: var(--content-secondary);
     }
     .runtime {
       font-size: 10px;

@@ -38,14 +38,34 @@ function runtimeBadge(runtime: string): TemplateResult | typeof nothing {
   return runtime ? html`<span class="runtime" title="runtime origin">${runtime}</span>` : nothing;
 }
 
-/** One roster-rail row — WHO is here, with a live presence dot. */
+/** Human-readable member-kind label for the card badge. */
+function kindLabel(kind: MemberKind): string {
+  switch (kind) {
+    case 'human':
+      return 'human';
+    case 'agent':
+      return 'agent';
+    case 'system':
+      return 'system';
+  }
+}
+
+/** One roster row — a member card (avatar + presence dot, name, kind/runtime),
+ *  the visual language of the old Users & Agents tile, off the design tokens. */
 function rosterRow(m: RosterMemberVM): TemplateResult {
   return html`
-    <li class="member ${m.active ? 'active' : 'idle'}" data-kind=${m.kind}>
-      <span class="dot" title=${m.active ? 'active' : 'idle'}></span>
-      <span class="glyph">${kindGlyph(m.kind)}</span>
-      <span class="name">${m.name}</span>
-      ${runtimeBadge(m.runtime)}
+    <li class="member ${m.active ? 'online' : 'idle'}" data-kind=${m.kind}>
+      <span class="avatar">
+        <span class="glyph">${kindGlyph(m.kind)}</span>
+        <span class="status-dot" title=${m.active ? 'active' : 'idle'}></span>
+      </span>
+      <span class="info">
+        <span class="name">${m.name}</span>
+        <span class="meta">
+          <span class="kind-badge">${kindLabel(m.kind)}</span>
+          ${runtimeBadge(m.runtime)}
+        </span>
+      </span>
     </li>
   `;
 }
@@ -79,6 +99,10 @@ export function renderChat(vm: ChatViewModel): TemplateResult {
     </header>
     <div class="panels">
       <aside class="who" aria-label="roster">
+        <div class="who-head">
+          <span class="who-title">Users &amp; Agents</span>
+          <span class="who-count">${vm.memberCount}</span>
+        </div>
         <ul class="roster">
           ${vm.members.map(rosterRow)}
         </ul>
