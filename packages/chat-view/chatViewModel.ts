@@ -35,6 +35,11 @@ export interface RosterMemberVM {
   readonly active: boolean;
   /** Self-reported runtime origin (`"claude"`, `"codex"`, `""` = unresolved). */
   readonly runtime: string;
+  /** Opaque live **vitals** — normalized `0..=100` readouts (energy, attention,
+   *  compute, …) the source attaches for the roster to draw as meters. Empty =
+   *  none reported (a human, a remote peer, or a persona not surfacing state) —
+   *  the card simply draws no meters, never fabricated bars. */
+  readonly vitals: Record<string, number>;
 }
 
 /** One conversation row — "what was said". */
@@ -82,6 +87,9 @@ function memberVM(slot: RosterSlotView): RosterMemberVM {
     kind: slot.kind.kind,
     active: slot.active,
     runtime: slot.provenance.runtime,
+    // Additive field (#vitals): an older core omits it → treat as no vitals, the
+    // same back-compat discipline as `purpose` ([[fallbacks-are-illegal-fail-loud]]).
+    vitals: slot.vitals ?? {},
   };
 }
 

@@ -235,6 +235,11 @@ pub(crate) fn roster_slot_from_member(member: &RoomMember) -> RosterSlotView {
         // unreported); `last_seen_ms` is the raw recency signal.
         availability: member.availability.map(availability_label).map(str::to_owned),
         last_seen_ms: member.last_seen_ms,
+        // airc's `RoomMember` carries no vitals — a continuum persona's live
+        // `PersonaState` (energy/attention/compute) is enriched onto local members
+        // by the presence path (part B). Empty here = no vitals reported, never
+        // fabricated bars ([[fallbacks-are-illegal-fail-loud]]).
+        vitals: BTreeMap::new(),
     }
 }
 
@@ -271,6 +276,7 @@ pub(crate) fn test_roster_slot(member: Uuid, name: &str, kind: SenderKind) -> Ro
         active: true,
         availability: None,
         last_seen_ms: 0,
+        vitals: BTreeMap::new(),
     }
 }
 

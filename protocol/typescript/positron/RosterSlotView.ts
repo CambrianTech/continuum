@@ -64,4 +64,16 @@ availability?: string,
  * (not `bigint`) to match the rest of the substrate's ms timestamps
  * (`ChatMessageView.timestamp`).
  */
-last_seen_ms: number, };
+last_seen_ms: number, 
+/**
+ * Opaque per-member **vitals** — normalized `0..=100` percentage readouts a
+ * source MAY attach for the app to draw as live meters (e.g. energy, attention,
+ * compute). Transported, NOT interpreted — the same neutral discipline as
+ * `integrations` and `availability`: positron carries whatever keys the source
+ * reports; the app layer decides what each means and how to render it (a continuum
+ * persona surfaces its `PersonaState`; a different adopter surfaces its own). `u8`
+ * (0..=100) keeps the slot `Eq`/hashable and is display-precise. Empty = no vitals
+ * reported — an honest unknown, never fabricated bars; `#[serde(default)]` so an
+ * older slot folds as empty, never dropped.
+ */
+vitals: Record<string, number>, };

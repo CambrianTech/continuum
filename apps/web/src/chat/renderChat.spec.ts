@@ -37,6 +37,7 @@ const member = (over: Partial<RosterSlotView> = {}): RosterSlotView => ({
   provenance: { runtime: '' },
   active: true,
   last_seen_ms: 0,
+  vitals: {},
   ...over,
 });
 

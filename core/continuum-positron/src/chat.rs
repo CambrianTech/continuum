@@ -290,6 +290,18 @@ pub struct RosterSlotView {
     #[serde(default)]
     #[ts(type = "number")]
     pub last_seen_ms: u64,
+    /// Opaque per-member **vitals** — normalized `0..=100` percentage readouts a
+    /// source MAY attach for the app to draw as live meters (e.g. energy, attention,
+    /// compute). Transported, NOT interpreted — the same neutral discipline as
+    /// `integrations` and `availability`: positron carries whatever keys the source
+    /// reports; the app layer decides what each means and how to render it (a continuum
+    /// persona surfaces its `PersonaState`; a different adopter surfaces its own). `u8`
+    /// (0..=100) keeps the slot `Eq`/hashable and is display-precise. Empty = no vitals
+    /// reported — an honest unknown, never fabricated bars; `#[serde(default)]` so an
+    /// older slot folds as empty, never dropped.
+    #[serde(default)]
+    #[ts(type = "Record<string, number>")]
+    pub vitals: BTreeMap<String, u8>,
 }
 
 /// Top-level state for the `"chat"` widget kind. Fills
@@ -477,6 +489,7 @@ mod tests {
             active: true,
             availability: Some("busy".into()),
             last_seen_ms: 1_700_000_000_000,
+            vitals: BTreeMap::new(),
         };
         let back: RosterSlotView =
             serde_json::from_str(&serde_json::to_string(&slot).unwrap()).unwrap();
@@ -535,6 +548,7 @@ mod tests {
                 active: true,
                 availability: Some("ready".into()),
                 last_seen_ms: 1_700_000_000_000,
+                vitals: BTreeMap::new(),
             }],
         };
         let json = serde_json::to_string(&state).unwrap();

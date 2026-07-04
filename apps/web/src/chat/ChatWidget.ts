@@ -233,6 +233,63 @@ export class ChatWidget extends LitElement {
       color: var(--content-accent);
       border: 1px solid var(--border-accent);
     }
+    /* Live genome-energy meters — the old persona-tile INT/NRG/QUE bars, reborn
+     * sci-fi: a thin cyan bar per vital with a moving glint on live agents. The
+     * readout that makes a persona feel alive in the roster. */
+    .vitals {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      margin-top: 4px;
+    }
+    .vital {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+    }
+    .vital-label {
+      font-family: var(--font-mono);
+      font-size: 8px;
+      letter-spacing: 0.06em;
+      color: var(--content-secondary);
+      width: 22px;
+      flex: none;
+    }
+    .vital-track {
+      position: relative;
+      height: 3px;
+      flex: 1;
+      border-radius: 2px;
+      background: var(--border-subtle);
+      overflow: hidden;
+    }
+    .vital-fill {
+      position: relative;
+      display: block;
+      height: 100%;
+      border-radius: 2px;
+      background: linear-gradient(90deg, rgba(0, 212, 255, 0.45), var(--content-accent));
+      box-shadow: 0 0 6px rgba(0, 212, 255, 0.5);
+      overflow: hidden;
+      transition: width 0.6s ease;
+    }
+    /* Moving glint — reads as a live, updating gauge on an active agent. */
+    @keyframes vital-shimmer {
+      from {
+        transform: translateX(-120%);
+      }
+      to {
+        transform: translateX(320%);
+      }
+    }
+    .member.online .vital-fill::after {
+      content: '';
+      position: absolute;
+      inset: 0;
+      width: 40%;
+      background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.55), transparent);
+      animation: vital-shimmer 2.4s linear infinite;
+    }
     .what {
       overflow-y: auto;
       padding: var(--spacing-md) var(--spacing-lg);
