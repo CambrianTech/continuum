@@ -260,7 +260,16 @@ nav/sheet, thumb-reach — not the 3-panel shrunk); a **terminal is not the web 
 full render serialized** (only what the persona needs now); **AR is not a flat panel in space**. The
 byte-identical web+terminal targets shipped first were the FLOOR (prove the framework, zero regression) —
 the goal is each target rendering the shared data as *its own* best experience. The `RenderTarget` is
-exactly where per-surface UX taste belongs.
+exactly where per-surface UX taste belongs — and it's **AUTOMATIC, like CSS media queries**: the best UX
+per surface is *derived* from the singular definition + per-surface rules, exactly like `@media` derives a
+layout per viewport without a hand-authored page each. **Modality is another media dimension** (`@media
+(min-width)` → `@media (modality: mobile|terminal|rag|ar)`). The app declares **semantic intent** once
+(the `WorkspaceView` roles — `nav`, `left`=secondary, `content`=primary, `context`, `meters`/`status` —
+say WHAT each thing is + its priority, like HTML semantics); each `RenderTarget` holds **surface-adaptation
+rules** and AUTO-DERIVES the layout (mobile → primary full-screen + secondary behind bottom-nav/sheet;
+terminal → text density; RAG → concise grounding, primary + who, drop chrome; AR → spatial). So a target
+is an **adaptive renderer (a per-modality media-query engine), not a bespoke design** — design effort goes
+into the target's *rules once*, and every app gets the right per-portal UX for free.
 
 **The build:** the primitives exist; the missing keystone is `defineApp` + `mount(app, target)`, then
 refactor `apps/{web,tui}` from hand-wired roots onto it (no old code immune once the framework is
