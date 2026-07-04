@@ -26,7 +26,7 @@
 //!
 //! ## Which airc streams map to `kind="chat"`
 //!
-//! Two bus streams fold onto the single existing `ChatViewState::KIND`, and
+//! Three bus streams fold onto the single existing `ChatViewState::KIND`, and
 //! the split between them mirrors airc's own message/identity split:
 //!
 //! - **`chat:posted`** — a posted message. Deserialized into the **thin**
@@ -37,6 +37,11 @@
 //!   [`AircPresenceUpdate`], each entry an airc member joined with its
 //!   identity card (neutral `kind` + opaque `integrations`), replacing
 //!   the room's roster. This is the identity lookup table for messages.
+//! - **`persona:vitals`** — a persona radiated its live cognition readouts.
+//!   Deserialized into [`PersonaVitalsUpdate`] and folded into that member's
+//!   [`RosterSlotView::vitals`] by id — a thin overlay kept in its own map so
+//!   it survives a roster-replacing presence snapshot (personas emit, this
+//!   projection folds; the presence emitter stays persona-agnostic).
 //!
 //! Wall / coordination / kanban / widget state (task #89) are *different*
 //! kinds and are deliberately out of scope here — they get their own
@@ -256,9 +261,11 @@ pub(crate) fn roster_slot_from_member(member: &RoomMember) -> RosterSlotView {
         availability: member.availability.map(availability_label).map(str::to_owned),
         last_seen_ms: member.last_seen_ms,
         // airc's `RoomMember` carries no vitals — a continuum persona's live
-        // `PersonaState` (energy/attention/compute) is enriched onto local members
-        // by the presence path (part B). Empty here = no vitals reported, never
-        // fabricated bars ([[fallbacks-are-illegal-fail-loud]]).
+        // `PersonaState` (energy/attention/compute) arrives on its OWN
+        // `persona:vitals` event and is folded into the slot by id at `store`
+        // time (see [`PersonaVitalsUpdate`] / [`ChatProjection::apply_vitals`]),
+        // never through this presence path. Empty here = no vitals reported,
+        // never fabricated bars ([[fallbacks-are-illegal-fail-loud]]).
         vitals: BTreeMap::new(),
     }
 }
@@ -935,6 +942,45 @@ mod tests {
         assert_eq!(view.room_id, room_b);
         assert_eq!(view.messages.len(), 1, "room A's message was cleared");
         assert_eq!(view.messages[0].content, "b");
+    }
+
+    #[test]
+    fn switching_rooms_clears_vitals() {
+        // what this catches: switch_room must clear the per-member vitals map,
+        // or a member with the SAME id in a new room would inherit the prior
+        // room's meters — a cross-room leak. The vitals twin of
+        // switching_rooms_resets_the_accumulator.
+        let substrate = Substrate::new();
+        let mut p = ChatProjection::new(substrate.clone());
+        let room_a = Uuid::from_u128(0xa);
+        let room_b = Uuid::from_u128(0xf);
+        let m = Uuid::from_u128(0xb);
+
+        // Room A: member m present + radiating vitals.
+        if let ProjectionInput::Presence(u) =
+            classify(PRESENCE_UPDATED, &presence_one(room_a, m, "Asha", "agent", json!({}))).unwrap()
+        {
+            p.apply_presence(u);
+        }
+        let radiated = serde_json::to_value(PersonaVitalsUpdate {
+            member_id: m,
+            vitals: BTreeMap::from([("energy".to_string(), 70u8)]),
+        })
+        .unwrap();
+        if let ProjectionInput::Vitals(v) = classify(PERSONA_VITALS, &radiated).unwrap() {
+            p.apply_vitals(v);
+        }
+        assert_eq!(current_chat(&substrate).roster[0].vitals.get("energy"), Some(&70));
+
+        // Same member id focuses room B → the vitals map is cleared, no leak.
+        if let ProjectionInput::Presence(u) =
+            classify(PRESENCE_UPDATED, &presence_one(room_b, m, "Asha", "agent", json!({}))).unwrap()
+        {
+            p.apply_presence(u);
+        }
+        let view = current_chat(&substrate);
+        assert_eq!(view.room_id, room_b);
+        assert!(view.roster[0].vitals.is_empty(), "vitals leaked from room A into room B");
     }
 
     #[test]
