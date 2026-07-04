@@ -25,5 +25,7 @@ export type {
 } from './chatViewModel';
 
 // The chat activity expressed on the consumer-neutral pattern primitives
-// (ACTIVITY-ROOM-PATTERNS.md): the roster IS the `Listing` primitive.
-export { rosterListing } from './patternProjections';
+// (ACTIVITY-ROOM-PATTERNS.md): the roster IS the `Listing`, and the whole room
+// composes into a `Workspace` (nav + left + purpose-keyed content + context).
+export { rosterListing, roomsListing, chatWorkspace } from './patternProjections';
+export type { ChatContentBody } from './patternProjections';

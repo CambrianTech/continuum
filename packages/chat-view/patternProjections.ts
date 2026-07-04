@@ -9,8 +9,14 @@
  * a target only draws them.
  */
 
-import type { ListingView, ListingCell, CellStatus } from '@continuum/patterns';
-import type { ChatViewModel, MemberKind, RosterMemberVM } from './chatViewModel';
+import type {
+  ListingView,
+  ListingCell,
+  CellStatus,
+  ContentView,
+  WorkspaceView,
+} from '@continuum/patterns';
+import type { ChatViewModel, MemberKind, MessageRowVM, RosterMemberVM } from './chatViewModel';
 
 /** Leading glyph per member kind — the neutral human/agent/system discriminant, as a
  *  display token the Listing carries (targets draw it, they don't re-derive it). */
@@ -39,5 +45,43 @@ export function rosterListing(vm: ChatViewModel): ListingView {
     id: 'roster',
     title: 'Users & Agents',
     cells: vm.members.map(rosterCell),
+  };
+}
+
+/** The nav `Listing` — the rooms-Listing that is the tab bar for a human and the
+ *  channel-attention set for a persona (one nav primitive over room-space,
+ *  ACTIVITY-ROOM-PATTERNS.md). Today the client holds one focused room, so this is a
+ *  single active cell; when the client tracks multiple rooms/DMs it fills out with no
+ *  shape change (that is the point of `activity == room == tab`). */
+export function roomsListing(vm: ChatViewModel): ListingView {
+  return {
+    id: 'rooms',
+    title: 'Rooms',
+    cells: [{ id: vm.roomId, title: vm.roomName, status: 'active', group: vm.purpose }],
+  };
+}
+
+/** The chat activity's `Content` body — the conversation. `Content` is keyed by the
+ *  room's `purpose` (here `vm.purpose`, `"chat"`), so a target's registered chat
+ *  renderer draws these rows; a foundry room would carry a different purpose + body. */
+export interface ChatContentBody {
+  readonly messages: readonly MessageRowVM[];
+  readonly isEmpty: boolean;
+}
+
+/** The whole chat room as a `Workspace` — nav (rooms) + left (people) + content
+ *  (the conversation, dispatched by `purpose`) + an empty context panel. This is the
+ *  data spine a `RenderTarget` draws; every activity projects its own `Workspace` the
+ *  same way, so the shell is identical and only content/context vary. */
+export function chatWorkspace(vm: ChatViewModel): WorkspaceView {
+  const content: ContentView<ChatContentBody> = {
+    purpose: vm.purpose,
+    body: { messages: vm.messages, isEmpty: vm.isEmpty },
+  };
+  return {
+    nav: roomsListing(vm),
+    left: [rosterListing(vm)],
+    content,
+    context: { listings: [] },
   };
 }
