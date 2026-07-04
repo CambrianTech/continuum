@@ -1124,6 +1124,14 @@ impl WorkspaceCycle {
         self.genome.load().as_ref().clone()
     }
 
+    /// This mind's monotonic service-tick count — how many `Workspace::cycle`
+    /// ticks it has serviced since spawn. The DELTA of this over an interval is
+    /// the persona's live "thinking tempo" (the roster **ACT** vital): a rising
+    /// count = actively servicing concerns, a flat count = idle. Read wait-free.
+    pub fn cycle_count(&self) -> u64 {
+        self.cycle_counter.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
     /// Clear the volatile working-memory scratch (the act/reasoning proprioception
     /// buffer), if this cycle has hands. Called at the boundary between disjoint
     /// concerns — e.g. each independent task in a `cognition/eval` pass — so one

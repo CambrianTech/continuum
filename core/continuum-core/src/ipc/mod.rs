@@ -114,6 +114,7 @@ pub mod positron_presence;
 pub mod positron_source;
 pub mod positron_wall_source;
 pub mod protocol;
+pub mod vitals_emitter;
 pub mod ws;
 
 use diagnostics::{current_rss_mb, dump_memory_report, log_command_rss_delta};
@@ -2435,6 +2436,14 @@ pub fn start_server(
                             room_name.clone(),
                             projection_bus.clone(),
                         );
+
+                        // Roster-vitals radiator (design B emit half): sample each
+                        // resident persona's live WorkspaceCycle (service-tick tempo
+                        // + paged-in genome) and publish `persona:vitals` on the SAME
+                        // bus the chat projection reads, so those readouts breathe as
+                        // meters on the who-panel card. Reads the workspace registry
+                        // itself (where residents run); the projection folds by id.
+                        vitals_emitter::spawn_vitals_emitter(&state.rt_handle, projection_bus.clone());
 
                         // Wall projector: the consuming half of `wall:changed`.
                         // A dedicated node reader (own home + identity, distinct
