@@ -25,17 +25,19 @@ room_id: string,
  * Human-readable room name (e.g. `"general"`). Substrate-resolved;
  * widget must not derive from URL slug.
  */
-room_name: string,
+room_name: string, 
 /**
  * The room's **activity purpose** — the content-dispatch key
  * (`"chat"`, `"foundry"`, `"scada"`, …). Per
  * `docs/architecture/ACTIVITY-ROOM-PATTERNS.md`, `activity == room ==
  * content == tab`: a client's `Content` primitive dispatches on this to
- * pick the room's central widget(s). Neutral/opaque here — positron
- * transports the value, continuum sets it (from the room's recipe via
- * `RoomPurposeSource`, task #6); defaults to `"chat"`.
+ * pick the room's central widget(s), so adding an activity is a purpose
+ * value + a registered renderer, never a shell change. Neutral/opaque
+ * here — positron transports the value, continuum sets it (from the
+ * room's recipe/nature via `RoomPurposeSource`, task #6); it defaults to
+ * `"chat"` until a recipe names another purpose.
  */
-purpose: string,
+purpose: string, 
 /**
  * Most recent messages, oldest first. Bounded — substrate decides
  * the window (see `MAX_MESSAGES_PER_SNAPSHOT` in the builder).
