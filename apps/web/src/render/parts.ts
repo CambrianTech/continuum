@@ -77,16 +77,18 @@ function vitalsMeters(vitals: Record<string, number>): TemplateResult | typeof n
   if (entries.length === 0) return nothing;
   return html`
     <span class="vitals">
-      ${entries.map(
-        ([key, pct]) => html`
+      ${entries.map(([key, pct]) => {
+        const clamped = Math.max(0, Math.min(100, pct));
+        return html`
           <span class="vital" title="${key} ${pct}%">
             <span class="vital-label">${vitalTag(key)}</span>
             <span class="vital-track">
-              <span class="vital-fill" style="width:${Math.max(0, Math.min(100, pct))}%"></span>
+              <span class="vital-fill" style="width:${clamped}%"></span>
             </span>
+            <span class="vital-value">${Math.round(clamped)}</span>
           </span>
-        `,
-      )}
+        `;
+      })}
     </span>
   `;
 }
