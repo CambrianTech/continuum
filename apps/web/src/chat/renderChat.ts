@@ -18,38 +18,17 @@
  * state + send handler — this function renders only the read surface.)
  */
 
-import { html, type TemplateResult } from 'lit';
+import { type TemplateResult } from 'lit';
 import { chatWorkspace, type ChatViewModel } from '@continuum/chat-view';
-import { memberCard } from '../render/parts';
-import { webContentRegistry } from '../content/registry';
+import { webTarget } from '../render/litTarget';
 
-/** The read surface: header + roster `Listing` + purpose-dispatched Content. */
+/** The read surface: header + roster `Listing` + purpose-dispatched Content.
+ *
+ * Now a thin delegation through positron's framework path: project the VM onto the
+ * neutral `WorkspaceView` (`chatWorkspace`) and let the web `RenderTarget` paint it.
+ * The markup is byte-identical to the former inline template (screenshot-verified) —
+ * the difference is architectural: the same projection a persona reads over RAG and a
+ * mobile Flutter target will paint. `apps/web` flows through `mount(chatApp, …, webTarget)`. */
 export function renderChat(vm: ChatViewModel): TemplateResult {
-  // Project onto the pattern primitives; the shell draws the pieces + routes the
-  // center on `content.purpose` (the Content registry). One projection, both eyes
-  // (this) and the persona's grounding read it.
-  const ws = chatWorkspace(vm);
-  return html`
-    <header class="room">
-      <div class="room-name">${vm.roomName}</div>
-      <div class="room-meta">
-        <span class="count" title="active / total">${vm.activeCount}/${vm.memberCount} here</span>
-        <span class="room-id" title="room id">${vm.roomId}</span>
-      </div>
-    </header>
-    <div class="panels">
-      <aside class="who" aria-label="roster">
-        <div class="who-head">
-          <span class="who-title">Users &amp; Agents</span>
-          <span class="who-count">${vm.memberCount}</span>
-        </div>
-        <ul class="roster">
-          ${vm.members.map(memberCard)}
-        </ul>
-      </aside>
-      <section class="what" aria-label="conversation">
-        ${webContentRegistry.render(ws.content)}
-      </section>
-    </div>
-  `;
+  return webTarget.workspace(chatWorkspace(vm));
 }
