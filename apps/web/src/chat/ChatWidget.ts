@@ -124,15 +124,19 @@ export class ChatWidget extends LitElement {
       gap: var(--spacing-sm);
       padding: 6px var(--spacing-md);
       border-radius: var(--radius-md);
+      transition: background 0.15s ease;
+    }
+    .member:hover {
+      background: var(--button-secondary-background);
     }
     .member .avatar {
       position: relative;
-      width: 34px;
-      height: 34px;
+      width: 40px;
+      height: 40px;
       border-radius: 50%;
       display: grid;
       place-items: center;
-      font-size: 18px;
+      font-size: 20px;
       flex: none;
       background: var(--border-subtle);
       border: 1px solid var(--border-subtle);
@@ -141,6 +145,27 @@ export class ChatWidget extends LitElement {
     .member[data-kind='agent'] .avatar {
       border-color: var(--border-accent);
       box-shadow: 0 0 6px rgba(0, 212, 255, 0.18);
+    }
+    /* …and a slow "cognition" comet arc on a live agent — the old persona-tile's
+     * living ring, a quiet sign the agent is present and thinking. */
+    @keyframes comet-orbit {
+      from {
+        transform: rotate(0deg);
+      }
+      to {
+        transform: rotate(360deg);
+      }
+    }
+    .member[data-kind='agent'].online .avatar::before {
+      content: '';
+      position: absolute;
+      inset: -4px;
+      border-radius: 50%;
+      border: 2px solid transparent;
+      border-top-color: var(--content-accent);
+      border-right-color: rgba(0, 212, 255, 0.4);
+      animation: comet-orbit 3.5s linear infinite;
+      pointer-events: none;
     }
     .member .status-dot {
       position: absolute;
