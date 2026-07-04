@@ -50,7 +50,7 @@ export const webTarget: RenderTarget<TemplateResult> = {
         <div class="room-name">${room?.title ?? ''}</div>
         <div class="room-meta">
           <span class="count" title="active / total">${activeCount}/${memberCount} here</span>
-          <span class="room-id" title="room id">${room?.id ?? ''}</span>
+          <span class="live" title="live · ${room?.id ?? ''}"><span class="live-dot"></span>live</span>
         </div>
       </header>
       <div class="panels">

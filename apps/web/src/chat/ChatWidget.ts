@@ -76,9 +76,27 @@ export class ChatWidget extends LitElement {
       color: var(--content-secondary);
       font-size: 12px;
     }
-    .room-id {
-      opacity: 0.5;
-      font-family: var(--font-mono);
+    /* A live pulse beats a raw UUID dumped in the header (the id lives in the tooltip). */
+    .live {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      font-size: 10px;
+      color: var(--content-secondary);
+    }
+    .live-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--status-online, #3fb950);
+      box-shadow: 0 0 6px var(--status-online, #3fb950);
+      animation: live-pulse 2.4s ease-in-out infinite;
+    }
+    @keyframes live-pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.35; }
     }
     .panels {
       display: grid;
@@ -313,6 +331,12 @@ export class ChatWidget extends LitElement {
       padding: var(--spacing-xl) var(--spacing-xs);
       text-align: center;
     }
+    /* A centered reading column — the conversation shouldn't hug the left edge of a
+       wide desktop panel with a dead void on the right. */
+    .messages {
+      max-width: 880px;
+      margin: 0 auto;
+    }
     .messages .msg {
       display: flex;
       gap: var(--spacing-sm);
@@ -336,6 +360,7 @@ export class ChatWidget extends LitElement {
     }
     .sender {
       font-weight: 600;
+      color: var(--content-accent);
     }
     .time {
       color: var(--content-secondary);
@@ -344,6 +369,9 @@ export class ChatWidget extends LitElement {
     .content {
       white-space: pre-wrap;
       word-break: break-word;
+      /* Cap the measure — prose past ~68ch is hard to read; a lovable chat never
+         stretches a bubble the full 1000px+ of a desktop panel. */
+      max-width: 68ch;
       background: var(--message-assistant-background);
       border: 1px solid var(--message-assistant-border);
       border-radius: var(--radius-lg);
