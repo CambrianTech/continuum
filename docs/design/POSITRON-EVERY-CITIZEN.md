@@ -120,6 +120,52 @@ Everything sci-fi falls out of it, for free, because a persona is just a citizen
 
 Small core, enormous surface area. **Terse, high up, sci-fi as the side effect** ([[build-the-factory-as-you-build-the-car]]). The build path below stays the same; presence is the field to add to the Surface after foundry proves the shell (a `presence` axis on state: `{who, attending, acting}` per citizen).
 
+## 4.6 The Universe axis — experience, not theme (host any world)
+
+A **theme** is `--content-accent: cyan`. A **universe** is *Tron* — the glow, the grid-floor,
+the way controls animate and sound, the feeling of operating a machine that's alive. LOTR,
+Warcraft, Star Trek/LCARS are universes; each is a *total experience*, not a palette. So the
+render model has **three compositional axes**, not two:
+
+- **Surface** = *what* (the room/activity: foundry, chat, a mind's brain-HUD)
+- **RenderTarget** = *where* (terminal, web desktop, mobile, AR/VR)
+- **Universe** = *the world it feels like* (Tron, LOTR, Star Trek… or our own original)
+
+`experience = Surface × RenderTarget × Universe`. The foundry (Surface) in XR (RenderTarget) in
+Tron (Universe) → you stand in a glowing forge on the Grid; the *same* foundry on the terminal
+in Tron → the 1980s cyan command console listing models; on web → the Tron desktop. **Same room,
+same world, native to each surface.** You are never in a different app — you're in the same
+universe wearing a different surface. This is what makes it *an experience that blows them away*
+on first contact instead of "a themed website."
+
+**Two rules that keep it powerful:**
+1. **Universes are authored, not hardcoded** — a Universe is *content/recipe* (the Universe
+   Architect, `universe-architect.png`), a coherent bundle: token palette + motion/interaction
+   idiom + spatial language (how a room lays out in 2D vs XR) + sound + tone. Swappable live by
+   name (`universe.png`). Positron **hosts any universe** — we are NOT clones of Tron/LOTR/Warcraft;
+   we are the engine that *lets those universes exist*, with an original first-party one as the
+   default that stands on its own.
+2. **A Universe re-skins ALL of it, on EVERY surface, without touching a Surface or a component.**
+   The generic `listingCell` becomes a glowing Grid row in Tron, an illuminated-manuscript line in
+   LOTR, an LCARS pill in Star Trek — same declared cell, the Universe supplies the *how*. If
+   changing universe requires touching an activity, the axis leaked; fix the seam.
+
+**The deepest layer — a Universe re-embodies the CITIZENS, not just the chrome.** You don't talk to
+"the foundry persona" — in the Warcraft universe you talk to **the orc running the forge.** Same
+mind, same memory, same skill (Asha is *Asha* underneath — identity persists per
+[[persona-is-a-genome-overlay-not-an-instance]]); the Universe supplies her *costume*: avatar, voice,
+role, the anvil and smoke around her. In Tron she's a program of light; in Star Trek a science
+officer. This is where POSITRONIC-EMBODIMENT plugs into the axis: the **presence stream** (§4.5)
+carries *who + attending + acting*; the **Universe renders that "who" as a character.** And positron
+makes the universe happen *across every view* — the orc is an orc portrait on web, an orc you stand
+beside in XR, an orc's growl on the terminal: always the orc, always the forge, always Warcraft. The
+activity is the same recipe; the citizen is the same self; the Universe is the world they're wearing.
+
+The build implication: the design-token layer (INTERFACE-PORT-MAP §1) is the *seed* of a Universe
+(the palette slice). Grow it into the full experience bundle (motion + spatial + sound + tone),
+and make it a first-class authorable entity — a *universe is a recipe too* (THE-ORGANISM). First
+experience = one original universe, ruthless and coherent across terminal ↔ web ↔ mobile ↔ XR.
+
 ## 5. The test of done
 
 Not "the web page looks right." **Done is:** a human on web/mobile sees a gorgeous foundry;
