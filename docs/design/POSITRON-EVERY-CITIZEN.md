@@ -199,6 +199,50 @@ grounding), a game studio ships a fantasy one, and both ride the identical Surfa
 Universe stack. The "portal, not a website" claim is what lets a company make its whole internal
 world one.
 
+## 4.7 Define once → all modalities (the framework payoff — for continuum AND anyone)
+
+The question that decides whether positron is a *framework* or just our app's plumbing: **how does a
+project define a "continuum-desktop"-class app ONCE and get every modality?** Today `apps/{web,tui}`
+are separate hand-wired composition roots (each re-does the SDK→view→host wiring). That's the
+pre-framework state. The framework elevates it to ONE declaration + a per-modality `mount`:
+
+```ts
+// The app, defined ONCE — neutral, declarative, no modality assumptions.
+const app = defineApp({
+  shell:    (state) => workspaceView(state),        // WHO / WHAT / WHERE layout (WorkspaceView)
+  content:  (r) => { r.register('chat', chat);      // the ACTIVITIES = recipe purpose → ContentRenderer
+                     r.register('foundry', foundry); },   //   (createContentRegistry — a MIME table)
+  data:     { state: (sdk) => sdk.subscribe('chat'), //   READ  binding: SDK stream → WorkspaceView
+              dispatch: (sdk) => sdk.execute },       //   WRITE binding: a control IS a command
+  universe: 'continuum',                              // look/lore (theme⊇tokens + motion + embodiment)
+});
+
+// Every modality mounts the SAME app — the per-modality "app" becomes ONE line.
+mount(app, webTarget);      // Lit DOM          (apps/web)
+mount(app, flutterTarget);  // Flutter          (apps/mobile, via sdk/flutter)
+mount(app, terminalTarget); // ANSI             (apps/tui)
+mount(app, ragTarget);      // persona grounding + operable commands (RAG)
+```
+
+**Why this is "structure once → all modalities":** `RenderTarget<Out>` already abstracts *the output
+per modality*, and positron's **component library** provides per-target renderers for the standard
+widgets (cell, meter, tab bar, avatar tile…). So the project declares its **structure** (shell +
+activities + data + universe) against neutral primitives, and each `RenderTarget` renders that one
+declaration — exactly how Flutter/RN render one widget tree to iOS+Android. Custom activity bodies are
+written against the same primitives, so they inherit every target too.
+
+**Why this is easy for OTHER projects (the real answer):** another project `npm i @continuum/patterns`,
+calls `defineApp({ …their activities, their universe })`, and gets web / mobile / terminal / RAG apps
+for free — **they never write per-modality code.** Continuum's own app is simply *the first* `defineApp`
+consumer; positron doesn't know or care that it's continuum ([[three-separable-layers-recipe-positron-universe]],
+positron is general). The matryoshka holds: `defineApp` is the outermost neutral declaration, each
+`RenderTarget` a doll that renders it ([[logical-portability-for-unknown-future-integrations]]).
+
+**The build:** the primitives exist; the missing keystone is `defineApp` + `mount(app, target)`, then
+refactor `apps/{web,tui}` from hand-wired roots onto it (no old code immune once the framework is
+understood — [[mine-past-work-for-patterns-clever-vs-typical]]). That single elevation is what turns
+positron from "our plumbing" into "the framework a company or a game defines its whole app in, once."
+
 ## 5. The test of done
 
 Not "the web page looks right." **Done is:** a human on web/mobile sees a gorgeous foundry;
