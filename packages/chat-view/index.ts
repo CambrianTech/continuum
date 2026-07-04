@@ -23,3 +23,7 @@ export type {
   RosterMemberVM,
   MessageRowVM,
 } from './chatViewModel';
+
+// The chat activity expressed on the consumer-neutral pattern primitives
+// (ACTIVITY-ROOM-PATTERNS.md): the roster IS the `Listing` primitive.
+export { rosterListing } from './patternProjections';

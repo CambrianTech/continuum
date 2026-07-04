@@ -1,0 +1,21 @@
+{
+  "name": "@continuum/patterns",
+  "version": "0.1.0",
+  "private": true,
+  "description": "The consumer-neutral widget pattern contract (docs/architecture/ACTIVITY-ROOM-PATTERNS.md). Framework-free shapes — Listing / Content(dispatch-by-purpose) / ContextPanel / Workspace — plus the RenderTarget contract each surface (web Lit, tui ANSI, the Rust persona RAG renderer, mobile) implements. A widget is a pattern projected to any consumer; the human's UI and the persona's grounding are ONE projection. Holds NO DOM, NO ANSI, NO RAG specifics, and no dependencies.",
+  "type": "module",
+  "main": "./index.ts",
+  "types": "./index.ts",
+  "exports": {
+    ".": "./index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.0",
+    "vitest": "^2.1.0"
+  }
+}
