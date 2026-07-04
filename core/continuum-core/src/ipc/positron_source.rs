@@ -68,7 +68,7 @@
 //! — the revision key would extend from the bare kind string to a
 //! `(room_id, kind)` tuple (see `continuum-positron/src/revisions.rs`).
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
@@ -170,6 +170,26 @@ pub(crate) struct AircPresenceUpdate {
     pub(crate) room_id: Uuid,
     pub(crate) room_name: String,
     pub(crate) roster: Vec<RosterSlotView>,
+}
+
+/// Event name a persona radiates its live vitals under.
+pub(crate) const PERSONA_VITALS: &str = "persona:vitals";
+
+/// Typed `persona:vitals` payload — one persona's live cognition readouts.
+///
+/// Design B of the roster-vitals build: a persona **radiates** its own
+/// `PersonaState` (energy/attention/compute, normalized `0..=100`) on the bus,
+/// and this projection **folds** it into that member's [`RosterSlotView::vitals`]
+/// by id — the same emit/subscribe organism messages + presence already use, so
+/// the persona-agnostic presence emitter never learns about personas. `member_id`
+/// is the persona's airc peer id, matching the roster slot it enriches. Same
+/// `pub(crate)` + `Serialize` "agree by construction" discipline as
+/// [`AircPresenceUpdate`]: the emitter builds THIS struct, never a hand JSON.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PersonaVitalsUpdate {
+    pub(crate) member_id: Uuid,
+    pub(crate) vitals: BTreeMap<String, u8>,
 }
 
 /// airc's `AgentAvailabilityState` → its stable neutral wire label — airc's
@@ -349,6 +369,12 @@ struct ChatProjection {
     /// `ChatViewState.messages` is documented to carry).
     messages: VecDeque<ChatMessageView>,
     roster: Vec<RosterSlotView>,
+    /// Latest live vitals per member id, folded from `persona:vitals` events
+    /// (design B). Kept SEPARATE from the presence roster — presence replaces
+    /// the roster wholesale on every update, so vitals live here and are merged
+    /// into each slot at `store` time, surviving roster churn. A member with no
+    /// entry simply has empty vitals (no meter), never a fabricated one.
+    vitals: HashMap<Uuid, BTreeMap<String, u8>>,
 }
 
 impl ChatProjection {
@@ -363,6 +389,7 @@ impl ChatProjection {
             room_name: String::new(),
             messages: VecDeque::new(),
             roster: Vec::new(),
+            vitals: HashMap::new(),
         }
     }
 
@@ -378,7 +405,19 @@ impl ChatProjection {
             self.room_name.clear();
             self.messages.clear();
             self.roster.clear();
+            self.vitals.clear();
         }
+    }
+
+    /// Fold a persona's radiated vitals into the per-member map and re-store.
+    /// The values are merged into the roster at `store` time (they outlive any
+    /// single presence snapshot), so a persona breathing its energy updates the
+    /// widget without touching the neutral presence path. A member that left the
+    /// roster keeps no bearing here — `store` only merges vitals for members the
+    /// current roster still lists.
+    fn apply_vitals(&mut self, update: PersonaVitalsUpdate) {
+        self.vitals.insert(update.member_id, update.vitals);
+        self.store();
     }
 
     /// Fold a posted message into the view and store the new snapshot.
@@ -447,6 +486,21 @@ impl ChatProjection {
         let Some(room_id) = self.room_id else {
             return;
         };
+        // Merge each member's latest radiated vitals into its neutral slot
+        // (design B fold): presence owns the roster shape; vitals are the live
+        // cognition overlay keyed by id. A member with no vitals entry keeps the
+        // slot's empty map — no fabricated bars.
+        let roster: Vec<RosterSlotView> = self
+            .roster
+            .iter()
+            .map(|slot| match self.vitals.get(&slot.member_id) {
+                Some(v) => RosterSlotView {
+                    vitals: v.clone(),
+                    ..slot.clone()
+                },
+                None => slot.clone(),
+            })
+            .collect();
         let view = ChatViewState {
             room_id,
             room_name: self.room_name.clone(),
@@ -456,7 +510,7 @@ impl ChatProjection {
             // Content primitive dispatches on it (ACTIVITY-ROOM-PATTERNS.md).
             purpose: "chat".to_string(),
             messages: self.messages.iter().cloned().collect(),
-            roster: self.roster.clone(),
+            roster,
         };
         self.substrate
             .store(self.builder.session(view));
@@ -469,6 +523,7 @@ impl ChatProjection {
 enum ProjectionInput {
     Message(AircChatPosted),
     Presence(AircPresenceUpdate),
+    Vitals(PersonaVitalsUpdate),
 }
 
 fn classify(name: &str, payload: &serde_json::Value) -> Option<ProjectionInput> {
@@ -483,6 +538,9 @@ fn classify(name: &str, payload: &serde_json::Value) -> Option<ProjectionInput> 
         PRESENCE_UPDATED => serde_json::from_value::<AircPresenceUpdate>(body.clone())
             .ok()
             .map(ProjectionInput::Presence),
+        PERSONA_VITALS => serde_json::from_value::<PersonaVitalsUpdate>(body.clone())
+            .ok()
+            .map(ProjectionInput::Vitals),
         _ => None,
     }
 }
@@ -512,6 +570,7 @@ pub fn spawn(rt: &tokio::runtime::Handle, bus: Arc<MessageBus>, substrate: Subst
                         match input {
                             ProjectionInput::Message(m) => projection.apply_message(m),
                             ProjectionInput::Presence(p) => projection.apply_presence(p),
+                            ProjectionInput::Vitals(v) => projection.apply_vitals(v),
                         }
                     }
                 }
@@ -608,6 +667,53 @@ mod tests {
             view.messages[0].sender_name
         );
         assert!(view.messages[0].integrations.is_empty());
+    }
+
+    #[test]
+    fn persona_vitals_fold_into_the_member_slot_and_survive_presence() {
+        // what this catches: design B's fold — a persona:vitals event must merge
+        // its readouts into that member's roster slot BY ID, and (because vitals
+        // live in their own map, not the presence roster) a later presence
+        // snapshot that REPLACES the roster must not drop them. A member with no
+        // vitals event keeps an empty map — no fabricated bars.
+        let substrate = Substrate::new();
+        let mut p = ChatProjection::new(substrate.clone());
+        let room = Uuid::from_u128(0xa);
+        let asha = Uuid::from_u128(0xb);
+
+        // Roster arrives first — no vitals yet.
+        match classify(PRESENCE_UPDATED, &presence_one(room, asha, "Asha", "agent", json!({}))).unwrap()
+        {
+            ProjectionInput::Presence(u) => p.apply_presence(u),
+            _ => panic!("presence:updated must classify as Presence"),
+        }
+        assert!(current_chat(&substrate).roster[0].vitals.is_empty(), "no vitals before any radiate");
+
+        // Asha radiates her vitals.
+        let radiated = serde_json::to_value(PersonaVitalsUpdate {
+            member_id: asha,
+            vitals: BTreeMap::from([("energy".to_string(), 80u8), ("attention".to_string(), 90u8)]),
+        })
+        .unwrap();
+        match classify(PERSONA_VITALS, &radiated).unwrap() {
+            ProjectionInput::Vitals(v) => p.apply_vitals(v),
+            _ => panic!("persona:vitals must classify as Vitals"),
+        }
+        let slot = current_chat(&substrate).roster.remove(0);
+        assert_eq!(slot.vitals.get("energy"), Some(&80));
+        assert_eq!(slot.vitals.get("attention"), Some(&90));
+
+        // A fresh presence snapshot replaces the roster wholesale — vitals stay.
+        match classify(PRESENCE_UPDATED, &presence_one(room, asha, "Asha", "agent", json!({}))).unwrap()
+        {
+            ProjectionInput::Presence(u) => p.apply_presence(u),
+            _ => panic!("presence:updated must classify as Presence"),
+        }
+        assert_eq!(
+            current_chat(&substrate).roster[0].vitals.get("energy"),
+            Some(&80),
+            "vitals survive a roster refresh (they are keyed by id, not carried on presence)"
+        );
     }
 
     #[test]
