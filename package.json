@@ -6,6 +6,7 @@
     "sdk/typescript",
     "packages/patterns",
     "packages/chat-view",
+    "packages/foundry-view",
     "apps/web",
     "apps/tui",
     "apps/desktop"
@@ -16,8 +17,8 @@
     "dev:desktop": "npm run dev -w @continuum/desktop",
     "build:clients": "npm run build -w @continuum/sdk-typescript && npm run build -w @continuum/web",
     "lint:clients": "eslint --max-warnings 0 packages apps/web apps/tui sdk/typescript",
-    "typecheck:clients": "npm run typecheck -w @continuum/sdk-typescript && npm run typecheck -w @continuum/chat-view && npm run typecheck -w @continuum/web && npm run typecheck -w @continuum/tui",
-    "test:clients": "npm test -w @continuum/sdk-typescript && npm test -w @continuum/chat-view && npm test -w @continuum/tui && npm test -w @continuum/web",
+    "typecheck:clients": "npm run typecheck -w @continuum/sdk-typescript && npm run typecheck -w @continuum/chat-view && npm run typecheck -w @continuum/foundry-view && npm run typecheck -w @continuum/web && npm run typecheck -w @continuum/tui",
+    "test:clients": "npm test -w @continuum/sdk-typescript && npm test -w @continuum/chat-view && npm test -w @continuum/foundry-view && npm test -w @continuum/tui && npm test -w @continuum/web",
     "check:clients": "npm run vendor:views:check -w @continuum/sdk-typescript && npm run lint:clients && npm run typecheck:clients && npm run test:clients",
     "stop": "bash tools/scripts/system-stop.sh",
     "install:continuum": "bash tools/scripts/install.sh",
