@@ -271,9 +271,19 @@ export class ChatWidget extends LitElement {
       width: 22px;
       flex: none;
     }
+    /* Numeric readout — the old sci-fi gauge showed the value, not just a bar. */
+    .vital-value {
+      font-family: var(--font-mono);
+      font-size: 8px;
+      color: var(--content-accent);
+      width: 16px;
+      text-align: right;
+      flex: none;
+      font-variant-numeric: tabular-nums;
+    }
     .vital-track {
       position: relative;
-      height: 3px;
+      height: 4px;
       flex: 1;
       border-radius: 2px;
       background: var(--border-subtle);
