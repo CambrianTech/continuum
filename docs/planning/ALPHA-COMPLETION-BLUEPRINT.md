@@ -74,8 +74,18 @@ leaves a reusable part behind. The order builds the gene, then grows the organis
    (token layer → full bundle); prove a live universe swap on the running app.
 3. **Foundry live + persona-operable** — the control-heavy outlier renders on the Grid AND Asha operates
    it (perceives models + config via RAG, pages one in via commands). Glass-box her operating it.
-4. **The component library** — extract the repeating patterns (cell done; menu, tree, tab bar, form,
-   meter) as chat+foundry demand them. Third activity is *declared*, not coded.
+4. **The complex-widget library — across all THREE surfaces (web / mobile / terminal).** The live app
+   today is a basic 3-panel chat (text rows + one ACT meter); the README (`live-session-avatars`,
+   `factory`, `persona-brain-hud`) is the ceiling. Grow the positron component library to the README's
+   rich set — **avatar video tile · vitals card (INT/NRG/ATN + GENOME meters) · system-vitals sparkline
+   · tab bar · call-control bar · brain-HUD**, plus the plain cell/menu/tree/form — and give **each
+   widget a per-surface renderer**: full on web, **responsive reflow on mobile** (today the desktop
+   layout clips at 390px — a real bug), **ANSI approximation on terminal** (meters→bars, avatars→glyphs;
+   `apps/tui` already renders WHO/WHAT, proving the seam). **Proof = a screenshot on EACH surface**
+   (`node scripts/shot.mjs` at desktop + `SHOT_SIZE=390,844`; `npm run frame -w @continuum/tui`), compared
+   against the README. A third activity is then *declared*, not coded, and it lands on every surface.
+   *(Feeds on #16: the terminal frame confirmed the persona-echo/duplication is in the DATA, not a render
+   bug — fix upstream, then the widgets show clean.)*
 5. **Avatars + animations** — the live 3D call: N personas embodied, lip-synced, genome-bars, real-time
    voice, animation that blows our minds (the README hero shot, made live). Screenshot + capture.
 6. **Grid reliability** — the README's "add a second machine, it discovers automatically; laptop
