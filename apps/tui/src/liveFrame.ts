@@ -1,26 +1,43 @@
 /**
- * One-frame live render — connects to the running core's WS state ingress and
- * draws the FIRST live `chat` snapshot through the SAME surface the interactive
- * TUI runs (`renderChat ∘ chatViewModel ∘ chatStateFromEnvelope`), then exits.
- * Proves a real node client renders the live room off the state seam. Run with
- * `tsx` (resolves the SDK's TS source). Delete after the proof, or keep as a
- * headless smoke of the read path.
+ * One-frame live render — the first real composition on positron's `mount()`.
+ *
+ * Connects to the running core's WS state ingress and draws the FIRST live `chat`
+ * snapshot through the framework path: `mount(chatApp, source, createAnsiTarget(), sink)`.
+ * `chatApp` projects the snapshot → the neutral WorkspaceView; the ANSI target paints
+ * it; the sink writes the frame. The SAME `chatApp` the browser mounts on `webTarget`,
+ * here mounted on the terminal target — define once, one line per surface. Run with
+ * `tsx`. Proves a real node client renders the live room off the state seam via mount().
  */
 import { StateConnection, type StateEnvelope } from '@continuum/sdk-typescript';
-import { chatStateFromEnvelope, CHAT_KIND, chatViewModel } from '@continuum/chat-view';
-import { renderChat } from './renderChat.js';
+import { chatStateFromEnvelope, CHAT_KIND, chatApp, type ChatState } from '@continuum/chat-view';
+import { mount, type AppSource } from '@continuum/patterns';
+import { createAnsiTarget } from './ansiTarget.js';
 
 async function main(): Promise<void> {
   const wsUrl = process.env.CONTINUUM_WS ?? 'ws://127.0.0.1:8974';
-  const state = new StateConnection(wsUrl);
-  let rendered = false;
-  state.on(CHAT_KIND, (env: StateEnvelope) => {
-    if (rendered) return;
-    rendered = true;
-    process.stdout.write(renderChat(chatViewModel(chatStateFromEnvelope(env))) + '\n');
+  const conn = new StateConnection(wsUrl);
+
+  // The data source: push the FIRST chat snapshot, then done. Injected into mount() so
+  // the same app runs against a real core, a replay, or a test fixture.
+  const source: AppSource<ChatState> = (onState) => {
+    let sent = false;
+    conn.on(CHAT_KIND, (env: StateEnvelope) => {
+      if (sent) return;
+      sent = true;
+      onState(chatStateFromEnvelope(env));
+    });
+    return () => {
+      /* one-shot: process exits on first frame */
+    };
+  };
+
+  // Define once, mount on the terminal target; the sink writes the frame and exits.
+  mount(chatApp, source, createAnsiTarget(), (frame) => {
+    process.stdout.write(frame + '\n');
     process.exit(0);
   });
-  await state.connect();
+
+  await conn.connect();
   setTimeout(() => {
     process.stderr.write('no chat state within 15s — room empty or WS unfed\n');
     process.exit(1);
