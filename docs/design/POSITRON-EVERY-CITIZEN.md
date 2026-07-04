@@ -252,6 +252,16 @@ library) written ONCE per modality. The app author only ever touches the neutral
 makes building "easy + consistent across paradigms." Answer to "whole shebang ourselves?": **no — we own
 the definition + the thin per-framework adapter; the frameworks own the pixels.**
 
+**Share the data, DESIGN the presentation — best UX per portal** ([[best-ux-per-portal-not-identical-projection]]).
+"Define once" shares the DATA + intent (the `WorkspaceView`), NOT the layout. Each `RenderTarget` is a
+**deliberately-designed best-UX-for-that-surface**, never a mechanical identical projection and never
+everything-crammed-on-every-screen. A **phone is not a shrunk desktop** (one thing at a time, bottom
+nav/sheet, thumb-reach — not the 3-panel shrunk); a **terminal is not the web as text**; **RAG is not the
+full render serialized** (only what the persona needs now); **AR is not a flat panel in space**. The
+byte-identical web+terminal targets shipped first were the FLOOR (prove the framework, zero regression) —
+the goal is each target rendering the shared data as *its own* best experience. The `RenderTarget` is
+exactly where per-surface UX taste belongs.
+
 **The build:** the primitives exist; the missing keystone is `defineApp` + `mount(app, target)`, then
 refactor `apps/{web,tui}` from hand-wired roots onto it (no old code immune once the framework is
 understood — [[mine-past-work-for-patterns-clever-vs-typical]]). **Most basic requirement first** (Joel):
