@@ -238,10 +238,27 @@ consumer; positron doesn't know or care that it's continuum ([[three-separable-l
 positron is general). The matryoshka holds: `defineApp` is the outermost neutral declaration, each
 `RenderTarget` a doll that renders it ([[logical-portability-for-unknown-future-integrations]]).
 
+**Leverage vs reinvent — the load-bearing decision: LEVERAGE.** Positron is NOT a render engine and
+must never become one. Its view types (`WorkspaceView`, `ListingView`, `ContentView`…) are **neutral
+data — view-models, not framework objects.** Each `RenderTarget<Out>` *delegates the actual painting to
+the best framework for that modality*, mapping the view-model → that framework's widgets:
+- **web** → **Lit** paints (`Out = TemplateResult`). Already proven — this is how `apps/web` works.
+- **mobile** → **Flutter** paints (`Out = Widget`); the view-model arrives over `sdk/flutter` (the uniffi
+  AAR/xcframework). Flutter does layout/gesture/platform — the hard work — exactly as Lit does on web.
+- **terminal** → an ANSI lib paints. **AR/VR** → Bevy/three. **RAG** → text/commands projection.
+So Flutter (and Lit, and Bevy) do the *rendering* hard work; positron does the *consistency* hard work —
+one `defineApp`, one neutral view-vocabulary, and the view-model→framework mapping (the component
+library) written ONCE per modality. The app author only ever touches the neutral layer; that is what
+makes building "easy + consistent across paradigms." Answer to "whole shebang ourselves?": **no — we own
+the definition + the thin per-framework adapter; the frameworks own the pixels.**
+
 **The build:** the primitives exist; the missing keystone is `defineApp` + `mount(app, target)`, then
 refactor `apps/{web,tui}` from hand-wired roots onto it (no old code immune once the framework is
-understood — [[mine-past-work-for-patterns-clever-vs-typical]]). That single elevation is what turns
-positron from "our plumbing" into "the framework a company or a game defines its whole app in, once."
+understood — [[mine-past-work-for-patterns-clever-vs-typical]]). **Most basic requirement first** (Joel):
+the who/what/where chat app, `defineApp`'d ONCE, mounted to web (Lit — done), mobile (Flutter — the one
+new renderer), and agents (RAG). Prove *that* trio off one definition before any richer widget. That
+single elevation turns positron from "our plumbing" into "the framework a company or a game defines its
+whole app in, once."
 
 ## 5. The test of done
 
