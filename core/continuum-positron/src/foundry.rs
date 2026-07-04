@@ -143,5 +143,25 @@ mod tests {
         };
         assert_eq!(state.kind(), "foundry");
         assert_eq!(state.kind(), ForgeViewState::KIND);
+        // The monotonic revision is an ENVELOPE-level counter, never a payload
+        // field — the same contract chat/wall pin (chat.rs / wall.rs sibling tests).
+        assert_eq!(state.revision(), None);
+    }
+
+    // what this catches: a foundry room with an empty catalogue is a valid view —
+    // an empty workbench renders an empty list, not an error (the same honest-empty
+    // discipline wall's `empty_board_is_a_valid_view_not_an_error` pins).
+    #[test]
+    fn empty_models_is_a_valid_view() {
+        let state = ForgeViewState {
+            room_id: Uuid::from_u128(0xf),
+            room_name: "foundry".into(),
+            purpose: "foundry".into(),
+            models: vec![],
+        };
+        let json = serde_json::to_string(&state).expect("serialize");
+        let back: ForgeViewState = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(state, back);
+        assert!(back.models.is_empty());
     }
 }
