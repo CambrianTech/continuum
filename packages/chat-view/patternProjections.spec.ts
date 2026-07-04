@@ -10,7 +10,7 @@
 
 import { describe, it, expect } from 'vitest';
 import type { ChatViewModel } from './chatViewModel';
-import { rosterListing, roomsListing, chatWorkspace } from './patternProjections';
+import { rosterListing, roomsListing, chatWorkspace, type ChatContentBody } from './patternProjections';
 
 const vm: ChatViewModel = {
   roomName: 'general',
@@ -67,7 +67,9 @@ describe('chat → pattern projections', () => {
     expect(ws.left).toHaveLength(1);
     expect(ws.left[0]!.id).toBe('roster');
     expect(ws.content.purpose).toBe('chat');
-    const body = ws.content.body as { messages: unknown[]; isEmpty: boolean };
+    // `WorkspaceView.content.body` is deliberately opaque (`ContentView<unknown>`) at
+    // the workspace boundary; a chat-aware test narrows to the exported chat body.
+    const body = ws.content.body as ChatContentBody;
     expect(body.messages).toHaveLength(1);
     expect(body.isEmpty).toBe(false);
     expect(ws.context.listings).toHaveLength(0);
