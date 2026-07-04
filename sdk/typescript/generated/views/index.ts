@@ -10,10 +10,16 @@
 // workspace package and a UI app depends only on `@continuum/sdk-typescript`
 // ([[headless-core-many-clients]], [[persona-is-a-client]]).
 //
-// Scope: the `chat` widget closure only (ChatViewState + its row/roster/
-// identity types). Wall/kanban/etc. get vendored when a widget renders them —
-// outlier-validate then STOP. Re-vendor from `protocol/typescript/positron/` on
-// a view-payload change; do not hand-edit.
+// Scope: the vendored widget closures — `chat` (ChatViewState + its row/roster/
+// identity types) and `foundry` (ForgeViewState + ForgeModelView). Wall/kanban/etc.
+// get vendored when a widget renders them — outlier-validate then STOP.
+//
+// The `.ts` files here are NOT hand-edited: they are copied verbatim from
+// `protocol/typescript/positron/` by `scripts/vendor-views.mjs` (the declared
+// VENDORED set). On a view-payload change, run `npm run vendor:views`; the
+// `vendor:views:check` step in `check:clients` fails loud if they ever drift (#80).
+// This barrel (the exported names) IS hand-maintained — add a line when a closure
+// grows.
 
 export type { ChatViewState } from './ChatViewState';
 export type { ChatMessageView } from './ChatMessageView';
