@@ -163,6 +163,7 @@ mod tests {
         ChatViewState {
             room_id,
             room_name: "general".into(),
+            purpose: "chat".into(),
             messages: Vec::new(),
             roster: vec![RosterSlotView {
                 member_id: Uuid::from_u128(1),

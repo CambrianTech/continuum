@@ -301,6 +301,16 @@ pub struct ChatViewState {
     /// Human-readable room name (e.g. `"general"`). Substrate-resolved;
     /// widget must not derive from URL slug.
     pub room_name: String,
+    /// The room's **activity purpose** — the content-dispatch key
+    /// (`"chat"`, `"foundry"`, `"scada"`, …). Per
+    /// `docs/architecture/ACTIVITY-ROOM-PATTERNS.md`, `activity == room ==
+    /// content == tab`: a client's `Content` primitive dispatches on this to
+    /// pick the room's central widget(s), so adding an activity is a purpose
+    /// value + a registered renderer, never a shell change. Neutral/opaque
+    /// here — positron transports the value, continuum sets it (from the
+    /// room's recipe/nature via `RoomPurposeSource`, task #6); it defaults to
+    /// `"chat"` until a recipe names another purpose.
+    pub purpose: String,
     /// Most recent messages, oldest first. Bounded — substrate decides
     /// the window (see `MAX_MESSAGES_PER_SNAPSHOT` in the builder).
     /// Past-the-window history is pulled on demand through a
@@ -485,6 +495,7 @@ mod tests {
         let state = ChatViewState {
             room_id,
             room_name: "general".into(),
+            purpose: "chat".into(),
             messages: vec![ChatMessageView {
                 id: Uuid::from_u128(0xb),
                 room_id,
@@ -534,6 +545,7 @@ mod tests {
         let state = ChatViewState {
             room_id: Uuid::from_u128(0xa),
             room_name: "general".into(),
+            purpose: "chat".into(),
             messages: vec![],
             roster: vec![],
         };

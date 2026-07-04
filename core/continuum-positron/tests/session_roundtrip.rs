@@ -70,6 +70,7 @@ fn build_chat_state(content: &str) -> ChatViewState {
     ChatViewState {
         room_id,
         room_name: "general".into(),
+        purpose: "chat".into(),
         messages: vec![ChatMessageView {
             id: message_id,
             room_id,

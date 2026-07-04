@@ -53,6 +53,10 @@ export interface MessageRowVM {
 export interface ChatViewModel {
   readonly roomName: string;
   readonly roomId: string;
+  /** The room's activity purpose (the Content dispatch key — "chat", "foundry"…).
+   *  Today always "chat"; when RoomPurposeSource (#6) lands, a client's `Content`
+   *  registry dispatches on it (ACTIVITY-ROOM-PATTERNS.md). */
+  readonly purpose: string;
   readonly memberCount: number;
   readonly activeCount: number;
   readonly members: readonly RosterMemberVM[];
@@ -99,6 +103,7 @@ export function chatViewModel(state: ChatState): ChatViewModel {
   return {
     roomName: state.room_name,
     roomId: state.room_id,
+    purpose: state.purpose,
     memberCount: members.length,
     activeCount: members.filter((m) => m.active).length,
     members,
