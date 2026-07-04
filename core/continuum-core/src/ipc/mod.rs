@@ -3,6 +3,8 @@ use crate::gpu::GpuMemoryManager;
 use crate::modules::agent::AgentModule;
 use crate::modules::ai_provider::AIProviderModule;
 use crate::modules::airc::AircModule;
+use crate::modules::airc_bridge_directive::AircBridgeDirectiveModule;
+use crate::modules::airc_bridge_dispatch::AircBridgeDispatchModule;
 use crate::modules::auth::ExternalWebviewAuthModule;
 use crate::modules::avatar::AvatarModule;
 use crate::modules::channel::{ChannelModule, ChannelState};
@@ -15,8 +17,6 @@ use crate::modules::events::EventsModule;
 use crate::modules::forge::ForgeModule;
 use crate::modules::gpu::GpuModule;
 use crate::modules::grid::GridModule;
-use crate::modules::airc_bridge_directive::AircBridgeDirectiveModule;
-use crate::modules::airc_bridge_dispatch::AircBridgeDispatchModule;
 use crate::modules::health::HealthModule;
 use crate::modules::launch_mode::LaunchModeModule;
 use crate::modules::live::{VoiceModule, VoiceState};
@@ -114,6 +114,7 @@ pub mod positron_presence;
 pub mod positron_source;
 pub mod positron_wall_source;
 pub mod protocol;
+pub mod room_purpose;
 pub mod vitals_emitter;
 pub mod ws;
 
@@ -884,9 +885,9 @@ pub fn start_server(
     // daemon (which plans off its snapshot) and the `models/*` command surface
     // (which mutates it). One owner, one live universe: a `models/pull` that
     // flips a model Ready is seen by the very next serving tick — no reboot.
-    let model_catalog = Arc::new(
-        crate::model_registry::live::ModelCatalog::from_registry(crate::model_registry::global()),
-    );
+    let model_catalog = Arc::new(crate::model_registry::live::ModelCatalog::from_registry(
+        crate::model_registry::global(),
+    ));
 
     // The ONE per-machine resource authority (#56). Its VRAM ceiling comes from
     // the LIVE GpuMonitor (`gpu::monitor::detect()` — Metal + every NVIDIA host),
@@ -1006,12 +1007,9 @@ pub fn start_server(
                 .map(|bm| bm.broker())
         });
     if let Some(broker) = broker_arc {
-        broker.register(
-            disk_pressure_monitor.clone() as Arc<dyn crate::paging::pool::ResourcePool>
-        );
-        broker.register(
-            pressure_monitor.clone() as Arc<dyn crate::paging::pool::ResourcePool>
-        );
+        broker
+            .register(disk_pressure_monitor.clone() as Arc<dyn crate::paging::pool::ResourcePool>);
+        broker.register(pressure_monitor.clone() as Arc<dyn crate::paging::pool::ResourcePool>);
 
         // Wire the resource authority's per-kind lease pools onto the broker so
         // cross-resource pressure relief reaches VRAM/RAM/disk leases: when a
@@ -1219,9 +1217,8 @@ pub fn start_server(
 
     // Shared state for per-persona cognition (unified: engine + inbox + rate limiter + sleep + adapters + genome)
     let rag_engine = Arc::new(RagEngine::new());
-    let cognition_state = Arc::new(
-        CognitionState::new(rag_engine.clone()).with_gpu_manager(gpu_manager.clone()),
-    );
+    let cognition_state =
+        Arc::new(CognitionState::new(rag_engine.clone()).with_gpu_manager(gpu_manager.clone()));
     let personas = cognition_state.personas.clone();
     runtime.register(Arc::new(CognitionModule::new(cognition_state)));
 
@@ -1277,12 +1274,10 @@ pub fn start_server(
     // (tearing it down would freeze the avatar mid-call) and sheds the renderer
     // only when nothing is rendering. Shares the same live-session lifecycle as
     // voice, so both sides of a call are protected together.
-    resource_daemon.add_consumer(Arc::new(
-        crate::modules::bevy_consumer::BevyConsumer::new(
-            voice_state.resource_lifecycle.clone(),
-            gpu_manager.clone(),
-        ),
-    ));
+    resource_daemon.add_consumer(Arc::new(crate::modules::bevy_consumer::BevyConsumer::new(
+        voice_state.resource_lifecycle.clone(),
+        gpu_manager.clone(),
+    )));
     runtime.register(Arc::new(VoiceModule::new(voice_state)));
 
     // Phase 3: CodeModule (wraps file engines and shell sessions per-persona)
@@ -1487,7 +1482,9 @@ pub fn start_server(
         // the SAME registry (cheap Clone over an inner Arc) so a work command can
         // resolve the calling persona's live airc runtime. Registered before the
         // executor is built so its typed commands land on the one registry.
-        runtime.register(Arc::new(crate::modules::work::WorkModule::new(registry.clone())));
+        runtime.register(Arc::new(crate::modules::work::WorkModule::new(
+            registry.clone(),
+        )));
         // SubstrateGovernor — the deterministic cognitive-region scheduler daemon.
         // Schedules the ChannelDigestRegion: per live persona it pre-stages the
         // persona's current-channel digest into the SHARED digest buffer
@@ -1496,7 +1493,8 @@ pub fn start_server(
         let digest_region: Arc<dyn crate::runtime::BrainRegion> = Arc::new(
             crate::cognition::channel_digest_region::ChannelDigestRegion::with_buffer(
                 crate::cognition::channel_substrate::global_channel_digest_builder(),
-                Arc::new(registry.clone()) as Arc<dyn crate::cognition::channel_digest_region::PersonaChannelReader>,
+                Arc::new(registry.clone())
+                    as Arc<dyn crate::cognition::channel_digest_region::PersonaChannelReader>,
                 crate::cognition::channel_substrate::global_channel_digest_buffer(),
             ),
         );
@@ -1588,9 +1586,7 @@ pub fn start_server(
             ),
         );
         let rag_inspect_module = std::sync::Arc::new(
-            crate::modules::persona_rag_inspect::PersonaRagInspectModule::new(
-                rag_inspect_resolver,
-            ),
+            crate::modules::persona_rag_inspect::PersonaRagInspectModule::new(rag_inspect_resolver),
         );
         runtime.register(rag_inspect_module);
         log_info!(
@@ -1941,19 +1937,18 @@ pub fn start_server(
                 // a failed re-home leaves personas on their prior (still-live)
                 // binding rather than a silent wrong-brain, and retries on the
                 // next snapshot edge ([[fallbacks-are-illegal-fail-loud]]).
-                let adapter =
-                    match crate::persona::supervisor::build_served_adapter(&snap).await {
-                        Ok(a) => a,
-                        Err(e) => {
-                            tracing::warn!(
-                                model = %active,
-                                error = %e,
-                                "served-model re-home: adapter build failed — personas stay \
-                                 on their prior binding; will retry on the next snapshot edge"
-                            );
-                            continue;
-                        }
-                    };
+                let adapter = match crate::persona::supervisor::build_served_adapter(&snap).await {
+                    Ok(a) => a,
+                    Err(e) => {
+                        tracing::warn!(
+                            model = %active,
+                            error = %e,
+                            "served-model re-home: adapter build failed — personas stay \
+                             on their prior binding; will retry on the next snapshot edge"
+                        );
+                        continue;
+                    }
+                };
                 let n = crate::cognition::persona_workspace::global().re_home_all(
                     adapter,
                     Some(active.clone()),
@@ -2321,13 +2316,11 @@ pub fn start_server(
                                             // commands over TCP). peer_id is nil (no
                                             // verified peer); trust comes from the Tcp
                                             // source, not the id.
-                                            let caller = Some(
-                                                crate::routing::CallerIdentity::tcp(
-                                                    crate::identity::PeerId::from_uuid(
-                                                        uuid::Uuid::nil(),
-                                                    ),
+                                            let caller = Some(crate::routing::CallerIdentity::tcp(
+                                                crate::identity::PeerId::from_uuid(
+                                                    uuid::Uuid::nil(),
                                                 ),
-                                            );
+                                            ));
                                             if let Err(e) = handle_client(stream, state, caller) {
                                                 log_error!(
                                                     "ipc",
@@ -2419,7 +2412,10 @@ pub fn start_server(
                 // persona hosting; if airc discovery gave us neither, the
                 // roster has no source and we log the skip (not a silent
                 // fallback — an honestly-disabled projection).
-                match node_presence_deps.clone().zip(persona_bootstrap_room_name.clone()) {
+                match node_presence_deps
+                    .clone()
+                    .zip(persona_bootstrap_room_name.clone())
+                {
                     Some(((daemon_socket, room_id), room_name)) => {
                         let continuum_root =
                             crate::modules::persona_instance_manager::resolve_continuum_root();
@@ -2443,7 +2439,10 @@ pub fn start_server(
                         // bus the chat projection reads, so those readouts breathe as
                         // meters on the who-panel card. Reads the workspace registry
                         // itself (where residents run); the projection folds by id.
-                        vitals_emitter::spawn_vitals_emitter(&state.rt_handle, projection_bus.clone());
+                        vitals_emitter::spawn_vitals_emitter(
+                            &state.rt_handle,
+                            projection_bus.clone(),
+                        );
 
                         // Wall projector: the consuming half of `wall:changed`.
                         // A dedicated node reader (own home + identity, distinct
