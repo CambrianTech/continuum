@@ -82,8 +82,7 @@ use uuid::Uuid;
 
 use airc_lib::{AgentAvailabilityState, RoomMember};
 use continuum_positron::{
-    ChatMessageView, ChatViewState, Provenance, RosterSlotView, SenderKind, StateBuilder,
-    Substrate,
+    ChatMessageView, ChatViewState, Provenance, RosterSlotView, SenderKind, StateBuilder, Substrate,
 };
 
 use crate::runtime::MessageBus;
@@ -258,7 +257,10 @@ pub(crate) fn roster_slot_from_member(member: &RoomMember) -> RosterSlotView {
         // Neutral presence facts carried straight through — the fields Rail B
         // used to drop. `availability` is airc's stable label (or `None` when
         // unreported); `last_seen_ms` is the raw recency signal.
-        availability: member.availability.map(availability_label).map(str::to_owned),
+        availability: member
+            .availability
+            .map(availability_label)
+            .map(str::to_owned),
         last_seen_ms: member.last_seen_ms,
         // airc's `RoomMember` carries no vitals — a continuum persona's live
         // `PersonaState` (energy/attention/compute) arrives on its OWN
@@ -277,10 +279,7 @@ pub(crate) fn roster_slot_from_member(member: &RoomMember) -> RosterSlotView {
 /// construction" contract, enforced instead of hoped for). Shared by the chat
 /// / wall / kanban projector test mods: one wire-shape source, even in tests.
 #[cfg(test)]
-pub(crate) fn test_presence_payload(
-    room: Uuid,
-    roster: Vec<RosterSlotView>,
-) -> serde_json::Value {
+pub(crate) fn test_presence_payload(room: Uuid, roster: Vec<RosterSlotView>) -> serde_json::Value {
     serde_json::to_value(AircPresenceUpdate {
         room_id: room,
         room_name: "general".to_string(),
@@ -382,6 +381,11 @@ struct ChatProjection {
     /// into each slot at `store` time, surviving roster churn. A member with no
     /// entry simply has empty vitals (no meter), never a fabricated one.
     vitals: HashMap<Uuid, BTreeMap<String, u8>>,
+    /// Resolves this room's activity **purpose** (the `Content` dispatch key) — #6.
+    /// The projection no longer hardcodes `"chat"`; it routes through this seam so a
+    /// foundry / scada / academy room reports its own recipe-defined purpose with NO
+    /// projection change once the real (recipe-backed) resolver is injected.
+    purpose_source: crate::ipc::room_purpose::SharedRoomPurpose,
 }
 
 impl ChatProjection {
@@ -397,6 +401,9 @@ impl ChatProjection {
             messages: VecDeque::new(),
             roster: Vec::new(),
             vitals: HashMap::new(),
+            // Default resolver (every room → "chat") until the recipe-backed source
+            // lands; injecting a real one is a one-line change here, no call-site churn.
+            purpose_source: crate::ipc::room_purpose::default_source(),
         }
     }
 
@@ -511,16 +518,16 @@ impl ChatProjection {
         let view = ChatViewState {
             room_id,
             room_name: self.room_name.clone(),
-            // Every room is a chat room today. `RoomPurposeSource` (task #6)
-            // will resolve this from the room's recipe/nature so a foundry /
-            // scada / academy room reports its own purpose and the client's
-            // Content primitive dispatches on it (ACTIVITY-ROOM-PATTERNS.md).
-            purpose: "chat".to_string(),
+            // The room's activity purpose — resolved through the `RoomPurposeSource`
+            // seam (#6), NOT hardcoded. Today the default answers "chat" for every
+            // room; when the recipe-backed resolver is injected, a foundry / scada /
+            // academy room reports its own purpose and the client's Content primitive
+            // dispatches on it (ACTIVITY-ROOM-PATTERNS.md) with no change here.
+            purpose: self.purpose_source.purpose_for(room_id),
             messages: self.messages.iter().cloned().collect(),
             roster,
         };
-        self.substrate
-            .store(self.builder.session(view));
+        self.substrate.store(self.builder.session(view));
     }
 }
 
@@ -689,17 +696,27 @@ mod tests {
         let asha = Uuid::from_u128(0xb);
 
         // Roster arrives first — no vitals yet.
-        match classify(PRESENCE_UPDATED, &presence_one(room, asha, "Asha", "agent", json!({}))).unwrap()
+        match classify(
+            PRESENCE_UPDATED,
+            &presence_one(room, asha, "Asha", "agent", json!({})),
+        )
+        .unwrap()
         {
             ProjectionInput::Presence(u) => p.apply_presence(u),
             _ => panic!("presence:updated must classify as Presence"),
         }
-        assert!(current_chat(&substrate).roster[0].vitals.is_empty(), "no vitals before any radiate");
+        assert!(
+            current_chat(&substrate).roster[0].vitals.is_empty(),
+            "no vitals before any radiate"
+        );
 
         // Asha radiates her vitals.
         let radiated = serde_json::to_value(PersonaVitalsUpdate {
             member_id: asha,
-            vitals: BTreeMap::from([("energy".to_string(), 80u8), ("attention".to_string(), 90u8)]),
+            vitals: BTreeMap::from([
+                ("energy".to_string(), 80u8),
+                ("attention".to_string(), 90u8),
+            ]),
         })
         .unwrap();
         match classify(PERSONA_VITALS, &radiated).unwrap() {
@@ -711,7 +728,11 @@ mod tests {
         assert_eq!(slot.vitals.get("attention"), Some(&90));
 
         // A fresh presence snapshot replaces the roster wholesale — vitals stay.
-        match classify(PRESENCE_UPDATED, &presence_one(room, asha, "Asha", "agent", json!({}))).unwrap()
+        match classify(
+            PRESENCE_UPDATED,
+            &presence_one(room, asha, "Asha", "agent", json!({})),
+        )
+        .unwrap()
         {
             ProjectionInput::Presence(u) => p.apply_presence(u),
             _ => panic!("presence:updated must classify as Presence"),
@@ -735,13 +756,19 @@ mod tests {
         let mut p = ChatProjection::new(substrate.clone());
         let room = Uuid::from_u128(0xa);
         let sender = Uuid::from_u128(0xd);
-        if let ProjectionInput::Message(m) =
-            classify(CHAT_POSTED, &posted_from(room, Uuid::from_u128(0xb), sender, "hi")).unwrap()
+        if let ProjectionInput::Message(m) = classify(
+            CHAT_POSTED,
+            &posted_from(room, Uuid::from_u128(0xb), sender, "hi"),
+        )
+        .unwrap()
         {
             p.apply_message(m);
         }
         // Provisional before the card.
-        assert_eq!(current_chat(&substrate).messages[0].sender_kind, SenderKind::Human);
+        assert_eq!(
+            current_chat(&substrate).messages[0].sender_kind,
+            SenderKind::Human
+        );
         // Card arrives via presence: Agent named Helper carrying a badge.
         let presence = presence_one(
             room,
@@ -757,7 +784,9 @@ mod tests {
         assert_eq!(msg.sender_name, "Helper");
         assert_eq!(msg.sender_kind, SenderKind::Agent);
         assert_eq!(
-            msg.integrations.get("continuum.persona_id").map(String::as_str),
+            msg.integrations
+                .get("continuum.persona_id")
+                .map(String::as_str),
             Some("helper-1"),
             "opaque badge resolved from the card"
         );
@@ -777,8 +806,11 @@ mod tests {
         if let ProjectionInput::Presence(u) = classify(PRESENCE_UPDATED, &presence).unwrap() {
             p.apply_presence(u);
         }
-        if let ProjectionInput::Message(m) =
-            classify(CHAT_POSTED, &posted_from(room, Uuid::from_u128(0xb), sender, "hi")).unwrap()
+        if let ProjectionInput::Message(m) = classify(
+            CHAT_POSTED,
+            &posted_from(room, Uuid::from_u128(0xb), sender, "hi"),
+        )
+        .unwrap()
         {
             p.apply_message(m);
         }
@@ -821,7 +853,10 @@ mod tests {
         assert_eq!(view.roster[0].display_name, "Helper");
         assert_eq!(view.roster[0].kind, SenderKind::Agent);
         assert_eq!(
-            view.roster[0].integrations.get("continuum.persona_id").map(String::as_str),
+            view.roster[0]
+                .integrations
+                .get("continuum.persona_id")
+                .map(String::as_str),
             Some("helper-1")
         );
         assert!(view.roster[0].active);
@@ -845,13 +880,17 @@ mod tests {
         let room = Uuid::from_u128(0xa);
         let sender = Uuid::from_u128(0xd);
         // Message before the card → provenance honestly unresolved.
-        if let ProjectionInput::Message(m) =
-            classify(CHAT_POSTED, &posted_from(room, Uuid::from_u128(0xb), sender, "hi")).unwrap()
+        if let ProjectionInput::Message(m) = classify(
+            CHAT_POSTED,
+            &posted_from(room, Uuid::from_u128(0xb), sender, "hi"),
+        )
+        .unwrap()
         {
             p.apply_message(m);
         }
         assert_eq!(
-            current_chat(&substrate).messages[0].provenance.runtime, "",
+            current_chat(&substrate).messages[0].provenance.runtime,
+            "",
             "unresolved provenance is empty, not fabricated"
         );
         // Presence folds the card carrying a runtime origin.
@@ -957,8 +996,11 @@ mod tests {
         let m = Uuid::from_u128(0xb);
 
         // Room A: member m present + radiating vitals.
-        if let ProjectionInput::Presence(u) =
-            classify(PRESENCE_UPDATED, &presence_one(room_a, m, "Asha", "agent", json!({}))).unwrap()
+        if let ProjectionInput::Presence(u) = classify(
+            PRESENCE_UPDATED,
+            &presence_one(room_a, m, "Asha", "agent", json!({})),
+        )
+        .unwrap()
         {
             p.apply_presence(u);
         }
@@ -970,17 +1012,26 @@ mod tests {
         if let ProjectionInput::Vitals(v) = classify(PERSONA_VITALS, &radiated).unwrap() {
             p.apply_vitals(v);
         }
-        assert_eq!(current_chat(&substrate).roster[0].vitals.get("energy"), Some(&70));
+        assert_eq!(
+            current_chat(&substrate).roster[0].vitals.get("energy"),
+            Some(&70)
+        );
 
         // Same member id focuses room B → the vitals map is cleared, no leak.
-        if let ProjectionInput::Presence(u) =
-            classify(PRESENCE_UPDATED, &presence_one(room_b, m, "Asha", "agent", json!({}))).unwrap()
+        if let ProjectionInput::Presence(u) = classify(
+            PRESENCE_UPDATED,
+            &presence_one(room_b, m, "Asha", "agent", json!({})),
+        )
+        .unwrap()
         {
             p.apply_presence(u);
         }
         let view = current_chat(&substrate);
         assert_eq!(view.room_id, room_b);
-        assert!(view.roster[0].vitals.is_empty(), "vitals leaked from room A into room B");
+        assert!(
+            view.roster[0].vitals.is_empty(),
+            "vitals leaked from room A into room B"
+        );
     }
 
     #[test]
@@ -1010,21 +1061,13 @@ mod tests {
         {
             p.apply_message(m);
         }
-        let r1 = substrate
-            .cache()
-            .get(ChatViewState::KIND)
-            .unwrap()
-            .revision;
+        let r1 = substrate.cache().get(ChatViewState::KIND).unwrap().revision;
         if let ProjectionInput::Message(m) =
             classify(CHAT_POSTED, &posted(room, Uuid::from_u128(0x2), "two")).unwrap()
         {
             p.apply_message(m);
         }
-        let r2 = substrate
-            .cache()
-            .get(ChatViewState::KIND)
-            .unwrap()
-            .revision;
+        let r2 = substrate.cache().get(ChatViewState::KIND).unwrap().revision;
         assert!(r2 > r1, "revision must advance: {r1:?} -> {r2:?}");
     }
 }
