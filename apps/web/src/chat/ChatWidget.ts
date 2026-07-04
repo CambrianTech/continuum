@@ -91,6 +91,22 @@ export class ChatWidget extends LitElement {
       padding: var(--spacing-sm) 0;
       background: var(--sidebar-background);
     }
+    /* Responsive: below a phone breakpoint the fixed 2-column layout clips the
+       content off-screen. Collapse to a single column — the roster becomes a
+       capped, scrollable strip on top, and the content gets the full width.
+       One step toward the complex-widget-across-surfaces target; a drawer/toggle
+       can come later. (Found by dogfooding shot.mjs at 390px.) */
+    @media (max-width: 720px) {
+      .panels {
+        grid-template-columns: 1fr;
+        grid-template-rows: auto 1fr;
+      }
+      .who {
+        border-right: none;
+        border-bottom: 1px solid var(--border-subtle);
+        max-height: 30vh;
+      }
+    }
     ul {
       list-style: none;
       margin: 0;
@@ -293,6 +309,10 @@ export class ChatWidget extends LitElement {
     .what {
       overflow-y: auto;
       padding: var(--spacing-md) var(--spacing-lg);
+      /* Grid items default to min-width:auto and won't shrink below their content,
+         so a long message makes .what overflow its track and clip at narrow widths.
+         min-width:0 lets it honor the track so the bubbles wrap within the viewport. */
+      min-width: 0;
     }
     .empty {
       color: var(--content-secondary);
@@ -306,6 +326,14 @@ export class ChatWidget extends LitElement {
     }
     .msg-glyph {
       flex: none;
+    }
+    /* The flex child holding the message text MUST be allowed to shrink below its
+       content's intrinsic width, or the bubble overflows its container and clips
+       (mid-word) instead of wrapping — the canonical flexbox min-width:auto trap.
+       Applies at every width; the bubble should never overflow the viewport. */
+    .msg-body {
+      min-width: 0;
+      flex: 1;
     }
     .msg-head {
       display: flex;
