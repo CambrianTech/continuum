@@ -38,8 +38,7 @@ The bar keeps rising; never let a tool sit at "good enough." Known next steps:
    deterministic, not time-boxed; (b) `--window-size` does NOT set the real viewport (inspect found it
    renders ~500px when asked for 390) — use `Emulation.setDeviceMetricsOverride` so a "mobile" shot is
    a *true* phone width, matching what `inspect` already does. Shared CDP helper between shot + inspect.
-4. **cu-native** — fold these into the Rust core as `cu ship` / `cu shot` commands so a **persona
-   (Asha) runs the exact same factory** a human does — the endgame ([[build-the-factory-as-you-build-the-car]]).
+4. **cu-native — converge to the JTAG/feedback port** (the endgame, [[feedback-is-a-first-class-cross-modality-dimension-jtag-cu]]). Feedback (screenshot / inspect / perf / log) is a first-class dimension that must be uniform + easy across **every** modality (web / mobile / ARVR / rag-persona) through the one `cu` port, so a **persona (Asha) runs the same verb a human does**. The substrate already has the pattern — the `Screenshotter` trait (`commands/interface/capture/{web,ios,android}.rs`, #94: one trait, N targets, fails loud persona-actionably). So: (a) `shot.mjs` reinvents the *web slice* of that adapter → route it through `cu interface/capture` (dev-external is the pre-core-boot fallback); (b) `inspect.mjs` is a NEW capability → make it a sibling **Inspector adapter family** (`cu interface/inspect`; web=CDP, mobile=layout/accessibility tree); (c) close the **modality gaps** — ARVR + rag/persona capture, and the same first-class treatment for **performance** + **logging** across all surfaces.
 
 5. **Port the rest of the factory off bash** — the existing npm scripts (`start`, `stop`,
    `install:continuum`, `setup:git-hooks`, `docker:ensure`) all shell out to `bash tools/scripts/*.sh`,
