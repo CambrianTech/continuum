@@ -83,9 +83,9 @@ describe('chatViewModel', () => {
         ],
       }),
     );
-    expect(vm.members[0].vitals).toEqual({ energy: 80, attention: 90 });
-    expect(vm.members[1].vitals).toEqual({});
-    expect(vm.members[2].vitals).toEqual({});
+    expect(vm.members[0]?.vitals).toEqual({ energy: 80, attention: 90 });
+    expect(vm.members[1]?.vitals).toEqual({});
+    expect(vm.members[2]?.vitals).toEqual({});
   });
 
   // what this catches: activeCount counts only present members — it drives the

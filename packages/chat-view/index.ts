@@ -29,3 +29,7 @@ export type {
 // composes into a `Workspace` (nav + left + purpose-keyed content + context).
 export { rosterListing, roomsListing, chatWorkspace } from './patternProjections';
 export type { ChatContentBody } from './patternProjections';
+
+// The chat activity as a positron app, defined ONCE — mount it on any RenderTarget
+// (web/mobile/terminal/RAG). The first real `defineApp` consumer.
+export { chatApp } from './chatApp';
