@@ -1,0 +1,14 @@
+{
+  "name": "Continuum",
+  "short_name": "Continuum",
+  "description": "A distributed AI world that runs on your hardware.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#16161a",
+  "theme_color": "#16161a",
+  "icons": [
+    { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}
