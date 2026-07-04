@@ -32,9 +32,23 @@ fi
 profile="$(mktemp -d)"
 trap 'rm -rf "$profile"' EXIT
 
+# Wall-clock guard: on a LIVE page (an open WebSocket never goes idle) Chrome
+# writes the screenshot but then refuses to EXIT, because --virtual-time-budget
+# waits for a quiescence that never comes. So run it in the background, give it
+# the budget + a margin of real seconds to write the PNG, then reap it. The frame
+# is captured either way; the guard just stops a live page from hanging the caller.
+# (Found by dogfooding shot.sh against the live three-panel app.)
 "$CHROME" --headless=new --disable-gpu --hide-scrollbars --no-first-run \
   --user-data-dir="$profile" --window-size="$SIZE" \
-  --virtual-time-budget="$BUDGET" --screenshot="$OUT" "$URL" >/dev/null 2>&1 || true
+  --virtual-time-budget="$BUDGET" --screenshot="$OUT" "$URL" >/dev/null 2>&1 &
+chrome_pid=$!
+deadline=$(( BUDGET / 1000 + 8 ))
+for _ in $(seq 1 "$deadline"); do
+  kill -0 "$chrome_pid" 2>/dev/null || break
+  sleep 1
+done
+kill "$chrome_pid" 2>/dev/null || true
+wait "$chrome_pid" 2>/dev/null || true
 
 if [[ -s "$OUT" ]]; then
   echo "shot: $URL → $OUT ($(du -h "$OUT" | cut -f1), size ${SIZE})"
