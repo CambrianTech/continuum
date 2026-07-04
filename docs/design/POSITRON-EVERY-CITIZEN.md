@@ -161,10 +161,24 @@ makes the universe happen *across every view* — the orc is an orc portrait on 
 beside in XR, an orc's growl on the terminal: always the orc, always the forge, always Warcraft. The
 activity is the same recipe; the citizen is the same self; the Universe is the world they're wearing.
 
-The build implication: the design-token layer (INTERFACE-PORT-MAP §1) is the *seed* of a Universe
-(the palette slice). Grow it into the full experience bundle (motion + spatial + sound + tone),
-and make it a first-class authorable entity — a *universe is a recipe too* (THE-ORGANISM). First
-experience = one original universe, ruthless and coherent across terminal ↔ web ↔ mobile ↔ XR.
+**Containment (the precise relationship — a universe is NOT "theme with extra steps"):**
+
+```
+Universe  ⊇  Theme  ⊇  color tokens (the SCSS $vars / CSS --tokens we already have)
+   │            │            └─ palette: --content-accent, --status-online, --message-*, …
+   │            └─ + typography, radii, spacing, the static "look"
+   └─ + motion, spatial language (2D layout vs XR staging), sound, interaction idiom,
+        embodiment (the orc), tone — and it TRANSCENDS every RenderTarget: console, web, mobile, XR
+```
+
+The SCSS color layer is not bypassed — it is the **innermost ring**, the palette a Universe
+*supplies* and then wraps in everything a color can't express. The INTERFACE-PORT-MAP §1 token
+reconciliation is therefore the **foundation stone** of the universe system, not "just theming."
+
+The build implication: grow that token layer outward into the full experience bundle (motion +
+spatial + sound + embodiment + tone), and make it a first-class authorable entity — a *universe is
+a recipe too* (THE-ORGANISM). First experience = one original universe, ruthless and coherent
+across terminal ↔ web ↔ mobile ↔ XR.
 
 ## 5. The test of done
 
