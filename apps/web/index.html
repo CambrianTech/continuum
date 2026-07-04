@@ -2,7 +2,18 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <!-- Mobile app-layer (PWA): the same positron web template, installable + standalone
+         on a phone. First mobile surface on the one app template; Tauri-mobile native
+         shell is the next app layer. [[joel-crossplatform-native-background]] -->
+    <meta name="theme-color" content="#16161a" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Continuum" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="icon" type="image/svg+xml" href="/icon.svg" />
+    <link rel="apple-touch-icon" href="/icon.svg" />
     <title>Continuum — Chat</title>
     <style>
       html,
