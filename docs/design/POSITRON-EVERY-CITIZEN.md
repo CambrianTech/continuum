@@ -105,6 +105,21 @@ Existing scaffolding: `@continuum/foundry-view` (`ForgeState`, `modelsListing`,
 6. **Mobile target** — the native shell implements `RenderTarget` over the same components;
    nothing above changes.
 
+## 4.5 The clever core — the Surface (fluid, sci-fi, NOT web3)
+
+The paradigm is **experiential**, not infrastructural: an AI that *inhabits* the interface with you. One abstraction makes it emergent instead of built. The diff-eq collapse: the naive design is FOUR systems — UI framework + tool-calling API + presence/collab + multimodal/voice. Positron collapses them into ONE:
+
+> **A `Surface` = `{ state, affordances (= commands), presence, projections }`** that any citizen perceives and operates in any modality.
+
+Everything sci-fi falls out of it, for free, because a persona is just a citizen whose render target is RAG and whose touch is a command:
+
+1. **Presence + operation are the SAME stream** (the keystone). The surface streams *who is attending to what, and acting on it*, alongside state. So you **watch Asha in the app**: a focus halo on the control she's reading, a field lighting as she fills it — live cursors, but for every control in every activity. Not a sidebar chatbot; a mind touching the same objects. (The vitals ACT meter was taste #1 — render the persona's inner state; this extends it to attention + action.)
+2. **The persona is a RENDERER, not just a participant.** RAG-as-target + operating the declarative layer means Asha can *re-project* the interface: a dense dashboard → a 10-second spoken briefing; a form → a conversation ("I'll fill it, just tell me X"); a table → a narrated insight. Modality is fluid — table ↔ chat ↔ voice ↔ viz — because all are projections of one declared state. The UI meets you where you are because a *mind* projects it.
+3. **The interface is DATA the persona rearranges.** Surface the right controls for the task, hide the rest, build a view on request (the adaptive surface, [[adaptive-tool-surface-meets-you-in-the-middle]]) — she manipulates the same layer that renders it. "Set me up to forge a coder model" → the workspace reconfigures itself.
+4. **Continuity + anticipation.** Engram memory + agency make the surface a *living space*: pre-arrange the bench for the next task, resume where you left off, show who's been working on what. A room that remembers, not a static render.
+
+Small core, enormous surface area. **Terse, high up, sci-fi as the side effect** ([[build-the-factory-as-you-build-the-car]]). The build path below stays the same; presence is the field to add to the Surface after foundry proves the shell (a `presence` axis on state: `{who, attending, acting}` per citizen).
+
 ## 5. The test of done
 
 Not "the web page looks right." **Done is:** a human on web/mobile sees a gorgeous foundry;
