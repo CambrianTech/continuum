@@ -4,6 +4,19 @@
 
 ---
 
+## Start here — the canonical architecture (precedence-winning)
+
+How the whole thing composes. Read these first; on architecture questions they win.
+
+1. **[THE-ORGANISM.md](THE-ORGANISM.md)** — recipes are DNA; an activity / curriculum / persona / artifact / team all *grow* from one gene. **Continuum is recipe-driven** (a room = `recipe.instantiate()`).
+2. **[THE-GRID-IS-ALIVE.md](THE-GRID-IS-ALIVE.md)** — the metaverse of synthetic citizens (the published papers + past prototypes fused): a Tron grid of rooms, minds you walk into as consoles, avatars, universes.
+3. **[design/POSITRON-EVERY-CITIZEN.md](design/POSITRON-EVERY-CITIZEN.md)** — positron: one interface every citizen (human / persona / agent) *perceives and operates*; the **Surface**; the **Universe axis** (an experience, not a theme — it *contains* the color tokens and transcends every surface: motion, sound, embodiment "talk to the orc," lore = a RAG layer).
+4. **[planning/ALPHA-COMPLETION-BLUEPRINT.md](planning/ALPHA-COMPLETION-BLUEPRINT.md)** — the governing execution plan to the alive README; supersedes the older scattered planning docs.
+
+**The four separable layers** (compose, never couple): **Recipe** = logic+content (continuum substrate) · **Positron** = render+operate ([general engine](../packages/patterns/README.md)) · **Universe** = experience+lore+embodiment (general — works *outside* continuum; a company or a game ships its own) · **Continuum** = composes them into the living organism.
+
+---
+
 ## Structure
 
 ```
