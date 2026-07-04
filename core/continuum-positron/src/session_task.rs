@@ -272,7 +272,13 @@ fn reconcile_forwarders(
             .remove(kind)
             .unwrap_or_else(|| substrate.broadcast().subscribe(kind));
         let handle = tokio::spawn(forward_kind(rx, *rate, outbound.clone()));
-        forwarders.insert(kind.clone(), Forwarder { handle, rate: *rate });
+        forwarders.insert(
+            kind.clone(),
+            Forwarder {
+                handle,
+                rate: *rate,
+            },
+        );
     }
 
     // Abort forwarders whose kind is no longer subscribed or observed.
@@ -365,7 +371,12 @@ mod tests {
 
         let (in_tx, in_rx) = mpsc::channel(8);
         let (out_tx, mut out_rx) = mpsc::channel(8);
-        let task = tokio::spawn(run_session(in_rx, out_tx, substrate.clone(), ScriptedDispatcher::ok()));
+        let task = tokio::spawn(run_session(
+            in_rx,
+            out_tx,
+            substrate.clone(),
+            ScriptedDispatcher::ok(),
+        ));
 
         in_tx.send(subscribe(&["chat"])).await.unwrap();
 
@@ -374,12 +385,20 @@ mod tests {
         // read — that the forwarder's receiver is already attached at
         // revision 1.
         let snapshot = out_rx.recv().await.expect("snapshot frame");
-        assert_eq!(state_rev(&snapshot), Some(1), "snapshot is the current revision");
+        assert_eq!(
+            state_rev(&snapshot),
+            Some(1),
+            "snapshot is the current revision"
+        );
 
         // A later store must arrive live, exactly once, at revision 2.
         substrate.store(envelope("chat", 2));
         let live = out_rx.recv().await.expect("live frame");
-        assert_eq!(state_rev(&live), Some(2), "the store fanned out as a live State frame");
+        assert_eq!(
+            state_rev(&live),
+            Some(2),
+            "the store fanned out as a live State frame"
+        );
 
         drop(in_tx);
         task.await.unwrap().unwrap();
@@ -398,7 +417,12 @@ mod tests {
 
         let (in_tx, in_rx) = mpsc::channel(8);
         let (out_tx, mut out_rx) = mpsc::channel(8);
-        let task = tokio::spawn(run_session(in_rx, out_tx, substrate.clone(), ScriptedDispatcher::ok()));
+        let task = tokio::spawn(run_session(
+            in_rx,
+            out_tx,
+            substrate.clone(),
+            ScriptedDispatcher::ok(),
+        ));
 
         in_tx.send(subscribe(&["chat"])).await.unwrap();
         let _snapshot = out_rx.recv().await.expect("snapshot");
@@ -432,7 +456,12 @@ mod tests {
 
         let (in_tx, in_rx) = mpsc::channel(8);
         let (out_tx, mut out_rx) = mpsc::channel(8);
-        let task = tokio::spawn(run_session(in_rx, out_tx, substrate.clone(), ScriptedDispatcher::ok()));
+        let task = tokio::spawn(run_session(
+            in_rx,
+            out_tx,
+            substrate.clone(),
+            ScriptedDispatcher::ok(),
+        ));
 
         in_tx.send(subscribe(&["chat"])).await.unwrap();
         let _ = out_rx.recv().await.expect("chat snapshot");
@@ -472,7 +501,12 @@ mod tests {
 
         let (in_tx, in_rx) = mpsc::channel(8);
         let (out_tx, mut out_rx) = mpsc::channel(8);
-        let task = tokio::spawn(run_session(in_rx, out_tx, substrate.clone(), ScriptedDispatcher::ok()));
+        let task = tokio::spawn(run_session(
+            in_rx,
+            out_tx,
+            substrate.clone(),
+            ScriptedDispatcher::ok(),
+        ));
 
         in_tx
             .send(ClientMessage::Observe {
@@ -514,7 +548,12 @@ mod tests {
 
         let (in_tx, in_rx) = mpsc::channel(8);
         let (out_tx, mut out_rx) = mpsc::channel(8);
-        let task = tokio::spawn(run_session(in_rx, out_tx, substrate.clone(), Arc::clone(&dispatcher)));
+        let task = tokio::spawn(run_session(
+            in_rx,
+            out_tx,
+            substrate.clone(),
+            Arc::clone(&dispatcher),
+        ));
 
         let cid = Uuid::from_u128(0xbeef);
         in_tx
@@ -530,13 +569,20 @@ mod tests {
 
         let frame = out_rx.recv().await.expect("a frame");
         match frame {
-            ServerMessage::CommandFailed { correlation_id, error } => {
+            ServerMessage::CommandFailed {
+                correlation_id,
+                error,
+            } => {
                 assert_eq!(correlation_id, cid);
                 assert_eq!(error, "policy denied");
             }
             other => panic!("expected CommandFailed, got {other:?}"),
         }
-        assert_eq!(dispatcher.call_count(), 1, "the command reached the dispatcher");
+        assert_eq!(
+            dispatcher.call_count(),
+            1,
+            "the command reached the dispatcher"
+        );
 
         drop(in_tx);
         task.await.unwrap().unwrap();
@@ -555,7 +601,12 @@ mod tests {
 
         let (in_tx, in_rx) = mpsc::channel(8);
         let (out_tx, mut out_rx) = mpsc::channel(8);
-        let task = tokio::spawn(run_session(in_rx, out_tx, substrate.clone(), ScriptedDispatcher::ok()));
+        let task = tokio::spawn(run_session(
+            in_rx,
+            out_tx,
+            substrate.clone(),
+            ScriptedDispatcher::ok(),
+        ));
 
         // Reconnect already at revision 7 → snapshot skipped.
         in_tx

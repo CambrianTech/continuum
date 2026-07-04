@@ -77,7 +77,10 @@ use uuid::Uuid;
 /// `string`, which matches JSON behavior — `Uuid` isn't a JSON
 /// primitive).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/positron/ChatMessageView.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/positron/ChatMessageView.ts"
+)]
 pub struct ChatMessageView {
     #[ts(type = "string")]
     pub id: Uuid,
@@ -129,7 +132,10 @@ pub struct ChatMessageView {
 /// learning continuum (see module docs).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case", tag = "kind")]
-#[ts(export, export_to = "../../../protocol/typescript/positron/SenderKind.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/positron/SenderKind.ts"
+)]
 pub enum SenderKind {
     /// Carbon — typed at the keyboard, dictated through STT, etc.
     Human,
@@ -196,7 +202,10 @@ impl SenderKind {
 /// not interpreted here — the app layer decides what a given runtime
 /// means for trust, exactly as it does for `integrations`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/positron/Provenance.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/positron/Provenance.ts"
+)]
 pub struct Provenance {
     /// The producer's self-reported runtime class, verbatim from airc
     /// presence (`"claude"` / `"codex"` / `"interactive"` / …). The
@@ -232,7 +241,10 @@ impl Provenance {
 /// `member_id` + `kind` + opaque `integrations`, never a
 /// continuum-specific "persona" field.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/positron/RosterSlotView.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/positron/RosterSlotView.ts"
+)]
 pub struct RosterSlotView {
     #[ts(type = "string")]
     pub member_id: Uuid,
@@ -293,7 +305,10 @@ pub struct RosterSlotView {
 /// (additive — additive ts-rs deltas are wire-compatible) in
 /// follow-up slices.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../../protocol/typescript/positron/ChatViewState.ts")]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/positron/ChatViewState.ts"
+)]
 pub struct ChatViewState {
     /// The room this snapshot describes.
     #[ts(type = "string")]

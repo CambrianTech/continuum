@@ -210,7 +210,9 @@ mod tests {
         // The first send transitions None → Some(env). The waiting
         // receiver wakes through normal watch semantics.
         b.send(envelope("chat", 1));
-        rx.changed().await.expect("first send wakes early subscriber");
+        rx.changed()
+            .await
+            .expect("first send wakes early subscriber");
         let first = rx
             .borrow_and_update()
             .clone()
@@ -324,11 +326,8 @@ mod tests {
         // user_rx.changed() would hang — assert it's NOT ready.
         // tokio::select with a deadline is the right shape for a
         // negative test.
-        let did_change = tokio::time::timeout(
-            std::time::Duration::from_millis(50),
-            user_rx.changed(),
-        )
-        .await;
+        let did_change =
+            tokio::time::timeout(std::time::Duration::from_millis(50), user_rx.changed()).await;
         assert!(
             did_change.is_err(),
             "user-list receiver must not see chat's send"
@@ -380,11 +379,8 @@ mod tests {
 
         // user-list cold-start subscriber MUST still be at None — no
         // user-list send has happened yet.
-        let did_change = tokio::time::timeout(
-            std::time::Duration::from_millis(50),
-            user_rx.changed(),
-        )
-        .await;
+        let did_change =
+            tokio::time::timeout(std::time::Duration::from_millis(50), user_rx.changed()).await;
         assert!(
             did_change.is_err(),
             "user-list cold-start subscriber must not wake on chat's send"
