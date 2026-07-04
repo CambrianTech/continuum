@@ -112,6 +112,35 @@ export function memberCard(m: RosterMemberVM): TemplateResult {
   `;
 }
 
+/** One member card, reproduced from the NEUTRAL `ListingCell` (not the rich VM).
+ *  This is what lets the web `RenderTarget` draw the roster from a `WorkspaceView`
+ *  alone — the cell now carries everything the card needs: `glyph` (kind glyph),
+ *  `title` (name), `badges` = [kind, runtime?], `status` (active/idle), `meters`
+ *  (vitals). Byte-for-byte the same markup as `memberCard(vm)` — verified by the
+ *  before/after screenshot of the live three-panel — so routing apps/web through the
+ *  framework's neutral projection does not regress the ACT meters. */
+export function memberCardFromCell(cell: ListingCell): TemplateResult {
+  const active = cell.status === 'active';
+  const kind = cell.badges?.[0] ?? 'agent';
+  const runtime = cell.badges?.[1] ?? '';
+  return html`
+    <li class="member ${active ? 'online' : 'idle'}" data-kind=${kind}>
+      <span class="avatar">
+        <span class="glyph">${cell.glyph ?? ''}</span>
+        <span class="status-dot" title=${active ? 'active' : 'idle'}></span>
+      </span>
+      <span class="info">
+        <span class="name">${cell.title}</span>
+        <span class="meta">
+          <span class="kind-badge">${kind}</span>
+          ${runtimeBadge(runtime)}
+        </span>
+        ${cell.meters ? vitalsMeters(cell.meters) : nothing}
+      </span>
+    </li>
+  `;
+}
+
 /** One conversation row — WHAT was said. */
 export function messageRow(msg: MessageRowVM): TemplateResult {
   return html`
