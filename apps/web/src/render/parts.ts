@@ -8,7 +8,31 @@
  */
 
 import { html, nothing, type TemplateResult } from 'lit';
+import type { ListingCell } from '@continuum/patterns';
 import type { MemberKind, MessageRowVM, RosterMemberVM } from '@continuum/chat-view';
+
+/** GENERIC listing-cell renderer — the first real positron web *component*: it draws
+ *  ANY already-projected `ListingCell` (a foundry model, a room, a cohort) the same
+ *  way, on any target. The roster's rich member card stays bespoke while it carries
+ *  live vitals meters; every other Listing routes through this. Two consumers
+ *  (foundry now, more later) is exactly what earns the extraction — outliers first,
+ *  then the component ([[positron-is-a-framework-not-vanilla-pages]]). */
+export function listingCell(cell: ListingCell): TemplateResult {
+  return html`
+    <li class="cell" data-status=${cell.status ?? 'none'}>
+      ${cell.glyph ? html`<span class="cell-glyph">${cell.glyph}</span>` : nothing}
+      <div class="cell-body">
+        <div class="cell-title">${cell.title}</div>
+        ${cell.subtitle ? html`<div class="cell-subtitle">${cell.subtitle}</div>` : nothing}
+      </div>
+      ${cell.badges && cell.badges.length > 0
+        ? html`<span class="cell-badges">
+            ${cell.badges.map((b) => html`<span class="cell-badge">${b}</span>`)}
+          </span>`
+        : nothing}
+    </li>
+  `;
+}
 
 /** Short glyph per author kind — the neutral human/agent/system discriminant. */
 export function kindGlyph(kind: MemberKind): string {

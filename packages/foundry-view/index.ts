@@ -12,5 +12,5 @@
 export { FOUNDRY_KIND, forgeStateFromEnvelope } from './ForgeState';
 export type { ForgeState } from './ForgeState';
 
-export { modelsListing, foundryContextPanel, foundryContent } from './patternProjections';
+export { modelCell, modelsListing, foundryContextPanel, foundryContent } from './patternProjections';
 export type { ForgeContentBody } from './patternProjections';
