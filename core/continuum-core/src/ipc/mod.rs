@@ -112,9 +112,9 @@ pub mod positron_foundry_source;
 pub mod positron_kanban_source;
 pub mod positron_presence;
 pub mod positron_source;
-pub mod vitals_emitter;
 pub mod positron_wall_source;
 pub mod protocol;
+pub mod vitals_emitter;
 pub mod ws;
 
 use diagnostics::{current_rss_mb, dump_memory_report, log_command_rss_delta};

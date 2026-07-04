@@ -55,38 +55,58 @@ pub fn spawn_vitals_emitter(rt: &tokio::runtime::Handle, bus: Arc<MessageBus>) {
         let mut last_vitals: HashMap<Uuid, BTreeMap<String, u8>> = HashMap::new();
         loop {
             ticker.tick().await;
-            let registry = persona_workspace::global();
-            for (id, _name) in registry.roster() {
-                let Some(cycle) = registry.get(&id) else {
-                    continue;
-                };
-                // ACTIVITY: the cycle-tick delta since we last sampled. First
-                // sample seeds `last` = now → delta 0 (honest "no history yet").
-                let ticks = cycle.cycle_count();
-                let delta = ticks.saturating_sub(last_ticks.get(&id).copied().unwrap_or(ticks));
-                last_ticks.insert(id, ticks);
+            // Wrap the (synchronous) sample in catch_unwind: the only realistic
+            // panic here is a POISONED registry lock — another thread panicked
+            // while holding `persona_workspace`'s `cycles` mutex — and one bad
+            // tick must NOT silently kill the radiator for the whole process
+            // lifetime (CONCURRENCY-STYLE-GUIDE quarantine box). Log + retry next
+            // interval. No `.await` inside, so unwind-safety is straightforward.
+            // (Unlike the presence emitter, there is no `presence:resync`-style
+            // path: the change-dedup means a chat projection that restarts sees no
+            // meter on an idle persona until its readout next changes — acceptable,
+            // since a missing bar on a genuinely-idle persona is honest, not blank.)
+            let sampled = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let registry = persona_workspace::global();
+                for (id, _name) in registry.roster() {
+                    let Some(cycle) = registry.get(&id) else {
+                        continue;
+                    };
+                    // ACTIVITY: the cycle-tick delta since we last sampled. First
+                    // sample seeds `last` = now → delta 0 ("no history yet").
+                    let ticks = cycle.cycle_count();
+                    let delta =
+                        ticks.saturating_sub(last_ticks.get(&id).copied().unwrap_or(ticks));
+                    last_ticks.insert(id, ticks);
 
-                let genome_len = cycle.genome().len();
-                let mut vitals = BTreeMap::new();
-                vitals.insert("activity".to_string(), pct_u64(delta, ACT_FULL_SCALE_TICKS));
-                // Omit genome entirely when the persona has none paged in — an
-                // honest missing meter, not a 0% fabricated one.
-                if genome_len > 0 {
-                    vitals.insert("genome".to_string(), pct_usize(genome_len, GEN_FULL_SCALE_GENES));
-                }
+                    let genome_len = cycle.genome().len();
+                    let mut vitals = BTreeMap::new();
+                    vitals.insert("activity".to_string(), pct_u64(delta, ACT_FULL_SCALE_TICKS));
+                    // Omit genome entirely when the persona has none paged in — an
+                    // honest missing meter, not a 0% fabricated one.
+                    if genome_len > 0 {
+                        vitals
+                            .insert("genome".to_string(), pct_usize(genome_len, GEN_FULL_SCALE_GENES));
+                    }
 
-                // Change-dedup: a stable persona radiates nothing.
-                if last_vitals.get(&id) == Some(&vitals) {
-                    continue;
-                }
-                last_vitals.insert(id, vitals.clone());
-                let update = PersonaVitalsUpdate { member_id: id, vitals };
-                match serde_json::to_value(&update) {
-                    Ok(payload) => bus.publish_async_only(PERSONA_VITALS, payload),
-                    Err(e) => {
-                        tracing::warn!(persona = %id, error = %e, "persona vitals serialize failed")
+                    // Change-dedup: a stable persona radiates nothing.
+                    if last_vitals.get(&id) == Some(&vitals) {
+                        continue;
+                    }
+                    last_vitals.insert(id, vitals.clone());
+                    let update = PersonaVitalsUpdate { member_id: id, vitals };
+                    match serde_json::to_value(&update) {
+                        Ok(payload) => bus.publish_async_only(PERSONA_VITALS, payload),
+                        Err(e) => {
+                            tracing::warn!(persona = %id, error = %e, "persona vitals serialize failed")
+                        }
                     }
                 }
+            }));
+            if sampled.is_err() {
+                tracing::warn!(
+                    "vitals radiator tick panicked (likely a poisoned registry lock) — \
+                     skipping, retrying next interval"
+                );
             }
         }
     });
