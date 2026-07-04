@@ -1,0 +1,22 @@
+{
+  "//": "Typecheck config for @continuum/foundry-view. Mirrors the SDK's strict contract; compiles against the SDK source (@continuum/sdk-typescript resolves to ./index.ts, no build step). This package is framework-free and platform-neutral, so NO DOM lib — it must typecheck the same under a browser bundler (apps/web) and under Node (apps/tui). tsc is --noEmit typecheck only; each consumer's bundler/runtime owns transpilation.",
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "lib": ["ES2022"],
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true,
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "types": []
+  },
+  "include": ["*.ts"],
+  "exclude": ["node_modules"]
+}
