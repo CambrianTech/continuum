@@ -103,6 +103,7 @@ class StreamConsumer {
 const SNAPSHOT: StateEnvelope = chatEnvelope(1, {
   room_id: 'room-1',
   room_name: 'general',
+  purpose: 'chat',
   roster: [
     member({ member_id: 'asha', display_name: 'Asha', kind: kind('agent'), provenance: { runtime: 'claude' } }),
     member({ member_id: 'joel', display_name: 'Joel', kind: kind('human'), active: false }),
@@ -115,6 +116,7 @@ const SNAPSHOT: StateEnvelope = chatEnvelope(1, {
 const DELTA: StateEnvelope = chatEnvelope(2, {
   room_id: 'room-1',
   room_name: 'general',
+  purpose: 'chat',
   roster: [
     member({ member_id: 'asha', display_name: 'Asha', kind: kind('agent'), provenance: { runtime: 'claude' } }),
     member({ member_id: 'joel', display_name: 'Joel', kind: kind('human'), active: true }),

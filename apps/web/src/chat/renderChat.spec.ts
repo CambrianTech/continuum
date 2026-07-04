@@ -98,7 +98,7 @@ describe('renderChat (Lit)', () => {
   it('renders room, roster, and messages from a seam-projected snapshot', () => {
     const vm = project({
       room_id: 'room-1',
-      room_name: 'general',
+      room_name: 'general', purpose: 'chat',
       roster: [
         member({ member_id: 'asha', display_name: 'Asha', kind: kind('agent'), provenance: { runtime: 'claude' } }),
         member({ member_id: 'joel', display_name: 'Joel', kind: kind('human'), active: false }),
@@ -134,7 +134,7 @@ describe('renderChat (Lit)', () => {
   // string, not an error and not a bare void — matching the ANSI renderer's
   // "No messages yet — say hello." contract exactly.
   it('renders an honest empty state when there are no messages', () => {
-    const vm = project({ room_id: 'room-1', room_name: 'general', roster: [], messages: [] });
+    const vm = project({ room_id: 'room-1', room_name: 'general', purpose: 'chat', roster: [], messages: [] });
     const text = markup(vm);
     expect(text).toContain('No messages yet — say hello.');
     expect(text).not.toMatch(/error/i);
@@ -147,7 +147,7 @@ describe('renderChat (Lit)', () => {
   it('badges a resolved runtime once and never fabricates one for the unresolved', () => {
     const vm = project({
       room_id: 'room-1',
-      room_name: 'general',
+      room_name: 'general', purpose: 'chat',
       roster: [
         member({ member_id: 'asha', display_name: 'Asha', provenance: { runtime: 'claude' } }),
         member({ member_id: 'nyx', display_name: 'Nyx', provenance: { runtime: '' } }),

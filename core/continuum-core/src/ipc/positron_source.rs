@@ -444,6 +444,11 @@ impl ChatProjection {
         let view = ChatViewState {
             room_id,
             room_name: self.room_name.clone(),
+            // Every room is a chat room today. `RoomPurposeSource` (task #6)
+            // will resolve this from the room's recipe/nature so a foundry /
+            // scada / academy room reports its own purpose and the client's
+            // Content primitive dispatches on it (ACTIVITY-ROOM-PATTERNS.md).
+            purpose: "chat".to_string(),
             messages: self.messages.iter().cloned().collect(),
             roster: self.roster.clone(),
         };

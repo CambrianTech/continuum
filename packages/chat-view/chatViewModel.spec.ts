@@ -44,6 +44,7 @@ const state = (over: Partial<ChatState> = {}): ChatState => ({
   revision: 3,
   room_id: 'room-1',
   room_name: 'general',
+  purpose: 'chat',
   messages: [],
   roster: [],
   ...over,
