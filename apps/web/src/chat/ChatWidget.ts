@@ -278,6 +278,13 @@ export class ChatWidget extends LitElement {
       place-items: center;
       color: var(--content-secondary);
     }
+    .render-error {
+      padding: var(--spacing-lg);
+      color: var(--content-error);
+      font-family: var(--font-mono);
+      font-size: 13px;
+      white-space: pre-wrap;
+    }
   `;
 
   override render(): TemplateResult {
@@ -285,8 +292,19 @@ export class ChatWidget extends LitElement {
       return html`<div class="connecting">Connecting to the room…</div>`;
     }
     const vm = chatViewModel(this.state);
+    // Error boundary: a render throw (e.g. the Content registry hitting an
+    // unregistered room purpose) must be VISIBLE here, not swallowed into a Lit
+    // update abort that leaves a silent stuck "Connecting…". Fail loud where it's
+    // seen ([[fallbacks-are-illegal-fail-loud]]).
+    let surface: TemplateResult;
+    try {
+      surface = renderChat(vm);
+    } catch (err) {
+      const cause = err instanceof Error ? err.message : String(err);
+      return html`<div class="render-error">Interface error rendering this room: ${cause}</div>`;
+    }
     return html`
-      ${renderChat(vm)}
+      ${surface}
       ${this._sendError ? html`<div class="send-error">${this._sendError}</div>` : nothing}
       <form class="compose" @submit=${this.onSubmit}>
         <input
