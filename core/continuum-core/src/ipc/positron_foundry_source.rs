@@ -25,21 +25,16 @@ use crate::model_registry::live::{CatalogSnapshot, LiveModel};
 /// only — the renderer draws them and never re-resolves from the catalogue.
 fn forge_model_view(live: &LiveModel) -> ForgeModelView {
     let m = &live.model;
-    // `parameter_count` is the raw param count; `0` means the catalogue does not
-    // know it (never a real model), so we report `None` rather than a fabricated
-    // `0.0` billion ([[fallbacks-are-illegal-fail-loud]]). Otherwise → billions.
-    let params_b = if m.parameter_count == 0 {
-        None
-    } else {
-        Some(m.parameter_count as f32 / 1e9)
-    };
     ForgeModelView {
         model_id: m.id.clone(),
         // Name is optional on the row; fall back to the id so a row always labels
         // itself, never blank.
         display_name: m.name.clone().unwrap_or_else(|| m.id.clone()),
         source: m.provider.clone(),
-        params_b,
+        // The "0 means unknown → None" contract lives once, on the Model helper —
+        // read it, don't restate the sentinel here ([[fallbacks-are-illegal-fail-loud]],
+        // one-decision-one-place).
+        params_b: m.parameter_count_billions(),
     }
 }
 
