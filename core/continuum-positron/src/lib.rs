@@ -123,6 +123,7 @@ pub mod cache;
 pub mod chat;
 pub mod connection;
 pub mod dispatch;
+pub mod foundry;
 pub mod kanban;
 pub mod observer;
 pub mod revisions;
