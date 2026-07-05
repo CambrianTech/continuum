@@ -353,47 +353,39 @@ export class ChatWidget extends LitElement {
     .cog-cluster {
       display: flex;
       align-items: center;
-      gap: 6px;
+      gap: 7px;
       flex: none;
       margin-left: auto;
       padding-left: 8px;
     }
-    /* Cognition diamond — four faculties (Focus/Reason/Recall/Act) as four lit triangles;
-       the SHAPE is the shape of the mind that instant. */
+    /* Cognition diamond — four triangles pointing out like a compass (Focus N / Reason E /
+       Recall S / Act W), each lit by its faculty value; the SHAPE is the mind that instant. */
     .cog-diamond {
-      width: 30px;
-      height: 30px;
-      flex: none;
-      filter: drop-shadow(0 0 3px rgba(0, 212, 255, 0.4));
-    }
-    .cog-quad {
-      fill: var(--content-accent);
-      stroke: rgba(0, 0, 0, 0.5);
-      stroke-width: 0.7;
-    }
-    .cog-outline {
-      fill: none;
-      stroke: var(--content-accent);
-      stroke-width: 1;
-      opacity: 0.55;
-    }
-    /* Genome bars — a compact equalizer, one segment per loaded LoRA gene (base model = empty). */
-    .genome {
-      display: inline-flex;
-      gap: 2px;
-      align-items: flex-end;
-      flex: none;
+      width: 28px;
       height: 28px;
+      flex: none;
+    }
+    .cog-tri {
+      fill: var(--content-accent);
+      filter: drop-shadow(0 0 2px rgba(0, 212, 255, 0.55));
+    }
+    /* Genome — a compact 2-column chip of tiny gene cells (base model shows an empty chip). */
+    .genome {
+      display: grid;
+      grid-template-columns: repeat(2, 5px);
+      grid-auto-rows: 5px;
+      gap: 2px;
+      flex: none;
     }
     .gene {
-      width: 3px;
-      height: 28px;
+      width: 5px;
+      height: 5px;
       border-radius: 1px;
       background: var(--border-subtle);
     }
     .gene.on {
       background: var(--content-accent);
-      box-shadow: 0 0 4px var(--content-accent);
+      box-shadow: 0 0 3px var(--content-accent);
     }
     /* CENTER pane — the horizontal engine gauges (SPD/PAR), compact. */
     .vitals {
