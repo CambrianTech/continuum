@@ -16,6 +16,7 @@
     "@continuum/chat-view": "*",
     "@continuum/foundry-view": "*",
     "@continuum/sdk-typescript": "*",
+    "highlight.js": "^11.11.1",
     "lit": "^3.2.0"
   },
   "devDependencies": {
