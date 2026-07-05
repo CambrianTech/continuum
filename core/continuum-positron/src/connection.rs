@@ -43,8 +43,8 @@ use positron_core::wire::{CommandEnvelope, CommandSource};
 
 use crate::dispatch::CommandDispatch;
 use crate::observer::{apply_observe, ObserverRegistration};
+use crate::cache::StateSource;
 use crate::session::{apply_subscribe, Subscription};
-use crate::substrate::Substrate;
 
 /// One client session's substrate-recorded state. Cheap to construct
 /// fresh; mutated in place as `ClientMessage`s arrive.
@@ -71,15 +71,15 @@ impl Connection {
     /// Single dispatch point — the variant match is exhaustive per
     /// `[[no-fallbacks-ever]]`. Async because `apply_command` is
     /// async (the dispatcher may be remote).
-    pub async fn handle<D: CommandDispatch + ?Sized>(
+    pub async fn handle<D: CommandDispatch + ?Sized, S: StateSource>(
         &mut self,
         msg: ClientMessage,
-        substrate: &Substrate,
+        source: &S,
         dispatcher: &D,
     ) -> Result<Vec<ServerMessage>, String> {
         match &msg {
-            ClientMessage::Subscribe { .. } => self.handle_subscribe(msg, substrate),
-            ClientMessage::Observe { .. } => self.handle_observe(msg, substrate),
+            ClientMessage::Subscribe { .. } => self.handle_subscribe(msg, source),
+            ClientMessage::Observe { .. } => self.handle_observe(msg, source),
             ClientMessage::Command(_) => self.handle_command(msg, dispatcher).await,
         }
     }
@@ -88,12 +88,12 @@ impl Connection {
     /// per the declarative-replace doctrine; returns snapshot
     /// frames per the snapshot-then-live + exact-equality-skip
     /// rule.
-    pub fn handle_subscribe(
+    pub fn handle_subscribe<S: StateSource>(
         &mut self,
         msg: ClientMessage,
-        substrate: &Substrate,
+        source: &S,
     ) -> Result<Vec<ServerMessage>, String> {
-        let (sub, frames) = apply_subscribe(substrate.cache(), msg)?;
+        let (sub, frames) = apply_subscribe(source, msg)?;
         self.subscription = sub;
         Ok(frames)
     }
@@ -101,12 +101,12 @@ impl Connection {
     /// Handle an `Observe` frame. Inserts (replaces) the observer's
     /// registration under its `observer_id`; returns snapshot
     /// frames per the same resync contract.
-    pub fn handle_observe(
+    pub fn handle_observe<S: StateSource>(
         &mut self,
         msg: ClientMessage,
-        substrate: &Substrate,
+        source: &S,
     ) -> Result<Vec<ServerMessage>, String> {
-        let (reg, frames) = apply_observe(substrate.cache(), msg)?;
+        let (reg, frames) = apply_observe(source, msg)?;
         // HashMap::insert replaces the prior value if any — exactly
         // the protocol's declarative-replace semantics for observers.
         self.observers.insert(reg.observer_id.clone(), reg);
@@ -226,6 +226,7 @@ impl Connection {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::substrate::Substrate;
     use async_trait::async_trait;
     use positron_core::session::KindRevision;
     use positron_core::wire::{
