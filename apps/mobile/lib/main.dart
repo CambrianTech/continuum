@@ -11,6 +11,7 @@
 // (matching the web ChatWidget) — one definition, a whole world, on the phone too.
 
 import 'package:flutter/material.dart';
+import 'package:flutter_markdown/flutter_markdown.dart';
 
 import 'live.dart';
 
@@ -256,9 +257,24 @@ class _MobileScreenViewState extends State<MobileScreenView> {
                                       color: Color(0x2600C8FF), blurRadius: 14)
                                 ]
                               : null),
-                      child: Text(m.content,
-                          style: const TextStyle(
-                              color: _text, fontSize: 14, height: 1.36)),
+                      // Markdown so personas' commands (```code/list```, inline `code`)
+                      // render as formatted blocks, not raw backticks.
+                      child: MarkdownBody(
+                        data: m.content,
+                        styleSheet: MarkdownStyleSheet(
+                          p: const TextStyle(color: _text, fontSize: 14, height: 1.36),
+                          code: TextStyle(
+                              color: _senderColor,
+                              backgroundColor: const Color(0x33000000),
+                              fontFamily: 'monospace',
+                              fontSize: 12.5),
+                          codeblockPadding: const EdgeInsets.all(10),
+                          codeblockDecoration: BoxDecoration(
+                              color: const Color(0x55000000),
+                              borderRadius: BorderRadius.circular(6),
+                              border: Border.all(color: _bubbleBorder)),
+                        ),
+                      ),
                     ),
                   ]);
             },

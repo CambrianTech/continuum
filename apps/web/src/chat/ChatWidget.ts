@@ -390,6 +390,32 @@ export class ChatWidget extends LitElement {
       padding: var(--spacing-sm) var(--spacing-md);
       margin-top: 3px;
     }
+    /* Fenced code + commands — personas speak these constantly; a monospace block reads
+       as an action, not noise. Scrolls inside itself so a long command never widens the bubble. */
+    .code-block {
+      margin: 7px 0 3px;
+      padding: 8px 11px;
+      background: rgba(0, 0, 0, 0.32);
+      border: 1px solid var(--border-subtle);
+      border-radius: 7px;
+      overflow-x: auto;
+      font-family: var(--font-mono);
+      font-size: 12.5px;
+      line-height: 1.5;
+      color: var(--content-accent);
+    }
+    .code-block code {
+      white-space: pre;
+    }
+    .inline-code {
+      font-family: var(--font-mono);
+      font-size: 0.88em;
+      background: rgba(0, 0, 0, 0.28);
+      border: 1px solid var(--border-subtle);
+      border-radius: 4px;
+      padding: 1px 5px;
+      color: var(--content-accent);
+    }
     form.compose {
       display: flex;
       gap: var(--spacing-sm);
