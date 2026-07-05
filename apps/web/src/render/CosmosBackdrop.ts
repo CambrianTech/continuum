@@ -41,6 +41,11 @@ export class CosmosBackdrop extends LitElement {
   private _raf = 0;
   private _t0 = 0;
 
+  /** The room's citizens — rendered as a living constellation (the room, reflected in
+   *  the sky). Set by the host each render; the animation reads it live, so who's
+   *  present + who's active literally shapes the cosmos. */
+  citizens: Array<{ name: string; active: boolean }> = [];
+
   override render() {
     return html`<canvas></canvas>`;
   }
@@ -150,6 +155,48 @@ export class CosmosBackdrop extends LitElement {
     }
     ctx.shadowBlur = 0;
     ctx.globalCompositeOperation = 'source-over';
+
+    // The CITIZENS as a living constellation — the room reflected in the sky. Each
+    // persona is a named star slowly orbiting; the active ones pulse; lines link them
+    // all. Who is here + who is thinking literally shapes the cosmos.
+    const cz = this.citizens;
+    if (cz.length > 0) {
+      const cx = w / 2;
+      const cy = h * 0.46;
+      const rr = Math.min(w, h) * 0.32;
+      const pos = cz.map((c, i) => {
+        const ang = (i / cz.length) * Math.PI * 2 + time * 0.05;
+        return { c, x: cx + Math.cos(ang) * rr * 1.15, y: cy + Math.sin(ang) * rr };
+      });
+      ctx.strokeStyle = 'rgba(150,190,255,0.32)';
+      ctx.lineWidth = 1;
+      for (let i = 0; i < pos.length; i++) {
+        for (let j = i + 1; j < pos.length; j++) {
+          const a = pos[i];
+          const b = pos[j];
+          if (!a || !b) continue;
+          ctx.beginPath();
+          ctx.moveTo(a.x, a.y);
+          ctx.lineTo(b.x, b.y);
+          ctx.stroke();
+        }
+      }
+      ctx.textAlign = 'center';
+      ctx.font = '600 12px system-ui, -apple-system, sans-serif';
+      for (const p of pos) {
+        const pulse = p.c.active ? 0.6 + 0.4 * Math.sin(time * 2.2) : 0.4;
+        ctx.shadowColor = 'rgba(150,190,255,0.95)';
+        ctx.shadowBlur = 14 * pulse + 6;
+        ctx.fillStyle = `rgba(222,236,255,${0.7 + 0.3 * pulse})`;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, 3.6, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.shadowBlur = 0;
+        ctx.fillStyle = 'rgba(200,215,255,0.9)';
+        ctx.fillText(p.c.name, p.x, p.y + 20);
+      }
+      ctx.textAlign = 'start';
+    }
 
     this._raf = requestAnimationFrame(this._loop);
   };

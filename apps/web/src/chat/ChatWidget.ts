@@ -693,7 +693,11 @@ export class ChatWidget extends LitElement {
     }
     const cosmos = this.getAttribute('data-universe') === 'cosmos';
     return html`
-      ${cosmos ? html`<cosmos-backdrop></cosmos-backdrop>` : nothing}
+      ${cosmos
+        ? html`<cosmos-backdrop
+            .citizens=${vm.members.map((m) => ({ name: m.name, active: m.active }))}
+          ></cosmos-backdrop>`
+        : nothing}
       ${surface}
       ${this._sendError ? html`<div class="send-error">${this._sendError}</div>` : nothing}
       <form class="compose" @submit=${this.onSubmit}>
