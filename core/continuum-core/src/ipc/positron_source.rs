@@ -435,12 +435,21 @@ impl ChatProjection {
     }
 
     /// Fold a posted message into the view and store the new snapshot.
-    /// Idempotent on `message_id`: a redelivered event (the bus is
-    /// best-effort) does not double-append. Identity is resolved from the
-    /// roster, never carried on the message (see `AircChatPosted`).
+    /// Idempotent on `message_id` AND on `(sender, content)`: a redelivered
+    /// event (the bus is best-effort) is caught by the id check, but a
+    /// **multi-hop replay** re-emits the same logical message with a FRESH
+    /// `message_id` (#16) — which the id check alone cannot collapse, and which
+    /// showed as doubled turns in every client. Content-identity is the same
+    /// stance the cognition admission dedup already takes (`content_hash`,
+    /// `cognition_io.rs`): one `(sender, content)` is one message, however many
+    /// ids the bus minted for it. Identity is resolved from the roster, never
+    /// carried on the message (see `AircChatPosted`).
     fn apply_message(&mut self, msg: AircChatPosted) {
         self.switch_room(msg.room_id);
-        if self.messages.iter().any(|m| m.id == msg.message_id) {
+        let is_duplicate = self.messages.iter().any(|m| {
+            m.id == msg.message_id || (m.sender_id == msg.sender_id && m.content == msg.content)
+        });
+        if is_duplicate {
             return;
         }
         let resolved = resolve_identity(&self.roster, msg.sender_id);
@@ -956,6 +965,47 @@ mod tests {
             }
         }
         assert_eq!(current_chat(&substrate).messages.len(), 1);
+    }
+
+    #[test]
+    fn multi_hop_replay_with_fresh_id_does_not_double_render() {
+        // what this catches: #16 — a multi-hop replay re-emits the SAME logical
+        // message with a FRESH message_id, which dedup-by-id alone cannot collapse.
+        // It showed as doubled turns in every client (web/terminal/RAG). Content
+        // identity (sender + content) collapses it, matching the cognition
+        // content_hash admission dedup; a genuinely new message still appends.
+        let substrate = Substrate::new();
+        let mut p = ChatProjection::new(substrate.clone());
+        let room = Uuid::from_u128(0xa);
+        let sender = Uuid::from_u128(0xc);
+        for id in [0x10u128, 0x11, 0x12] {
+            if let ProjectionInput::Message(msg) = classify(
+                CHAT_POSTED,
+                &posted_from(room, Uuid::from_u128(id), sender, "hello team"),
+            )
+            .unwrap()
+            {
+                p.apply_message(msg);
+            }
+        }
+        assert_eq!(
+            current_chat(&substrate).messages.len(),
+            1,
+            "replay must collapse"
+        );
+        if let ProjectionInput::Message(msg) = classify(
+            CHAT_POSTED,
+            &posted_from(room, Uuid::from_u128(0x13), sender, "a new thought"),
+        )
+        .unwrap()
+        {
+            p.apply_message(msg);
+        }
+        assert_eq!(
+            current_chat(&substrate).messages.len(),
+            2,
+            "new content still appends"
+        );
     }
 
     #[test]
