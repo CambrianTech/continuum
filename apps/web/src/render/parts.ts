@@ -143,6 +143,39 @@ export function memberCardFromCell(cell: ListingCell): TemplateResult {
   `;
 }
 
+/** Render message text with light markdown: fenced ```code``` blocks and inline `code`.
+ *  Personas speak commands (`code/list --filter src/**`, ```bash … ```) constantly, and
+ *  raw backticks in the transcript are noise — a monospace block reads as an action. Lit
+ *  auto-escapes every interpolation, so the code text is inert (no HTML injection). */
+export function formatContent(text: string): TemplateResult {
+  const parts: TemplateResult[] = [];
+  const fence = /```[^\n]*\n?([\s\S]*?)```/g;
+  let last = 0;
+  let m: RegExpExecArray | null;
+  while ((m = fence.exec(text)) !== null) {
+    if (m.index > last) parts.push(inlineCode(text.slice(last, m.index)));
+    parts.push(html`<pre class="code-block"><code>${(m[1] ?? '').replace(/\n+$/, '')}</code></pre>`);
+    last = fence.lastIndex;
+  }
+  if (last < text.length) parts.push(inlineCode(text.slice(last)));
+  return html`${parts}`;
+}
+
+/** Inline `code` spans → styled <code>; everything else passes through as text. */
+function inlineCode(text: string): TemplateResult {
+  const out: Array<TemplateResult | string> = [];
+  const rx = /`([^`\n]+)`/g;
+  let last = 0;
+  let m: RegExpExecArray | null;
+  while ((m = rx.exec(text)) !== null) {
+    if (m.index > last) out.push(text.slice(last, m.index));
+    out.push(html`<code class="inline-code">${m[1] ?? ''}</code>`);
+    last = rx.lastIndex;
+  }
+  if (last < text.length) out.push(text.slice(last));
+  return html`${out}`;
+}
+
 /** One conversation row — WHAT was said. */
 export function messageRow(msg: MessageRowVM): TemplateResult {
   return html`
@@ -154,7 +187,7 @@ export function messageRow(msg: MessageRowVM): TemplateResult {
           ${runtimeBadge(msg.runtime)}
           <span class="time">${msg.time}</span>
         </div>
-        <div class="content">${msg.content}</div>
+        <div class="content">${formatContent(msg.content)}</div>
       </div>
     </li>
   `;
