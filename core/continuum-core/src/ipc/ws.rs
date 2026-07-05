@@ -32,12 +32,26 @@ use continuum_positron::{run_session, ClientMessage, CommandDispatch, ServerMess
 use futures_util::{SinkExt, StreamExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
-use tokio_tungstenite::{accept_async, tungstenite::Message};
+use tokio_tungstenite::accept_hdr_async;
+use tokio_tungstenite::tungstenite::handshake::server::{Request, Response};
+use tokio_tungstenite::tungstenite::Message;
 
 use crate::identity::PeerId;
 use crate::ipc::positron_dispatch::ExecutorDispatch;
 use crate::routing::{CallerIdentity, CommandRequestHandler};
 use crate::runtime::CommandExecutor;
+
+/// Extract the connecting citizen's id from the WS connect URL query — the
+/// `me=<uuid>` param the client sends (`ws://…/?core=…&me=<uuid>`). `None` when
+/// absent or unparseable: an anonymous session, honest — never a fabricated
+/// identity ([[fallbacks-are-illegal-fail-loud]]). This is who the session's
+/// per-user views (nav) belong to; a human and a persona pass it the same way.
+fn parse_me(query: Option<&str>) -> Option<uuid::Uuid> {
+    query?
+        .split('&')
+        .find_map(|pair| pair.strip_prefix("me="))
+        .and_then(|v| uuid::Uuid::parse_str(v).ok())
+}
 
 /// Bind the WS listener on `bind_addr` and accept thin-client connections
 /// until the process exits. Spawned on the tokio runtime from `start_server`
@@ -55,7 +69,13 @@ pub async fn serve(bind_addr: String, executor: Arc<CommandExecutor>, substrate:
             listener
         }
         Err(e) => {
-            crate::log_error!("ipc", "ws", "WS listener failed to bind {}: {}", bind_addr, e);
+            crate::log_error!(
+                "ipc",
+                "ws",
+                "WS listener failed to bind {}: {}",
+                bind_addr,
+                e
+            );
             return;
         }
     };
@@ -111,14 +131,34 @@ async fn handle_ws_connection(
     substrate: Substrate,
     dispatcher: Arc<dyn CommandDispatch>,
 ) {
-    let ws_stream = match accept_async(stream).await {
+    // Capture the citizen id from the connect URL (`?me=<uuid>`) during the
+    // handshake — this is WHO the session belongs to, so its per-user views (nav)
+    // resolve to THIS citizen's substrate instead of an anonymous nil. A human
+    // browser and a persona client pass it the identical way: the session is
+    // citizen-scoped, and the code has no is-human branch to say otherwise.
+    let captured_me: Arc<std::sync::Mutex<Option<uuid::Uuid>>> =
+        Arc::new(std::sync::Mutex::new(None));
+    let cap = captured_me.clone();
+    let ws_stream = match accept_hdr_async(stream, move |req: &Request, resp: Response| {
+        *cap.lock().unwrap_or_else(|e| e.into_inner()) = parse_me(req.uri().query());
+        Ok(resp)
+    })
+    .await
+    {
         Ok(ws) => ws,
         Err(e) => {
             crate::log_debug!("ipc", "ws", "WS handshake failed for {}: {}", peer, e);
             return;
         }
     };
-    crate::log_debug!("ipc", "ws", "WS client connected: {}", peer);
+    let citizen = *captured_me.lock().unwrap_or_else(|e| e.into_inner());
+    crate::log_debug!(
+        "ipc",
+        "ws",
+        "WS client connected: {} (citizen: {:?})",
+        peer,
+        citizen
+    );
 
     let (mut ws_sink, mut ws_source) = ws_stream.split();
 
@@ -143,7 +183,13 @@ async fn handle_ws_connection(
     let (session_out_tx, mut session_out_rx) = mpsc::channel::<ServerMessage>(64);
     let session_task = tokio::spawn(async move {
         if let Err(e) = run_session(session_in_rx, session_out_tx, substrate, dispatcher).await {
-            crate::log_warn!("ipc", "ws", "positron session for {} ended with error: {}", peer, e);
+            crate::log_warn!(
+                "ipc",
+                "ws",
+                "positron session for {} ended with error: {}",
+                peer,
+                e
+            );
         }
     });
     let drain_tx = tx.clone();
@@ -298,6 +344,20 @@ mod tests {
     use super::*;
     use continuum_airc_protocol::{AircCommandRequest, AircCommandResponse};
 
+    // what this catches: the citizen id is extracted from the `?me=<uuid>` connect
+    // query the client already sends — so a WS session is citizen-scoped, not the
+    // nil-caller anonymous it was. Absent/garbage → None (honest anonymous), not a
+    // fabricated identity.
+    #[test]
+    fn parse_me_extracts_the_citizen_from_the_connect_query() {
+        let me = uuid::Uuid::from_u128(0xa54a);
+        let q = format!("core=ws%3A%2F%2Fx&me={me}&other=1");
+        assert_eq!(parse_me(Some(&q)), Some(me), "extracts me from a real query");
+        assert_eq!(parse_me(Some("me=not-a-uuid")), None, "garbage uuid → None");
+        assert_eq!(parse_me(Some("core=x&room=general")), None, "no me param → None");
+        assert_eq!(parse_me(None), None, "no query → None");
+    }
+
     // what this catches: a malformed frame must yield None (no id → nothing to
     // correlate a reply to), never a panic or a bogus id=0 response.
     #[tokio::test]
@@ -307,7 +367,10 @@ mod tests {
         // value; assert the parse-guard directly instead.
         let bad = "{ not json";
         let parsed: Result<WsClientMessage, _> = serde_json::from_str(bad);
-        assert!(parsed.is_err(), "malformed frame must not parse to an envelope");
+        assert!(
+            parsed.is_err(),
+            "malformed frame must not parse to an envelope"
+        );
     }
 
     // what this catches: a well-formed Command frame round-trips into the
@@ -390,7 +453,9 @@ mod tests {
         let executor = Arc::new(CommandExecutor::new(registry));
 
         // Bind an ephemeral loopback port and drive the REAL connection handler.
-        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind ephemeral");
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind ephemeral");
         let addr = listener.local_addr().expect("local addr");
         let exec = Arc::clone(&executor);
         let substrate = Substrate::new();
@@ -419,7 +484,11 @@ mod tests {
             .await
             .expect("send command frame");
 
-        let reply = ws.next().await.expect("a reply arrives").expect("reply is ok");
+        let reply = ws
+            .next()
+            .await
+            .expect("a reply arrives")
+            .expect("reply is ok");
         let text = match reply {
             Message::Text(t) => t,
             other => panic!("expected a text reply, got {other:?}"),
@@ -453,8 +522,8 @@ mod tests {
     // (or only served the snapshot) leaves the thin-client fleet un-live (#794).
     #[tokio::test]
     async fn ws_subscribe_streams_a_live_state_frame_over_a_real_socket() {
+        use crate::runtime::{CommandExecutor as Exec, ModuleRegistry};
         use continuum_positron::{StateEnvelope, StateLayer};
-        use crate::runtime::{ModuleRegistry, CommandExecutor as Exec};
         use tokio_tungstenite::connect_async;
 
         fn state_env(kind: &str, revision: u64) -> StateEnvelope {
@@ -477,7 +546,9 @@ mod tests {
         let dispatcher: Arc<dyn CommandDispatch> =
             Arc::new(ExecutorDispatch::new(Arc::clone(&executor)));
 
-        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind ephemeral");
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind ephemeral");
         let addr = listener.local_addr().expect("local addr");
         let conn_substrate = substrate.clone();
         tokio::spawn(async move {
@@ -496,14 +567,20 @@ mod tests {
             layers: vec![StateLayer::Session],
             last_seen: vec![],
         };
-        ws.send(Message::Text(serde_json::to_string(&subscribe).unwrap().into()))
-            .await
-            .expect("send subscribe frame");
+        ws.send(Message::Text(
+            serde_json::to_string(&subscribe).unwrap().into(),
+        ))
+        .await
+        .expect("send subscribe frame");
 
         // First frame: the snapshot at revision 1, re-framed as WsServerMessage::State.
         let snapshot = decode_state(ws.next().await);
         assert_eq!(snapshot.kind, "chat");
-        assert_eq!(snapshot.revision, Some(1), "snapshot rides the wire as a State frame");
+        assert_eq!(
+            snapshot.revision,
+            Some(1),
+            "snapshot rides the wire as a State frame"
+        );
 
         // A later store must arrive live over the SAME socket, no second request.
         substrate.store(state_env("chat", 2));
