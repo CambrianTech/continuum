@@ -20,10 +20,35 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use positron_core::wire::StateEnvelope;
+use tokio::sync::watch;
 use uuid::Uuid;
 
 use crate::cache::StateSource;
 use crate::Substrate;
+
+/// What `run_session` needs from a substrate: the snapshot READ (via
+/// [`StateSource`]) AND the live BROADCAST subscription, both routed by kind. A
+/// plain [`Substrate`] implements it trivially (one store); [`CompositeCache`]
+/// routes each per-USER kind to the citizen's store and each per-ROOM kind to the
+/// node store — so a session's snapshot AND its live updates both come from the
+/// right place, transparently. This is the one seam the session serving loop
+/// generalizes over.
+pub trait SessionSubstrate: StateSource {
+    /// A live receiver for `kind`'s updates, from the store that owns that kind.
+    fn subscribe_kind(&self, kind: &str) -> watch::Receiver<Option<Arc<StateEnvelope>>>;
+}
+
+impl StateSource for Substrate {
+    fn get_state(&self, kind: &str) -> Option<Arc<StateEnvelope>> {
+        self.cache().get(kind)
+    }
+}
+
+impl SessionSubstrate for Substrate {
+    fn subscribe_kind(&self, kind: &str) -> watch::Receiver<Option<Arc<StateEnvelope>>> {
+        self.broadcast().subscribe(kind)
+    }
+}
 
 /// Kinds that are PER-USER — routed to the citizen's own substrate. Everything
 /// else is per-room and stays on the node substrate. OPEN by data: a new per-user
@@ -93,6 +118,19 @@ impl StateSource for CompositeCache {
             self.per_user.cache().get(kind)
         } else {
             self.node.cache().get(kind)
+        }
+    }
+}
+
+impl SessionSubstrate for CompositeCache {
+    fn subscribe_kind(&self, kind: &str) -> watch::Receiver<Option<Arc<StateEnvelope>>> {
+        // Same routing as the read: a per-user kind's LIVE updates come from the
+        // citizen's store, a per-room kind's from the node store — so the session
+        // streams both correctly, not just the initial snapshot.
+        if PER_USER_KINDS.contains(&kind) {
+            self.per_user.subscribe_kind(kind)
+        } else {
+            self.node.subscribe_kind(kind)
         }
     }
 }
@@ -195,6 +233,26 @@ mod tests {
         assert!(
             per_user.cache().get("chat").is_none(),
             "chat never lands in the per-user store"
+        );
+    }
+
+    // what this catches: LIVE nav updates (not just the subscribe snapshot) route
+    // from the citizen's store — a `nav` broadcast subscription taken through the
+    // composite fires when the CITIZEN substrate stores, so the session streams
+    // per-user updates from the right place.
+    #[test]
+    fn composite_broadcast_routes_per_user_updates_to_the_citizen_store() {
+        let node = Substrate::new();
+        let per_user = Substrate::new();
+        let composite = CompositeCache::new(node.clone(), per_user.clone());
+        let mut nav_rx = composite.subscribe_kind("nav");
+        // Store nav to the citizen store — the composite's nav subscriber must see it.
+        per_user.store(StateBuilder::standalone().session(TinyNav {
+            current: "room-a".into(),
+        }));
+        assert!(
+            nav_rx.borrow_and_update().is_some(),
+            "a per-user nav update reaches the composite's nav subscriber"
         );
     }
 }

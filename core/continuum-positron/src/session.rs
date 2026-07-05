@@ -52,7 +52,7 @@ use std::sync::Arc;
 use positron_core::session::{ClientMessage, KindRevision, ServerMessage};
 use positron_core::wire::{StateEnvelope, StateLayer};
 
-use crate::cache::{StateSource, SubstrateStateCache};
+use crate::cache::StateSource;
 
 /// One connection's current declared interest set. Created (or
 /// replaced) by [`apply_subscribe`]; consulted by the live-broadcast
@@ -216,6 +216,7 @@ pub(crate) fn should_skip(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cache::SubstrateStateCache;
     use positron_core::wire::StateLayer;
 
     fn env(kind: &str, revision: u64) -> StateEnvelope {

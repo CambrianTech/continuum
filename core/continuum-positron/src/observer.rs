@@ -41,7 +41,7 @@ use std::collections::HashSet;
 use positron_core::session::{ClientMessage, ServerMessage};
 use positron_core::wire::{StateEnvelope, StateLayer};
 
-use crate::cache::{StateSource, SubstrateStateCache};
+use crate::cache::StateSource;
 use crate::session::should_skip;
 
 /// One AI observer's substrate-recorded registration. Built by
@@ -129,6 +129,7 @@ pub fn apply_observe(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cache::SubstrateStateCache;
     use positron_core::session::KindRevision;
     use positron_core::wire::{ObserverSpec, StateLayer};
 
