@@ -810,6 +810,12 @@ pub fn start_server(
     // Phase 1: HealthModule (stateless)
     runtime.register(Arc::new(HealthModule::new()));
 
+    // NavModule — nav/mark-read: advance the shared read cursor + publish NAV_CHANGED
+    // on the airc bus (nav slice 3). Command in, Event out; the write half of the
+    // dual-consumer atom — one (user, room) cursor, read by the human unread badge AND
+    // the persona's RAG grounding. Captures the bus in initialize (like vision).
+    runtime.register(Arc::new(crate::modules::nav::NavModule::new()));
+
     // ai/should-respond — the kernel command that runs a persona's WorkspaceCycle
     // (the brain) and returns a Decision. Resolves the per-persona cycle from the
     // process-global PersonaWorkspaceRegistry, which is populated at persona spawn
