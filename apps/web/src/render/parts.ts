@@ -102,15 +102,16 @@ export function cognitionDiamond(v: Readonly<Record<string, number>>): TemplateR
   // FOUR distinct triangles pointing out like a compass (N=Focus, E=Reason, S=Recall,
   // W=Act), a gap in the centre — so it reads as four, and a strong faculty burns bright
   // while a dim one nearly vanishes (the SHAPE is the mind). No more solid blob.
-  const lit = (k: string) => 0.12 + 0.88 * (Math.max(0, Math.min(100, v[k] ?? 0)) / 100);
+  const lit = (k: string) => 0.14 + 0.86 * (Math.max(0, Math.min(100, v[k] ?? 0)) / 100);
   const pct = (k: string) => Math.round(Math.max(0, Math.min(100, v[k] ?? 0)));
-  const tri = (pts: string, k: string, label: string) =>
-    svg`<polygon points="${pts}" class="cog-tri" style="opacity:${lit(k)}"><title>${label} ${pct(k)}</title></polygon>`;
+  // Each faculty its own hue (color > monochrome) — readable by colour AND position.
+  const tri = (pts: string, k: string, label: string, color: string) =>
+    svg`<polygon points="${pts}" class="cog-tri" style="fill:${color};opacity:${lit(k)}"><title>${label} ${pct(k)}</title></polygon>`;
   return html`<svg viewBox="0 0 40 40" class="cog-diamond" aria-label="cognition">
-    ${tri('20,2 12,15 28,15', 'focus', 'Focus')}
-    ${tri('38,20 25,12 25,28', 'reason', 'Reason')}
-    ${tri('20,38 12,25 28,25', 'recall', 'Recall')}
-    ${tri('2,20 15,12 15,28', 'act', 'Act')}
+    ${tri('20,2 12,15 28,15', 'focus', 'Focus', '#00d4ff')}
+    ${tri('38,20 25,12 25,28', 'reason', 'Reason', '#ffb020')}
+    ${tri('20,38 12,25 28,25', 'recall', 'Recall', '#3fb950')}
+    ${tri('2,20 15,12 15,28', 'act', 'Act', '#ff6a3d')}
   </svg>`;
 }
 
@@ -147,7 +148,7 @@ export function personaReadout(v: Readonly<Record<string, number>>): TemplateRes
   return html`<span class="stat-grid">
     ${stats.map(([k, label]) => {
       const val = Math.round(Math.max(0, Math.min(100, v[k] ?? 0)));
-      return html`<span class="stat" title="${label} ${val}">
+      return html`<span class="stat" data-key=${k} title="${label} ${val}">
         <span class="stat-label">${label}</span>
         <span class="stat-bar"><span class="stat-fill" style="width:${val}%"></span></span>
         <span class="stat-val">${val}</span>

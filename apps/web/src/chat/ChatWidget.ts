@@ -381,6 +381,14 @@ export class ChatWidget extends LitElement {
       flex: none;
       font-variant-numeric: tabular-nums;
     }
+    /* Warm the PAR (model-size) meter amber — SPD stays cyan, so the two read apart (palette > mono). */
+    .stat[data-key='size'] .stat-fill {
+      background: linear-gradient(90deg, rgba(255, 176, 32, 0.5), #ffb020);
+      box-shadow: 0 0 4px rgba(255, 176, 32, 0.5);
+    }
+    .stat[data-key='size'] .stat-val {
+      color: #ffb020;
+    }
     /* RIGHT pane of the 3-pane persona row — cognition diamond + genome bars, pushed right,
        ~one avatar tall so the row stays COMPACT (not a tall stack). */
     .cog-cluster {
@@ -398,9 +406,10 @@ export class ChatWidget extends LitElement {
       height: 28px;
       flex: none;
     }
+    /* Each triangle sets its own hue inline (Focus cyan / Reason amber / Recall green /
+       Act orange) — a soft neutral glow keeps the colours popping without a cyan halo. */
     .cog-tri {
-      fill: var(--content-accent);
-      filter: drop-shadow(0 0 2px rgba(0, 212, 255, 0.55));
+      filter: drop-shadow(0 0 1.5px rgba(255, 255, 255, 0.25));
     }
     /* Genome — a compact 2-column chip of tiny gene cells (base model shows an empty chip). */
     .genome {
