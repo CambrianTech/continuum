@@ -112,7 +112,7 @@ export class ChatWidget extends LitElement {
     }
     .panels {
       display: grid;
-      grid-template-columns: minmax(160px, 220px) 1fr;
+      grid-template-columns: minmax(210px, 280px) 1fr;
       min-height: 0;
     }
     .who {
@@ -290,6 +290,64 @@ export class ChatWidget extends LitElement {
     /* Live genome-energy meters — the old persona-tile INT/NRG/QUE bars, reborn
      * sci-fi: a thin cyan bar per vital with a moving glint on live agents. The
      * readout that makes a persona feel alive in the roster. */
+    /* Clickable glass-box row — the whole tile navigates into the persona's tab/content. */
+    .member.clickable {
+      cursor: pointer;
+    }
+    .member.clickable:focus-visible {
+      outline: 1px solid var(--content-accent);
+      outline-offset: -1px;
+    }
+    .member .info {
+      min-width: 0;
+      flex: 1;
+    }
+    /* The dense meter grid — the info-packed heart of the glass-box tile: tiny label+bar+value
+       cells, two columns, close together, each hoverable ([[persona-tile-is-a-live-game-hud]]). */
+    .stat-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1px 8px;
+      margin-top: 4px;
+    }
+    .stat {
+      display: flex;
+      align-items: center;
+      gap: 3px;
+    }
+    .stat-label {
+      font-family: var(--font-mono);
+      font-size: 7px;
+      letter-spacing: 0.04em;
+      color: var(--content-secondary);
+      width: 19px;
+      flex: none;
+    }
+    .stat-bar {
+      position: relative;
+      height: 3px;
+      flex: 1;
+      min-width: 12px;
+      border-radius: 2px;
+      background: var(--border-subtle);
+      overflow: hidden;
+    }
+    .stat-fill {
+      display: block;
+      height: 100%;
+      border-radius: 2px;
+      background: linear-gradient(90deg, rgba(0, 212, 255, 0.5), var(--content-accent));
+      box-shadow: 0 0 4px rgba(0, 212, 255, 0.5);
+    }
+    .stat-val {
+      font-family: var(--font-mono);
+      font-size: 7px;
+      color: var(--content-accent);
+      width: 12px;
+      text-align: right;
+      flex: none;
+      font-variant-numeric: tabular-nums;
+    }
     /* RIGHT pane of the 3-pane persona row — cognition diamond + genome bars, pushed right,
        ~one avatar tall so the row stays COMPACT (not a tall stack). */
     .cog-cluster {
