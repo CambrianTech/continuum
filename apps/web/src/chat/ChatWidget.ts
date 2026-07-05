@@ -290,14 +290,15 @@ export class ChatWidget extends LitElement {
     /* Live genome-energy meters — the old persona-tile INT/NRG/QUE bars, reborn
      * sci-fi: a thin cyan bar per vital with a moving glint on live agents. The
      * readout that makes a persona feel alive in the roster. */
-    /* The rich persona readout — cognition diamond + genome bars + engine gauges, in a row.
-       Each part appears only when its data is present ([[design-the-persona-as-a-being]]). */
-    .readout {
+    /* RIGHT pane of the 3-pane persona row — cognition diamond + genome bars, pushed right,
+       ~one avatar tall so the row stays COMPACT (not a tall stack). */
+    .cog-cluster {
       display: flex;
       align-items: center;
-      gap: 9px;
-      margin-top: 5px;
-      flex-wrap: wrap;
+      gap: 6px;
+      flex: none;
+      margin-left: auto;
+      padding-left: 8px;
     }
     /* Cognition diamond — four faculties (Focus/Reason/Recall/Act) as four lit triangles;
        the SHAPE is the shape of the mind that instant. */
@@ -305,10 +306,11 @@ export class ChatWidget extends LitElement {
       width: 30px;
       height: 30px;
       flex: none;
+      filter: drop-shadow(0 0 3px rgba(0, 212, 255, 0.4));
     }
     .cog-quad {
       fill: var(--content-accent);
-      stroke: rgba(0, 0, 0, 0.45);
+      stroke: rgba(0, 0, 0, 0.5);
       stroke-width: 0.7;
     }
     .cog-outline {
@@ -317,16 +319,17 @@ export class ChatWidget extends LitElement {
       stroke-width: 1;
       opacity: 0.55;
     }
-    /* Genome bars — one filled segment per loaded LoRA gene (the base model shows none). */
+    /* Genome bars — a compact equalizer, one segment per loaded LoRA gene (base model = empty). */
     .genome {
       display: inline-flex;
       gap: 2px;
-      align-items: center;
+      align-items: flex-end;
       flex: none;
+      height: 28px;
     }
     .gene {
       width: 3px;
-      height: 13px;
+      height: 28px;
       border-radius: 1px;
       background: var(--border-subtle);
     }
@@ -334,16 +337,12 @@ export class ChatWidget extends LitElement {
       background: var(--content-accent);
       box-shadow: 0 0 4px var(--content-accent);
     }
-    .readout .vitals {
-      flex: 1;
-      min-width: 72px;
-      margin-top: 0;
-    }
+    /* CENTER pane — the horizontal engine gauges (SPD/PAR), compact. */
     .vitals {
       display: flex;
       flex-direction: column;
       gap: 2px;
-      margin-top: 4px;
+      margin-top: 3px;
     }
     .vital {
       display: flex;
