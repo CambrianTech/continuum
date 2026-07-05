@@ -266,6 +266,55 @@ export class ChatWidget extends LitElement {
     /* Live genome-energy meters — the old persona-tile INT/NRG/QUE bars, reborn
      * sci-fi: a thin cyan bar per vital with a moving glint on live agents. The
      * readout that makes a persona feel alive in the roster. */
+    /* The rich persona readout — cognition diamond + genome bars + engine gauges, in a row.
+       Each part appears only when its data is present ([[design-the-persona-as-a-being]]). */
+    .readout {
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      margin-top: 5px;
+      flex-wrap: wrap;
+    }
+    /* Cognition diamond — four faculties (Focus/Reason/Recall/Act) as four lit triangles;
+       the SHAPE is the shape of the mind that instant. */
+    .cog-diamond {
+      width: 30px;
+      height: 30px;
+      flex: none;
+    }
+    .cog-quad {
+      fill: var(--content-accent);
+      stroke: rgba(0, 0, 0, 0.45);
+      stroke-width: 0.7;
+    }
+    .cog-outline {
+      fill: none;
+      stroke: var(--content-accent);
+      stroke-width: 1;
+      opacity: 0.55;
+    }
+    /* Genome bars — one filled segment per loaded LoRA gene (the base model shows none). */
+    .genome {
+      display: inline-flex;
+      gap: 2px;
+      align-items: center;
+      flex: none;
+    }
+    .gene {
+      width: 3px;
+      height: 13px;
+      border-radius: 1px;
+      background: var(--border-subtle);
+    }
+    .gene.on {
+      background: var(--content-accent);
+      box-shadow: 0 0 4px var(--content-accent);
+    }
+    .readout .vitals {
+      flex: 1;
+      min-width: 72px;
+      margin-top: 0;
+    }
     .vitals {
       display: flex;
       flex-direction: column;
@@ -804,7 +853,27 @@ export class ChatWidget extends LitElement {
     if (!this.state) {
       return html`<div class="connecting">Connecting to the room…</div>`;
     }
-    const vm = chatViewModel(this.state);
+    let vm = chatViewModel(this.state);
+    // ?demo — inject sample cognition/genome/engine vitals to PREVIEW the rich persona
+    // readout before the cognition-emission slice wires the real signals. Explicit flag,
+    // never the live default (no fabricated data on a real room).
+    if (new URLSearchParams(location.search).has('demo')) {
+      vm = {
+        ...vm,
+        members: vm.members.map((m, i) => ({
+          ...m,
+          vitals: {
+            focus: 30 + ((i * 27) % 60),
+            reason: 80 - ((i * 19) % 55),
+            recall: 45 + ((i * 23) % 45),
+            act: 20 + ((i * 31) % 70),
+            genome: 33 + ((i * 17) % 60),
+            speed: 55 + ((i * 13) % 40),
+            size: 40 + ((i * 21) % 45),
+          },
+        })),
+      };
+    }
     // Error boundary: a render throw (e.g. the Content registry hitting an
     // unregistered room purpose) must be VISIBLE here, not swallowed into a Lit
     // update abort that leaves a silent stuck "Connecting…". Fail loud where it's

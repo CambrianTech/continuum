@@ -7,7 +7,7 @@
  * field→element maps, styled entirely from the design tokens.
  */
 
-import { html, nothing, type TemplateResult } from 'lit';
+import { html, svg, nothing, type TemplateResult } from 'lit';
 import { unsafeHTML } from 'lit/directives/unsafe-html.js';
 import hljs from 'highlight.js/lib/common';
 import type { ListingCell } from '@continuum/patterns';
@@ -65,25 +65,29 @@ export function runtimeBadge(runtime: string): TemplateResult | typeof nothing {
   return runtime ? html`<span class="runtime" title="runtime origin">${runtime}</span>` : nothing;
 }
 
-/** Short 3-letter tag for a vital key — the old persona-tile's INT/NRG/QUE label. */
-function vitalTag(key: string): string {
-  return key.slice(0, 3).toUpperCase();
-}
 
 /** The live genome-energy meters — one thin glowing bar per vital the persona
  *  surfaces (energy/attention/compute). Renders nothing when the member reports
  *  no vitals (a human, a remote peer) — no fabricated bars. This is the readout
  *  that makes a persona feel *alive* in the roster (the PX target). */
-function vitalsMeters(vitals: Record<string, number>): TemplateResult | typeof nothing {
-  const entries = Object.entries(vitals);
+function vitalsMeters(vitals: Readonly<Record<string, number>>): TemplateResult | typeof nothing {
+  // The two engine gauges — the persona's inference engine, not generic vitals:
+  //   SPD = inference speed (tokens/sec, the speedometer)
+  //   PAR = base-model size (parameters, the tach/RPM — scales up + down as the model changes)
+  // Cognition faculties + genome render as the diamond + bars, not as meters here.
+  const gauges: Array<[string, string]> = [
+    ['speed', 'SPD'],
+    ['size', 'PAR'],
+  ];
+  const entries = gauges.filter(([k]) => vitals[k] !== undefined);
   if (entries.length === 0) return nothing;
   return html`
     <span class="vitals">
-      ${entries.map(([key, pct]) => {
-        const clamped = Math.max(0, Math.min(100, pct));
+      ${entries.map(([key, label]) => {
+        const clamped = Math.max(0, Math.min(100, vitals[key] ?? 0));
         return html`
-          <span class="vital" title="${key} ${pct}%">
-            <span class="vital-label">${vitalTag(key)}</span>
+          <span class="vital" data-gauge=${key} title="${label} ${Math.round(clamped)}%">
+            <span class="vital-label">${label}</span>
             <span class="vital-track">
               <span class="vital-fill" style="width:${clamped}%"></span>
             </span>
@@ -93,6 +97,50 @@ function vitalsMeters(vitals: Record<string, number>): TemplateResult | typeof n
       })}
     </span>
   `;
+}
+
+/** The four faculties the cognition diamond reads — Focus / Reason / Recall / Act. */
+const COGNITION = ['focus', 'reason', 'recall', 'act'] as const;
+
+/** The cognition diamond — four faculties of a working mind as four triangles, each lit by
+ *  its live value. The SHAPE of the diamond is the shape of the mind that instant: a persona
+ *  deep in thought skews toward Reason, one running tools skews toward Act. Dynamic from
+ *  cognition events ([[design-the-persona-as-a-being]]). */
+export function cognitionDiamond(v: Readonly<Record<string, number>>): TemplateResult {
+  const lit = (k: string) => 0.14 + 0.86 * (Math.max(0, Math.min(100, v[k] ?? 0)) / 100);
+  const pct = (k: string) => Math.round(Math.max(0, Math.min(100, v[k] ?? 0)));
+  // corners N(20,2) E(38,20) S(20,38) W(2,20), meeting at centre (20,20).
+  return html`<svg viewBox="0 0 40 40" class="cog-diamond" aria-label="cognition">
+    ${svg`<polygon points="20,20 2,20 20,2" class="cog-quad" style="opacity:${lit('focus')}"><title>Focus ${pct('focus')}%</title></polygon>`}
+    ${svg`<polygon points="20,20 20,2 38,20" class="cog-quad" style="opacity:${lit('reason')}"><title>Reason ${pct('reason')}%</title></polygon>`}
+    ${svg`<polygon points="20,20 38,20 20,38" class="cog-quad" style="opacity:${lit('recall')}"><title>Recall ${pct('recall')}%</title></polygon>`}
+    ${svg`<polygon points="20,20 20,38 2,20" class="cog-quad" style="opacity:${lit('act')}"><title>Act ${pct('act')}%</title></polygon>`}
+    ${svg`<polygon points="20,2 38,20 20,38 2,20" class="cog-outline" />`}
+  </svg>`;
+}
+
+/** Genome bars — the persona's loaded LoRA genes as filled segments. Nothing when running
+ *  the base model (honest — not a fabricated 0% bar). */
+export function genomeBlock(v: Readonly<Record<string, number>>): TemplateResult | typeof nothing {
+  const g = v.genome;
+  if (g === undefined || g <= 0) return nothing;
+  const filled = Math.max(1, Math.round((Math.min(100, g) / 100) * 6));
+  return html`<span class="genome" title="genome ${Math.round(g)}%">
+    ${Array.from({ length: 6 }, (_, i) => html`<span class="gene ${i < filled ? 'on' : ''}"></span>`)}
+  </span>`;
+}
+
+/** The rich per-persona readout: cognition diamond + genome bars + the tempo/other meters.
+ *  Each part appears only when its data is present — a persona with no cognition emitted yet
+ *  simply shows its activity, honestly. */
+export function personaReadout(v: Readonly<Record<string, number>>): TemplateResult | typeof nothing {
+  const hasCog = COGNITION.some((k) => (v[k] ?? 0) > 0);
+  const genome = genomeBlock(v);
+  const meters = vitalsMeters(v);
+  if (!hasCog && genome === nothing && meters === nothing) return nothing;
+  return html`<span class="readout">
+    ${hasCog ? cognitionDiamond(v) : nothing}${genome}${meters}
+  </span>`;
 }
 
 /** One member card — avatar + presence dot, name, kind/runtime, live vitals —
@@ -110,7 +158,7 @@ export function memberCard(m: RosterMemberVM): TemplateResult {
           <span class="kind-badge">${kindLabel(m.kind)}</span>
           ${runtimeBadge(m.runtime)}
         </span>
-        ${vitalsMeters(m.vitals)}
+        ${personaReadout(m.vitals)}
       </span>
     </li>
   `;
@@ -139,7 +187,7 @@ export function memberCardFromCell(cell: ListingCell): TemplateResult {
           <span class="kind-badge">${kind}</span>
           ${runtimeBadge(runtime)}
         </span>
-        ${cell.meters ? vitalsMeters(cell.meters) : nothing}
+        ${cell.meters ? personaReadout(cell.meters) : nothing}
       </span>
     </li>
   `;
