@@ -111,6 +111,65 @@ pub fn project_nav(user: Uuid, snap: NavSnapshot) -> NavViewState {
     }
 }
 
+/// The LIVE [`NavReader`] — reads each room's real read cursor from the shared
+/// `ChannelBookmarks` (the SAME row the persona's RAG grounding reads: the
+/// first-class dual-consumer atom — a human's unread badge and a persona's
+/// "what's new since I last looked" are one value) plus real unread from the
+/// pre-staged digest buffer.
+///
+/// The room set is provided by the caller (boot wiring), because a citizen's
+/// open-room set is not yet a single registry read — `persona_workspace` lists
+/// residents but not their channels. That's the one open seam; the read cursors
+/// themselves are fully live.
+pub struct ChannelBookmarksNavReader {
+    /// The citizen's rooms in tab order — (room id, human title). Supplied by
+    /// the caller until a per-citizen room-set registry exists.
+    rooms: Vec<(Uuid, String)>,
+}
+
+impl ChannelBookmarksNavReader {
+    pub fn new(rooms: Vec<(Uuid, String)>) -> Self {
+        Self { rooms }
+    }
+}
+
+impl NavReader for ChannelBookmarksNavReader {
+    fn nav_snapshot(&self, user: Uuid) -> NavSnapshot {
+        use crate::cognition::channel_substrate::{
+            global_channel_bookmarks, global_channel_digest_buffer,
+        };
+        use crate::runtime::ready_buffer::ReadyBuffer;
+        let bookmarks = global_channel_bookmarks();
+        let digests = global_channel_digest_buffer();
+        let activities = self
+            .rooms
+            .iter()
+            .map(|(room, title)| {
+                // REAL cursor — the same (user, room) mark advance()/markRead writes.
+                let last = bookmarks.last_read(user, *room);
+                // REAL unread from the pre-staged digest when one is staged for
+                // this (citizen, room); no staged digest → no unread info yet (an
+                // honestly-absent badge, never a fabricated "all read").
+                let unread = digests
+                    .peek(&(user, *room))
+                    .map(|d| d.unread().len() as u32)
+                    .unwrap_or(0);
+                NavActivity {
+                    id: room.to_string(),
+                    title: title.clone(),
+                    kind: NavTargetKind::Room,
+                    unread,
+                    last_read: Some(last as i64),
+                }
+            })
+            .collect();
+        // Current = the first room until the caller tracks an explicit focus
+        // (the `whereWasI` / current-tab write lands with markRead's sibling).
+        let current = self.rooms.first().map(|(r, _)| r.to_string());
+        NavSnapshot { current, activities, bookmarks: Vec::new() }
+    }
+}
+
 /// Accumulates a citizen's nav state into [`NavViewState`] and writes each
 /// transition to the [`Substrate`]. Not `Clone` — one owner per projection; the
 /// consume loop owns it.
@@ -228,6 +287,27 @@ mod tests {
         assert_eq!(view.last_read.get("room-a"), Some(&1_700_000_000_000));
         assert_eq!(view.last_read.get("room-b"), Some(&1_699_000_000_000));
         assert_eq!(view.bookmarks.len(), 1);
+    }
+
+    // what this catches: the LIVE reader reads the real ChannelBookmarks cursor
+    // — advancing the mark the persona's grounding uses (its markRead write path)
+    // is exactly what the nav's last_read reflects. The dual-consumer atom: one
+    // (user, room) mark, read by both the persona and the nav view.
+    #[test]
+    fn live_reader_reflects_the_real_shared_bookmark() {
+        use crate::cognition::channel_substrate::global_channel_bookmarks;
+        // Unique ids so the process-global bookmark store can't collide with
+        // another test advancing a different (user, room).
+        let asha = Uuid::from_u128(0xa54a_u128);
+        let room = Uuid::from_u128(0x9e21_u128);
+        global_channel_bookmarks().advance(asha, room, 42);
+        let reader = ChannelBookmarksNavReader::new(vec![(room, "General".into())]);
+        let snap = reader.nav_snapshot(asha);
+        let view = project_nav(asha, snap);
+        assert_eq!(view.open_tabs.len(), 1);
+        assert_eq!(view.open_tabs[0].title, "General");
+        assert_eq!(view.last_read.get(&room.to_string()), Some(&42));
+        assert_eq!(view.current_tab, Some(room.to_string()));
     }
 
     // what this catches: an empty workspace projects to an honest empty nav
