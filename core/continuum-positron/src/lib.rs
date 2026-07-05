@@ -128,6 +128,7 @@ pub mod kanban;
 pub mod nav;
 pub mod observer;
 pub mod revisions;
+pub mod scoping;
 pub mod session;
 pub mod session_task;
 pub mod state;
