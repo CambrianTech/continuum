@@ -58,6 +58,24 @@ pub struct SubstrateStateCache {
     by_kind: Mutex<HashMap<String, Arc<StateEnvelope>>>,
 }
 
+/// The read seam the session serving needs: "give me the latest envelope for this
+/// kind." Implemented by [`SubstrateStateCache`] (one store) AND by the composite
+/// that unions a node substrate (per-ROOM kinds) with a citizen's per-user substrate
+/// (per-USER kinds), routed by kind — so `apply_subscribe`/`apply_observe` read both
+/// transparently without knowing there are two stores behind the kind. This is what
+/// lets a session see the room's chat AND its own nav, each from the right store.
+pub trait StateSource {
+    /// The latest envelope for `kind`, or `None` if no state exists for it yet
+    /// (honest silence — never a fabricated empty snapshot).
+    fn get_state(&self, kind: &str) -> Option<Arc<StateEnvelope>>;
+}
+
+impl StateSource for SubstrateStateCache {
+    fn get_state(&self, kind: &str) -> Option<Arc<StateEnvelope>> {
+        self.get(kind)
+    }
+}
+
 impl SubstrateStateCache {
     pub fn new() -> Self {
         Self::default()

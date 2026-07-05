@@ -52,7 +52,7 @@ use std::sync::Arc;
 use positron_core::session::{ClientMessage, KindRevision, ServerMessage};
 use positron_core::wire::{StateEnvelope, StateLayer};
 
-use crate::cache::SubstrateStateCache;
+use crate::cache::{StateSource, SubstrateStateCache};
 
 /// One connection's current declared interest set. Created (or
 /// replaced) by [`apply_subscribe`]; consulted by the live-broadcast
@@ -134,7 +134,7 @@ impl Subscription {
 /// - It does not touch `Observe` or `Command` — separate handlers in
 ///   slice 2B.
 pub fn apply_subscribe(
-    cache: &SubstrateStateCache,
+    cache: &impl StateSource,
     msg: ClientMessage,
 ) -> Result<(Subscription, Vec<ServerMessage>), String> {
     let (kinds, layers, last_seen) = match msg {
@@ -154,7 +154,7 @@ pub fn apply_subscribe(
     let mut snapshots: Vec<ServerMessage> = Vec::with_capacity(kinds.len());
 
     for kind in &kinds {
-        let Some(current) = cache.get(kind) else {
+        let Some(current) = cache.get_state(kind) else {
             // No cached state for this kind yet. Per protocol §"Skip
             // rule" parenthetical: "The skip is purely an optimization;
             // when in doubt, send." Sending nothing when there IS
