@@ -21,13 +21,14 @@ continuum-jtag-*.tgz
 /target/
 **/target/
 
-# Generated CSS-in-JS modules emitted by src/scripts/compile-sass.ts
+# Generated CSS-in-JS modules emitted by the legacy Node shell's compile-sass.ts
 # from sibling .scss source files. Pure build output — never hand-edited.
-src/widgets/**/public/*.styles.ts
-src/widgets/**/styles/*.styles.ts
+# (Old Node/TS system moved to legacy/src/ — task #83.)
+legacy/src/widgets/**/public/*.styles.ts
+legacy/src/widgets/**/styles/*.styles.ts
 
 # Generated manifest files (use generated.ts instead)
-src/manifests/
+legacy/src/manifests/
 
 # Generated test files
 test-config.md
