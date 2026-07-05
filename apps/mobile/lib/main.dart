@@ -12,10 +12,17 @@
 
 import 'package:flutter/material.dart';
 
+import 'live.dart';
+
 void main() => runApp(const ContinuumMobileApp());
 
 // The active universe (from the URL, so a web build can switch worlds).
 final bool _tron = Uri.base.queryParameters['universe'] == 'tron';
+
+// The core's state WS. On the Android emulator, 10.0.2.2 is the host loopback; override
+// with --dart-define=CORE_WS=ws://host:8974 for a device or a different host.
+const String _coreWs =
+    String.fromEnvironment('CORE_WS', defaultValue: 'ws://10.0.2.2:8974');
 
 // ── The mobile view-model (Dart mirror of patterns.MobileScreen) ──
 class MobileCell {
@@ -135,10 +142,27 @@ class MobileScreenView extends StatefulWidget {
 
 class _MobileScreenViewState extends State<MobileScreenView> {
   int _tab = 0;
+  MobileScreen _screen = sample; // sample until the first live snapshot arrives
+  LiveConnection? _live;
+
+  @override
+  void initState() {
+    super.initState();
+    _live = LiveConnection(_coreWs, (screen) {
+      if (mounted) setState(() => _screen = screen);
+    })
+      ..connect();
+  }
+
+  @override
+  void dispose() {
+    _live?.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
-    final s = sample;
+    final s = _screen;
     final whoCount = s.tabs.firstWhere((t) => t.id == 'who').cells.length;
     return Scaffold(
       backgroundColor: _scaffoldBg,
