@@ -2510,8 +2510,14 @@ pub fn start_server(
                     }
                 }
 
+                // Per-citizen substrates for per-user views (nav): each connecting
+                // citizen (?me) reads its own nav from here, unioned with the node
+                // substrate for per-room views. Shared instance so the nav projector
+                // (write) and the session (read) agree on for_citizen(me).
+                let per_user =
+                    std::sync::Arc::new(continuum_positron::scoping::PerUserSubstrates::new());
                 state.rt_handle.spawn(async move {
-                    ws::serve(bind_addr, ws_executor, ws_substrate).await;
+                    ws::serve(bind_addr, ws_executor, ws_substrate, per_user).await;
                 });
             }
         }
