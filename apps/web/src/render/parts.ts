@@ -91,39 +91,6 @@ function emojiOverlay(v: Readonly<Record<string, number>>): TemplateResult | typ
 }
 
 
-/** The live genome-energy meters — one thin glowing bar per vital the persona
- *  surfaces (energy/attention/compute). Renders nothing when the member reports
- *  no vitals (a human, a remote peer) — no fabricated bars. This is the readout
- *  that makes a persona feel *alive* in the roster (the PX target). */
-function vitalsMeters(vitals: Readonly<Record<string, number>>): TemplateResult | typeof nothing {
-  // The two engine gauges — the persona's inference engine, not generic vitals:
-  //   SPD = inference speed (tokens/sec, the speedometer)
-  //   PAR = base-model size (parameters, the tach/RPM — scales up + down as the model changes)
-  // Cognition faculties + genome render as the diamond + bars, not as meters here.
-  const gauges: Array<[string, string]> = [
-    ['speed', 'SPD'],
-    ['size', 'PAR'],
-  ];
-  const entries = gauges.filter(([k]) => vitals[k] !== undefined);
-  if (entries.length === 0) return nothing;
-  return html`
-    <span class="vitals">
-      ${entries.map(([key, label]) => {
-        const clamped = Math.max(0, Math.min(100, vitals[key] ?? 0));
-        return html`
-          <span class="vital" data-gauge=${key} title="${label} ${Math.round(clamped)}%">
-            <span class="vital-label">${label}</span>
-            <span class="vital-track">
-              <span class="vital-fill" style="width:${clamped}%"></span>
-            </span>
-            <span class="vital-value">${Math.round(clamped)}</span>
-          </span>
-        `;
-      })}
-    </span>
-  `;
-}
-
 /** The four faculties the cognition diamond reads — Focus / Reason / Recall / Act. */
 const COGNITION = ['focus', 'reason', 'recall', 'act'] as const;
 
@@ -132,7 +99,9 @@ const COGNITION = ['focus', 'reason', 'recall', 'act'] as const;
  *  deep in thought skews toward Reason, one running tools skews toward Act. Dynamic from
  *  cognition events ([[design-the-persona-as-a-being]]). */
 export function cognitionDiamond(v: Readonly<Record<string, number>>): TemplateResult {
-  const lit = (k: string) => 0.14 + 0.86 * (Math.max(0, Math.min(100, v[k] ?? 0)) / 100);
+  // Dramatic contrast so the SHAPE reads — a dim faculty nearly vanishes, a strong one
+  // burns bright. All-mid values used to fill in as one solid blob; this shows the mind.
+  const lit = (k: string) => 0.05 + 0.95 * (Math.max(0, Math.min(100, v[k] ?? 0)) / 100);
   const pct = (k: string) => Math.round(Math.max(0, Math.min(100, v[k] ?? 0)));
   // corners N(20,2) E(38,20) S(20,38) W(2,20), meeting at centre (20,20).
   return html`<svg viewBox="0 0 40 40" class="cog-diamond" aria-label="cognition">
@@ -158,20 +127,50 @@ export function genomeBlock(v: Readonly<Record<string, number>>): TemplateResult
 /** The rich per-persona readout: cognition diamond + genome bars + the tempo/other meters.
  *  Each part appears only when its data is present — a persona with no cognition emitted yet
  *  simply shows its activity, honestly. */
+/** Every stat the glass-box tile can pack, in order — cognition faculties, then the engine.
+ *  Each renders as a tiny label+bar+value; all present ones tile into a dense grid. */
+const STAT_ORDER: ReadonlyArray<readonly [string, string]> = [
+  ['focus', 'FOC'],
+  ['reason', 'REA'],
+  ['recall', 'REC'],
+  ['act', 'ACT'],
+  ['speed', 'SPD'],
+  ['size', 'PAR'],
+];
+
+/** The dense meter grid — the info-packed heart of the glass-box tile. Tons of tiny
+ *  labelled value-meters close together, each hoverable ([[persona-tile-is-a-live-game-hud]]).
+ *  Plus the cognition diamond (compact personality glyph) + genome bars alongside. */
 export function personaReadout(v: Readonly<Record<string, number>>): TemplateResult | typeof nothing {
+  const stats = STAT_ORDER.filter(([k]) => v[k] !== undefined);
+  if (stats.length === 0) return nothing;
+  return html`<span class="stat-grid">
+    ${stats.map(([k, label]) => {
+      const val = Math.round(Math.max(0, Math.min(100, v[k] ?? 0)));
+      return html`<span class="stat" title="${label} ${val}">
+        <span class="stat-label">${label}</span>
+        <span class="stat-bar"><span class="stat-fill" style="width:${val}%"></span></span>
+        <span class="stat-val">${val}</span>
+      </span>`;
+    })}
+  </span>`;
+}
+
+/** The RIGHT pane of the glass-box tile — the cognition diamond (personality glyph) + genome
+ *  bars. Compact, ~one avatar tall, pushed to the right edge. */
+export function cognitionCluster(v: Readonly<Record<string, number>>): TemplateResult | typeof nothing {
   const hasCog = COGNITION.some((k) => (v[k] ?? 0) > 0);
   const genome = genomeBlock(v);
   if (!hasCog && genome === nothing) return nothing;
-  return html`<span class="cog-cluster">
-    ${hasCog ? cognitionDiamond(v) : nothing}${genome}
-  </span>`;
+  return html`<span class="cog-cluster">${hasCog ? cognitionDiamond(v) : nothing}${genome}</span>`;
 }
 
 /** One member card — avatar + presence dot, name, kind/runtime, live vitals —
  *  the old Users & Agents persona-tile as the `Listing` cell (INTERFACE-PORT-MAP.md). */
 export function memberCard(m: RosterMemberVM): TemplateResult {
   return html`
-    <li class="member ${m.active ? 'online' : 'idle'}" data-kind=${m.kind}>
+    <li class="member clickable ${m.active ? 'online' : 'idle'}" data-kind=${m.kind} tabindex="0"
+        title="Open ${m.name}">
       <span class="avatar" data-state=${avatarState(m.vitals, m.active)}>
         <span class="glyph">${kindGlyph(m.kind)}</span>
         ${emojiOverlay(m.vitals)}
@@ -182,9 +181,9 @@ export function memberCard(m: RosterMemberVM): TemplateResult {
           <span class="kind-badge">${kindLabel(m.kind)}</span>
           ${runtimeBadge(m.runtime)}
         </span>
-        ${vitalsMeters(m.vitals)}
+        ${personaReadout(m.vitals)}
       </span>
-      ${personaReadout(m.vitals)}
+      ${cognitionCluster(m.vitals)}
     </li>
   `;
 }
@@ -201,7 +200,8 @@ export function memberCardFromCell(cell: ListingCell): TemplateResult {
   const kind = cell.badges?.[0] ?? 'agent';
   const runtime = cell.badges?.[1] ?? '';
   return html`
-    <li class="member ${active ? 'online' : 'idle'}" data-kind=${kind}>
+    <li class="member clickable ${active ? 'online' : 'idle'}" data-kind=${kind} tabindex="0"
+        title="Open ${cell.title}">
       <span class="avatar" data-state=${avatarState(cell.meters ?? {}, active)}>
         <span class="glyph">${cell.glyph ?? ''}</span>
         ${emojiOverlay(cell.meters ?? {})}
@@ -212,9 +212,9 @@ export function memberCardFromCell(cell: ListingCell): TemplateResult {
           <span class="kind-badge">${kind}</span>
           ${runtimeBadge(runtime)}
         </span>
-        ${cell.meters ? vitalsMeters(cell.meters) : nothing}
+        ${cell.meters ? personaReadout(cell.meters) : nothing}
       </span>
-      ${cell.meters ? personaReadout(cell.meters) : nothing}
+      ${cell.meters ? cognitionCluster(cell.meters) : nothing}
     </li>
   `;
 }
