@@ -45,6 +45,17 @@ export class ChatWidget extends LitElement {
   private _sending = false;
   private _sendError = '';
 
+  override connectedCallback(): void {
+    super.connectedCallback();
+    // The UNIVERSE axis: ?universe=<key> re-embodies the SAME chatApp inside a whole
+    // experience — Tron's neon grid, a fantasy forge, a corporate onboarding — theme +
+    // lore, one definition, every citizen ([[universe-is-an-experience-not-a-theme]]).
+    // The target maps the key to a skin; here it's a data-attribute the styles key off.
+    // Unset → the native 'continuum' look.
+    const universe = new URLSearchParams(location.search).get('universe');
+    if (universe) this.setAttribute('data-universe', universe);
+  }
+
   static override styles = css`
     /* Styled ENTIRELY from the shared design tokens (apps/web/src/theme.css) — no
      * hardcoded colors, so a theme swap is a :root override and the same token
@@ -484,6 +495,63 @@ export class ChatWidget extends LitElement {
       .member .vitals {
         display: none;
       }
+    }
+
+    /* ── UNIVERSE: tron ── the SAME app, re-embodied as a neon grid portal. Not a
+       theme swap — an EXPERIENCE ([[universe-is-an-experience-not-a-theme]]): the grid
+       floor, glowing programs, the derez cyan. One chatApp, a whole world over it. */
+    :host([data-universe='tron']) {
+      color: #cfefff;
+      background:
+        radial-gradient(ellipse 90% 60% at 50% 8%, rgba(0, 200, 255, 0.10), transparent 70%),
+        repeating-linear-gradient(0deg, transparent 0 43px, rgba(0, 224, 255, 0.07) 43px 44px),
+        repeating-linear-gradient(90deg, transparent 0 43px, rgba(0, 224, 255, 0.07) 43px 44px),
+        linear-gradient(180deg, #00080f, #01030a);
+    }
+    :host([data-universe='tron']) .room {
+      border-bottom: 1px solid rgba(0, 224, 255, 0.35);
+      box-shadow: 0 1px 18px rgba(0, 200, 255, 0.18);
+    }
+    :host([data-universe='tron']) .room-name {
+      color: #66f6ff;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      text-shadow: 0 0 10px rgba(0, 224, 255, 0.9), 0 0 26px rgba(0, 200, 255, 0.5);
+    }
+    :host([data-universe='tron']) .live-dot {
+      background: #00fff0;
+      box-shadow: 0 0 10px #00fff0, 0 0 22px rgba(0, 255, 240, 0.6);
+    }
+    :host([data-universe='tron']) .who,
+    :host([data-universe='tron']) form.compose {
+      border-color: rgba(0, 224, 255, 0.28);
+      background: rgba(0, 12, 22, 0.55);
+    }
+    :host([data-universe='tron']) .sender {
+      color: #6ff0ff;
+      text-shadow: 0 0 8px rgba(0, 224, 255, 0.7);
+    }
+    :host([data-universe='tron']) .content {
+      background: rgba(0, 18, 30, 0.55);
+      border: 1px solid rgba(0, 224, 255, 0.35);
+      box-shadow: 0 0 14px rgba(0, 200, 255, 0.12), inset 0 0 10px rgba(0, 200, 255, 0.06);
+      backdrop-filter: blur(1px);
+    }
+    /* Programs glow on the grid — the avatar ring lights up cyan. */
+    :host([data-universe='tron']) .avatar {
+      box-shadow: 0 0 12px rgba(0, 224, 255, 0.55);
+      border-radius: 50%;
+    }
+    :host([data-universe='tron']) .status-dot {
+      box-shadow: 0 0 8px currentColor;
+    }
+    :host([data-universe='tron']) .who-title,
+    :host([data-universe='tron']) .name {
+      color: #a9e9ff;
+      text-shadow: 0 0 6px rgba(0, 200, 255, 0.4);
+    }
+    :host([data-universe='tron']) input {
+      color: #cfefff;
     }
   `;
 
