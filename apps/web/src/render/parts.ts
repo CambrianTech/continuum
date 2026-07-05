@@ -65,6 +65,31 @@ export function runtimeBadge(runtime: string): TemplateResult | typeof nothing {
   return runtime ? html`<span class="runtime" title="runtime origin">${runtime}</span>` : nothing;
 }
 
+/** The avatar's live inference state — the SAME signal the chat header's "Asha is thinking…"
+ *  reads. Drives the ring colour + pulse. Real thinking/error events are the wiring
+ *  (persona:vitals emitting `error`/inference state); today derived from activity/reason
+ *  (thinking) + presence (active/idle). */
+export function avatarState(v: Readonly<Record<string, number>>, active: boolean): string {
+  if ((v.error ?? 0) > 0) return 'error';
+  if ((v.activity ?? 0) > 25 || (v.reason ?? 0) > 55) return 'thinking';
+  return active ? 'active' : 'idle';
+}
+
+/** An emoji over the avatar for an emotional event. Today a proxy for the dominant cognitive
+ *  faculty; real emotion events (mood/reaction) wire in later — that's the hard part. */
+function emojiOverlay(v: Readonly<Record<string, number>>): TemplateResult | typeof nothing {
+  const faces: Array<[string, number]> = [
+    ['🎯', v.focus ?? 0],
+    ['🤔', v.reason ?? 0],
+    ['💭', v.recall ?? 0],
+    ['⚡', v.act ?? 0],
+  ];
+  faces.sort((a, b) => b[1] - a[1]);
+  const top = faces[0];
+  if (!top || top[1] < 66) return nothing;
+  return html`<span class="emoji-overlay">${top[0]}</span>`;
+}
+
 
 /** The live genome-energy meters — one thin glowing bar per vital the persona
  *  surfaces (energy/attention/compute). Renders nothing when the member reports
@@ -148,9 +173,9 @@ export function personaReadout(v: Readonly<Record<string, number>>): TemplateRes
 export function memberCard(m: RosterMemberVM): TemplateResult {
   return html`
     <li class="member ${m.active ? 'online' : 'idle'}" data-kind=${m.kind}>
-      <span class="avatar">
+      <span class="avatar" data-state=${avatarState(m.vitals, m.active)}>
         <span class="glyph">${kindGlyph(m.kind)}</span>
-        <span class="status-dot" title=${m.active ? 'active' : 'idle'}></span>
+        ${emojiOverlay(m.vitals)}
       </span>
       <span class="info">
         <span class="name">${m.name}</span>
@@ -177,9 +202,9 @@ export function memberCardFromCell(cell: ListingCell): TemplateResult {
   const runtime = cell.badges?.[1] ?? '';
   return html`
     <li class="member ${active ? 'online' : 'idle'}" data-kind=${kind}>
-      <span class="avatar">
+      <span class="avatar" data-state=${avatarState(cell.meters ?? {}, active)}>
         <span class="glyph">${cell.glyph ?? ''}</span>
-        <span class="status-dot" title=${active ? 'active' : 'idle'}></span>
+        ${emojiOverlay(cell.meters ?? {})}
       </span>
       <span class="info">
         <span class="name">${cell.title}</span>
