@@ -161,10 +161,9 @@ export function genomeBlock(v: Readonly<Record<string, number>>): TemplateResult
 export function personaReadout(v: Readonly<Record<string, number>>): TemplateResult | typeof nothing {
   const hasCog = COGNITION.some((k) => (v[k] ?? 0) > 0);
   const genome = genomeBlock(v);
-  const meters = vitalsMeters(v);
-  if (!hasCog && genome === nothing && meters === nothing) return nothing;
-  return html`<span class="readout">
-    ${hasCog ? cognitionDiamond(v) : nothing}${genome}${meters}
+  if (!hasCog && genome === nothing) return nothing;
+  return html`<span class="cog-cluster">
+    ${hasCog ? cognitionDiamond(v) : nothing}${genome}
   </span>`;
 }
 
@@ -183,8 +182,9 @@ export function memberCard(m: RosterMemberVM): TemplateResult {
           <span class="kind-badge">${kindLabel(m.kind)}</span>
           ${runtimeBadge(m.runtime)}
         </span>
-        ${personaReadout(m.vitals)}
+        ${vitalsMeters(m.vitals)}
       </span>
+      ${personaReadout(m.vitals)}
     </li>
   `;
 }
@@ -212,8 +212,9 @@ export function memberCardFromCell(cell: ListingCell): TemplateResult {
           <span class="kind-badge">${kind}</span>
           ${runtimeBadge(runtime)}
         </span>
-        ${cell.meters ? personaReadout(cell.meters) : nothing}
+        ${cell.meters ? vitalsMeters(cell.meters) : nothing}
       </span>
+      ${cell.meters ? personaReadout(cell.meters) : nothing}
     </li>
   `;
 }
