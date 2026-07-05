@@ -121,7 +121,10 @@ export function genomeBlock(v: Readonly<Record<string, number>>): TemplateResult
   if (g === undefined || g <= 0) return nothing;
   const filled = Math.max(1, Math.round((Math.min(100, g) / 100) * 6));
   return html`<span class="genome" title="genome ${Math.round(g)}%">
-    ${Array.from({ length: 6 }, (_, i) => html`<span class="gene ${i < filled ? 'on' : ''}"></span>`)}
+    ${Array.from(
+      { length: 6 },
+      (_, i) => html`<span class="gene ${i < filled ? 'on' : ''} ${i % 3 === 2 ? 'hot' : ''}"></span>`,
+    )}
   </span>`;
 }
 

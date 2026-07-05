@@ -149,15 +149,48 @@ export class ChatWidget extends LitElement {
     }
     /* Member card — the old persona-tile: avatar + presence dot, name, meta. */
     .member {
+      position: relative;
       display: flex;
       align-items: center;
       gap: var(--spacing-sm);
-      padding: 6px var(--spacing-md);
-      border-radius: var(--radius-md);
+      padding: 3px 10px 3px var(--spacing-sm);
+      /* Cyberpunk "disjoint pane" — a chamfered (notched-corner) HUD module, not a rounded row. */
+      clip-path: polygon(0 0, calc(100% - 7px) 0, 100% 7px, 100% 100%, 7px 100%, 0 calc(100% - 7px));
       transition: background 0.15s ease;
     }
-    .member:hover {
-      background: var(--button-secondary-background);
+    .member:hover,
+    .member.clickable:focus-visible {
+      background: linear-gradient(90deg, rgba(0, 212, 255, 0.09), transparent 70%);
+      outline: none;
+    }
+    /* HUD corner brackets on hover/focus — the framed-module look from the reference sheet. */
+    .member.clickable::before,
+    .member.clickable::after {
+      content: '';
+      position: absolute;
+      width: 7px;
+      height: 7px;
+      opacity: 0;
+      transition: opacity 0.15s ease;
+      pointer-events: none;
+    }
+    .member.clickable::before {
+      top: 2px;
+      left: 2px;
+      border-top: 1px solid var(--content-accent);
+      border-left: 1px solid var(--content-accent);
+    }
+    .member.clickable::after {
+      right: 2px;
+      bottom: 2px;
+      border-bottom: 1px solid var(--content-accent);
+      border-right: 1px solid var(--content-accent);
+    }
+    .member.clickable:hover::before,
+    .member.clickable:hover::after,
+    .member.clickable:focus-visible::before,
+    .member.clickable:focus-visible::after {
+      opacity: 1;
     }
     .member .avatar {
       position: relative;
@@ -386,6 +419,11 @@ export class ChatWidget extends LitElement {
     .gene.on {
       background: var(--content-accent);
       box-shadow: 0 0 3px var(--content-accent);
+    }
+    /* Orange gene cells — the cyan+orange dual-tone from the HUD reference sheet. */
+    .gene.on.hot {
+      background: #ff6a3d;
+      box-shadow: 0 0 3px #ff6a3d;
     }
     /* CENTER pane — the horizontal engine gauges (SPD/PAR), compact. */
     .vitals {
