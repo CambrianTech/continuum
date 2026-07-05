@@ -99,17 +99,18 @@ const COGNITION = ['focus', 'reason', 'recall', 'act'] as const;
  *  deep in thought skews toward Reason, one running tools skews toward Act. Dynamic from
  *  cognition events ([[design-the-persona-as-a-being]]). */
 export function cognitionDiamond(v: Readonly<Record<string, number>>): TemplateResult {
-  // Dramatic contrast so the SHAPE reads — a dim faculty nearly vanishes, a strong one
-  // burns bright. All-mid values used to fill in as one solid blob; this shows the mind.
-  const lit = (k: string) => 0.05 + 0.95 * (Math.max(0, Math.min(100, v[k] ?? 0)) / 100);
+  // FOUR distinct triangles pointing out like a compass (N=Focus, E=Reason, S=Recall,
+  // W=Act), a gap in the centre — so it reads as four, and a strong faculty burns bright
+  // while a dim one nearly vanishes (the SHAPE is the mind). No more solid blob.
+  const lit = (k: string) => 0.12 + 0.88 * (Math.max(0, Math.min(100, v[k] ?? 0)) / 100);
   const pct = (k: string) => Math.round(Math.max(0, Math.min(100, v[k] ?? 0)));
-  // corners N(20,2) E(38,20) S(20,38) W(2,20), meeting at centre (20,20).
+  const tri = (pts: string, k: string, label: string) =>
+    svg`<polygon points="${pts}" class="cog-tri" style="opacity:${lit(k)}"><title>${label} ${pct(k)}</title></polygon>`;
   return html`<svg viewBox="0 0 40 40" class="cog-diamond" aria-label="cognition">
-    ${svg`<polygon points="20,20 2,20 20,2" class="cog-quad" style="opacity:${lit('focus')}"><title>Focus ${pct('focus')}%</title></polygon>`}
-    ${svg`<polygon points="20,20 20,2 38,20" class="cog-quad" style="opacity:${lit('reason')}"><title>Reason ${pct('reason')}%</title></polygon>`}
-    ${svg`<polygon points="20,20 38,20 20,38" class="cog-quad" style="opacity:${lit('recall')}"><title>Recall ${pct('recall')}%</title></polygon>`}
-    ${svg`<polygon points="20,20 20,38 2,20" class="cog-quad" style="opacity:${lit('act')}"><title>Act ${pct('act')}%</title></polygon>`}
-    ${svg`<polygon points="20,2 38,20 20,38 2,20" class="cog-outline" />`}
+    ${tri('20,2 12,15 28,15', 'focus', 'Focus')}
+    ${tri('38,20 25,12 25,28', 'reason', 'Reason')}
+    ${tri('20,38 12,25 28,25', 'recall', 'Recall')}
+    ${tri('2,20 15,12 15,28', 'act', 'Act')}
   </svg>`;
 }
 
@@ -127,13 +128,9 @@ export function genomeBlock(v: Readonly<Record<string, number>>): TemplateResult
 /** The rich per-persona readout: cognition diamond + genome bars + the tempo/other meters.
  *  Each part appears only when its data is present — a persona with no cognition emitted yet
  *  simply shows its activity, honestly. */
-/** Every stat the glass-box tile can pack, in order — cognition faculties, then the engine.
- *  Each renders as a tiny label+bar+value; all present ones tile into a dense grid. */
+/** The engine meters shown as bars — the cognition faculties are the DIAMOND, not bars
+ *  (showing them both ways made the tile tall + redundant). Just speed + size here. */
 const STAT_ORDER: ReadonlyArray<readonly [string, string]> = [
-  ['focus', 'FOC'],
-  ['reason', 'REA'],
-  ['recall', 'REC'],
-  ['act', 'ACT'],
   ['speed', 'SPD'],
   ['size', 'PAR'],
 ];
