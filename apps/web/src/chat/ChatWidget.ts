@@ -553,6 +553,61 @@ export class ChatWidget extends LitElement {
     :host([data-universe='tron']) input {
       color: #cfefff;
     }
+
+    /* ── UNIVERSE: forge ── the range test. Not neon — WARMTH: the orc's forge, fire
+       glowing up from below, molten-amber programs, hammered iron. Same chatApp, a wholly
+       different WORLD ([[universe-is-an-experience-not-a-theme]]) — proving a universe is
+       an experience, not a colour swap. */
+    :host([data-universe='forge']) {
+      color: #efdcc0;
+      background:
+        radial-gradient(ellipse 85% 55% at 50% 112%, rgba(255, 120, 20, 0.32), transparent 60%),
+        radial-gradient(ellipse 55% 35% at 50% 104%, rgba(255, 190, 70, 0.22), transparent 52%),
+        linear-gradient(180deg, #0e0a06, #17100a);
+    }
+    :host([data-universe='forge']) .room {
+      border-bottom: 1px solid rgba(255, 140, 40, 0.4);
+      box-shadow: 0 1px 22px rgba(255, 110, 20, 0.22);
+    }
+    :host([data-universe='forge']) .room-name {
+      color: #ffb347;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      text-shadow: 0 0 12px rgba(255, 130, 30, 0.85), 0 0 3px rgba(255, 210, 120, 0.9);
+    }
+    :host([data-universe='forge']) .live-dot {
+      background: #ff9a2e;
+      box-shadow: 0 0 10px #ff7a18, 0 0 22px rgba(255, 120, 20, 0.6);
+    }
+    :host([data-universe='forge']) .who,
+    :host([data-universe='forge']) form.compose {
+      border-color: rgba(255, 130, 40, 0.24);
+      background: rgba(30, 18, 8, 0.5);
+    }
+    :host([data-universe='forge']) .sender {
+      color: #ffb865;
+      text-shadow: 0 0 8px rgba(255, 130, 30, 0.6);
+    }
+    :host([data-universe='forge']) .content {
+      background: rgba(28, 18, 10, 0.6);
+      border: 1px solid rgba(255, 130, 40, 0.32);
+      box-shadow: 0 0 16px rgba(255, 110, 20, 0.12), inset 0 0 12px rgba(255, 90, 10, 0.06);
+    }
+    :host([data-universe='forge']) .avatar {
+      box-shadow: 0 0 14px rgba(255, 130, 30, 0.5);
+      border-radius: 50%;
+    }
+    :host([data-universe='forge']) .status-dot {
+      box-shadow: 0 0 8px currentColor;
+    }
+    :host([data-universe='forge']) .who-title,
+    :host([data-universe='forge']) .name {
+      color: #e8c89a;
+      text-shadow: 0 0 6px rgba(255, 130, 30, 0.4);
+    }
+    :host([data-universe='forge']) input {
+      color: #efdcc0;
+    }
   `;
 
   override render(): TemplateResult {
