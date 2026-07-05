@@ -176,6 +176,30 @@ export class ChatWidget extends LitElement {
       border-color: var(--border-accent);
       box-shadow: 0 0 6px rgba(0, 212, 255, 0.18);
     }
+    /* Live inference-state ring — the game HUD's status halo, matching the chat header's
+       "Asha is thinking…". The border carries the state colour; the glow layers over it. */
+    .member .avatar[data-state='thinking'] {
+      border-color: var(--content-accent);
+    }
+    .member .avatar[data-state='active'] {
+      border-color: #3fb950;
+    }
+    .member .avatar[data-state='error'] {
+      border-color: #f85149;
+      box-shadow: 0 0 0 1px #f85149, 0 0 8px rgba(248, 81, 73, 0.55);
+    }
+    .member .avatar[data-state='idle'] {
+      opacity: 0.7;
+    }
+    /* Emotional-event emoji, over the avatar. */
+    .emoji-overlay {
+      position: absolute;
+      bottom: -4px;
+      right: -5px;
+      font-size: 14px;
+      line-height: 1;
+      filter: drop-shadow(0 0 3px rgba(0, 0, 0, 0.85));
+    }
     /* A slow breathing "cognition" glow on a LIVE agent — the sci-fi signal that
      * this is a living mind present in the room, not a static row. Paired with the
      * comet arc below; both idle out when the agent goes offline. */
