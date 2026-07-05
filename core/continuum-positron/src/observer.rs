@@ -41,7 +41,7 @@ use std::collections::HashSet;
 use positron_core::session::{ClientMessage, ServerMessage};
 use positron_core::wire::{StateEnvelope, StateLayer};
 
-use crate::cache::SubstrateStateCache;
+use crate::cache::{StateSource, SubstrateStateCache};
 use crate::session::should_skip;
 
 /// One AI observer's substrate-recorded registration. Built by
@@ -84,7 +84,7 @@ impl ObserverRegistration {
 /// Returns `Err` if `msg` is NOT an `Observe` variant — single-
 /// purpose handler per [[no-fallbacks-ever]].
 pub fn apply_observe(
-    cache: &SubstrateStateCache,
+    cache: &impl StateSource,
     msg: ClientMessage,
 ) -> Result<(ObserverRegistration, Vec<ServerMessage>), String> {
     let (spec, last_seen) = match msg {
@@ -104,7 +104,7 @@ pub fn apply_observe(
     let mut snapshots: Vec<ServerMessage> = Vec::with_capacity(spec.kinds.len());
 
     for kind in &spec.kinds {
-        let Some(current) = cache.get(kind) else {
+        let Some(current) = cache.get_state(kind) else {
             // Same honest-silence semantic as subscribe: no cached
             // state for this kind → no snapshot to send this cycle.
             continue;

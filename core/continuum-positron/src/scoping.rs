@@ -17,11 +17,19 @@
 //! drift apart. Minimizing the human/persona gap starts with refusing to encode it.
 
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
+use positron_core::wire::StateEnvelope;
 use uuid::Uuid;
 
+use crate::cache::StateSource;
 use crate::Substrate;
+
+/// Kinds that are PER-USER — routed to the citizen's own substrate. Everything
+/// else is per-room and stays on the node substrate. OPEN by data: a new per-user
+/// view (settings, the costume-per-activity pick) adds its kind string here, never
+/// a branch elsewhere. `nav` is the first.
+pub const PER_USER_KINDS: &[&str] = &["nav"];
 
 /// A registry of per-citizen substrates for per-user view kinds. One substrate
 /// per citizen, created on first use. Per-room kinds do NOT come here — they stay
@@ -55,6 +63,37 @@ impl PerUserSubstrates {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .len()
+    }
+}
+
+/// A read view that UNIONS a node substrate (per-room kinds) with a citizen's
+/// per-user substrate (per-user kinds), routed by kind. A session reads through
+/// this and never knows there are two stores — it asks for a kind, gets the right
+/// envelope. This is what lets one session see the room's `chat` AND its own `nav`,
+/// each from the correct store, with no session-code change (it just needs a
+/// [`StateSource`]). Holds two [`Substrate`] handles (Arc-shared — cheap clones).
+pub struct CompositeCache {
+    node: Substrate,
+    per_user: Substrate,
+}
+
+impl CompositeCache {
+    /// Union the shared node substrate with `citizen`'s per-user substrate.
+    pub fn new(node: Substrate, per_user: Substrate) -> Self {
+        Self { node, per_user }
+    }
+}
+
+impl StateSource for CompositeCache {
+    fn get_state(&self, kind: &str) -> Option<Arc<StateEnvelope>> {
+        // Per-user kinds come from the citizen's own store; everything else (the
+        // room's chat/wall/kanban) from the shared node store. Data-routed, no
+        // is-human / is-persona branch — the same union for every citizen.
+        if PER_USER_KINDS.contains(&kind) {
+            self.per_user.cache().get(kind)
+        } else {
+            self.node.cache().get(kind)
+        }
     }
 }
 
@@ -116,5 +155,46 @@ mod tests {
         let _h = reg.for_citizen(human);
         let _p = reg.for_citizen(persona);
         assert_eq!(reg.citizen_count(), 2);
+    }
+
+    #[derive(Debug, Clone, serde::Serialize)]
+    struct TinyRoom {
+        topic: String,
+    }
+    impl positron_core::ViewState for TinyRoom {
+        fn kind(&self) -> &'static str {
+            "chat"
+        }
+    }
+
+    // what this catches: the composite ROUTES by kind — per-room `chat` resolves
+    // from the node store, per-user `nav` from the citizen store — and it does not
+    // merge everything into one place (nav is never in node; chat never in per-user).
+    // This is the union that lets one session see the room AND its own nav.
+    #[test]
+    fn composite_routes_per_user_to_citizen_store_room_to_node() {
+        let node = Substrate::new();
+        let per_user = Substrate::new();
+        node.store(StateBuilder::standalone().session(TinyRoom {
+            topic: "general".into(),
+        }));
+        per_user.store(StateBuilder::standalone().session(TinyNav {
+            current: "room-a".into(),
+        }));
+        let composite = CompositeCache::new(node.clone(), per_user.clone());
+        assert!(
+            composite.get_state("chat").is_some(),
+            "per-room kind resolves from the node store"
+        );
+        assert!(
+            composite.get_state("nav").is_some(),
+            "per-user kind resolves from the citizen's own store"
+        );
+        // The union routes, it does not merge: each store holds only its own kinds.
+        assert!(node.cache().get("nav").is_none(), "nav never lands in the node store");
+        assert!(
+            per_user.cache().get("chat").is_none(),
+            "chat never lands in the per-user store"
+        );
     }
 }
