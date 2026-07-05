@@ -56,7 +56,7 @@ use tokio::task::JoinHandle;
 
 use crate::connection::Connection;
 use crate::dispatch::CommandDispatch;
-use crate::substrate::Substrate;
+use crate::scoping::SessionSubstrate;
 
 /// How fast a kind's live `State` frames are forwarded on this
 /// connection.
@@ -191,14 +191,15 @@ async fn forward_kind(
 ///
 /// `D` is the dispatcher's type; passing an `Arc<dyn CommandDispatch>`
 /// binds `D = dyn CommandDispatch`.
-pub async fn run_session<D>(
+pub async fn run_session<D, S>(
     mut inbound: mpsc::Receiver<ClientMessage>,
     outbound: mpsc::Sender<ServerMessage>,
-    substrate: Substrate,
+    substrate: S,
     dispatcher: Arc<D>,
 ) -> Result<(), String>
 where
     D: CommandDispatch + ?Sized,
+    S: SessionSubstrate,
 {
     let mut conn = Connection::new();
     let mut forwarders: HashMap<String, Forwarder> = HashMap::new();
@@ -216,7 +217,7 @@ where
             HashMap::new();
         for kind in frame_kinds(&msg) {
             if !forwarders.contains_key(&kind) && !pending.contains_key(&kind) {
-                pending.insert(kind.clone(), substrate.broadcast().subscribe(&kind));
+                pending.insert(kind.clone(), substrate.subscribe_kind(&kind));
             }
         }
 
@@ -246,9 +247,9 @@ where
 /// rates: spawn new kinds (reusing the pre-attached receiver so the
 /// no-lost-update guarantee holds), restart kinds whose rate changed,
 /// and abort kinds no longer wanted.
-fn reconcile_forwarders(
+fn reconcile_forwarders<S: SessionSubstrate>(
     conn: &Connection,
-    substrate: &Substrate,
+    substrate: &S,
     outbound: &mpsc::Sender<ServerMessage>,
     forwarders: &mut HashMap<String, Forwarder>,
     mut pending: HashMap<String, watch::Receiver<Option<Arc<StateEnvelope>>>>,
@@ -270,7 +271,7 @@ fn reconcile_forwarders(
         // latest.
         let rx = pending
             .remove(kind)
-            .unwrap_or_else(|| substrate.broadcast().subscribe(kind));
+            .unwrap_or_else(|| substrate.subscribe_kind(kind));
         let handle = tokio::spawn(forward_kind(rx, *rate, outbound.clone()));
         forwarders.insert(
             kind.clone(),
@@ -300,6 +301,7 @@ fn reconcile_forwarders(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::substrate::Substrate;
     use async_trait::async_trait;
     use positron_core::session::KindRevision;
     use positron_core::wire::{CommandEnvelope, CommandSource, ObserverSpec, StateLayer};
