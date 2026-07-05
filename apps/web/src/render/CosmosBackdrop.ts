@@ -1,0 +1,160 @@
+/**
+ * <cosmos-backdrop> — a LIVING generative starfield for the 'cosmos' universe.
+ *
+ * Not a CSS skin: an animated canvas where the citizens converse among drifting,
+ * twinkling stars linked by a faint constellation network that forms + dissolves as they
+ * move — the grid as a breathing mind ([[universe-is-an-experience-not-a-theme]]). Owns
+ * its own requestAnimationFrame lifecycle and sits behind the translucent chat panels.
+ * A universe can be a whole world in MOTION, not just a colour.
+ */
+
+import { LitElement, html, css } from 'lit';
+
+interface Star {
+  x: number;
+  y: number;
+  r: number; // radius (px)
+  vx: number;
+  vy: number;
+  phase: number; // twinkle offset
+}
+
+export class CosmosBackdrop extends LitElement {
+  static override styles = css`
+    :host {
+      position: absolute;
+      inset: 0;
+      z-index: 0;
+      overflow: hidden;
+      pointer-events: none;
+    }
+    canvas {
+      width: 100%;
+      height: 100%;
+      display: block;
+    }
+  `;
+
+  private _canvas?: HTMLCanvasElement;
+  private _ctx?: CanvasRenderingContext2D | null;
+  private _stars: Star[] = [];
+  private _raf = 0;
+  private _t0 = 0;
+
+  override render() {
+    return html`<canvas></canvas>`;
+  }
+
+  override firstUpdated(): void {
+    this._canvas = this.renderRoot.querySelector('canvas') ?? undefined;
+    this._ctx = this._canvas?.getContext('2d');
+    this._resize();
+    window.addEventListener('resize', this._resize);
+    this._t0 = performance.now();
+    this._raf = requestAnimationFrame(this._loop);
+  }
+
+  override disconnectedCallback(): void {
+    super.disconnectedCallback();
+    cancelAnimationFrame(this._raf);
+    window.removeEventListener('resize', this._resize);
+  }
+
+  private _resize = (): void => {
+    if (!this._canvas) return;
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const w = this.offsetWidth || 1200;
+    const h = this.offsetHeight || 800;
+    this._canvas.width = w * dpr;
+    this._canvas.height = h * dpr;
+    this._ctx?.setTransform(dpr, 0, 0, dpr, 0, 0);
+    const count = Math.max(30, Math.min(110, Math.round((w * h) / 15000)));
+    this._stars = Array.from({ length: count }, () => ({
+      x: Math.random() * w,
+      y: Math.random() * h,
+      r: 0.5 + Math.random() * 1.6,
+      vx: (Math.random() - 0.5) * 0.09,
+      vy: (Math.random() - 0.5) * 0.09,
+      phase: Math.random() * Math.PI * 2,
+    }));
+  };
+
+  private _loop = (t: number): void => {
+    const ctx = this._ctx;
+    if (!ctx) return;
+    const w = this.offsetWidth;
+    const h = this.offsetHeight;
+    const time = (t - this._t0) / 1000;
+
+    // deep space
+    ctx.fillStyle = '#05010f';
+    ctx.fillRect(0, 0, w, h);
+
+    // nebula — soft additive blooms that slowly breathe
+    ctx.globalCompositeOperation = 'lighter';
+    const blobs: [number, number, string, number][] = [
+      [w * 0.22, h * 0.24, 'rgba(90,40,180,', 340],
+      [w * 0.80, h * 0.34, 'rgba(30,90,205,', 380],
+      [w * 0.55, h * 0.82, 'rgba(185,40,140,', 320],
+    ];
+    for (const [bx, by, col, r] of blobs) {
+      const pulse = 0.1 + 0.05 * Math.sin(time * 0.3 + bx * 0.01);
+      const g = ctx.createRadialGradient(bx, by, 0, bx, by, r);
+      g.addColorStop(0, `${col}${pulse})`);
+      g.addColorStop(1, `${col}0)`);
+      ctx.fillStyle = g;
+      ctx.fillRect(0, 0, w, h);
+    }
+
+    // drift + wrap
+    for (const s of this._stars) {
+      s.x += s.vx;
+      s.y += s.vy;
+      if (s.x < 0) s.x += w;
+      else if (s.x > w) s.x -= w;
+      if (s.y < 0) s.y += h;
+      else if (s.y > h) s.y -= h;
+    }
+
+    // constellation network — lines between near stars, forming + dissolving
+    const LINK = 130;
+    ctx.lineWidth = 1;
+    for (let i = 0; i < this._stars.length; i++) {
+      for (let j = i + 1; j < this._stars.length; j++) {
+        const a = this._stars[i];
+        const b = this._stars[j];
+        if (!a || !b) continue;
+        const dx = a.x - b.x;
+        const dy = a.y - b.y;
+        const d2 = dx * dx + dy * dy;
+        if (d2 < LINK * LINK) {
+          const alpha = (1 - Math.sqrt(d2) / LINK) * 0.16;
+          ctx.strokeStyle = `rgba(120,180,255,${alpha})`;
+          ctx.beginPath();
+          ctx.moveTo(a.x, a.y);
+          ctx.lineTo(b.x, b.y);
+          ctx.stroke();
+        }
+      }
+    }
+
+    // stars — twinkle with a soft glow
+    for (const s of this._stars) {
+      const tw = 0.5 + 0.5 * Math.sin(time * 1.6 + s.phase);
+      ctx.fillStyle = `rgba(215,228,255,${0.45 * tw + 0.35})`;
+      ctx.shadowColor = 'rgba(150,190,255,0.9)';
+      ctx.shadowBlur = 4 + 3 * tw;
+      ctx.beginPath();
+      ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.shadowBlur = 0;
+    ctx.globalCompositeOperation = 'source-over';
+
+    this._raf = requestAnimationFrame(this._loop);
+  };
+}
+
+if (!customElements.get('cosmos-backdrop')) {
+  customElements.define('cosmos-backdrop', CosmosBackdrop);
+}

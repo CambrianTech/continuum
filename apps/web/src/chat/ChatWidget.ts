@@ -20,6 +20,7 @@ import { LitElement, html, css, nothing, type PropertyValues, type TemplateResul
 import type { ChatState } from '@continuum/chat-view';
 import { chatViewModel } from '@continuum/chat-view';
 import { renderChat } from './renderChat';
+import '../render/CosmosBackdrop'; // registers <cosmos-backdrop> for the cosmos universe
 
 /** The send action the host injects. Resolves when the message is accepted by
  *  the core; rejects (fails loud) on a transport/command error the widget shows. */
@@ -608,6 +609,70 @@ export class ChatWidget extends LitElement {
     :host([data-universe='forge']) input {
       color: #efdcc0;
     }
+
+    /* ── UNIVERSE: cosmos ── a universe that MOVES. <cosmos-backdrop> paints a living
+       starfield + constellation network behind translucent glass panels, so the citizens
+       converse afloat in a breathing cosmos. A world in motion, not a colour swap. */
+    :host([data-universe='cosmos']) {
+      position: relative;
+      color: #dfe6ff;
+      background: #05010f;
+    }
+    :host([data-universe='cosmos']) .room,
+    :host([data-universe='cosmos']) .panels,
+    :host([data-universe='cosmos']) form.compose {
+      position: relative;
+      z-index: 1;
+    }
+    :host([data-universe='cosmos']) .room {
+      background: rgba(5, 3, 20, 0.5);
+      backdrop-filter: blur(3px);
+      border-bottom: 1px solid rgba(140, 160, 255, 0.25);
+    }
+    :host([data-universe='cosmos']) .room-name {
+      color: #cfe0ff;
+      letter-spacing: 0.12em;
+      text-shadow: 0 0 12px rgba(120, 160, 255, 0.9);
+    }
+    :host([data-universe='cosmos']) .who {
+      background: rgba(8, 6, 26, 0.4);
+      backdrop-filter: blur(3px);
+      border-color: rgba(140, 160, 255, 0.18);
+    }
+    :host([data-universe='cosmos']) .sender {
+      color: #bcccff;
+      text-shadow: 0 0 8px rgba(120, 160, 255, 0.6);
+    }
+    :host([data-universe='cosmos']) .content {
+      background: rgba(12, 10, 34, 0.46);
+      border: 1px solid rgba(150, 170, 255, 0.28);
+      box-shadow: 0 0 16px rgba(90, 120, 255, 0.1);
+      backdrop-filter: blur(4px);
+    }
+    :host([data-universe='cosmos']) form.compose {
+      background: rgba(8, 6, 26, 0.55);
+      backdrop-filter: blur(4px);
+      border-top-color: rgba(140, 160, 255, 0.2);
+    }
+    :host([data-universe='cosmos']) .live-dot {
+      background: #9ab8ff;
+      box-shadow: 0 0 10px #9ab8ff, 0 0 22px rgba(120, 160, 255, 0.6);
+    }
+    :host([data-universe='cosmos']) .avatar {
+      box-shadow: 0 0 12px rgba(150, 170, 255, 0.5);
+      border-radius: 50%;
+    }
+    :host([data-universe='cosmos']) .status-dot {
+      box-shadow: 0 0 8px currentColor;
+    }
+    :host([data-universe='cosmos']) .who-title,
+    :host([data-universe='cosmos']) .name {
+      color: #c8d4ff;
+      text-shadow: 0 0 6px rgba(120, 160, 255, 0.4);
+    }
+    :host([data-universe='cosmos']) input {
+      color: #dfe6ff;
+    }
   `;
 
   override render(): TemplateResult {
@@ -626,7 +691,9 @@ export class ChatWidget extends LitElement {
       const cause = err instanceof Error ? err.message : String(err);
       return html`<div class="render-error">Interface error rendering this room: ${cause}</div>`;
     }
+    const cosmos = this.getAttribute('data-universe') === 'cosmos';
     return html`
+      ${cosmos ? html`<cosmos-backdrop></cosmos-backdrop>` : nothing}
       ${surface}
       ${this._sendError ? html`<div class="send-error">${this._sendError}</div>` : nothing}
       <form class="compose" @submit=${this.onSubmit}>
