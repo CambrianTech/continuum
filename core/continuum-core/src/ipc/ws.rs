@@ -28,6 +28,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use continuum_airc_protocol::{AircCommandRequest, WsClientMessage, WsServerMessage};
+use continuum_positron::scoping::{CompositeCache, PerUserSubstrates};
 use continuum_positron::{run_session, ClientMessage, CommandDispatch, ServerMessage, Substrate};
 use futures_util::{SinkExt, StreamExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -57,7 +58,12 @@ fn parse_me(query: Option<&str>) -> Option<uuid::Uuid> {
 /// until the process exits. Spawned on the tokio runtime from `start_server`
 /// when `CONTINUUM_CORE_WS` is set. Fails loud (logs + returns) if the bind
 /// fails — a dead listener never silently pretends to serve.
-pub async fn serve(bind_addr: String, executor: Arc<CommandExecutor>, substrate: Substrate) {
+pub async fn serve(
+    bind_addr: String,
+    executor: Arc<CommandExecutor>,
+    substrate: Substrate,
+    per_user: Arc<PerUserSubstrates>,
+) {
     let listener = match TcpListener::bind(&bind_addr).await {
         Ok(listener) => {
             crate::log_info!(
@@ -94,9 +100,11 @@ pub async fn serve(bind_addr: String, executor: Arc<CommandExecutor>, substrate:
             Ok((stream, peer)) => {
                 let executor = Arc::clone(&executor);
                 let substrate = substrate.clone();
+                let per_user = Arc::clone(&per_user);
                 let dispatcher = Arc::clone(&dispatcher);
                 tokio::spawn(async move {
-                    handle_ws_connection(stream, peer, executor, substrate, dispatcher).await;
+                    handle_ws_connection(stream, peer, executor, substrate, per_user, dispatcher)
+                        .await;
                 });
             }
             Err(e) => {
@@ -129,6 +137,7 @@ async fn handle_ws_connection(
     peer: SocketAddr,
     executor: Arc<CommandExecutor>,
     substrate: Substrate,
+    per_user: Arc<PerUserSubstrates>,
     dispatcher: Arc<dyn CommandDispatch>,
 ) {
     // Capture the citizen id from the connect URL (`?me=<uuid>`) during the
@@ -182,7 +191,19 @@ async fn handle_ws_connection(
     let (session_in_tx, session_in_rx) = mpsc::channel::<ClientMessage>(64);
     let (session_out_tx, mut session_out_rx) = mpsc::channel::<ServerMessage>(64);
     let session_task = tokio::spawn(async move {
-        if let Err(e) = run_session(session_in_rx, session_out_tx, substrate, dispatcher).await {
+        // A citizen session (`?me` present) reads its per-USER views (nav) from ITS
+        // OWN substrate, unioned with the node substrate for per-ROOM views (chat/
+        // wall/kanban) — the composite. An anonymous session reads the node substrate
+        // alone. Identical path for a human and a persona: the only difference is
+        // whether `?me` was on the URL, never who they are.
+        let result = match citizen {
+            Some(me) => {
+                let composite = CompositeCache::new(substrate, per_user.for_citizen(me));
+                run_session(session_in_rx, session_out_tx, composite, dispatcher).await
+            }
+            None => run_session(session_in_rx, session_out_tx, substrate, dispatcher).await,
+        };
+        if let Err(e) = result {
             crate::log_warn!(
                 "ipc",
                 "ws",
@@ -461,9 +482,10 @@ mod tests {
         let substrate = Substrate::new();
         let dispatcher: Arc<dyn CommandDispatch> =
             Arc::new(ExecutorDispatch::new(Arc::clone(&exec)));
+        let per_user = Arc::new(PerUserSubstrates::new());
         tokio::spawn(async move {
             if let Ok((stream, peer)) = listener.accept().await {
-                handle_ws_connection(stream, peer, exec, substrate, dispatcher).await;
+                handle_ws_connection(stream, peer, exec, substrate, per_user, dispatcher).await;
             }
         });
 
@@ -551,9 +573,11 @@ mod tests {
             .expect("bind ephemeral");
         let addr = listener.local_addr().expect("local addr");
         let conn_substrate = substrate.clone();
+        let per_user = Arc::new(PerUserSubstrates::new());
         tokio::spawn(async move {
             if let Ok((stream, peer)) = listener.accept().await {
-                handle_ws_connection(stream, peer, executor, conn_substrate, dispatcher).await;
+                handle_ws_connection(stream, peer, executor, conn_substrate, per_user, dispatcher)
+                    .await;
             }
         });
 
