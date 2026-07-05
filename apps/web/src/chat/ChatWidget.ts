@@ -303,22 +303,25 @@ export class ChatWidget extends LitElement {
       align-items: center;
       gap: 4px;
     }
+    /* Angular HUD chips (slanted-edge tags from the reference), not rounded pills. The two
+       chips cut opposite corners so they nest, and the palette keeps kind cool / runtime warm. */
     .member .kind-badge {
-      font-size: 9px;
+      font-size: 8px;
       text-transform: uppercase;
-      letter-spacing: 0.05em;
-      padding: 1px 5px;
-      border-radius: var(--radius-sm);
-      background: var(--button-secondary-background);
+      letter-spacing: 0.08em;
+      padding: 1px 6px;
+      clip-path: polygon(0 0, 100% 0, calc(100% - 4px) 100%, 0 100%);
+      background: rgba(130, 140, 160, 0.16);
       color: var(--content-secondary);
     }
     .runtime {
-      font-size: 10px;
-      padding: 1px 5px;
-      border-radius: var(--radius-md);
-      background: var(--button-secondary-background);
+      font-size: 8px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      padding: 1px 6px;
+      clip-path: polygon(4px 0, 100% 0, 100% 100%, 0 100%);
+      background: rgba(0, 212, 255, 0.14);
       color: var(--content-accent);
-      border: 1px solid var(--border-accent);
     }
     /* Live genome-energy meters — the old persona-tile INT/NRG/QUE bars, reborn
      * sci-fi: a thin cyan bar per vital with a moving glint on live agents. The
