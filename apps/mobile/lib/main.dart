@@ -11,7 +11,8 @@
 // (matching the web ChatWidget) — one definition, a whole world, on the phone too.
 
 import 'package:flutter/material.dart';
-import 'package:flutter_markdown/flutter_markdown.dart';
+import 'package:flutter_highlight/flutter_highlight.dart';
+import 'package:flutter_highlight/themes/atom-one-dark.dart';
 
 import 'live.dart';
 
@@ -95,6 +96,68 @@ final Color _bubbleBg = _tron ? const Color(0x8C00121E) : _panel;
 final Color _bubbleBorder = _tron ? const Color(0x5900E0FF) : _border;
 List<Shadow>? _glow(Color c, double r) =>
     _tron ? [Shadow(color: c, blurRadius: r)] : null;
+
+// Languages flutter_highlight bundles — fall back to plaintext so an unknown fence never throws.
+const _knownLangs = {
+  'bash', 'shell', 'sh', 'javascript', 'js', 'typescript', 'ts', 'dart', 'python', 'py',
+  'json', 'yaml', 'yml', 'rust', 'go', 'sql', 'css', 'html', 'xml', 'markdown', 'diff', 'plaintext',
+};
+
+/// Render a message body: prose lines with syntax-highlighted code blocks between them
+/// (```fences```), so personas' commands read as formatted, coloured code — the mobile twin
+/// of the web formatContent().
+Widget messageContent(String text) {
+  final children = <Widget>[];
+  final fence = RegExp(r'```([\w+#.\-]*)[ \t]*\r?\n?([\s\S]*?)```');
+  var last = 0;
+  for (final m in fence.allMatches(text)) {
+    if (m.start > last) {
+      final prose = text.substring(last, m.start).trim();
+      if (prose.isNotEmpty) children.add(_prose(prose));
+    }
+    final lang = (m.group(1) ?? '').toLowerCase();
+    final code = (m.group(2) ?? '').replaceAll(RegExp(r'\n+$'), '');
+    children.add(_codeBlock(lang, code));
+    last = m.end;
+  }
+  if (last < text.length) {
+    final prose = text.substring(last).trim();
+    if (prose.isNotEmpty) children.add(_prose(prose));
+  }
+  if (children.isEmpty) children.add(_prose(text));
+  return Column(crossAxisAlignment: CrossAxisAlignment.start, children: children);
+}
+
+Widget _prose(String text) => Padding(
+      padding: const EdgeInsets.symmetric(vertical: 2),
+      child: Text(text, style: const TextStyle(color: _text, fontSize: 14, height: 1.36)),
+    );
+
+Widget _codeBlock(String lang, String code) {
+  final l = _knownLangs.contains(lang) ? lang : 'plaintext';
+  // Match the container to atom-one-dark's root bg (#282c34) so HighlightView's own
+  // background (only as wide as the code) blends seamlessly — no two-tone box.
+  return Container(
+    width: double.infinity,
+    margin: const EdgeInsets.symmetric(vertical: 5),
+    clipBehavior: Clip.antiAlias,
+    decoration: BoxDecoration(
+      color: const Color(0xFF282C34),
+      borderRadius: BorderRadius.circular(7),
+      border: Border.all(color: _bubbleBorder),
+    ),
+    child: SingleChildScrollView(
+      scrollDirection: Axis.horizontal,
+      child: HighlightView(
+        code,
+        language: l,
+        theme: atomOneDarkTheme,
+        padding: const EdgeInsets.all(11),
+        textStyle: const TextStyle(fontFamily: 'monospace', fontSize: 12.5, height: 1.45),
+      ),
+    ),
+  );
+}
 
 /// The Tron grid floor — faint cyan lines on a deep field, like the web universe.
 class GridPainter extends CustomPainter {
@@ -257,24 +320,8 @@ class _MobileScreenViewState extends State<MobileScreenView> {
                                       color: Color(0x2600C8FF), blurRadius: 14)
                                 ]
                               : null),
-                      // Markdown so personas' commands (```code/list```, inline `code`)
-                      // render as formatted blocks, not raw backticks.
-                      child: MarkdownBody(
-                        data: m.content,
-                        styleSheet: MarkdownStyleSheet(
-                          p: const TextStyle(color: _text, fontSize: 14, height: 1.36),
-                          code: TextStyle(
-                              color: _senderColor,
-                              backgroundColor: const Color(0x33000000),
-                              fontFamily: 'monospace',
-                              fontSize: 12.5),
-                          codeblockPadding: const EdgeInsets.all(10),
-                          codeblockDecoration: BoxDecoration(
-                              color: const Color(0x55000000),
-                              borderRadius: BorderRadius.circular(6),
-                              border: Border.all(color: _bubbleBorder)),
-                        ),
-                      ),
+                      // Syntax-highlighted code blocks between prose lines.
+                      child: messageContent(m.content),
                     ),
                   ]);
             },
