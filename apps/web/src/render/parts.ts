@@ -8,6 +8,8 @@
  */
 
 import { html, nothing, type TemplateResult } from 'lit';
+import { unsafeHTML } from 'lit/directives/unsafe-html.js';
+import hljs from 'highlight.js/lib/common';
 import type { ListingCell } from '@continuum/patterns';
 import type { MemberKind, MessageRowVM, RosterMemberVM } from '@continuum/chat-view';
 
@@ -149,12 +151,25 @@ export function memberCardFromCell(cell: ListingCell): TemplateResult {
  *  auto-escapes every interpolation, so the code text is inert (no HTML injection). */
 export function formatContent(text: string): TemplateResult {
   const parts: TemplateResult[] = [];
-  const fence = /```[^\n]*\n?([\s\S]*?)```/g;
+  const fence = /```([\w+#.-]*)[ \t]*\n?([\s\S]*?)```/g;
   let last = 0;
   let m: RegExpExecArray | null;
   while ((m = fence.exec(text)) !== null) {
     if (m.index > last) parts.push(inlineCode(text.slice(last, m.index)));
-    parts.push(html`<pre class="code-block"><code>${(m[1] ?? '').replace(/\n+$/, '')}</code></pre>`);
+    const lang = (m[1] ?? '').toLowerCase();
+    const code = (m[2] ?? '').replace(/\n+$/, '');
+    const n = code.length === 0 ? 0 : code.split('\n').length;
+    // Syntax-highlight (fence language, else auto-detect); hljs escapes the code, so the
+    // resulting HTML is inert for unsafeHTML. Expandable: short blocks open, long ones
+    // collapse behind a summary so a big command/output never buries the conversation.
+    const highlighted =
+      lang && hljs.getLanguage(lang)
+        ? hljs.highlight(code, { language: lang, ignoreIllegals: true }).value
+        : hljs.highlightAuto(code).value;
+    parts.push(html`<details class="code-collapsible" ?open=${n <= 3}>
+      <summary>${lang || 'code'}<span class="code-count">${n} ${n === 1 ? 'line' : 'lines'}</span></summary>
+      <pre><code class="hljs">${unsafeHTML(highlighted)}</code></pre>
+    </details>`);
     last = fence.lastIndex;
   }
   if (last < text.length) parts.push(inlineCode(text.slice(last)));

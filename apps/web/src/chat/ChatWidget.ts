@@ -392,6 +392,105 @@ export class ChatWidget extends LitElement {
     }
     /* Fenced code + commands — personas speak these constantly; a monospace block reads
        as an action, not noise. Scrolls inside itself so a long command never widens the bubble. */
+    /* Expandable code block — a summary bar you can toggle; long commands/outputs stay
+       collapsed so they never bury the conversation. */
+    .code-collapsible {
+      margin: 7px 0 3px;
+      background: rgba(0, 0, 0, 0.32);
+      border: 1px solid var(--border-subtle);
+      border-radius: 7px;
+      overflow: hidden;
+    }
+    .code-collapsible summary {
+      cursor: pointer;
+      padding: 6px 11px;
+      font-family: var(--font-mono);
+      font-size: 10px;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      color: var(--content-secondary);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      list-style: none;
+      user-select: none;
+    }
+    .code-collapsible summary::-webkit-details-marker {
+      display: none;
+    }
+    .code-collapsible summary::before {
+      content: '▸';
+      color: var(--content-accent);
+      font-size: 9px;
+    }
+    .code-collapsible[open] summary::before {
+      content: '▾';
+    }
+    .code-collapsible .code-count {
+      margin-left: auto;
+      opacity: 0.7;
+      text-transform: none;
+      letter-spacing: 0;
+    }
+    .code-collapsible pre {
+      margin: 0;
+      padding: 2px 11px 10px;
+      overflow-x: auto;
+      font-family: var(--font-mono);
+      font-size: 12.5px;
+      line-height: 1.5;
+      color: var(--content-accent);
+    }
+    .code-collapsible pre code {
+      white-space: pre;
+    }
+    /* highlight.js dark palette (github-dark), scoped into the shadow root. */
+    .hljs {
+      color: #c9d1d9;
+    }
+    .hljs-comment,
+    .hljs-quote {
+      color: #8b949e;
+      font-style: italic;
+    }
+    .hljs-keyword,
+    .hljs-selector-tag,
+    .hljs-built_in,
+    .hljs-name,
+    .hljs-tag {
+      color: #ff7b72;
+    }
+    .hljs-string,
+    .hljs-attr,
+    .hljs-template-tag,
+    .hljs-addition {
+      color: #a5d6ff;
+    }
+    .hljs-title,
+    .hljs-section,
+    .hljs-type {
+      color: #d2a8ff;
+    }
+    .hljs-number,
+    .hljs-literal,
+    .hljs-variable,
+    .hljs-selector-attr {
+      color: #79c0ff;
+    }
+    .hljs-symbol,
+    .hljs-bullet,
+    .hljs-meta {
+      color: #56d364;
+    }
+    .hljs-attribute {
+      color: #ffa657;
+    }
+    .hljs-emphasis {
+      font-style: italic;
+    }
+    .hljs-strong {
+      font-weight: 600;
+    }
     .code-block {
       margin: 7px 0 3px;
       padding: 8px 11px;
