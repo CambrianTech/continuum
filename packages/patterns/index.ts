@@ -209,6 +209,56 @@ export function createRagTarget(content: ContentRegistry<string>): RenderTarget<
   };
 }
 
+// ── Mobile adaptation rule — authored + tested ONCE, every native painter inherits it ──
+
+/** One bottom-nav destination on the mobile shell: a secondary listing (Who / Where) the
+ *  phone reveals one tab at a time — never all panels crammed at once. */
+export interface MobileTab {
+  readonly id: string;
+  readonly title: string;
+  readonly cells: readonly ListingCell[];
+}
+
+/** The MOBILE adaptation of a `WorkspaceView`: the primary content owns the screen; the
+ *  secondary listings become bottom-nav tabs; per-cell **dossier** detail (badges, meters,
+ *  subtitle) is DROPPED — a phone shows presence, not a dossier. A native painter (Flutter,
+ *  Swift, Kotlin) consumes THIS; the rule that produces it lives + is tested here, so the
+ *  native app is a thin painter, not a place UX decisions are re-made
+ *  ([[best-ux-per-portal-not-identical-projection]]). */
+export interface MobileScreen {
+  readonly title: string;
+  readonly primary: ContentView;
+  readonly tabs: readonly MobileTab[];
+}
+
+/**
+ * `toMobileScreen` — the `@media (modality: mobile)` rule as a pure, testable function.
+ * Derives a phone-native layout from the SAME neutral `WorkspaceView` the desktop paints as
+ * a three-panel: conversation full-screen (`primary`), the who/where listings behind a
+ * bottom nav (`tabs`), each cell stripped to presence essentials (id, title, glyph, status)
+ * — the dossier badges/meters a desktop row can afford are dropped. Authored once; the
+ * Flutter/Swift/Kotlin painter renders `MobileScreen` → native widgets. Verifiable without a
+ * simulator — the rule is logic, the pixels are the grid's last mile.
+ */
+export function toMobileScreen(ws: WorkspaceView): MobileScreen {
+  const presenceOnly = (c: ListingCell): ListingCell => ({
+    id: c.id,
+    title: c.title,
+    ...(c.glyph !== undefined ? { glyph: c.glyph } : {}),
+    ...(c.status !== undefined ? { status: c.status } : {}),
+  });
+  const tab = (v: ListingView): MobileTab => ({
+    id: v.id,
+    title: v.title,
+    cells: v.cells.map(presenceOnly),
+  });
+  return {
+    title: ws.nav.cells[0]?.title ?? '',
+    primary: ws.content,
+    tabs: ws.left.map(tab),
+  };
+}
+
 /** Build an empty content-dispatch table for a target. Fail-loud on unknown purpose. */
 export function createContentRegistry<Out>(): ContentRegistry<Out> {
   const table = new Map<string, ContentRenderer<Out>>();
