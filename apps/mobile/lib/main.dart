@@ -6,10 +6,16 @@
 // a bottom nav, per-cell dossier dropped. The RULE lives + is tested in TS
 // (mobileScreen.spec.ts); this is the thin native painter. Sample data here proves the
 // painter; the live wire (sdk/flutter over the core WS) is the next slice.
+//
+// UNIVERSE axis: ?universe=tron re-embodies the SAME screen as the neon grid portal
+// (matching the web ChatWidget) — one definition, a whole world, on the phone too.
 
 import 'package:flutter/material.dart';
 
 void main() => runApp(const ContinuumMobileApp());
+
+// The active universe (from the URL, so a web build can switch worlds).
+final bool _tron = Uri.base.queryParameters['universe'] == 'tron';
 
 // ── The mobile view-model (Dart mirror of patterns.MobileScreen) ──
 class MobileCell {
@@ -65,7 +71,7 @@ final sample = MobileScreen(
   ],
 );
 
-// Design tokens — matched to the loved-up web (dark sci-fi, cyan accent, live green).
+// Design tokens — the native 'continuum' look (dark sci-fi, cyan accent, live green).
 const _bg = Color(0xFF0D1117);
 const _panel = Color(0xFF161B22);
 const _border = Color(0xFF21262D);
@@ -74,12 +80,49 @@ const _online = Color(0xFF3FB950);
 const _dim = Color(0xFF8B949E);
 const _text = Color(0xFFC9D1D9);
 
+// The tron universe — brighter derez cyan + a grid floor + glows.
+final Color _scaffoldBg = _tron ? const Color(0xFF00060E) : _bg;
+final Color _senderColor = _tron ? const Color(0xFF6FF0FF) : _accent;
+final Color _bubbleBg = _tron ? const Color(0x8C00121E) : _panel;
+final Color _bubbleBorder = _tron ? const Color(0x5900E0FF) : _border;
+List<Shadow>? _glow(Color c, double r) =>
+    _tron ? [Shadow(color: c, blurRadius: r)] : null;
+
+/// The Tron grid floor — faint cyan lines on a deep field, like the web universe.
+class GridPainter extends CustomPainter {
+  @override
+  void paint(Canvas canvas, Size size) {
+    final line = Paint()
+      ..color = const Color(0x1400E0FF)
+      ..strokeWidth = 1;
+    for (double x = 0; x <= size.width; x += 44) {
+      canvas.drawLine(Offset(x, 0), Offset(x, size.height), line);
+    }
+    for (double y = 0; y <= size.height; y += 44) {
+      canvas.drawLine(Offset(0, y), Offset(size.width, y), line);
+    }
+    // A cyan wash near the top — the horizon glow of the grid.
+    canvas.drawRect(
+      Rect.fromLTWH(0, 0, size.width, size.height * 0.35),
+      Paint()
+        ..shader = const LinearGradient(
+          begin: Alignment.topCenter,
+          end: Alignment.bottomCenter,
+          colors: [Color(0x1A00C8FF), Color(0x0000C8FF)],
+        ).createShader(Rect.fromLTWH(0, 0, size.width, size.height * 0.35)),
+    );
+  }
+
+  @override
+  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
+}
+
 class ContinuumMobileApp extends StatelessWidget {
   const ContinuumMobileApp({super.key});
   @override
   Widget build(BuildContext context) => MaterialApp(
         debugShowCheckedModeBanner: false,
-        theme: ThemeData.dark().copyWith(scaffoldBackgroundColor: _bg),
+        theme: ThemeData.dark().copyWith(scaffoldBackgroundColor: _scaffoldBg),
         home: const MobileScreenView(),
       );
 }
@@ -98,15 +141,19 @@ class _MobileScreenViewState extends State<MobileScreenView> {
     final s = sample;
     final whoCount = s.tabs.firstWhere((t) => t.id == 'who').cells.length;
     return Scaffold(
-      backgroundColor: _bg,
+      backgroundColor: _scaffoldBg,
       appBar: AppBar(
-        backgroundColor: _bg,
+        backgroundColor: _scaffoldBg,
         elevation: 0,
         titleSpacing: 16,
         title: Row(children: [
-          Text(s.title,
-              style: const TextStyle(
-                  color: _accent, fontWeight: FontWeight.w700, fontSize: 17)),
+          Text(_tron ? s.title.toUpperCase() : s.title,
+              style: TextStyle(
+                  color: _senderColor,
+                  fontWeight: FontWeight.w700,
+                  fontSize: 17,
+                  letterSpacing: _tron ? 2.4 : 0,
+                  shadows: _glow(const Color(0xFF00E0FF), 14))),
           const Spacer(),
           Text('$whoCount here',
               style: const TextStyle(color: _dim, fontSize: 12)),
@@ -114,18 +161,27 @@ class _MobileScreenViewState extends State<MobileScreenView> {
           Container(
               width: 7,
               height: 7,
-              decoration:
-                  const BoxDecoration(color: _online, shape: BoxShape.circle)),
+              decoration: BoxDecoration(
+                  color: _tron ? const Color(0xFF00FFF0) : _online,
+                  shape: BoxShape.circle,
+                  boxShadow: _tron
+                      ? const [
+                          BoxShadow(color: Color(0xCC00FFF0), blurRadius: 10)
+                        ]
+                      : null)),
           const SizedBox(width: 5),
           const Text('LIVE',
               style: TextStyle(color: _dim, fontSize: 10, letterSpacing: 1.4)),
           const SizedBox(width: 4),
         ]),
       ),
-      body: _tab == 1 ? _who(s.tabs[1]) : _conversation(s.conversation),
+      body: Stack(children: [
+        if (_tron) Positioned.fill(child: CustomPaint(painter: GridPainter())),
+        _tab == 1 ? _who(s.tabs[1]) : _conversation(s.conversation),
+      ]),
       bottomNavigationBar: BottomNavigationBar(
-        backgroundColor: _panel,
-        selectedItemColor: _accent,
+        backgroundColor: _tron ? const Color(0xF20A1420) : _panel,
+        selectedItemColor: _senderColor,
         unselectedItemColor: _dim,
         currentIndex: _tab,
         type: BottomNavigationBarType.fixed,
@@ -152,10 +208,11 @@ class _MobileScreenViewState extends State<MobileScreenView> {
                       padding: const EdgeInsets.only(left: 4, top: 8, bottom: 4),
                       child: Row(children: [
                         Text(m.sender,
-                            style: const TextStyle(
-                                color: _accent,
+                            style: TextStyle(
+                                color: _senderColor,
                                 fontWeight: FontWeight.w600,
-                                fontSize: 13)),
+                                fontSize: 13,
+                                shadows: _glow(const Color(0xB300E0FF), 8))),
                         const SizedBox(width: 6),
                         Text(m.time,
                             style: const TextStyle(color: _dim, fontSize: 11)),
@@ -166,9 +223,15 @@ class _MobileScreenViewState extends State<MobileScreenView> {
                       padding: const EdgeInsets.symmetric(
                           horizontal: 12, vertical: 9),
                       decoration: BoxDecoration(
-                          color: _panel,
+                          color: _bubbleBg,
                           borderRadius: BorderRadius.circular(10),
-                          border: Border.all(color: _border)),
+                          border: Border.all(color: _bubbleBorder),
+                          boxShadow: _tron
+                              ? const [
+                                  BoxShadow(
+                                      color: Color(0x2600C8FF), blurRadius: 14)
+                                ]
+                              : null),
                       child: Text(m.content,
                           style: const TextStyle(
                               color: _text, fontSize: 14, height: 1.36)),
@@ -182,17 +245,18 @@ class _MobileScreenViewState extends State<MobileScreenView> {
 
   Widget _composer() => Container(
         padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
-        decoration: const BoxDecoration(
-            color: _bg, border: Border(top: BorderSide(color: _border))),
+        decoration: BoxDecoration(
+            color: _tron ? const Color(0x730A1420) : _bg,
+            border: Border(top: BorderSide(color: _bubbleBorder))),
         child: Row(children: [
           Expanded(
             child: Container(
               padding:
                   const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
               decoration: BoxDecoration(
-                  color: _panel,
+                  color: _bubbleBg,
                   borderRadius: BorderRadius.circular(22),
-                  border: Border.all(color: _border)),
+                  border: Border.all(color: _bubbleBorder)),
               child: const Text('Message cambriantech…',
                   style: TextStyle(color: _dim, fontSize: 14)),
             ),
@@ -201,9 +265,13 @@ class _MobileScreenViewState extends State<MobileScreenView> {
           Container(
             width: 42,
             height: 42,
-            decoration:
-                const BoxDecoration(color: _accent, shape: BoxShape.circle),
-            child: const Icon(Icons.arrow_upward, color: _bg, size: 20),
+            decoration: BoxDecoration(
+                color: _senderColor,
+                shape: BoxShape.circle,
+                boxShadow: _tron
+                    ? const [BoxShadow(color: Color(0x9900E0FF), blurRadius: 14)]
+                    : null),
+            child: Icon(Icons.arrow_upward, color: _scaffoldBg, size: 20),
           ),
         ]),
       );
@@ -222,16 +290,18 @@ class _MobileScreenViewState extends State<MobileScreenView> {
                           width: 10,
                           height: 10,
                           decoration: BoxDecoration(
-                              color: _online,
+                              color: _tron ? const Color(0xFF00FFF0) : _online,
                               shape: BoxShape.circle,
-                              border: Border.all(color: _bg, width: 2)),
+                              border:
+                                  Border.all(color: _scaffoldBg, width: 2)),
                         ),
                       ),
                   ]),
                   title: Text(c.title,
-                      style: const TextStyle(
-                          color: Color(0xFFE6EDF3),
-                          fontWeight: FontWeight.w600)),
+                      style: TextStyle(
+                          color: const Color(0xFFE6EDF3),
+                          fontWeight: FontWeight.w600,
+                          shadows: _glow(const Color(0x8000E0FF), 6))),
                 ))
             .toList(),
       );
