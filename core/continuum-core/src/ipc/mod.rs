@@ -1674,6 +1674,16 @@ pub fn start_server(
         // TODO #52) AND decides the model + lanes from an honest budget +
         // on-disk footprints with GPU-residency. The spawner obeys the plan —
         // no hardcoded tier/model/lanes. (Supersedes the #1645 tier-clamp fix.)
+        // Glass-box: surface the artifact cache state at boot so the real provisioning
+        // picture (what weights/avatars are present, how much disk) is visible without
+        // a debugger ([[never-blind-feedback-driven-iteration]]). First live use of the
+        // provisioning system on the running core. `eprintln!` (not the category logger)
+        // so a boot summary is UNCONDITIONALLY visible in the server log, regardless of
+        // which log categories the operator has enabled.
+        eprintln!(
+            "📦 artifact cache at boot: {}",
+            crate::provisioning::Provisioner::default().cache_report()
+        );
         let (hw_cap, tier_cat, tier_id) = serving_daemon.detected_tier();
         // The plan is the single grouped source of truth (model + lanes +
         // host-fit served window). Pass it by reference to the spawner per
