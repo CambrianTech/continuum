@@ -307,6 +307,18 @@ impl ServingDaemonModule {
         // all" is a different question than "how much should the shared base claim now".)
         let available = self.system.snapshot().memory.available_bytes;
         let mode = crate::provisioning::serving_mode_for_pressure(available);
+        // Observability: emit ONLY on a mode TRANSITION so the dynamic scaling is visible
+        // without spamming the hot plan tick ([[never-blind-feedback-driven-iteration]]).
+        // This is the seam a learned / LLM policy will report through — watch it kick down
+        // under load, and later watch a smarter policy make a better call.
+        {
+            use std::sync::atomic::{AtomicU8, Ordering};
+            static LAST_MODE: AtomicU8 = AtomicU8::new(u8::MAX);
+            let m = mode as u8;
+            if LAST_MODE.swap(m, Ordering::Relaxed) != m {
+                eprintln!("🎛 serving mode → {:?} ({} GiB free)", mode, available / (1 << 30));
+            }
+        }
         HostBudget {
             usable_bytes: (raw.usable_bytes as f64 * mode.serving_fraction()) as u64,
             perf_cores: raw.perf_cores,
