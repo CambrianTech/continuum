@@ -319,23 +319,56 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    // Wait for the Unix socket to be bound + world-rw chmod'd. The IPC
-    // thread already libc::_exit(1)s on bind failure, so a watch that
-    // never transitions means the process is on its way down — main's
-    // await will resolve to Err and we fall through to a clean exit
-    // with the IPC thread's exit code already in flight.
-    if *ipc_ready_rx.borrow_and_update() {
-        // fast path
-    } else {
+    // Wait for the Unix socket to be bound — under a BOOT DEADLINE. The old code
+    // parked FOREVER if the IPC thread panicked/hung before binding: `IPC_READY`
+    // is a process-global watch sender that is NOT dropped on a thread panic, so
+    // `changed()` never errors and the comment's promised "clean exit" never
+    // happened (audit: a pre-bind `panic!` in start_server — e.g. model_registry
+    // load — or ANY hung module init = infinite alive-but-deaf zombie). Bound the
+    // wait: if the socket isn't bound within the deadline, boot is wedged — fail
+    // loud + _exit(1) so the supervisor (launchd/systemd KeepAlive) restarts us
+    // instead of parking ([[fallbacks-are-illegal-fail-loud]], task #82). Override
+    // with CONTINUUM_BOOT_DEADLINE_SECS (default 300 — generous for a cold model load).
+    let boot_deadline = std::time::Duration::from_secs(
+        std::env::var("CONTINUUM_BOOT_DEADLINE_SECS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .filter(|&s| s > 0)
+            .unwrap_or(300),
+    );
+    let wait_ready = async {
+        if *ipc_ready_rx.borrow_and_update() {
+            return;
+        }
         loop {
             if ipc_ready_rx.changed().await.is_err() {
-                tracing::error!("❌ IPC ready watch closed before bind — see prior error");
-                return Ok(());
+                // Sender dropped pre-bind → the IPC thread is going down; its own
+                // _exit(1) may be in flight. Exit non-zero too — never fall through
+                // alive (the old `return Ok(())` here masked a boot failure).
+                // eprintln! too: libc::_exit(1) does NOT flush the async tracing
+                // appender, so the raw unbuffered stderr write is what the operator
+                // actually sees.
+                let m = "❌ IPC ready watch closed before bind — IPC thread died; exiting 1";
+                tracing::error!("{m}");
+                eprintln!("{m}");
+                unsafe { libc::_exit(1) };
             }
             if *ipc_ready_rx.borrow_and_update() {
                 break;
             }
         }
+    };
+    if tokio::time::timeout(boot_deadline, wait_ready).await.is_err() {
+        // eprintln! alongside tracing: libc::_exit(1) skips the async appender
+        // flush, so the raw stderr write is what the operator/service log sees.
+        let m = format!(
+            "❌ core did not bind its IPC socket within {}s — boot is wedged (a pre-bind \
+             panic or a hung module init). Exiting non-zero so the service restarts.",
+            boot_deadline.as_secs()
+        );
+        tracing::error!("{m}");
+        eprintln!("{m}");
+        unsafe { libc::_exit(1) };
     }
 
     // Delayed reporter registration: subscribe to the Bevy renderer's
