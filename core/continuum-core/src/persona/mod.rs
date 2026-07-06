@@ -69,6 +69,7 @@ pub mod media_policy;
 pub mod message_cache;
 pub mod model_selection;
 pub mod name_generator;
+pub mod projection;
 pub mod prompt_assembly;
 pub mod rag_budget;
 pub mod rag_capture;
