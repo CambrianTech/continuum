@@ -52,8 +52,13 @@ services:
   # ── Model Init (downloads voice/avatar/scene models on first run) ──
   model-init:
     build:
-      context: ./src
-      dockerfile: ../docker/model-init.Dockerfile
+      # context moved src → legacy/src (#1840); dockerfile path is relative to
+      # the context, so ../docker → ../../docker to stay at repo-root/docker.
+      # NOTE (Linux work): models.json lives at legacy/src/shared/models.json
+      # today — a follow should source the model catalog from a new-world home,
+      # not the frozen legacy tree. Build-verify on a Linux box.
+      context: ./legacy/src
+      dockerfile: ../../docker/model-init.Dockerfile
     image: ghcr.io/cambriantech/continuum-model-init:${CONTINUUM_IMAGE_TAG:-latest}
     # One-time downloader. Fixed budget — doesn't scale with host RAM.
     mem_limit: ${MODEL_INIT_MEM:-2g}
@@ -98,8 +103,14 @@ services:
         # avatar-provisioning story lands (LFS, model-init download,
         # or curl from a CC0 URL in CI before docker build) per the
         # gap noted in PR891-E2E-VALIDATION.md.
-        shared: ./src/shared
-        shared-generated: ./src/shared/generated
+        # moved src → legacy/src (#1840). NOTE (Linux work): shared/models.json IS
+        # at legacy/src/shared, but shared-generated/entity_schemas.json is a
+        # GENERATED file (ts-rs / cargo test), gitignored — NOT present in the
+        # legacy tree on a clean checkout. The core image build needs that file
+        # generated (or sourced from a new-world home) FIRST. This is the deepest
+        # container-path gap the src move exposed; must be build-verified on Linux.
+        shared: ./legacy/src/shared
+        shared-generated: ./legacy/src/shared/generated
       args:
         # --no-default-features excludes livekit-webrtc (handled by livekit-bridge).
         # load-dynamic-ort loads ONNX Runtime as shared lib (runtime discovery).
@@ -183,66 +194,14 @@ services:
       timeout: 3s
       retries: 5
 
-  # ── Node Server (TypeScript) ──────────────────────────────
-  node-server:
-    build:
-      context: ./src
-      dockerfile: ../docker/node-server.Dockerfile
-    image: ghcr.io/cambriantech/continuum-node:${CONTINUUM_IMAGE_TAG:-latest}
-    restart: unless-stopped
-    # TS orchestrator + IPC buffers + RAG state. Scales with host RAM —
-    # install.sh sets NODE_SERVER_MEM to max(2, host_gb/8). Default 2g
-    # for manual docker compose users.
-    mem_limit: ${NODE_SERVER_MEM:-2g}
-    # depends_on omits postgres — it's in the `postgres` profile (opt-in).
-    # node-server doesn't connect to postgres directly anyway; all data ops
-    # flow through continuum-core via IPC with opaque handles.
-    depends_on:
-      continuum-core:
-        condition: service_healthy
-    ports:
-      - "${NODE_WS_PORT:-9001}:9001"   # WebSocket
-    volumes:
-      - ~/.continuum:/root/.continuum
-    environment:
-      # node-server never directly connects to a database — all data ops
-      # go through continuum-core via IPC, using opaque handles ('main' for
-      # the primary DB, persona UUIDs for per-persona DBs). Rust resolves
-      # handles to concrete backends. DATABASE_URL intentionally NOT set
-      # here: the old value leaked across the TS→Rust IPC boundary as a
-      # connection string and broke Mac Option B where docker-DNS doesn't
-      # resolve from the native host.
-      - NODE_ENV=production
-      - JTAG_SKIP_HTTP=1
-      - JTAG_NO_TLS=1
-      # Browser connects to LiveKit via host-mapped port, not Docker DNS.
-      # 'ws://livekit:7880' only resolves inside the Docker network;
-      # the browser runs on the host where 'livekit' doesn't resolve.
-      # localhost:7880 works because livekit binds that port to the host.
-      # Grid mode overrides via LIVEKIT_BROWSER_URL=ws://tailscale:7880.
-      - LIVEKIT_URL=${LIVEKIT_BROWSER_URL:-ws://localhost:7880}
-
-  # ── Widget Server (Vite) ──────────────────────────────────
-  widget-server:
-    build:
-      context: ./src
-      dockerfile: ../docker/widget-server.Dockerfile
-    image: ghcr.io/cambriantech/continuum-widgets:${CONTINUUM_IMAGE_TAG:-latest}
-    restart: unless-stopped
-    mem_limit: 512m
-    depends_on:
-      node-server:
-        condition: service_healthy
-    ports:
-      - "9003:9003"   # HTTP
-    volumes:
-      - ~/.continuum/config.env:/root/.continuum/config.env:ro
-    environment:
-      - JTAG_HTTP_PORT=9003
-      - JTAG_WEBSOCKET_PORT=${NODE_WS_PORT:-9001}
-      # WS proxy: widget-server forwards browser WebSocket to node-server container
-      - JTAG_WS_PROXY_HOST=node-server
-      - JTAG_WS_PROXY_PORT=9001
+  # ── (removed) Node Server + Widget Server — the old TS/Vite UI chain ──
+  # The old-Node UI serving stack (node-server WS orchestrator + widget-server
+  # Vite host) is deleted: the reliable client is the native Tauri DESKTOP that
+  # attaches to continuum-core's WS ingress directly (desktop-only — see
+  # [[reliability-spine-*]]). Both built from ./src (now legacy/src #1840) and
+  # served the retired web UI, so they die with it. Grid nodes run core-only; a
+  # desktop connects from anywhere. Web stays a dev-only vite convenience, not a
+  # container service.
 
   # ── LiveKit (WebRTC) — local mode ───────────────────────────
   # Dev server for voice/video. Behind `live` profile — text chat doesn't
