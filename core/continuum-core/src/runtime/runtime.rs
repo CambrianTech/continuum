@@ -124,22 +124,60 @@ impl Runtime {
         let modules = self.registry.list_modules();
         info!("Initializing {} modules...", modules.len());
 
+        // Per-module init deadline. A module's `initialize()` is meant to be fast
+        // (in-memory wiring; heavy work is detached / tick-driven), so 60s is a
+        // wedged-init backstop, NOT a normal budget — it bounds the airc-120s-hang
+        // class per-module so ONE hung init can't stall the whole boot + socket
+        // bind. Generous to never false-positive a legitimately slow init.
+        const PER_MODULE_INIT_DEADLINE: std::time::Duration = std::time::Duration::from_secs(60);
+
+        // Collect failures instead of cascading. The old `return Err` on the FIRST
+        // failure skipped EVERY module after it → a silently half-booted core
+        // (audit finding). Each module now inits independently; a failure is
+        // recorded LOUDLY and we keep going so the rest of the substrate comes up.
+        let mut failures: Vec<String> = Vec::new();
         for name in &modules {
             if let Some(module) = self.registry.get_by_name(name) {
-                match module.initialize(&ctx).await {
-                    Ok(_) => {
+                match tokio::time::timeout(PER_MODULE_INIT_DEADLINE, module.initialize(&ctx)).await {
+                    Ok(Ok(_)) => {
                         info!("  {} initialized", name);
                     }
-                    Err(e) => {
-                        error!("  {} initialization failed: {}", name, e);
-                        return Err(format!("Module '{}' failed to initialize: {}", name, e));
+                    Ok(Err(e)) => {
+                        error!("  ✗ {} initialization FAILED: {}", name, e);
+                        failures.push(format!("{name}: {e}"));
+                    }
+                    Err(_) => {
+                        error!(
+                            "  ✗ {} init TIMED OUT after {}s (wedged) — skipped so the rest boot",
+                            name,
+                            PER_MODULE_INIT_DEADLINE.as_secs()
+                        );
+                        failures.push(format!(
+                            "{name}: init timed out after {}s",
+                            PER_MODULE_INIT_DEADLINE.as_secs()
+                        ));
                     }
                 }
             }
         }
 
-        info!("All {} modules initialized", modules.len());
-        Ok(())
+        if failures.is_empty() {
+            info!("All {} modules initialized", modules.len());
+            Ok(())
+        } else {
+            // Fail LOUD with the COMPLETE failure set (never just the first, never
+            // silent). The caller decides whether a degraded boot is acceptable;
+            // either way the operator sees every module that failed. The main.rs
+            // boot deadline still backstops a failure that prevents socket bind.
+            let summary = format!(
+                "{}/{} modules FAILED to initialize — core is DEGRADED: [{}]",
+                failures.len(),
+                modules.len(),
+                failures.join("; ")
+            );
+            error!("⚠ {summary}");
+            Err(summary)
+        }
     }
 
     /// Await a named module's `ready_edge()`. Returns `Ok(())` as soon as
