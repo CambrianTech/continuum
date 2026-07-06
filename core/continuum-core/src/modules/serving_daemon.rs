@@ -300,11 +300,13 @@ impl ServingDaemonModule {
         let raw = live_host_budget(&self.system, &self.resource_daemon);
         // Reserve headroom per the machine drive mode so the autonomic plan LEAVES room
         // for the other personas' KV + render + LiveKit — the resiliency fix that keeps a
-        // crowded call from OOM-ing the shared pool. Default Comfort; a follow-up drives
-        // the mode from the ScalingPolicy / live pressure. (The pin fit-gate keeps the RAW
-        // budget via `live_host_budget` directly — "can this model fit at all" is a
-        // different question than "how much should the shared base claim right now".)
-        let mode = crate::provisioning::PowerMode::Comfort;
+        // crowded call from OOM-ing the shared pool. The mode is driven from LIVE pressure
+        // (Eco when free memory is tight, Comfort at normal headroom) so the base reserves
+        // harder exactly when the pool is strained — auto-downshift. (The pin fit-gate
+        // keeps the RAW budget via `live_host_budget` directly — "can this model fit at
+        // all" is a different question than "how much should the shared base claim now".)
+        let available = self.system.snapshot().memory.available_bytes;
+        let mode = crate::provisioning::serving_mode_for_pressure(available);
         HostBudget {
             usable_bytes: (raw.usable_bytes as f64 * mode.serving_fraction()) as u64,
             perf_cores: raw.perf_cores,

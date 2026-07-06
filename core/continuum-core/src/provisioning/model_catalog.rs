@@ -247,6 +247,21 @@ pub fn budget_for_mode(total_bytes: u64, mode: PowerMode) -> u64 {
     }
 }
 
+/// The shared-base serving mode from live memory pressure — the auto-downshift. When
+/// free memory is tight (many personas resident, a game opened), drop to Eco so the base
+/// claims less and the rest of the call's KV + render still fit; at normal headroom stay
+/// Comfort. This is the load test's exact failure mode (KV ceiling under a crowd) handled
+/// automatically: serving reserves harder precisely when the pool is under strain, never
+/// grabbing its way into an OOM. 8 GiB matches the `DefaultScalingPolicy` starved-box line.
+pub fn serving_mode_for_pressure(available_bytes: u64) -> PowerMode {
+    const TIGHT: u64 = 8 * (1 << 30);
+    if available_bytes < TIGHT {
+        PowerMode::Eco
+    } else {
+        PowerMode::Comfort
+    }
+}
+
 /// The model-weight budget (bytes) derivable from a machine's total memory — the pure
 /// policy, so the caller passes `SystemResourceMonitor::memory().total` (the ONE resource
 /// authority — never a parallel probe) and gets a conservative weights budget. Reserves
@@ -488,6 +503,14 @@ mod tests {
         assert!(PowerMode::Comfort.serving_fraction() < PowerMode::Sport.serving_fraction());
         assert!(PowerMode::Sport.serving_fraction() < PowerMode::Performance.serving_fraction());
         assert_eq!(PowerMode::Performance.serving_fraction(), 1.0);
+    }
+
+    // what this catches: the auto-downshift — tight free memory picks Eco (reserve
+    // hardest), roomy picks Comfort. The base reserves harder exactly under strain.
+    #[test]
+    fn serving_downshifts_to_eco_under_pressure() {
+        assert_eq!(serving_mode_for_pressure(4 * (1 << 30)), PowerMode::Eco);
+        assert_eq!(serving_mode_for_pressure(32 * (1 << 30)), PowerMode::Comfort);
     }
 
     // what this catches: LIVE misfit-hardware proof — THIS machine's real memory → budget
