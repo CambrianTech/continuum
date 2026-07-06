@@ -51,7 +51,7 @@ pub(super) enum AnimationSet {
 pub(super) use blinking::animate_blinking;
 pub(super) use body_gestures::{animate_body_gestures, drive_cognitive_gestures};
 pub(super) use breathing::animate_breathing;
-pub(super) use cadence::manage_render_cadence;
+pub(super) use cadence::{govern_idle_cadence, manage_render_cadence};
 pub(super) use camera::animate_idle;
 pub(super) use expression::animate_expression;
 pub(super) use eye_gaze::animate_eye_gaze;

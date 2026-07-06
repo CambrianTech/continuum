@@ -81,6 +81,10 @@ pub(super) fn run_bevy_app(
                 process_commands,
                 monitor_load_states,
                 update_memory_stats,
+                // Render governor: set the desired idle cadence from live load
+                // (active/speaking slots) so idle faces throttle under a crowded call
+                // while the speaker stays full-fps. sync_idle_cadence applies it.
+                animation::govern_idle_cadence,
                 sync_idle_cadence,
                 scene::room::populate_rooms,
             ),
