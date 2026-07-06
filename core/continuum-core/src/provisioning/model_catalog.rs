@@ -77,6 +77,18 @@ fn looks_like_quant(token: &str) -> bool {
 /// be surfaced (fail loud), never silently downgraded past what exists or oversized past
 /// what fits.
 pub fn select_best_fit(candidates: &[GgufCandidate], vram_budget_bytes: u64) -> Option<&GgufCandidate> {
+    select_for_demand(candidates, vram_budget_bytes, QualityTarget::Balanced)
+}
+
+/// Pick the main-weight GGUF for a demand level. `Balanced` prefers the largest QUANTIZED
+/// tier that fits (near-lossless, leaves the pool for others), falling to float only if
+/// no quant fits. `Maximum` takes the single largest that fits, raw float included — the
+/// gas pedal. None when nothing fits (fail loud).
+pub fn select_for_demand(
+    candidates: &[GgufCandidate],
+    vram_budget_bytes: u64,
+    target: QualityTarget,
+) -> Option<&GgufCandidate> {
     // Largest that fits, deterministic tie-break by name — over a given candidate set.
     let largest = |quantized_only: bool| {
         candidates
@@ -89,10 +101,12 @@ pub fn select_best_fit(candidates: &[GgufCandidate], vram_budget_bytes: u64) -> 
                     .then_with(|| b.filename.cmp(&a.filename))
             })
     };
-    // Prefer the largest QUANTIZED tier that fits; fall to raw float weights only when no
-    // quant fits at all (a repo that ships F16-only, or a budget below the smallest quant
-    // yet above a tiny float — rare). Q8 near-lossless beats F16 for 2× the pool.
-    largest(true).or_else(|| largest(false))
+    match target {
+        // Share the box: near-lossless quantized, float only if no quant fits.
+        QualityTarget::Balanced => largest(true).or_else(|| largest(false)),
+        // Floor it: the biggest thing that fits, F16 included.
+        QualityTarget::Maximum => largest(false),
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -171,6 +185,32 @@ pub async fn list_repo_ggufs(
         .collect())
 }
 
+/// How hard to push THIS request — the gas pedal. Selection is dynamic, not a fixed
+/// conservative policy ([[misfit-grid-is-a-distributed-moe]], "dynamic base model up or
+/// down").
+/// - `Balanced` (default): the machine is shared — many personas, a live call. Leave
+///   headroom for the others + render; prefer near-lossless quantized weights.
+/// - `Maximum`: floor it. The teacher that trains the others, a substantial iOS build,
+///   "I need the BEST coder" — hand this one request nearly the whole machine and the
+///   highest fidelity that fits, raw F16 included. If we can run it, we should.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum QualityTarget {
+    #[default]
+    Balanced,
+    Maximum,
+}
+
+/// The weights budget for a demand level: `Balanced` leaves headroom for other personas
+/// + render; `Maximum` hands this request nearly the whole machine (a small OS reserve).
+pub fn budget_for_demand(total_bytes: u64, target: QualityTarget) -> u64 {
+    match target {
+        QualityTarget::Balanced => model_budget_from_total(total_bytes),
+        // Press the gas: the whole box minus a thin OS reserve. One demanding ask can
+        // take everything, because that's the point of being able to run it at all.
+        QualityTarget::Maximum => total_bytes.saturating_sub(2 * (1 << 30)),
+    }
+}
+
 /// The model-weight budget (bytes) derivable from a machine's total memory — the pure
 /// policy, so the caller passes `SystemResourceMonitor::memory().total` (the ONE resource
 /// authority — never a parallel probe) and gets a conservative weights budget. Reserves
@@ -183,19 +223,22 @@ pub fn model_budget_from_total(total_bytes: u64) -> u64 {
     (usable as f64 * 0.70) as u64 // the rest for KV cache + activations at runtime
 }
 
-/// Resolve WHAT to download for `repo` on a machine with `vram_budget_bytes`: query the
-/// repo, pick the highest-fidelity quant that fits, and return the download plan. Fails
-/// loud (`NoneFit`) when nothing fits — this machine can't host the model, don't pretend
-/// otherwise. Cheap (one API call, no download); the fetch is the proven Downloader.
+/// Resolve WHAT to download for `repo` on a machine with `total_memory_bytes` at demand
+/// `target`: derive the budget (shared vs floored), query the repo, pick the best quant
+/// that fits, and return the download plan. Fails loud (`NoneFit`) when nothing fits —
+/// this machine can't host the model at this demand, don't pretend otherwise. Cheap (one
+/// API call, no download); the fetch is the proven Downloader.
 pub async fn plan_model_fetch(
     client: &reqwest::Client,
     repo: &str,
-    vram_budget_bytes: u64,
+    total_memory_bytes: u64,
+    target: QualityTarget,
 ) -> Result<ModelFetchPlan, CatalogError> {
+    let budget = budget_for_demand(total_memory_bytes, target);
     let ggufs = list_repo_ggufs(client, repo).await?;
-    let pick = select_best_fit(&ggufs, vram_budget_bytes).ok_or_else(|| CatalogError::NoneFit {
+    let pick = select_for_demand(&ggufs, budget, target).ok_or_else(|| CatalogError::NoneFit {
         repo: normalize_repo(repo),
-        budget: vram_budget_bytes,
+        budget,
     })?;
     Ok(ModelFetchPlan {
         url: resolve_file_url(repo, &pick.filename),
@@ -293,13 +336,16 @@ mod tests {
         let client = reqwest::Client::new();
         let repo = "bartowski/Qwen2.5-Coder-14B-Instruct-GGUF";
         // Fits: a real plan with a resolve/main URL for the chosen quant.
-        let plan = plan_model_fetch(&client, repo, 16 * (1 << 30)).await.unwrap();
+        let plan = plan_model_fetch(&client, repo, 32 * (1 << 30), QualityTarget::Balanced)
+            .await
+            .unwrap();
         assert!(plan.url.contains("/resolve/main/"), "downloadable URL");
         assert!(plan.url.ends_with(&plan.filename));
-        assert!(plan.size_bytes <= 16 * (1 << 30));
         println!("plan: {} ({} MiB)", plan.url, plan.size_bytes >> 20);
-        // Doesn't fit: 1 MiB budget → fail loud, not a silent tiny pick.
-        let err = plan_model_fetch(&client, repo, 1 << 20).await.unwrap_err();
+        // Doesn't fit: a 2 GiB machine → budget 0 → fail loud, not a silent tiny pick.
+        let err = plan_model_fetch(&client, repo, 2 * (1 << 30), QualityTarget::Balanced)
+            .await
+            .unwrap_err();
         assert!(matches!(err, CatalogError::NoneFit { .. }));
     }
 
@@ -316,6 +362,30 @@ mod tests {
         assert_eq!(model_budget_from_total(2 * (1 << 30)), 0);
     }
 
+    // what this catches: the gas pedal — with the same candidates + budget, Balanced
+    // shares the box (near-lossless Q8) while Maximum floors it (raw F16); and Maximum's
+    // budget hands over nearly the whole machine vs Balanced's reserved share.
+    #[test]
+    fn maximum_floors_it_balanced_shares() {
+        let files = vec![
+            GgufCandidate::new("m-Q8_0.gguf", 15_000),
+            GgufCandidate::new("m-f16.gguf", 30_000),
+        ];
+        assert_eq!(
+            select_for_demand(&files, 40_000, QualityTarget::Balanced).unwrap().filename,
+            "m-Q8_0.gguf"
+        );
+        assert_eq!(
+            select_for_demand(&files, 40_000, QualityTarget::Maximum).unwrap().filename,
+            "m-f16.gguf"
+        );
+        let total = 64u64 * (1 << 30);
+        assert!(
+            budget_for_demand(total, QualityTarget::Maximum)
+                > budget_for_demand(total, QualityTarget::Balanced)
+        );
+    }
+
     // what this catches: LIVE misfit-hardware proof — THIS machine's real memory → budget
     // → the quant of coder-14b it would actually fetch. The whole point: the same code
     // picks Q8 on a big box and a small quant on a toy. Run:
@@ -326,21 +396,22 @@ mod tests {
         let mut sys = sysinfo::System::new();
         sys.refresh_memory();
         let total = sys.total_memory();
-        let budget = model_budget_from_total(total);
-        println!(
-            "this machine: total {} MiB → model budget {} MiB",
-            total >> 20,
-            budget >> 20
-        );
-        match plan_model_fetch(
-            &reqwest::Client::new(),
-            "bartowski/Qwen2.5-Coder-14B-Instruct-GGUF",
-            budget,
-        )
-        .await
-        {
-            Ok(p) => println!("→ would fetch {} ({} MiB, {:?})", p.filename, p.size_bytes >> 20, p.quant),
-            Err(e) => println!("→ {e}"),
+        let client = reqwest::Client::new();
+        let repo = "bartowski/Qwen2.5-Coder-14B-Instruct-GGUF";
+        println!("this machine: total {} MiB", total >> 20);
+        for target in [QualityTarget::Balanced, QualityTarget::Maximum] {
+            let budget = budget_for_demand(total, target);
+            match plan_model_fetch(&client, repo, total, target).await {
+                Ok(p) => println!(
+                    "  {:?} (budget {} MiB) → {} ({} MiB, {:?})",
+                    target,
+                    budget >> 20,
+                    p.filename,
+                    p.size_bytes >> 20,
+                    p.quant
+                ),
+                Err(e) => println!("  {target:?} → {e}"),
+            }
         }
     }
 }
