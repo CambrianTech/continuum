@@ -97,6 +97,40 @@ pub fn gender_from_identity(identity: &str) -> AvatarGender {
     *deterministic_pick(identity, IDENTITY_GENDERS, "gender")
 }
 
+/// Third-person pronouns, coherent with a persona's gender. The persona genesis
+/// draws gender first ([[procedural-persona-genesis]]); pronouns derive from it so
+/// they always agree with the avatar/voice/name. Binary today (the catalog is
+/// Male/Female); `they/them` is a universally-valid alias a persona may also use.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PronounSet {
+    pub subject: &'static str,    // she / he
+    pub object: &'static str,     // her / him
+    pub possessive: &'static str, // her / his
+}
+
+impl PronounSet {
+    /// The canonical short form, e.g. "she/her".
+    pub fn short(&self) -> String {
+        format!("{}/{}", self.subject, self.object)
+    }
+}
+
+/// Derive gender-coherent pronouns.
+pub fn pronouns_for_gender(gender: AvatarGender) -> PronounSet {
+    match gender {
+        AvatarGender::Female => PronounSet {
+            subject: "she",
+            object: "her",
+            possessive: "her",
+        },
+        AvatarGender::Male => PronounSet {
+            subject: "he",
+            object: "him",
+            possessive: "his",
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
