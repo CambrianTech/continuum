@@ -286,8 +286,18 @@ impl LiveKitAgentManager {
             AvatarGender::Female => "female",
         };
 
+        // Gap #2 ([[procedural-persona-genesis]]): when the persona has no explicit
+        // voice, seed the voice pick from its IDENTITY — NOT the literal "default",
+        // which hashes to ONE voice and collapses every same-gender persona onto it.
+        // The TTS resolver treats an arbitrary string as a gender-filtered per-voice
+        // SEED, so `user_id` is exactly the right seed: a stable, UNIQUE voice per
+        // persona, coherent with the gender + avatar (all drawn from the same id).
+        let voice_seed = match voice {
+            Some(v) if !v.is_empty() && v != "default" => v,
+            _ => user_id,
+        };
         let synthesis =
-            tts_service::synthesize_speech_async(text, voice, adapter, Some(gender_str))
+            tts_service::synthesize_speech_async(text, Some(voice_seed), adapter, Some(gender_str))
                 .await
                 .map_err(|e| format!("TTS synthesis failed: {}", e))?;
 

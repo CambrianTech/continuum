@@ -580,6 +580,41 @@ mod tests {
     }
 
     #[test]
+    fn resolve_voice_is_identity_seeded_and_unique() {
+        // what this catches: [[procedural-persona-genesis]] Gap #2 — the voice is
+        // resolved from a per-call SEED, and the persona-speak path now passes the
+        // persona IDENTITY as that seed (not the constant "default"). So distinct
+        // personas of the same gender get DISTINCT voices (unique) and the same
+        // persona is STABLE + gender-coherent. Before the caller fix every persona
+        // passed "default" → deterministic_hash("default") → ONE shared voice.
+        let kokoro = KokoroTTS::new();
+        let female: Vec<String> = kokoro
+            .available_voices()
+            .into_iter()
+            .filter(|v| v.gender.as_deref() == Some("female"))
+            .map(|v| v.id)
+            .collect();
+        assert!(female.len() >= 2, "need ≥2 female voices to prove distinctness");
+
+        // same identity → stable, gender-coherent voice
+        let a = resolve_voice_gendered(&kokoro, "persona-alpha", Some("female"));
+        let a2 = resolve_voice_gendered(&kokoro, "persona-alpha", Some("female"));
+        assert_eq!(a, a2, "same identity seed must yield the same voice");
+        assert!(female.contains(&a), "picked voice must be female (gender-coherent)");
+
+        // distinct identities → a SPREAD across the female pool, not all one voice
+        let picked: std::collections::HashSet<String> = (0..50)
+            .map(|i| resolve_voice_gendered(&kokoro, &format!("persona-{i}"), Some("female")))
+            .collect();
+        assert!(
+            picked.len() >= 2,
+            "identity-seeded voices must spread across the female pool, got {}",
+            picked.len()
+        );
+        assert!(picked.iter().all(|v| female.contains(v)), "all picks stay female");
+    }
+
+    #[test]
     fn test_silence_adapter_synthesize() {
         let rt = tokio::runtime::Runtime::new().unwrap();
         let silence = SilenceTTS::new();
