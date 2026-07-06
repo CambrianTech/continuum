@@ -36,13 +36,9 @@ use crate::persona::types::{InboxMessage, SenderType};
 /// survive intact.
 const RESULT_FOLD_MAX_CHARS: usize = 16_000;
 
-/// Max chars of an act-observation recorded into the VOLATILE working-memory
-/// scratchpad (proprioception). Much smaller than `RESULT_FOLD_MAX_CHARS` — working
-/// memory is a rolling "what my hands just did" pointer (the full result lives in
-/// the engram for relevance recall), and the answer to a lookup is almost always in
-/// the head of the result. Keeps the perception bid compact while still carrying
-/// enough for the mind to answer from its own recent action.
-const WM_ACTION_HEAD_CHARS: usize = 800;
+// The working-memory trail-head bound lives in `working_memory.rs` now (its home — WM owns
+// its own truncation). Still used here for the settlement answer-head.
+use crate::cognition::working_memory::WM_ACTION_HEAD_CHARS;
 
 /// The result of driving a mind to settlement.
 pub struct SettleOutcome {
@@ -272,8 +268,10 @@ pub async fn apply_act(
     // next tick and the mind can see its own hands (and that it's repeating itself).
     // This is the shared live↔eval channel, not the eval-only `[you just acted]` fold.
     // See [[act-results-need-a-recency-channel-not-semantic-recall]].
-    let head: String = observation.chars().take(WM_ACTION_HEAD_CHARS).collect();
-    body.working_memory.record_action(&head);
+    // Pass the FULL observation — WorkingMemory keeps the latest whole (so the mind can
+    // work with what it just fetched) and derives the trail head itself. This is the fix
+    // for live agents being starved to the head of their own tool results.
+    body.working_memory.record_action(&observation);
 
     crate::probe!(
         class = "persona.act.observed",
