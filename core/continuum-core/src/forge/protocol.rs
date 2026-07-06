@@ -98,6 +98,150 @@ pub struct ExportResult {
     pub details: Value,
 }
 
+// ── Genome training-lifecycle types (relocated from the retired
+// inference/unsloth_forge.rs — task #52). The organism-facing contract for
+// train/status/package/probe, home'd HERE beside the export contract so the ONE
+// forge protocol module is the single source of truth every custodian impl
+// (NativeMlxCustodian, ForgeCustodianHttp) speaks. Engine-neutral; not Unsloth-
+// specific (the Unsloth wire bodies died with the module). ────────────────────
+
+/// A training run the organism kicks off on a custodian. The recipe
+/// (`ForgeRecipe`) fills these; the organism never picks the engine — the
+/// custodian dispatches MLX vs CUDA from `model_name` + its own hardware.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ForgeTrainRequest {
+    /// Base model id/path to fine-tune (the same id the gateway serves with).
+    pub model_name: String,
+    /// `"lora"` (the pageable genome layer — default) | `"full"`.
+    pub training_type: String,
+    /// Dataset format the custodian parses, e.g. `"sharegpt"` / `"alpaca"`.
+    pub format_type: String,
+    /// Local dataset file paths (e.g. the ShareGPT JSONL from `dataset/from-turns`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub local_datasets: Vec<String>,
+    pub num_epochs: u32,
+    /// Learning rate as a STRING (e.g. `"1e-05"`) — passed through verbatim.
+    pub learning_rate: String,
+    pub batch_size: u32,
+    pub gradient_accumulation_steps: u32,
+    pub max_seq_length: u32,
+    /// 4-bit base load (QLoRA) — the custodian's memory/quality knob.
+    pub load_in_4bit: bool,
+    /// LoRA path (vs full fine-tune). The genome layer is a LoRA.
+    pub use_lora: bool,
+    /// Genome knobs sent EXPLICITLY — the recipe owns them, never silent defaults.
+    pub lora_r: u32,
+    pub lora_alpha: u32,
+    pub lora_dropout: f64,
+}
+
+/// The handle a custodian returns when a run starts — the organism keeps the
+/// `job_id` to observe [`TrainStatus`]. Byte custody stays custodian-side.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct TrainHandle {
+    #[serde(default)]
+    pub job_id: String,
+    #[serde(default)]
+    pub message: String,
+}
+
+/// Live training status — the inspectable progress of a run. `phase` is
+/// `"idle"`/`"training"`/…; `details` carries step/loss for the metric stream.
+/// Sourced from the job actor's published watch snapshot — a READ, never a poll.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct TrainStatus {
+    #[serde(default)]
+    pub job_id: String,
+    #[serde(default)]
+    pub phase: String,
+    #[serde(default)]
+    pub is_training_running: bool,
+    #[serde(default)]
+    pub message: String,
+    #[serde(default)]
+    pub error: Option<String>,
+    #[serde(default)]
+    pub details: TrainProgress,
+}
+
+/// The numeric progress inside a run (`status.details`).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct TrainProgress {
+    #[serde(default)]
+    pub epoch: f64,
+    #[serde(default)]
+    pub step: u64,
+    #[serde(default)]
+    pub total_steps: u64,
+    #[serde(default)]
+    pub loss: Option<f64>,
+}
+
+/// What to package a trained checkpoint INTO — the genetic OUTCOME the organism
+/// names. The custodian owns the HOW; continuum declares the target form. A
+/// custodian that emits a new family of layers extends THIS enum, never the call.
+#[derive(Debug, Clone, PartialEq)]
+pub enum GenomeFormat {
+    /// The pageable LoRA genome layer (adapter as-is, PEFT/safetensors).
+    Lora { base_model_id: Option<String> },
+    /// A fused + quantized standalone GGUF (`quantization` e.g. `"Q4_K_M"`).
+    Gguf { quantization: String },
+    /// A GGUF LoRA *adapter* — the pageable gene `llama-server --lora` loads and
+    /// the per-request `"lora":[{id,scale}]` dial scales. DISTINCT from [`Gguf`]
+    /// (a fused standalone model): this is the adapter ALONE, the thing the genome
+    /// pages in/out over a shared base — the SUPPLY side of the page-in loop
+    /// (`cognition/eval`'s `gene` pages exactly this in to measure lift).
+    /// `base_model_id` is REQUIRED (a GGUF LoRA with no base is meaningless — the
+    /// invariant lives in the type). `outtype` = adapter weight type (`"f16"`).
+    GgufLora {
+        base_model_id: String,
+        outtype: String,
+    },
+}
+
+/// Package a trained checkpoint into a genome artifact — the ONE export surface.
+/// `checkpoint`/`save_directory` are custodian-owned handles; the organism never
+/// touches the bytes. `push_to_hub`/`repo_id` ride the genome-market publish path.
+#[derive(Debug, Clone)]
+pub struct PackageRequest {
+    pub checkpoint: String,
+    pub save_directory: String,
+    pub format: GenomeFormat,
+    pub max_seq_length: u32,
+    pub load_in_4bit: bool,
+    pub push_to_hub: bool,
+    pub repo_id: Option<String>,
+}
+
+/// The LoRA catalog a custodian owns. `outputs_dir` is the byte-custody root —
+/// the proof the trained bytes live custodian-side.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct LoraCatalog {
+    #[serde(default)]
+    pub loras: Vec<Value>,
+    #[serde(default)]
+    pub outputs_dir: String,
+}
+
+/// What a forge custodian can do RIGHT NOW — DISCOVERED by probing, never declared
+/// by config. A forge daemon routes grid forge demand against this: don't dispatch
+/// to a `busy` custodian; prefer one that already `held_genes` the base; treat
+/// `!reachable` as "route elsewhere or fail loud". The fabric's self-organizing
+/// primitive at the forge tier (`[[model-endpoint-fabric-adapter-router]]`).
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct ForgeCapability {
+    /// The custodian answered the probe (reachable + healthy).
+    pub reachable: bool,
+    /// A run is in flight — a new train would queue/contend for the engine.
+    pub busy: bool,
+    /// The current run's phase (`"idle"`/`"training"`/…) for the fleet snapshot.
+    pub phase: String,
+    /// How many trained LoRA genome layers this custodian already holds.
+    pub held_genes: usize,
+    /// The byte-custody root (proof the bytes live custodian-side).
+    pub outputs_dir: String,
+}
+
 /// `GET /health` response — liveness + capability + contract version + the
 /// readiness/capacity detail a router (the model-endpoint fabric) scores against.
 ///
