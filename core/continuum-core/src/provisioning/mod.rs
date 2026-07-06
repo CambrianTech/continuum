@@ -29,7 +29,10 @@ pub use avatar_source::AvatarSource;
 pub use cache::{reconcile, CacheDecision, CacheEntry, ProvisionPlan};
 pub use downloader::{DownloadError, Downloader};
 pub use fetch::{fetch_and_place, FetchError};
-pub use model_catalog::{parse_quant, select_best_fit, GgufCandidate};
+pub use model_catalog::{
+    budget_for_mode, parse_quant, plan_family_fetch, plan_model_fetch, select_best_fit, select_for_mode,
+    CatalogError, GgufCandidate, ModelFamily, ModelFetchPlan, PowerMode,
+};
 pub use model_source::ModelSource;
 pub use provisioner::{EvictionReport, Provisioner};
 pub use scaling::{DefaultScalingPolicy, DemandContext, ScalingPolicy};
