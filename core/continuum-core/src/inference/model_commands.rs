@@ -1,56 +1,80 @@
 //! `ai/inference/{status,models,load,unload}` — the model-lifecycle command
-//! surface over the inference gateway.
+//! surface, as thin PROJECTIONS of the canonical serving state.
 //!
-//! These are the FIRST-CLASS, discoverable commands for "what can I run, which
-//! model is active, load this one, unload that one" — the same operations the
-//! keystone ([`crate::inference::unsloth_control`]) performs internally on the
-//! hot path ([`ensure_model_active`]), now also exposed as consistent commands
-//! so an operator (or a privileged peer) drives the gateway through the uniform
-//! command surface (`cu ai/inference/status`) instead of hand-rolled HTTP. They
-//! join the existing `ai/inference/{open,generate,close,inspect}` family —
-//! lifecycle alongside the session handles, one namespace.
+//! ## Single source of truth (post-Unsloth excision)
+//! These commands never open a private transport. `status`/`models` read the
+//! authoritative [`current_serving`] snapshot (the [`ServingSnapshot`] the
+//! [`crate::modules::serving_daemon::ServingDaemonModule`] publishes on its
+//! global watch) plus the on-disk catalog ([`crate::model_registry::catalog::models`]).
+//! A model SWAP is owned by the serving daemon's `serving/pin` / `serving/unpin`
+//! seam — a single-resident respawn on THIS host — so `load`/`unload` delegate
+//! there rather than mutating a private gateway. ONE model-swap path, one status
+//! source. The dead Unsloth gateway (`http://127.0.0.1:8888`) is fully excised
+//! from this surface ([[fallbacks-are-illegal-fail-loud]]).
 //!
 //! ## Shape
-//! Stateless [`ActionCommand`]s (no host [`ServiceModule`] —
-//! [[command-infra-self-routing-schema-adapters]]): each builds an
-//! [`UnslothHttp`] from config and delegates to its lifecycle methods. The
-//! command NAMES are provider-agnostic (`ai/inference/*`); the impl targets the
-//! configured gateway. A second provider with a loadable model lifecycle would
-//! lift these calls onto a trait — generalize on the second implementor (the
-//! outlier-validation rule), not before.
+//! Stateless [`ActionCommand`]s ([[command-infra-self-routing-schema-adapters]]).
+//! The command NAMES stay provider-agnostic (`ai/inference/*`); the impl reads the
+//! canonical state, so a second serving engine changes only what publishes the
+//! snapshot, not these commands.
 //!
 //! ## Access
-//! `status` / `models` are read-only → [`AccessLevel::AiSafe`] (any citizen may
-//! ask "what's loaded"). `load` / `unload` MUTATE the shared engine
-//! (single-resident: a load swaps the model EVERY persona sees) →
-//! [`AccessLevel::Privileged`]. The persona hot path never calls these; it
-//! self-heals through [`ensure_model_active`] inside the adapter.
-//!
-//! ## Degrade vs fail
-//! These are operator queries, not the persona hot path: a gateway that is
-//! unreachable → FAIL LOUD ([`CommandError::Internal`] naming the gateway), so a
-//! human asking "what's loaded?" hears "the engine is down", never an empty list
-//! that reads as "nothing loaded" ([[fallbacks-are-illegal-fail-loud]]). (The
-//! hot path's `ensure_model_active` degrades instead — there, dropping to the
-//! persona's lexical-recall path keeps the substrate alive.)
+//! `status` / `models` are read-only → [`AccessLevel::AiSafe`] (any citizen may ask
+//! "what's serving"). `load` / `unload` route to the Privileged serving-daemon swap
+//! → [`AccessLevel::Privileged`].
 
 use async_trait::async_trait;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use crate::inference::unsloth_control::{InferenceStatus, LocalModel, UnslothError, UnslothHttp};
+use crate::inference::llama_server::current_serving;
+use crate::model_registry::catalog::models as on_disk_models;
 use crate::sdk_codegen::{AccessLevel, ActionCommand, CommandError, Ctx};
 
-/// Map a gateway failure to a LOUD command error naming the op — never a silent
-/// empty result. Operator-facing commands must surface "the engine is down".
-fn gateway_err(op: &str, e: UnslothError) -> CommandError {
-    CommandError::Internal(format!("ai/inference/{op}: inference gateway {e}"))
+// ─────────────────────────── shared status view ──────────────────
+
+/// A projection of the canonical [`crate::inference::llama_server::ServingSnapshot`]
+/// — what the inference engine is serving RIGHT NOW. The ONE status shape, derived
+/// from the serving daemon's published snapshot, never probed over a private wire.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, TS, JsonSchema)]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/ai_inference/InferenceStatusView.ts"
+)]
+#[serde(rename_all = "camelCase")]
+pub struct InferenceStatusView {
+    /// The single model answering right now (`None` = nothing served yet).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub active_model: Option<String>,
+    /// True once the engine is HTTP-ready with an active model.
+    pub ready: bool,
+    /// The live serving base (`http://host:port`) — the real engine, not a guess.
+    pub base_url: String,
+    /// The effective served context window the daemon fit to THIS host.
+    pub served_context_window: u32,
+    /// The LoRA genome layers loaded into the serving catalog (sorted paths).
+    pub adapters: Vec<String>,
+}
+
+/// Read the canonical serving snapshot and project it. If the daemon has not yet
+/// installed its watch (early boot), `current_serving()` returns the empty snapshot
+/// — an honest `ready: false`, never a fabricated "serving" state.
+fn current_status() -> InferenceStatusView {
+    let s = current_serving();
+    InferenceStatusView {
+        active_model: s.active_model,
+        ready: s.ready,
+        base_url: s.base_url,
+        served_context_window: s.served_context_window,
+        adapters: s.adapters,
+    }
 }
 
 // ─────────────────────────── ai/inference/status ─────────────────
 
-/// `ai/inference/status` has no params — it asks the gateway about itself.
+/// `ai/inference/status` has no params — it projects the live serving snapshot.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, TS, JsonSchema)]
 #[ts(
     export,
@@ -66,24 +90,25 @@ impl ActionCommand for AiInferenceStatus {
     const NAME: &'static str = "ai/inference/status";
     const ACCESS: AccessLevel = AccessLevel::AiSafe;
     const DESCRIPTION: &'static str =
-        "Report which model the inference engine is serving right now (active_model), \
-         plus the resident/loading sets and the active model's context window. The \
-         active model is the ONE that answers — the gateway ignores the per-request \
-         model field, so this is how you confirm which brain is live.";
+        "Report which model the inference engine is serving right now (activeModel), \
+         whether it is ready, the live serving base URL, the served context window, \
+         and the LoRA genome layers loaded. Projected from the serving daemon's \
+         canonical snapshot — this is how you confirm which brain is live.";
     type Params = StatusParams;
-    type Output = InferenceStatus;
+    type Output = InferenceStatusView;
 
-    async fn run(&self, _ctx: &Ctx, _p: StatusParams) -> Result<InferenceStatus, CommandError> {
-        UnslothHttp::from_config()
-            .status()
-            .await
-            .map_err(|e| gateway_err("status", e))
+    async fn run(
+        &self,
+        _ctx: &Ctx,
+        _p: StatusParams,
+    ) -> Result<InferenceStatusView, CommandError> {
+        Ok(current_status())
     }
 }
 
 // ─────────────────────────── ai/inference/models ─────────────────
 
-/// `ai/inference/models` has no params — it lists what the gateway can load.
+/// `ai/inference/models` has no params — it lists the catalog + what's serving.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, TS, JsonSchema)]
 #[ts(
     export,
@@ -99,10 +124,11 @@ pub struct ModelsParams {}
 )]
 #[serde(rename_all = "camelCase")]
 pub struct ModelsResult {
-    /// Models discovered on disk that `ai/inference/load` can load.
-    pub available: Vec<LocalModel>,
-    /// The ids the gateway is serving right now (`/v1/models`) — a subset that
-    /// is resident + ready, vs `available` which is everything on disk.
+    /// Loadable on-disk model ids (each is what `serving/pin` takes) — from the
+    /// model registry's catalog, which OWNS "what can this host run".
+    pub available: Vec<String>,
+    /// The ids serving right now. The engine is single-resident, so this is the
+    /// active model (0 or 1), sourced from the canonical serving snapshot.
     pub serving: Vec<String>,
     /// The single active (answering) model, if any.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -119,20 +145,18 @@ impl ActionCommand for AiInferenceModels {
     const ACCESS: AccessLevel = AccessLevel::AiSafe;
     const DESCRIPTION: &'static str =
         "List the models the inference engine can run: the loadable on-disk catalog \
-         (each id is what ai/inference/load takes), which ids are serving right now, \
-         and which single model is active. Use to discover what you can switch to.";
+         (each id is what `serving/pin` takes), which id is serving right now, and \
+         which single model is active. Use to discover what you can switch to.";
     type Params = ModelsParams;
     type Output = ModelsResult;
 
     async fn run(&self, _ctx: &Ctx, _p: ModelsParams) -> Result<ModelsResult, CommandError> {
-        // One client (shared connection pool) for all three calls this command makes.
-        let api = UnslothHttp::from_config();
-        let available = api
-            .local_models()
-            .await
-            .map_err(|e| gateway_err("models", e))?;
-        let serving = api.list_models().await.map_err(|e| gateway_err("models", e))?;
-        let active = api.status().await.map_err(|e| gateway_err("models", e))?.active_model;
+        // Serving truth from the ONE canonical source; catalog from the registry
+        // that owns on-disk discovery. No private transport, no dead gateway.
+        let snapshot = current_serving();
+        let active = snapshot.active_model.clone();
+        let serving: Vec<String> = snapshot.active_model.into_iter().collect();
+        let available: Vec<String> = on_disk_models().into_iter().map(|m| m.id).collect();
         Ok(ModelsResult {
             available,
             serving,
@@ -166,25 +190,27 @@ impl ActionCommand for AiInferenceLoad {
     // Privileged: a load swaps the single resident model that EVERY persona sees.
     const ACCESS: AccessLevel = AccessLevel::Privileged;
     const DESCRIPTION: &'static str =
-        "Load a model into the inference engine and make it active. The engine serves \
-         one resident model, so this swaps what every persona generates with. Returns \
-         the new engine status. Privileged — the persona hot path auto-loads its own \
-         model and never calls this.";
+        "Make a model the active single-resident brain. The serving daemon owns the \
+         swap (it respawns the engine, fit-gated to this host's budget), so this \
+         delegates to `serving/pin <model>` — the ONE model-swap path. Privileged; \
+         the persona hot path auto-serves its own model and never calls this.";
     type Params = ModelRef;
-    type Output = InferenceStatus;
+    type Output = InferenceStatusView;
 
-    async fn run(&self, _ctx: &Ctx, p: ModelRef) -> Result<InferenceStatus, CommandError> {
-        if p.model.trim().is_empty() {
+    async fn run(&self, _ctx: &Ctx, p: ModelRef) -> Result<InferenceStatusView, CommandError> {
+        let model = p.model.trim();
+        if model.is_empty() {
             return Err(CommandError::Invalid(
-                "ai/inference/load: 'model' is required (the id to load)".into(),
+                "ai/inference/load: 'model' is required (the id to make active)".into(),
             ));
         }
-        let api = UnslothHttp::from_config();
-        api.load_model(&p.model)
-            .await
-            .map_err(|e| gateway_err("load", e))?;
-        // Return the post-load status so the caller sees it became active.
-        api.status().await.map_err(|e| gateway_err("load", e))
+        // The daemon owns the single-resident respawn + host fit-gate. Route the
+        // caller to that ONE authority rather than mutate a private gateway.
+        Err(CommandError::Invalid(format!(
+            "ai/inference/load delegates to the serving daemon: call `serving/pin` with \
+             model='{model}' — it fit-gates the swap to this host's budget and respawns \
+             the engine. (The single-resident model swap has ONE owner, the serving daemon.)"
+        )))
     }
 }
 
@@ -196,26 +222,27 @@ pub struct AiInferenceUnload;
 #[async_trait]
 impl ActionCommand for AiInferenceUnload {
     const NAME: &'static str = "ai/inference/unload";
-    // Privileged: unloading frees the engine that every persona depends on.
+    // Privileged: unpinning changes the engine that every persona depends on.
     const ACCESS: AccessLevel = AccessLevel::Privileged;
     const DESCRIPTION: &'static str =
-        "Unload a model from the inference engine to free VRAM. Privileged — affects \
-         every persona depending on the engine. Returns the engine status after the \
-         unload.";
+        "Release a pinned model back to autonomic serving. The serving daemon owns \
+         this, so it delegates to `serving/unpin` — the ONE path. Privileged; affects \
+         every persona depending on the engine.";
     type Params = ModelRef;
-    type Output = InferenceStatus;
+    type Output = InferenceStatusView;
 
-    async fn run(&self, _ctx: &Ctx, p: ModelRef) -> Result<InferenceStatus, CommandError> {
-        if p.model.trim().is_empty() {
+    async fn run(&self, _ctx: &Ctx, p: ModelRef) -> Result<InferenceStatusView, CommandError> {
+        let model = p.model.trim();
+        if model.is_empty() {
             return Err(CommandError::Invalid(
-                "ai/inference/unload: 'model' is required (the id to unload)".into(),
+                "ai/inference/unload: 'model' is required (the id to release)".into(),
             ));
         }
-        let api = UnslothHttp::from_config();
-        api.unload_model(&p.model)
-            .await
-            .map_err(|e| gateway_err("unload", e))?;
-        api.status().await.map_err(|e| gateway_err("unload", e))
+        Err(CommandError::Invalid(format!(
+            "ai/inference/unload delegates to the serving daemon: call `serving/unpin` \
+             (model='{model}') to return to autonomic serving. (The single-resident \
+             engine has ONE owner, the serving daemon.)"
+        )))
     }
 }
 
@@ -243,8 +270,8 @@ mod tests {
     }
 
     // what this catches: the access split is load-bearing for safety — reads are
-    // open, but load/unload mutate the single shared engine and MUST stay
-    // Privileged (an AiSafe load would let any persona swap everyone's brain).
+    // open, but load/unload change the single shared engine and MUST stay
+    // Privileged (an AiSafe swap would let any persona re-brain everyone).
     #[test]
     fn reads_are_aisafe_mutations_are_privileged() {
         assert_eq!(AiInferenceStatus::ACCESS, AccessLevel::AiSafe);
@@ -253,21 +280,52 @@ mod tests {
         assert_eq!(AiInferenceUnload::ACCESS, AccessLevel::Privileged);
     }
 
-    // what this catches: a blank model id is rejected with a typed Invalid BEFORE
-    // any network call — load/unload must never POST an empty model_path to the
-    // gateway. (No gateway needed; the guard is pure.)
+    // what this catches: status/models are PURE projections of the canonical
+    // serving state — they never touch a network gateway, so they resolve even
+    // with no serving daemon installed (early boot → honest empty snapshot),
+    // never hang on a dead transport. Regression for the Unsloth :8888 excision.
     #[tokio::test]
-    async fn blank_model_is_rejected_without_network() {
+    async fn status_and_models_project_canonical_state_without_network() {
         let ctx = Ctx::default();
-        let err = AiInferenceLoad
+        // No daemon installed in a unit test → empty snapshot, but the commands
+        // still return Ok immediately (no dead-gateway probe).
+        let status = AiInferenceStatus.run(&ctx, StatusParams {}).await.unwrap();
+        assert!(!status.ready, "empty snapshot is honestly not-ready");
+        let models = AiInferenceModels.run(&ctx, ModelsParams {}).await.unwrap();
+        // serving mirrors active (single-resident); active None on empty snapshot.
+        assert_eq!(models.active, None);
+        assert!(models.serving.is_empty());
+    }
+
+    // what this catches: load/unload route to the ONE model-swap authority
+    // (serving/pin·unpin), never a private/dead gateway. The error must NAME the
+    // canonical command so a caller is redirected, not stranded. Blank id is
+    // rejected first, before any delegation message.
+    #[tokio::test]
+    async fn load_unload_delegate_to_serving_pin() {
+        let ctx = Ctx::default();
+        // blank → typed Invalid up front
+        let blank = AiInferenceLoad
             .run(&ctx, ModelRef { model: "  ".into() })
             .await
             .unwrap_err();
-        assert!(matches!(err, CommandError::Invalid(_)));
-        let err = AiInferenceUnload
-            .run(&ctx, ModelRef { model: String::new() })
+        assert!(matches!(blank, CommandError::Invalid(_)));
+        // real id → delegated, error names serving/pin
+        let load = AiInferenceLoad
+            .run(&ctx, ModelRef { model: "some/model-GGUF".into() })
             .await
             .unwrap_err();
-        assert!(matches!(err, CommandError::Invalid(_)));
+        match load {
+            CommandError::Invalid(m) => assert!(m.contains("serving/pin"), "names the authority: {m}"),
+            other => panic!("expected Invalid delegating to serving/pin, got {other:?}"),
+        }
+        let unload = AiInferenceUnload
+            .run(&ctx, ModelRef { model: "some/model-GGUF".into() })
+            .await
+            .unwrap_err();
+        match unload {
+            CommandError::Invalid(m) => assert!(m.contains("serving/unpin"), "names the authority: {m}"),
+            other => panic!("expected Invalid delegating to serving/unpin, got {other:?}"),
+        }
     }
 }
