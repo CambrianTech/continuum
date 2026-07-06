@@ -37,9 +37,10 @@
 //! working memory SELF-ACTIVATES only where thinking is enabled — "reason when it
 //! helps, remember what you reasoned." No config flag needed.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use uuid::Uuid;
 
 use async_trait::async_trait;
 use parking_lot::Mutex;
@@ -72,6 +73,34 @@ const WORKING_MEMORY_SALIENCE: f32 = 0.5;
 /// ("I'll read it again") because the data never came back. [[act-results-need-a-recency-channel-not-semantic-recall]]
 pub const WM_ACTION_HEAD_CHARS: usize = 800;
 
+/// Max distinct dispatched (background) handles tracked at once. A persona with more than
+/// this many sentinels/compiles/debuggers in flight is unusual; past the cap the
+/// oldest-updated finished handle is evicted first (a still-running one is never dropped).
+const MAX_DISPATCHED: usize = 16;
+
+/// Lifecycle of a dispatched (background) command the persona sent away — a sentinel,
+/// a compile, a debugger. Streams continuously: `Running` updates arrive in place, then a
+/// terminal `Done`/`Failed`. The handle (a UUID) is reusable — the mind can pass it to
+/// another command (cancel, query, attach) in a later turn ([[commands-are-agency-algs-are-pathways]]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DispatchStatus {
+    Running,
+    Done,
+    Failed,
+}
+
+/// One in-flight (or freshly-finished) dispatched command, keyed by handle in
+/// `WorkingMemory::dispatched`. The `latest` is the newest streamed content (progress line
+/// or final result), updated IN PLACE so continuous progress doesn't spam the trail.
+#[derive(Debug, Clone)]
+struct DispatchedAction {
+    label: String,
+    latest: String,
+    status: DispatchStatus,
+    /// Recency ordinal (shared monotonic stamp) — orders handles + picks the eviction victim.
+    seq: u64,
+}
+
 /// A bounded, rolling buffer of the persona's recent reasoning. Cheap to clone the
 /// `Arc`; shared between the writer (deliberation faculty) and the reader
 /// (`WorkingMemoryFaculty`). `parking_lot::Mutex` — no poisoning, and every access
@@ -89,6 +118,12 @@ pub struct WorkingMemory {
     /// completing later) feeds this SAME slot on its completion event — one channel, sync
     /// or async ([[act-results-need-a-recency-channel-not-semantic-recall]]).
     last_action: Mutex<Option<(u64, String)>>,
+    /// In-flight + freshly-finished dispatched commands, keyed by handle (UUID). The
+    /// SAME recency channel as `last_action`, but keyed so concurrent sentinels/compiles/
+    /// debuggers stream in without clobbering each other. Fed by the completion/progress
+    /// listener (`record_dispatch_event`); surfaced by the faculty so the mind perceives
+    /// "what I sent away, and where it's at" each heartbeat. Bounded by `MAX_DISPATCHED`.
+    dispatched: Mutex<HashMap<Uuid, DispatchedAction>>,
     /// Monotonic stamp applied to ACTION entries. Two reasons: (1) it makes each
     /// recorded action a DISTINCT string even when the persona repeats the identical
     /// tool call — so the working-memory window the perception faculty bids next tick
@@ -106,6 +141,7 @@ impl WorkingMemory {
             capacity: capacity.max(1),
             entries: Mutex::new(VecDeque::new()),
             last_action: Mutex::new(None),
+            dispatched: Mutex::new(HashMap::new()),
             next_action_seq: AtomicU64::new(1),
         }
     }
@@ -161,6 +197,61 @@ impl WorkingMemory {
         self.last_action.lock().clone()
     }
 
+    /// Fold a streamed event from a DISPATCHED (background) command into the mind's
+    /// recency, keyed by its handle. The async twin of `record_action`: a sentinel /
+    /// compile / debugger the persona sent away emits events CONTINUOUSLY — `Running`
+    /// progress updates the handle's slot IN PLACE (no trail spam), then a terminal
+    /// `Done`/`Failed` marks it. The mind perceives outstanding + freshly-finished handles
+    /// via the faculty next heartbeat, so it can act on a result the moment it lands
+    /// without ever blocking. `label` is set once (first event) and preserved across
+    /// updates. Bounded by `MAX_DISPATCHED` — a finished handle is evicted before a
+    /// running one when over cap ([[act-results-need-a-recency-channel-not-semantic-recall]]).
+    pub fn record_dispatch_event(
+        &self,
+        handle: Uuid,
+        label: &str,
+        content: &str,
+        status: DispatchStatus,
+    ) {
+        let seq = self.next_action_seq.fetch_add(1, Ordering::Relaxed);
+        let mut m = self.dispatched.lock();
+        let entry = m.entry(handle).or_insert_with(|| DispatchedAction {
+            label: label.trim().to_string(),
+            latest: String::new(),
+            status: DispatchStatus::Running,
+            seq,
+        });
+        entry.latest = content.trim().to_string();
+        entry.status = status;
+        entry.seq = seq;
+        if m.len() > MAX_DISPATCHED {
+            // Evict the oldest-updated FINISHED handle; never drop one still running.
+            if let Some(victim) = m
+                .iter()
+                .filter(|(_, a)| a.status != DispatchStatus::Running)
+                .min_by_key(|(_, a)| a.seq)
+                .map(|(h, _)| *h)
+            {
+                m.remove(&victim);
+            }
+        }
+    }
+
+    /// Snapshot of dispatched (background) commands — `(handle, label, latest, status)`,
+    /// most-recently-updated last. The faculty renders these so the mind sees what it sent
+    /// away and where each stands; the handle is reusable in a follow-up command.
+    pub fn dispatched_snapshot(&self) -> Vec<(Uuid, String, String, DispatchStatus)> {
+        let m = self.dispatched.lock();
+        let mut v: Vec<_> = m
+            .iter()
+            .map(|(h, a)| (*h, a.label.clone(), a.latest.clone(), a.status.clone(), a.seq))
+            .collect();
+        v.sort_by_key(|t| t.4);
+        v.into_iter()
+            .map(|(h, l, latest, s, _)| (h, l, latest, s))
+            .collect()
+    }
+
     /// Record that the persona SETTLED — produced an utterance and closed the current
     /// concern. Pushes a [`WM_SETTLEMENT_PREFIX`]-marked boundary into the same rolling
     /// buffer (honest proprioception: "I already answered X", perceivable by the mind
@@ -197,6 +288,7 @@ impl WorkingMemory {
     pub fn clear(&self) {
         self.entries.lock().clear();
         *self.last_action.lock() = None; // the full latest result is proprioception too
+        self.dispatched.lock().clear(); // dispatched handles belong to the cleared concern
     }
 
     pub fn is_empty(&self) -> bool {
@@ -232,7 +324,8 @@ impl Faculty for WorkingMemoryFaculty {
     // reasoning into phase 1 so the deliberator conditions on it in phase 2.
     async fn contribute(&self, _ws: &Workspace) -> Option<Contribution> {
         let recent = self.memory.recent();
-        if recent.is_empty() {
+        let dispatched = self.memory.dispatched_snapshot();
+        if recent.is_empty() && dispatched.is_empty() {
             return None;
         }
         // Render oldest-first, newest-LAST: position alone carries recency (the last
@@ -248,30 +341,65 @@ impl Faculty for WorkingMemoryFaculty {
         // trace + the user turn. Each trace already carries its own stable absolute
         // marker (e.g. "[action #41]"); recency needs no per-act-mutating annotation.
         let n = recent.len();
-        let body = recent
-            .iter()
-            .map(|r| format!("- {r}"))
-            .collect::<Vec<_>>()
-            .join("\n");
-        let mut text = format!("Your recent thoughts and actions (working memory):\n{body}");
-        // The FULL result of the most recent act, appended AFTER the append-only trail:
-        // the stable prefix keeps its KV-cache, only this fresh block re-prefills (it is
-        // new each act regardless). This is what lets the mind actually USE what its hands
-        // fetched — count the file, read the screenshot description, scan the log — instead
-        // of looping on the truncated head. Only shown when it carries more than the trail
-        // head already does, so short results don't duplicate.
+        let mut sections: Vec<String> = Vec::new();
+        // The append-only reasoning/action trail (may be empty if the only live content is
+        // dispatched background work).
+        if !recent.is_empty() {
+            let body = recent
+                .iter()
+                .map(|r| format!("- {r}"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            sections.push(format!(
+                "Your recent thoughts and actions (working memory):\n{body}"
+            ));
+        }
+        // The FULL result of the most recent act, AFTER the append-only trail: the stable
+        // prefix keeps its KV-cache, only this fresh block re-prefills (new each act
+        // regardless). Lets the mind USE what its hands fetched — count the file, read the
+        // screenshot description, scan the log — instead of looping on the truncated head.
+        // Only when it carries more than the trail head already does.
         if let Some((seq, full)) = self.memory.last_action_full() {
             if full.chars().count() > WM_ACTION_HEAD_CHARS {
-                text.push_str(&format!(
-                    "\n\nFull result of your most recent action (#{seq}):\n{full}"
-                ));
+                sections.push(format!("Full result of your most recent action (#{seq}):\n{full}"));
             }
+        }
+        // Background commands the mind sent away — sentinels, compiles, debuggers —
+        // streaming their status back by handle. The mind sees what's outstanding and what
+        // just finished, and can pass a handle to a follow-up command (cancel/query). Fresh
+        // each event, so it trails the stable prefix like the full-result block.
+        if !dispatched.is_empty() {
+            let lines = dispatched
+                .iter()
+                .map(|(h, label, latest, status)| {
+                    let hs = h.to_string();
+                    let short = hs.get(..8).unwrap_or(hs.as_str());
+                    let tag = match status {
+                        DispatchStatus::Running => "running",
+                        DispatchStatus::Done => "done",
+                        DispatchStatus::Failed => "failed",
+                    };
+                    let tail = if latest.is_empty() {
+                        String::new()
+                    } else {
+                        format!(": {latest}")
+                    };
+                    format!("- #{short} {label} [{tag}]{tail}")
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            sections.push(format!(
+                "Commands you dispatched (background, by handle):\n{lines}"
+            ));
         }
         Some(Contribution::context(
             Self::faculty_id(),
-            text,
+            sections.join("\n\n"),
             WORKING_MEMORY_SALIENCE,
-            format!("working memory: {n} recent trace(s) carried forward"),
+            format!(
+                "working memory: {n} trace(s), {} dispatched",
+                dispatched.len()
+            ),
         ))
     }
 }
@@ -322,6 +450,47 @@ mod tests {
         wm.record_action("small follow-up");
         let (seq2, _) = wm.last_action_full().unwrap();
         assert_eq!(seq2, 2, "latest-full tracks the most recent act");
+    }
+
+    // what this catches: the ASYNC feedback channel — a dispatched (background) command
+    // streams status back by handle CONTINUOUSLY (running → done), updating in place; two
+    // concurrent handles don't clobber; the faculty surfaces both so the mind sees what it
+    // sent away. This is what lets a persona fire a sentinel/compile/debugger and fold the
+    // result in when it lands, without ever blocking.
+    #[tokio::test]
+    async fn dispatched_commands_stream_back_by_handle() {
+        let wm = Arc::new(WorkingMemory::new(8));
+        let compile = Uuid::from_u128(1);
+        let sentinel = Uuid::from_u128(2);
+
+        // Two sentinels in flight, streaming continuously.
+        wm.record_dispatch_event(compile, "compile core", "building…", DispatchStatus::Running);
+        wm.record_dispatch_event(sentinel, "research task", "searching…", DispatchStatus::Running);
+        // A progress update on the compile updates IN PLACE (still one handle).
+        wm.record_dispatch_event(compile, "compile core", "linking…", DispatchStatus::Running);
+        let snap = wm.dispatched_snapshot();
+        assert_eq!(snap.len(), 2, "two distinct handles, no clobber");
+        let c = snap.iter().find(|(h, ..)| *h == compile).unwrap();
+        assert_eq!(c.2, "linking…", "progress updated in place");
+        assert_eq!(c.3, DispatchStatus::Running);
+
+        // The compile finishes — terminal Done with its result.
+        wm.record_dispatch_event(compile, "compile core", "0 errors, 0 warnings", DispatchStatus::Done);
+        let snap = wm.dispatched_snapshot();
+        let c = snap.iter().find(|(h, ..)| *h == compile).unwrap();
+        assert_eq!(c.3, DispatchStatus::Done);
+        assert_eq!(c.2, "0 errors, 0 warnings");
+
+        // The faculty surfaces both dispatched handles to the mind.
+        let rendered = WorkingMemoryFaculty::new(wm.clone())
+            .contribute(&Workspace::new("a fresh burst"))
+            .await
+            .expect("bids when dispatched work exists")
+            .content
+            .clone();
+        assert!(rendered.contains("Commands you dispatched"), "the mind sees its sentinels");
+        assert!(rendered.contains("compile core [done]: 0 errors"), "finished result shown");
+        assert!(rendered.contains("research task [running]"), "in-flight shown");
     }
 
     // what this catches: record/recent round-trips, blank reasoning is ignored, and
