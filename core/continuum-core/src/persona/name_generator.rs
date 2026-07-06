@@ -83,11 +83,18 @@ const MALE_NAMES: &[&str] = &[
 /// name)`.
 pub fn agent_name_from_identity(identity: &str) -> &'static str {
     let gender = gender_from_identity(identity);
-    let pool: &[&'static str] = match gender {
-        AvatarGender::Female => FEMALE_NAMES,
-        AvatarGender::Male => MALE_NAMES,
-    };
-    *deterministic_pick(identity, pool, "agent_name")
+    match gender {
+        AvatarGender::Female => *deterministic_pick(identity, FEMALE_NAMES, "agent_name"),
+        AvatarGender::Male => *deterministic_pick(identity, MALE_NAMES, "agent_name"),
+        // Neuter (they/them): no dedicated unisex pool yet — draw from BOTH so the
+        // name isn't locked to a binary presentation (a they/them persona can carry
+        // any name). Stable per identity via the same salt.
+        AvatarGender::Neutral => {
+            let combined: Vec<&'static str> =
+                FEMALE_NAMES.iter().chain(MALE_NAMES.iter()).copied().collect();
+            *deterministic_pick(identity, &combined, "agent_name")
+        }
+    }
 }
 
 #[cfg(test)]
@@ -151,6 +158,11 @@ mod tests {
                 AvatarGender::Male => assert!(
                     MALE_NAMES.contains(&name),
                     "{name} picked for male identity but not in MALE_NAMES"
+                ),
+                // Neuter draws from BOTH pools — the name must be in one of them.
+                AvatarGender::Neutral => assert!(
+                    FEMALE_NAMES.contains(&name) || MALE_NAMES.contains(&name),
+                    "{name} picked for neutral identity but not in either pool"
                 ),
             }
         }

@@ -100,6 +100,10 @@ pub enum PitchRange {
 pub enum AvatarGender {
     Male,
     Female,
+    /// Neuter — they/them. A real minority ([[procedural-persona-genesis]]); its
+    /// presentation is not constrained to masc/fem, so a Neutral persona draws its
+    /// avatar/voice from the full pool (any presentation is coherent with they/them).
+    Neutral,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]

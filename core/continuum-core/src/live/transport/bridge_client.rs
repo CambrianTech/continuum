@@ -284,6 +284,11 @@ impl LiveKitAgentManager {
         let gender_str = match gender {
             AvatarGender::Male => "male",
             AvatarGender::Female => "female",
+            // Neuter (they/them): pass "neutral" — resolve_voice_gendered picks a
+            // neutral-tagged voice if the backend has one, else falls through to an
+            // identity-seeded pick from the full pool (any voice is coherent with
+            // they/them). Forward-compatible with neuter voices as they're added.
+            AvatarGender::Neutral => "neutral",
         };
 
         // Gap #2 ([[procedural-persona-genesis]]): when the persona has no explicit
