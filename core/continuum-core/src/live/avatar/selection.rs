@@ -80,7 +80,9 @@ pub fn select_avatar_for_voice(
 /// mismatch unrepresentable by construction. (The batch path `select_avatar_for_agent`
 /// already did this + adds cross-persona dedup; this is the stateless sibling.)
 pub fn select_avatar_by_identity(identity: &str) -> &'static AvatarModel {
-    let gender = gender_from_identity(identity);
+    // Name-anchored gender first (coherence), id-hash only as a fallback for
+    // unregistered / unisex / custom-named identities.
+    let gender = registered_gender(identity).unwrap_or_else(|| gender_from_identity(identity));
     // Neuter (they/them): presentation isn't constrained to masc/fem, so ANY avatar
     // is coherent — draw from the full pool (no filter, no warn). When neuter-tagged
     // VRMs are added, the Female/Male filter below will start preferring them.
@@ -111,6 +113,43 @@ pub fn select_avatar_by_identity(identity: &str) -> &'static AvatarModel {
 static AVATAR_ALLOCATION: std::sync::Mutex<Option<HashMap<String, usize>>> =
     std::sync::Mutex::new(None);
 
+/// Identity → the persona's coherent gender, derived from its NAME at the one
+/// moment name + identity co-occur (voice-session registration).
+///
+/// [[procedural-persona-genesis]] coherence anchor. A persona's name is the stable,
+/// persisted, user-visible truth; its live `peer_id` is a random tag airc mints
+/// independently (`PeerId::new()`), so the two need not agree in gender. The
+/// stateless selection paths (profile snapshot, live video pump) only ever hold the
+/// peer_id — so left alone they'd fall back to an id-hash gender that can mismatch
+/// the name (a feminine "Asha" on a masculine VRM). By capturing the NAME-derived
+/// gender ONCE, keyed by identity, every later selection (snapshot, pump, voice)
+/// resolves the SAME gender by id — coherent with each other AND with the name.
+static PERSONA_GENDER: std::sync::Mutex<Option<HashMap<String, AvatarGender>>> =
+    std::sync::Mutex::new(None);
+
+/// Capture a persona's name-anchored gender, keyed by its live identity. Call this
+/// when a persona's identity + display name are both in hand (voice-session
+/// registration). A unisex/custom name (`gender_from_name` → `None`) records
+/// nothing, so those fall back to the id-hash gender.
+pub fn register_persona_gender(identity: &str, name: &str) {
+    if let Some(gender) = crate::persona::name_generator::gender_from_name(name) {
+        let mut guard = PERSONA_GENDER.lock().unwrap();
+        guard
+            .get_or_insert_with(HashMap::new)
+            .insert(identity.to_string(), gender);
+    }
+}
+
+/// The name-anchored gender for an identity, if one was registered. This is the
+/// coherence source every avatar/voice selection consults FIRST.
+pub fn registered_gender(identity: &str) -> Option<AvatarGender> {
+    PERSONA_GENDER
+        .lock()
+        .unwrap()
+        .as_ref()
+        .and_then(|m| m.get(identity).copied())
+}
+
 /// Select the best avatar for an agent, avoiding model reuse across personas.
 ///
 /// Algorithm (3-phase, gender-coherent):
@@ -131,9 +170,9 @@ pub fn select_avatar_for_agent(identity: &str, voice: Option<&str>) -> &'static 
         return &AVATAR_CATALOG[idx];
     }
 
-    // Resolve gender: voice name > deterministic from identity
-    let gender = voice
-        .and_then(gender_from_voice_name)
+    // Resolve gender: registered name-anchored gender > voice name > id hash.
+    let gender = registered_gender(identity)
+        .or_else(|| voice.and_then(gender_from_voice_name))
         .unwrap_or_else(|| gender_from_identity(identity));
 
     // Filter catalog to matching gender
@@ -388,9 +427,9 @@ pub fn select_dynamic_avatar(identity: &str, voice: Option<&str>) -> &'static Dy
         return &models[idx];
     }
 
-    // Resolve gender: voice name > deterministic from identity
-    let gender = voice
-        .and_then(gender_from_voice_name)
+    // Resolve gender: registered name-anchored gender > voice name > id hash.
+    let gender = registered_gender(identity)
+        .or_else(|| voice.and_then(gender_from_voice_name))
         .unwrap_or_else(|| gender_from_identity(identity));
 
     // Filter catalog to matching gender
@@ -557,6 +596,37 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn registered_name_gender_overrides_id_hash() {
+        // what this catches: the LIVE coherence gap — a persona's avatar keys on its
+        // random peer_id, whose gender need not match the persona's NAME. After the
+        // live layer registers the name-anchored gender, select_avatar_by_identity must
+        // honor the NAME's gender, not the id-hash — so a feminine-named persona keeps a
+        // feminine face even when its peer_id happens to hash Male.
+        use crate::persona::name_generator::{agent_name_from_identity, gender_from_name};
+
+        // A name unambiguously in the FEMALE pool (via a Female-hashing identity).
+        let female_name = (0..500)
+            .find_map(|i| {
+                let name = agent_name_from_identity(&format!("fem-src-{i}"));
+                (gender_from_name(name) == Some(AvatarGender::Female)).then_some(name)
+            })
+            .expect("a female-pool name exists");
+        // A DIFFERENT identity whose raw id-hash gender is Male (the mismatch case).
+        let male_id = (0..500)
+            .map(|i| format!("male-id-{i}"))
+            .find(|id| gender_from_identity(id) == AvatarGender::Male)
+            .expect("a Male-hashing identity exists");
+
+        register_persona_gender(&male_id, female_name);
+        let avatar = select_avatar_by_identity(&male_id);
+        assert_eq!(
+            avatar.voice_profile.gender,
+            AvatarGender::Female,
+            "registered female NAME must override the Male id-hash → female avatar"
+        );
     }
 
     #[test]
