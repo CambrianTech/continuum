@@ -30,28 +30,34 @@
 
 use crate::forge::custodian_client::ForgeCustodianHttp;
 use crate::forge::{ForgeArtifact, ForgeRecipe};
-use crate::inference::unsloth_forge::{
-    to_body, ForgeCustodian, ForgeTrainRequest, GenomeFormat, PackageRequest, UnslothForgeHttp,
+use crate::runtime::{
+    CommandResult, MessageBus, ModuleConfig, ModuleContext, ModulePriority, ServiceModule,
 };
-use crate::runtime::{CommandResult, ModuleConfig, ModuleContext, ModulePriority, ServiceModule};
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::any::Any;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-pub struct ForgeModule;
+/// Holds the [`MessageBus`] (captured in `initialize`) so native training jobs can
+/// EMIT `forge.train.*` lifecycle events onto airc — consumers SUBSCRIBE, never poll.
+#[derive(Default)]
+pub struct ForgeModule {
+    bus: RwLock<Option<Arc<MessageBus>>>,
+}
 
 impl ForgeModule {
     pub fn new() -> Self {
-        Self
+        Self::default()
     }
-}
 
-impl Default for ForgeModule {
-    fn default() -> Self {
-        Self::new()
+    /// The captured bus, if `initialize` has run. `None` in a bare unit test —
+    /// [`crate::forge::mlx_job::spawn_train_job`] then simply skips the bus emit
+    /// (the watch still updates, so `forge/train-status` stays honest).
+    fn bus(&self) -> Option<Arc<MessageBus>> {
+        self.bus.read().unwrap_or_else(|e| e.into_inner()).clone()
     }
 }
 
@@ -98,20 +104,23 @@ impl ServiceModule for ForgeModule {
             "forge/train" => {
                 let parsed: ForgeTrainParams = serde_json::from_value(params)
                     .map_err(|e| format!("forge/train: invalid params: {e}"))?;
-                // Engine branch (#52): Apple Silicon owns the native mlx_lm.lora
-                // run; other platforms (and an explicit selector) delegate to the
-                // custodian. A deterministic platform branch, not a fallback.
+                // Native mlx_lm.lora on Apple Silicon — FIRE-AND-EMIT: returns a handle
+                // immediately, `forge.train.*` events flow over airc (no poll). A
+                // non-mlx engine routes to a grid-peer custodian (task #52 follow-up),
+                // NEVER an Unsloth fallback ([[fallbacks-are-illegal-fail-loud]]).
                 if mlx_engine_selected(parsed.engine.as_deref())? {
-                    run_train_native_mlx(parsed)
+                    run_train_native_mlx(parsed, self.bus())
                 } else {
-                    run_train(&UnslothForgeHttp::from_config(), parsed).await
+                    Err("forge/train: native forge trains via mlx on Apple Silicon; a \
+                         non-mlx engine must route to a grid-peer custodian (task #52 \
+                         follow-up) — there is no Unsloth fallback"
+                        .to_string())
                 }
             }
             "forge/train-status" => {
-                let status = UnslothForgeHttp::from_config()
-                    .train_status()
-                    .await
-                    .map_err(|e| e.to_string())?;
+                // A READ of the native job's last published watch value — the
+                // fire-and-EMIT contract, never a poll against a gateway.
+                let status = crate::forge::mlx_job::current_train_status();
                 let json = serde_json::to_value(status)
                     .map_err(|e| format!("forge/train-status: serialize: {e}"))?;
                 Ok(CommandResult::Json(json))
@@ -148,7 +157,12 @@ impl ServiceModule for ForgeModule {
                     )
                     .await
                 } else {
-                    run_export(&UnslothForgeHttp::from_config(), parsed).await
+                    Err(format!(
+                        "forge/export: native forge packages the pageable 'gguf-lora' gene \
+                         (the unit the grid trades + llama-server pages in); format {:?} is \
+                         not supported natively — no Unsloth fallback",
+                        parsed.format
+                    ))
                 }
             }
             "forge/health" => {
@@ -160,9 +174,10 @@ impl ServiceModule for ForgeModule {
                 run_health(&ForgeCustodianHttp::from_config()).await
             }
             "forge/probe" => {
-                // DISCOVER the custodian's current capability — the self-organizing
-                // primitive a forge daemon (and the grid) route demand against.
-                let cap = UnslothForgeHttp::from_config().probe().await;
+                // DISCOVER this node's native forge capability — the self-organizing
+                // primitive the grid routes training demand against. Sourced from the
+                // live job watch + the on-disk genome dir, no gateway.
+                let cap = native_forge_capability();
                 let json = serde_json::to_value(cap)
                     .map_err(|e| format!("forge/probe: serialize: {e}"))?;
                 Ok(CommandResult::Json(json))
@@ -397,53 +412,6 @@ fn default_lora_target_keys() -> Vec<String> {
     ]
 }
 
-/// Build the custodian train request from the params. Pure — unit-testable
-/// without the custodian, so the body continuum POSTs is pinned independently of
-/// a real run (the genome knobs ride EXPLICITLY; `use_lora` follows the type).
-fn build_train_request(p: &ForgeTrainParams) -> ForgeTrainRequest {
-    ForgeTrainRequest {
-        model_name: p.base_model.clone(),
-        training_type: p.training_type.clone(),
-        format_type: p.format_type.clone(),
-        local_datasets: vec![p.dataset_path.clone()],
-        num_epochs: p.num_epochs,
-        learning_rate: p.learning_rate.clone(),
-        batch_size: p.batch_size,
-        gradient_accumulation_steps: p.gradient_accumulation_steps,
-        max_seq_length: p.max_seq_length,
-        load_in_4bit: p.load_in_4bit,
-        use_lora: p.training_type == "lora",
-        lora_r: p.lora_r,
-        lora_alpha: p.lora_alpha,
-        lora_dropout: 0.0,
-    }
-}
-
-/// `forge/train` — delegate the run to the custodian. `dry_run` returns the
-/// resolved request body (the wiring check); otherwise the custodian kicks the
-/// run off (fire-and-poll — the custodian owns the long-running training; poll
-/// `forge/train-status`). Fail-loud on an unreachable/erroring custodian.
-async fn run_train(
-    custodian: &dyn ForgeCustodian,
-    p: ForgeTrainParams,
-) -> Result<CommandResult, String> {
-    let req = build_train_request(&p);
-    if p.dry_run {
-        return Ok(CommandResult::Json(json!({
-            "dry_run": true,
-            "request": to_body(&req),
-        })));
-    }
-    let handle = custodian.train_start(&req).await.map_err(|e| e.to_string())?;
-    let status = custodian.train_status().await.map_err(|e| e.to_string())?;
-    Ok(CommandResult::Json(json!({
-        "dry_run": false,
-        "job_id": handle.job_id,
-        "message": handle.message,
-        "status": serde_json::to_value(status).map_err(|e| e.to_string())?,
-    })))
-}
-
 /// True when the native MLX engine should own the train run for the given
 /// explicit selector. Explicit `engine` wins; `None` auto-detects by platform
 /// (Apple Silicon trains on mlx). This is a deterministic platform branch, not a
@@ -473,6 +441,37 @@ fn resolve_mlx_python() -> PathBuf {
     PathBuf::from(home).join(".continuum/genome/venv/bin/python3")
 }
 
+/// The on-disk root where native mlx runs write forged adapters
+/// (`~/.continuum/forge/lora/<adapter_name>`) — matches `run_train_native_mlx`.
+fn native_genome_dir() -> String {
+    std::env::var("HOME")
+        .map(|h| format!("{h}/.continuum/forge/lora"))
+        .unwrap_or_else(|_| ".continuum/forge/lora".to_string())
+}
+
+/// This node's native forge capability — the self-organizing primitive the grid
+/// routes training demand against. OBSERVED (the live job watch + the on-disk
+/// genome dir), never declared by config. `busy` reflects a run in flight;
+/// `held_genes` counts the adapters already forged on this host.
+fn native_forge_capability() -> crate::forge::protocol::ForgeCapability {
+    let s = crate::forge::mlx_job::current_train_status();
+    let outputs_dir = native_genome_dir();
+    let held_genes = std::fs::read_dir(&outputs_dir)
+        .map(|rd| rd.filter_map(|e| e.ok()).filter(|e| e.path().is_dir()).count())
+        .unwrap_or(0);
+    crate::forge::protocol::ForgeCapability {
+        reachable: true,
+        busy: s.is_training_running,
+        phase: if s.phase.is_empty() {
+            "idle".to_string()
+        } else {
+            s.phase
+        },
+        held_genes,
+        outputs_dir,
+    }
+}
+
 /// Read a JSONL file into one `Value` per non-blank line (fail loud on a
 /// malformed line, naming the line number — never silently drop rows).
 fn read_jsonl(path: &Path) -> Result<Vec<Value>, String> {
@@ -497,7 +496,10 @@ fn read_jsonl(path: &Path) -> Result<Vec<Value>, String> {
 /// data dir mlx_lm expects, and runs [`run_mlx_train`] with scale derived from
 /// the LoRA geometry (`alpha/rank`) per [[genome-loop-trains-on-own-mistakes]].
 /// `dry_run` returns the resolved spec WITHOUT spawning — the wiring check.
-fn run_train_native_mlx(p: ForgeTrainParams) -> Result<CommandResult, String> {
+fn run_train_native_mlx(
+    p: ForgeTrainParams,
+    bus: Option<Arc<MessageBus>>,
+) -> Result<CommandResult, String> {
     use crate::forge::mlx_train::{run_mlx_train, MlxBasePrep, MlxTrainEnv, MlxTrainSpec};
 
     // --- train base: explicit + asserted to equal the served weights ---
@@ -614,13 +616,20 @@ fn run_train_native_mlx(p: ForgeTrainParams) -> Result<CommandResult, String> {
     let env = MlxTrainEnv {
         python: resolve_mlx_python(),
     };
-    let out = run_mlx_train(&spec, &env)?;
+    // FIRE-AND-EMIT: spawn the (blocking) mlx_lm.lora run as a tracked job on a
+    // blocking thread; return the handle NOW. Lifecycle (training → completed/
+    // failed) publishes over the watch (`forge/train-status` reads it) AND the airc
+    // bus (`forge.train.*`) so the L3 completion sentinel + grid peers SUBSCRIBE —
+    // no poll, never block the caller on a multi-minute train (also task #86).
+    let job_id = format!("mlx-{}", p.adapter_name);
+    let out_dir = adapter_out.display().to_string();
+    crate::forge::mlx_job::spawn_train_job(job_id.clone(), bus, move || run_mlx_train(&spec, &env));
     Ok(CommandResult::Json(json!({
-        "dry_run": false,
         "engine": "mlx",
-        "adapter_dir": out.adapter_dir.display().to_string(),
-        "adapters_safetensors": out.adapters_safetensors.display().to_string(),
-        "adapter_config": out.adapter_config.display().to_string(),
+        "jobId": job_id,
+        "phase": "training",
+        "message": "native mlx_lm.lora training started — subscribe to forge.train.done (no poll)",
+        "adapterOut": out_dir,
     })))
 }
 
@@ -675,60 +684,6 @@ fn default_quantization() -> String {
 }
 fn default_lora_outtype() -> String {
     "f16".to_string()
-}
-
-/// Resolve the organism's `format`/`quantization` params into the unsloth
-/// custodian's genetic [`GenomeFormat`] outcome. Pure. Handles ONLY the
-/// unsloth-served formats (`lora`, `gguf`); `gguf-lora` is served by the
-/// continuum forge custodian over Contract C ([`run_export_gguf_lora`]) and is
-/// dispatched away before reaching here — so this rejects it loudly as a guard
-/// against a future caller routing it down the wrong (unsloth) path.
-fn package_format(format: &str, quantization: &str) -> Result<GenomeFormat, String> {
-    match format {
-        "lora" => Ok(GenomeFormat::Lora { base_model_id: None }),
-        "gguf" => Ok(GenomeFormat::Gguf { quantization: quantization.to_string() }),
-        "gguf-lora" => Err(
-            "format 'gguf-lora' is served by the forge custodian (Contract C), not this path \
-             — route via run_export_gguf_lora"
-                .to_string(),
-        ),
-        other => Err(format!(
-            "unsupported export format: {other} (lora|gguf via unsloth; gguf-lora via custodian)"
-        )),
-    }
-}
-
-/// `forge/export` — name the genome OUTCOME and hand it to the custodian. ONE
-/// call: the custodian owns the load → fuse → convert → quantize sequence (black
-/// box). Fail-loud on any custodian error or a non-success envelope.
-async fn run_export(
-    custodian: &dyn ForgeCustodian,
-    p: ForgeExportParams,
-) -> Result<CommandResult, String> {
-    let format = package_format(&p.format, &p.quantization)?;
-    let result = custodian
-        .package(&PackageRequest {
-            checkpoint: p.checkpoint.clone(),
-            save_directory: p.save_directory.clone(),
-            format,
-            max_seq_length: p.max_seq_length,
-            load_in_4bit: p.load_in_4bit,
-            push_to_hub: false,
-            repo_id: None,
-        })
-        .await
-        .map_err(|e| e.to_string())?;
-
-    if !result.success {
-        return Err(format!("custodian export ({}) failed: {}", p.format, result.message));
-    }
-    Ok(CommandResult::Json(json!({
-        "format": p.format,
-        "checkpoint": p.checkpoint,
-        "save_directory": p.save_directory,
-        "message": result.message,
-        "details": result.details,
-    })))
 }
 
 /// `forge/export` for the `gguf-lora` outcome — served by the continuum forge
@@ -1120,113 +1075,6 @@ mod tests {
         assert!(artifact.active_params_b.is_none());
     }
 
-    // ── forge/train + forge/export — DELEGATED to the custodian (#32) ──
-    //
-    // The byte work moved to the custodian, so these tests pin the two halves the
-    // organism still owns: the REQUEST shape it sends, and that export sequences
-    // load-checkpoint → package. A recording fake stands in for the HTTP
-    // custodian (the real wire is unit-tested in inference::unsloth_forge).
-
-    use crate::inference::unsloth_control::UnslothError;
-    use crate::inference::unsloth_forge::{
-        ExportResult, ForgeCustodian, ForgeTrainRequest, GenomeFormat, LoraCatalog, PackageRequest,
-        TrainHandle, TrainStatus,
-    };
-    use std::sync::Mutex;
-
-    /// Records what the organism asked the custodian to do, and returns scripted
-    /// results — so we assert on the request shape without a network. The
-    /// load→fuse→convert sequence is now BELOW the trait (an unsloth-impl detail),
-    /// so the fake only sees the organism-facing `package` call.
-    #[derive(Default)]
-    struct RecordingCustodian {
-        trains: Mutex<Vec<ForgeTrainRequest>>,
-        packages: Mutex<Vec<PackageRequest>>,
-        /// Custodian's package success flag (to exercise the fail-loud path).
-        succeed: bool,
-    }
-
-    impl RecordingCustodian {
-        fn ok() -> Self {
-            Self { succeed: true, ..Default::default() }
-        }
-    }
-
-    #[async_trait]
-    impl ForgeCustodian for RecordingCustodian {
-        async fn train_start(
-            &self,
-            req: &ForgeTrainRequest,
-        ) -> Result<TrainHandle, UnslothError> {
-            self.trains.lock().unwrap().push(req.clone());
-            Ok(TrainHandle { job_id: "job-1".into(), message: "started".into() })
-        }
-        async fn train_status(&self) -> Result<TrainStatus, UnslothError> {
-            Ok(TrainStatus { job_id: "job-1".into(), phase: "training".into(), ..Default::default() })
-        }
-        async fn package(&self, req: &PackageRequest) -> Result<ExportResult, UnslothError> {
-            self.packages.lock().unwrap().push(req.clone());
-            Ok(ExportResult { success: self.succeed, message: "packaged".into(), ..Default::default() })
-        }
-        async fn list_loras(&self) -> Result<LoraCatalog, UnslothError> {
-            Ok(LoraCatalog::default())
-        }
-    }
-
-    // what this catches: the recipe's genome knobs (base model, type, rank/alpha,
-    // epochs) ride EXPLICITLY in the custodian body — never silently fall to the
-    // custodian's defaults (the fail-loud-over-silent-substitution rule). Pure.
-    #[test]
-    fn train_request_carries_genome_knobs_explicitly() {
-        let p = ForgeTrainParams {
-            dataset_path: "/turns.jsonl".into(),
-            base_model: "unsloth/Qwen3-0.6B".into(),
-            format_type: "chat".into(),
-            training_type: "lora".into(),
-            lora_r: 32,
-            lora_alpha: 64,
-            num_epochs: 3,
-            learning_rate: "2e-4".into(),
-            batch_size: 1,
-            gradient_accumulation_steps: 1,
-            max_seq_length: 2048,
-            load_in_4bit: true,
-            dry_run: true,
-            ..Default::default()
-        };
-        let req = build_train_request(&p);
-        assert_eq!(req.model_name, "unsloth/Qwen3-0.6B");
-        assert_eq!(req.training_type, "lora");
-        assert!(req.use_lora, "lora type → use_lora true");
-        assert_eq!(req.lora_r, 32);
-        assert_eq!(req.lora_alpha, 64);
-        assert_eq!(req.num_epochs, 3);
-        assert_eq!(req.local_datasets, vec!["/turns.jsonl".to_string()]);
-    }
-
-    // what this catches: a full fine-tune does NOT set use_lora (the type drives
-    // the flag — so a "full" recipe doesn't accidentally request a LoRA).
-    #[test]
-    fn full_finetune_does_not_request_lora() {
-        let p = ForgeTrainParams {
-            dataset_path: "/d.jsonl".into(),
-            base_model: "m".into(),
-            format_type: "chat".into(),
-            training_type: "full".into(),
-            lora_r: 16,
-            lora_alpha: 16,
-            num_epochs: 1,
-            learning_rate: "2e-4".into(),
-            batch_size: 1,
-            gradient_accumulation_steps: 1,
-            max_seq_length: 2048,
-            load_in_4bit: true,
-            dry_run: true,
-            ..Default::default()
-        };
-        assert!(!build_train_request(&p).use_lora);
-    }
-
     // ── native MLX engine selection + spec resolution (#52) ──
 
     /// What this catches: engine selection is EXPLICIT-wins, never a silent
@@ -1279,7 +1127,7 @@ mod tests {
             "lora_alpha": 32,
             "dry_run": true,
         })).expect("params");
-        let v = match run_train_native_mlx(p).unwrap() {
+        let v = match run_train_native_mlx(p, None).unwrap() {
             CommandResult::Json(v) => v,
             _ => panic!("json"),
         };
@@ -1310,126 +1158,16 @@ mod tests {
             "engine": "mlx",
             "dry_run": true,
         })).expect("params");
-        let err = run_train_native_mlx(p).unwrap_err();
+        let err = run_train_native_mlx(p, None).unwrap_err();
         assert!(err.contains("train_base_dir is required"), "got: {err}");
         assert!(err.contains("serve-base"), "must name the train==serve reason, got: {err}");
     }
 
-    // what this catches: dry_run resolves the request WITHOUT contacting the
-    // custodian (the wiring check — no run kicked off, nothing recorded).
-    #[tokio::test]
-    async fn forge_train_dry_run_does_not_call_custodian() {
-        let cust = RecordingCustodian::ok();
-        let p = ForgeTrainParams {
-            dataset_path: "/turns.jsonl".into(),
-            base_model: "m".into(),
-            format_type: "chat".into(),
-            training_type: "lora".into(),
-            lora_r: 16,
-            lora_alpha: 16,
-            num_epochs: 1,
-            learning_rate: "2e-4".into(),
-            batch_size: 1,
-            gradient_accumulation_steps: 1,
-            max_seq_length: 2048,
-            load_in_4bit: true,
-            dry_run: true,
-            ..Default::default()
-        };
-        let v = match run_train(&cust, p).await.unwrap() {
-            CommandResult::Json(v) => v,
-            _ => panic!("json"),
-        };
-        assert_eq!(v["dry_run"], true);
-        assert_eq!(v["request"]["model_name"], "m");
-        assert!(cust.trains.lock().unwrap().is_empty(), "dry_run must not POST");
-    }
-
-    // what this catches: a live train DELEGATES to the custodian (records the
-    // request, returns the handle's job_id) — the organism never spawns a trainer.
-    #[tokio::test]
-    async fn forge_train_delegates_to_custodian() {
-        let cust = RecordingCustodian::ok();
-        let p = ForgeTrainParams {
-            dataset_path: "/turns.jsonl".into(),
-            base_model: "m".into(),
-            format_type: "chat".into(),
-            training_type: "lora".into(),
-            lora_r: 16,
-            lora_alpha: 16,
-            num_epochs: 1,
-            learning_rate: "2e-4".into(),
-            batch_size: 1,
-            gradient_accumulation_steps: 1,
-            max_seq_length: 2048,
-            load_in_4bit: true,
-            dry_run: false,
-            ..Default::default()
-        };
-        let v = match run_train(&cust, p).await.unwrap() {
-            CommandResult::Json(v) => v,
-            _ => panic!("json"),
-        };
-        assert_eq!(v["dry_run"], false);
-        assert_eq!(v["job_id"], "job-1");
-        assert_eq!(cust.trains.lock().unwrap().len(), 1);
-    }
-
-    // what this catches: export names the LoRA OUTCOME and hands the custodian ONE
-    // package call carrying the checkpoint + save-dir handles. The load→export
-    // sequencing now lives BELOW the trait (unsloth-impl detail), so the organism
-    // only asserts it asked for the right genome form.
-    #[tokio::test]
-    async fn forge_export_lora_packages_as_lora() {
-        let cust = RecordingCustodian::ok();
-        let p = ForgeExportParams {
-            checkpoint: "/ckpt".into(),
-            save_directory: "/out".into(),
-            format: "lora".into(),
-            quantization: "Q4_K_M".into(),
-            base_model_id: None,
-            outtype: "f16".into(),
-            max_seq_length: 2048,
-            load_in_4bit: true,
-        };
-        let v = match run_export(&cust, p).await.unwrap() {
-            CommandResult::Json(v) => v,
-            _ => panic!("json"),
-        };
-        assert_eq!(v["format"], "lora");
-        let pkgs = cust.packages.lock().unwrap();
-        assert_eq!(pkgs.len(), 1, "exactly one package call");
-        assert_eq!(pkgs[0].checkpoint, "/ckpt");
-        assert_eq!(pkgs[0].save_directory, "/out");
-        assert_eq!(pkgs[0].format, GenomeFormat::Lora { base_model_id: None });
-    }
-
-    // what this catches: the GGUF path threads the quantization method through into
-    // the GenomeFormat (the grid can want a quantized standalone, not just the LoRA).
-    #[tokio::test]
-    async fn forge_export_gguf_threads_quantization() {
-        let cust = RecordingCustodian::ok();
-        let p = ForgeExportParams {
-            checkpoint: "/ckpt".into(),
-            save_directory: "/out".into(),
-            format: "gguf".into(),
-            quantization: "Q5_K_M".into(),
-            base_model_id: None,
-            outtype: "f16".into(),
-            max_seq_length: 2048,
-            load_in_4bit: true,
-        };
-        run_export(&cust, p).await.unwrap();
-        let pkgs = cust.packages.lock().unwrap();
-        assert_eq!(pkgs.len(), 1);
-        assert_eq!(pkgs[0].format, GenomeFormat::Gguf { quantization: "Q5_K_M".into() });
-    }
+    use std::sync::Mutex;
 
     /// Records the Contract C ([`crate::forge::protocol`]) gguf-lora requests the
     /// organism sends to the forge CUSTODIAN — so we assert the stateless wire
-    /// shape (checkpoint-in-body, base, outtype) without a network. Distinct from
-    /// `RecordingCustodian` (the unsloth trait) because gguf-lora is a different
-    /// daemon on a different contract.
+    /// shape (checkpoint-in-body, base, outtype) without a network.
     #[derive(Default)]
     struct RecordingForgeCustodian {
         exports: Mutex<Vec<crate::forge::protocol::GgufLoraRequest>>,
@@ -1659,69 +1397,25 @@ mod tests {
         assert!(err.contains("connection refused"), "got: {err}");
     }
 
-    // what this catches: a custodian that fails the package is surfaced LOUDLY (no
-    // silent no-op — the bug class #32 was opened to kill).
-    #[tokio::test]
-    async fn forge_export_fails_loud_when_custodian_fails() {
-        let cust = RecordingCustodian::default(); // succeed=false
-        let p = ForgeExportParams {
-            checkpoint: "/ckpt".into(),
-            save_directory: "/out".into(),
-            format: "lora".into(),
-            quantization: "Q4_K_M".into(),
-            base_model_id: None,
-            outtype: "f16".into(),
-            max_seq_length: 2048,
-            load_in_4bit: true,
-        };
-        let err = run_export(&cust, p).await.expect_err("package failure must error");
-        assert!(err.contains("export (lora) failed"), "got: {err}");
-    }
+    // ── forge/probe — DISCOVER this node's native forge capability ──
 
-    // ── forge/probe — DISCOVER capability (self-organizing fabric primitive) ──
-
-    /// A custodian that doesn't answer — every call errors. Stands in for an
-    /// unreachable/down endpoint so we can pin that `probe` reports it truthfully.
-    struct DeadCustodian;
-
-    #[async_trait]
-    impl ForgeCustodian for DeadCustodian {
-        async fn train_start(&self, _: &ForgeTrainRequest) -> Result<TrainHandle, UnslothError> {
-            Err(UnslothError::Api("down".into()))
-        }
-        async fn train_status(&self) -> Result<TrainStatus, UnslothError> {
-            Err(UnslothError::Api("down".into()))
-        }
-        async fn package(&self, _: &PackageRequest) -> Result<ExportResult, UnslothError> {
-            Err(UnslothError::Api("down".into()))
-        }
-        async fn list_loras(&self) -> Result<LoraCatalog, UnslothError> {
-            Err(UnslothError::Api("down".into()))
-        }
-    }
-
-    // what this catches: probe DISCOVERS a live custodian's state (reachable, its
-    // run phase) by asking it — capability observed, not declared. This is the
-    // reading a forge daemon routes grid demand against.
-    #[tokio::test]
-    async fn probe_reports_reachable_live_custodian() {
-        let cust = RecordingCustodian::ok();
-        let cap = cust.probe().await;
-        assert!(cap.reachable, "an answering custodian is reachable");
-        assert!(!cap.busy, "default status is not mid-run");
-        assert_eq!(cap.phase, "training");
-        assert_eq!(cap.held_genes, 0, "empty catalog → zero held genes");
-    }
-
-    // what this catches: an unreachable custodian probes to reachable:false — the
-    // honest sensor reading, NOT a panic and NOT a silent pretend-healthy. A daemon
-    // routes elsewhere on this (or fails loud if it's the last custodian).
-    #[tokio::test]
-    async fn probe_reports_unreachable_when_custodian_down() {
-        let cap = DeadCustodian.probe().await;
-        assert!(!cap.reachable, "a down custodian must read unreachable");
-        assert!(!cap.busy);
-        assert_eq!(cap.held_genes, 0);
+    // what this catches: native probe DISCOVERS capability from the on-disk genome
+    // dir + the live job watch — reachable is true on any host with the mlx path
+    // (observed, never declared), and outputs_dir points at the byte-custody root.
+    // No custodian, no network — the self-organizing primitive the grid routes
+    // training demand against.
+    #[test]
+    fn native_probe_reports_reachable_from_on_disk_capability() {
+        let cap = native_forge_capability();
+        assert!(
+            cap.reachable,
+            "the native mlx forge path is always reachable on-host"
+        );
+        assert!(
+            cap.outputs_dir.ends_with(".continuum/forge/lora"),
+            "genome dir: {}",
+            cap.outputs_dir
+        );
     }
 
     // ── forge/decide — "assemble best self, or train" (product-thesis decision) ──
