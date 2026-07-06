@@ -23,6 +23,7 @@ pub mod fetch;
 pub mod model_catalog;
 pub mod model_source;
 pub mod provisioner;
+pub mod scaling;
 
 pub use avatar_source::AvatarSource;
 pub use cache::{reconcile, CacheDecision, CacheEntry, ProvisionPlan};
@@ -31,6 +32,7 @@ pub use fetch::{fetch_and_place, FetchError};
 pub use model_catalog::{parse_quant, select_best_fit, GgufCandidate};
 pub use model_source::ModelSource;
 pub use provisioner::{EvictionReport, Provisioner};
+pub use scaling::{DefaultScalingPolicy, DemandContext, ScalingPolicy};
 
 /// What kind of artifact this is — for routing + human-readable provisioning reports.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
