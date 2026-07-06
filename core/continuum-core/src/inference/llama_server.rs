@@ -54,6 +54,13 @@ const DEFAULT_HOST: &str = "127.0.0.1";
 /// a distinct port and keep scanning — see [`EphemeralServingLane`].)
 const DEFAULT_PORT: u16 = 58057;
 
+/// Compile-time default OpenAI `/v1` base for the local llama-server provider spec
+/// ([`crate::model_registry::catalog`]). A placeholder only: the adapter is
+/// repointed at the serving daemon's live snapshot `base_url` (== [`serving_v1_url`])
+/// at registration. Mirrors [`DEFAULT_PORT`]; operator override is
+/// `LLAMA_SERVER_BASE_URL`. Owned HERE — never the dead Unsloth `:8888` gateway.
+pub const DEFAULT_BASE_URL: &str = "http://127.0.0.1:58057/v1";
+
 /// How many ports above a base an EPHEMERAL measurement lane scans for a free one
 /// ([`first_free_port`], used only by [`EphemeralServingLane`]) before giving up
 /// and binding the base (letting the spawn fail loud rather than serving somewhere

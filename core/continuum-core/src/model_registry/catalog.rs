@@ -677,7 +677,7 @@ pub fn providers() -> Vec<Provider> {
         provider(ProviderSpec {
             id: crate::inference::llama_server::PROVIDER_ID,
             name: "llama-server (local OpenAI-compatible gateway)",
-            base_url: crate::inference::unsloth_control::DEFAULT_HOST,
+            base_url: crate::inference::llama_server::DEFAULT_BASE_URL,
             api_key_env: None,
             default_model: Some("continuum-ai/qwen3.5-4b-code-forged-GGUF"),
             auth: AuthKind::None,
