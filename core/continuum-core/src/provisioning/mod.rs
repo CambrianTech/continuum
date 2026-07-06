@@ -17,9 +17,11 @@
 use std::path::PathBuf;
 
 pub mod avatar_source;
+pub mod cache;
 pub mod model_source;
 
 pub use avatar_source::AvatarSource;
+pub use cache::{reconcile, CacheDecision, CacheEntry, ProvisionPlan};
 pub use model_source::ModelSource;
 
 /// What kind of artifact this is — for routing + human-readable provisioning reports.
