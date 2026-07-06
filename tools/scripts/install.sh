@@ -172,7 +172,7 @@ install_cuda_toolkit() {
   else CAN_SUDO=false; fi
   if ! $CAN_SUDO; then
     echo -e "  ${RED}CUDA toolkit needed but no terminal for sudo. Re-run in a terminal:${NC}"
-    echo -e "  ${YELLOW}  cd src && bash scripts/install.sh${NC}"
+    echo -e "  ${YELLOW}  bash tools/scripts/install.sh${NC}"
     return 0
   fi
   ensure_sudo_warmed
@@ -625,41 +625,17 @@ install_livekit() {
 install_livekit
 
 # ============================================================================
-# Unsloth — inference + LoRA-training engine (preferred local backend)
+# Inference + LoRA-training engine — NATIVE, no separate install (Unsloth excised)
 # ============================================================================
 #
-# Unsloth (Apache-2.0 core; llama.cpp underneath — the backend Continuum already
-# targets) is the PREFERRED local inference + training engine: Continuum points
-# its AIProviderAdapter at unsloth's OpenAI-compatible /v1 and surfaces its
-# commands to unsloth chat over MCP (continuum-mcp). See
-# docs/architecture/UNSLOTH-INTEGRATION.md.
-#
-# Installed by default (it's the engine), but NON-FATAL and behind the adapter
-# boundary — Continuum still runs with another provider if this is absent
-# (solve-for-public-users). Skip with CONTINUUM_NO_UNSLOTH=1. Idempotent.
-# Real installer per unsloth docs: curl -fsSL https://unsloth.ai/install.sh | sh
-# (macOS/Linux). Runs as a local web server: `unsloth studio -p 8888`.
-echo -e "${YELLOW}[8/9] Unsloth (inference + training engine)${NC}"
-if [ "${CONTINUUM_NO_UNSLOTH:-0}" = "1" ]; then
-  echo -e "  ${GREEN}⏭  Skipped (CONTINUUM_NO_UNSLOTH=1).${NC}"
-elif command -v unsloth &>/dev/null; then
-  echo -e "  ${GREEN}✅ unsloth already installed${NC}"
-else
-  case "$PLATFORM" in
-    macos|linux|wsl)
-      # Non-fatal: a failed engine install must not abort the whole installer.
-      if curl -fsSL https://unsloth.ai/install.sh | sh; then
-        echo -e "  ${GREEN}✅ unsloth installed — launch: unsloth studio -p 8888${NC}"
-      else
-        echo -e "  ${YELLOW}⚠  unsloth install failed — Continuum still runs with another"
-        echo -e "     provider. Re-run later: curl -fsSL https://unsloth.ai/install.sh | sh${NC}"
-      fi
-      ;;
-    *)
-      echo -e "  ${YELLOW}⏭  Unsupported platform for the unsloth installer; skipping.${NC}"
-      ;;
-  esac
-fi
+# Continuum OWNS its inference + genome-forge stack: the core spawns its own
+# llama-server (built from the vendored llama.cpp submodule) to serve models over
+# an OpenAI-compatible /v1, and forges LoRA genes natively via mlx_lm on Apple
+# Silicon. Nothing to install here — the engine comes up WITH the core. (The mlx
+# trainer wants a Python venv with mlx-lm; the core provisions
+# ~/.continuum/genome/venv lazily on the first forge/train.)
+echo -e "${YELLOW}[8/9] Inference + training engine${NC}"
+echo -e "  ${GREEN}✅ native — llama-server (serving) + mlx_lm (forge) come up with the core${NC}"
 
 # ============================================================================
 # Tailscale mesh VPN (multi-tower networking)
@@ -756,8 +732,8 @@ if command -v tailscale &>/dev/null; then
   echo -e "  Tailscale: ${ts_ip}"
 fi
 echo ""
-echo -e "  ${YELLOW}Start:${NC}  cd src && npm start"
-echo -e "  ${YELLOW}Test:${NC}   ./jtag ping"
+echo -e "  ${YELLOW}Start:${NC}  npm start"
+echo -e "  ${YELLOW}Test:${NC}   cu ping"
 echo -e "  ${YELLOW}Config:${NC} $CONFIG_FILE"
 echo ""
 
