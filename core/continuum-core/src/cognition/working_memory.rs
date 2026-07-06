@@ -64,6 +64,14 @@ pub const WM_SETTLEMENT_PREFIX: &str = "[settled]";
 /// not outrank standing framing (roster/doctrine, 0.9) or a strong recall hit.
 const WORKING_MEMORY_SALIENCE: f32 = 0.5;
 
+/// How much of a tool result's HEAD is kept in the rolling recency trail (older acts +
+/// the proprioceptive "I did #n X" stamp). The LATEST act is kept in FULL separately
+/// (`last_action`) so the mind can actually work with what its hands just fetched — count
+/// a file, read a screenshot description, scan a log tail — not a truncated stub. Was
+/// starving live agents: they saw only the head of their own tool results and looped
+/// ("I'll read it again") because the data never came back. [[act-results-need-a-recency-channel-not-semantic-recall]]
+pub const WM_ACTION_HEAD_CHARS: usize = 800;
+
 /// A bounded, rolling buffer of the persona's recent reasoning. Cheap to clone the
 /// `Arc`; shared between the writer (deliberation faculty) and the reader
 /// (`WorkingMemoryFaculty`). `parking_lot::Mutex` — no poisoning, and every access
@@ -72,6 +80,15 @@ const WORKING_MEMORY_SALIENCE: f32 = 0.5;
 pub struct WorkingMemory {
     capacity: usize,
     entries: Mutex<VecDeque<String>>,
+    /// The FULL result of the most recent act, kept whole (bounded upstream by the
+    /// executor's fold cap) so the mind can work with what its hands just fetched — a
+    /// file to count, a screenshot description to read, a log to scan. Only the latest is
+    /// full; older acts survive as heads in `entries`. `(seq, result)`; the `seq` matches
+    /// the `[action #n]` stamp in the trail so the mind can tie the full result to the
+    /// proprioceptive entry. An ASYNC result (a dispatched sentinel/debugger/compilation
+    /// completing later) feeds this SAME slot on its completion event — one channel, sync
+    /// or async ([[act-results-need-a-recency-channel-not-semantic-recall]]).
+    last_action: Mutex<Option<(u64, String)>>,
     /// Monotonic stamp applied to ACTION entries. Two reasons: (1) it makes each
     /// recorded action a DISTINCT string even when the persona repeats the identical
     /// tool call — so the working-memory window the perception faculty bids next tick
@@ -88,6 +105,7 @@ impl WorkingMemory {
         Self {
             capacity: capacity.max(1),
             entries: Mutex::new(VecDeque::new()),
+            last_action: Mutex::new(None),
             next_action_seq: AtomicU64::new(1),
         }
     }
@@ -114,17 +132,33 @@ impl WorkingMemory {
     /// entry is stamped with a monotonic `#n` so a repeated identical act still
     /// changes the perception window (see `next_action_seq`). Oldest ages out past
     /// capacity, same rolling scratchpad as reasoning.
-    pub fn record_action(&self, action: &str) {
-        let a = action.trim();
+    pub fn record_action(&self, result: &str) {
+        let a = result.trim();
         if a.is_empty() {
             return;
         }
         let seq = self.next_action_seq.fetch_add(1, Ordering::Relaxed);
+        // Keep the LATEST result in FULL so the mind can work with it next turn (count a
+        // file, read a screenshot description, scan a log). Overwrites the prior latest —
+        // older acts survive only as heads in the trail below.
+        *self.last_action.lock() = Some((seq, a.to_string()));
+        // Head into the rolling recency trail: proprioception ("I did #n X") + the
+        // repeat-break signal. Truncation lives HERE now (one place), so callers pass the
+        // full result and never pre-truncate. Append-only + `#seq`-stamped keeps the
+        // trail's KV-cache prefix byte-stable across a settle-act.
+        let head: String = a.chars().take(WM_ACTION_HEAD_CHARS).collect();
         let mut e = self.entries.lock();
-        e.push_back(format!("[action #{seq}] {a}"));
+        e.push_back(format!("[action #{seq}] {head}"));
         while e.len() > self.capacity {
             e.pop_front();
         }
+    }
+
+    /// The FULL result of the most recent act, with its `#seq` stamp — `None` before any
+    /// act or after a `clear`. The perception faculty surfaces this so the mind sees the
+    /// whole of what its hands just fetched, not the truncated trail head.
+    pub fn last_action_full(&self) -> Option<(u64, String)> {
+        self.last_action.lock().clone()
     }
 
     /// Record that the persona SETTLED — produced an utterance and closed the current
@@ -162,6 +196,7 @@ impl WorkingMemory {
     /// continuously and old traces age out naturally past `capacity`.
     pub fn clear(&self) {
         self.entries.lock().clear();
+        *self.last_action.lock() = None; // the full latest result is proprioception too
     }
 
     pub fn is_empty(&self) -> bool {
@@ -218,9 +253,23 @@ impl Faculty for WorkingMemoryFaculty {
             .map(|r| format!("- {r}"))
             .collect::<Vec<_>>()
             .join("\n");
+        let mut text = format!("Your recent thoughts and actions (working memory):\n{body}");
+        // The FULL result of the most recent act, appended AFTER the append-only trail:
+        // the stable prefix keeps its KV-cache, only this fresh block re-prefills (it is
+        // new each act regardless). This is what lets the mind actually USE what its hands
+        // fetched — count the file, read the screenshot description, scan the log — instead
+        // of looping on the truncated head. Only shown when it carries more than the trail
+        // head already does, so short results don't duplicate.
+        if let Some((seq, full)) = self.memory.last_action_full() {
+            if full.chars().count() > WM_ACTION_HEAD_CHARS {
+                text.push_str(&format!(
+                    "\n\nFull result of your most recent action (#{seq}):\n{full}"
+                ));
+            }
+        }
         Some(Contribution::context(
             Self::faculty_id(),
-            format!("Your recent thoughts and actions (working memory):\n{body}"),
+            text,
             WORKING_MEMORY_SALIENCE,
             format!("working memory: {n} recent trace(s) carried forward"),
         ))
@@ -230,6 +279,50 @@ impl Faculty for WorkingMemoryFaculty {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches: THE starvation fix — a large tool result comes back to the mind
+    // in FULL (so it can count/read/scan it), while the rolling trail keeps only the head
+    // (byte-stable proprioception). Older acts drop to head-only; a fresh act's full result
+    // replaces the prior. This is why a persona reading a 130-line file can now answer about
+    // the whole file instead of looping on the doc-comment head.
+    #[tokio::test]
+    async fn latest_action_returns_full_result_trail_keeps_head() {
+        let wm = Arc::new(WorkingMemory::new(8));
+        let big = format!("line0\n{}", "x".repeat(5_000)); // > WM_ACTION_HEAD_CHARS
+        wm.record_action(&big);
+
+        // The full result is available whole.
+        let (seq, full) = wm.last_action_full().expect("latest act kept");
+        assert_eq!(seq, 1);
+        assert_eq!(full, big, "the mind gets the WHOLE result, not a truncated stub");
+
+        // The rolling trail carries only the head (KV-stable proprioception).
+        let trail = wm.recent();
+        assert_eq!(trail.len(), 1);
+        assert!(trail[0].starts_with("[action #1]"));
+        assert!(
+            trail[0].chars().count() < big.chars().count(),
+            "trail entry is head-truncated, not the whole result"
+        );
+
+        // The faculty surfaces the full result as its own block.
+        let rendered = WorkingMemoryFaculty::new(wm.clone())
+            .contribute(&Workspace::new("a fresh burst"))
+            .await
+            .expect("bids")
+            .content
+            .clone();
+        assert!(
+            rendered.contains("Full result of your most recent action (#1):"),
+            "the whole result reaches the mind"
+        );
+        assert!(rendered.contains(&"x".repeat(5_000)), "and it's the FULL body");
+
+        // A second act replaces the full slot; the first survives only as a trail head.
+        wm.record_action("small follow-up");
+        let (seq2, _) = wm.last_action_full().unwrap();
+        assert_eq!(seq2, 2, "latest-full tracks the most recent act");
+    }
 
     // what this catches: record/recent round-trips, blank reasoning is ignored, and
     // the buffer ROLLS at capacity (oldest dropped) — it's a scratchpad, not a log.
