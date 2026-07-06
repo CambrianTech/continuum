@@ -295,6 +295,7 @@ pub fn prepare_base_for_mlx(
 pub fn run_mlx_train(
     spec: &MlxTrainSpec,
     env: &MlxTrainEnv,
+    on_progress: &(dyn Fn(u64, Option<f64>) + Sync),
 ) -> Result<MlxTrainOutput, String> {
     // --- preconditions (fail AT the missing precondition, naming it) ---
     if !env.python.is_file() {
@@ -359,18 +360,42 @@ pub fn run_mlx_train(
     std::fs::write(&config_path, build_lora_config_yaml(spec))
         .map_err(|e| format!("write MLX train config {}: {e}", config_path.display()))?;
 
-    // --- spawn the trainer ---
+    // --- spawn the trainer, STREAMING stdout for live progress ---
+    // mlx_lm.lora prints `Iter N: Train loss X, …` lines as it trains; we parse them
+    // and publish step/loss to `on_progress` so `forge/train-status` shows the gene
+    // forming in real time (the "watch it learn" glass box). stderr is drained on a
+    // side thread (avoids a pipe-full deadlock) and kept for the failure message.
     let args = build_train_args(spec, &config_path);
-    let output = std::process::Command::new(&env.python)
+    let mut child = std::process::Command::new(&env.python)
         .args(&args)
-        .output()
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
         .map_err(|e| format!("spawn mlx_lm.lora: {e}"))?;
-    if !output.status.success() {
-        return Err(format!(
-            "mlx_lm.lora failed ({}):\n{}",
-            output.status,
-            String::from_utf8_lossy(&output.stderr)
-        ));
+
+    let stderr = child.stderr.take();
+    let stderr_handle = std::thread::spawn(move || {
+        use std::io::Read;
+        let mut buf = String::new();
+        if let Some(mut s) = stderr {
+            let _ = s.read_to_string(&mut buf);
+        }
+        buf
+    });
+
+    if let Some(stdout) = child.stdout.take() {
+        use std::io::BufRead;
+        for line in std::io::BufReader::new(stdout).lines().map_while(Result::ok) {
+            if let Some((step, loss)) = parse_mlx_progress(&line) {
+                on_progress(step, loss);
+            }
+        }
+    }
+
+    let status = child.wait().map_err(|e| format!("wait mlx_lm.lora: {e}"))?;
+    let stderr_out = stderr_handle.join().unwrap_or_default();
+    if !status.success() {
+        return Err(format!("mlx_lm.lora failed ({status}):\n{stderr_out}"));
     }
 
     // --- verify the adapter actually landed (no partial-success) ---
@@ -395,9 +420,42 @@ pub fn run_mlx_train(
     })
 }
 
+/// Parse an mlx_lm.lora progress line into `(step, loss)`. mlx_lm prints e.g.
+/// `Iter 10: Train loss 2.345, Learning Rate 1.000e-05, …`. Returns `None` for any
+/// non-train-loss line (val lines, banners) — a parse miss is silent because
+/// progress is best-effort; the terminal result on disk is the truth.
+fn parse_mlx_progress(line: &str) -> Option<(u64, Option<f64>)> {
+    let rest = line.trim().strip_prefix("Iter ")?;
+    let (iter_str, after) = rest.split_once(':')?;
+    let step: u64 = iter_str.trim().parse().ok()?;
+    let loss = after
+        .split_once("Train loss ")
+        .and_then(|(_, tail)| tail.trim_start().split([',', ' ']).next())
+        .and_then(|n| n.parse::<f64>().ok())?;
+    Some((step, Some(loss)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches: the mlx_lm progress parser reads real step/loss from a
+    // Train-loss line and returns None for Val-only / banner lines — so live
+    // `forge/train-status` shows honest training progress and never a garbage step.
+    #[test]
+    fn parses_mlx_train_loss_lines_only() {
+        assert_eq!(
+            parse_mlx_progress("Iter 10: Train loss 2.345, Learning Rate 1.000e-05, It/sec 1.2"),
+            Some((10, Some(2.345)))
+        );
+        assert_eq!(
+            parse_mlx_progress("Iter 20: Val loss 2.1, Val took 3.4s"),
+            None,
+            "val-only lines carry no train loss → skipped"
+        );
+        assert_eq!(parse_mlx_progress("Starting training..."), None);
+        assert_eq!(parse_mlx_progress("Iter oops: Train loss 1.0"), None);
+    }
 
     fn spec() -> MlxTrainSpec {
         MlxTrainSpec {
@@ -525,7 +583,7 @@ mod tests {
         let env = MlxTrainEnv {
             python: PathBuf::from("/nonexistent/python3"),
         };
-        let err = run_mlx_train(&spec(), &env).unwrap_err();
+        let err = run_mlx_train(&spec(), &env, &|_, _| {}).unwrap_err();
         assert!(err.contains("interpreter"), "err: {err}");
     }
 
