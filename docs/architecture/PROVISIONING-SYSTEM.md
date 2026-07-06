@@ -95,6 +95,29 @@ workstation provisions the teacher + VL model. It composes with the inference-la
 planner (the lane daemon decides *how many* run; the provisioner ensures the weights
 are *on disk*).
 
+### 5. The store is a CACHE — the Provisioner owns disk, not just downloads
+
+Disk is finite on the misfit grid (a MacBook Air is not the 16 TB store), so the
+artifact store is a **cache**, and the Provisioner OWNS it — it's the disk authority
+for weights/avatars/voices, the way the ResourceGovernor owns VRAM ([[resource-authority-is-a-system-concern]]).
+
+- **Pin the needed set** — "we need what we need": the artifacts the *currently
+  active* personas + lanes require (the `ProvisionPlan`) are PINNED and guaranteed
+  present.
+- **Evict the rest** — everything unpinned is evictable cache. When fetching a needed
+  artifact would blow the disk budget, evict least-needed-first (LRU / last-used),
+  exactly the shape of the genome pager but for the whole on-disk store.
+- **`DiskState` is the reasoning primitive** — every `ArtifactSource` reports whether
+  an artifact is present + how many bytes, so the cache can compute "reclaimable if I
+  evict X, Y" against "need N more bytes for Z".
+- **Fail loud when it won't fit** — if the pinned/needed set doesn't fit even after
+  evicting everything unpinned, that's a hard truth about this machine (too many big
+  models for this disk) — name it, don't silently thrash ([[fallbacks-are-illegal-fail-loud]],
+  [[model-fit-is-the-priority-single-machine-first]]).
+
+So `provision(plan)` is really `reconcile(plan, disk_budget)`: ensure the pinned set
+is on disk, evicting unpinned cache as needed, refusing loudly if impossible.
+
 ## Invariants
 
 1. **Data-driven** — every artifact is a catalog entry, never a hardcoded path or a

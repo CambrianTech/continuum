@@ -56,6 +56,7 @@ pub mod orm;
 pub mod paging;
 pub mod paths;
 pub mod persona;
+pub mod provisioning;
 pub mod rag;
 pub mod resources;
 pub mod routing;
