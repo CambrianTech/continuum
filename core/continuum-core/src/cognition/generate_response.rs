@@ -62,7 +62,7 @@ pub const UNKNOWN_MEMBERS: &str = "unknown members";
 const HOUR_GAP_THRESHOLD_MS: u64 = 60 * 60 * 1000;
 
 /// Routing sentinel for the best available local Qwen/llama.cpp runtime.
-// The inference gateway is unsloth (the sole inference path, [[unsloth-universal-model-gateway]]).
+// The inference gateway is our OWN llama-server (the sole local inference path; Unsloth excised).
 // Was "local" (the in-process llama.cpp adapter) — now gated off, so routing the turn
 // to "local" + a hardcoded model id that the gateway doesn't serve would hard-fail
 // select(). The turn binds to the llama-server gateway + the discovered served model

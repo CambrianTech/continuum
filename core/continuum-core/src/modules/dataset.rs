@@ -359,8 +359,8 @@ impl DatasetService {
     /// flywheel: a persona's recorded room turns (the system prompt + the user
     /// message → the persona's spoken response) become SFT examples in the SAME
     /// `{messages:[{role,content}]}` format the CSV importer emits, then flow
-    /// through the SAME split/write/manifest path. The JSONL is unsloth's
-    /// canonical training input — train a LoRA genome on "chats like this one".
+    /// through the SAME split/write/manifest path. The JSONL is the canonical
+    /// ShareGPT/SFT training input — train a LoRA genome on "chats like this one".
     ///
     /// Source = the recorder's per-turn JSON captures (default
     /// `~/.continuum/fixtures/persona-respond`), NOT engrams — engrams are
