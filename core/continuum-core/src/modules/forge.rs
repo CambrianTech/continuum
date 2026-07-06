@@ -623,7 +623,9 @@ fn run_train_native_mlx(
     // no poll, never block the caller on a multi-minute train (also task #86).
     let job_id = format!("mlx-{}", p.adapter_name);
     let out_dir = adapter_out.display().to_string();
-    crate::forge::mlx_job::spawn_train_job(job_id.clone(), bus, move || run_mlx_train(&spec, &env));
+    crate::forge::mlx_job::spawn_train_job(job_id.clone(), bus, move |on_progress| {
+        run_mlx_train(&spec, &env, on_progress)
+    });
     Ok(CommandResult::Json(json!({
         "engine": "mlx",
         "jobId": job_id,

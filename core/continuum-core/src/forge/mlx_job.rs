@@ -28,7 +28,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use tokio::sync::watch;
 
 use crate::forge::mlx_train::MlxTrainOutput;
-use crate::forge::protocol::TrainStatus;
+use crate::forge::protocol::{TrainProgress, TrainStatus};
 use crate::runtime::MessageBus;
 
 /// Bus topic: a native training run has started (payload `{jobId}`).
@@ -75,7 +75,9 @@ fn running(job_id: &str) -> TrainStatus {
 /// bus. The returned job_id is the handle a caller keeps.
 pub fn spawn_train_job<F>(job_id: String, bus: Option<Arc<MessageBus>>, train: F) -> String
 where
-    F: FnOnce() -> Result<MlxTrainOutput, String> + Send + 'static,
+    F: FnOnce(&(dyn Fn(u64, Option<f64>) + Send + Sync)) -> Result<MlxTrainOutput, String>
+        + Send
+        + 'static,
 {
     let (tx, rx) = watch::channel(running(&job_id));
     *registry().lock().unwrap_or_else(|e| e.into_inner()) = Some(rx);
@@ -86,8 +88,23 @@ where
 
     let jid = job_id.clone();
     tokio::task::spawn_blocking(move || {
+        // Live progress: the trainer calls this per step; we publish it to the watch
+        // so `forge/train-status` shows the gene forming in real time (no poll).
+        let publish = |step: u64, loss: Option<f64>| {
+            let _ = tx.send(TrainStatus {
+                job_id: jid.clone(),
+                phase: "training".into(),
+                is_training_running: true,
+                details: TrainProgress {
+                    step,
+                    loss,
+                    ..Default::default()
+                },
+                ..Default::default()
+            });
+        };
         // The blocking mlx subprocess wait lives HERE, off the async executor.
-        match train() {
+        match train(&publish) {
             Ok(output) => {
                 let _ = tx.send(TrainStatus {
                     job_id: jid.clone(),
@@ -162,7 +179,7 @@ mod tests {
     #[tokio::test]
     async fn fire_and_emit_success_then_failure_transitions() {
         // success: spawn returns the handle immediately; trainer completes off-thread.
-        let jid = spawn_train_job("job-ok".into(), None, || Ok(fake_output()));
+        let jid = spawn_train_job("job-ok".into(), None, |_progress| Ok(fake_output()));
         assert_eq!(jid, "job-ok");
         let s = drive_until("completed").await;
         assert_eq!(s.phase, "completed", "reached terminal completed");
@@ -170,7 +187,9 @@ mod tests {
         assert!(s.error.is_none());
 
         // failure: a failing trainer names the error, never a silent completed.
-        spawn_train_job("job-err".into(), None, || Err("mlx_lm.lora exploded".into()));
+        spawn_train_job("job-err".into(), None, |_progress| {
+            Err("mlx_lm.lora exploded".into())
+        });
         let f = drive_until("failed").await;
         assert_eq!(f.phase, "failed");
         assert!(!f.is_training_running);
