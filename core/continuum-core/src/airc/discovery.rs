@@ -48,8 +48,9 @@ const DISCOVERY_SUBPROCESS_DEADLINE: Duration = Duration::from_secs(5);
 /// Deadline for the auto-install path. Generous because the install
 /// script runs `curl` + `bash` and on a cold install can clone +
 /// build airc — minutes, legitimately. 120s catches a truly stuck
-/// install without holding boot forever; below this we trust the
-/// installer's own progress.
+/// install; it now bounds the **detached background task**
+/// (`discover_airc_socket` spawns the install and fails fast), so boot
+/// NEVER waits on it — below this we trust the installer's own progress.
 const AUTO_INSTALL_DEADLINE: Duration = Duration::from_secs(120);
 
 /// Canonical installer URL. Same one printed at the top of airc's
@@ -75,6 +76,8 @@ pub enum DiscoveryError {
     InstallFailed(String),
     #[error("auto-install suppressed via {AIRC_DISABLE_AUTOINSTALL}=1 — install airc manually: curl -fsSL {AIRC_INSTALL_URL} | bash")]
     AutoInstallDisabled,
+    #[error("airc not on PATH — bootstrapping it in the background; the node is up but not yet a grid peer (a later discovery attaches once the install lands)")]
+    AutoInstallInProgress,
     #[error("`airc ipc-endpoint` failed: {0}")]
     EndpointCommandFailed(String),
     #[error("`airc ipc-endpoint` returned an empty path — airc binary may be from before #1095 (add the command or upgrade airc)")]
@@ -109,19 +112,28 @@ pub async fn discover_airc_socket() -> Result<PathBuf, DiscoveryError> {
         return Err(DiscoveryError::AutoInstallDisabled);
     }
 
+    // airc is not on PATH. SPEED IS PARAMOUNT (Joel, 2026-07-06): the boot path
+    // must NEVER block on a network install (the old synchronous
+    // `auto_install_airc().await` held socket-bind for up to AUTO_INSTALL_DEADLINE
+    // = 120s — a launchd/service boot with airc off its minimal PATH hung the
+    // whole core). Kick the installer off DETACHED and fail fast: the core binds
+    // its IPC socket + is responsive NOW; airc stays Unreachable (the aggregate
+    // degrades gracefully) until the install lands and a later discovery attaches.
+    // Still fail loud (named error) — we just don't HANG to do it.
     warn!(
-        "airc not found on PATH — installing from {AIRC_INSTALL_URL}. \
-         Most users won't have airc pre-installed; continuum-core \
-         bootstraps it so the persona-as-airc-peer flow works headless. \
+        "airc not found on PATH — bootstrapping it in the BACKGROUND from \
+         {AIRC_INSTALL_URL}; boot continues, airc joins once installed. \
          Set {AIRC_DISABLE_AUTOINSTALL}=1 to opt out."
     );
-    auto_install_airc().await?;
-    if !airc_on_path().await {
-        return Err(DiscoveryError::InstallFailed(
-            "post-install `which airc` still empty — check $HOME/.local/bin in PATH".into(),
-        ));
-    }
-    query_airc_endpoint().await
+    tokio::spawn(async {
+        match auto_install_airc().await {
+            Ok(()) => info!(
+                "airc background bootstrap installed — will attach on the next discovery pass"
+            ),
+            Err(e) => warn!("airc background bootstrap failed: {e}"),
+        }
+    });
+    Err(DiscoveryError::AutoInstallInProgress)
 }
 
 async fn airc_on_path() -> bool {
