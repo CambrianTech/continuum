@@ -22,6 +22,7 @@
     "check:clients": "npm run vendor:views:check -w @continuum/sdk-typescript && npm run lint:clients && npm run typecheck:clients && npm run test:clients",
     "stop": "bash tools/scripts/system-stop.sh",
     "install:continuum": "bash tools/scripts/install.sh",
+    "setup:rust": "bash tools/scripts/setup-rust.sh",
     "setup:git-hooks": "bash tools/scripts/setup-git-hooks.sh",
     "docker:ensure": "bash scripts/ensure-docker.sh",
     "ship": "node scripts/ship.mjs",
