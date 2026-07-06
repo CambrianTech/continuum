@@ -8,17 +8,16 @@ for the Windows path). This file is the punch list for that session.
 Everything below is *build-time / run-time* — `docker compose config` cannot catch it (it parses the
 compose, it does not resolve build contexts or run containers).
 
-## 1. Core image build — the deepest gap (highest risk) — ~2–4h + a build
-`continuum-core-vulkan.Dockerfile` (and `-cuda`) copy `entity_schemas.json` from the `shared-generated`
-build context, now repointed to `legacy/src/shared/generated/`. **That file is GENERATED** (ts-rs / `cargo
-test`), gitignored — it is **NOT present in a clean checkout**, so `COPY --from=shared-generated
-entity_schemas.json` will fail the build. Two ways to fix, decide on the Linux box:
-- (a) Generate it before `docker build` — a CI/build step runs the bindings generator (`cargo test -p
-  continuum-core` emits it, or the new `protocol/typescript` generator) and stages it as the context; **or**
-- (b) Confirm the Rust core does not actually need `entity_schemas.json` at build (it's an old-Node
-  data-daemon artifact) and drop the `shared-generated` context + the Dockerfile `COPY`.
-- Also decide the right long-term home for `models.json` (currently `legacy/src/shared/models.json`) — it
-  should come from a new-world source, not the frozen legacy tree.
+## 1. Core image build — ✅ RESOLVED (build-proven on macOS, was a false alarm)
+The earlier worry was that `entity_schemas.json` is a generated file absent from a clean checkout. It
+turned out to be **vestigial scaffolding**: `modules/entity_schemas.rs` embeds the schema at compile time via
+`include_str!("../../../../protocol/typescript/entity_schemas.json")` — a **source-relative** path, and that
+file is **checked in** at `protocol/typescript/`, so the Dockerfile's `COPY . .` already provides it. The
+`COPY --from=shared-generated …/shared/generated/…` targeted a path the code never reads, and `models.json`
+has **zero** references in the Rust core. So the `additional_contexts` block (compose) + both
+`COPY --from=shared*` lines (all three core Dockerfiles) were **deleted**. Build-verified on macOS with a
+throwaway image that the contexts resolved, and by the fact the native core has compiled all session reading
+exactly that `include_str!` path. Nothing to do on Linux here beyond the normal full build (item 3).
 
 ## 2. model-init image — ~1–2h + a build
 Build context repointed `./src` → `./legacy/src` (dockerfile path `../docker` → `../../docker` to match).
@@ -49,13 +48,18 @@ Verify `docker compose --profile postgres up` + the core's `DATABASE_URL=postgre
 the multi-writer grid case (default is SQLite; postgres is opt-in).
 
 ## Rough total
-**~2 focused days on a Linux + NVIDIA box**, plus a WSL2 pass for the Windows install path. Item 1
-(entity_schemas.json generation) is the blocking one — the core image will not build until it's resolved.
+The blocking item (1) is gone. What's left is a real `up` on a Linux+NVIDIA box (item 3) with GPU
+passthrough, the model-init build (2), the grid desktop→core-WS proxy (4), a fresh-box `install.sh` (5), and
+the postgres profile (6) — none of which can be exercised from a Mac with no Docker GPU. Call it a focused
+afternoon of iterating against real container failures once the box is available, plus a WSL2 pass for the
+Windows install path.
 
-## What's already done (config-validated on macOS)
+## What's already done (macOS — config-validated + build-proven where possible)
+- **Item 1 resolved + build-proven**: deleted the vestigial `additional_contexts` (compose) + `COPY
+  --from=shared*` lines (all three core Dockerfiles). `entity_schemas.json` comes via `COPY . .`
+  (`include_str!` from `protocol/typescript/`, checked in); `models.json` is unreferenced by the core.
 - Removed the old-Node UI chain: `node-server` + `widget-server` services (+ the Mac override + the
-  Tailscale-serve web proxies that fronted them). Desktop-only: the native Tauri desktop attaches to the
-  core's WS directly; web stays a dev-only vite convenience.
-- Repointed the surviving stale `./src` build contexts (`model-init`, core `additional_contexts`) to
-  `legacy/src` with in-file NOTEs marking the Linux build-verify.
-- `docker compose config` green for base / `+mac` / `+gpu`; 0 old-Node services in the resolved config.
+  Tailscale-serve web proxies that fronted them). Desktop-only.
+- `model-init` build context repointed `./src` → `./legacy/src` (it legitimately reads `models.json`).
+- `docker compose config` green for base / `+mac` / `+gpu`; 0 old-Node services; core-build contexts proven
+  to resolve with a throwaway `docker build`.

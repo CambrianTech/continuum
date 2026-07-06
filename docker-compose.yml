@@ -88,29 +88,12 @@ services:
     build:
       context: ./core
       dockerfile: ../../docker/continuum-core-vulkan.Dockerfile
-      additional_contexts:
-        # NOTE: the `avatars: ./src/models/avatars` line was here from
-        # 9b1f6ca2a "Bake CC0 avatar VRM models into continuum-core image"
-        # (April 2026), but src/models is gitignored — the directory
-        # doesn't exist in CI checkouts and the build context fails to
-        # resolve, breaking carl-install-smoke for any PR that touches
-        # install.sh (e.g. #1475). The Dockerfile already handles the
-        # empty-dir case via `RUN mkdir -p /app/avatars` (see
-        # docker/continuum-core.Dockerfile line 143 and the explanatory
-        # comment block at lines 131-142). No Dockerfile uses
-        # `--from=avatars`, so the context declaration was dangling
-        # (referenced nowhere, broke everywhere). Restore when the
-        # avatar-provisioning story lands (LFS, model-init download,
-        # or curl from a CC0 URL in CI before docker build) per the
-        # gap noted in PR891-E2E-VALIDATION.md.
-        # moved src → legacy/src (#1840). NOTE (Linux work): shared/models.json IS
-        # at legacy/src/shared, but shared-generated/entity_schemas.json is a
-        # GENERATED file (ts-rs / cargo test), gitignored — NOT present in the
-        # legacy tree on a clean checkout. The core image build needs that file
-        # generated (or sourced from a new-world home) FIRST. This is the deepest
-        # container-path gap the src move exposed; must be build-verified on Linux.
-        shared: ./legacy/src/shared
-        shared-generated: ./legacy/src/shared/generated
+      # No `additional_contexts` needed. The two that used to live here (shared,
+      # shared-generated) were vestigial: entity_schemas.rs embeds the schema at
+      # compile time via `include_str!("../../../../protocol/typescript/entity_schemas.json")`
+      # — a source-relative path the Dockerfile's `COPY . .` already provides (the
+      # file is checked in) — and the Rust core has zero references to models.json.
+      # The matching `COPY --from=shared*` lines were removed from the Dockerfiles.
       args:
         # --no-default-features excludes livekit-webrtc (handled by livekit-bridge).
         # load-dynamic-ort loads ONNX Runtime as shared lib (runtime discovery).

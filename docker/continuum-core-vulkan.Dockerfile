@@ -92,14 +92,10 @@ RUN cargo chef cook --release ${GPU_FEATURES} --recipe-path recipe.json
 # NOW copy real source. mtime fresh → cargo rebuilds for real.
 COPY . .
 
-# entity_schemas.json lives outside the workers build context (at
-# src/shared/generated/). Same pattern as continuum-core / continuum-core-cuda —
-# CI must pass `build-contexts: shared-generated=./src/shared/generated`.
-COPY --from=shared-generated entity_schemas.json /shared/generated/entity_schemas.json
-
-# Model registry SSOT used by candle_adapter.rs include_str!:
-# ../../../../shared/models.json resolves to /shared/models.json here.
-COPY --from=shared models.json /shared/models.json
+# entity_schemas.json is embedded at compile time by modules/entity_schemas.rs via
+# include_str!("../../../../protocol/typescript/entity_schemas.json") — a source-
+# relative path the `COPY . .` above already provides (the file is checked in). No
+# `--from=shared*` build-context needed; models.json is unreferenced by the Rust core.
 
 # Fail fast if submodules are uninitialized.
 RUN test -f vendor/llama.cpp/CMakeLists.txt || ( \
