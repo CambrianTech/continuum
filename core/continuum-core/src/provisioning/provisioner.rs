@@ -75,6 +75,33 @@ impl Provisioner {
         reconcile(&entries, budget_bytes)
     }
 
+    /// A human-readable snapshot of the artifact cache — per kind, how many artifacts
+    /// are present on disk vs catalogued, and the bytes they occupy. For the boot-time
+    /// glass-box log so the real cache state is visible without a debugger
+    /// ([[never-blind-feedback-driven-iteration]]).
+    pub fn cache_report(&self) -> String {
+        let mut parts = Vec::new();
+        for source in &self.sources {
+            let specs = source.catalog();
+            let mut present = 0usize;
+            let mut bytes = 0u64;
+            for spec in &specs {
+                if let DiskState::Present { bytes: b, .. } = source.disk_state(&spec.id) {
+                    present += 1;
+                    bytes += b;
+                }
+            }
+            parts.push(format!(
+                "{:?} {}/{} present ({} MiB)",
+                source.kind(),
+                present,
+                specs.len(),
+                bytes / (1 << 20)
+            ));
+        }
+        parts.join(" · ")
+    }
+
     /// Find an artifact's on-disk state across the sources (first present wins).
     fn locate(&self, id: &str) -> Option<DiskState> {
         self.sources
