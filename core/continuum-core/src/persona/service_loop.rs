@@ -1539,6 +1539,55 @@ mod tests {
             }
         }
 
+        // Deterministic reproduction of the live self-talk spiral (Asha re-answering on
+        // every heartbeat). The heartbeat sleeps when `burst_fingerprint` is unchanged, so
+        // the load-bearing invariant is: a persona's OWN message entering its window must
+        // NOT change its own fingerprint. If it does, the mind re-wakes and re-responds
+        // forever. These two tests pin the mechanism without a live core to spiral.
+        const ASHA: &str = "90e758b2-3cf3-45c1-b100-de7c4ab5a549";
+        const PEER: &str = "0d3209a1-c675-41db-9867-86f1011f9520";
+        const RELAY: &str = "7711fe60-a19f-4f41-9ab6-24c884757338"; // the machine's airc socket peer
+
+        // what this catches: with CORRECT attribution (own message carries the persona's
+        // own peer_id), the fingerprint is stable after she speaks → she sleeps → no spiral.
+        #[test]
+        fn own_message_correctly_attributed_keeps_fingerprint_stable() {
+            let before = vec![delivery("airc", vec![chat(PEER, "Hi Asha, what's new?")])];
+            let after = vec![delivery(
+                "airc",
+                vec![
+                    chat(PEER, "Hi Asha, what's new?"),
+                    chat(ASHA, "Not much — just enjoying the grid!"), // her own reply, attributed to HER
+                ],
+            )];
+            assert_eq!(
+                super::super::burst_fingerprint(&before, ASHA),
+                super::super::burst_fingerprint(&after, ASHA),
+                "own message must be excluded from own burst → heartbeat sleeps → no spiral"
+            );
+        }
+
+        // what this catches: THE BUG — if the RAG attributes her own message to the
+        // transport RELAY instead of her, the self-exclusion misses it, the fingerprint
+        // flips, and the heartbeat re-deliberates forever. This is the live spiral, and it
+        // localizes the fix to attribution: her own post must carry HER peer_id, not the relay's.
+        #[test]
+        fn own_message_misattributed_to_relay_flips_fingerprint_the_spiral() {
+            let before = vec![delivery("airc", vec![chat(PEER, "Hi Asha, what's new?")])];
+            let after_bug = vec![delivery(
+                "airc",
+                vec![
+                    chat(PEER, "Hi Asha, what's new?"),
+                    chat(RELAY, "Not much — just enjoying the grid!"), // her reply MIS-attributed to the relay
+                ],
+            )];
+            assert_ne!(
+                super::super::burst_fingerprint(&before, ASHA),
+                super::super::burst_fingerprint(&after_bug, ASHA),
+                "mis-attributed own message escapes self-exclusion → fingerprint flips → the spiral"
+            );
+        }
+
         #[test]
         fn remote_peer_renders_with_roster_name_self_with_agent_name() {
             let room = Uuid::nil();
