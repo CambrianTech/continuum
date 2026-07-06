@@ -133,6 +133,12 @@ static PERSONA_GENDER: std::sync::Mutex<Option<HashMap<String, AvatarGender>>> =
 /// nothing, so those fall back to the id-hash gender.
 pub fn register_persona_gender(identity: &str, name: &str) {
     if let Some(gender) = crate::persona::name_generator::gender_from_name(name) {
+        clog_info!(
+            "🎭 coherence: persona '{}' ({}) → {:?} (name-anchored; avatar+voice will follow)",
+            name,
+            identity,
+            gender
+        );
         let mut guard = PERSONA_GENDER.lock().unwrap();
         guard
             .get_or_insert_with(HashMap::new)
