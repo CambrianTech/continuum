@@ -34,6 +34,19 @@ pub enum DownloadError {
     },
 }
 
+/// Receives download progress so a fetch is never a blind wait — the UI / bus / log
+/// gets "42% (3.8/9.0 GB)" instead of a frozen spinner. Called periodically (throttled)
+/// as bytes land; `total` is None when the server sends no Content-Length.
+pub trait ProgressSink: Send + Sync {
+    fn on_progress(&self, downloaded: u64, total: Option<u64>);
+}
+
+/// The default — no feedback (for callers that don't want it).
+pub struct NoopProgress;
+impl ProgressSink for NoopProgress {
+    fn on_progress(&self, _downloaded: u64, _total: Option<u64>) {}
+}
+
 /// One resumable, verified fetch primitive shared by every `ArtifactSource`.
 pub struct Downloader {
     client: reqwest::Client,
@@ -65,6 +78,19 @@ impl Downloader {
         url: &str,
         dest: &Path,
         expected_sha256: Option<&str>,
+    ) -> Result<u64, DownloadError> {
+        self.fetch_with_progress(url, dest, expected_sha256, &NoopProgress)
+            .await
+    }
+
+    /// As `fetch`, but emits periodic progress to `progress` (throttled to ~4 MiB) so a
+    /// big download shows feedback instead of a blind wait ([[never-blind-feedback-driven-iteration]]).
+    pub async fn fetch_with_progress(
+        &self,
+        url: &str,
+        dest: &Path,
+        expected_sha256: Option<&str>,
+        progress: &dyn ProgressSink,
     ) -> Result<u64, DownloadError> {
         // Cache hit: present + (if a checksum is pinned) verifies.
         if dest.exists() {
@@ -113,13 +139,28 @@ impl Downloader {
             .await
             .map_err(|source| DownloadError::Io { path: part.clone(), source })?;
 
+        // Total for progress: Content-Length is the REMAINING body, so add back the
+        // already-downloaded prefix on a resume (206).
+        let total = resp
+            .content_length()
+            .map(|remaining| if append { resume_from + remaining } else { remaining });
+        let mut downloaded = if append { resume_from } else { 0 };
+        let mut last_emit = downloaded;
+
         let mut stream = resp.bytes_stream();
         while let Some(chunk) = stream.next().await {
             let chunk = chunk.map_err(|source| DownloadError::Http { url: url.to_string(), source })?;
             file.write_all(&chunk)
                 .await
                 .map_err(|source| DownloadError::Io { path: part.clone(), source })?;
+            downloaded += chunk.len() as u64;
+            // Throttle to ~4 MiB so a 9 GB model gives ~2000 updates, not one per packet.
+            if downloaded - last_emit >= (4 << 20) {
+                progress.on_progress(downloaded, total);
+                last_emit = downloaded;
+            }
         }
+        progress.on_progress(downloaded, total); // final tick (100%)
         file.sync_all()
             .await
             .map_err(|source| DownloadError::Io { path: part.clone(), source })?;
@@ -215,5 +256,39 @@ mod tests {
     #[test]
     fn part_path_is_dest_dot_part() {
         assert_eq!(part_path(Path::new("/m/x.gguf")), PathBuf::from("/m/x.gguf.part"));
+    }
+
+    // what this catches: LIVE — a real download emits progress (feedback, not a blind
+    // wait) and the final tick equals the total bytes. Network-gated + ignored by
+    // default; run explicitly: `cargo test -p continuum-core -- --ignored fetch_emits_progress`.
+    #[tokio::test]
+    #[ignore]
+    async fn fetch_emits_progress_live() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        struct Rec {
+            calls: AtomicU64,
+            last: AtomicU64,
+        }
+        impl ProgressSink for Rec {
+            fn on_progress(&self, downloaded: u64, _total: Option<u64>) {
+                self.calls.fetch_add(1, Ordering::Relaxed);
+                self.last.store(downloaded, Ordering::Relaxed);
+            }
+        }
+        let dir = TempDir::new().unwrap();
+        let dest = dir.path().join("base_female.zip");
+        let rec = Rec { calls: AtomicU64::new(0), last: AtomicU64::new(0) };
+        let bytes = Downloader::default()
+            .fetch_with_progress(
+                "https://opengameart.org/sites/default/files/base_female.zip",
+                &dest,
+                None,
+                &rec,
+            )
+            .await
+            .expect("real download");
+        assert!(bytes > 1_000_000, "downloaded a real multi-MB file");
+        assert!(rec.calls.load(Ordering::Relaxed) >= 1, "progress was emitted");
+        assert_eq!(rec.last.load(Ordering::Relaxed), bytes, "final progress == total bytes");
     }
 }
