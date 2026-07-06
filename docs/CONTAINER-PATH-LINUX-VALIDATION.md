@@ -1,0 +1,61 @@
+# Container path — Linux validation work (estimate)
+
+The container-first install is **config-validated on macOS** (`docker compose config` green for base /
+mac / gpu overlays; old-Node UI chain removed). But macOS has **no Docker GPU passthrough**, so the actual
+image **builds** and a real `docker compose up` can only be verified on a **Linux + NVIDIA** box (or WSL2
+for the Windows path). This file is the punch list for that session.
+
+Everything below is *build-time / run-time* — `docker compose config` cannot catch it (it parses the
+compose, it does not resolve build contexts or run containers).
+
+## 1. Core image build — the deepest gap (highest risk) — ~2–4h + a build
+`continuum-core-vulkan.Dockerfile` (and `-cuda`) copy `entity_schemas.json` from the `shared-generated`
+build context, now repointed to `legacy/src/shared/generated/`. **That file is GENERATED** (ts-rs / `cargo
+test`), gitignored — it is **NOT present in a clean checkout**, so `COPY --from=shared-generated
+entity_schemas.json` will fail the build. Two ways to fix, decide on the Linux box:
+- (a) Generate it before `docker build` — a CI/build step runs the bindings generator (`cargo test -p
+  continuum-core` emits it, or the new `protocol/typescript` generator) and stages it as the context; **or**
+- (b) Confirm the Rust core does not actually need `entity_schemas.json` at build (it's an old-Node
+  data-daemon artifact) and drop the `shared-generated` context + the Dockerfile `COPY`.
+- Also decide the right long-term home for `models.json` (currently `legacy/src/shared/models.json`) — it
+  should come from a new-world source, not the frozen legacy tree.
+
+## 2. model-init image — ~1–2h + a build
+Build context repointed `./src` → `./legacy/src` (dockerfile path `../docker` → `../../docker` to match).
+`models.json` IS at `legacy/src/shared/`, so it should resolve — but verify the `model-init.Dockerfile`
+still builds + downloads (whisper/voice/avatar) end-to-end, then move `models.json` off the legacy tree.
+
+## 3. Full `docker compose --profile gpu up` on Linux+NVIDIA — ~half-day, iterate
+Bring up `continuum-core-vulkan` (or `-cuda` via the gpu overlay) + `model-init` + `livekit` (live profile)
++ `forge-worker` + `inference`. Verify: core comes up healthy (socket + IPC ping), **GPU passthrough works**
+(nvidia runtime, `--gpus`), the resource daemons see the real GPU/VRAM (holistic view — never an isolated
+sandbox), and a persona can generate. This is the real "reliable upstart in a container" gate.
+
+## 4. Desktop → containerized-core WS (grid remote access) — ~2–4h + a 2-machine grid test
+The containerized core uses a **unix socket**; a remote Tauri desktop needs the core's **WS ingress on a
+TCP port** + (grid mode) Tailscale proxying it. `tailscale-serve.json` now proxies only livekit signaling
+(the old widget-server/node-server web proxies were removed). The desktop→core-WS grid proxy is **unbuilt** —
+expose the core's WS port in the container + add a Tailscale serve handler for it, then test from a second
+machine.
+
+## 5. `install.sh` on a fresh Ubuntu / WSL2 — ~2–3h, iterate
+Run the 9-step installer end-to-end on a clean box: system deps → node → rust → python ML → (postgres
+opt-in) → livekit → native engine note (now: llama-server + mlx, no Unsloth) → (tailscale opt-in). Confirm
+the final `npm start` + `cu ping` actually work (the message this PR fixed). WSL2 additionally exercises the
+`install.ps1` → `bootstrap.sh` handoff.
+
+## 6. postgres profile — ~1h
+Verify `docker compose --profile postgres up` + the core's `DATABASE_URL=postgres://…` path still works for
+the multi-writer grid case (default is SQLite; postgres is opt-in).
+
+## Rough total
+**~2 focused days on a Linux + NVIDIA box**, plus a WSL2 pass for the Windows install path. Item 1
+(entity_schemas.json generation) is the blocking one — the core image will not build until it's resolved.
+
+## What's already done (config-validated on macOS)
+- Removed the old-Node UI chain: `node-server` + `widget-server` services (+ the Mac override + the
+  Tailscale-serve web proxies that fronted them). Desktop-only: the native Tauri desktop attaches to the
+  core's WS directly; web stays a dev-only vite convenience.
+- Repointed the surviving stale `./src` build contexts (`model-init`, core `additional_contexts`) to
+  `legacy/src` with in-file NOTEs marking the Linux build-verify.
+- `docker compose config` green for base / `+mac` / `+gpu`; 0 old-Node services in the resolved config.
