@@ -19,10 +19,12 @@ has **zero** references in the Rust core. So the `additional_contexts` block (co
 throwaway image that the contexts resolved, and by the fact the native core has compiled all session reading
 exactly that `include_str!` path. Nothing to do on Linux here beyond the normal full build (item 3).
 
-## 2. model-init image — ~1–2h + a build
-Build context repointed `./src` → `./legacy/src` (dockerfile path `../docker` → `../../docker` to match).
-`models.json` IS at `legacy/src/shared/`, so it should resolve — but verify the `model-init.Dockerfile`
-still builds + downloads (whisper/voice/avatar) end-to-end, then move `models.json` off the legacy tree.
+## 2. model-init image — ✅ build-proven on macOS
+The download scripts had moved to `tools/scripts/` (not `legacy/src/scripts/`), so the build broke on the
+script COPYs (caught by an actual `docker build`). Fixed: context → `./tools/scripts`, `models.json` via a
+`models` additional-context (`./legacy/src/shared`), dead `generate-scene-models.ts` + `package.json` COPYs
+dropped. Image builds clean (`docker build` on macOS — `node:20-slim` is multi-arch, native arm64). The model
+DOWNLOAD is a runtime CMD, so only a real `up` on a network-connected box exercises the actual fetch (item 3).
 
 ## 3. Full `docker compose --profile gpu up` on Linux+NVIDIA — ~half-day, iterate
 Bring up `continuum-core-vulkan` (or `-cuda` via the gpu overlay) + `model-init` + `livekit` (live profile)

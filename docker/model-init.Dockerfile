@@ -17,16 +17,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-# Single source of truth for ALL models the system uses (chat / vision /
-# embedding / STT / TTS / VAD). Per Joel 2026-05-04:
-# "we MUST have this work from ONE source of truth"
-COPY shared/models.json shared/models.json
-COPY scripts/download-models.sh scripts/download-models.sh
+# Build context is ./tools/scripts (the scripts' home after #1840); models.json
+# comes from the `models` additional-context (./legacy/src/shared). Single source
+# of truth for ALL models (chat / vision / embedding / STT / TTS / VAD) — per Joel
+# 2026-05-04: "we MUST have this work from ONE source of truth".
+COPY --from=models models.json shared/models.json
+COPY download-models.sh scripts/download-models.sh
 # Avatar download (VRM files) — distinct from ML models, kept separate for now.
-COPY scripts/download-avatar-models.sh scripts/download-avatar-models.sh
-COPY scripts/generate-scene-models.ts scripts/generate-scene-models.ts
-COPY scripts/shared/ scripts/shared/
-COPY package.json package.json
+COPY download-avatar-models.sh scripts/download-avatar-models.sh
+# shared/preflight.sh is sourced by download-avatar-models.sh at runtime.
+COPY shared/ scripts/shared/
 
 RUN chmod +x scripts/download-models.sh scripts/download-avatar-models.sh
 
