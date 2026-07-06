@@ -305,6 +305,17 @@ impl PersonaInstanceManagerModule {
             );
         }
 
+        // Register the persona's NAME-anchored gender at SPAWN, keyed by its identity
+        // (persona_id == peer_id, the same string the live avatar/voice sites key on).
+        // This makes the profile snapshot + every avatar/voice selection coherent with
+        // the visible name from BIRTH — not only once the persona joins a voice session
+        // ([[procedural-persona-genesis]] coherence anchor; the profile pic is shown in
+        // rosters/tiles with no call in play).
+        crate::live::avatar::selection::register_persona_gender(
+            &runtime.persona_id().to_string(),
+            runtime.agent_name(),
+        );
+
         let info = PersonaInstanceInfo::from_runtime(&runtime);
         self.registry.register(runtime);
         Ok(info)
