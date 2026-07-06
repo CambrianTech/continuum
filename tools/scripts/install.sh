@@ -493,21 +493,23 @@ if [ "$SKIP_BUILD" = "0" ]; then
     exit 1
   fi
 
-  echo -e "  Building TypeScript..."
-  npm run build:ts 2>&1 | tail -1
+  # The old `build:ts` / `build:cli` scripts left with the retired Node shell
+  # (moved to legacy/src, #1840) — they no longer exist in the root package.json.
+  # Calling them under `set -eo pipefail` made `npm run` exit non-zero ("Missing
+  # script") and ABORTED the whole native install (install-audit FATAL). The
+  # current TS deliverables are the client SDK + web app; build them BEST-EFFORT
+  # in an `if` (so a client-build failure can never abort a headless-core install —
+  # the Rust core below is the deliverable). The `if` condition also shields the
+  # pipeline from `set -e`.
+  echo -e "  Building clients (SDK + web, best-effort)..."
+  if npm run build:clients 2>&1 | tail -3; then
+    echo -e "  ${GREEN}✅ clients built${NC}"
+  else
+    echo -e "  ${YELLOW}⚠  client build skipped/failed — headless core install continues${NC}"
+  fi
 
-  # Build the CLI bundle too. Without it, src/jtag falls back to
-  # `tsx` resolution which can't resolve tsconfig path aliases (e.g.,
-  # @system/core/types/SystemScopes) at runtime — fast post-clone
-  # invocations of jtag fail with ERR_MODULE_NOT_FOUND. Bundle path
-  # is what every production invocation should use. Caught 2026-05-02
-  # via PR #1012 chat.log artifact: carl-install-smoke chat-probe
-  # was failing this exact way on every CI run.
-  echo -e "  Building CLI bundle..."
-  npm run build:cli 2>&1 | tail -1
-
-  echo -e "  Building Rust workers..."
-  bash scripts/setup-rust.sh 2>&1 | tail -5
+  echo -e "  Building Rust core + workers..."
+  bash "$SCRIPT_DIR/setup-rust.sh" 2>&1 | tail -5
 fi
 
 # ============================================================================
