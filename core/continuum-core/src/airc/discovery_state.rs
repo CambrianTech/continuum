@@ -127,7 +127,7 @@ pub enum DiscoveryFailure {
     #[error("airc binary not on PATH and auto-install was disabled (CONTINUUM_NO_AUTOINSTALL=1)")]
     AutoInstallDisabled,
 
-    #[error("airc not on PATH — installing in the background; node is up, will attach as a grid peer once the install lands")]
+    #[error("airc not on PATH — installing in the background; node is UP (local commands work), restart the core once the install completes to join airc as a grid peer")]
     AutoInstallInProgress,
 
     #[error("airc binary install failed: {0}")]

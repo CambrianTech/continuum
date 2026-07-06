@@ -76,7 +76,7 @@ pub enum DiscoveryError {
     InstallFailed(String),
     #[error("auto-install suppressed via {AIRC_DISABLE_AUTOINSTALL}=1 — install airc manually: curl -fsSL {AIRC_INSTALL_URL} | bash")]
     AutoInstallDisabled,
-    #[error("airc not on PATH — bootstrapping it in the background; the node is up but not yet a grid peer (a later discovery attaches once the install lands)")]
+    #[error("airc not on PATH — bootstrapping it in the background; the node is UP (local commands work) but not yet a grid peer. Restart the core once the install completes to join airc (self-healing re-attach without restart is a follow-up).")]
     AutoInstallInProgress,
     #[error("`airc ipc-endpoint` failed: {0}")]
     EndpointCommandFailed(String),
@@ -122,13 +122,15 @@ pub async fn discover_airc_socket() -> Result<PathBuf, DiscoveryError> {
     // Still fail loud (named error) — we just don't HANG to do it.
     warn!(
         "airc not found on PATH — bootstrapping it in the BACKGROUND from \
-         {AIRC_INSTALL_URL}; boot continues, airc joins once installed. \
+         {AIRC_INSTALL_URL}; boot continues (node is up, local commands work). \
+         Restart the core once it lands to join airc as a grid peer. \
          Set {AIRC_DISABLE_AUTOINSTALL}=1 to opt out."
     );
     tokio::spawn(async {
         match auto_install_airc().await {
             Ok(()) => info!(
-                "airc background bootstrap installed — will attach on the next discovery pass"
+                "airc background bootstrap installed — restart the core to join airc \
+                 (or wait for the self-healing re-discovery tick once that lands)"
             ),
             Err(e) => warn!("airc background bootstrap failed: {e}"),
         }
