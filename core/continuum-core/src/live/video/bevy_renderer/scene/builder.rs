@@ -24,7 +24,13 @@ pub fn room_color_from_identity(identity: &str) -> Color {
         .bytes()
         .fold(0u64, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u64));
     let hue = (hash % 360) as f32;
-    let saturation = 0.15 + (((hash >> 8) % 20) as f32 / 100.0);
-    let lightness = 0.08 + (((hash >> 16) % 10) as f32 / 100.0);
+    // Studio backdrop polish ([[persona-visual-identity]] render-well): a CLEAN,
+    // low-saturation identity tint — a subtle wash over a controlled dark value, not
+    // the old murky mid-saturation "dark wall" (sat 0.15–0.35 @ near-black 0.08–0.18
+    // read as muddy). Lower saturation kills the murk; a slightly lifted value gives
+    // a slate/charcoal-with-a-hint-of-hue that still lets a lit avatar pop while
+    // looking deliberate. Each persona keeps a unique, recognizable tint.
+    let saturation = 0.07 + (((hash >> 8) % 9) as f32 / 100.0); // 0.07–0.16
+    let lightness = 0.12 + (((hash >> 16) % 7) as f32 / 100.0); // 0.12–0.19
     Color::hsl(hue, saturation, lightness)
 }
