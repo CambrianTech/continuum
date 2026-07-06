@@ -28,6 +28,14 @@ impl GgufCandidate {
         parse_quant(&self.filename)
     }
 
+    /// True for an actual quantization (Q… / IQ…), false for raw float weights
+    /// (F16/F32/BF16). Float GGUFs are ~2× a near-lossless Q8 for inference — on a
+    /// shared misfit pool that's memory stolen from other personas + KV + render, so
+    /// they're a last resort, not the preferred pick.
+    pub fn is_quantized(&self) -> bool {
+        matches!(self.quant().as_deref(), Some(q) if q.starts_with('Q') || q.starts_with("IQ"))
+    }
+
     /// Auxiliary GGUFs that are NOT the main weights: the vision projector (`mmproj-…`)
     /// and multi-part splits (`…-00002-of-00003.gguf`) — the main-weight selection must
     /// skip these, they're fetched alongside the chosen quant, not instead of it.
@@ -69,15 +77,22 @@ fn looks_like_quant(token: &str) -> bool {
 /// be surfaced (fail loud), never silently downgraded past what exists or oversized past
 /// what fits.
 pub fn select_best_fit(candidates: &[GgufCandidate], vram_budget_bytes: u64) -> Option<&GgufCandidate> {
-    candidates
-        .iter()
-        .filter(|c| !c.is_auxiliary() && c.size_bytes <= vram_budget_bytes)
-        // Largest that fits; deterministic tie-break by name so the choice is stable.
-        .max_by(|a, b| {
-            a.size_bytes
-                .cmp(&b.size_bytes)
-                .then_with(|| b.filename.cmp(&a.filename))
-        })
+    // Largest that fits, deterministic tie-break by name — over a given candidate set.
+    let largest = |quantized_only: bool| {
+        candidates
+            .iter()
+            .filter(|c| !c.is_auxiliary() && c.size_bytes <= vram_budget_bytes)
+            .filter(|c| !quantized_only || c.is_quantized())
+            .max_by(|a, b| {
+                a.size_bytes
+                    .cmp(&b.size_bytes)
+                    .then_with(|| b.filename.cmp(&a.filename))
+            })
+    };
+    // Prefer the largest QUANTIZED tier that fits; fall to raw float weights only when no
+    // quant fits at all (a repo that ships F16-only, or a budget below the smallest quant
+    // yet above a tiny float — rare). Q8 near-lossless beats F16 for 2× the pool.
+    largest(true).or_else(|| largest(false))
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -156,6 +171,18 @@ pub async fn list_repo_ggufs(
         .collect())
 }
 
+/// The model-weight budget (bytes) derivable from a machine's total memory — the pure
+/// policy, so the caller passes `SystemResourceMonitor::memory().total` (the ONE resource
+/// authority — never a parallel probe) and gets a conservative weights budget. Reserves
+/// headroom for the OS + Bevy render + LiveKit, then leaves a share for the KV cache /
+/// activations. On Mac unified memory this IS the GPU pool; the governor's measured VRAM
+/// refines it on discrete GPUs. Conservative on purpose — a quant that fits beats an OOM.
+pub fn model_budget_from_total(total_bytes: u64) -> u64 {
+    const OS_RENDER_RESERVE: u64 = 4 * (1 << 30); // OS + Bevy render + LiveKit encode
+    let usable = total_bytes.saturating_sub(OS_RENDER_RESERVE);
+    (usable as f64 * 0.70) as u64 // the rest for KV cache + activations at runtime
+}
+
 /// Resolve WHAT to download for `repo` on a machine with `vram_budget_bytes`: query the
 /// repo, pick the highest-fidelity quant that fits, and return the download plan. Fails
 /// loud (`NoneFit`) when nothing fits — this machine can't host the model, don't pretend
@@ -204,14 +231,20 @@ mod tests {
             GgufCandidate::new("m-Q3_K_M.gguf", 6_000),
             GgufCandidate::new("m-Q4_K_M.gguf", 8_000),
             GgufCandidate::new("m-Q8_0.gguf", 15_000),
+            GgufCandidate::new("m-f16.gguf", 30_000),     // raw float — last resort
             GgufCandidate::new("mmproj-f16.gguf", 1_000), // auxiliary — never the main pick
         ];
-        // 10k budget → Q4 (8k) is the largest main weight that fits.
+        // 10k budget → Q4 (8k) is the largest quant that fits.
         assert_eq!(select_best_fit(&files, 10_000).unwrap().filename, "m-Q4_K_M.gguf");
-        // 20k budget → Q8 (the biggest).
-        assert_eq!(select_best_fit(&files, 20_000).unwrap().filename, "m-Q8_0.gguf");
+        // 40k budget → Q8 (15k), NOT the larger F16 (30k): prefer quantized, don't burn
+        // the pool on raw float weights.
+        assert_eq!(select_best_fit(&files, 40_000).unwrap().filename, "m-Q8_0.gguf");
         // 5k budget → nothing fits (Q3 is 6k). Fail loud, don't grab the 1k mmproj.
         assert!(select_best_fit(&files, 5_000).is_none());
+
+        // F16-only repo: float is the last resort, used when no quant exists.
+        let float_only = vec![GgufCandidate::new("m-f16.gguf", 10_000)];
+        assert_eq!(select_best_fit(&float_only, 20_000).unwrap().filename, "m-f16.gguf");
     }
 
     // what this catches: the gguf_hint → repo → file-URL derivation (host/scheme stripped,
@@ -268,5 +301,46 @@ mod tests {
         // Doesn't fit: 1 MiB budget → fail loud, not a silent tiny pick.
         let err = plan_model_fetch(&client, repo, 1 << 20).await.unwrap_err();
         assert!(matches!(err, CatalogError::NoneFit { .. }));
+    }
+
+    // what this catches: the budget policy reserves headroom + scales with the machine —
+    // a big box gets a big budget, an 8 GB toy gets a small one, and a machine at/below
+    // the reserve gets 0 (fetch nothing local, lean remote), never a negative underflow.
+    #[test]
+    fn model_budget_reserves_and_scales() {
+        assert_eq!(model_budget_from_total(96 * (1 << 30)), (92 * (1 << 30)) * 7 / 10);
+        // 8 GiB toy: (8-4)*0.7 = 2.8 GiB — small, but a real budget.
+        assert!(model_budget_from_total(8 * (1 << 30)) < 3 * (1 << 30));
+        assert!(model_budget_from_total(8 * (1 << 30)) > 2 * (1 << 30));
+        // At/under the reserve → 0, not underflow.
+        assert_eq!(model_budget_from_total(2 * (1 << 30)), 0);
+    }
+
+    // what this catches: LIVE misfit-hardware proof — THIS machine's real memory → budget
+    // → the quant of coder-14b it would actually fetch. The whole point: the same code
+    // picks Q8 on a big box and a small quant on a toy. Run:
+    // `cargo test -p continuum-core -- --ignored this_machine_model_fit`.
+    #[tokio::test]
+    #[ignore]
+    async fn this_machine_model_fit_for_coder_14b() {
+        let mut sys = sysinfo::System::new();
+        sys.refresh_memory();
+        let total = sys.total_memory();
+        let budget = model_budget_from_total(total);
+        println!(
+            "this machine: total {} MiB → model budget {} MiB",
+            total >> 20,
+            budget >> 20
+        );
+        match plan_model_fetch(
+            &reqwest::Client::new(),
+            "bartowski/Qwen2.5-Coder-14B-Instruct-GGUF",
+            budget,
+        )
+        .await
+        {
+            Ok(p) => println!("→ would fetch {} ({} MiB, {:?})", p.filename, p.size_bytes >> 20, p.quant),
+            Err(e) => println!("→ {e}"),
+        }
     }
 }
