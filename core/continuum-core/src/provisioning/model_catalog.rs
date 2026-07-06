@@ -356,6 +356,43 @@ pub async fn plan_family_fetch(
     }
 }
 
+#[derive(Debug, thiserror::Error)]
+pub enum ProvisionModelError {
+    #[error(transparent)]
+    Catalog(#[from] CatalogError),
+    #[error(transparent)]
+    Fetch(#[from] super::FetchError),
+}
+
+/// The EXECUTE end of the catalog: plan the hardware-fit download for `repo` at `mode`,
+/// then fetch the chosen quant into `dest_dir`, returning the placed path. Composes
+/// `plan_model_fetch` (which quant fits) + `fetch_and_place` (download → verify → atomic).
+/// This is how a persona that needs a bigger brain (Maximum) actually GETS one — the last
+/// mile between "we own the catalog" and a model on disk ready to serve. Idempotent: a
+/// present file is a Downloader cache-hit, no re-fetch.
+pub async fn provision_model(
+    client: &reqwest::Client,
+    downloader: &super::Downloader,
+    repo: &str,
+    total_memory_bytes: u64,
+    mode: PowerMode,
+    dest_dir: &std::path::Path,
+    progress: &dyn super::downloader::ProgressSink,
+) -> Result<std::path::PathBuf, ProvisionModelError> {
+    let plan = plan_model_fetch(client, repo, total_memory_bytes, mode).await?;
+    let dest = dest_dir.join(&plan.filename);
+    let spec = super::ArtifactSpec {
+        id: normalize_repo(repo),
+        url: plan.url,
+        source_kind: super::SourceKind::Direct,
+        size_bytes: Some(plan.size_bytes),
+        checksum: None, // HF lfs.oid (sha256) is available — verify-after-fetch is a refinement
+        license: None,
+    };
+    super::fetch_and_place(&spec, &dest, downloader, progress).await?;
+    Ok(dest)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -455,6 +492,32 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, CatalogError::NoneFit { .. }));
+    }
+
+    // what this catches: LIVE end-to-end — the EXECUTE path actually downloads a real model
+    // (plan → fetch → placed on disk). A small 0.5B repo so it's fast; proves the same path
+    // that fetches a 32B coder. Run: `-- --ignored provision_model_live`.
+    #[tokio::test]
+    #[ignore]
+    async fn provision_model_live_downloads_a_small_model() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let client = reqwest::Client::new();
+        let dl = crate::provisioning::Downloader::default();
+        let path = provision_model(
+            &client,
+            &dl,
+            "bartowski/Qwen2.5-0.5B-Instruct-GGUF",
+            64 * (1 << 30), // spacious machine → Comfort picks the largest 0.5B quant
+            PowerMode::Comfort,
+            dir.path(),
+            &crate::provisioning::downloader::NoopProgress,
+        )
+        .await
+        .expect("provision a small model end-to-end");
+        assert!(path.exists(), "the model file landed on disk");
+        let bytes = std::fs::metadata(&path).unwrap().len();
+        println!("✅ provisioned {} ({} MiB)", path.display(), bytes >> 20);
+        assert!(bytes > 50_000_000, "a real multi-hundred-MB GGUF, not an error page");
     }
 
     // what this catches: the budget policy reserves headroom + scales with the machine —
