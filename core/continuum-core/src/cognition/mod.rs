@@ -64,6 +64,7 @@ pub mod response_orchestrator;
 pub mod response_validator;
 pub mod serving_plan;
 pub mod shared_analysis;
+pub mod self_repeat;
 pub mod should_respond;
 pub mod should_respond_module;
 pub mod threat_detector;
