@@ -80,17 +80,21 @@ mod tests {
             assert_eq!(spec.gender, again.gender);
             assert_eq!(spec.avatar_id, again.avatar_id);
 
-            // avatar gender agrees with the spine
+            // avatar gender agrees with the spine — for the binary genders. Neutral
+            // (they/them) is presentation-unconstrained, so any avatar is coherent.
             let avatar = select_avatar_by_identity(&id);
-            assert_eq!(
-                avatar.voice_profile.gender, spec.gender,
-                "avatar gender must match spec gender for '{id}'"
-            );
+            if spec.gender != AvatarGender::Neutral {
+                assert_eq!(
+                    avatar.voice_profile.gender, spec.gender,
+                    "avatar gender must match spec gender for '{id}'"
+                );
+            }
 
             // pronouns agree with gender
             match spec.gender {
                 AvatarGender::Female => assert_eq!(spec.pronouns.subject, "she"),
                 AvatarGender::Male => assert_eq!(spec.pronouns.subject, "he"),
+                AvatarGender::Neutral => assert_eq!(spec.pronouns.subject, "they"),
             }
 
             // voice is seeded on the identity (Gap #2), name/avatar are non-empty

@@ -81,6 +81,12 @@ pub fn select_avatar_for_voice(
 /// already did this + adds cross-persona dedup; this is the stateless sibling.)
 pub fn select_avatar_by_identity(identity: &str) -> &'static AvatarModel {
     let gender = gender_from_identity(identity);
+    // Neuter (they/them): presentation isn't constrained to masc/fem, so ANY avatar
+    // is coherent — draw from the full pool (no filter, no warn). When neuter-tagged
+    // VRMs are added, the Female/Male filter below will start preferring them.
+    if gender == AvatarGender::Neutral {
+        return deterministic_pick(identity, AVATAR_CATALOG, "avatar");
+    }
     let matching: Vec<&'static AvatarModel> = AVATAR_CATALOG
         .iter()
         .filter(|m| m.voice_profile.gender == gender)
@@ -540,12 +546,16 @@ mod tests {
         // avatar's gender must ALWAYS equal gender_from_identity.
         for i in 0..500 {
             let id = format!("persona-{i}");
+            let g = gender_from_identity(&id);
             let avatar = select_avatar_by_identity(&id);
-            assert_eq!(
-                avatar.voice_profile.gender,
-                gender_from_identity(&id),
-                "profile avatar gender must match persona gender for '{id}'"
-            );
+            // Female/Male personas: avatar gender MUST match. Neutral (they/them) is
+            // presentation-unconstrained, so any avatar is coherent — no assertion.
+            if g != AvatarGender::Neutral {
+                assert_eq!(
+                    avatar.voice_profile.gender, g,
+                    "profile avatar gender must match persona gender for '{id}'"
+                );
+            }
         }
     }
 
@@ -623,11 +633,15 @@ mod tests {
         for (id, model_id) in identities.iter().zip(assigned_models.iter()) {
             let model = AVATAR_CATALOG.iter().find(|m| m.id == *model_id).unwrap();
             let expected_gender = gender_from_identity(id);
-            assert_eq!(
-                model.voice_profile.gender, expected_gender,
-                "Persona '{}' has gender {:?} but got model '{}' with gender {:?}",
-                id, expected_gender, model_id, model.voice_profile.gender
-            );
+            // Neutral (they/them) is presentation-unconstrained — the allocator gives
+            // any avatar (Phase C), so skip the binary gender-match for Neutral.
+            if expected_gender != AvatarGender::Neutral {
+                assert_eq!(
+                    model.voice_profile.gender, expected_gender,
+                    "Persona '{}' has gender {:?} but got model '{}' with gender {:?}",
+                    id, expected_gender, model_id, model.voice_profile.gender
+                );
+            }
         }
 
         reset_allocation();
@@ -668,11 +682,15 @@ mod tests {
         for (id, model_id) in identities.iter().zip(assigned.iter()) {
             let model = AVATAR_CATALOG.iter().find(|m| m.id == *model_id).unwrap();
             let expected_gender = gender_from_identity(id);
-            assert_eq!(
-                model.voice_profile.gender, expected_gender,
-                "Persona '{}' has gender {:?} but got model '{}' with gender {:?}",
-                id, expected_gender, model_id, model.voice_profile.gender
-            );
+            // Neutral (they/them) is presentation-unconstrained — the allocator gives
+            // any avatar (Phase C), so skip the binary gender-match for Neutral.
+            if expected_gender != AvatarGender::Neutral {
+                assert_eq!(
+                    model.voice_profile.gender, expected_gender,
+                    "Persona '{}' has gender {:?} but got model '{}' with gender {:?}",
+                    id, expected_gender, model_id, model.voice_profile.gender
+                );
+            }
         }
 
         // Verify females still get good diversity (7 female models for ~6 female personas)
