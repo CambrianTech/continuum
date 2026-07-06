@@ -88,6 +88,19 @@ pub enum CatalogError {
         #[source]
         source: reqwest::Error,
     },
+    #[error("no quant of {repo} fits {} MiB of VRAM — this machine can't host it", budget >> 20)]
+    NoneFit { repo: String, budget: u64 },
+}
+
+/// The resolved decision of what to download for a model repo on this machine: the exact
+/// file URL, its name, size, and quant. Produced cheaply (one API call, no download) so
+/// the hardware-fit choice is inspectable before committing to a multi-GB fetch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModelFetchPlan {
+    pub url: String,
+    pub filename: String,
+    pub size_bytes: u64,
+    pub quant: Option<String>,
 }
 
 /// Normalize a `gguf_hint` to a bare `org/name` HF repo id (strip scheme + host + slashes).
@@ -141,6 +154,28 @@ pub async fn list_repo_ggufs(
         .filter(|e| e.entry_type == "file" && e.path.to_lowercase().ends_with(".gguf"))
         .map(|e| GgufCandidate::new(e.path, e.size))
         .collect())
+}
+
+/// Resolve WHAT to download for `repo` on a machine with `vram_budget_bytes`: query the
+/// repo, pick the highest-fidelity quant that fits, and return the download plan. Fails
+/// loud (`NoneFit`) when nothing fits — this machine can't host the model, don't pretend
+/// otherwise. Cheap (one API call, no download); the fetch is the proven Downloader.
+pub async fn plan_model_fetch(
+    client: &reqwest::Client,
+    repo: &str,
+    vram_budget_bytes: u64,
+) -> Result<ModelFetchPlan, CatalogError> {
+    let ggufs = list_repo_ggufs(client, repo).await?;
+    let pick = select_best_fit(&ggufs, vram_budget_bytes).ok_or_else(|| CatalogError::NoneFit {
+        repo: normalize_repo(repo),
+        budget: vram_budget_bytes,
+    })?;
+    Ok(ModelFetchPlan {
+        url: resolve_file_url(repo, &pick.filename),
+        filename: pick.filename.clone(),
+        size_bytes: pick.size_bytes,
+        quant: pick.quant(),
+    })
 }
 
 #[cfg(test)]
@@ -214,5 +249,24 @@ mod tests {
             pick.quant(),
             ggufs.len()
         );
+    }
+
+    // what this catches: LIVE — the full resolution (query → select → URL) yields a real
+    // downloadable plan for a fitting budget, and fails LOUD (NoneFit) when the budget is
+    // too small for any quant. Run: `cargo test -p continuum-core -- --ignored plan_model_fetch_live`.
+    #[tokio::test]
+    #[ignore]
+    async fn plan_model_fetch_live_resolves_and_fails_loud() {
+        let client = reqwest::Client::new();
+        let repo = "bartowski/Qwen2.5-Coder-14B-Instruct-GGUF";
+        // Fits: a real plan with a resolve/main URL for the chosen quant.
+        let plan = plan_model_fetch(&client, repo, 16 * (1 << 30)).await.unwrap();
+        assert!(plan.url.contains("/resolve/main/"), "downloadable URL");
+        assert!(plan.url.ends_with(&plan.filename));
+        assert!(plan.size_bytes <= 16 * (1 << 30));
+        println!("plan: {} ({} MiB)", plan.url, plan.size_bytes >> 20);
+        // Doesn't fit: 1 MiB budget → fail loud, not a silent tiny pick.
+        let err = plan_model_fetch(&client, repo, 1 << 20).await.unwrap_err();
+        assert!(matches!(err, CatalogError::NoneFit { .. }));
     }
 }
