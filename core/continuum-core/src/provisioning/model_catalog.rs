@@ -77,17 +77,17 @@ fn looks_like_quant(token: &str) -> bool {
 /// be surfaced (fail loud), never silently downgraded past what exists or oversized past
 /// what fits.
 pub fn select_best_fit(candidates: &[GgufCandidate], vram_budget_bytes: u64) -> Option<&GgufCandidate> {
-    select_for_demand(candidates, vram_budget_bytes, QualityTarget::Balanced)
+    select_for_mode(candidates, vram_budget_bytes, PowerMode::Comfort)
 }
 
-/// Pick the main-weight GGUF for a demand level. `Balanced` prefers the largest QUANTIZED
-/// tier that fits (near-lossless, leaves the pool for others), falling to float only if
-/// no quant fits. `Maximum` takes the single largest that fits, raw float included — the
-/// gas pedal. None when nothing fits (fail loud).
-pub fn select_for_demand(
+/// Pick the main-weight GGUF for a mode. Non-`allows_float` modes prefer the largest
+/// QUANTIZED tier that fits (near-lossless, leaves the pool for others), falling to float
+/// only if no quant fits. `Performance` (`allows_float`) takes the single largest that
+/// fits, raw F16 included. None when nothing fits (fail loud).
+pub fn select_for_mode(
     candidates: &[GgufCandidate],
     vram_budget_bytes: u64,
-    target: QualityTarget,
+    mode: PowerMode,
 ) -> Option<&GgufCandidate> {
     // Largest that fits, deterministic tie-break by name — over a given candidate set.
     let largest = |quantized_only: bool| {
@@ -101,11 +101,12 @@ pub fn select_for_demand(
                     .then_with(|| b.filename.cmp(&a.filename))
             })
     };
-    match target {
-        // Share the box: near-lossless quantized, float only if no quant fits.
-        QualityTarget::Balanced => largest(true).or_else(|| largest(false)),
+    if mode.allows_float() {
         // Floor it: the biggest thing that fits, F16 included.
-        QualityTarget::Maximum => largest(false),
+        largest(false)
+    } else {
+        // Share the box: near-lossless quantized, float only if no quant fits.
+        largest(true).or_else(|| largest(false))
     }
 }
 
@@ -185,29 +186,50 @@ pub async fn list_repo_ggufs(
         .collect())
 }
 
-/// How hard to push THIS request — the gas pedal. Selection is dynamic, not a fixed
-/// conservative policy ([[misfit-grid-is-a-distributed-moe]], "dynamic base model up or
-/// down").
-/// - `Balanced` (default): the machine is shared — many personas, a live call. Leave
-///   headroom for the others + render; prefer near-lossless quantized weights.
-/// - `Maximum`: floor it. The teacher that trains the others, a substantial iOS build,
-///   "I need the BEST coder" — hand this one request nearly the whole machine and the
-///   highest fidelity that fits, raw F16 included. If we can run it, we should.
+/// The user-facing power spectrum — exactly a car's drive modes (Eco · Comfort · Sport ·
+/// Performance), and "tuners" for the power user: a first-class AI citizen or the human
+/// can define their own [`ScalingPolicy`](super::scaling::ScalingPolicy). `Comfort` is the
+/// default — economical by design (the "32 mpg" that still launches when you floor it).
+/// The mode sets how much of the box this one request may use, whether it climbs to a
+/// bigger brain, and whether raw float weights are on the table.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum QualityTarget {
+pub enum PowerMode {
+    /// Max efficiency — battery, thermal, a crowded call. Small share of the box.
+    Eco,
+    /// Everyday default — good quality, shares the box with the rest of the call.
     #[default]
-    Balanced,
-    Maximum,
+    Comfort,
+    /// Quality-leaning — most of the machine, and climb to a bigger model.
+    Sport,
+    /// Floor it — nearly the whole box, the biggest brain + fidelity that fits, F16 on
+    /// the table. The teacher that trains the others, a substantial iOS build.
+    Performance,
 }
 
-/// The weights budget for a demand level: `Balanced` leaves headroom for other personas
-/// + render; `Maximum` hands this request nearly the whole machine (a small OS reserve).
-pub fn budget_for_demand(total_bytes: u64, target: QualityTarget) -> u64 {
-    match target {
-        QualityTarget::Balanced => model_budget_from_total(total_bytes),
-        // Press the gas: the whole box minus a thin OS reserve. One demanding ask can
-        // take everything, because that's the point of being able to run it at all.
-        QualityTarget::Maximum => total_bytes.saturating_sub(2 * (1 << 30)),
+impl PowerMode {
+    /// Raw float weights (F16) allowed — only when flooring it.
+    pub fn allows_float(self) -> bool {
+        matches!(self, PowerMode::Performance)
+    }
+    /// Climb the model-size ladder to a bigger BRAIN, not just a bigger quant.
+    pub fn climbs_ladder(self) -> bool {
+        matches!(self, PowerMode::Sport | PowerMode::Performance)
+    }
+}
+
+/// The weights budget for a mode: Eco leaves most of the box free (others, battery,
+/// thermal); Comfort is the conservative everyday; Sport takes most of it; Performance
+/// takes nearly all. Pass live `available_bytes` for an adaptive pick, `total` for the
+/// theoretical ceiling.
+pub fn budget_for_mode(total_bytes: u64, mode: PowerMode) -> u64 {
+    const RESERVE: u64 = 4 * (1 << 30); // OS + Bevy render + LiveKit encode
+    let usable = total_bytes.saturating_sub(RESERVE);
+    match mode {
+        PowerMode::Eco => (usable as f64 * 0.35) as u64,
+        PowerMode::Comfort => (usable as f64 * 0.70) as u64,
+        PowerMode::Sport => (usable as f64 * 0.90) as u64,
+        // Floor it: the whole box minus a thin OS reserve.
+        PowerMode::Performance => total_bytes.saturating_sub(2 * (1 << 30)),
     }
 }
 
@@ -218,9 +240,8 @@ pub fn budget_for_demand(total_bytes: u64, target: QualityTarget) -> u64 {
 /// activations. On Mac unified memory this IS the GPU pool; the governor's measured VRAM
 /// refines it on discrete GPUs. Conservative on purpose — a quant that fits beats an OOM.
 pub fn model_budget_from_total(total_bytes: u64) -> u64 {
-    const OS_RENDER_RESERVE: u64 = 4 * (1 << 30); // OS + Bevy render + LiveKit encode
-    let usable = total_bytes.saturating_sub(OS_RENDER_RESERVE);
-    (usable as f64 * 0.70) as u64 // the rest for KV cache + activations at runtime
+    // The Comfort (everyday) budget — reserve OS+render, 70% of the rest for weights.
+    budget_for_mode(total_bytes, PowerMode::Comfort)
 }
 
 /// Resolve WHAT to download for `repo` on a machine with `total_memory_bytes` at demand
@@ -232,11 +253,11 @@ pub async fn plan_model_fetch(
     client: &reqwest::Client,
     repo: &str,
     total_memory_bytes: u64,
-    target: QualityTarget,
+    mode: PowerMode,
 ) -> Result<ModelFetchPlan, CatalogError> {
-    let budget = budget_for_demand(total_memory_bytes, target);
+    let budget = budget_for_mode(total_memory_bytes, mode);
     let ggufs = list_repo_ggufs(client, repo).await?;
-    let pick = select_for_demand(&ggufs, budget, target).ok_or_else(|| CatalogError::NoneFit {
+    let pick = select_for_mode(&ggufs, budget, mode).ok_or_else(|| CatalogError::NoneFit {
         repo: normalize_repo(repo),
         budget,
     })?;
@@ -285,25 +306,24 @@ pub async fn plan_family_fetch(
     client: &reqwest::Client,
     family: &ModelFamily,
     total_memory_bytes: u64,
-    target: QualityTarget,
+    mode: PowerMode,
 ) -> Result<ModelFetchPlan, CatalogError> {
-    match target {
-        QualityTarget::Balanced => {
-            plan_model_fetch(client, family.ladder[family.default_idx], total_memory_bytes, target).await
-        }
-        QualityTarget::Maximum => {
-            let mut last_err = None;
-            for repo in family.ladder.iter().rev() {
-                match plan_model_fetch(client, repo, total_memory_bytes, target).await {
-                    Ok(plan) => return Ok(plan),
-                    Err(e) => last_err = Some(e),
-                }
+    if mode.climbs_ladder() {
+        // Climb top-down: the largest model whose best quant fits this mode wins.
+        let mut last_err = None;
+        for repo in family.ladder.iter().rev() {
+            match plan_model_fetch(client, repo, total_memory_bytes, mode).await {
+                Ok(plan) => return Ok(plan),
+                Err(e) => last_err = Some(e),
             }
-            Err(last_err.unwrap_or(CatalogError::NoneFit {
-                repo: family.name.to_string(),
-                budget: budget_for_demand(total_memory_bytes, target),
-            }))
         }
+        Err(last_err.unwrap_or(CatalogError::NoneFit {
+            repo: family.name.to_string(),
+            budget: budget_for_mode(total_memory_bytes, mode),
+        }))
+    } else {
+        // Everyday: the default size, sized to the mode's budget.
+        plan_model_fetch(client, family.ladder[family.default_idx], total_memory_bytes, mode).await
     }
 }
 
@@ -395,14 +415,14 @@ mod tests {
         let client = reqwest::Client::new();
         let repo = "bartowski/Qwen2.5-Coder-14B-Instruct-GGUF";
         // Fits: a real plan with a resolve/main URL for the chosen quant.
-        let plan = plan_model_fetch(&client, repo, 32 * (1 << 30), QualityTarget::Balanced)
+        let plan = plan_model_fetch(&client, repo, 32 * (1 << 30), PowerMode::Comfort)
             .await
             .unwrap();
         assert!(plan.url.contains("/resolve/main/"), "downloadable URL");
         assert!(plan.url.ends_with(&plan.filename));
         println!("plan: {} ({} MiB)", plan.url, plan.size_bytes >> 20);
         // Doesn't fit: a 2 GiB machine → budget 0 → fail loud, not a silent tiny pick.
-        let err = plan_model_fetch(&client, repo, 2 * (1 << 30), QualityTarget::Balanced)
+        let err = plan_model_fetch(&client, repo, 2 * (1 << 30), PowerMode::Comfort)
             .await
             .unwrap_err();
         assert!(matches!(err, CatalogError::NoneFit { .. }));
@@ -431,17 +451,17 @@ mod tests {
             GgufCandidate::new("m-f16.gguf", 30_000),
         ];
         assert_eq!(
-            select_for_demand(&files, 40_000, QualityTarget::Balanced).unwrap().filename,
+            select_for_mode(&files, 40_000, PowerMode::Comfort).unwrap().filename,
             "m-Q8_0.gguf"
         );
         assert_eq!(
-            select_for_demand(&files, 40_000, QualityTarget::Maximum).unwrap().filename,
+            select_for_mode(&files, 40_000, PowerMode::Performance).unwrap().filename,
             "m-f16.gguf"
         );
         let total = 64u64 * (1 << 30);
         assert!(
-            budget_for_demand(total, QualityTarget::Maximum)
-                > budget_for_demand(total, QualityTarget::Balanced)
+            budget_for_mode(total, PowerMode::Performance)
+                > budget_for_mode(total, PowerMode::Comfort)
         );
     }
 
@@ -458,8 +478,8 @@ mod tests {
         let client = reqwest::Client::new();
         let repo = "bartowski/Qwen2.5-Coder-14B-Instruct-GGUF";
         println!("this machine: total {} MiB", total >> 20);
-        for target in [QualityTarget::Balanced, QualityTarget::Maximum] {
-            let budget = budget_for_demand(total, target);
+        for target in [PowerMode::Eco, PowerMode::Comfort, PowerMode::Sport, PowerMode::Performance] {
+            let budget = budget_for_mode(total, target);
             match plan_model_fetch(&client, repo, total, target).await {
                 Ok(p) => println!(
                     "  {:?} (budget {} MiB) → {} ({} MiB, {:?})",
@@ -486,7 +506,7 @@ mod tests {
         let client = reqwest::Client::new();
         let fam = ModelFamily::coder();
         println!("this machine: total {} MiB — coder family {:?}", total >> 20, fam.ladder);
-        for target in [QualityTarget::Balanced, QualityTarget::Maximum] {
+        for target in [PowerMode::Eco, PowerMode::Comfort, PowerMode::Sport, PowerMode::Performance] {
             match plan_family_fetch(&client, &fam, total, target).await {
                 Ok(p) => println!("  {:?} → {} ({} MiB, {:?})", target, p.filename, p.size_bytes >> 20, p.quant),
                 Err(e) => println!("  {target:?} → {e}"),

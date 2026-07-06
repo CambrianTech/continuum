@@ -17,7 +17,7 @@
 //! `DefaultScalingPolicy` is the sensible default (mundane stays small, escalate only when
 //! genuinely needed AND the box can spare it).
 
-use super::model_catalog::QualityTarget;
+use super::model_catalog::PowerMode;
 
 /// What a scaling decision sees: how hard the work looks + what the machine can spare
 /// right now. Fed from persona signals + the live resource monitor.
@@ -30,30 +30,35 @@ pub struct DemandContext {
     pub available_bytes: u64,
 }
 
-/// Decides the gear from live conditions. THE definable seam — swap in a user's or an AI
-/// citizen's own policy; the default is conservative-with-escalation.
+/// Decides the drive mode from live conditions. THE definable seam — swap in a user's or
+/// an AI citizen's own policy (the "tuner"); the default auto-shifts like a car.
 pub trait ScalingPolicy: Send + Sync {
-    fn target(&self, ctx: &DemandContext) -> QualityTarget;
+    fn mode(&self, ctx: &DemandContext) -> PowerMode;
 }
 
-/// The default policy: stay `Balanced` for the mundane — never haul in a 32B for a
-/// please/thank-you — and escalate to `Maximum` only when the persona is genuinely
-/// struggling AND the box can currently spare the horsepower. Adapt on the fly; the user
-/// never notices the gear change.
+/// The default policy — the automatic transmission. It shifts by difficulty, but only as
+/// far up as the box can currently afford, and drops to Eco when memory is starved (a
+/// game is open):
+/// - trivial ("thanks!") → Eco — never haul in a big model for pleasantries;
+/// - everyday → Comfort — the economical 32-mpg default;
+/// - hard + room → Sport — climb to a bigger model;
+/// - out-of-its-league + plenty of room → Performance — floor it, the teacher's brain.
+/// Adapt on the fly; the user never notices the shift.
 pub struct DefaultScalingPolicy;
 
 impl ScalingPolicy for DefaultScalingPolicy {
-    fn target(&self, ctx: &DemandContext) -> QualityTarget {
-        /// Above this the persona is clearly out of its league.
-        const HARD: f32 = 0.66;
-        /// Don't floor it on a box that can't currently host the big model — a game is
-        /// open, memory is tight. Balanced still serves; escalation would just thrash.
-        const FLOOR_NEEDS_BYTES: u64 = 20 * (1 << 30);
-
-        if ctx.difficulty >= HARD && ctx.available_bytes >= FLOOR_NEEDS_BYTES {
-            QualityTarget::Maximum
-        } else {
-            QualityTarget::Balanced
+    fn mode(&self, ctx: &DemandContext) -> PowerMode {
+        let avail_gib = ctx.available_bytes / (1 << 30);
+        // Protect a starved box: little free memory → Eco no matter the difficulty. A
+        // game ate the RAM; escalation would only thrash.
+        if avail_gib < 8 {
+            return PowerMode::Eco;
+        }
+        match ctx.difficulty {
+            d if d >= 0.85 && avail_gib >= 20 => PowerMode::Performance,
+            d if d >= 0.66 && avail_gib >= 12 => PowerMode::Sport,
+            d if d < 0.2 => PowerMode::Eco, // trivial pleasantries
+            _ => PowerMode::Comfort,
         }
     }
 }
@@ -62,27 +67,27 @@ impl ScalingPolicy for DefaultScalingPolicy {
 mod tests {
     use super::*;
 
-    fn target(difficulty: f32, available_gib: u64) -> QualityTarget {
-        DefaultScalingPolicy.target(&DemandContext {
+    fn mode(difficulty: f32, available_gib: u64) -> PowerMode {
+        DefaultScalingPolicy.mode(&DemandContext {
             difficulty,
             available_bytes: available_gib * (1 << 30),
         })
     }
 
-    // what this catches: the whole adaptive intent in one policy —
-    //  - mundane stays cheap no matter how much RAM is free (no 32B for "thanks!");
-    //  - a genuinely hard turn escalates WHEN the box can spare it;
-    //  - the SAME hard turn stays Balanced when a game has eaten the memory (adapt to
-    //    live conditions instead of thrashing).
+    // what this catches: the automatic transmission shifts by difficulty but only as far
+    // as the box can afford, and drops to Eco when a game has starved the RAM —
+    //  - trivial "thanks!" → Eco (never a big model for pleasantries);
+    //  - everyday → Comfort (the 32-mpg default);
+    //  - hard + room → Sport; out-of-league + plenty of room → Performance;
+    //  - the SAME hard turn on a game-starved box → Eco, not a thrash.
     #[test]
-    fn mundane_stays_cheap_hard_escalates_only_when_affordable() {
-        // Mundane — Balanced even on a huge idle box.
-        assert_eq!(target(0.1, 128), QualityTarget::Balanced);
-        // Hard + plenty free → floor it.
-        assert_eq!(target(0.9, 60), QualityTarget::Maximum);
-        // Hard but a game ate the RAM (5 GiB free) → stay Balanced, don't thrash.
-        assert_eq!(target(0.9, 5), QualityTarget::Balanced);
-        // Right at the difficulty edge below the threshold → still cheap.
-        assert_eq!(target(0.5, 60), QualityTarget::Balanced);
+    fn auto_shifts_by_difficulty_bounded_by_free_memory() {
+        assert_eq!(mode(0.1, 128), PowerMode::Eco); // trivial
+        assert_eq!(mode(0.5, 60), PowerMode::Comfort); // everyday
+        assert_eq!(mode(0.7, 60), PowerMode::Sport); // hard + room
+        assert_eq!(mode(0.9, 60), PowerMode::Performance); // out of its league + room
+        assert_eq!(mode(0.9, 5), PowerMode::Eco); // game ate the RAM → don't thrash
+        // Hard but only middling free memory → shift up only to Sport, not Performance.
+        assert_eq!(mode(0.9, 14), PowerMode::Sport);
     }
 }
