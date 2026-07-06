@@ -509,13 +509,12 @@ impl AIProviderModule {
         // iteration order which is non-deterministic — caused a bug
         // where qwen3.5 got registered twice and qwen2-vl was skipped.
         // Now we iterate ALL rows uniformly.
-        // NO silent local-inference fallback. unsloth is THE inference path
-        // ([[unsloth-universal-model-gateway]]); unsloth itself serves our forged
-        // GGUF. The in-process llama.cpp adapter is OPT-IN ONLY
-        // (CONTINUUM_LOCAL_LLAMA=1) so the core never registers a local backend by
-        // default and never silently REVERTS to local when unsloth is absent — a
-        // missing gateway fails loud at select(), it does not get papered over with
-        // local inference ([[no-fallbacks-ever]]). Full removal tracked in task #41.
+        // NO silent local-inference fallback. Our OWN llama-server is THE inference
+        // path (Unsloth excised); it serves our forged GGUF over /v1. The in-process
+        // llama.cpp adapter is OPT-IN ONLY (CONTINUUM_LOCAL_LLAMA=1) so the core never
+        // registers a local backend by default and never silently REVERTS to local when
+        // the gateway is absent — a missing gateway fails loud at select(), it does not
+        // get papered over with local inference ([[no-fallbacks-ever]]).
         let local_llama_opt_in =
             crate::config_env::read("CONTINUUM_LOCAL_LLAMA").as_deref() == Some("1");
         if let Some(reg_arc) =

@@ -1784,7 +1784,7 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
 
     /// Create embeddings over the OpenAI-compatible `/v1/embeddings` endpoint.
     /// This is the path continuum's neural recall ([`NeuralEmbeddingProvider`])
-    /// takes through the unsloth gateway — it replaces the in-process
+    /// takes through the local llama-server /v1 gateway — it replaces the in-process
     /// fastembed/ONNX embedder. Degrades to an `Err` (never panics) when the
     /// endpoint is unreachable or the model isn't an embedding model; the caller
     /// falls back to the lexical embedder.
