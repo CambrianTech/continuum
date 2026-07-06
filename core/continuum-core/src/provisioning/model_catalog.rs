@@ -248,6 +248,65 @@ pub async fn plan_model_fetch(
     })
 }
 
+/// A capability served by a LADDER of model sizes (coder 7B → 14B → 32B). The gas pedal
+/// climbs it: `Balanced` serves the everyday default size; `Maximum` serves the LARGEST
+/// model whose best quant fits this machine — a bigger brain, not just a bigger quant of
+/// the same one. This is "dynamic base model up or down" made concrete: the teacher that
+/// trains the others reaches for the 32B when the box can hold it.
+#[derive(Debug, Clone)]
+pub struct ModelFamily {
+    pub name: &'static str,
+    /// Repos ordered SMALLEST → largest capability.
+    pub ladder: &'static [&'static str],
+    /// Index into `ladder` of the shared-default (Balanced) size.
+    pub default_idx: usize,
+}
+
+impl ModelFamily {
+    /// The Qwen2.5-Coder ladder — the everyday coder + the teacher.
+    pub fn coder() -> Self {
+        Self {
+            name: "qwen2.5-coder",
+            ladder: &[
+                "bartowski/Qwen2.5-Coder-7B-Instruct-GGUF",
+                "bartowski/Qwen2.5-Coder-14B-Instruct-GGUF",
+                "bartowski/Qwen2.5-Coder-32B-Instruct-GGUF",
+            ],
+            default_idx: 1, // 14B is the everyday size
+        }
+    }
+}
+
+/// Plan the fetch for a family at a demand. `Balanced` serves the default size (share the
+/// box). `Maximum` climbs the ladder TOP-DOWN and returns the largest model whose best
+/// quant fits — pressing the gas escalates the brain, not just the precision. Fails loud
+/// only if nothing on the ladder fits at all.
+pub async fn plan_family_fetch(
+    client: &reqwest::Client,
+    family: &ModelFamily,
+    total_memory_bytes: u64,
+    target: QualityTarget,
+) -> Result<ModelFetchPlan, CatalogError> {
+    match target {
+        QualityTarget::Balanced => {
+            plan_model_fetch(client, family.ladder[family.default_idx], total_memory_bytes, target).await
+        }
+        QualityTarget::Maximum => {
+            let mut last_err = None;
+            for repo in family.ladder.iter().rev() {
+                match plan_model_fetch(client, repo, total_memory_bytes, target).await {
+                    Ok(plan) => return Ok(plan),
+                    Err(e) => last_err = Some(e),
+                }
+            }
+            Err(last_err.unwrap_or(CatalogError::NoneFit {
+                repo: family.name.to_string(),
+                budget: budget_for_demand(total_memory_bytes, target),
+            }))
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -410,6 +469,26 @@ mod tests {
                     p.size_bytes >> 20,
                     p.quant
                 ),
+                Err(e) => println!("  {target:?} → {e}"),
+            }
+        }
+    }
+
+    // what this catches: LIVE — the gas pedal climbs the SIZE ladder, not just the quant.
+    // Balanced serves the everyday 14B; Maximum reaches for the biggest coder this machine
+    // can hold (the teacher's brain). Run: `-- --ignored this_machine_climbs_the_coder_ladder`.
+    #[tokio::test]
+    #[ignore]
+    async fn this_machine_climbs_the_coder_ladder() {
+        let mut sys = sysinfo::System::new();
+        sys.refresh_memory();
+        let total = sys.total_memory();
+        let client = reqwest::Client::new();
+        let fam = ModelFamily::coder();
+        println!("this machine: total {} MiB — coder family {:?}", total >> 20, fam.ladder);
+        for target in [QualityTarget::Balanced, QualityTarget::Maximum] {
+            match plan_family_fetch(&client, &fam, total, target).await {
+                Ok(p) => println!("  {:?} → {} ({} MiB, {:?})", target, p.filename, p.size_bytes >> 20, p.quant),
                 Err(e) => println!("  {target:?} → {e}"),
             }
         }
