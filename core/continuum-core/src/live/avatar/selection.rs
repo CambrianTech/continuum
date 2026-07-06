@@ -68,10 +68,35 @@ pub fn select_avatar_for_voice(
     best
 }
 
-/// Select avatar by deterministic hash of persona identity.
-/// Same persona always gets the same model.
+/// Select avatar by deterministic hash of persona identity — GENDER-COHERENT.
+/// Same persona always gets the same model, and that model's gender ALWAYS
+/// matches the persona's gender (which also drives its name + voice).
+///
+/// This is the single-persona projection used by the profile-picture snapshot
+/// (`modules/avatar.rs`) and the live video pump (`live/avatar/video_pump.rs`).
+/// It used to hash the FULL catalog with no gender filter, so a female persona
+/// (female name + female voice) could land on a male VRM — the incoherence
+/// [[procedural-persona-genesis]] Gap #1 names. Filtering by gender first makes a
+/// mismatch unrepresentable by construction. (The batch path `select_avatar_for_agent`
+/// already did this + adds cross-persona dedup; this is the stateless sibling.)
 pub fn select_avatar_by_identity(identity: &str) -> &'static AvatarModel {
-    deterministic_pick(identity, AVATAR_CATALOG, "avatar")
+    let gender = gender_from_identity(identity);
+    let matching: Vec<&'static AvatarModel> = AVATAR_CATALOG
+        .iter()
+        .filter(|m| m.voice_profile.gender == gender)
+        .collect();
+    if matching.is_empty() {
+        // A catalog gap (no VRM of this gender), not this call's bug. Fail LOUD
+        // naming it, but still return a face — a profile picture must never crash
+        // the core ([[fallbacks-are-illegal-fail-loud]]: name it, don't hide it).
+        clog_warn!(
+            "avatar catalog has no {:?} model — add a {:?} VRM; using full catalog for now",
+            gender,
+            gender
+        );
+        return deterministic_pick(identity, AVATAR_CATALOG, "avatar");
+    }
+    matching[deterministic_index(identity, matching.len(), "avatar")]
 }
 
 /// Global allocation map: identity → catalog index.
@@ -503,6 +528,25 @@ mod tests {
         let a2 = select_avatar_by_identity("bob");
         assert!(!a1.id.is_empty());
         assert!(!a2.id.is_empty());
+    }
+
+    #[test]
+    fn profile_avatar_is_gender_coherent() {
+        // what this catches: [[procedural-persona-genesis]] Gap #1 — the profile /
+        // video avatar MUST match the persona's gender (which also drives its name
+        // + voice). Before the gender filter, select_avatar_by_identity hashed the
+        // full catalog with no gender constraint, so a female persona (female name
+        // + female voice) could land on a male VRM. Across many identities the
+        // avatar's gender must ALWAYS equal gender_from_identity.
+        for i in 0..500 {
+            let id = format!("persona-{i}");
+            let avatar = select_avatar_by_identity(&id);
+            assert_eq!(
+                avatar.voice_profile.gender,
+                gender_from_identity(&id),
+                "profile avatar gender must match persona gender for '{id}'"
+            );
+        }
     }
 
     #[test]
