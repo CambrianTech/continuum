@@ -6,6 +6,7 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use airc_core::{RoomId, TranscriptKind};
 use airc_ipc::{codec::read_frame, AttachRequest, AttachStart, DaemonClient, Response};
@@ -27,9 +28,45 @@ pub fn spawn_daemon_attach(
     bus: Arc<MessageBus>,
     runtime: &tokio::runtime::Handle,
 ) {
+    // RE-ATTACH loop. This is a RAW `DaemonClient::attach` realtime-transcript
+    // stream (positron chat/wall/kanban + the persona-turn projection), NOT
+    // airc-lib's reconnecting `subscribe()` — so airc-lib's transport recovery
+    // does NOT cover it ([[persona-airc-resilience]] is about the subscribe path).
+    // Before this loop it ran EXACTLY ONCE: on any daemon restart / stream drop
+    // the task ended (Err → warn, clean EOF → SILENT) and the persona went
+    // permanently DEAF to inbound airc events until continuum-core rebooted
+    // (reliability audit #5). Re-attach with capped backoff so a daemon restart
+    // self-heals. There is no deliberately-loud terminal signal to mask here —
+    // malformed events are already skipped (handle_attach_response), and a raw
+    // attach drop is a transport event, not a wire-schema fault.
     runtime.spawn(async move {
-        if let Err(error) = run_daemon_attach(socket_path, channel, bus).await {
-            warn!("AIRC daemon attach stream stopped: {error}");
+        const MIN_BACKOFF: Duration = Duration::from_secs(1);
+        const MAX_BACKOFF: Duration = Duration::from_secs(30);
+        // An attach that streamed for at least this long before dropping was
+        // healthy → reset backoff so a brief blip doesn't ratchet the delay.
+        const HEALTHY_ATTACH: Duration = Duration::from_secs(30);
+        let mut backoff = MIN_BACKOFF;
+        loop {
+            let started = Instant::now();
+            match run_daemon_attach(socket_path.clone(), channel, bus.clone()).await {
+                Ok(()) => warn!(
+                    "AIRC daemon attach ended (daemon EOF) after {:?} — re-attaching in {:?}",
+                    started.elapsed(),
+                    backoff
+                ),
+                Err(error) => warn!(
+                    "AIRC daemon attach stopped: {error} (after {:?}) — re-attaching in {:?}",
+                    started.elapsed(),
+                    backoff
+                ),
+            }
+            // Reset backoff if the prior attach was long-lived (a healthy session
+            // that dropped), else escalate up to the cap.
+            if started.elapsed() >= HEALTHY_ATTACH {
+                backoff = MIN_BACKOFF;
+            }
+            tokio::time::sleep(backoff).await;
+            backoff = (backoff * 2).min(MAX_BACKOFF);
         }
     });
 }
