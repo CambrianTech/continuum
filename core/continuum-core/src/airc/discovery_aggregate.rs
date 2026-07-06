@@ -96,6 +96,7 @@ impl From<DiscoveryError> for DiscoveryFailure {
         match e {
             DiscoveryError::InstallFailed(msg) => DiscoveryFailure::InstallFailed(msg),
             DiscoveryError::AutoInstallDisabled => DiscoveryFailure::AutoInstallDisabled,
+            DiscoveryError::AutoInstallInProgress => DiscoveryFailure::AutoInstallInProgress,
             DiscoveryError::EndpointCommandFailed(msg) => {
                 DiscoveryFailure::EndpointCommandFailed(msg)
             }
