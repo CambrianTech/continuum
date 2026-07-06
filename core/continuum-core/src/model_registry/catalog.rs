@@ -427,9 +427,9 @@ pub fn models() -> Vec<Model> {
                 Capability::Streaming,
             ],
             gguf_hint: Some("huggingface.co/bartowski/Qwen2.5-Coder-14B-Instruct-GGUF"),
-            gguf_local_path: Some(
-                "~/.continuum/genome/models/qwen2.5-coder-14b-instruct/Qwen2.5-Coder-14B-Instruct-Q4_K_M.gguf",
-            ),
+            // gguf_local_path DERIVED, not hardcoded: resolve_gguf matches this id to
+            // its dir under ~/.continuum/genome/models/ (identity-token subset) and
+            // falls back to the HF cache via gguf_hint — no baked absolute path or quant.
             chat_template: Some(QWEN35_CHAT_TEMPLATE),
             multi_party_strategy: MultiPartyChatStrategy::ProperChatMlSingleParty,
             stop_sequences: &["<|im_end|>", "<|endoftext|>"],
@@ -500,9 +500,7 @@ pub fn models() -> Vec<Model> {
             // above is serving-only; MLX/PEFT fine-tuning + the custodian convert
             // resolve THIS HF repo (cached, MLX-ready) through the canonical id.
             hf_source: Some("unsloth/Qwen2.5-0.5B-Instruct"),
-            gguf_local_path: Some(
-                "~/.continuum/genome/models/qwen2.5-0.5b-instruct/qwen2.5-0.5b-instruct-q4_k_m.gguf",
-            ),
+            // gguf_local_path DERIVED from the id under genome/models (see coder-14b above).
             multi_party_strategy: MultiPartyChatStrategy::ProperChatMlSingleParty,
             ..ModelSpec::default()
         }),
@@ -525,9 +523,7 @@ pub fn models() -> Vec<Model> {
             tokens_per_second: 0.0,
             capabilities: &[Capability::Embedding],
             gguf_hint: Some("huggingface.co/Qwen/Qwen3-Embedding-0.6B-GGUF"),
-            gguf_local_path: Some(
-                "~/.continuum/genome/models/qwen3-embedding-0.6b/Qwen3-Embedding-0.6B-Q8_0.gguf",
-            ),
+            // gguf_local_path DERIVED from the id under genome/models (see coder-14b above).
             ..ModelSpec::default()
         }),
     ]

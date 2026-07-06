@@ -296,4 +296,46 @@ mod tests {
             assert_eq!(model.gguf_local_path.as_deref(), Some(gguf.as_path()));
         });
     }
+
+    // what this catches: the coder-14b teacher resolves its serving GGUF by DERIVING
+    // the path from its id under ~/.continuum/genome/models/ — with NO hardcoded
+    // gguf_local_path in the catalog (removed). Proves the unhardcoding: drop the
+    // baked absolute path + quant, and the registry still finds the model by id
+    // (where download-models.sh lands it).
+    #[test]
+    fn coder_14b_resolves_by_id_derivation_without_hardcoded_path() {
+        let home = tempfile::tempdir().unwrap();
+        crate::model_registry::artifacts::with_test_home(home.path(), || {
+            // Place the GGUF where the provisioner lands it: genome/models/<dir>/.
+            let dir = home
+                .path()
+                .join(".continuum/genome/models/qwen2.5-coder-14b-instruct");
+            std::fs::create_dir_all(&dir).unwrap();
+            write_empty_gguf(&dir.join("Qwen2.5-Coder-14B-Instruct-Q4_K_M.gguf"));
+
+            let spec = catalog::models()
+                .into_iter()
+                .find(|m| m.id == "continuum-ai/qwen2.5-coder-14b-instruct-GGUF")
+                .expect("coder-14b in catalog");
+            // The catalog carries NO hardcoded path anymore.
+            assert!(
+                spec.gguf_local_path.is_none(),
+                "coder-14b catalog spec must have no hardcoded gguf_local_path"
+            );
+
+            let reg = Registry::from_catalog(vec![spec], catalog::providers())
+                .expect("registry loads");
+            let model = reg
+                .model("continuum-ai/qwen2.5-coder-14b-instruct-GGUF")
+                .expect("coder-14b registered");
+            let resolved = model
+                .gguf_local_path
+                .as_deref()
+                .expect("must resolve a GGUF by id-derivation");
+            assert!(
+                resolved.ends_with("Qwen2.5-Coder-14B-Instruct-Q4_K_M.gguf"),
+                "resolved by id-derivation under genome/models, got {resolved:?}"
+            );
+        });
+    }
 }
