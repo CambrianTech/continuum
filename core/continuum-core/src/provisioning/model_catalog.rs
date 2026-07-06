@@ -215,6 +215,20 @@ impl PowerMode {
     pub fn climbs_ladder(self) -> bool {
         matches!(self, PowerMode::Sport | PowerMode::Performance)
     }
+
+    /// Fraction of currently-FREE memory the shared serving base may claim — the rest
+    /// is left for the other personas' KV cache, the renderer, and LiveKit. Eco leaves
+    /// the most (a crowded call, battery); Performance floors it (a solo demanding
+    /// session). This is the resiliency reserve that keeps 14 personas from OOM-ing the
+    /// pool: serving never grabs everything, so the KV of the rest of the call still fits.
+    pub fn serving_fraction(self) -> f64 {
+        match self {
+            PowerMode::Eco => 0.55,
+            PowerMode::Comfort => 0.80,
+            PowerMode::Sport => 0.92,
+            PowerMode::Performance => 1.0,
+        }
+    }
 }
 
 /// The weights budget for a mode: Eco leaves most of the box free (others, battery,
@@ -463,6 +477,17 @@ mod tests {
             budget_for_mode(total, PowerMode::Performance)
                 > budget_for_mode(total, PowerMode::Comfort)
         );
+    }
+
+    // what this catches: the serving reserve is monotonic (Eco leaves the most free for
+    // the rest of the call, Performance claims all of it) — the knob that keeps a crowded
+    // call from OOM-ing the shared pool.
+    #[test]
+    fn serving_fraction_is_monotonic_and_performance_takes_all() {
+        assert!(PowerMode::Eco.serving_fraction() < PowerMode::Comfort.serving_fraction());
+        assert!(PowerMode::Comfort.serving_fraction() < PowerMode::Sport.serving_fraction());
+        assert!(PowerMode::Sport.serving_fraction() < PowerMode::Performance.serving_fraction());
+        assert_eq!(PowerMode::Performance.serving_fraction(), 1.0);
     }
 
     // what this catches: LIVE misfit-hardware proof — THIS machine's real memory → budget
