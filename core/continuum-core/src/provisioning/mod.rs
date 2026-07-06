@@ -19,10 +19,12 @@ use std::path::PathBuf;
 pub mod avatar_source;
 pub mod cache;
 pub mod model_source;
+pub mod provisioner;
 
 pub use avatar_source::AvatarSource;
 pub use cache::{reconcile, CacheDecision, CacheEntry, ProvisionPlan};
 pub use model_source::ModelSource;
+pub use provisioner::Provisioner;
 
 /// What kind of artifact this is — for routing + human-readable provisioning reports.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
