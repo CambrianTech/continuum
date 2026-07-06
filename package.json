@@ -25,6 +25,7 @@
     "setup:rust": "bash tools/scripts/setup-rust.sh",
     "setup:git-hooks": "bash tools/scripts/setup-git-hooks.sh",
     "service:install": "bash tools/scripts/install-service.sh install",
+    "service:install:system": "bash tools/scripts/install-service.sh install --system",
     "service:uninstall": "bash tools/scripts/install-service.sh uninstall",
     "service:status": "bash tools/scripts/install-service.sh status",
     "docker:ensure": "bash scripts/ensure-docker.sh",
