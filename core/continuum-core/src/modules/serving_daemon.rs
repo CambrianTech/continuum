@@ -297,7 +297,18 @@ impl ServingDaemonModule {
     /// Delegates to the free [`live_host_budget`] so the autonomic tick and the
     /// `serving/pin` fit-gate compute the budget from the ONE source.
     fn host_budget(&self) -> HostBudget {
-        live_host_budget(&self.system, &self.resource_daemon)
+        let raw = live_host_budget(&self.system, &self.resource_daemon);
+        // Reserve headroom per the machine drive mode so the autonomic plan LEAVES room
+        // for the other personas' KV + render + LiveKit — the resiliency fix that keeps a
+        // crowded call from OOM-ing the shared pool. Default Comfort; a follow-up drives
+        // the mode from the ScalingPolicy / live pressure. (The pin fit-gate keeps the RAW
+        // budget via `live_host_budget` directly — "can this model fit at all" is a
+        // different question than "how much should the shared base claim right now".)
+        let mode = crate::provisioning::PowerMode::Comfort;
+        HostBudget {
+            usable_bytes: (raw.usable_bytes as f64 * mode.serving_fraction()) as u64,
+            perf_cores: raw.perf_cores,
+        }
     }
 
     /// The servable candidates RIGHT NOW: the on-disk Ready models, MINUS any an
