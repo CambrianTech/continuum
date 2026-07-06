@@ -19,6 +19,11 @@ use std::path::{Path, PathBuf};
 /// as exploding geometry. Only VRM 0.x models (83 joints) work in the headless pipeline.
 ///
 /// Gender distribution (static): 6 Female, 2 Male
+// The provisioning source: all current models are CC0 VRoid Studio avatars fetched as
+// zips from OpenGameArt (https://opengameart.org/content/vroid-studio-cc0-models). The
+// `url`/`source_kind`/`license` fields make THIS the single source of truth for the
+// download — `download-avatar-models.sh` provisions from the JSON projection of this
+// catalog, so adding an avatar is one entry here, not an edit in two places.
 pub const AVATAR_CATALOG: &[AvatarModel] = &[
     AvatarModel {
         id: "vroid-female-base",
@@ -30,6 +35,9 @@ pub const AVATAR_CATALOG: &[AvatarModel] = &[
             gender: AvatarGender::Female,
             energy: EnergyLevel::Moderate,
         },
+        url: concat!("https://opengameart.org/sites/default/files", "/base_female.zip"),
+        source_kind: "vroid-zip",
+        license: "CC0",
     },
     AvatarModel {
         id: "vroid-male-base",
@@ -41,6 +49,9 @@ pub const AVATAR_CATALOG: &[AvatarModel] = &[
             gender: AvatarGender::Male,
             energy: EnergyLevel::Moderate,
         },
+        url: concat!("https://opengameart.org/sites/default/files", "/base_male.zip"),
+        source_kind: "vroid-zip",
+        license: "CC0",
     },
     AvatarModel {
         id: "vroid-sakurada",
@@ -52,6 +63,9 @@ pub const AVATAR_CATALOG: &[AvatarModel] = &[
             gender: AvatarGender::Male,
             energy: EnergyLevel::Energetic,
         },
+        url: concat!("https://opengameart.org/sites/default/files", "/sakurada_fumiriya.zip"),
+        source_kind: "vroid-zip",
+        license: "CC0",
     },
     AvatarModel {
         id: "vroid-shino",
@@ -63,6 +77,9 @@ pub const AVATAR_CATALOG: &[AvatarModel] = &[
             gender: AvatarGender::Female,
             energy: EnergyLevel::Calm,
         },
+        url: concat!("https://opengameart.org/sites/default/files", "/sendagaya_shino.zip"),
+        source_kind: "vroid-zip",
+        license: "CC0",
     },
     AvatarModel {
         id: "vroid-darkness",
@@ -74,6 +91,9 @@ pub const AVATAR_CATALOG: &[AvatarModel] = &[
             gender: AvatarGender::Female,
             energy: EnergyLevel::Calm,
         },
+        url: concat!("https://opengameart.org/sites/default/files", "/avatarsample_d_darkness.zip"),
+        source_kind: "vroid-zip",
+        license: "CC0",
     },
     AvatarModel {
         id: "vroid-sample-d",
@@ -85,6 +105,9 @@ pub const AVATAR_CATALOG: &[AvatarModel] = &[
             gender: AvatarGender::Female,
             energy: EnergyLevel::Moderate,
         },
+        url: concat!("https://opengameart.org/sites/default/files", "/avatarsample_d_0.zip"),
+        source_kind: "vroid-zip",
+        license: "CC0",
     },
     AvatarModel {
         id: "vroid-sample-e",
@@ -96,6 +119,9 @@ pub const AVATAR_CATALOG: &[AvatarModel] = &[
             gender: AvatarGender::Female,
             energy: EnergyLevel::Energetic,
         },
+        url: concat!("https://opengameart.org/sites/default/files", "/avatarsample_e.zip"),
+        source_kind: "vroid-zip",
+        license: "CC0",
     },
     AvatarModel {
         id: "vroid-sample-f",
@@ -107,6 +133,9 @@ pub const AVATAR_CATALOG: &[AvatarModel] = &[
             gender: AvatarGender::Female,
             energy: EnergyLevel::Moderate,
         },
+        url: concat!("https://opengameart.org/sites/default/files", "/avatarsample_f.zip"),
+        source_kind: "vroid-zip",
+        license: "CC0",
     },
 ];
 
@@ -188,6 +217,9 @@ impl ModelManifest {
             .as_str()
         {
             "male" | "m" => AvatarGender::Male,
+            // Neuter (they/them) round-trips from the catalog projection ([[procedural-persona-genesis]]);
+            // without this arm a "neutral" manifest would silently read as Female.
+            "neutral" | "n" | "they" => AvatarGender::Neutral,
             _ => AvatarGender::Female,
         }
     }
@@ -610,6 +642,59 @@ mod tests {
     #[test]
     fn test_avatar_catalog_has_8_models() {
         assert_eq!(AVATAR_CATALOG.len(), 8);
+    }
+
+    // what this catches: the single-source invariant — every catalog entry must be
+    // PROVISIONABLE (a non-empty url + a known source_kind + a license) AND
+    // gender-tagged. This is what makes "add one AVATAR_CATALOG entry" the whole
+    // workflow for a new avatar ([[persona-visual-identity]] additions-first-class).
+    #[test]
+    fn every_catalog_entry_is_provisionable_and_tagged() {
+        for m in AVATAR_CATALOG {
+            assert!(m.url.starts_with("http"), "{} has no download url", m.id);
+            assert!(
+                matches!(m.source_kind, "vroid-zip" | "vrm"),
+                "{} has unknown source_kind '{}'",
+                m.id,
+                m.source_kind
+            );
+            assert!(!m.license.is_empty(), "{} has no license", m.id);
+            assert!(m.filename.ends_with(".vrm"), "{} filename not .vrm", m.id);
+        }
+    }
+
+    // Projects AVATAR_CATALOG → tools/scripts/avatar-catalog.json — the ts-rs pattern:
+    // the Rust catalog is the source of truth; download-avatar-models.sh reads THIS
+    // projection (via jq) instead of a hardcoded URL list. Runs on `cargo test`; commit
+    // the result alongside catalog changes. Deterministic content, so concurrent test
+    // writes are byte-identical.
+    #[test]
+    fn generate_avatar_catalog_json() {
+        let avatars: Vec<serde_json::Value> = AVATAR_CATALOG
+            .iter()
+            .map(|m| {
+                serde_json::json!({
+                    "id": m.id,
+                    "name": m.name,
+                    "filename": m.filename,
+                    "url": m.url,
+                    "sourceKind": m.source_kind,
+                    "gender": format!("{:?}", m.voice_profile.gender).to_lowercase(),
+                    "style": format!("{:?}", m.style).to_lowercase(),
+                    "license": m.license,
+                })
+            })
+            .collect();
+        let doc = serde_json::json!({
+            "_comment": "GENERATED from AVATAR_CATALOG (catalog.rs) by `cargo test generate_avatar_catalog_json`. Do not hand-edit — add avatars in catalog.rs and regenerate.",
+            "avatars": avatars,
+        });
+        let json = serde_json::to_string_pretty(&doc).unwrap() + "\n";
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../tools/scripts/avatar-catalog.json"
+        );
+        std::fs::write(path, json).expect("write avatar-catalog.json projection");
     }
 
     #[test]

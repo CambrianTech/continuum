@@ -159,34 +159,42 @@ echo -e "${YELLOW}Checking VRM avatar models (8 CC0 models)...${NC}"
 # Source: https://opengameart.org/content/vroid-studio-cc0-models
 # ============================================================================
 
-echo -e "${YELLOW}VRoid Studio anime avatars (8 models):${NC}"
+# Provision avatars from the SINGLE-SOURCE catalog (avatar-catalog.json, generated from
+# AVATAR_CATALOG in core/continuum-core/src/live/avatar/catalog.rs). Adding an avatar
+# there + regenerating (`cargo test -p continuum-core generate_avatar_catalog_json`) is
+# the whole workflow — no hardcoded URLs here, no gender drift. Fail LOUD if jq or the
+# catalog is missing (never silently skip provisioning — a faceless persona is a bug).
+CATALOG="$SCRIPT_DIR/avatar-catalog.json"
+if ! command -v jq &> /dev/null; then
+  echo -e "${RED}✗ jq not found — required to read the avatar catalog. Install jq and re-run.${NC}" >&2
+  exit 1
+fi
+if [ ! -f "$CATALOG" ]; then
+  echo -e "${RED}✗ avatar catalog missing: $CATALOG${NC}" >&2
+  echo -e "${RED}  regenerate with: cargo test -p continuum-core generate_avatar_catalog_json${NC}" >&2
+  exit 1
+fi
 
-download_vroid_zip "vroid-female-base" \
-  "https://opengameart.org/sites/default/files/base_female.zip"
-
-download_vroid_zip "vroid-male-base" \
-  "https://opengameart.org/sites/default/files/base_male.zip"
-
-download_vroid_zip "vroid-sakurada" \
-  "https://opengameart.org/sites/default/files/sakurada_fumiriya.zip"
-
-download_vroid_zip "vroid-shino" \
-  "https://opengameart.org/sites/default/files/sendagaya_shino.zip"
-
-download_vroid_zip "vroid-darkness" \
-  "https://opengameart.org/sites/default/files/avatarsample_d_darkness.zip"
-
-download_vroid_zip "vroid-sample-d" \
-  "https://opengameart.org/sites/default/files/avatarsample_d_0.zip"
-
-download_vroid_zip "vroid-sample-e" \
-  "https://opengameart.org/sites/default/files/avatarsample_e.zip"
-
-download_vroid_zip "vroid-sample-f" \
-  "https://opengameart.org/sites/default/files/avatarsample_f.zip"
-
-# 100Avatars REMOVED — 2D flat models, look terrible next to 3D VRoid models.
-# Need proper 3D CC0 models to expand the catalog beyond 8.
+echo -e "${YELLOW}Provisioning avatars from catalog ($(jq '.avatars | length' "$CATALOG") entries):${NC}"
+# Process substitution (not a pipe) so the DOWNLOADED/EXISTING/FAILED counters, updated
+# inside the download_* fns, survive in THIS shell rather than a pipe subshell.
+while read -r entry; do
+  id=$(echo "$entry" | jq -r '.id')
+  url=$(echo "$entry" | jq -r '.url')
+  kind=$(echo "$entry" | jq -r '.sourceKind')
+  gender=$(echo "$entry" | jq -r '.gender')
+  name=$(echo "$entry" | jq -r '.name')
+  case "$kind" in
+    vroid-zip) download_vroid_zip "$id" "$url" ;;
+    vrm)       download_vrm "$id" "$url" ;;
+    *) echo -e "  ${RED}⚠ ${id}: unknown sourceKind '${kind}' — skipping${NC}" >&2 ;;
+  esac
+  # Drop a gender manifest next to the VRM so AvatarCatalog::discover() reads gender
+  # from DATA (the catalog), not an inferred filename hash. Idempotent.
+  if [ -f "$MODELS_DIR/${id}.vrm" ]; then
+    printf 'id = "%s"\nname = "%s"\ngender = "%s"\n' "$id" "$name" "$gender" > "$MODELS_DIR/${id}.toml"
+  fi
+done < <(jq -c '.avatars[]' "$CATALOG")
 
 # ============================================================================
 # Summary

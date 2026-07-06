@@ -19,6 +19,17 @@ pub struct AvatarModel {
     pub style: AvatarStyle,
     /// Voice characteristics this model matches best
     pub voice_profile: VoiceProfile,
+    /// Provisioning URL — where this avatar is downloaded from. THE single source of
+    /// truth for the download (no longer hardcoded in download-avatar-models.sh);
+    /// [[persona-visual-identity]] "additions are first-class": add one entry here and
+    /// it downloads, gets gender-tagged, and the coherent draw picks it up.
+    pub url: &'static str,
+    /// How to fetch `url`: "vroid-zip" (download a zip, extract the .vrm) or "vrm"
+    /// (direct .vrm file). The provisioner branches on this, so a new avatar from a
+    /// different source is a pure data change.
+    pub source_kind: &'static str,
+    /// License identifier (all current models are CC0).
+    pub license: &'static str,
 }
 
 /// Dynamic avatar model — discovered at runtime from filesystem + manifest.
