@@ -1,0 +1,85 @@
+{
+  "_comment": "GENERATED from AVATAR_CATALOG (catalog.rs) by `cargo test generate_avatar_catalog_json`. Do not hand-edit — add avatars in catalog.rs and regenerate.",
+  "avatars": [
+    {
+      "filename": "vroid-female-base.vrm",
+      "gender": "female",
+      "id": "vroid-female-base",
+      "license": "CC0",
+      "name": "Base Female",
+      "sourceKind": "vroid-zip",
+      "style": "anime",
+      "url": "https://opengameart.org/sites/default/files/base_female.zip"
+    },
+    {
+      "filename": "vroid-male-base.vrm",
+      "gender": "male",
+      "id": "vroid-male-base",
+      "license": "CC0",
+      "name": "Base Male",
+      "sourceKind": "vroid-zip",
+      "style": "anime",
+      "url": "https://opengameart.org/sites/default/files/base_male.zip"
+    },
+    {
+      "filename": "vroid-sakurada.vrm",
+      "gender": "male",
+      "id": "vroid-sakurada",
+      "license": "CC0",
+      "name": "Sakurada Fumiriya",
+      "sourceKind": "vroid-zip",
+      "style": "anime",
+      "url": "https://opengameart.org/sites/default/files/sakurada_fumiriya.zip"
+    },
+    {
+      "filename": "vroid-shino.vrm",
+      "gender": "female",
+      "id": "vroid-shino",
+      "license": "CC0",
+      "name": "Sendagaya Shino",
+      "sourceKind": "vroid-zip",
+      "style": "anime",
+      "url": "https://opengameart.org/sites/default/files/sendagaya_shino.zip"
+    },
+    {
+      "filename": "vroid-darkness.vrm",
+      "gender": "female",
+      "id": "vroid-darkness",
+      "license": "CC0",
+      "name": "Darkness",
+      "sourceKind": "vroid-zip",
+      "style": "anime",
+      "url": "https://opengameart.org/sites/default/files/avatarsample_d_darkness.zip"
+    },
+    {
+      "filename": "vroid-sample-d.vrm",
+      "gender": "female",
+      "id": "vroid-sample-d",
+      "license": "CC0",
+      "name": "Sample D",
+      "sourceKind": "vroid-zip",
+      "style": "anime",
+      "url": "https://opengameart.org/sites/default/files/avatarsample_d_0.zip"
+    },
+    {
+      "filename": "vroid-sample-e.vrm",
+      "gender": "female",
+      "id": "vroid-sample-e",
+      "license": "CC0",
+      "name": "Sample E",
+      "sourceKind": "vroid-zip",
+      "style": "anime",
+      "url": "https://opengameart.org/sites/default/files/avatarsample_e.zip"
+    },
+    {
+      "filename": "vroid-sample-f.vrm",
+      "gender": "female",
+      "id": "vroid-sample-f",
+      "license": "CC0",
+      "name": "Sample F",
+      "sourceKind": "vroid-zip",
+      "style": "anime",
+      "url": "https://opengameart.org/sites/default/files/avatarsample_f.zip"
+    }
+  ]
+}
