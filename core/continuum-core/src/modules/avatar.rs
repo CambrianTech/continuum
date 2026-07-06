@@ -75,7 +75,13 @@ impl AvatarModule {
         // Skip initial frames (loading/black), then grab a good one.
         let mut best_frame = None;
         let mut frames_received = 0u32;
-        let max_wait = std::time::Duration::from_secs(5);
+        // A COLD VRM load doesn't emit frames until the model is parsed + the scene is
+        // instantiated (SceneInstanceReady) — observed ~15s on a 21MB VRM before the
+        // first healthy frame, then the 40-frame warmup skip below. 5s always failed
+        // cold (the live video pump succeeds only because it stays allocated). 30s
+        // covers cold load + warmup; the result is cached (png_path.exists() short-
+        // circuits) so this wait is paid once per avatar.
+        let max_wait = std::time::Duration::from_secs(30);
         let start = std::time::Instant::now();
 
         while start.elapsed() < max_wait {
