@@ -80,6 +80,69 @@ pub fn select_best_fit(candidates: &[GgufCandidate], vram_budget_bytes: u64) -> 
         })
 }
 
+#[derive(Debug, thiserror::Error)]
+pub enum CatalogError {
+    #[error("hf api error for {repo}: {source}")]
+    Http {
+        repo: String,
+        #[source]
+        source: reqwest::Error,
+    },
+}
+
+/// Normalize a `gguf_hint` to a bare `org/name` HF repo id (strip scheme + host + slashes).
+pub fn normalize_repo(hint: &str) -> String {
+    hint.trim()
+        .trim_start_matches("https://")
+        .trim_start_matches("http://")
+        .trim_start_matches("huggingface.co/")
+        .trim_matches('/')
+        .to_string()
+}
+
+/// The direct download URL for one file in a repo (main branch).
+pub fn resolve_file_url(repo: &str, filename: &str) -> String {
+    format!(
+        "https://huggingface.co/{}/resolve/main/{filename}",
+        normalize_repo(repo)
+    )
+}
+
+#[derive(serde::Deserialize)]
+struct HfTreeEntry {
+    #[serde(rename = "type")]
+    entry_type: String,
+    path: String,
+    #[serde(default)]
+    size: u64,
+}
+
+/// Query the HF tree API for a repo's GGUF files + their real sizes — WE are the catalog
+/// now, so this is how we learn what quants exist to choose among. Returns every `.gguf`
+/// (main weights + auxiliaries; `select_best_fit` filters auxiliaries at pick time).
+pub async fn list_repo_ggufs(
+    client: &reqwest::Client,
+    repo: &str,
+) -> Result<Vec<GgufCandidate>, CatalogError> {
+    let repo = normalize_repo(repo);
+    let url = format!("https://huggingface.co/api/models/{repo}/tree/main?recursive=true");
+    let entries: Vec<HfTreeEntry> = client
+        .get(&url)
+        .header("user-agent", "continuum-provisioner")
+        .send()
+        .await
+        .and_then(|r| r.error_for_status())
+        .map_err(|source| CatalogError::Http { repo: repo.clone(), source })?
+        .json()
+        .await
+        .map_err(|source| CatalogError::Http { repo: repo.clone(), source })?;
+    Ok(entries
+        .into_iter()
+        .filter(|e| e.entry_type == "file" && e.path.to_lowercase().ends_with(".gguf"))
+        .map(|e| GgufCandidate::new(e.path, e.size))
+        .collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -114,5 +177,42 @@ mod tests {
         assert_eq!(select_best_fit(&files, 20_000).unwrap().filename, "m-Q8_0.gguf");
         // 5k budget → nothing fits (Q3 is 6k). Fail loud, don't grab the 1k mmproj.
         assert!(select_best_fit(&files, 5_000).is_none());
+    }
+
+    // what this catches: the gguf_hint → repo → file-URL derivation (host/scheme stripped,
+    // resolve/main path correct) — the wiring the fetch executor uses to turn a chosen
+    // quant into a download.
+    #[test]
+    fn repo_and_url_derivation() {
+        assert_eq!(normalize_repo("https://huggingface.co/bartowski/Foo-GGUF"), "bartowski/Foo-GGUF");
+        assert_eq!(normalize_repo("bartowski/Foo-GGUF/"), "bartowski/Foo-GGUF");
+        assert_eq!(
+            resolve_file_url("huggingface.co/bartowski/Foo-GGUF", "Foo-Q4_K_M.gguf"),
+            "https://huggingface.co/bartowski/Foo-GGUF/resolve/main/Foo-Q4_K_M.gguf"
+        );
+    }
+
+    // what this catches: LIVE — the real HF tree API yields this repo's GGUF quants with
+    // real sizes, and the model-fit pick for a 16 GB budget actually fits. Network-gated;
+    // run: `cargo test -p continuum-core -- --ignored list_repo_ggufs_live`.
+    #[tokio::test]
+    #[ignore]
+    async fn list_repo_ggufs_live_reads_real_quants() {
+        let client = reqwest::Client::new();
+        let ggufs = list_repo_ggufs(&client, "bartowski/Qwen2.5-Coder-14B-Instruct-GGUF")
+            .await
+            .expect("real HF query");
+        assert!(ggufs.len() > 3, "repo publishes multiple quants");
+        assert!(ggufs.iter().all(|g| g.size_bytes > 0), "each gguf has a real size");
+        let budget = 16u64 * (1 << 30); // 16 GiB VRAM
+        let pick = select_best_fit(&ggufs, budget).expect("something fits 16 GiB");
+        assert!(pick.size_bytes <= budget);
+        println!(
+            "16 GiB VRAM → {} ({} MiB, quant {:?}) out of {} quants",
+            pick.filename,
+            pick.size_bytes >> 20,
+            pick.quant(),
+            ggufs.len()
+        );
     }
 }
