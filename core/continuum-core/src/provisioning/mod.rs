@@ -18,11 +18,13 @@ use std::path::PathBuf;
 
 pub mod avatar_source;
 pub mod cache;
+pub mod downloader;
 pub mod model_source;
 pub mod provisioner;
 
 pub use avatar_source::AvatarSource;
 pub use cache::{reconcile, CacheDecision, CacheEntry, ProvisionPlan};
+pub use downloader::{DownloadError, Downloader};
 pub use model_source::ModelSource;
 pub use provisioner::Provisioner;
 
