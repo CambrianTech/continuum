@@ -132,6 +132,15 @@ impl ServiceModule for VoiceModule {
                     .map(|p| (p.user_id.to_string(), p.display_name.clone()))
                     .collect();
 
+                // Capture each persona's NAME-anchored gender keyed by its live
+                // identity — the one point where identity + display name co-occur.
+                // Every later avatar/voice selection resolves gender from this, so the
+                // profile snapshot, live video pump, and voice all agree with the
+                // visible NAME ([[procedural-persona-genesis]] coherence anchor).
+                for (user_id, display_name) in &ai_participants {
+                    crate::live::avatar::selection::register_persona_gender(user_id, display_name);
+                }
+
                 self.state
                     .voice_service
                     .register_session(session_id, room_id, participants)?;

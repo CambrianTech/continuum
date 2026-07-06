@@ -97,6 +97,26 @@ pub fn agent_name_from_identity(identity: &str) -> &'static str {
     }
 }
 
+/// Resolve a persona's gender from its NAME — which gendered pool the name belongs
+/// to. This is the coherence ANCHOR ([[procedural-persona-genesis]]): a persona's
+/// name is chosen before its keypair exists and is the stable, persisted,
+/// user-visible truth, whereas the live `peer_id` is a random tag assigned later
+/// (`airc-identity` mints `PeerId::new()`, independent of the name). So the name —
+/// not the peer_id — is what avatar/voice must cohere WITH, or a feminine "Asha"
+/// ends up with a masculine face. Returns `None` for a name in BOTH pools (a
+/// genuinely unisex draw, e.g. a Neutral persona) or NEITHER (custom/legacy name),
+/// letting the caller fall back to an id-hash gender for those.
+pub fn gender_from_name(name: &str) -> Option<AvatarGender> {
+    let in_female = FEMALE_NAMES.iter().any(|&n| n == name);
+    let in_male = MALE_NAMES.iter().any(|&n| n == name);
+    match (in_female, in_male) {
+        (true, false) => Some(AvatarGender::Female),
+        (false, true) => Some(AvatarGender::Male),
+        // Both (unisex) or neither (custom) → ambiguous; caller falls back.
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

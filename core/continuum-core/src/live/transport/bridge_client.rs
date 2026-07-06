@@ -280,7 +280,10 @@ impl LiveKitAgentManager {
             .await?;
 
         // TTS runs HERE in core (uses ort — safe, no webrtc in this process)
-        let gender = gender_from_identity(user_id);
+        // Name-anchored gender first so the voice matches the persona's NAME +
+        // avatar ([[procedural-persona-genesis]]); id-hash only as a fallback.
+        let gender = crate::live::avatar::selection::registered_gender(user_id)
+            .unwrap_or_else(|| gender_from_identity(user_id));
         let gender_str = match gender {
             AvatarGender::Male => "male",
             AvatarGender::Female => "female",
