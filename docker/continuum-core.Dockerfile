@@ -49,18 +49,10 @@ RUN cargo chef cook --release ${GPU_FEATURES} --recipe-path recipe.json
 # Now build actual source (fast — deps already compiled)
 COPY . .
 
-# entity_schemas.json lives outside the workers build context (at
-# src/shared/generated/). The Rust code includes it via relative path
-# from modules/entity_schemas.rs. Docker additional_contexts makes it
-# available without expanding the build context to all of src/.
-# include_str! path from continuum-core/src/modules/ is ../../../../shared/generated/
-# which resolves to /shared/generated/ from WORKDIR /app
-COPY --from=shared-generated entity_schemas.json /shared/generated/entity_schemas.json
-
-# src/shared/models.json is the model-registry SSOT. candle_adapter.rs embeds it
-# via include_str!("../../../../shared/models.json"), which resolves to
-# /shared/models.json from this Docker build layout.
-COPY --from=shared models.json /shared/models.json
+# entity_schemas.json is embedded at compile time by modules/entity_schemas.rs via
+# include_str!("../../../../protocol/typescript/entity_schemas.json") — a source-
+# relative path the `COPY . .` above already provides (the file is checked in). No
+# `--from=shared*` build-context needed; models.json is unreferenced by the Rust core.
 
 # Fail fast if the host forgot to init submodules. Without this, cmake's
 # CMakeLists-not-found error surfaces ~15 min into the cargo build —
