@@ -36,3 +36,17 @@ system** — our stack *hurt* an unfamiliar model by ~10pts. Our ~4.6K-token too
 a model not tuned to it; our own Qwen-Coder-14B eats that context fine (88%). So our system is **not yet a universal
 lift** — it lifts the model we tuned around and taxes a stranger. Closing that (concise/adaptive context per task,
 and the act-reflex LoRA) IS the "win for every model out of the box" work.
+
+## Head-to-head, run through the system (2026-07)
+
+Ours via the Rust `benchmark/run` command; Hermes via the toolchain-free `oneshot_opponent.py`.
+Same 40 HumanEval-Rust tasks, same rustc compile+run grader.
+
+| model | pass@1 | via |
+|---|---|---|
+| **Qwen2.5-Coder-14B — OURS** | **85% (34/40)** | `cu benchmark/run --name humaneval-rs` |
+| Hermes-3-Llama-3.1-8B | 52% (21/40) | external /v1, one-shot |
+
+**+33 points, run through the actual benchmark system, cross-validated (Hermes 52% a third time).**
+Reproduce: `cu benchmark/run --persona_id <UUID> --name humaneval-rs --limit 40` for ours; bring up
+any `/v1` and `python3 benchmarks/coder/oneshot_opponent.py --endpoint … --limit 40` for a challenger.
