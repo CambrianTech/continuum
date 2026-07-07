@@ -67,3 +67,21 @@ Trend is clear: bigger coder → better (0.5B→1.5B→14B: 25→45→85), and o
 *The 3B scoring under the 1.5B is almost certainly variance on a 40-task one-shot slice (± ~8pts at this N) —
 worth a rerun at higher N to settle; recorded honestly rather than cherry-picked. All one-shot runs via the
 toolchain-free opponent script; ours via `benchmark/run`. Reproduce with the two commands in the README.
+
+## Same-model control — first cell (2026-07): does OUR loop lift the SAME model?
+
+The clean, confound-free test: hold the model fixed, vary only the harness. `benchmark/run
+--base_model_id <id>` measures the full loop on that exact model (own ephemeral lane, living
+persona untouched). Reproduce: `cu benchmark/run --persona_id <id> --name humaneval-rs
+--base_model_id continuum-ai/qwen2.5-coder-1.5b-instruct-GGUF --limit 40`.
+
+| model | raw one-shot | through our system | delta |
+|---|---|---|---|
+| Qwen2.5-Coder-1.5B | 45% (18/40) | 48% (19/40) | +1 task — **within noise** |
+
+Honest read: on a *tiny* 1.5B doing *function-level* tasks, our loop shows **no measurable lift**
+— reported straight, not cherry-picked. The loop's edge is act→verify→recover, which needs a
+model capable enough to fix its own errors and a task with room to iterate; a 1.5B on single
+functions has neither. Testable prediction this supports: **the lift scales with model capability
+and task difficulty** — measure the 14B and repo-level SWE-bench next. The control is the win here:
+falsifiable, reproducible, peer-reviewable.
