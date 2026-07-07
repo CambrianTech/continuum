@@ -74,3 +74,19 @@ python3 benchmarks/matrix.py benchmarks/config.json
 
 This is the system to run across many models and many benchmarks — individuals first, then
 teams that scale and learn — and chart it, repeatably.
+
+## Benchmark catalog (manage collections like the model catalog)
+
+Benchmarks are large managed artifacts, catalogued and pulled by name — not vendored.
+
+```bash
+python3 benchmarks/catalog.py list                 # what's known + cached
+python3 benchmarks/catalog.py pull humaneval        # fetch + cache a large one
+python3 benchmarks/catalog.py resolve humaneval-rs  # name → local path
+```
+
+A matrix benchmark references a catalog entry by name (`"catalog": "humaneval"`) and the runner
+pulls + caches it on demand into `~/.continuum/benchmarks/`. Add a respected collection
+(SWE-bench, LiveCodeBench, MBPP, …) = one `KNOWN` entry with its `grader`. Big datasets cache
+like a model, never bloat the repo. Later a Rust `benchmark/*` command wraps the SAME registry
+so a persona can call a competition by name.
