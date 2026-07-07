@@ -52,3 +52,25 @@ for the opponent side.
 There is no code to add — an opponent is a config line (endpoint + model + label). Stand it up
 however you like (that is *your* dependency, never ours) and point the harness at it. See
 `coder/SCOREBOARD.md` for the running results.
+
+## The matrix (reproducible — runners × benchmarks → a chart)
+
+`matrix.py` replaces the hand-run one-offs: one command runs every (runner × benchmark)
+pair from a config and emits `CHART.md` + `results.json`.
+
+```bash
+cp benchmarks/config.example.json benchmarks/config.json   # edit runners + benchmarks
+python3 benchmarks/matrix.py benchmarks/config.json
+```
+
+- A **runner** is `ours` (through the Continuum core) or `opponent` (an external `/v1` you
+  bring up — llama-server, unsloth gateway, ollama, cloud, or an airc node). A future
+  **team** runner (coordinated personas on one plan) drops in with no charting change.
+- Put a model's **own published number** for a benchmark in its `published` map and the chart
+  renders `_(claim …)_` beside what we measured identically — so an "amazing claim" meets a
+  real, common benchmark reproduced the same way. Take them on their numbers.
+- Add a benchmark = one config entry + a gym file. Add an opponent = one config line (stand
+  its endpoint up yourself; that is your dependency, never ours).
+
+This is the system to run across many models and many benchmarks — individuals first, then
+teams that scale and learn — and chart it, repeatably.
