@@ -5,13 +5,12 @@
 //!
 //! Security guarantees:
 //! - No directory traversal (../ sequences resolved and blocked)
-//! - Extension allowlist enforced on write operations
 //! - File size limits enforced on writes
 //! - Symlinks resolved before validation (no symlink-based escapes)
 
 use std::path::{Path, PathBuf};
 
-use super::types::{ALLOWED_EXTENSIONS, MAX_WRITE_SIZE};
+use super::types::MAX_WRITE_SIZE;
 
 /// Workspace-scoped path security validator.
 ///
@@ -30,8 +29,6 @@ pub struct PathSecurity {
 pub enum PathSecurityError {
     /// Path escapes the workspace boundary.
     TraversalBlocked { path: String, workspace: String },
-    /// File extension not in allowlist.
-    ExtensionBlocked { path: String, extension: String },
     /// File exceeds maximum write size.
     FileTooLarge { path: String, size: u64, max: u64 },
     /// Path is not valid UTF-8.
@@ -45,9 +42,6 @@ impl std::fmt::Display for PathSecurityError {
         match self {
             Self::TraversalBlocked { path, workspace } => {
                 write!(f, "Path '{}' escapes workspace '{}'", path, workspace)
-            }
-            Self::ExtensionBlocked { path, extension } => {
-                write!(f, "Extension '.{}' not allowed for '{}'", extension, path)
             }
             Self::FileTooLarge { path, size, max } => {
                 write!(f, "File '{}' is {} bytes (max: {})", path, size, max)
@@ -127,13 +121,14 @@ impl PathSecurity {
 
     /// Validate and resolve a path for write operations.
     ///
-    /// The path must be within the workspace root (not read-only roots).
-    /// Also validates the file extension against the allowlist.
-    /// Returns the absolute path (parent dir must exist).
+    /// The ONLY write boundary is the workspace sandbox: the path must resolve inside the
+    /// workspace root (`resolve_for_write` — canonicalized, symlink-escape-proof). There is
+    /// NO extension allowlist — the sandbox already contains the blast radius, so also
+    /// dictating WHICH file types a persona may write is redundant and just cripples her
+    /// (it banned `.swift`, so she couldn't build an app). A citizen writes any source in
+    /// her own sandbox. Size is still bounded (`validate_size`). Returns the absolute path.
     pub fn validate_write(&self, relative_path: &str) -> Result<PathBuf, PathSecurityError> {
-        let resolved = self.resolve_for_write(relative_path)?;
-        self.check_extension(relative_path)?;
-        Ok(resolved)
+        self.resolve_for_write(relative_path)
     }
 
     /// Validate file size for a write operation.
@@ -270,21 +265,6 @@ impl PathSecurity {
         })
     }
 
-    /// Check that a file's extension is in the allowlist.
-    fn check_extension(&self, path: &str) -> Result<(), PathSecurityError> {
-        let path = Path::new(path);
-        let extension = path.extension().and_then(|e| e.to_str()).unwrap_or("");
-
-        if extension.is_empty() || !ALLOWED_EXTENSIONS.contains(&extension) {
-            return Err(PathSecurityError::ExtensionBlocked {
-                path: path.display().to_string(),
-                extension: extension.to_string(),
-            });
-        }
-
-        Ok(())
-    }
-
     /// Normalize a path by collapsing `.` and `..` components without I/O.
     ///
     /// This is a pre-check before any filesystem operations.
@@ -382,28 +362,23 @@ mod tests {
         assert!(result.is_ok());
     }
 
+    // what this catches: the sandbox — NOT an extension allowlist — is the write boundary.
+    // Any source extension a coder needs (.swift, .kt, .cpp, .go, …) writes fine within the
+    // workspace; the extension allowlist that used to ban .swift is gone. Escaping the
+    // sandbox is still refused.
     #[test]
-    fn test_extension_blocked() {
+    fn any_extension_writes_within_sandbox_but_escapes_are_refused() {
         let (_dir, security) = setup_workspace();
-        let result = security.validate_write("src/malware.exe");
-        assert!(matches!(
-            result,
-            Err(PathSecurityError::ExtensionBlocked { .. })
-        ));
-    }
-
-    #[test]
-    fn test_allowed_extensions() {
-        let (_dir, security) = setup_workspace();
-        // All these should pass extension check
-        for ext in &[
-            "ts", "tsx", "js", "jsx", "json", "md", "css", "html", "rs", "toml", "yaml", "yml",
-            "txt", "sh", "py",
-        ] {
+        for ext in &["swift", "kt", "cpp", "m", "go", "java", "ts", "rs", "py", "plist"] {
             let path = format!("src/test.{}", ext);
-            let result = security.check_extension(&path);
-            assert!(result.is_ok(), "Extension '{}' should be allowed", ext);
+            assert!(
+                security.validate_write(&path).is_ok(),
+                "'{}' must be writable in the sandbox — no extension bans",
+                ext
+            );
         }
+        // The sandbox is still the wall: a traversal escape is refused regardless of extension.
+        assert!(security.validate_write("../escape.swift").is_err());
     }
 
     #[test]
