@@ -24,3 +24,15 @@ one-shot and through `run_ours.sh`.*
 - **System-lift isolation** — same local model, one-shot vs `run_ours.sh`, to attribute the
   gap between model-fit and our loop/PX.
 - **airc-node opponent** — reach a model over an airc peer's `/v1` (grid-encapsulation proof).
+
+## Decoupled cross-check (external /v1, one-shot, off our product entirely)
+
+| model / system | passed | pass@1 | via | notes |
+|---|---|---|---|---|
+| Hermes-3-Llama-3.1-8B | 21/40 | 52% | standalone llama-server, one-shot | clean prompt, `oneshot_opponent.py` |
+
+**Kink found (the cognition-refinement target):** Hermes scores **52% raw one-shot** but only **42% through our
+system** — our stack *hurt* an unfamiliar model by ~10pts. Our ~4.6K-token tool menu + grounding context distracts
+a model not tuned to it; our own Qwen-Coder-14B eats that context fine (88%). So our system is **not yet a universal
+lift** — it lifts the model we tuned around and taxes a stranger. Closing that (concise/adaptive context per task,
+and the act-reflex LoRA) IS the "win for every model out of the box" work.
