@@ -181,6 +181,7 @@ impl TrainingCompletionSentinel {
                 // Some at the top of this fn.
                 eval_set: Some(eval_set),
                 max_acts: None,
+                max_retries: None,
                 note: Some(format!(
                     "L3 auto-eval (gene={}, base={}, provider={})",
                     job.trait_kind, job.base_model, job.handle.provider_id

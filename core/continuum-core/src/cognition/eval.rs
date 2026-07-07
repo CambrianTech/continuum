@@ -430,6 +430,14 @@ pub struct CognitionEvalParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional, type = "number")]
     pub max_acts: Option<u32>,
+    /// Agentic-recovery budget: how many times a FAILED test-graded task is handed its
+    /// compiler/test output to fix before it scores a miss. Default [`MAX_FAIL_RETRIES`].
+    /// Set `0` for the ONE-SHOT baseline (what plain inference / unsloth gets on the same
+    /// weights) — so a `0` vs `N` A/B on the identical model+benchmark measures exactly the
+    /// edge our agentic loop adds, repeatably, from one param.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional, type = "number")]
+    pub max_retries: Option<u32>,
     /// Free-text label for THIS run, written to the progress ledger so a trend
     /// line is readable: "baseline", "taught show-output", "genome v2", etc.
     /// The ledger is how you "mark improvement as you go" — every eval leaves a
@@ -682,6 +690,7 @@ impl ActionCommand for CognitionEval {
         };
 
         let max_acts = p.max_acts.unwrap_or(DEFAULT_MAX_ACTS) as usize;
+        let max_retries = p.max_retries.unwrap_or(MAX_FAIL_RETRIES);
         let total = tasks.len() as u32;
         let rate = |score: u32| if total > 0 { score as f64 / total as f64 } else { 0.0 };
 
@@ -704,7 +713,7 @@ impl ActionCommand for CognitionEval {
         // separate, deliberate decision, never a side effect of measuring it.
         if let Some(gene) = &p.gene {
             cycle.page_out();
-            let (base_score, _) = run_pass(&cycle, &isolation, &tasks, room, max_acts).await;
+            let (base_score, _) = run_pass(&cycle, &isolation, &tasks, room, max_acts, max_retries).await;
 
             // Both arms start each task from the pre-eval memory frame — `run_pass`
             // rewinds the admission frame before EVERY task (per-task isolation), so
@@ -717,7 +726,7 @@ impl ActionCommand for CognitionEval {
                 scale: gene.scale.unwrap_or(1.0),
             }]);
             let (gene_score, gene_results) =
-                run_pass(&cycle, &isolation, &tasks, room, max_acts).await;
+                run_pass(&cycle, &isolation, &tasks, room, max_acts, max_retries).await;
             cycle.page_out();
 
             // Guard drops here: her memory frame + real persistence sink restored.
@@ -784,7 +793,7 @@ impl ActionCommand for CognitionEval {
         // Single pass: measure whatever genome is currently paged in (base by
         // default) — the plain coder number, no A/B. Still isolated, so a plain
         // baseline run is reproducible and leaves her memory untouched.
-        let (score, results) = run_pass(&cycle, &isolation, &tasks, room, max_acts).await;
+        let (score, results) = run_pass(&cycle, &isolation, &tasks, room, max_acts, max_retries).await;
         drop(isolation);
         let verify = self_verify_rate(&results);
         let agg = speed_latency_aggregates(&results);
@@ -998,6 +1007,7 @@ async fn run_pass(
     tasks: &[EvalTask],
     room: Uuid,
     max_acts: usize,
+    max_retries: u32,
 ) -> (u32, Vec<EvalTaskResult>) {
     let mut pass = 0u32;
     let mut results = Vec::with_capacity(tasks.len());
@@ -1111,7 +1121,7 @@ async fn run_pass(
         let mut total_acts = settled.acts as u32;
         let mut attempt = 1u32;
         while !ok
-            && attempt <= MAX_FAIL_RETRIES
+            && attempt <= max_retries
             && t.test.is_some()
             && settled.inference_error.is_none()
         {

@@ -435,30 +435,28 @@ pub fn models() -> Vec<Model> {
             stop_sequences: &["<|im_end|>", "<|endoftext|>"],
             ..ModelSpec::default()
         }),
-        // Qwen2.5-Coder-32B — the real-work coder. The 14B fails non-trivial tasks (a
-        // correct LRU cache) even with agentic recovery; the 32B is the model real coding
-        // needs on this 64 GB box. ~20 GB at Q4_K_M, so plan_serving picks it as
-        // most-capable-that-fits once pulled. Same serving lane + chat template as the 14B.
-        model(ModelSpec {
-            id: "continuum-ai/qwen2.5-coder-32b-instruct-GGUF",
-            name: "Qwen2.5-Coder-32B-Instruct",
-            provider: "llama-server",
-            arch: Arch::Qwen2,
-            context_window: 32_768,
-            max_output_tokens: 8192,
-            tokens_per_second: 8.0,
-            capabilities: &[
-                Capability::TextGeneration,
-                Capability::Chat,
-                Capability::ToolUse,
-                Capability::Streaming,
-            ],
-            gguf_hint: Some("huggingface.co/bartowski/Qwen2.5-Coder-32B-Instruct-GGUF"),
-            chat_template: Some(QWEN35_CHAT_TEMPLATE),
-            multi_party_strategy: MultiPartyChatStrategy::ProperChatMlSingleParty,
-            stop_sequences: &["<|im_end|>", "<|endoftext|>"],
-            ..ModelSpec::default()
-        }),
+        // Qwen2.5-Coder-32B — downloaded (~20 GB Q4_K_M) and the KV fit-gate fix lets it
+        // serve, but DELIBERATELY NOT registered yet: measured live it DECLINES a directed
+        // coding task (emits a bare "PASS") instead of acting, so serving it as the live
+        // coder is strictly WORSE than the 14B, which reliably uses its tools. Kept verbatim
+        // so re-enabling is a one-line uncomment ONCE its act-reflex is trained (the genome
+        // loop over the DoD + recovery harness). Until then plan_serving keeps the 14B — the
+        // model that actually works.
+        // model(ModelSpec {
+        //     id: "continuum-ai/qwen2.5-coder-32b-instruct-GGUF",
+        //     name: "Qwen2.5-Coder-32B-Instruct",
+        //     provider: "llama-server",
+        //     arch: Arch::Qwen2,
+        //     context_window: 32_768,
+        //     max_output_tokens: 8192,
+        //     tokens_per_second: 8.0,
+        //     capabilities: &[Capability::TextGeneration, Capability::Chat, Capability::ToolUse, Capability::Streaming],
+        //     gguf_hint: Some("huggingface.co/bartowski/Qwen2.5-Coder-32B-Instruct-GGUF"),
+        //     chat_template: Some(QWEN35_CHAT_TEMPLATE),
+        //     multi_party_strategy: MultiPartyChatStrategy::ProperChatMlSingleParty,
+        //     stop_sequences: &["<|im_end|>", "<|endoftext|>"],
+        //     ..ModelSpec::default()
+        // }),
         model(ModelSpec {
             id: "qwen2-vl-7b-instruct",
             name: "Qwen2-VL-7B-Instruct (in-process)",
