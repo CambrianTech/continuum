@@ -451,6 +451,20 @@ mod tests {
         assert!(parse_tool_calls("I could use code/write to save file_path=x.rs later.").is_empty());
     }
 
+    // what this catches: under llama-server --jinja the 14B emits its call wrapped in
+    // `<tools>…</tools>` (a template quirk — not the canonical `<tool_call>`), and
+    // llama-server does NOT stamp finish=tool_calls for it. The universal salvage MUST
+    // still extract it (via the inner {name,arguments} object) or the persona's hands go
+    // dead on the exact path native tool-calling now takes. Regression for the --jinja fix.
+    #[test]
+    fn extracts_jinja_tools_wrapped_call() {
+        let text = "<tools>\n{\"name\": \"list_dir\", \"arguments\": {\"path\": \".\"}}\n</tools>";
+        let calls = parse_tool_calls(text);
+        assert_eq!(calls.len(), 1, "the tools-wrapped call must be recovered");
+        assert_eq!(calls[0].name, "list_dir");
+        assert_eq!(calls[0].input["path"], ".");
+    }
+
     // what this catches: a clean bare JSON tool call parses to a ToolCall with the
     // right name + args (the happy path).
     #[test]
