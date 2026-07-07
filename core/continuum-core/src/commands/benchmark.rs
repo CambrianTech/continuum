@@ -66,6 +66,22 @@ pub fn known_benchmarks() -> &'static [BenchmarkSpec] {
             eval_set: None,
             source_url: Some("https://raw.githubusercontent.com/google-research/google-research/master/mbpp/mbpp.jsonl"),
         },
+        BenchmarkSpec {
+            name: "livecodebench",
+            description: "LiveCodeBench — contamination-free competitive-programming problems, refreshed over time.",
+            grader: Grader::Python,
+            tasks: 500,
+            eval_set: None,
+            source_url: Some("https://huggingface.co/datasets/livecodebench/code_generation_lite"),
+        },
+        BenchmarkSpec {
+            name: "swe-bench-lite",
+            description: "SWE-bench Lite — real GitHub issues + repos; a solution is a patch that makes the repo's tests pass. The agentic gold standard; grader is a repo test harness.",
+            grader: Grader::Python,
+            tasks: 300,
+            eval_set: None,
+            source_url: Some("https://huggingface.co/datasets/princeton-nlp/SWE-bench_Lite"),
+        },
     ]
 }
 
