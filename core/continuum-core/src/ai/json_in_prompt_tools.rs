@@ -184,7 +184,7 @@ trait ToolCallFormat: Send + Sync {
 /// The supported surface formats, most-specific first. Extend this list to support
 /// a new base model — the only edit a new format requires.
 fn tool_call_formats() -> &'static [&'static dyn ToolCallFormat] {
-    &[&EnvelopeFormat, &TaggedFormat, &BareFormat]
+    &[&EnvelopeFormat, &TaggedFormat, &BareFormat, &NarratedWriteFormat]
 }
 
 /// `{"tool_call": {"name": "...", "arguments": {...}}}` — continuum's injected
@@ -255,6 +255,66 @@ impl ToolCallFormat for BareFormat {
                 .map(Into::into)
         })
     }
+}
+
+/// A model that NARRATES a file write instead of emitting the JSON envelope — e.g.
+/// `code/write with file_path="lru.rs" and content: ```rust\n<code>\n``` ` — observed
+/// live from Qwen2.5-Coder-32B on a real task. The code IS there and the intent is
+/// unambiguous; only the machine-readable envelope is missing, so the file never lands
+/// and the turn scores `acts=0` (the "describe acting instead of acting" reflex). This
+/// LAST-RESORT format recovers that attempt into a real `code/write`. It fires ONLY when
+/// the text names `code/write` AND carries a fenced code block AND a `file_path`, so a
+/// model that emits proper JSON never reaches it and stray prose can't false-trigger.
+/// (A LoRA trains the reflex away; until then her hands work when she describes the call.)
+struct NarratedWriteFormat;
+impl ToolCallFormat for NarratedWriteFormat {
+    fn id(&self) -> &'static str {
+        "narrated-write"
+    }
+    fn parse(&self, text: &str) -> Vec<ToolCall> {
+        if !text.contains("code/write") {
+            return Vec::new();
+        }
+        let (Some(path), Some(content)) =
+            (extract_file_path(text), extract_first_code_fence(text))
+        else {
+            return Vec::new();
+        };
+        if content.trim().is_empty() {
+            return Vec::new();
+        }
+        vec![ToolCall {
+            id: format!("jip-{}", Uuid::new_v4()),
+            name: "code/write".to_string(),
+            input: serde_json::json!({ "file_path": path, "content": content }),
+        }]
+    }
+}
+
+/// Pull `file_path`'s value out of prose: `file_path="x"`, `file_path=x`,
+/// `file_path: x`, `file_path x`. Value ends at a quote, whitespace, or comma.
+fn extract_file_path(text: &str) -> Option<String> {
+    let idx = text.find("file_path")?;
+    let after =
+        text[idx + "file_path".len()..].trim_start_matches([' ', '=', ':', '"', '\'']);
+    let end = after
+        .find(|c: char| c == '"' || c == '\'' || c.is_whitespace() || c == ',')
+        .unwrap_or(after.len());
+    let path = after[..end].trim();
+    (!path.is_empty()).then(|| path.to_string())
+}
+
+/// The body of the FIRST ```…``` fenced block, with the optional language line stripped.
+fn extract_first_code_fence(text: &str) -> Option<String> {
+    let open = text.find("```")?;
+    let after = &text[open + 3..];
+    // Skip the language token on the opening fence line (```rust\n → drop "rust\n").
+    let body = match after.find('\n') {
+        Some(nl) => &after[nl + 1..],
+        None => after,
+    };
+    let close = body.find("```")?;
+    Some(body[..close].to_string())
 }
 
 /// Scan `text` for balanced `{...}` objects (ignoring braces inside JSON strings),
@@ -364,6 +424,31 @@ mod tests {
         let s = render_tool_instructions(&[spec("ping", "Health check.")]);
         assert!(s.contains("\"tool_call\""));
         assert!(s.contains("ping: Health check."));
+    }
+
+    // what this catches: the narrate-instead-of-act reflex — Qwen-Coder-32B on a real
+    // task emitted `code/write with file_path="..." and content: ```rust\n<code>\n``` `
+    // as PROSE (no JSON envelope), so acts=0 and the file never landed. The last-resort
+    // NarratedWriteFormat must recover it into a real code/write with the fenced code.
+    #[test]
+    fn recovers_a_narrated_code_write_with_fenced_code() {
+        let text = "Sure — I'll use code/write with file_path=\"lru.rs\" and content of \
+                    the implementation:\n\n```rust\npub struct LruCache;\nimpl LruCache { }\n```";
+        let calls = parse_tool_calls(text);
+        assert_eq!(calls.len(), 1, "narrated write should parse to one call");
+        assert_eq!(calls[0].name, "code/write");
+        assert_eq!(calls[0].input["file_path"], "lru.rs");
+        assert!(
+            calls[0].input["content"].as_str().unwrap().contains("pub struct LruCache"),
+            "the fenced code must become the write content"
+        );
+    }
+
+    // what this catches: the last-resort format must NOT false-trigger on prose that
+    // merely mentions code/write without an actual file + fenced code to write.
+    #[test]
+    fn narrated_write_ignores_prose_without_a_fence() {
+        assert!(parse_tool_calls("I could use code/write to save file_path=x.rs later.").is_empty());
     }
 
     // what this catches: a clean bare JSON tool call parses to a ToolCall with the
