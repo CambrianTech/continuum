@@ -1064,12 +1064,24 @@ impl LlamaServerControl for LlamaServerProcess {
         // explicit override file, not a silent fallback: present → it's the
         // truth the GGUF should have carried; absent → the embedded template
         // stands.
+        // --jinja is UNCONDITIONAL: it makes llama-server render the `tools` we send and do
+        // grammar-constrained parsing of the model's NATIVE tool-call format, using the
+        // model's OWN chat template. That is the tool-trained shape a Qwen/Hermes/etc GGUF
+        // expects — infinitely more reliable than us reverse-engineering tool calls out of
+        // prose after the fact. A normal pulled GGUF carries a tool-capable embedded template;
+        // this switch was previously gated on a forge sidecar existing, so pulled models
+        // silently ran with tools DISABLED (the gateway ignored the `tools` param → the
+        // persona narrated tool calls instead of emitting them). The sidecar, when the forge
+        // wrote one, now OVERRIDES the embedded template (for forged GGUFs that shipped a
+        // thin, tool-less 208-char template) — present → override, absent → the embedded
+        // tool-capable template stands, tools ON either way.
+        cmd.arg("--jinja");
         if let Some(tpl) = gguf
             .parent()
             .map(|d| d.join("chat_template.jinja"))
             .filter(|p| p.is_file())
         {
-            cmd.arg("--jinja").arg("--chat-template-file").arg(tpl);
+            cmd.arg("--chat-template-file").arg(tpl);
         }
         // Load each trained genome layer into the `/lora-adapters` catalog at
         // index order; the per-request `"lora":[{id,scale}]` field pages them in.
