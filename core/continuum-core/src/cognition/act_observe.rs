@@ -118,6 +118,62 @@ fn all_calls_already_satisfied(recent: &[String], calls: &[ToolCall]) -> bool {
     })
 }
 
+/// Char-safe truncate with a trailing ellipsis when cut.
+fn truncate_chars(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        return s.to_string();
+    }
+    format!("{}…", s.chars().take(max).collect::<String>())
+}
+
+/// Collapse tool ARGS for the recall channel: a large string value (e.g. a whole file
+/// passed in `content`) becomes `<key>: N chars` — re-showing that file verbatim on every
+/// future turn is the dead weight that taxes context (measured: it drowned an unfamiliar
+/// 8B). Small args pass through compact.
+fn summarize_args_for_recall(args: &serde_json::Value) -> String {
+    match args {
+        serde_json::Value::Object(map) => map
+            .iter()
+            .map(|(k, v)| match v {
+                serde_json::Value::String(s) if s.chars().count() > 80 => {
+                    format!("{k}: {} chars", s.chars().count())
+                }
+                other => format!("{k}={}", truncate_chars(other.to_string().trim_matches('"'), 60)),
+            })
+            .collect::<Vec<_>>()
+            .join(", "),
+        other => truncate_chars(&other.to_string(), 120),
+    }
+}
+
+/// Render ONE completed act as a desktop-style COLLAPSED reference for the RECALL channel —
+/// the PX side of the universal handle/expand primitive ([[handles-events-expansion-one-
+/// universal-primitive]]): a small result stays inline (like a short link); a big one is a
+/// one-line summary the mind expands on demand (the full body already carries its own
+/// `tool/output` handle when the executor spilled it — the same handle a positron thumbnail
+/// would open); an ERROR is always shown in full (highlighted — never hide what broke). The
+/// RECENCY channel (working memory) still holds the whole latest result; this only slims
+/// what recall re-injects turn after turn.
+fn render_act_for_recall(
+    name: &str,
+    args: &serde_json::Value,
+    intent: &str,
+    is_err: bool,
+    body: &str,
+) -> String {
+    const RECALL_INLINE_MAX: usize = 280;
+    let args_summary = summarize_args_for_recall(args);
+    let outcome = if is_err {
+        format!("FAILED:\n{}", truncate_chars(body.trim(), 800))
+    } else if body.trim().chars().count() <= RECALL_INLINE_MAX {
+        body.trim().to_string()
+    } else {
+        format!("ok — {}", truncate_chars(body.trim().lines().next().unwrap_or(""), 140))
+    };
+    let mark = if is_err { "⚠ " } else { "" };
+    format!("{mark}I ran {name}({args_summary}) because {intent} → {outcome}\n\n")
+}
+
 /// Execute ONE `Act` verdict: run its calls through the persona's hands, admit
 /// the outcome as an Episodic engram (the result becomes memory), and return the
 /// observation text so the caller can fold it into the next perception.
@@ -264,13 +320,19 @@ pub async fn apply_act(
     // Form the observation: what she did and what came back. First person, because
     // this is the persona observing her OWN hands — the engram reads like a memory
     // of acting, not a log line.
+    // TWO renderings, one per memory channel (the universal collapse/expand primitive,
+    // PX side): `observation` is the FULL trace for the RECENCY channel (working memory
+    // keeps the latest whole so the mind can act on what it just fetched); `recall_observation`
+    // is the COLLAPSED reference for the EPISODIC engram that RECALL re-injects on later turns.
     let mut observation = String::new();
+    let mut recall_observation = String::new();
     for (i, call) in fg_calls.iter().enumerate() {
         let result = outcome.results.get(i);
         let body_text = match result {
             Some(r) => r.content.as_str(),
             None => "(no result returned)",
         };
+        let is_err = result.map(|r| r.is_error == Some(true)).unwrap_or(false);
         let args = serde_json::to_string(&call.input).unwrap_or_else(|_| "{}".to_string());
         observation.push_str(&format!(
             "I ran {}({}) because {}.\nResult:\n{}\n\n",
@@ -279,14 +341,25 @@ pub async fn apply_act(
             intent.trim(),
             body_text.trim(),
         ));
+        recall_observation.push_str(&render_act_for_recall(
+            &call.name,
+            &call.input,
+            intent.trim(),
+            is_err,
+            body_text,
+        ));
     }
     // The background dispatches are part of what she just did — record them as
     // proprioception so the mind knows it sent them away (and won't re-dispatch or block).
+    // They are already concise, so both channels carry them verbatim.
     for note in &bg_notes {
         observation.push_str(note);
         observation.push_str("\n\n");
+        recall_observation.push_str(note);
+        recall_observation.push_str("\n\n");
     }
     let observation = observation.trim().to_string();
+    let recall_observation = recall_observation.trim().to_string();
 
     // Admit the outcome as an Episodic engram through the ONE production admit
     // path (a self-observation message from the persona to itself). This is the
@@ -300,7 +373,9 @@ pub async fn apply_act(
         sender_id: body.persona_id,
         sender_name: body.persona_name.clone(),
         sender_type: SenderType::Persona,
-        content: observation.clone(),
+        // The RECALL channel gets the COLLAPSED reference (expand-on-demand via the handle);
+        // recency (working memory, below) keeps the FULL trace.
+        content: recall_observation,
         timestamp: now_ms,
         priority: 1.0,
         source_modality: None,
@@ -595,6 +670,30 @@ fn now_ms() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches: recall collapse (the PX/handle primitive, RAG side). A code/write
+    // carries a WHOLE FILE in `content` — on recall that must become `content: N chars`, not
+    // the file re-shown every future turn (the measured context tax). A small success stays
+    // inline; an ERROR is always shown, highlighted. The recency channel keeps the full trace;
+    // this only guards what recall re-injects.
+    #[test]
+    fn recall_collapses_big_args_and_highlights_errors() {
+        let big = "fn main(){}\n".repeat(200); // a whole "file"
+        let args = serde_json::json!({ "file_path": "x.rs", "content": big });
+        let ref_ok = render_act_for_recall("code/write", &args, "acting", false, "{\"success\":true}");
+        assert!(ref_ok.contains("content: "), "big content arg must collapse to a size");
+        assert!(ref_ok.contains("chars"), "collapsed arg names its size");
+        assert!(!ref_ok.contains("fn main(){}\nfn main(){}"), "the file must NOT be re-shown verbatim");
+
+        // small success → inline
+        let small = render_act_for_recall("code/read", &serde_json::json!({"file_path":"a"}), "acting", false, "hello");
+        assert!(small.contains("→ hello"), "small result stays inline");
+
+        // error → highlighted + shown
+        let err = render_act_for_recall("code/shell", &serde_json::json!({"cmd":"x"}), "acting", true, "error: no such file");
+        assert!(err.starts_with("⚠"), "errors are highlighted");
+        assert!(err.contains("FAILED") && err.contains("no such file"), "errors are shown, never hidden");
+    }
 
     // what this catches: the long-running set matches the REAL command names (the live bug
     // was `cargo/test` vs the actual `code/cargo/test`), and ordinary fast commands are NOT
