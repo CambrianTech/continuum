@@ -237,6 +237,14 @@ impl WorkingMemory {
         }
     }
 
+    /// The label of a dispatched handle THIS persona owns, or `None` if the handle isn't
+    /// ours (never dispatched here, or already evicted). The async-dispatch listener uses
+    /// it to claim ONLY its own completions off the shared `command:completed` bus — other
+    /// clients' handles, and this persona's synchronous commands, are ignored.
+    pub fn dispatched_label(&self, handle: Uuid) -> Option<String> {
+        self.dispatched.lock().get(&handle).map(|a| a.label.clone())
+    }
+
     /// Snapshot of dispatched (background) commands — `(handle, label, latest, status)`,
     /// most-recently-updated last. The faculty renders these so the mind sees what it sent
     /// away and where each stands; the handle is reusable in a follow-up command.
