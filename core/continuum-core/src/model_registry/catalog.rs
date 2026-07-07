@@ -435,6 +435,31 @@ pub fn models() -> Vec<Model> {
             stop_sequences: &["<|im_end|>", "<|endoftext|>"],
             ..ModelSpec::default()
         }),
+        // Hermes-3-Llama-3.1-8B — the benchmark opponent (Nous Research's agentic/tool-use
+        // flagship). Registered so we can serve it and run the SAME coder gym through our
+        // OWN system for an honest head-to-head vs our served model. Llama-3.1 arch, ChatML
+        // prompt format (same template). ~5 GB at Q4_K_M. NOTE: general model, not a code
+        // specialist — the fair read is agentic tool-use, not raw HumanEval.
+        model(ModelSpec {
+            id: "NousResearch/Hermes-3-Llama-3.1-8B-GGUF",
+            name: "Hermes-3-Llama-3.1-8B (benchmark opponent)",
+            provider: "llama-server",
+            arch: Arch::Llama,
+            context_window: 32_768,
+            max_output_tokens: 8192,
+            tokens_per_second: 18.0,
+            capabilities: &[
+                Capability::TextGeneration,
+                Capability::Chat,
+                Capability::ToolUse,
+                Capability::Streaming,
+            ],
+            gguf_hint: Some("huggingface.co/bartowski/Hermes-3-Llama-3.1-8B-GGUF"),
+            chat_template: Some(QWEN35_CHAT_TEMPLATE),
+            multi_party_strategy: MultiPartyChatStrategy::ProperChatMlSingleParty,
+            stop_sequences: &["<|im_end|>", "<|eot_id|>", "<|endoftext|>"],
+            ..ModelSpec::default()
+        }),
         // Qwen2.5-Coder-32B — downloaded (~20 GB Q4_K_M) and the KV fit-gate fix lets it
         // serve, but DELIBERATELY NOT registered yet: measured live it DECLINES a directed
         // coding task (emits a bare "PASS") instead of acting, so serving it as the live
