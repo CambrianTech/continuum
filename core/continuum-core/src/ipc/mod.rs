@@ -422,10 +422,30 @@ fn handle_client<S: IpcStream>(
                         Err(e) => HandleResult::Json(Response::error(e)),
                     },
                     Some(Err(e)) => HandleResult::Json(Response::error(e)),
-                    None => HandleResult::Json(Response::error(format!(
-                        "Unknown command: '{}'. No module registered for this command prefix.",
-                        cmd
-                    ))),
+                    None => {
+                        // Don't dead-end with a developer-internal "no module registered"
+                        // (the discoverability lie): suggest the nearest commands the
+                        // caller can actually run, via the shared matcher — same PX every
+                        // caller gets, persona or CLI or MCP.
+                        let caller_trust = crate::routing::caller_trust(caller.as_ref());
+                        let names: Vec<&str> = crate::sdk_codegen::command_registry()
+                            .into_iter()
+                            .filter(|d| {
+                                crate::modules::grid::acl::is_command_authorized(d.name, caller_trust)
+                            })
+                            .map(|d| d.name)
+                            .collect();
+                        let suggestions = crate::commands::help::did_you_mean(cmd, &names);
+                        let hint = if suggestions.is_empty() {
+                            "Call `commands/help` with no arguments to list every command you can run."
+                                .to_string()
+                        } else {
+                            format!("Did you mean: {}?", suggestions.join(", "))
+                        };
+                        HandleResult::Json(Response::error(format!(
+                            "Unknown command: '{cmd}'. {hint}"
+                        )))
+                    }
                 }
             } else {
                 HandleResult::Json(Response::error(
