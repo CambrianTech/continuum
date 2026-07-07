@@ -234,6 +234,21 @@ pub fn build_workspace_cycle(cfg: PersonaBrainConfig) -> WorkspaceCycle {
     // turns record nothing). Built HERE (before recall) so recall can share it in and
     // suppress an engram the recency channel already carries — see below.
     let working_memory = Arc::new(WorkingMemory::new(DEFAULT_WORKING_MEMORY_CAPACITY));
+    // Async-dispatch listener (LIVE personas only): fold completions of THIS persona's
+    // background dispatches back into working memory by handle, so a compile/train/sentinel
+    // it sent away streams its result into the mind when it lands ([[persona-async-dispatch-channel]]).
+    // Gated on `cfg.defer_recall` — true ONLY on the supervisor spawn; eval forks + harnesses
+    // set it false — AND a running tokio runtime, so an eval fork or a sync test never spawns
+    // a leaked bus listener. Needs the core executor + its bus, exposed by the persona's hands.
+    if cfg.defer_recall && tokio::runtime::Handle::try_current().is_ok() {
+        if let Some(bus) = tool_executor
+            .as_ref()
+            .and_then(|t| t.command_executor())
+            .and_then(|exec| exec.message_bus())
+        {
+            super::dispatch_listener::spawn(bus, Arc::clone(&working_memory));
+        }
+    }
     let recall = RecallFaculty::new(cfg.persona_id, cfg.admission)
         .with_embedder(embedder)
         // Budget recall by the served model's capability: a tight 4B window
