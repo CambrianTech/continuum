@@ -177,10 +177,11 @@ fn truncate_tool_output(s: String, max: usize, spill: Option<&spill::SpillRef>) 
         // failure-hunting path specifically (grep for the error), per Joel: the
         // build hands spit out a lot of crap and the job is finding the error.
         Some(r) => format!(
-            "the FULL {} lines were saved as output `{}`. Find the part you need \
-             with `tool/output` — e.g. grep for the failure with \
-             `{{\"handle\":\"{}\",\"pattern\":\"error|panic|failed\"}}`, or read a \
-             line range with `startLine`/`endLine`",
+            "the FULL {} lines were saved as output `{}`. Find the part you need with \
+             `tool/output` — easiest, jump straight to what broke with a prebuilt filter: \
+             `{{\"handle\":\"{}\",\"filter\":\"errors\"}}` (or `warnings`/`failures`/\
+             `summary`); for a specific hunt use `\"pattern\":\"<regex>\"`, or read a line \
+             range with `startLine`/`endLine`",
             r.lines, r.handle, r.handle,
         ),
         // Not recoverable — narrow at the source instead.
