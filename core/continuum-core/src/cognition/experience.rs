@@ -200,6 +200,7 @@ mod tests {
             expect: String::new(),
             test: with_test.then(|| "assert_eq!(rev(\"ab\"), \"ba\");".to_string()),
             lang: Some("rust".to_string()),
+            dod_shell: None,
         }
     }
 
