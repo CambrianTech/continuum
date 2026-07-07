@@ -85,3 +85,22 @@ model capable enough to fix its own errors and a task with room to iterate; a 1.
 functions has neither. Testable prediction this supports: **the lift scales with model capability
 and task difficulty** — measure the 14B and repo-level SWE-bench next. The control is the win here:
 falsifiable, reproducible, peer-reviewable.
+
+## Same-model control — the honest verdict on function-level tasks (2026-07)
+
+Both sizes, same 40 humaneval-rs tasks, raw one-shot (standalone llama-server) vs through our full loop:
+
+| model | raw one-shot | through our system | delta |
+|---|---|---|---|
+| Qwen2.5-Coder-1.5B | 45% (18/40) | 48% (19/40) | +1 task — noise |
+| Qwen2.5-Coder-14B | 82% (33/40) | 85% (34/40) | +1 task — noise |
+
+**Verdict: on function-level HumanEval-Rust, our agentic loop shows NO measurable lift over raw one-shot for the
+same model, at either size.** The earlier "85 vs Hermes 52" headline was therefore **model-fit** (Qwen-Coder is
+strong — 82% raw), not our system. Reported straight — this is what the same-model control is FOR.
+
+Why (and where the loop should actually pay off): act→verify→recover needs errors worth recovering and room to
+iterate. Single-function tasks give a strong model little to fix on a second pass. The make-or-break test for the
+SYSTEM'S value is therefore **repo-level / agentic** work — SWE-bench-lite — not function-level. That is the next
+measurement, and it decides whether the loop's value is real or marginal. No spin: if it's marginal there too, the
+value lives in the OTHER axes (continuous learning / LoRA, teams), which get measured the same honest way.
