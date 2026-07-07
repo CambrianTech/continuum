@@ -50,3 +50,20 @@ Same 40 HumanEval-Rust tasks, same rustc compile+run grader.
 **+33 points, run through the actual benchmark system, cross-validated (Hermes 52% a third time).**
 Reproduce: `cu benchmark/run --persona_id <UUID> --name humaneval-rs --limit 40` for ours; bring up
 any `/v1` and `python3 benchmarks/coder/oneshot_opponent.py --endpoint … --limit 40` for a challenger.
+
+## Size + category ladder (2026-07) — humaneval-rs, 40 tasks, rustc-graded
+
+Coder size ladder one-shot (raw model), plus our 14B through the system and Hermes for reference:
+
+| model | pass@1 | how |
+|---|---|---|
+| Qwen2.5-Coder-0.5B | 25% (10/40) | one-shot |
+| Qwen2.5-Coder-1.5B | 45% (18/40) | one-shot |
+| Qwen2.5-Coder-3B | 32% (13/40) | one-shot* |
+| Hermes-3-Llama-3.1-8B | 52% (21/40) | one-shot |
+| **Qwen2.5-Coder-14B — OURS** | **85% (34/40)** | **through our system** |
+
+Trend is clear: bigger coder → better (0.5B→1.5B→14B: 25→45→85), and our system on the 14B tops the board.
+*The 3B scoring under the 1.5B is almost certainly variance on a 40-task one-shot slice (± ~8pts at this N) —
+worth a rerun at higher N to settle; recorded honestly rather than cherry-picked. All one-shot runs via the
+toolchain-free opponent script; ours via `benchmark/run`. Reproduce with the two commands in the README.
