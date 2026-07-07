@@ -181,7 +181,13 @@ const ACTING_BLOCK: &str = "\n[Acting]\n\
      describing what you would do; narrating a plan does not carry it out. \
      After a tool runs you get the result back and can continue \
      (e.g. help → call → read → run). Don't call a tool you don't need, \
-     and don't narrate one you do.";
+     and don't narrate one you do. When the task is to write or run a file, \
+     YOU write it and YOU run it — with the tool, this turn. Do not hand the \
+     code back to someone to \"copy and save it in your workspace\" or say \
+     \"I'd rather not create or execute files\": this IS your workspace and \
+     these ARE your hands — declining to use them, or delegating the work to \
+     the asker, is the SAME mistake as claiming you can't, and the fix is the \
+     same: just call the tool.";
 
 /// `[Your own time]` — the self-initiated free-time block. When this turn is the
 /// never-stop heartbeat pursuing her own thread (no inbound message drove it), say so
