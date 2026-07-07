@@ -65,11 +65,17 @@ pub struct CommandToolExecutor {
     /// persona's identity; cheap to clone (shares one `Arc<transport>`), so each
     /// concurrent tool call in a batch gets its own scoped view with no contention.
     conn: Connection<InProcessTransport>,
+    /// The SAME core `CommandExecutor` the connection dispatches through, held directly so
+    /// the persona's hands can (a) fire a long-running command via `dispatch_background`
+    /// (fire-and-poll, not block the turn) and (b) reach `message_bus()` for the
+    /// async-dispatch listener. `None` when built from a bare `Connection` (harnesses,
+    /// mocks) — those run every command synchronously. [[persona-async-dispatch-channel]]
+    core: Option<Arc<CommandExecutor>>,
 }
 
 impl CommandToolExecutor {
     pub fn new(conn: Connection<InProcessTransport>) -> Self {
-        Self { conn }
+        Self { conn, core: None }
     }
 
     /// Build a persona's hands over the uniform client: a
@@ -91,11 +97,20 @@ impl CommandToolExecutor {
         // airc inbound pump stamps `Airc`); only this local spawn path mints it.
         // `persona` is the persona's bare-Uuid id; the gate identity is the canonical
         // PeerId (== peer_id by invariant). Convert at this spawn boundary.
+        let core = executor.clone();
         let transport = InProcessTransport::new(
             executor,
             Some(CallerIdentity::local_persona(crate::identity::PeerId::from_uuid(persona))),
         );
-        Self::new(Connection::new(transport))
+        Self {
+            conn: Connection::new(transport),
+            core: Some(core),
+        }
+    }
+
+    /// The core executor behind these hands, if any (a live persona's; not a harness's).
+    pub fn core_executor(&self) -> Option<Arc<CommandExecutor>> {
+        self.core.clone()
     }
 }
 
@@ -267,6 +282,10 @@ fn persona_tool_error(attempted: &str, raw: String) -> String {
 
 #[async_trait]
 impl ToolExecutor for CommandToolExecutor {
+    fn command_executor(&self) -> Option<Arc<CommandExecutor>> {
+        self.core_executor()
+    }
+
     async fn execute_native_batch(
         &self,
         calls: &[NativeToolCall],
@@ -398,6 +417,25 @@ mod tests {
     use serde_json::json;
     use std::any::Any;
     use std::sync::Arc;
+
+    // what this catches: a live persona's hands (built via for_persona) EXPOSE the core
+    // executor, so apply_act can fire a long-running command in the background; a bare
+    // Connection-built executor (harness) does NOT — it runs every command synchronously.
+    // This is the reachability seam that lets a persona send a sentinel/compile away.
+    #[test]
+    fn for_persona_hands_expose_core_executor_for_dispatch() {
+        let exec = Arc::new(CommandExecutor::new(Arc::new(ModuleRegistry::new())));
+        let hands = CommandToolExecutor::for_persona(exec, uuid::Uuid::new_v4());
+        assert!(
+            hands.command_executor().is_some(),
+            "live persona hands expose the core executor for fire-and-poll dispatch"
+        );
+        let bare = CommandToolExecutor::new(hands.conn.clone());
+        assert!(
+            bare.command_executor().is_none(),
+            "harness hands (bare Connection) run every command synchronously"
+        );
+    }
 
     /// Minimal module that echoes its params back under `test/echo`.
     struct EchoModule;

@@ -131,6 +131,18 @@ fn all_calls_already_satisfied(recent: &[String], calls: &[ToolCall]) -> bool {
 /// hands or the executor errors. The admission is best-effort: an un-admitted
 /// observation still flows back via the returned text, so re-perception works
 /// regardless; admission is what makes it durable long-term memory.
+/// Commands that run long enough that BLOCKING the turn on them starves the mind — they
+/// are DISPATCHED in the background (fire-and-poll) and stream their result back into
+/// working memory via the dispatch listener when they finish. Seed set; the durable home is
+/// a per-command `long_running` flag on the command spec (#86). Matched on the slash form
+/// (models may emit the underscore form — normalize before calling).
+fn is_long_running(command: &str) -> bool {
+    matches!(
+        command,
+        "code/cargo/check" | "code/cargo/test" | "cognition/full-evaluate" | "forge/train"
+    )
+}
+
 pub async fn apply_act(
     cycle: &WorkspaceCycle,
     calls: &[ToolCall],
@@ -192,9 +204,48 @@ pub async fn apply_act(
         },
     };
 
+    // Long-running commands are DISPATCHED in the background (fire-and-poll): the turn never
+    // blocks on a compile/train/eval, and the result streams back into working memory via the
+    // dispatch listener when it lands. Requires the core executor (a live persona's hands
+    // expose it; harnesses don't → everything runs synchronously). No long-running calls —
+    // the overwhelmingly common case — means `fg_calls == calls` and this is inert.
+    let mut bg_notes: Vec<String> = Vec::new();
+    let fg_calls: Vec<ToolCall> = match body.executor.command_executor() {
+        Some(exec) => {
+            let mut fg = Vec::with_capacity(calls.len());
+            for call in calls {
+                let cmd = call.name.replace('_', "/");
+                if is_long_running(&cmd) {
+                    let handle = exec.dispatch_background(cmd.clone(), call.input.clone(), None);
+                    body.working_memory.record_dispatch_event(
+                        handle,
+                        &cmd,
+                        "dispatched — running",
+                        crate::cognition::working_memory::DispatchStatus::Running,
+                    );
+                    bg_notes.push(format!(
+                        "I dispatched {cmd} in the background (handle {handle}). I should NOT wait \
+                         on it — the result will appear in my working memory when it completes, and \
+                         I can carry on meanwhile."
+                    ));
+                    crate::probe!(
+                        class = "persona.act.dispatched_background",
+                        persona = %body.persona_name,
+                        command = %cmd,
+                        "long-running command dispatched fire-and-poll; result streams back to working memory"
+                    );
+                } else {
+                    fg.push(call.clone());
+                }
+            }
+            fg
+        }
+        None => calls.to_vec(),
+    };
+
     let outcome = match body
         .executor
-        .execute_native_batch(calls, &ctx, RESULT_FOLD_MAX_CHARS)
+        .execute_native_batch(&fg_calls, &ctx, RESULT_FOLD_MAX_CHARS)
         .await
     {
         Ok(o) => o,
@@ -214,7 +265,7 @@ pub async fn apply_act(
     // this is the persona observing her OWN hands — the engram reads like a memory
     // of acting, not a log line.
     let mut observation = String::new();
-    for (i, call) in calls.iter().enumerate() {
+    for (i, call) in fg_calls.iter().enumerate() {
         let result = outcome.results.get(i);
         let body_text = match result {
             Some(r) => r.content.as_str(),
@@ -228,6 +279,12 @@ pub async fn apply_act(
             intent.trim(),
             body_text.trim(),
         ));
+    }
+    // The background dispatches are part of what she just did — record them as
+    // proprioception so the mind knows it sent them away (and won't re-dispatch or block).
+    for note in &bg_notes {
+        observation.push_str(note);
+        observation.push_str("\n\n");
     }
     let observation = observation.trim().to_string();
 
@@ -538,6 +595,19 @@ fn now_ms() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches: the long-running set matches the REAL command names (the live bug
+    // was `cargo/test` vs the actual `code/cargo/test`), and ordinary fast commands are NOT
+    // backgrounded — so a `code/read` still returns synchronously in the same turn.
+    #[test]
+    fn long_running_set_matches_real_command_names() {
+        assert!(is_long_running("code/cargo/test"));
+        assert!(is_long_running("code/cargo/check"));
+        assert!(is_long_running("cognition/full-evaluate"));
+        assert!(!is_long_running("code/read"), "a file read stays synchronous");
+        assert!(!is_long_running("chat/send"));
+        assert!(!is_long_running("cargo/test"), "the wrong short name must NOT match");
+    }
     use crate::cognition::tool_executor::{
         NativeBatchOutcome, ParsedToolBatch, ToolError, ToolExecutionContext, ToolExecutor,
         ToolOutcome,
