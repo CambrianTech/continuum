@@ -180,6 +180,7 @@ impl TrainingCompletionSentinel {
                 // gym, never a default ([[fallbacks-are-illegal-fail-loud]]). Guarded
                 // Some at the top of this fn.
                 eval_set: Some(eval_set),
+                base_model_id: None, // a gene names its own forged base
                 max_acts: None,
                 max_retries: None,
                 note: Some(format!(

@@ -345,6 +345,69 @@ async fn spawn_gene_eval_lane(
     ))
 }
 
+/// Stand up an ephemeral measurement lane for a BARE base model (no gene, no LoRA) — the
+/// same #59 discipline as `spawn_gene_eval_lane`, minus the adapter. This is the clean
+/// "measure THIS model through our full loop" control: `benchmark/run --base_model_id X`
+/// forks the cognition copy onto a throwaway server for X, sized against free VRAM, WITHOUT
+/// re-homing or disturbing the living persona (whose lane stays whatever she's served on).
+/// It's what makes the same-model matrix — hold the harness fixed, vary the model — fall
+/// out of one command, with no serving-pin race. Fails loud (never a substitute base) if
+/// the id isn't in the registry or the lane won't come up.
+async fn spawn_base_eval_lane(
+    base_id: &str,
+) -> Result<
+    (
+        crate::inference::llama_server::EphemeralServingLane,
+        std::sync::Arc<dyn crate::ai::adapter::AIProviderAdapter>,
+        u32,
+        PlacementEvidence,
+    ),
+    CommandError,
+> {
+    use crate::ai::adapter::AIProviderAdapter;
+    use crate::inference::llama_server::{EphemeralServingLane, ServingTarget, PROVIDER_ID};
+
+    let base = crate::model_registry::try_global()
+        .and_then(|r| r.model(base_id).cloned())
+        .ok_or_else(|| {
+            CommandError::NotFound(format!(
+                "base_model_id '{base_id}' is not in the model registry — cannot stand up a measurement lane for it. Call ai/inference/models for loadable ids."
+            ))
+        })?;
+    let lane_ctx = base.context_window.min(EVAL_LANE_CONTEXT);
+    let placement_evidence =
+        decide_eval_lane_placement(&base, lane_ctx, &format!("eval-lane base:{base_id}"));
+    let target = ServingTarget {
+        model: base.clone(),
+        context_window: lane_ctx,
+        lanes: 1,
+        adapters: vec![], // bare base — no gene
+        placement: placement_evidence.placement,
+    };
+    let lane = EphemeralServingLane::spawn(&target, EVAL_LANE_BASE_PORT)
+        .await
+        .map_err(|e| {
+            CommandError::Internal(format!(
+                "could not bring up the ephemeral eval lane for base '{base_id}': {e}"
+            ))
+        })?;
+    let mut adapter =
+        crate::ai::openai_adapter::OpenAICompatibleAdapter::from_registry(PROVIDER_ID)
+            .with_runtime_base_url(lane.root().to_string())
+            .with_default_model(base.id.clone())
+            .with_dedicated_lane();
+    adapter
+        .initialize()
+        .await
+        .map_err(|e| CommandError::Internal(format!("eval-lane adapter failed to initialize: {e}")))?;
+    let served_ctx = lane.served_context_window().await.map_err(|e| {
+        CommandError::Internal(format!(
+            "eval lane for base '{base_id}' is up but its /props served window is unreadable ({e})"
+        ))
+    })?;
+    Ok((lane, std::sync::Arc::new(adapter), served_ctx, placement_evidence))
+}
+
 /// One eval task. Both the JSONL rows and inline `tasks` deserialize into this;
 /// every field is optional so an authoring typo degrades to a benign empty rather
 /// than failing the whole run. A task is TEST-GRADED when it carries `test`, else
@@ -426,6 +489,14 @@ pub struct CognitionEvalParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub eval_set: Option<String>,
+    /// Measure THIS base model through the full loop, in its OWN ephemeral lane, without
+    /// re-homing or disturbing the living persona (#59). The clean same-model control:
+    /// hold the harness fixed, vary the model. Ignored when a `gene` is set (a gene names
+    /// its own forged base). None → fork onto her live lane as before. Must be a loadable
+    /// id from `ai/inference/models`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub base_model_id: Option<String>,
     /// Max act→observe cycles per task before it counts as unfinished. Default 8.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional, type = "number")]
@@ -670,8 +741,9 @@ impl ActionCommand for CognitionEval {
         // the result so the harness shows which device the A/B was scored on. None in
         // single-pass mode (that forks onto her LIVE lane, which is already GPU).
         let mut placement_evidence: Option<PlacementEvidence> = None;
-        let cycle = match &p.gene {
-            Some(gene) => {
+        let cycle = match (&p.gene, p.base_model_id.as_deref()) {
+            // A gene names its own forged base → ephemeral lane + the gene as `--lora`.
+            (Some(gene), _) => {
                 let (lane, adapter, served_ctx, evidence) = spawn_gene_eval_lane(gene).await?;
                 placement_evidence = Some(evidence);
                 let cycle = crate::cognition::persona_workspace::global()
@@ -682,7 +754,22 @@ impl ActionCommand for CognitionEval {
                 _eval_lane = Some(lane);
                 cycle
             }
-            None => crate::cognition::persona_workspace::global()
+            // A bare base_model_id → ephemeral lane for THAT model, no gene. The clean
+            // same-model control: measure the full loop on a chosen model in its own
+            // throwaway server, living persona untouched (#59).
+            (None, Some(base_id)) => {
+                let (lane, adapter, served_ctx, evidence) = spawn_base_eval_lane(base_id).await?;
+                placement_evidence = Some(evidence);
+                let cycle = crate::cognition::persona_workspace::global()
+                    .fork_eval_cycle_with_adapter(&persona_uuid, adapter, served_ctx)
+                    .ok_or_else(|| CommandError::NotFound(format!(
+                        "no workspace template for persona {persona_uuid} — its mind was not assembled at spawn (register_from_cfg), so eval cannot fork a measurement copy"
+                    )))?;
+                _eval_lane = Some(lane);
+                cycle
+            }
+            // Neither → fork onto her LIVE lane (a plain number on whatever she's served on).
+            (None, None) => crate::cognition::persona_workspace::global()
                 .fork_eval_cycle(&persona_uuid)
                 .ok_or_else(|| CommandError::NotFound(format!(
                     "no workspace template for persona {persona_uuid} — its mind was not assembled at spawn (register_from_cfg), so eval cannot fork a measurement copy without measuring her live mind"
