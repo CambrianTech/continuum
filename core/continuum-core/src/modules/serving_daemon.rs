@@ -728,7 +728,13 @@ fn footprint_from_parts(
     // planner multiplies this by the window IT derives from the host budget —
     // we do NOT pre-collapse it against an assumed serving window here (no
     // PLANNED_CTX clamp; the served window is the planner's call, task #50).
-    let kv_per_token = (weights_bytes / 20_000).max(20_000);
+    // Realistic per-token KV. These Qwen coders use grouped-query attention (few KV
+    // heads), so KV is SMALL: ~200 KB/token for the 14B, ~260 KB/token for the 32B. The
+    // old `weights/20_000` gave ~1 MB/token for the 32B — 4× too high — which made a 32B
+    // that comfortably fits a 64 GB box read as ~32 GB of KV at 32k ctx and get falsely
+    // rejected by the fit-gate, so the planner kept a weaker model. `weights/80_000`
+    // (~110 KB for 14B, ~250 KB for 32B) tracks real Q4 GQA KV; still coarse, still floored.
+    let kv_per_token = (weights_bytes / 80_000).max(20_000);
 
     // Coarse capability rank: GB of weights (bigger ≈ more capable within a
     // family), +bonus for tool/code capability. Saturates into u8.
