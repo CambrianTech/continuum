@@ -252,8 +252,38 @@ impl CommandExecutor {
             command.path(),
             &outcome,
             start.elapsed().as_millis() as u64,
+            None, // synchronous: the caller holds the return value
         );
         outcome
+    }
+
+    /// Fire a command in the BACKGROUND: return a handle (UUID) immediately, run the
+    /// dispatch on a spawned task, and on completion emit `command:completed` carrying the
+    /// handle AND the result. A subscriber — e.g. a persona that sent a sentinel, a
+    /// compile, or a debugger away — matches the completion by handle and folds the outcome
+    /// in when it lands, never blocking the turn. This is the fire-and-poll shape (#86): the
+    /// caller does not await the work. The handle is reusable in a follow-up command
+    /// (cancel/query/attach), which is why it's a plain UUID ([[commands-are-agency-algs-are-pathways]]).
+    pub fn dispatch_background(
+        self: &std::sync::Arc<Self>,
+        command: impl Into<CommandUri>,
+        params: Value,
+        caller: Option<crate::routing::CallerIdentity>,
+    ) -> uuid::Uuid {
+        let handle = uuid::Uuid::new_v4();
+        let command: CommandUri = command.into();
+        let this = std::sync::Arc::clone(self);
+        tokio::spawn(async move {
+            let start = std::time::Instant::now();
+            let outcome = this.dispatch(&command, params, caller.as_ref()).await;
+            this.emit_command_completed(
+                command.path(),
+                &outcome,
+                start.elapsed().as_millis() as u64,
+                Some(handle),
+            );
+        });
+        handle
     }
 
     /// Routing decision on a [`CommandUri`]. Local URIs go through the
@@ -446,15 +476,24 @@ impl CommandExecutor {
         command: &str,
         outcome: &Result<CommandResult, String>,
         duration_ms: u64,
+        handle: Option<uuid::Uuid>,
     ) {
         let Some(bus) = self.bus.as_ref() else {
             return;
         };
+        // The result rides the event ONLY for a tracked background dispatch (handle set),
+        // so the dispatcher learns the outcome from the event itself — no second call. Sync
+        // commands stay thin: the caller already holds the return value.
+        let result = handle
+            .and(outcome.as_ref().ok())
+            .and_then(|r| r.to_json_value().ok());
         let event = CommandCompletedEvent {
             command_name: command.to_string(),
             duration_ms,
             success: outcome.is_ok(),
             error: outcome.as_ref().err().cloned(),
+            handle,
+            result,
         };
         match serde_json::to_value(&event) {
             Ok(payload) => bus.publish_async_only(COMMAND_COMPLETED_TOPIC, payload),
@@ -1109,6 +1148,39 @@ mod tests {
             event.duration_ms < 500,
             "trivial dispatch should be fast: {} ms",
             event.duration_ms
+        );
+        // A synchronous dispatch stays thin: no handle, no result on the event (the caller
+        // already holds the return value).
+        assert_eq!(event.handle, None, "sync command carries no dispatch handle");
+        assert_eq!(event.result, None, "sync command's result is not duplicated onto the event");
+    }
+
+    // what this catches: dispatch_background returns a handle IMMEDIATELY (fire-and-poll)
+    // and its completion event carries BOTH the handle and the result — so a subscriber
+    // (a persona that sent a sentinel away) matches the completion to its dispatch and
+    // folds the outcome in without a second call. This is the producer for the WM async
+    // recency channel.
+    #[tokio::test]
+    async fn dispatch_background_completion_carries_handle_and_result() {
+        let registry = Arc::new(ModuleRegistry::new());
+        registry.register(Arc::new(CannedModule {
+            canned: Ok(serde_json::json!({ "built": true, "warnings": 0 })),
+        }));
+        let bus = Arc::new(MessageBus::new());
+        let mut rx = bus.receiver();
+        let executor = Arc::new(CommandExecutor::new(registry).with_message_bus(bus));
+
+        // Fire in the background — returns a handle immediately, does not await the work.
+        let handle = executor.dispatch_background("canned/ping", serde_json::json!({}), None);
+
+        let event = next_command_completed(&mut rx).await;
+        assert_eq!(event.command_name, "canned/ping");
+        assert!(event.success);
+        assert_eq!(event.handle, Some(handle), "completion carries the dispatch handle");
+        assert_eq!(
+            event.result,
+            Some(serde_json::json!({ "built": true, "warnings": 0 })),
+            "completion carries the result — no second call needed"
         );
     }
 
