@@ -689,6 +689,64 @@ impl ActionCommand for CognitionEval {
                 )))?,
         };
 
+        // WARM-GATE — never measure a COLD model. A just-loaded or just-swapped lane 500s
+        // until its weights + KV are resident; firing the gym into it scores "inference
+        // failed" on every task — a false ZERO that would LIE about how far behind (or
+        // ahead) we are. A measurement that can't trust its own model is no measurement.
+        // Poll with a tiny throwaway deliberation until the lane answers, then run; if it
+        // never warms, fail LOUD rather than emit a bogus 0. (Cost is one cheap probe on a
+        // warm lane — the common case returns on the first try.)
+        {
+            let warm_room = Uuid::new_v4();
+            let probe_delivery = crate::persona::rag_budget::RagDelivery {
+                source_id: "airc".to_string(),
+                items: vec![crate::persona::rag_budget::RagItem {
+                    content: "ready check".to_string(),
+                    tokens: 0,
+                    metadata: serde_json::json!({ "peer_id": "peer", "occurred_at_ms": EVAL_EPOCH_MS }),
+                }],
+                tokens_used: 0,
+                continuation: None,
+                resolution_used: crate::persona::rag_budget::ResolutionPreference::Raw,
+            };
+            let mut warm = false;
+            for _ in 0..15u32 {
+                let burst = crate::cognition::workspace::Burst::from_turns(
+                    warm_room,
+                    crate::persona::service_loop::build_workspace_turns(
+                        std::slice::from_ref(&probe_delivery),
+                        "",
+                        "",
+                        None,
+                    ),
+                );
+                let probe = crate::cognition::act_observe::drive_to_settle(
+                    &cycle,
+                    burst,
+                    warm_room,
+                    0, // no acts — a bare deliberation is enough to prove the lane answers
+                    crate::cognition::workspace::TurnFraming::directed(),
+                )
+                .await;
+                if probe.inference_error.is_none() {
+                    warm = true;
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_secs(4)).await;
+            }
+            // Reset the volatile scratch the probe touched so task #1 starts from the same
+            // clean frame every other task does.
+            cycle.reset_working_memory();
+            if !warm {
+                return Err(CommandError::Internal(
+                    "serving lane not ready after ~60s of warm probes — refusing to run an \
+                     eval on a cold model (every task would score a false 'inference failed' \
+                     zero). Wait for the model to load, then retry."
+                        .to_string(),
+                ));
+            }
+        }
+
         let max_acts = p.max_acts.unwrap_or(DEFAULT_MAX_ACTS) as usize;
         let max_retries = p.max_retries.unwrap_or(MAX_FAIL_RETRIES);
         let total = tasks.len() as u32;
