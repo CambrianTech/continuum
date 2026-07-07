@@ -1,92 +1,46 @@
-# Continuum benchmarks — repeatable, honest, zero-dependency
+# Continuum benchmarks — reproducible, honest, zero-dependency
 
-An **extras** path. Nothing here is compiled into `continuum-core` or shipped in the product;
-it is tooling for measuring ourselves against external systems. Run it, don't depend on it.
+Benchmarking is **operational**, so it lives where the operational path lives: **Rust, on the
+DynCommand registry**, managed by the daemons, callable by a persona. The one exception is a
+single toolchain-free script whose only job is letting an *outsider* replicate our numbers
+against their own endpoint without our stack.
 
 ## The one hard rule
 
-**We never depend on any opponent — Hermes, unsloth, a cloud API, anything. Ever.**
+**We never depend on any opponent — Hermes, unsloth, a cloud provider — ever.** Optional
+integrations that reach what a user already runs are an asset; a forced dependency is a
+weakness (and off-grid: unmanageable by our daemons).
 
-Opponents are **external, optional `/v1` endpoints you bring**. This harness imports nothing
-from the product and the product imports nothing from here. An opponent is a URL — a local
-`llama-server`, an unsloth gateway, ollama, a cloud API, or an **airc node** exposing an
-OpenAI-compatible `/v1`. That last one is the point: it also proves *grid encapsulation* —
-any model, ours or an opponent's, is just a node reachable over the same seam.
+## Run OUR models — Rust `benchmark/*` commands (on-grid, persona-callable)
 
-## What it measures
-
-`coder/` — the Rust coder gym (`docs/genome/humaneval-rs.jsonl`, HumanEval-Rust): each task's
-answer is **compiled and run against a hidden test** (`rustc` — real pass/fail, no self-report,
-no exit-code masking). Two rows, same tasks, same grader:
-
-| runner | what it scores | how the model is reached |
-|---|---|---|
-| `coder/run_ours.sh` | OUR system (RAG + tools + PX + act→observe loop) | the local model the running core serves |
-| `coder/oneshot_opponent.py` | an opponent, one-shot | any external `/v1` URL you provide |
-
-The comparison is deliberately fair-with-an-asterisk: `run_ours.sh` runs the *whole system*;
-`oneshot_opponent.py` runs the opponent *one-shot* (its plain inference). The gap includes both
-model-fit (we pick the best local model for the ask — the thing cloud can't do) and system lift.
-To isolate the *system* lift, point `oneshot_opponent.py` at the SAME local model the core serves
-and diff it against `run_ours.sh`.
-
-## Run it
+The benchmark catalog + runner are Rust (`core/continuum-core/src/commands/benchmark.rs`),
+mirroring the model catalog. `benchmark/run` is a thin wrapper over `cognition/eval` — one
+grader, never reimplemented.
 
 ```bash
-# 1. OURS — a core must be up serving your local model (cu ping → ok), model warm.
-benchmarks/coder/run_ours.sh "Qwen2.5-Coder-14B (ours)" 40
+cu benchmark/list                                              # the catalog (name, grader, tasks, runnable)
+cu benchmark/run --persona_id <UUID> --name humaneval-rs --limit 40
+```
 
-# 2. AN OPPONENT — spin its /v1 up yourself (any backend), then:
+Add a respected collection (SWE-bench, LiveCodeBench, MBPP, …) = one `BenchmarkSpec` row in
+`benchmark.rs`. Big datasets pull + cache like a model (follow-up: `benchmark/pull`); the
+`grader` per entry says how solutions are scored (`rust` compile+run today). Later this same
+registry is how a persona runs a competition by name.
+
+## Score an OPPONENT — the one edge script
+
+`coder/oneshot_opponent.py` — the lone Python, deliberately toolchain-free: Python stdlib +
+`rustc`, imports nothing from us. Point it at any external OpenAI-compatible `/v1` (a local
+llama-server, an unsloth gateway, ollama, a cloud API, or an airc node) and it scores that
+model one-shot on the same gym, graded identically. This is how outsiders replicate us and how
+we take a model on its own published claims — same tasks, both numbers.
+
+```bash
 python3 benchmarks/coder/oneshot_opponent.py \
-    --endpoint http://127.0.0.1:8080/v1 --model hermes-3-8b \
-    --label "Hermes-3-8B" --limit 40
-
-# 3. Paste both rows into coder/SCOREBOARD.md.
+    --endpoint http://127.0.0.1:8090/v1 --model hermes-3 --label "Hermes-3-8B" --limit 40
 ```
 
-Requirements: `rustc` on PATH (grading), `python3` (stdlib only). No pip installs, no product runtime
-for the opponent side.
+## Results
 
-## Adding an opponent
-
-There is no code to add — an opponent is a config line (endpoint + model + label). Stand it up
-however you like (that is *your* dependency, never ours) and point the harness at it. See
-`coder/SCOREBOARD.md` for the running results.
-
-## The matrix (reproducible — runners × benchmarks → a chart)
-
-`matrix.py` replaces the hand-run one-offs: one command runs every (runner × benchmark)
-pair from a config and emits `CHART.md` + `results.json`.
-
-```bash
-cp benchmarks/config.example.json benchmarks/config.json   # edit runners + benchmarks
-python3 benchmarks/matrix.py benchmarks/config.json
-```
-
-- A **runner** is `ours` (through the Continuum core) or `opponent` (an external `/v1` you
-  bring up — llama-server, unsloth gateway, ollama, cloud, or an airc node). A future
-  **team** runner (coordinated personas on one plan) drops in with no charting change.
-- Put a model's **own published number** for a benchmark in its `published` map and the chart
-  renders `_(claim …)_` beside what we measured identically — so an "amazing claim" meets a
-  real, common benchmark reproduced the same way. Take them on their numbers.
-- Add a benchmark = one config entry + a gym file. Add an opponent = one config line (stand
-  its endpoint up yourself; that is your dependency, never ours).
-
-This is the system to run across many models and many benchmarks — individuals first, then
-teams that scale and learn — and chart it, repeatably.
-
-## Benchmark catalog (manage collections like the model catalog)
-
-Benchmarks are large managed artifacts, catalogued and pulled by name — not vendored.
-
-```bash
-python3 benchmarks/catalog.py list                 # what's known + cached
-python3 benchmarks/catalog.py pull humaneval        # fetch + cache a large one
-python3 benchmarks/catalog.py resolve humaneval-rs  # name → local path
-```
-
-A matrix benchmark references a catalog entry by name (`"catalog": "humaneval"`) and the runner
-pulls + caches it on demand into `~/.continuum/benchmarks/`. Add a respected collection
-(SWE-bench, LiveCodeBench, MBPP, …) = one `KNOWN` entry with its `grader`. Big datasets cache
-like a model, never bloat the repo. Later a Rust `benchmark/*` command wraps the SAME registry
-so a persona can call a competition by name.
+`coder/SCOREBOARD.md` — the running board. Ours (through the system) beside opponents (external
+one-shot), same tasks, same rustc grader. Reproduce with the two commands above.
