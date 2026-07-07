@@ -435,6 +435,72 @@ pub fn models() -> Vec<Model> {
             stop_sequences: &["<|im_end|>", "<|endoftext|>"],
             ..ModelSpec::default()
         }),
+        // The Qwen2.5-Coder SIZE LADDER — 0.5B / 1.5B / 3B, so a weak box serves what it can and
+        // we can chart small→large on the same benchmark (what a MacBook — or a Pi — gets away
+        // with). plan_serving still picks the largest that FITS, so these only serve where the
+        // 14B/32B won't. Same Qwen2 arch + ChatML template; tiny GGUFs (~0.4–2 GB Q4_K_M).
+        model(ModelSpec {
+            id: "continuum-ai/qwen2.5-coder-3b-instruct-GGUF",
+            name: "Qwen2.5-Coder-3B-Instruct",
+            provider: "llama-server",
+            arch: Arch::Qwen2,
+            context_window: 32_768,
+            max_output_tokens: 8192,
+            tokens_per_second: 45.0,
+            capabilities: &[Capability::TextGeneration, Capability::Chat, Capability::ToolUse, Capability::Streaming],
+            gguf_hint: Some("huggingface.co/bartowski/Qwen2.5-Coder-3B-Instruct-GGUF"),
+            chat_template: Some(QWEN35_CHAT_TEMPLATE),
+            multi_party_strategy: MultiPartyChatStrategy::ProperChatMlSingleParty,
+            stop_sequences: &["<|im_end|>", "<|endoftext|>"],
+            ..ModelSpec::default()
+        }),
+        model(ModelSpec {
+            id: "continuum-ai/qwen2.5-coder-1.5b-instruct-GGUF",
+            name: "Qwen2.5-Coder-1.5B-Instruct",
+            provider: "llama-server",
+            arch: Arch::Qwen2,
+            context_window: 32_768,
+            max_output_tokens: 8192,
+            tokens_per_second: 70.0,
+            capabilities: &[Capability::TextGeneration, Capability::Chat, Capability::ToolUse, Capability::Streaming],
+            gguf_hint: Some("huggingface.co/bartowski/Qwen2.5-Coder-1.5B-Instruct-GGUF"),
+            chat_template: Some(QWEN35_CHAT_TEMPLATE),
+            multi_party_strategy: MultiPartyChatStrategy::ProperChatMlSingleParty,
+            stop_sequences: &["<|im_end|>", "<|endoftext|>"],
+            ..ModelSpec::default()
+        }),
+        model(ModelSpec {
+            id: "continuum-ai/qwen2.5-coder-0.5b-instruct-GGUF",
+            name: "Qwen2.5-Coder-0.5B-Instruct",
+            provider: "llama-server",
+            arch: Arch::Qwen2,
+            context_window: 32_768,
+            max_output_tokens: 8192,
+            tokens_per_second: 110.0,
+            capabilities: &[Capability::TextGeneration, Capability::Chat, Capability::ToolUse, Capability::Streaming],
+            gguf_hint: Some("huggingface.co/bartowski/Qwen2.5-Coder-0.5B-Instruct-GGUF"),
+            chat_template: Some(QWEN35_CHAT_TEMPLATE),
+            multi_party_strategy: MultiPartyChatStrategy::ProperChatMlSingleParty,
+            stop_sequences: &["<|im_end|>", "<|endoftext|>"],
+            ..ModelSpec::default()
+        }),
+        // A GENERAL (non-coder) model for the CATEGORY axis — same size class as a coder, so a
+        // chart shows specialist-vs-generalist at equal size (the model-fit thesis, measured).
+        model(ModelSpec {
+            id: "continuum-ai/qwen2.5-3b-instruct-GGUF",
+            name: "Qwen2.5-3B-Instruct (general)",
+            provider: "llama-server",
+            arch: Arch::Qwen2,
+            context_window: 32_768,
+            max_output_tokens: 8192,
+            tokens_per_second: 45.0,
+            capabilities: &[Capability::TextGeneration, Capability::Chat, Capability::ToolUse, Capability::Streaming],
+            gguf_hint: Some("huggingface.co/bartowski/Qwen2.5-3B-Instruct-GGUF"),
+            chat_template: Some(QWEN35_CHAT_TEMPLATE),
+            multi_party_strategy: MultiPartyChatStrategy::ProperChatMlSingleParty,
+            stop_sequences: &["<|im_end|>", "<|endoftext|>"],
+            ..ModelSpec::default()
+        }),
         // NOTE: benchmark OPPONENTS (Hermes, unsloth, cloud models) are DELIBERATELY absent
         // from this catalog — we never depend on either, ever. They are scored as external,
         // optional /v1 endpoints by the standalone harness in `benchmarks/coder/`, which
