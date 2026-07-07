@@ -153,6 +153,12 @@ pub struct BenchmarkRunParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional, type = "number")]
     pub max_acts: Option<u32>,
+    /// Measure THIS model through the full loop (its own ephemeral lane, living persona
+    /// untouched) instead of whatever she's served on — the same-model control. A loadable
+    /// id from `ai/inference/models`, e.g. `continuum-ai/qwen2.5-coder-1.5b-instruct-GGUF`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub base_model_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, TS)]
@@ -229,9 +235,13 @@ impl ActionCommand for BenchmarkRun {
                     room_id: None,
                     tasks: None,
                     eval_set: Some(tmp.display().to_string()),
+                    base_model_id: p.base_model_id.clone(),
                     max_acts: p.max_acts.or(Some(6)),
                     max_retries: Some(0),
-                    note: Some(format!("benchmark/run {}", spec.name)),
+                    note: Some(match &p.base_model_id {
+                        Some(m) => format!("benchmark/run {} on {m}", spec.name),
+                        None => format!("benchmark/run {}", spec.name),
+                    }),
                 },
             )
             .await;
