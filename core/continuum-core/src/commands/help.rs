@@ -27,8 +27,39 @@ use crate::sdk_codegen::{command_registry, AccessLevel, ActionCommand, CommandEr
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
 pub struct CommandsHelpParams {
-    /// The command to explain, e.g. `code/read`.
-    pub name: String,
+    /// The command to explain, e.g. `code/read`. OMIT it to get an INDEX of every
+    /// command you can call (name + one-line description) — your starting point when
+    /// you don't yet know which tool to use.
+    #[serde(default)]
+    #[ts(optional)]
+    pub name: Option<String>,
+}
+
+/// Closest authorized command names to a miss — same category prefix (before `/`),
+/// or sharing a path segment. Cheap, dependency-free, and enough to unstick an agent
+/// that guessed a plausible-but-wrong name (e.g. `commands/describe` → `commands/help`).
+pub(crate) fn did_you_mean<'a>(query: &str, authorized: &[&'a str]) -> Vec<&'a str> {
+    let q = query.to_lowercase();
+    let q_prefix = q.split('/').next().unwrap_or(&q);
+    let q_segs: HashSet<&str> = q.split('/').filter(|s| !s.is_empty()).collect();
+    let mut scored: Vec<(u8, &str)> = authorized
+        .iter()
+        .filter_map(|name| {
+            let n = name.to_lowercase();
+            let n_prefix = n.split('/').next().unwrap_or(&n);
+            let shares_seg = n.split('/').any(|s| !s.is_empty() && q_segs.contains(s));
+            let score = if n_prefix == q_prefix {
+                2 // same category — strongest signal
+            } else if shares_seg {
+                1
+            } else {
+                return None;
+            };
+            Some((score, *name))
+        })
+        .collect();
+    scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(b.1)));
+    scored.into_iter().take(6).map(|(_, n)| n).collect()
 }
 
 #[derive(Debug, Clone, Serialize, TS)]
@@ -45,7 +76,7 @@ pub struct CommandsHelpResult {
 /// envelope (with placeholder values typed from the schema) + an argument list.
 /// Pure function of (name, description, params JSON Schema) — same schema every
 /// other interface adapts from.
-fn render_ai_help(name: &str, description: &str, schema: &Value) -> String {
+pub(crate) fn render_ai_help(name: &str, description: &str, schema: &Value) -> String {
     let props = schema.get("properties").and_then(Value::as_object);
     let required: HashSet<&str> = schema
         .get("required")
@@ -107,17 +138,50 @@ impl ActionCommand for CommandsHelp {
 
     async fn run(&self, ctx: &Ctx, p: CommandsHelpParams) -> Result<CommandsHelpResult, CommandError> {
         let trust = caller_trust(ctx.caller.as_ref());
-        let d = command_registry()
+        // Everything THIS caller could actually run — the universe for both the index
+        // and did-you-mean (never leak commands above the caller's access).
+        let authorized: Vec<_> = command_registry()
             .into_iter()
-            // Only help for what THIS caller could actually run (don't teach the
-            // format of a command it isn't authorized to invoke).
-            .find(|d| d.name == p.name && is_command_authorized(d.name, trust))
-            .ok_or_else(|| {
-                CommandError::NotFound(format!(
-                    "no command '{}' available to you (unknown, or above your access)",
-                    p.name
-                ))
-            })?;
+            .filter(|d| is_command_authorized(d.name, trust))
+            .collect();
+
+        // No name → the INDEX: every command you can call, one line each. This is the
+        // orientation an agent needs FIRST; erroring here (the old "missing field name")
+        // dead-ends the very first discovery move.
+        let Some(name) = p.name.as_deref().filter(|s| !s.trim().is_empty()) else {
+            let mut lines: Vec<String> = authorized
+                .iter()
+                .map(|d| format!("- {} — {}", d.name, d.description))
+                .collect();
+            lines.sort();
+            let manual = format!(
+                "{} commands available to you. Call `commands/help` with a `name` for the \
+                 exact tool-call format of any one.\n\n{}",
+                lines.len(),
+                lines.join("\n"),
+            );
+            return Ok(CommandsHelpResult {
+                name: String::new(),
+                description: "index of all callable commands".to_string(),
+                access_level: "ai-safe".to_string(),
+                manual,
+            });
+        };
+
+        let Some(d) = authorized.iter().find(|d| d.name == name) else {
+            // Unknown/unauthorized name → don't dead-end; suggest the nearest callable
+            // commands so a plausible wrong guess still moves the agent forward.
+            let names: Vec<&str> = authorized.iter().map(|d| d.name).collect();
+            let suggestions = did_you_mean(name, &names);
+            let hint = if suggestions.is_empty() {
+                "Call `commands/help` with no name for the full index.".to_string()
+            } else {
+                format!("Did you mean: {}?", suggestions.join(", "))
+            };
+            return Err(CommandError::NotFound(format!(
+                "no command '{name}' available to you (unknown, or above your access). {hint}"
+            )));
+        };
 
         Ok(CommandsHelpResult {
             name: d.name.to_string(),

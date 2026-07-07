@@ -236,39 +236,58 @@ fn persona_tool_error(attempted: &str, raw: String) -> String {
     // emitted the underscore form, so normalize before matching/suggesting.
     let normalized = attempted.replace('_', "/");
 
-    // Unknown command: the substrate's dev-facing message is useless to her.
-    if raw.contains("no Rust module handles command") || raw.starts_with("no command") {
-        // A command whose full name ends with `/<attempted>` is almost certainly
-        // what she meant — she dropped the leading category (`cargo/check` →
-        // `code/cargo/check`). Suggest only AiSafe names (the surface she can
-        // call), deduped and ordered for a stable, leak-free hint.
-        let suffix = format!("/{normalized}");
-        let mut suggestions: Vec<&'static str> = command_registry()
+    // The exact how-to-call manual for a command SHE can run, rendered inline so the
+    // fix rides back in THIS observation — she retries next turn with no discovery
+    // detour (Joel: "feedback truly links back into cognition effectively"). Single
+    // source of truth: the same renderer `commands/help` uses.
+    let manual_for = |name: &str| -> Option<String> {
+        command_registry()
             .into_iter()
-            .filter(|d| d.access_level == AccessLevel::AiSafe && d.name.ends_with(&suffix))
+            .find(|d| d.name == name && d.access_level == AccessLevel::AiSafe)
+            .map(|d| crate::commands::help::render_ai_help(d.name, d.description, &d.params_schema))
+    };
+
+    // Unknown command: the substrate's dev-facing message is useless to her. Suggest
+    // the nearest AiSafe names (category + shared-segment match — catches both a
+    // dropped category `cargo/check`→`code/cargo/check` AND a wrong sibling
+    // `commands/describe`→`commands/help`), and INLINE the top match's manual so the
+    // right call is right there.
+    if raw.contains("no Rust module handles command") || raw.starts_with("no command") {
+        let ai_names: Vec<&'static str> = command_registry()
+            .into_iter()
+            .filter(|d| d.access_level == AccessLevel::AiSafe)
             .map(|d| d.name)
             .collect();
-        suggestions.sort_unstable();
-        suggestions.dedup();
-        let did_you_mean = match suggestions.as_slice() {
-            [] => String::new(),
-            [one] => format!(" Did you mean `{one}`?"),
-            many => format!(
-                " Did you mean one of: {}?",
-                many.iter().map(|n| format!("`{n}`")).collect::<Vec<_>>().join(", ")
-            ),
-        };
+        let suggestions = crate::commands::help::did_you_mean(&normalized, &ai_names);
+        if let ([best, ..], Some(manual)) =
+            (suggestions.as_slice(), suggestions.first().and_then(|b| manual_for(b)))
+        {
+            let list = suggestions
+                .iter()
+                .map(|n| format!("`{n}`"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let _ = best;
+            return format!(
+                "`{normalized}` is not a tool you can call. Closest: {list}.\n\n\
+                 Here is how to call the first one — retry with this shape:\n{manual}"
+            );
+        }
         return format!(
-            "`{normalized}` is not a tool you can call.{did_you_mean} \
-             Call `commands/list` (optionally with a `filter` keyword) to find the \
-             right tool, then `commands/help` with its exact name to see the \
-             arguments and an example before you retry."
+            "`{normalized}` is not a tool you can call. Call `commands/help` with no \
+             arguments for the full list of what you CAN call, then retry."
         );
     }
 
     // Bad/missing arguments: the `[invalid]` prefix means serde already named the
-    // offending field — reinforce the manual so she gets the exact shape + example.
+    // offending field — INLINE the exact shape + example so she fixes it in place
+    // instead of spending a turn on `commands/help`.
     if raw.contains("[invalid]") {
+        if let Some(manual) = manual_for(&normalized) {
+            return format!(
+                "{raw}\n\nHere is the correct call — fix your arguments and retry:\n{manual}"
+            );
+        }
         return format!(
             "{raw}\n→ Call `commands/help` with name \"{normalized}\" to see the \
              exact argument names, types, and a fill-in-the-blanks example, then retry."
