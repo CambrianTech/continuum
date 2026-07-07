@@ -1,17 +1,15 @@
 {
-  "_comment": "Reproducible benchmark matrix. Copy to config.json and edit. Opponents are EXTERNAL /v1 endpoints you bring up yourself (a local llama-server, unsloth gateway, ollama, cloud API, or an airc node) — never a dependency of ours. 'ours' runs through a live Continuum core. Fill each runner's `published` map with the model's OWN published score for a benchmark (from its model card / paper) to render it next to what we measured identically.",
-
+  "_comment": "Reproducible benchmark matrix. Copy to config.json and edit. Opponents are EXTERNAL /v1 endpoints you bring up yourself (a local llama-server, unsloth gateway, ollama, cloud API, or an airc node) \u2014 never a dependency of ours. 'ours' runs through a live Continuum core. Fill each runner's `published` map with the model's OWN published score for a benchmark (from its model card / paper) to render it next to what we measured identically.",
   "benchmarks": [
     {
       "name": "humaneval-rs",
-      "gym": "docs/genome/humaneval-rs.jsonl",
+      "catalog": "humaneval-rs",
       "limit": 40,
       "max_acts": 6,
       "max_retries": 0,
       "timeout": 5400
     }
   ],
-
   "runners": [
     {
       "kind": "ours",

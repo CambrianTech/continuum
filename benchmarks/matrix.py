@@ -29,10 +29,20 @@ import argparse, json, os, re, subprocess, sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
+sys.path.insert(0, HERE)
+import catalog  # the benchmark catalog — pull/resolve by name, like the model catalog
 
 
 def _resolve(p):
     return p if os.path.isabs(p) else os.path.join(REPO, p)
+
+
+def bench_path(bench):
+    """A benchmark is referenced by `catalog` name (pulled + cached on demand) or an explicit
+    `gym` path. Catalog-by-name is the reproducible default; managed like the model catalog."""
+    if bench.get("catalog"):
+        return catalog.resolve(bench["catalog"])
+    return _resolve(bench["gym"])
 
 
 def run_opponent(r, bench):
@@ -40,7 +50,7 @@ def run_opponent(r, bench):
     cmd = [
         sys.executable, os.path.join(HERE, "coder", "oneshot_opponent.py"),
         "--endpoint", r["endpoint"], "--model", r["model"], "--label", r["label"],
-        "--gym", _resolve(bench["gym"]), "--limit", str(bench.get("limit", 40)),
+        "--gym", bench_path(bench), "--limit", str(bench.get("limit", 40)),
     ]
     if r.get("api_key"):
         cmd += ["--api-key", r["api_key"]]
@@ -54,7 +64,7 @@ def run_opponent(r, bench):
 def run_ours(r, bench):
     """Score a benchmark THROUGH the Continuum core (full system), via cu cognition/eval."""
     cu = r.get("cu", os.path.expanduser("~/.continuum/cache/cargo-target/debug/cu"))
-    gym = _resolve(bench["gym"])
+    gym = bench_path(bench)
     limit = bench.get("limit", 40)
     slice_path = f"/tmp/mtx_{os.getpid()}_{bench['name']}.jsonl"
     with open(gym) as f, open(slice_path, "w") as o:
