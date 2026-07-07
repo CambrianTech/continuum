@@ -343,8 +343,27 @@ pub const GLOB_MAX_MATCHES: usize = 5_000;
 
 /// Allowed file extensions for write operations.
 pub const ALLOWED_EXTENSIONS: &[&str] = &[
-    "ts", "tsx", "js", "jsx", "json", "md", "css", "html", "rs", "toml", "yaml", "yml", "txt",
-    "sh", "py",
+    // web / TS-JS
+    "ts", "tsx", "js", "jsx", "mjs", "cjs", "json", "jsonc", "css", "scss", "sass", "less",
+    "html", "htm", "vue", "svelte", "astro", "graphql", "gql", "wasm",
+    // systems / native
+    "rs", "c", "h", "cpp", "cc", "cxx", "hpp", "hh", "go", "zig",
+    // Apple / mobile — the reason this list was too small (iPhone apps need these)
+    "swift", "m", "mm", "kt", "kts", "java", "gradle", "xcconfig", "plist", "entitlements",
+    "storyboard", "xib", "pbxproj", "dart", "podspec",
+    // scripting / other langs
+    "py", "pyi", "rb", "php", "pl", "lua", "r", "jl", "ex", "exs", "erl", "scala", "clj",
+    "hs", "ml", "fs", "cs", "vb", "groovy", "nim", "cr",
+    // shell / build
+    "sh", "bash", "zsh", "fish", "bat", "ps1", "mk", "cmake", "make", "bazel", "bzl", "just",
+    "dockerfile", "containerfile",
+    // config / data / markup
+    "toml", "yaml", "yml", "ini", "cfg", "conf", "properties", "env", "xml", "csv", "tsv",
+    "proto", "sql", "prisma", "tf", "hcl", "lock",
+    // docs / text
+    "md", "mdx", "markdown", "txt", "rst", "adoc", "text", "log",
+    // dotfiles / no-extension configs commonly needed
+    "gitignore", "gitattributes", "editorconfig", "npmrc", "nvmrc", "prettierrc", "eslintrc",
 ];
 
 /// Maximum file size for write operations (1MB).
