@@ -77,6 +77,22 @@ pub struct CommandCompletedEvent {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub error: Option<String>,
+
+    /// The dispatch handle (UUID) when this command was fired as a TRACKED background
+    /// dispatch (`CommandExecutor::dispatch_background`). Absent for ordinary synchronous
+    /// commands, which stay thin. Lets a subscriber — e.g. a persona that sent a sentinel
+    /// away — match this completion to the exact call it dispatched, and reuse the same
+    /// handle in a follow-up command (cancel/query).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional, type = "string")]
+    pub handle: Option<uuid::Uuid>,
+
+    /// The command's JSON result, included ONLY for tracked background dispatches — so the
+    /// dispatcher gets the outcome from the event itself, no second call. Absent for
+    /// synchronous commands (the caller already holds the return value).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional, type = "unknown")]
+    pub result: Option<serde_json::Value>,
 }
 
 /// The canonical bus topic for command-completion events.
@@ -96,6 +112,8 @@ mod tests {
             duration_ms: 42,
             success: true,
             error: None,
+            handle: None,
+            result: None,
         };
         let wire = serde_json::to_value(&original).expect("serialize");
         assert_eq!(wire["commandName"], "chat/send");
@@ -104,6 +122,14 @@ mod tests {
         assert!(
             !wire.as_object().unwrap().contains_key("error"),
             "error elided when None"
+        );
+        assert!(
+            !wire.as_object().unwrap().contains_key("handle"),
+            "handle elided when None — sync commands stay thin"
+        );
+        assert!(
+            !wire.as_object().unwrap().contains_key("result"),
+            "result elided when None"
         );
 
         let parsed: CommandCompletedEvent =
@@ -118,6 +144,8 @@ mod tests {
             duration_ms: 7,
             success: false,
             error: Some("handle not found".to_string()),
+            handle: None,
+            result: None,
         };
         let wire = serde_json::to_value(&original).expect("serialize");
         assert_eq!(wire["success"], false);

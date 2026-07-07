@@ -37,4 +37,18 @@ success: boolean,
  * `Err(String)` value that bubbled out of the dispatch chain.
  * Absent on success.
  */
-error?: string, };
+error?: string, 
+/**
+ * The dispatch handle (UUID) when this command was fired as a TRACKED background
+ * dispatch (`CommandExecutor::dispatch_background`). Absent for ordinary synchronous
+ * commands, which stay thin. Lets a subscriber — e.g. a persona that sent a sentinel
+ * away — match this completion to the exact call it dispatched, and reuse the same
+ * handle in a follow-up command (cancel/query).
+ */
+handle?: string, 
+/**
+ * The command's JSON result, included ONLY for tracked background dispatches — so the
+ * dispatcher gets the outcome from the event itself, no second call. Absent for
+ * synchronous commands (the caller already holds the return value).
+ */
+result?: unknown, };
