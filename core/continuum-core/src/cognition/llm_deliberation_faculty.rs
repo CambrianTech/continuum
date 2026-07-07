@@ -36,7 +36,6 @@ use super::deliberation_budget::{est_tokens, tail_to_tokens, turn_message_line};
 use super::deliberation_parse::decision_from_response;
 use super::deliberation_prompt;
 use super::persona_tools;
-use super::tool_relevance::{self, LexicalToolRelevance};
 use super::workspace::{Contribution, Decision, Faculty, FacultyId, Workspace};
 use crate::ai::adapter::AIProviderAdapter;
 use crate::ai::types::{
@@ -639,40 +638,25 @@ impl LlmDeliberationFaculty {
         }
     }
 
-    /// Choose which tool categories the bookmarked menu OPENS (lists verbs inline)
-    /// this turn, from what the persona is doing NOW. The relevance signal is the
-    /// live burst (`ws.world_state`) plus the enrichment already selected for the turn
-    /// (`ws.broadcast` — recall, working memory, situation); scored against the full,
-    /// UN-budgeted broadcast so the result is a pure function of `ws` (see the
-    /// same-set-into-both-composes note in [`Self::prompt_view`]). Lexical scorer
-    /// (outlier A, [`LexicalToolRelevance`]) — a neural embedding scorer is the
-    /// deferred outlier B. `sticky = None`: the "where you were" cursor is per-(user,
-    /// room) state owned by airc (task #89), not yet threaded here. Empty tool set →
-    /// empty (no menu at all).
-    fn expanded_categories(&self, ws: &Workspace) -> BTreeSet<String> {
+    /// Which tool categories open (list their verbs inline) this turn — now ALL of them.
+    /// The full tool surface is always shown; relevance-scored progressive disclosure was
+    /// a weak-model crutch that hid a capable persona's own hands (see the body). Empty
+    /// tool set → empty (no menu at all).
+    fn expanded_categories(&self, _ws: &Workspace) -> BTreeSet<String> {
         if self.tools.is_empty() {
             return BTreeSet::new();
         }
-        let categories = persona_tools::group_categories(&self.tools);
-        // Relevance signal: the live situation + the turn's grounding. Budget-
-        // independent (full broadcast, not the trimmed context) so `expanded` is
-        // stable between the estimate and the final compose.
-        let mut signal = String::with_capacity(ws.world_state.len() + 256);
-        signal.push_str(&ws.world_state);
-        for c in &ws.broadcast {
-            if c.decision.is_none() {
-                signal.push('\n');
-                signal.push_str(&c.content);
-            }
-        }
-        tool_relevance::select_expanded_categories(
-            &LexicalToolRelevance,
-            &categories,
-            &signal,
-            None,
-            MAX_EXPANDED_CATEGORIES,
-            RELEVANCE_FLOOR,
-        )
+        // Show her the FULL tool surface — EVERY category's verbs inline, not a collapsed
+        // bookmark she has to guess she can open. Hiding tools behind relevance-scored
+        // progressive disclosure was a crutch for a weak model, and it CRIPPLES a capable
+        // one: she can't reach for what she can't see, so she says "I can't execute that"
+        // about a tool she was authorized for all along. A competent peer sees all her
+        // hands. Category names + arg names are cheap tokens (not the typed schemas —
+        // those still load on demand via commands/help). [[write-cognition-as-a-parent-above-lowered-expectations]]
+        persona_tools::group_categories(&self.tools)
+            .into_iter()
+            .map(|(cat, _)| cat.to_string())
+            .collect()
     }
 
     /// Build the role-attributed conversation thread from the workspace's
@@ -779,19 +763,6 @@ impl LlmDeliberationFaculty {
 /// tokenize far denser than English — so we OVER-count tokens to stay safely
 /// under `n_ctx`. The completion reserve absorbs the remaining slack.
 /// How many tool categories the bookmarked menu may OPEN (list their verbs inline)
-/// on one turn. The rest render as collapsed one-line bookmarks. Bounded so the menu
-/// stays a small per-turn render (a spine of headers + a few opened categories) —
-/// the whole point of the flip away from the ~1.8k-token open-everything catalog.
-/// Consumed by [`LlmDeliberationFaculty::expanded_categories`].
-const MAX_EXPANDED_CATEGORIES: usize = 4;
-
-/// The minimum lexical-relevance score a category must clear to be OPENED by
-/// [`tool_relevance::select_expanded_categories`]. A small positive floor (not zero)
-/// so an off-task turn (pure chat, no tool vocabulary in the situation) opens NOTHING
-/// — she still sees the full header spine and reaches any tool via
-/// `commands/list --filter`. Tuned low: one on-topic keyword should open a category.
-const RELEVANCE_FLOOR: f32 = 0.02;
-
 /// A snapshot of exactly what the deliberation faculty sends the model — the
 /// glass box over the RAG/prompt. Print it, capture it, diff it across turns.
 #[derive(Debug, Clone)]
