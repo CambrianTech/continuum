@@ -1122,15 +1122,25 @@ async fn run_pass(
         let mut attempt = 1u32;
         while !ok
             && attempt <= max_retries
-            && t.test.is_some()
+            && (t.test.is_some() || t.dod_shell.is_some())
             && settled.inference_error.is_none()
         {
+            // For a dod_shell task the grader checks the FILE she wrote, so the fix must be
+            // SAVED with the tool, not narrated as a code fence (glass-box: on recovery she
+            // produced the correct fix — added the missing derive — but as a bare ```rust```
+            // block, so it never landed). Direct her to re-write the file with the tool.
+            let fix_directive = if t.dod_shell.is_some() {
+                "Fix the code so every check passes, then use your code/write tool AGAIN to \
+                 save the COMPLETE corrected file to the SAME path as before (do not just \
+                 paste the code — it must be written to the file to be re-tested)."
+            } else {
+                "Fix the code so every test passes, then reply with the COMPLETE corrected \
+                 solution (not a diff)."
+            };
             let fix_prompt = format!(
-                "Your previous solution did NOT pass the tests.\n\n\
-                 TASK:\n{}\n\nYOUR SOLUTION:\n{}\n\nTEST / COMPILER OUTPUT:\n{}\n\n\
-                 Fix the code so every test passes, then reply with the COMPLETE corrected \
-                 solution (not a diff).",
-                t.prompt, answer, grade,
+                "Your previous solution did NOT pass.\n\n\
+                 TASK:\n{}\n\nYOUR SOLUTION:\n{}\n\nTEST / COMPILER OUTPUT:\n{}\n\n{}",
+                t.prompt, answer, grade, fix_directive,
             );
             let delivery = crate::persona::rag_budget::RagDelivery {
                 source_id: "airc".to_string(),
