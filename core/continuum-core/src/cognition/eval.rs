@@ -943,6 +943,11 @@ fn append_progress_ledger(result: &CognitionEvalResult, note: Option<&str>, eval
 /// paged into `cycle` — the A/B pages a gene in/out around two calls to this, so
 /// the base and candidate arms run the IDENTICAL motion (the only difference is
 /// the genome). That sameness is what makes the lift a fair measurement.
+/// How many times a FAILED (test-graded) task is handed its compiler/test output to fix
+/// before we score it a miss. This is the agentic-recovery budget — the edge over one-shot
+/// inference. 3 keeps a full eval bounded while giving real iteration room.
+const MAX_FAIL_RETRIES: u32 = 3;
+
 async fn run_pass(
     cycle: &crate::cognition::workspace::WorkspaceCycle,
     isolation: &crate::cognition::workspace::EvalIsolation,
@@ -1024,7 +1029,7 @@ async fn run_pass(
         // decline in her own words; she just isn't handed the silent hatch. The live
         // path computes directedness from real addressing (TODO #9); pinning it here
         // is the eval's exam-is-directed control. See `Workspace::directed_at_self`.
-        let settled = crate::cognition::act_observe::drive_to_settle(
+        let mut settled = crate::cognition::act_observe::drive_to_settle(
             cycle,
             burst,
             room,
@@ -1032,8 +1037,8 @@ async fn run_pass(
             crate::cognition::workspace::TurnFraming::directed(),
         )
         .await;
-        let answer = settled.spoken.unwrap_or_default();
-        let (ok, grade) = if let Some(cause) = &settled.inference_error {
+        let mut answer = settled.spoken.clone().unwrap_or_default();
+        let (mut ok, mut grade) = if let Some(cause) = &settled.inference_error {
             // The model call FAILED (timeout, 5xx, a serving lane refusing a model it
             // isn't hosting) — NOT a wrong answer. Grade it a named infra failure so a
             // serving hiccup never masquerades as a capability miss and corrupts the
@@ -1049,6 +1054,76 @@ async fn run_pass(
                 !t.expect.is_empty() && answer.to_lowercase().contains(&t.expect.to_lowercase());
             (m, if m { "substring match".into() } else { "no match".into() })
         };
+        // AGENTIC RECOVERY — the whole point of an agentic coder over one-shot inference,
+        // and the thing that beats unsloth on the same weights: when the solution FAILS the
+        // compiled tests, hand the model the exact test/compiler output and let it FIX and
+        // resubmit, up to `MAX_FAIL_RETRIES` times. Unsloth's plain generation never sees
+        // the failure; ours does (the full-result feedback threads it back). Only for
+        // test-graded tasks (a real compiler verdict to iterate against) and never on an
+        // infra failure (retrying a serving hiccup fixes nothing).
+        let mut total_acts = settled.acts as u32;
+        let mut attempt = 1u32;
+        while !ok
+            && attempt <= MAX_FAIL_RETRIES
+            && t.test.is_some()
+            && settled.inference_error.is_none()
+        {
+            let fix_prompt = format!(
+                "Your previous solution did NOT pass the tests.\n\n\
+                 TASK:\n{}\n\nYOUR SOLUTION:\n{}\n\nTEST / COMPILER OUTPUT:\n{}\n\n\
+                 Fix the code so every test passes, then reply with the COMPLETE corrected \
+                 solution (not a diff).",
+                t.prompt, answer, grade,
+            );
+            let delivery = crate::persona::rag_budget::RagDelivery {
+                source_id: "airc".to_string(),
+                items: vec![crate::persona::rag_budget::RagItem {
+                    content: fix_prompt,
+                    tokens: 0,
+                    metadata: serde_json::json!({
+                        "peer_id": "peer",
+                        "occurred_at_ms": EVAL_EPOCH_MS,
+                    }),
+                }],
+                tokens_used: 0,
+                continuation: None,
+                resolution_used: crate::persona::rag_budget::ResolutionPreference::Raw,
+            };
+            let retry_burst = crate::cognition::workspace::Burst::from_turns(
+                room,
+                crate::persona::service_loop::build_workspace_turns(
+                    std::slice::from_ref(&delivery),
+                    "",
+                    "",
+                    None,
+                ),
+            );
+            settled = crate::cognition::act_observe::drive_to_settle(
+                cycle,
+                retry_burst,
+                room,
+                max_acts,
+                crate::cognition::workspace::TurnFraming::directed(),
+            )
+            .await;
+            total_acts += settled.acts as u32;
+            answer = settled.spoken.clone().unwrap_or_default();
+            let regrade = if let Some(cause) = &settled.inference_error {
+                (false, format!("inference failed: {cause}"))
+            } else if let Some(test) = &t.test {
+                let lang = t.lang.as_deref().unwrap_or("rust");
+                test_grade(&answer, lang, test).await
+            } else {
+                (ok, grade.clone())
+            };
+            ok = regrade.0;
+            grade = if ok {
+                format!("tests passed (recovered on retry {attempt})")
+            } else {
+                regrade.1
+            };
+            attempt += 1;
+        }
         if ok {
             pass += 1;
         }
@@ -1060,7 +1135,7 @@ async fn run_pass(
             id: t.id.clone(),
             ok,
             grade,
-            acts: settled.acts as u32,
+            acts: total_acts,
             answer: answer.chars().take(200).collect(),
             latency_ms: m.latency_ms,
             output_tokens: m.output_tokens,
