@@ -370,6 +370,15 @@ pub struct EvalTask {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub lang: Option<String>,
+    /// A REAL definition-of-done: a shell command run in the persona's workspace AFTER she
+    /// acts (edits files with her tools). Pass = exit 0. This is what makes a task REAL vs
+    /// a HumanEval toy — the grade checks the actual repo state her edits produced (e.g.
+    /// `cargo test --test foo`), not code extracted from her chat answer. Supersedes
+    /// `test`/`expect`; the recovery loop feeds its stdout+stderr back on failure so she
+    /// iterates against the real compiler/test output until it goes green.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub dod_shell: Option<String>,
 }
 
 /// A gene to page in for the candidate arm of an A/B. The persona runs the eval
@@ -948,6 +957,41 @@ fn append_progress_ledger(result: &CognitionEvalResult, note: Option<&str>, eval
 /// inference. 3 keeps a full eval bounded while giving real iteration room.
 const MAX_FAIL_RETRIES: u32 = 3;
 
+/// Run a REAL definition-of-done: a shell command in the persona's workspace (cwd). Pass =
+/// exit 0. Returns `(ok, verdict)`; on failure the verdict carries the real stdout+stderr
+/// (tail-bounded) so the recovery loop hands the model the actual error to fix against.
+/// This is how a persona works on REAL things — her file edits are checked by a real build/
+/// test, not by grading text she typed into chat.
+async fn run_dod(cmd: &str) -> (bool, String) {
+    match tokio::process::Command::new("bash")
+        .arg("-lc")
+        .arg(cmd)
+        .output()
+        .await
+    {
+        Ok(o) => {
+            let ok = o.status.success();
+            let mut s = String::from_utf8_lossy(&o.stdout).into_owned();
+            s.push_str(&String::from_utf8_lossy(&o.stderr));
+            let s = s.trim();
+            let tail: String = {
+                let n = s.chars().count();
+                if n > 2000 {
+                    format!("…{}", s.chars().skip(n - 2000).collect::<String>())
+                } else {
+                    s.to_string()
+                }
+            };
+            if ok {
+                (true, format!("DoD passed: `{cmd}`"))
+            } else {
+                (false, format!("DoD `{cmd}` FAILED:\n{tail}"))
+            }
+        }
+        Err(e) => (false, format!("DoD `{cmd}` could not run: {e}")),
+    }
+}
+
 async fn run_pass(
     cycle: &crate::cognition::workspace::WorkspaceCycle,
     isolation: &crate::cognition::workspace::EvalIsolation,
@@ -1046,6 +1090,9 @@ async fn run_pass(
             // only as trustworthy as the metric). `ok = false`, but the grade tells the
             // truth instead of a misleading "no match".
             (false, format!("inference failed: {cause}"))
+        } else if let Some(dod) = &t.dod_shell {
+            // REAL task: run the definition-of-done against the repo state her edits produced.
+            run_dod(dod).await
         } else if let Some(test) = &t.test {
             let lang = t.lang.as_deref().unwrap_or("rust");
             test_grade(&answer, lang, test).await
@@ -1110,6 +1157,8 @@ async fn run_pass(
             answer = settled.spoken.clone().unwrap_or_default();
             let regrade = if let Some(cause) = &settled.inference_error {
                 (false, format!("inference failed: {cause}"))
+            } else if let Some(dod) = &t.dod_shell {
+                run_dod(dod).await
             } else if let Some(test) = &t.test {
                 let lang = t.lang.as_deref().unwrap_or("rust");
                 test_grade(&answer, lang, test).await
