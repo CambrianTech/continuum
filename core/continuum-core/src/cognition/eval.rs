@@ -1083,7 +1083,7 @@ async fn run_pass(
         // decline in her own words; she just isn't handed the silent hatch. The live
         // path computes directedness from real addressing (TODO #9); pinning it here
         // is the eval's exam-is-directed control. See `Workspace::directed_at_self`.
-        let mut settled = crate::cognition::act_observe::drive_to_settle(
+        let settled = crate::cognition::act_observe::drive_to_settle(
             cycle,
             burst,
             room,
@@ -1091,8 +1091,8 @@ async fn run_pass(
             crate::cognition::workspace::TurnFraming::directed(),
         )
         .await;
-        let mut answer = settled.spoken.clone().unwrap_or_default();
-        let (mut ok, mut grade) = if let Some(cause) = &settled.inference_error {
+        let answer = settled.spoken.clone().unwrap_or_default();
+        let (ok, grade) = if let Some(cause) = &settled.inference_error {
             // The model call FAILED (timeout, 5xx, a serving lane refusing a model it
             // isn't hosting) — NOT a wrong answer. Grade it a named infra failure so a
             // serving hiccup never masquerades as a capability miss and corrupts the
@@ -1111,88 +1111,17 @@ async fn run_pass(
                 !t.expect.is_empty() && answer.to_lowercase().contains(&t.expect.to_lowercase());
             (m, if m { "substring match".into() } else { "no match".into() })
         };
-        // AGENTIC RECOVERY — the whole point of an agentic coder over one-shot inference,
-        // and the thing that beats unsloth on the same weights: when the solution FAILS the
-        // compiled tests, hand the model the exact test/compiler output and let it FIX and
-        // resubmit, up to `MAX_FAIL_RETRIES` times. Unsloth's plain generation never sees
-        // the failure; ours does (the full-result feedback threads it back). Only for
-        // test-graded tasks (a real compiler verdict to iterate against) and never on an
-        // infra failure (retrying a serving hiccup fixes nothing).
-        let mut total_acts = settled.acts as u32;
-        let mut attempt = 1u32;
-        while !ok
-            && attempt <= max_retries
-            && (t.test.is_some() || t.dod_shell.is_some())
-            && settled.inference_error.is_none()
-        {
-            // For a dod_shell task the grader checks the FILE she wrote, so the fix must be
-            // SAVED with the tool, not narrated as a code fence (glass-box: on recovery she
-            // produced the correct fix — added the missing derive — but as a bare ```rust```
-            // block, so it never landed). Direct her to re-write the file with the tool.
-            let fix_directive = if t.dod_shell.is_some() {
-                "Fix the code so every check passes, then use your code/write tool AGAIN to \
-                 save the COMPLETE corrected file to the SAME path as before (do not just \
-                 paste the code — it must be written to the file to be re-tested)."
-            } else {
-                "Fix the code so every test passes, then reply with the COMPLETE corrected \
-                 solution (not a diff)."
-            };
-            let fix_prompt = format!(
-                "Your previous solution did NOT pass.\n\n\
-                 TASK:\n{}\n\nYOUR SOLUTION:\n{}\n\nTEST / COMPILER OUTPUT:\n{}\n\n{}",
-                t.prompt, answer, grade, fix_directive,
-            );
-            let delivery = crate::persona::rag_budget::RagDelivery {
-                source_id: "airc".to_string(),
-                items: vec![crate::persona::rag_budget::RagItem {
-                    content: fix_prompt,
-                    tokens: 0,
-                    metadata: serde_json::json!({
-                        "peer_id": "peer",
-                        "occurred_at_ms": EVAL_EPOCH_MS,
-                    }),
-                }],
-                tokens_used: 0,
-                continuation: None,
-                resolution_used: crate::persona::rag_budget::ResolutionPreference::Raw,
-            };
-            let retry_burst = crate::cognition::workspace::Burst::from_turns(
-                room,
-                crate::persona::service_loop::build_workspace_turns(
-                    std::slice::from_ref(&delivery),
-                    "",
-                    "",
-                    None,
-                ),
-            );
-            settled = crate::cognition::act_observe::drive_to_settle(
-                cycle,
-                retry_burst,
-                room,
-                max_acts,
-                crate::cognition::workspace::TurnFraming::directed(),
-            )
-            .await;
-            total_acts += settled.acts as u32;
-            answer = settled.spoken.clone().unwrap_or_default();
-            let regrade = if let Some(cause) = &settled.inference_error {
-                (false, format!("inference failed: {cause}"))
-            } else if let Some(dod) = &t.dod_shell {
-                run_dod(dod).await
-            } else if let Some(test) = &t.test {
-                let lang = t.lang.as_deref().unwrap_or("rust");
-                test_grade(&answer, lang, test).await
-            } else {
-                (ok, grade.clone())
-            };
-            ok = regrade.0;
-            grade = if ok {
-                format!("tests passed (recovered on retry {attempt})")
-            } else {
-                regrade.1
-            };
-            attempt += 1;
-        }
+        // NO test-only recovery wrapper here. Iterating on a failure is a PRODUCTION
+        // persona behavior — she runs her own verification (a shell/compile tool) inside
+        // `drive_to_settle`, sees the failure as an ordinary tool observation (threaded back
+        // by the full-result fix), and fixes, all in the ONE shared act→observe loop. The
+        // eval must exercise that identical path — a grader-fed retry loop that only exists
+        // at eval time would measure a fiction (Joel: "you can't code the test and prod path
+        // differently, or you never get a valid test"). So: one settle, then grade the
+        // artifact. `max_retries` no longer drives a harness loop; `max_acts` is the real
+        // knob — it bounds the persona's OWN act→observe iterations, in test and prod alike.
+        let _ = max_retries;
+        let total_acts = settled.acts as u32;
         if ok {
             pass += 1;
         }
