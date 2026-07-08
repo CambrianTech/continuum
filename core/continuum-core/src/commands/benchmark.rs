@@ -164,6 +164,11 @@ pub struct BenchmarkRunParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional, type = "number")]
     pub reviewers: Option<u32>,
+    /// Fire-and-poll (#86): run the eval DETACHED (returns immediately; result lands in the
+    /// progress ledger). Essential for long acting/team runs that outlive the client timeout.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub detach: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, TS)]
@@ -242,6 +247,7 @@ impl ActionCommand for BenchmarkRun {
                     eval_set: Some(tmp.display().to_string()),
                     base_model_id: p.base_model_id.clone(),
                     reviewers: p.reviewers,
+                    detach: p.detach,
                     max_acts: p.max_acts.or(Some(6)),
                     max_retries: Some(0),
                     note: Some(match &p.base_model_id {

@@ -524,6 +524,13 @@ pub struct CognitionEvalParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub note: Option<String>,
+    /// Fire-and-poll (#86): when true, the eval is spawned DETACHED — `run` returns a job
+    /// handle immediately (so it survives the IPC client disconnecting on a long acting run)
+    /// and the REAL result lands in the progress ledger (`~/.continuum/progress/<persona>.jsonl`),
+    /// which the caller polls by `note`. Default/false = run inline and block as before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub detach: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, TS)]
@@ -571,9 +578,15 @@ pub struct EvalTaskResult {
     pub decode_ms: u64,
 }
 
-#[derive(Debug, Clone, Serialize, TS)]
+#[derive(Debug, Clone, Serialize, TS, Default)]
 pub struct CognitionEvalResult {
     pub persona_id: String,
+    /// True = this is a fire-and-poll JOB HANDLE (#86), NOT a completed run: the eval was
+    /// spawned detached and its real result is in the progress ledger, not in these fields
+    /// (which are all zero on a handle). Poll `~/.continuum/progress/<persona_id>.jsonl`,
+    /// filtering by the `note` you passed. False/absent = a normal, complete result.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub detached: bool,
     /// Tasks passed.
     #[ts(type = "number")]
     pub score: u32,
@@ -678,6 +691,46 @@ impl ActionCommand for CognitionEval {
     type Output = CognitionEvalResult;
 
     async fn run(&self, _ctx: &Ctx, p: CognitionEvalParams) -> Result<CognitionEvalResult, CommandError> {
+        // Fire-and-poll (#86): a long ACTING eval runs many minutes — far past any IPC client
+        // timeout — so `detach` spawns it on the runtime (the body owns its params and reaches
+        // cognition via the global workspace registry, needing neither `self` nor `ctx`),
+        // returns a job handle NOW, and lets the real result land in the progress ledger. The
+        // run survives the client disconnecting; the caller polls
+        // `~/.continuum/progress/<persona>.jsonl` by `note`.
+        if p.detach.unwrap_or(false) {
+            let persona_id = p.persona_id.clone();
+            let note = p.note.clone().unwrap_or_default();
+            let mut inner = p.clone();
+            inner.detach = Some(false);
+            tokio::spawn(async move {
+                match CognitionEval::run_eval(inner).await {
+                    Ok(r) => tracing::info!(
+                        note = %note,
+                        score = r.score,
+                        total = r.total,
+                        "cognition/eval detached run complete — result in progress ledger"
+                    ),
+                    Err(e) => {
+                        tracing::error!(note = %note, error = %e, "cognition/eval detached run failed")
+                    }
+                }
+            });
+            return Ok(CognitionEvalResult {
+                detached: true,
+                persona_id,
+                ..Default::default()
+            });
+        }
+        CognitionEval::run_eval(p).await
+    }
+}
+
+impl CognitionEval {
+    /// The eval body — deliberately ctx-free (reaches the persona's live cognition through
+    /// the global workspace registry, owns its params), so it runs inline from `run` OR is
+    /// spawned detached for fire-and-poll (#86). One code path, two launch modes: the test
+    /// and prod paths stay identical [[validate-via-pure-rust-not-npm-jtag]].
+    async fn run_eval(p: CognitionEvalParams) -> Result<CognitionEvalResult, CommandError> {
         let persona_uuid = Uuid::parse_str(&p.persona_id).map_err(|_| {
             CommandError::Invalid(format!("persona_id '{}' is not a valid UUID", p.persona_id))
         })?;
@@ -886,6 +939,7 @@ impl ActionCommand for CognitionEval {
             let verify = self_verify_rate(&gene_results);
             let agg = speed_latency_aggregates(&gene_results);
             let result = CognitionEvalResult {
+                detached: false,
                 persona_id: persona_uuid.to_string(),
                 score: gene_score,
                 total,
@@ -967,6 +1021,7 @@ impl ActionCommand for CognitionEval {
         let verify = self_verify_rate(&results);
         let agg = speed_latency_aggregates(&results);
         let result = CognitionEvalResult {
+            detached: false,
             persona_id: persona_uuid.to_string(),
             score,
             total,
