@@ -132,6 +132,60 @@ pub async fn test_grade(answer: &str, lang: &str, test: &str) -> (bool, String) 
     }
 }
 
+/// ARTIFACT grade: read her acted solution from an in-workspace file (her HANDS) and run the
+/// SAME harness as [`test_grade`] (strip her `main`, append the task's test, compile, run) — the
+/// only difference is the code source: the file she wrote + compiled, not a block extracted from
+/// her spoken answer. This is the honest measure of an ACTING persona; a spoken-text grade is
+/// blind to code she put in a file. `rel_path` resolves against the core cwd (the workspace root
+/// `code/write` sandboxes to). Fails LOUD (never a silent pass) if she wrote nothing, the path
+/// escapes the workspace, or the file is empty. The file is removed after grading so a stale
+/// artifact from this or a prior task can never false-pass a later one.
+pub async fn test_grade_file(rel_path: &str, lang: &str, test: &str) -> (bool, String) {
+    match lang {
+        "rust" | "rs" => {}
+        other => {
+            return (
+                false,
+                format!("unsupported lang '{other}' (Rust gym: lang must be 'rust')"),
+            )
+        }
+    }
+    let path = std::path::Path::new(rel_path);
+    if path.is_absolute() || rel_path.contains("..") {
+        return (
+            false,
+            format!("solution_file must be a relative in-workspace path, got '{rel_path}'"),
+        );
+    }
+    let code = match std::fs::read_to_string(path) {
+        Ok(c) if !c.trim().is_empty() => c,
+        Ok(_) => {
+            let _ = std::fs::remove_file(path);
+            return (
+                false,
+                format!("solution_file '{rel_path}' is empty — she wrote no code"),
+            );
+        }
+        Err(_) => {
+            return (
+                false,
+                format!("solution_file '{rel_path}' not found — she never wrote it (acts=0 on this task)"),
+            )
+        }
+    };
+    let _ = std::fs::remove_file(path);
+    let dir = std::env::temp_dir().join(format!("cu-gym-{}", Uuid::new_v4()));
+    if std::fs::create_dir_all(&dir).is_err() {
+        return (false, "temp dir create failed".to_string());
+    }
+    let result = grade_rust(&dir, &code, test).await;
+    let _ = std::fs::remove_dir_all(&dir);
+    match result {
+        Ok(()) => (true, "tests passed".to_string()),
+        Err(msg) => (false, msg),
+    }
+}
+
 /// Compile the candidate (with a `main` built from the task's test) using `rustc`,
 /// then run the binary. `Ok(())` iff it compiles AND the test asserts don't panic
 /// (exit 0). `Err` carries the first failing step's stderr — compile error or panic
@@ -246,6 +300,30 @@ mod tests {
         let (ok, grade) = test_grade(answer, "rust", "let _ = add(2, 3);").await;
         assert!(!ok);
         assert!(grade.contains("compile error"), "grade was: {grade}");
+    }
+
+    // what this catches: ARTIFACT grading reads HER FILE (an acting persona's hands), not
+    // spoken text — a correct file passes, the file is removed after grading so a stale
+    // artifact can't false-pass a later task, a missing file fails LOUD ("never wrote it" =
+    // acts=0), and a path escaping the workspace is refused. This is the seam that makes an
+    // ACTING persona measurable at all (a spoken-text grade is blind to code she filed).
+    #[tokio::test]
+    async fn artifact_grade_reads_the_file_passes_correct_cleans_up_and_fails_loud() {
+        let rel = format!("cu-gym-artifact-{}.rs", uuid::Uuid::new_v4());
+        std::fs::write(&rel, "pub fn dbl(x: i32) -> i32 { x * 2 }\n").unwrap();
+        let (ok, grade) = test_grade_file(&rel, "rust", "assert_eq!(dbl(3), 6);").await;
+        assert!(ok, "a correct solution file should pass: {grade}");
+        assert!(
+            !std::path::Path::new(&rel).exists(),
+            "the file must be removed after grading so it can't false-pass a later task"
+        );
+        let (ok2, grade2) = test_grade_file(&rel, "rust", "assert_eq!(dbl(3), 6);").await;
+        assert!(
+            !ok2 && grade2.contains("never wrote it"),
+            "a missing file must fail loud, not silently pass: {grade2}"
+        );
+        let (ok3, _) = test_grade_file("../escape.rs", "rust", "").await;
+        assert!(!ok3, "a path escaping the workspace must be refused");
     }
 
     // what this catches: a candidate that self-verifies with its OWN `fn main` (the
