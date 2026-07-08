@@ -442,6 +442,15 @@ pub struct EvalTask {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub dod_shell: Option<String>,
+    /// ARTIFACT grade: a relative in-workspace path she is told to write her solution to. When
+    /// set alongside `test`, the grade reads HER FILE (her hands) instead of extracting a code
+    /// block from her spoken answer (her mouth), then runs the SAME harness (strip her `main`,
+    /// append `test`, compile, run). This is how an ACTING persona is measured — the act→verify
+    /// loop is only visible if we grade what she actually wrote + compiled, not what she narrated.
+    /// The file lands in the workspace root (= core cwd, where `code/write` sandboxes writes).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub solution_file: Option<String>,
 }
 
 /// A gene to page in for the candidate arm of an A/B. The persona runs the eval
@@ -1324,6 +1333,13 @@ async fn run_pass(
             // only as trustworthy as the metric). `ok = false`, but the grade tells the
             // truth instead of a misleading "no match".
             (false, format!("inference failed: {cause}"))
+        } else if let (Some(file), Some(test)) = (&t.solution_file, &t.test) {
+            // ARTIFACT-graded: she was told to WRITE her solution to `file` and verify it with her
+            // own tools. Grade her HANDS (the file she wrote + compiled), not her MOUTH (spoken
+            // text) — the only way the act→verify loop shows up in the score. Same harness as
+            // test_grade (strip her main, append test, compile, run).
+            let lang = t.lang.as_deref().unwrap_or("rust");
+            crate::cognition::gym_grader::test_grade_file(file, lang, test).await
         } else if let Some(dod) = &t.dod_shell {
             // REAL task: run the definition-of-done against the repo state her edits produced.
             run_dod(dod).await
