@@ -353,8 +353,19 @@ async fn serve_persona_loop_inner(
     // concern runs over the CURRENT world-state (no inbound message), so the persona
     // pursues its own open intentions and goes idle only when its own judgment says
     // there is nothing to do. [[organic-substrate-continuous-concern-scheduler]].
-    let mut heartbeat = tokio::time::interval(std::time::Duration::from_millis(SELF_TICK_MS));
-    heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    // Each persona beats at ITS OWN rhythm — there is no shared metronome. The tempo comes
+    // from the being's own life: quick while there's something to engage, drifting toward
+    // restful when it's alone (exponential backoff to a cap). Different beings living
+    // different moments beat at different rates, so they never tick in lockstep — the
+    // thundering herd that made six minds stampede one model isn't scheduled-around, it
+    // simply never forms. A stable identity-derived phase desyncs even the first beat.
+    // [[design-the-persona-as-a-being]] [[idle-is-self-directed-free-time]].
+    let engaged_beat = std::time::Duration::from_millis(SELF_TICK_MS);
+    let rest_cap = std::time::Duration::from_millis(SELF_TICK_REST_CAP_MS);
+    let phase = std::time::Duration::from_millis(
+        (ctx.identity.peer_id.as_uuid().as_u128() as u64) % SELF_TICK_MS,
+    );
+    let mut next_beat = engaged_beat + phase;
     // Burst fingerprint of the last cycle (message OR self-tick), so a heartbeat
     // over an unchanged world is free. Shared by both paths: a message turn updates
     // it, so the very next tick doesn't re-deliberate the same burst.
@@ -366,16 +377,29 @@ async fn serve_persona_loop_inner(
                 Some(m) => Wake::Msg(m),
                 None => Wake::Stop,
             },
-            _ = heartbeat.tick() => Wake::Tick,
+            _ = tokio::time::sleep(next_beat) => Wake::Tick,
         };
         let msg = match wake {
             Wake::Stop => break,
             Wake::Tick => {
-                // Heartbeat slice — the mind gets time with no inbound message.
+                // Heartbeat slice — the mind gets time with no inbound message. Its OWN
+                // activity sets the next beat: if it found something new to work on
+                // (last_burst_fp advanced), stay quick; if it went idle, drift toward rest.
+                let before = last_burst_fp;
                 run_self_cycle(ctx, conversation, &opts, &mut last_burst_fp).await;
+                next_beat = if last_burst_fp != before {
+                    engaged_beat
+                } else {
+                    (next_beat + next_beat / 2).min(rest_cap)
+                };
                 continue;
             }
-            Wake::Msg(m) => m,
+            // A message means life in the room — snap back to a quick beat so she's present
+            // and responsive, not drifting in rest.
+            Wake::Msg(m) => {
+                next_beat = engaged_beat;
+                m
+            }
         };
         if msg.lamport <= high_water {
             outcome.turns_skipped += 1;
@@ -933,6 +957,11 @@ async fn serve_persona_loop_inner(
 /// conservative so a full LLM deliberation can't fire faster than the world
 /// meaningfully changes; the burst-fingerprint gate keeps idle ticks free.
 const SELF_TICK_MS: u64 = 3_000;
+/// Restful ceiling for the intrinsic heartbeat. An idle persona's beat backs off toward
+/// this (it is NOT a fixed metronome), so a quiet citizen rests instead of hammering the
+/// shared model, and many idle minds spread across time rather than stampeding it. A message
+/// or fresh work snaps the beat back to `SELF_TICK_MS`. See the loop in `serve_persona_loop`.
+const SELF_TICK_REST_CAP_MS: u64 = 20_000;
 
 /// Act budget for a DIRECTED live turn driven to settlement (the eval-validated
 /// `drive_to_settle` path). A directly-addressed question must converge to an
