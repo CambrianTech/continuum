@@ -1,26 +1,24 @@
-//! DuckDuckGo backend — the KEYLESS web-search floor.
+//! DuckDuckGo backend — the KEYLESS web-search floor, driven through a REAL browser.
 //!
-//! Uses the DuckDuckGo **Instant Answer API** (`api.duckduckgo.com/?format=json`).
-//! No key, no signup, clean JSON — so a persona on a fresh machine still has a
-//! working web hand. This was a deliberate choice over scraping the DDG HTML
-//! endpoints: those serve a bot-block ("anomaly") page to non-browser/server
-//! IPs, so a naive scrape silently returns nothing. The Instant Answer API is
-//! the reliable keyless path.
+//! Loads `html.duckduckgo.com/html/?q=…` in the host's headless Chromium (via
+//! [`super::browser::render_dom`]) and parses the rendered results table into
+//! [`WebHit`]s. Driving a real browser is what makes keyless search actually work:
+//! a raw HTTP scrape gets DuckDuckGo's "anomaly" bot-block page (verified — it
+//! returns 200 with zero results), while a real Chrome with a real UA gets real
+//! organic results (also verified). This replaces both the old Instant-Answer API
+//! (trivia only, `count:0` for developer queries) and the reqwest scrape (blocked).
 //!
-//! The honest trade-off: this returns CURATED results (a Wikipedia-grade
-//! abstract + official-site links + related topics), not a full ranked web
-//! crawl. It is excellent for "what is X / who is Y / official site" foraging
-//! and weak for long-tail or freshness queries. That is exactly why it is the
-//! floor: configure `BRAVE_API_KEY` for full web search (the `brave` adapter).
+//! Still keyless and zero-setup — a persona on a fresh machine with Chrome/Chromium
+//! installed has a working search hand. `BRAVE_API_KEY` (the `brave` adapter)
+//! remains the higher-quality paid path; this is the floor that must actually work.
 
-use std::time::Duration;
-
-use serde::Deserialize;
-
-use super::{WebHit, WebSearchProvider};
+use super::{browser, WebHit, WebSearchProvider};
 use crate::sdk_codegen::CommandError;
 
-/// Keyless DuckDuckGo provider (Instant Answer API). Stateless.
+/// How long to let the results page render before dumping the DOM.
+const SEARCH_SETTLE_MS: u64 = 3500;
+
+/// Keyless DuckDuckGo provider (real browser → html endpoint → organic results). Stateless.
 pub struct DuckDuckGoProvider;
 
 #[async_trait::async_trait]
@@ -34,212 +32,201 @@ impl WebSearchProvider for DuckDuckGoProvider {
     }
 
     fn available(&self) -> bool {
-        true
+        // Needs a Chromium-family browser to drive; report honestly so auto-selection
+        // and the tool surface reflect reality rather than promising a dead hand.
+        crate::commands::interface::capture::web::locate_browser().is_some()
     }
 
     async fn search(&self, query: &str, count: u32) -> Result<Vec<WebHit>, CommandError> {
-        let client = reqwest::Client::builder()
-            .user_agent(concat!("continuum/", env!("CARGO_PKG_VERSION")))
-            .timeout(Duration::from_secs(15))
-            .build()
-            .map_err(|e| CommandError::Internal(format!("HTTP client init failed: {e}")))?;
-
-        let resp = client
-            .get("https://api.duckduckgo.com/")
-            .query(&[
-                ("q", query),
-                ("format", "json"),
-                ("no_html", "1"),
-                ("no_redirect", "1"),
-                ("t", "continuum"),
-            ])
-            .send()
-            .await
-            .map_err(|e| {
-                CommandError::Internal(format!("DuckDuckGo search request failed: {e}"))
-            })?;
-
-        let status = resp.status();
-        if !status.is_success() {
-            return Err(CommandError::Internal(format!(
-                "DuckDuckGo returned {status} for query '{query}' (the keyless backend \
-                 may be throttling — retry, or configure BRAVE_API_KEY for full web search)"
-            )));
+        let url = format!(
+            "https://html.duckduckgo.com/html/?q={}",
+            url_encode(query)
+        );
+        let dom = browser::render_dom(&url, SEARCH_SETTLE_MS).await?;
+        let hits = parse_ddg_html(&dom, count);
+        if hits.is_empty() && dom.contains("anomaly") {
+            return Err(CommandError::Internal(
+                "DuckDuckGo served its bot-block page even through the browser (heavy \
+                 rate-limiting). For reliable search get a FREE key at \
+                 https://brave.com/search/api/ and add BRAVE_API_KEY=<key> to \
+                 ~/.continuum/config.env — web/search then auto-uses it."
+                    .to_string(),
+            ));
         }
-
-        let parsed: DdgInstant = resp.json().await.map_err(|e| {
-            CommandError::Internal(format!("could not parse DuckDuckGo response: {e}"))
-        })?;
-
-        Ok(parsed.into_hits(count))
+        Ok(hits)
     }
 }
 
-/// The slice of the Instant Answer response we surface. Field names are DDG's
-/// PascalCase, renamed to snake_case. All optional/defaulted — an instant answer
-/// with no abstract (just related topics) is legitimate, not an error.
-#[derive(Debug, Deserialize)]
-struct DdgInstant {
-    #[serde(default, rename = "Heading")]
-    heading: String,
-    #[serde(default, rename = "AbstractText")]
-    abstract_text: String,
-    #[serde(default, rename = "AbstractURL")]
-    abstract_url: String,
-    #[serde(default, rename = "Results")]
-    results: Vec<DdgTopic>,
-    #[serde(default, rename = "RelatedTopics")]
-    related: Vec<DdgRelated>,
-}
+/// Parse the `html.duckduckgo.com` results table into ranked hits. Each organic result
+/// is an `<a class="result__a" href="…">title</a>` with a sibling
+/// `<a class="result__snippet">snippet</a>`; the two streams are zipped by rank, the DDG
+/// redirect is unwrapped, tags/entities are stripped, empty rows dropped, capped to `count`.
+fn parse_ddg_html(html: &str, count: u32) -> Vec<WebHit> {
+    use regex::Regex;
+    // Capture the anchor's attrs (any order) + inner text; pull href out of the attrs.
+    let a_re = Regex::new(r#"(?s)<a\b([^>]*\bclass="result__a"[^>]*)>(.*?)</a>"#)
+        .expect("static result__a regex");
+    let href_re = Regex::new(r#"href="([^"]+)""#).expect("static href regex");
+    let snip_re = Regex::new(r#"(?s)class="result__snippet"[^>]*>(.*?)</a>"#)
+        .expect("static result__snippet regex");
 
-/// A flat topic ({Text, FirstURL}) — used for `Results` and leaf `RelatedTopics`.
-#[derive(Debug, Deserialize)]
-struct DdgTopic {
-    #[serde(default, rename = "Text")]
-    text: String,
-    #[serde(default, rename = "FirstURL")]
-    first_url: String,
-}
+    let snippets: Vec<String> = snip_re
+        .captures_iter(html)
+        .map(|c| clean_text(&c[1]))
+        .collect();
 
-/// A `RelatedTopics` entry: either a leaf topic (`Text`/`FirstURL`) or a named
-/// group carrying nested `Topics`. Modeled as one struct with optional fields.
-#[derive(Debug, Deserialize)]
-struct DdgRelated {
-    #[serde(default, rename = "Text")]
-    text: Option<String>,
-    #[serde(default, rename = "FirstURL")]
-    first_url: Option<String>,
-    #[serde(default, rename = "Topics")]
-    topics: Option<Vec<DdgTopic>>,
-}
-
-impl DdgInstant {
-    /// Project the instant answer into ranked hits: the abstract first (the best
-    /// single answer), then official `Results`, then `RelatedTopics` (flattening
-    /// groups). Empty-URL entries are dropped; the list is capped to `count`.
-    fn into_hits(self, count: u32) -> Vec<WebHit> {
-        let mut hits: Vec<WebHit> = Vec::new();
-
-        if !self.abstract_text.is_empty() && !self.abstract_url.is_empty() {
-            hits.push(WebHit {
-                title: if self.heading.is_empty() {
-                    self.abstract_text.clone()
-                } else {
-                    self.heading.clone()
-                },
-                url: self.abstract_url.clone(),
-                snippet: self.abstract_text.clone(),
-            });
+    let mut hits = Vec::new();
+    for (i, cap) in a_re.captures_iter(html).enumerate() {
+        let Some(hm) = href_re.captures(&cap[1]) else {
+            continue;
+        };
+        let url = decode_ddg_url(&hm[1]);
+        let title = clean_text(&cap[2]);
+        if url.is_empty() || title.is_empty() {
+            continue;
         }
+        let snippet = snippets.get(i).cloned().unwrap_or_default();
+        hits.push(WebHit { title, url, snippet });
+        if hits.len() >= count as usize {
+            break;
+        }
+    }
+    hits
+}
 
-        for r in self.results {
-            if let Some(h) = topic_to_hit(r) {
-                hits.push(h);
+/// Percent-encode a query for a URL query string (RFC 3986 unreserved passes through).
+fn url_encode(q: &str) -> String {
+    let mut out = String::with_capacity(q.len() * 3);
+    for b in q.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char)
+            }
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}
+
+/// Resolve a DDG result href to the real destination. DDG wraps organic links as
+/// `//duckduckgo.com/l/?uddg=<percent-encoded-real-url>&rut=…`; unwrap + decode it.
+/// A bare protocol-relative `//host/…` gets `https:` prepended; a direct URL passes through.
+fn decode_ddg_url(href: &str) -> String {
+    if let Some(idx) = href.find("uddg=") {
+        let rest = &href[idx + "uddg=".len()..];
+        let enc = rest.split('&').next().unwrap_or(rest);
+        return percent_decode(enc);
+    }
+    if let Some(stripped) = href.strip_prefix("//") {
+        return format!("https://{stripped}");
+    }
+    href.to_string()
+}
+
+/// Minimal percent-decoder (`%XX` → byte, `+` → space) — enough for a uddg URL.
+fn percent_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'%' if i + 2 < bytes.len() => {
+                if let Ok(b) = u8::from_str_radix(&s[i + 1..i + 3], 16) {
+                    out.push(b);
+                    i += 3;
+                    continue;
+                }
+                out.push(bytes[i]);
+                i += 1;
+            }
+            b'+' => {
+                out.push(b' ');
+                i += 1;
+            }
+            b => {
+                out.push(b);
+                i += 1;
             }
         }
-
-        for entry in self.related {
-            match (entry.first_url, entry.topics) {
-                (Some(url), _) if !url.is_empty() => {
-                    if let Some(h) = topic_to_hit(DdgTopic {
-                        text: entry.text.unwrap_or_default(),
-                        first_url: url,
-                    }) {
-                        hits.push(h);
-                    }
-                }
-                (_, Some(group)) => {
-                    for t in group {
-                        if let Some(h) = topic_to_hit(t) {
-                            hits.push(h);
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
-
-        hits.truncate(count as usize);
-        hits
     }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
-/// Build a hit from a topic, deriving a short title from the leading clause of
-/// the descriptive text. Returns None for entries with no URL or no text.
-fn topic_to_hit(t: DdgTopic) -> Option<WebHit> {
-    if t.first_url.is_empty() || t.text.is_empty() {
-        return None;
+/// Strip HTML tags, decode the handful of entities DDG emits, collapse whitespace.
+pub(super) fn clean_text(html: &str) -> String {
+    let mut s = String::with_capacity(html.len());
+    let mut in_tag = false;
+    for c in html.chars() {
+        match c {
+            '<' => in_tag = true,
+            '>' => in_tag = false,
+            _ if !in_tag => s.push(c),
+            _ => {}
+        }
     }
-    let title = t
-        .text
-        .split(" - ")
-        .next()
-        .unwrap_or(&t.text)
-        .trim()
-        .to_string();
-    Some(WebHit {
-        title,
-        url: t.first_url,
-        snippet: t.text,
-    })
+    s.replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&#x27;", "'")
+        .replace("&#39;", "'")
+        .replace("&nbsp;", " ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    // what this catches: the Instant Answer JSON shape projects into ranked hits
-    // — abstract first (heading as title, abstract URL), then official Results,
-    // then flattened RelatedTopics (leaf + nested group), empty-URL entries
-    // dropped. This is the keyless path's load-bearing mapping, pinned offline so
-    // a DDG schema change is caught here, not as silent zero results.
+    // A trimmed sample of the real html.duckduckgo.com results markup.
+    const SAMPLE: &str = r##"
+      <div class="result results_links">
+        <a rel="nofollow" class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fdocs.rs%2Fserde_json&amp;rut=abc">serde_json - Rust</a>
+        <a class="result__snippet" href="//duckduckgo.com/l/?uddg=x">Serde JSON provides efficient <b>parsing</b> of JSON.</a>
+      </div>
+      <div class="result results_links">
+        <a rel="nofollow" class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Fx">Example &amp; Guide</a>
+        <a class="result__snippet" href="#">A worked example of the API.</a>
+      </div>"##;
+
+    // what this catches: the real DDG html results table projects into ranked hits with
+    // the redirect UNWRAPPED to the true URL, tags/entities stripped from title+snippet,
+    // link↔snippet zipped by rank. Pinned offline so a DDG markup change is caught here,
+    // not as silent zero results (the failure mode that made the web hand look dead).
     #[test]
-    fn projects_instant_answer_into_hits() {
-        let json = r#"{
-            "Heading": "Rust (programming language)",
-            "AbstractText": "Rust is a general-purpose programming language.",
-            "AbstractURL": "https://en.wikipedia.org/wiki/Rust_(programming_language)",
-            "Results": [
-                {"Text": "Official site", "FirstURL": "https://www.rust-lang.org/"}
-            ],
-            "RelatedTopics": [
-                {"Text": "Outline of Rust - the following outline", "FirstURL": "https://duckduckgo.com/Outline"},
-                {"Name": "Languages", "Topics": [
-                    {"Text": "Cargo - the Rust package manager", "FirstURL": "https://doc.rust-lang.org/cargo/"}
-                ]},
-                {"Text": "no url topic", "FirstURL": ""}
-            ]
-        }"#;
-        let parsed: DdgInstant = serde_json::from_str(json).expect("parse instant answer");
-        let hits = parsed.into_hits(10);
-        assert_eq!(hits.len(), 4, "abstract + 1 result + 2 related (empty-url dropped)");
-        assert_eq!(hits[0].title, "Rust (programming language)");
-        assert_eq!(hits[0].url, "https://en.wikipedia.org/wiki/Rust_(programming_language)");
-        assert_eq!(hits[1].title, "Official site");
-        // leading clause before " - " becomes the title
-        assert_eq!(hits[2].title, "Outline of Rust");
-        assert_eq!(hits[3].url, "https://doc.rust-lang.org/cargo/");
+    fn parses_ddg_html_and_unwraps_redirect() {
+        let hits = parse_ddg_html(SAMPLE, 10);
+        assert_eq!(hits.len(), 2, "two organic results");
+        assert_eq!(hits[0].title, "serde_json - Rust");
+        assert_eq!(hits[0].url, "https://docs.rs/serde_json", "uddg redirect decoded");
+        assert_eq!(hits[0].snippet, "Serde JSON provides efficient parsing of JSON.");
+        assert_eq!(hits[1].title, "Example & Guide", "entities decoded in title");
+        assert_eq!(hits[1].url, "https://example.com/x");
     }
 
     // what this catches: `count` caps the projected hits.
     #[test]
     fn respects_count_cap() {
-        let json = r#"{
-            "AbstractText": "x", "AbstractURL": "https://a.com",
-            "Results": [
-                {"Text": "b", "FirstURL": "https://b.com"},
-                {"Text": "c", "FirstURL": "https://c.com"}
-            ]
-        }"#;
-        let parsed: DdgInstant = serde_json::from_str(json).expect("parse");
-        assert_eq!(parsed.into_hits(2).len(), 2);
+        assert_eq!(parse_ddg_html(SAMPLE, 1).len(), 1);
     }
 
-    // what this catches: a response with no abstract (only related topics) is a
-    // legitimate empty-abstract result, projected without error.
+    // what this catches: the anomaly/bot-block page (no result markup) yields an honest
+    // empty list from the parser, not a spurious hit.
     #[test]
-    fn no_abstract_is_fine() {
-        let parsed: DdgInstant = serde_json::from_str(r#"{"RelatedTopics":[]}"#).expect("parse");
-        assert!(parsed.into_hits(10).is_empty());
+    fn bot_block_page_parses_empty() {
+        assert!(parse_ddg_html("<html><body>anomaly</body></html>", 10).is_empty());
+    }
+
+    // what this catches: percent-decode of a uddg-wrapped URL + query url-encoding.
+    #[test]
+    fn url_helpers() {
+        assert_eq!(
+            decode_ddg_url("//duckduckgo.com/l/?uddg=https%3A%2F%2Fdoc.rust-lang.org%2Fbook%2F&rut=z"),
+            "https://doc.rust-lang.org/book/"
+        );
+        assert_eq!(decode_ddg_url("//example.org/a"), "https://example.org/a");
+        assert_eq!(url_encode("rust serde_json"), "rust%20serde_json");
     }
 }
