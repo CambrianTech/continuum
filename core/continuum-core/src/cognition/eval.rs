@@ -497,6 +497,14 @@ pub struct CognitionEvalParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub base_model_id: Option<String>,
+    /// Team mode: with `Some(n>=1)`, add a REVIEWER teammate (a fresh fork of the SAME
+    /// persona/model) that reviews + corrects the writer's answer before grading — the
+    /// undeniable team proof (same model, same tasks, +1 teammate → does coordination lift?).
+    /// None/0 = solo. First slice supports one reviewer; live single-pass path only (no gene,
+    /// no base_model_id).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional, type = "number")]
+    pub reviewers: Option<u32>,
     /// Max act→observe cycles per task before it counts as unfinished. Default 8.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional, type = "number")]
@@ -937,8 +945,24 @@ impl ActionCommand for CognitionEval {
 
         // Single pass: measure whatever genome is currently paged in (base by
         // default) — the plain coder number, no A/B. Still isolated, so a plain
-        // baseline run is reproducible and leaves her memory untouched.
-        let (score, results) = run_pass(&cycle, &isolation, &tasks, room, max_acts, max_retries).await;
+        // baseline run is reproducible and leaves her memory untouched. TEAM mode
+        // (reviewers>=1, live single-pass only) forks a second copy of the same persona
+        // as a reviewer and grades the reviewed answer — same model, +1 teammate.
+        let want_team = p.reviewers.unwrap_or(0) >= 1 && p.gene.is_none() && p.base_model_id.is_none();
+        let (score, results) = if want_team {
+            let reviewer = crate::cognition::persona_workspace::global()
+                .fork_eval_cycle(&persona_uuid)
+                .ok_or_else(|| CommandError::NotFound(format!(
+                    "no workspace template for persona {persona_uuid} — cannot fork a reviewer teammate"
+                )))?;
+            let reviewer_iso = reviewer.isolate_for_eval();
+            let out =
+                run_pass_team(&cycle, &isolation, &reviewer, &reviewer_iso, &tasks, room, max_acts).await;
+            drop(reviewer_iso);
+            out
+        } else {
+            run_pass(&cycle, &isolation, &tasks, room, max_acts, max_retries).await
+        };
         drop(isolation);
         let verify = self_verify_rate(&results);
         let agg = speed_latency_aggregates(&results);
@@ -1279,6 +1303,121 @@ async fn run_pass(
             ok,
             grade,
             acts: total_acts,
+            answer: answer.chars().take(200).collect(),
+            latency_ms: m.latency_ms,
+            output_tokens: m.output_tokens,
+            tokens_per_second: m.tokens_per_second(),
+            decode_tokens_per_second: m.decode_tokens_per_second(),
+            cache_hit_rate: m.cache_hit_rate(),
+            prefill_ms: m.prefill_ms,
+            decode_ms: m.decode_ms,
+        });
+    }
+    (pass, results)
+}
+
+/// One deliberation on a forked cycle: deliver `prompt` through the SAME live burst formatter
+/// the heartbeat uses, then drive to settlement (directed — an exam question put TO her). The
+/// shared motion behind each teammate's turn in `run_pass_team`; mirrors the solo `run_pass`
+/// delivery byte-for-byte so a team-vs-solo delta is coordination, not a framing difference.
+/// Caller does the exam-hygiene reset/rewind (isolation is per-cycle).
+async fn eval_settle(
+    cycle: &crate::cognition::workspace::WorkspaceCycle,
+    room: Uuid,
+    prompt: &str,
+    max_acts: usize,
+) -> crate::cognition::act_observe::SettleOutcome {
+    let delivery = crate::persona::rag_budget::RagDelivery {
+        source_id: "airc".to_string(),
+        items: vec![crate::persona::rag_budget::RagItem {
+            content: prompt.to_string(),
+            tokens: 0,
+            metadata: serde_json::json!({ "peer_id": "peer", "occurred_at_ms": EVAL_EPOCH_MS }),
+        }],
+        tokens_used: 0,
+        continuation: None,
+        resolution_used: crate::persona::rag_budget::ResolutionPreference::Raw,
+    };
+    let burst = crate::cognition::workspace::Burst::from_turns(
+        room,
+        crate::persona::service_loop::build_workspace_turns(
+            std::slice::from_ref(&delivery),
+            "",
+            "",
+            None,
+        ),
+    );
+    crate::cognition::act_observe::drive_to_settle(
+        cycle,
+        burst,
+        room,
+        max_acts,
+        crate::cognition::workspace::TurnFraming::directed(),
+    )
+    .await
+}
+
+/// TEAM pass — the Continuum's molecule: two forks of the SAME persona (same base model) as
+/// WRITER + REVIEWER. The writer solves each task; a FRESH reviewer (clean context — a genuine
+/// second set of eyes, which is exactly what a solo who can't catch its own bug lacks) reviews
+/// the writer's solution, finds defects, and produces the FINAL code. The reviewer's answer is
+/// graded — same tasks, same grader, same model as the solo `run_pass`, so any team-vs-solo
+/// delta is PURE coordination value, not model-fit. This is the undeniable proof of teams:
+/// hold everything fixed but add a teammate. [[coordination-learning-flywheel]]
+async fn run_pass_team(
+    writer: &crate::cognition::workspace::WorkspaceCycle,
+    writer_iso: &crate::cognition::workspace::EvalIsolation,
+    reviewer: &crate::cognition::workspace::WorkspaceCycle,
+    reviewer_iso: &crate::cognition::workspace::EvalIsolation,
+    tasks: &[EvalTask],
+    room: Uuid,
+    max_acts: usize,
+) -> (u32, Vec<EvalTaskResult>) {
+    let mut pass = 0u32;
+    let mut results = Vec::with_capacity(tasks.len());
+    for t in tasks {
+        // WRITER solves (exam-hygiene reset, same delivery as solo run_pass).
+        writer.reset_working_memory();
+        writer_iso.rewind();
+        let w = eval_settle(writer, room, &t.prompt, max_acts).await;
+        let writer_answer = w.spoken.clone().unwrap_or_default();
+
+        // REVIEWER reviews the writer's solution and produces the FINAL code.
+        reviewer.reset_working_memory();
+        reviewer_iso.rewind();
+        let review_prompt = format!(
+            "A teammate proposed the solution below. Review it for correctness against the task \
+             — compile/run or trace it if useful — find any bug, and give the FINAL, complete \
+             corrected code (or return it unchanged if already correct).\n\nTASK:\n{}\n\n\
+             TEAMMATE'S SOLUTION:\n{}",
+            t.prompt, writer_answer
+        );
+        let r = eval_settle(reviewer, room, &review_prompt, max_acts).await;
+        let answer = r.spoken.clone().unwrap_or_default();
+
+        // Grade the FINAL (reviewer's) answer — SAME branches as solo run_pass.
+        let (ok, grade) = if let Some(cause) =
+            r.inference_error.clone().or_else(|| w.inference_error.clone())
+        {
+            (false, format!("inference failed: {cause}"))
+        } else if let Some(dod) = &t.dod_shell {
+            run_dod(dod).await
+        } else if let Some(test) = &t.test {
+            test_grade(&answer, t.lang.as_deref().unwrap_or("rust"), test).await
+        } else {
+            let m = !t.expect.is_empty() && answer.to_lowercase().contains(&t.expect.to_lowercase());
+            (m, if m { "substring match".into() } else { "no match".into() })
+        };
+        if ok {
+            pass += 1;
+        }
+        let acts = w.acts as u32 + r.acts as u32;
+        let m = r.metrics;
+        results.push(EvalTaskResult {
+            id: t.id.clone(),
+            ok,
+            grade,
+            acts,
             answer: answer.chars().take(200).collect(),
             latency_ms: m.latency_ms,
             output_tokens: m.output_tokens,
