@@ -75,9 +75,10 @@ def main():
         tf=os.path.join(wd,"task.jsonl"); open(tf,"w").write(json.dumps(task)+"\n")
         led=os.path.expanduser(f"~/.continuum/progress/{ASHA}.jsonl")
         n0=sum(1 for _ in open(led)) if os.path.exists(led) else 0
-        print(f"[ours] dispatching persona on {args.instance} (workspace rooted at clone, detached, max_acts=25)")
+        cap=os.path.join(wd,"capture")  # glass-box: her per-tick bids+DECISION land in <cap>/<persona>.jsonl
+        print(f"[ours] dispatching persona on {args.instance} (workspace rooted at clone, capture→{cap}, detached, max_acts=25)")
         sh([CU,"cognition/eval","--persona_id",ASHA,"--eval_set",tf,"--workspace_root",repo_dir,
-            "--max_acts","25","--note",note,"--detach","true"],check=False)
+            "--capture_dir",cap,"--max_acts","25","--note",note,"--detach","true"],check=False)
         # poll the ledger for this run to land (she is editing the clone in the background)
         for _ in range(40):
             time.sleep(30)

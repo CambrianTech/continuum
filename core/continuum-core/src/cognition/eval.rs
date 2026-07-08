@@ -548,6 +548,14 @@ pub struct CognitionEvalParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub workspace_root: Option<String>,
+    /// Glass-box seam (task #14): if set, wrap the eval-fork's cognition in the JSONL
+    /// [`JsonlWorkspaceCaptureSink`] so every tick's bids + DECISION + timings land in
+    /// `<capture_dir>/<persona_id>.jsonl` — makes a MEASURED run inspectable (did she Act or
+    /// Respond? which tool? why 0 edits?) without touching her live mind. `None` → Noop capture
+    /// exactly as before. Opt-in: zero change to every existing eval path.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub capture_dir: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, TS)]
@@ -852,6 +860,24 @@ impl CognitionEval {
                 .ok_or_else(|| CommandError::NotFound(format!(
                     "no workspace template for persona {persona_uuid} — its mind was not assembled at spawn (register_from_cfg), so eval cannot fork a measurement copy without measuring her live mind"
                 )))?,
+        };
+
+        // GLASS-BOX (task #14): if a capture_dir is pinned, wrap the fork's cognition in the
+        // JSONL capture sink so every tick's bids + DECISION + timings append to
+        // <dir>/<persona>.jsonl. This is what makes a MEASURED run inspectable — reading the
+        // `decision` field tells us whether she chose Act (and which tool) or Respond, which is
+        // exactly the fork needed to diagnose a 0-edit. Fork-only, never her live mind. Opt-in.
+        let cycle = match &p.capture_dir {
+            Some(dir) => cycle.with_capture(std::sync::Arc::new(
+                crate::cognition::workspace_capture::JsonlWorkspaceCaptureSink::open(
+                    std::path::Path::new(dir),
+                    persona_uuid,
+                )
+                .map_err(|e| {
+                    CommandError::Internal(format!("failed to open eval capture_dir '{dir}': {e}"))
+                })?,
+            )),
+            None => cycle,
         };
 
         // WARM-GATE — never measure a COLD model. A just-loaded or just-swapped lane 500s
