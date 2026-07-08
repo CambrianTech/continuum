@@ -88,14 +88,15 @@ pub(crate) fn render_ai_help(name: &str, description: &str, schema: &Value) -> S
     let mut arg_lines: Vec<String> = Vec::new();
     if let Some(props) = props {
         for (key, spec) in props {
-            let ty = spec.get("type").and_then(Value::as_str).unwrap_or("any");
             let req = required.contains(key.as_str());
             let doc = spec.get("description").and_then(Value::as_str).unwrap_or("");
-            // Placeholder typed by the schema; a trailing `?` marks optional.
-            example.insert(
-                key.clone(),
-                json!(format!("<{ty}{}>", if req { "" } else { "?" })),
-            );
+            // Resolve the param's real shape — a scalar `type`, OR an enum (`oneOf`/
+            // `anyOf`, possibly behind a `$ref`/`allOf`) whose variants we EXPAND into
+            // a hint + a concrete example. Without this, a complex param (e.g. an
+            // `EditMode` enum) collapsed to a useless `"any"`, so a model literally
+            // could not tell what to pass — the invisible-contract bug.
+            let (ty, placeholder) = param_shape(spec, schema);
+            example.insert(key.clone(), placeholder);
             arg_lines.push(format!(
                 "- {key} ({ty}, {}){}",
                 if req { "required" } else { "optional" },
@@ -119,6 +120,178 @@ pub(crate) fn render_ai_help(name: &str, description: &str, schema: &Value) -> S
          To call it, emit exactly this (fill in the values):\n{envelope_str}\n\n\
          Arguments:\n{args_block}"
     )
+}
+
+/// Resolve a schema node that may be a `$ref` (or a single-element `allOf` wrapping one —
+/// schemars' usual shape for a named type) against the root schema's `definitions`/`$defs`.
+/// Returns the node unchanged if it isn't a ref or the target is missing.
+fn resolve_ref<'a>(spec: &'a Value, root: &'a Value) -> &'a Value {
+    if let Some(items) = spec.get("allOf").and_then(Value::as_array) {
+        if items.len() == 1 {
+            return resolve_ref(&items[0], root);
+        }
+    }
+    if let Some(r) = spec.get("$ref").and_then(Value::as_str) {
+        let name = r.rsplit('/').next().unwrap_or("");
+        for defs in ["definitions", "$defs"] {
+            if let Some(d) = root.get(defs).and_then(|d| d.get(name)) {
+                return d;
+            }
+        }
+    }
+    spec
+}
+
+/// Describe a parameter's shape for help: a human type hint + a concrete placeholder
+/// example. Scalars → `("string", "<string>")`. Externally-tagged enums (`oneOf`/`anyOf`,
+/// possibly behind a `$ref`) → `("one of: A{fields} | B{fields}", <first-variant example>)`
+/// so a model SEES the variants instead of a blind `"any"` (the invisible-contract bug that
+/// left `code/edit`'s `edit_mode` uncallable). Graceful `any` fallback on any unknown shape.
+fn param_shape(spec: &Value, root: &Value) -> (String, Value) {
+    let spec = resolve_ref(spec, root);
+    if let Some(ty) = spec.get("type").and_then(Value::as_str) {
+        if let Some(en) = spec.get("enum").and_then(Value::as_array) {
+            let opts: Vec<String> = en.iter().filter_map(Value::as_str).map(str::to_string).collect();
+            if !opts.is_empty() {
+                return (format!("one of: {}", opts.join(" | ")), Value::String(opts[0].clone()));
+            }
+        }
+        return (ty.to_string(), json!(format!("<{ty}>")));
+    }
+    for tag in ["oneOf", "anyOf"] {
+        if let Some(variants) = spec.get(tag).and_then(Value::as_array) {
+            let mut names: Vec<String> = Vec::new();
+            let mut example = json!("<any>");
+            for (i, v) in variants.iter().enumerate() {
+                let v = resolve_ref(v, root);
+                let props = match v.get("properties").and_then(Value::as_object) {
+                    Some(p) => p,
+                    None => {
+                        // a bare `const`/`enum` string variant (plain unit enum)
+                        if let Some(c) = v.get("const").and_then(Value::as_str) {
+                            names.push(format!("\"{c}\""));
+                            if i == 0 {
+                                example = json!(c);
+                            }
+                        }
+                        continue;
+                    }
+                };
+                // INTERNALLY-tagged (serde tag = "type"): a discriminator property whose
+                // schema is a single-value const/enum string is the variant NAME; the other
+                // properties are its fields, and the call is a FLAT object carrying the tag.
+                let discr = props.iter().find_map(|(pk, pv)| {
+                    let pv = resolve_ref(pv, root);
+                    pv.get("const")
+                        .and_then(Value::as_str)
+                        .or_else(|| {
+                            pv.get("enum")
+                                .and_then(Value::as_array)
+                                .filter(|a| a.len() == 1)
+                                .and_then(|a| a[0].as_str())
+                        })
+                        .map(|val| (pk.clone(), val.to_string()))
+                });
+                if let Some((tag_field, vname)) = discr {
+                    let fields: Vec<String> =
+                        props.keys().filter(|k| **k != tag_field).cloned().collect();
+                    names.push(if fields.is_empty() {
+                        vname.clone()
+                    } else {
+                        format!("{vname}{{{}}}", fields.join(", "))
+                    });
+                    if i == 0 {
+                        let mut inner = serde_json::Map::new();
+                        inner.insert(tag_field.clone(), json!(vname.clone()));
+                        for (fk, fv) in props.iter().filter(|(k, _)| **k != tag_field) {
+                            let ft = resolve_ref(fv, root)
+                                .get("type")
+                                .and_then(Value::as_str)
+                                .unwrap_or("any");
+                            inner.insert(fk.clone(), json!(format!("<{ft}>")));
+                        }
+                        example = Value::Object(inner);
+                    }
+                } else if props.len() == 1 {
+                    // EXTERNALLY-tagged: the single property key IS the variant name.
+                    let (vname, vschema) = props.iter().next().unwrap();
+                    let vs = resolve_ref(vschema, root);
+                    let fields: Vec<String> = vs
+                        .get("properties")
+                        .and_then(Value::as_object)
+                        .map(|o| o.keys().cloned().collect())
+                        .unwrap_or_default();
+                    names.push(if fields.is_empty() {
+                        vname.clone()
+                    } else {
+                        format!("{vname}{{{}}}", fields.join(", "))
+                    });
+                    if i == 0 {
+                        let mut inner = serde_json::Map::new();
+                        if let Some(o) = vs.get("properties").and_then(Value::as_object) {
+                            for (fk, fv) in o {
+                                let ft = resolve_ref(fv, root)
+                                    .get("type")
+                                    .and_then(Value::as_str)
+                                    .unwrap_or("any");
+                                inner.insert(fk.clone(), json!(format!("<{ft}>")));
+                            }
+                        }
+                        example = json!({ vname.clone(): Value::Object(inner) });
+                    }
+                }
+            }
+            if !names.is_empty() {
+                return (format!("one of: {}", names.join(" | ")), example);
+            }
+        }
+    }
+    ("any".to_string(), json!("<any>"))
+}
+
+#[cfg(test)]
+mod param_shape_tests {
+    use super::*;
+    use serde_json::json;
+
+    // what this catches: an externally-tagged enum param (code/edit's EditMode) is EXPANDED
+    // into its variants + a concrete example instead of collapsing to a useless "any" — the
+    // invisible-contract bug I hit firsthand taking the SWE-bench test through cu (a model
+    // literally could not tell what edit_mode wanted). Fixture mirrors schemars output
+    // ($ref → definitions with a oneOf of {Variant:{fields}}).
+    #[test]
+    fn help_expands_enum_param_instead_of_any() {
+        // EditMode is #[serde(tag = "type", rename_all = "snake_case")] — INTERNALLY tagged.
+        // schemars renders each variant as an object with a single-enum `type` discriminator
+        // plus the variant's fields; the real call is a FLAT `{"type":"search_replace", ...}`.
+        let schema = json!({
+            "type": "object",
+            "required": ["file_path", "edit_mode"],
+            "properties": {
+                "file_path": {"type": "string", "description": "path"},
+                "edit_mode": {"$ref": "#/definitions/EditMode"}
+            },
+            "definitions": { "EditMode": {"oneOf": [
+                {"type":"object","required":["type","search","replace"],"properties":{"type":{"type":"string","enum":["search_replace"]},"search":{"type":"string"},"replace":{"type":"string"},"all":{"type":"boolean"}}},
+                {"type":"object","required":["type","content"],"properties":{"type":{"type":"string","enum":["append"]},"content":{"type":"string"}}}
+            ]}}
+        });
+        let out = render_ai_help("code/edit", "edit a file", &schema);
+        assert!(out.contains("search_replace{"), "variant NAME (not field) + fields shown: {out}");
+        assert!(out.contains("search") && out.contains("replace"), "variant fields shown: {out}");
+        assert!(out.contains("append"), "second variant shown: {out}");
+        assert!(!out.contains("edit_mode (any"), "no longer collapses to any: {out}");
+        // the example is a FLAT object carrying the discriminator — the shape that actually works
+        assert!(out.contains("\"type\"") && out.contains("\"search_replace\""), "flat tagged example: {out}");
+    }
+
+    // what this catches: a plain scalar param still renders as before (no regression).
+    #[test]
+    fn scalar_param_unchanged() {
+        let schema = json!({"type":"object","required":["p"],"properties":{"p":{"type":"string"}}});
+        let out = render_ai_help("x", "y", &schema);
+        assert!(out.contains("p (string, required)"), "{out}");
+    }
 }
 
 /// A persona's "how do I call this?" — returns the exact tool-call format for a
