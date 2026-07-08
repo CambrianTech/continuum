@@ -186,6 +186,7 @@ impl TrainingCompletionSentinel {
                 max_acts: None,
                 max_retries: None,
                 workspace_root: None,
+                capture_dir: None,
                 note: Some(format!(
                     "L3 auto-eval (gene={}, base={}, provider={})",
                     job.trait_kind, job.base_model, job.handle.provider_id

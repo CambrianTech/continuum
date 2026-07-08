@@ -251,6 +251,7 @@ impl ActionCommand for BenchmarkRun {
                     max_acts: p.max_acts.or(Some(6)),
                     max_retries: Some(0),
                     workspace_root: None,
+                    capture_dir: None,
                     note: Some(match &p.base_model_id {
                         Some(m) => format!("benchmark/run {} on {m}", spec.name),
                         None => format!("benchmark/run {}", spec.name),
