@@ -309,6 +309,13 @@ fn handle_client<S: IpcStream>(
         }
     });
 
+    // #85: track in-flight command tasks for THIS connection so we can abort them if the
+    // client disconnects mid-flight — a blocking handler with no one left to answer would
+    // otherwise run to completion writing into a dead socket (a zombie). Detached #86 jobs
+    // spawn on their OWN task inside the handler, so the command task tracked here has already
+    // returned for them — fire-and-poll is never aborted, only abandoned blocking requests are.
+    let mut inflight: Vec<tokio::task::JoinHandle<()>> = Vec::new();
+
     // Reader loop — parse requests and dispatch to tokio for concurrent processing.
     // No longer blocks waiting for handle_request() to complete before reading next request.
     for line in reader.lines() {
@@ -352,7 +359,9 @@ fn handle_client<S: IpcStream>(
         let tx = tx.clone();
         let caller = caller.clone();
         let rt_handle = state.rt_handle.clone();
-        rt_handle.spawn(async move {
+        // Reap already-finished handles so this Vec stays bounded to what's actually in flight.
+        inflight.retain(|h| !h.is_finished());
+        let inflight_handle = rt_handle.spawn(async move {
             let handle_result = if let Some(ref cmd) = command {
                 // Boundary gate for a REMOTE (TCP) caller: the route_command path is
                 // owner-by-locality (ungated) for the local Unix socket, so a remote
@@ -454,6 +463,23 @@ fn handle_client<S: IpcStream>(
             };
             let _ = tx.send((request_id, handle_result));
         });
+        inflight.push(inflight_handle);
+    }
+
+    // #85: the reader hit EOF — the client is gone. Abort any handler still running for this
+    // connection (aborting an already-finished task is a harmless no-op). Fire-and-poll (#86)
+    // jobs are untouched: their command task already returned the handle, so nothing here holds
+    // them — only an abandoned BLOCKING request is cancelled, freeing its lane and CPU.
+    let aborted = inflight.iter().filter(|h| !h.is_finished()).count();
+    for h in &inflight {
+        h.abort();
+    }
+    if aborted > 0 {
+        log_debug!(
+            "ipc",
+            "server",
+            "aborted {aborted} in-flight handler(s) for disconnected client: {peer_addr}"
+        );
     }
 
     // Drop sender to signal writer thread to exit, then wait for it
