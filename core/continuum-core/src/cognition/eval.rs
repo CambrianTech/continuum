@@ -1385,11 +1385,20 @@ async fn run_pass_team(
         // REVIEWER reviews the writer's solution and produces the FINAL code.
         reviewer.reset_working_memory();
         reviewer_iso.rewind();
+        // The reviewer's job is QUALITY CONTROL, not rewriting. The failure mode a glass-box
+        // trace exposed: the reviewer eyeballs (acts=0), narrates a review, and "optimizes"
+        // WORKING code — regressing tasks the writer got right. So the mandate is explicit:
+        // verify by ACTUALLY compiling/running; leave passing code UNTOUCHED; change only a
+        // proven defect; output only code. This is the coordination discipline a good human
+        // reviewer has (don't break what works), made explicit for the model.
         let review_prompt = format!(
-            "A teammate proposed the solution below. Review it for correctness against the task \
-             — compile/run or trace it if useful — find any bug, and give the FINAL, complete \
-             corrected code (or return it unchanged if already correct).\n\nTASK:\n{}\n\n\
-             TEAMMATE'S SOLUTION:\n{}",
+            "You are the QUALITY-CONTROL reviewer on a teammate's solution below — not a \
+             rewriter. FIRST, actually COMPILE AND RUN it against the task using your tools \
+             (do not just read it). If it compiles and passes, return it EXACTLY as-is — do \
+             NOT optimize, refactor, or 'improve' working code; that only introduces bugs. \
+             ONLY if it fails to compile or a case is wrong, fix the SPECIFIC defect and \
+             nothing else. Output ONLY the final complete code — no commentary.\n\n\
+             TASK:\n{}\n\nTEAMMATE'S SOLUTION:\n{}",
             t.prompt, writer_answer
         );
         let r = eval_settle(reviewer, room, &review_prompt, max_acts).await;
