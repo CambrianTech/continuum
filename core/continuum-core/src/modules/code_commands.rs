@@ -369,6 +369,19 @@ impl ActionCommand for CodeTree {
 
 // ─────────────────────────── code/search ─────────────────────────
 
+/// Heuristic: does this string look like a FILE GLOB (a path pattern) rather than a
+/// grep term/regex? Conservative — requires a `*`/`?` AND a path-glob shape (`/`, `**`,
+/// or a leading `*.ext`) AND no whitespace — so a genuine content regex like `foo.*bar`
+/// or `fn .*Params` is NOT misclassified, while `**/*.py`, `*.rs`, `src/**/*.js` are.
+/// Used by code/search to auto-recover the common `pattern`↔`file_glob` conflation.
+fn looks_like_file_glob(pattern: &str) -> bool {
+    let p = pattern.trim();
+    !p.is_empty()
+        && !p.chars().any(char::is_whitespace)
+        && (p.contains('*') || p.contains('?'))
+        && (p.contains('/') || p.contains("**") || p.starts_with("*."))
+}
+
 /// Search file contents for a pattern (grep across the workspace).
 pub struct CodeSearch {
     pub state: Arc<CodeState>,
@@ -399,6 +412,44 @@ impl ActionCommand for CodeSearch {
     async fn run(&self, ctx: &Ctx, p: CodeSearchParams) -> Result<SearchResult, CommandError> {
         let engine = engine!(self, ctx);
         let max = p.max_results.unwrap_or(100);
+
+        // FORGIVENESS: models routinely conflate code/search (grep file CONTENTS — `pattern`
+        // is the search TERM, `file_glob` filters which files) with code/glob (find files BY
+        // name). A glob-shaped `pattern` with no `file_glob` greps CONTENTS for the literal glob
+        // text → 0 matches → the model retries the identical call forever (glass-boxed live: a
+        // 14B fired `code/search(pattern="**/*.py")` 12× in a row, never advancing to read/edit).
+        // If `pattern` looks like a file glob and no `file_glob` was given, do what it MEANT: list
+        // the matching FILES (code/glob's job) and hand them back + a one-line note on the right
+        // shape, so a single call makes progress instead of looping. [[px-persona-experience-tools-as-good-ux]]
+        if p.file_glob.is_none() && looks_like_file_glob(&p.pattern) {
+            let g = engine
+                .glob_match(&p.pattern, None)
+                .map_err(|e| CommandError::Internal(e.to_string()))?;
+            let matches: Vec<SearchMatch> = g
+                .matches
+                .iter()
+                .take(max as usize)
+                .map(|path| SearchMatch {
+                    file_path: path.clone(),
+                    line_number: 0,
+                    line_content: String::new(),
+                    match_start: 0,
+                    match_end: 0,
+                })
+                .collect();
+            return Ok(SearchResult {
+                success: true,
+                total_matches: g.total_matches,
+                files_searched: g.matches.len() as u32,
+                matches,
+                error: Some(format!(
+                    "`pattern` {:?} looked like a FILE GLOB, so I listed matching FILES (that is \
+                     code/glob's job). To search file CONTENTS instead, call code/search with a \
+                     text/regex `pattern` (e.g. \"Blueprint\") PLUS `file_glob` {:?}. {} file(s) matched.",
+                    p.pattern, p.pattern, g.total_matches
+                )),
+            });
+        }
 
         // Search every searchable root (workspace + read-only roots), merging and
         // de-duplicating by (file, line) since roots may overlap.
@@ -943,6 +994,21 @@ mod tests {
     use super::*;
     use crate::sdk_codegen::{AccessLevel, Ctx};
     use dashmap::DashMap;
+
+    // what this catches: code/search auto-detects a glob-shaped `pattern` (the misuse a local
+    // model makes — `**/*.py` as the grep term, glass-boxed looping 12× on it) so it can list
+    // FILES instead of grepping contents for the literal glob → 0 → loop. Must NOT misclassify a
+    // genuine content regex, or real greps would be silently redirected. Regression for the
+    // flask SWE 0-edit search-loop.
+    #[test]
+    fn glob_shaped_search_patterns_detected_content_regexes_spared() {
+        for g in ["**/*.py", "*.rs", "src/**/*.js", "**/blueprints.py", "*.{rs,py}"] {
+            assert!(looks_like_file_glob(g), "should be treated as a file glob: {g}");
+        }
+        for r in ["Blueprint", "foo.*bar", "fn .*Params", "self.name = name", "TODO", "raise ValueError"] {
+            assert!(!looks_like_file_glob(r), "must NOT be treated as a glob (real content pattern): {r}");
+        }
+    }
 
     /// A `CodeState` whose `local-owner` engine (the `Ctx::default` caller) is rooted
     /// at the OS temp dir, so read-only commands run without touching the repo or
