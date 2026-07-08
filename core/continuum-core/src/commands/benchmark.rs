@@ -159,6 +159,11 @@ pub struct BenchmarkRunParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub base_model_id: Option<String>,
+    /// Team mode: `Some(n>=1)` adds a reviewer teammate (same persona/model) that reviews +
+    /// corrects each answer before grading — the undeniable team-vs-solo proof. None = solo.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional, type = "number")]
+    pub reviewers: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, TS)]
@@ -236,6 +241,7 @@ impl ActionCommand for BenchmarkRun {
                     tasks: None,
                     eval_set: Some(tmp.display().to_string()),
                     base_model_id: p.base_model_id.clone(),
+                    reviewers: p.reviewers,
                     max_acts: p.max_acts.or(Some(6)),
                     max_retries: Some(0),
                     note: Some(match &p.base_model_id {
