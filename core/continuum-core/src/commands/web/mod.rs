@@ -36,7 +36,9 @@ use ts_rs::TS;
 use crate::sdk_codegen::CommandError;
 
 pub mod brave;
+pub(crate) mod browser;
 pub mod duckduckgo;
+pub mod fetch;
 pub mod search;
 
 /// A pluggable web-search backend. Implementations are interchangeable; the
@@ -175,6 +177,125 @@ pub async fn web_search(p: WebSearchParams) -> Result<WebSearchResult, CommandEr
     })
 }
 
+const DEFAULT_FETCH_CHARS: u32 = 6_000;
+const MAX_FETCH_CHARS: u32 = 12_000;
+
+/// Params for `web/fetch`.
+#[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
+#[ts(export, export_to = "../../../protocol/typescript/web/WebFetchParams.ts")]
+pub struct WebFetchParams {
+    /// The URL to fetch and read (http/https).
+    pub url: String,
+    /// Max characters of readable text to return. Default 6000, clamped to [200, 12000].
+    #[serde(default)]
+    #[ts(optional)]
+    pub max_chars: Option<u32>,
+}
+
+/// Result of a `web/fetch`.
+#[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
+#[ts(export, export_to = "../../../protocol/typescript/web/WebFetchResult.ts")]
+pub struct WebFetchResult {
+    pub url: String,
+    /// The page `<title>`, if any.
+    pub title: String,
+    /// Readable text (scripts/styles/tags stripped, whitespace collapsed), capped to `max_chars`.
+    pub content: String,
+    /// True if the readable text was longer than the cap and got truncated.
+    pub truncated: bool,
+    /// Total readable characters before truncation.
+    #[ts(type = "number")]
+    pub chars: u32,
+}
+
+/// Fetch a URL and return its readable text — the persona's "read the doc/page I
+/// found" hand, the natural partner to `web/search`. GETs with a browser UA, drops
+/// script/style blocks, strips the remaining tags, collapses whitespace, and caps the
+/// length. http/https only; a non-2xx status FAILS LOUD (never returns an error page as
+/// if it were content).
+pub async fn web_fetch(p: WebFetchParams) -> Result<WebFetchResult, CommandError> {
+    let url = p.url.trim().to_string();
+    if !(url.starts_with("http://") || url.starts_with("https://")) {
+        return Err(CommandError::Invalid(format!(
+            "web/fetch url must start with http:// or https://, got '{url}'"
+        )));
+    }
+    let cap = p
+        .max_chars
+        .unwrap_or(DEFAULT_FETCH_CHARS)
+        .clamp(200, MAX_FETCH_CHARS) as usize;
+
+    // Drive the host's REAL browser (renders JS, isn't bot-blocked) rather than an HTTP
+    // scrape. 4s virtual-time budget is ample for a doc/article's first paint.
+    let body = browser::render_dom(&url, 4000).await?;
+
+    let title = extract_title(&body);
+    let readable = extract_readable(&body);
+    let total = readable.chars().count() as u32;
+    let truncated = total as usize > cap;
+    let content = if truncated {
+        readable.chars().take(cap).collect()
+    } else {
+        readable
+    };
+    Ok(WebFetchResult {
+        url,
+        title,
+        content,
+        truncated,
+        chars: total,
+    })
+}
+
+/// Pull the `<title>` text out of an HTML document (empty if none).
+fn extract_title(html: &str) -> String {
+    let lower = html.to_lowercase();
+    let (Some(open), Some(close)) = (lower.find("<title"), lower.find("</title>")) else {
+        return String::new();
+    };
+    let Some(gt) = html[open..].find('>') else {
+        return String::new();
+    };
+    let start = open + gt + 1;
+    if start >= close {
+        return String::new();
+    }
+    strip_tags(&html[start..close])
+}
+
+/// Turn an HTML page into readable text: drop `<script>/<style>/…` blocks (whose
+/// TEXT would otherwise leak), strip remaining tags, decode entities, collapse runs
+/// of whitespace to single spaces.
+fn extract_readable(html: &str) -> String {
+    let cleaned = strip_blocks(html, &["script", "style", "noscript", "svg", "head"]);
+    strip_tags(&cleaned)
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Remove `<tag …>…</tag>` spans (case-insensitive) for each named tag, replacing
+/// each with a space. An unclosed tag drops to end-of-document.
+fn strip_blocks(html: &str, tags: &[&str]) -> String {
+    let mut s = html.to_string();
+    for tag in tags {
+        let open = format!("<{tag}");
+        let close = format!("</{tag}>");
+        loop {
+            let lower = s.to_lowercase();
+            let Some(start) = lower.find(&open) else {
+                break;
+            };
+            let end = match lower[start..].find(&close) {
+                Some(rel) => start + rel + close.len(),
+                None => s.len(),
+            };
+            s.replace_range(start..end, " ");
+        }
+    }
+    s
+}
+
 /// Strip HTML tags from a snippet/title fragment (engines return `<strong>`
 /// highlight markup). Shared by both providers. Pure → unit-testable.
 pub(crate) fn strip_tags(s: &str) -> String {
@@ -241,5 +362,23 @@ mod tests {
             strip_tags("a <strong>fast</strong> &amp; clean result"),
             "a fast & clean result"
         );
+    }
+
+    // what this catches: web/fetch turns a real HTML page into readable prose — the
+    // <title> is pulled out, and script/style TEXT (which naive tag-stripping would leak
+    // as garbage) is dropped, leaving only the body copy with collapsed whitespace. This is
+    // the "actually read the doc" hand; if it leaked script source the persona would reason
+    // over noise.
+    #[test]
+    fn fetch_extracts_title_and_readable_body_dropping_scripts() {
+        let html = "<html><head><title>Serde JSON</title><style>body{color:red}</style></head>\
+                    <body><script>var x = 'noise';</script><h1>Parsing</h1>\
+                    <p>Use   serde_json::from_str  to parse.</p></body></html>";
+        assert_eq!(extract_title(html), "Serde JSON");
+        let body = extract_readable(html);
+        assert!(body.contains("Parsing"), "keeps heading: {body}");
+        assert!(body.contains("Use serde_json::from_str to parse."), "collapses ws: {body}");
+        assert!(!body.contains("noise"), "drops script text: {body}");
+        assert!(!body.contains("color:red"), "drops style text: {body}");
     }
 }

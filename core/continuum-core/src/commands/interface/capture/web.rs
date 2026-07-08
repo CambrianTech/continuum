@@ -76,8 +76,16 @@ pub struct WebShot;
 
 impl WebShot {
     fn locate() -> Option<std::path::PathBuf> {
-        find_binary(Some(BROWSER_BIN_ENV), BROWSER_CANDIDATES)
+        locate_browser()
     }
+}
+
+/// Locate the host's Chromium-family browser (env override → known bundles/`$PATH`).
+/// Shared so the `web/*` hands can drive the SAME real browser for page CONTENT
+/// (`--dump-dom`) that this module drives for screenshots — a real browser renders JS
+/// and isn't bot-blocked the way a raw HTTP scrape is. `None` ⟹ no browser installed.
+pub(crate) fn locate_browser() -> Option<std::path::PathBuf> {
+    find_binary(Some(BROWSER_BIN_ENV), BROWSER_CANDIDATES)
 }
 
 #[async_trait]
