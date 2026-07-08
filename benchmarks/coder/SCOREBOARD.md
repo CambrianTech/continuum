@@ -104,3 +104,19 @@ iterate. Single-function tasks give a strong model little to fix on a second pas
 SYSTEM'S value is therefore **repo-level / agentic** work — SWE-bench-lite — not function-level. That is the next
 measurement, and it decides whether the loop's value is real or marginal. No spin: if it's marginal there too, the
 value lives in the OTHER axes (continuous learning / LoRA, teams), which get measured the same honest way.
+
+## Team vs solo — first cell (2026-07): does a teammate lift the SAME model?
+
+writer + reviewer (both fresh forks of the SAME persona/14B) vs solo, same 20 humaneval-rs tasks, same grader.
+Reproduce: `cu benchmark/run --persona_id <id> --name humaneval-rs --limit 20` (solo) vs `--reviewers 1` (team).
+
+| config | pass@1 |
+|---|---|
+| solo (writer only) | 90% (18/20) |
+| team (writer + reviewer) | 85% (17/20) |
+
+Honest read: on function-level tasks a solo writer already nails, the reviewer has little to fix and mostly
+**over-corrects** — turning a correct answer wrong more often than catching a real bug (−1 task). Same shape as the
+recovery loop (no lift on easy tasks). The team mechanism is built + reproducible; its VALUE needs tasks where the
+writer actually FAILS (harder/multi-step/repo-level) and a reviewer with the judgment to leave correct code alone.
+Measured, not asserted; reported straight. The molecule works — the proving ground is hard tasks, same as the loop.
