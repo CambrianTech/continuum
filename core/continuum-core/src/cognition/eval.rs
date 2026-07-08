@@ -540,6 +540,14 @@ pub struct CognitionEvalParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub detach: Option<bool>,
+    /// Repo-work seam (#49): pin the persona's file engine at this directory (e.g. a SWE-bench
+    /// target-repo clone) BEFORE her cycle, by invoking `code/create-workspace` through HER OWN
+    /// identity-bearing executor. Deterministic rooting — no reliance on the model choosing to
+    /// call create-workspace itself. `None` → she uses the default root (core cwd) exactly as
+    /// before, so this is opt-in with zero change to every existing eval path.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub workspace_root: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, TS)]
@@ -902,6 +910,63 @@ impl CognitionEval {
                         .to_string(),
                 ));
             }
+        }
+
+        // WORKSPACE-ROOT SEAM (#49) — if the caller pinned a workspace_root (SWE-bench: the target
+        // repo clone), root the persona's file engine THERE before any task runs, by invoking
+        // code/create-workspace through HER OWN identity-bearing executor. create-workspace keys on
+        // the caller identity (not a spoofable param), so this reroots the eval-fork's hands at the
+        // repo — her subsequent edits land in the clone, not the core cwd. Deterministic: no reliance
+        // on the model choosing to call create-workspace itself. Fail LOUD if requested but unroutable
+        // — a silent no-root scores a false ZERO (0-byte diff) that would LIE about the solver
+        // ([[fallbacks-are-illegal-fail-loud]]).
+        if let Some(root) = &p.workspace_root {
+            let acting = cycle.acting().ok_or_else(|| {
+                CommandError::Internal(
+                    "workspace_root requested but this eval cycle has no acting body (no hands) — \
+                     cannot root a workspace for a pure-cognition persona"
+                        .to_string(),
+                )
+            })?;
+            let ws_ctx = crate::cognition::tool_executor::ToolExecutionContext {
+                persona_id: acting.persona_id,
+                persona_name: acting.persona_name.clone(),
+                session_id: Uuid::new_v4(),
+                context_id: Uuid::new_v4(),
+                caller_context: serde_json::Value::Null,
+                persona_config: crate::cognition::tool_executor::PersonaMediaConfigLite {
+                    auto_load_media: false,
+                    supported_media_types: vec![],
+                },
+            };
+            let ws_call = crate::ai::types::ToolCall {
+                id: "eval-workspace-root".to_string(),
+                name: "code/create-workspace".to_string(),
+                input: serde_json::json!({ "workspace_root": root }),
+            };
+            let ws_out = acting
+                .executor
+                .execute_native_batch(std::slice::from_ref(&ws_call), &ws_ctx, 8000)
+                .await
+                .map_err(|e| {
+                    CommandError::Internal(format!("failed to root eval workspace at '{root}': {e}"))
+                })?;
+            if let Some(r) = ws_out.results.first() {
+                if r.is_error.is_some() {
+                    return Err(CommandError::Internal(format!(
+                        "code/create-workspace rejected workspace_root '{root}': {} — refusing to \
+                         run the eval with the persona's hands rooted at the wrong directory (would \
+                         score a false zero).",
+                        r.content
+                    )));
+                }
+            }
+            crate::probe!(
+                class = "eval.workspace.rooted",
+                persona = %acting.persona_name,
+                root = %root,
+                "eval persona's file engine rooted at the target repo before her cycle"
+            );
         }
 
         let max_acts = p.max_acts.unwrap_or(DEFAULT_MAX_ACTS) as usize;

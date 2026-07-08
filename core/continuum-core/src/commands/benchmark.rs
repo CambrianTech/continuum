@@ -250,6 +250,7 @@ impl ActionCommand for BenchmarkRun {
                     detach: p.detach,
                     max_acts: p.max_acts.or(Some(6)),
                     max_retries: Some(0),
+                    workspace_root: None,
                     note: Some(match &p.base_model_id {
                         Some(m) => format!("benchmark/run {} on {m}", spec.name),
                         None => format!("benchmark/run {}", spec.name),

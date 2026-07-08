@@ -55,7 +55,10 @@ def main():
         sh(["git", "apply", p], cwd=repo_dir)
     else:
         # OURS: point a Continuum persona at the clone and run her cognition on the issue.
-        # She opens the repo herself via create-workspace (the proven hinge), reads, edits.
+        # Her file engine is rooted at the clone DETERMINISTICALLY by cognition/eval's
+        # --workspace_root seam (#49) — it invokes code/create-workspace through her own
+        # identity-bearing executor before her cycle, so we no longer rely on the MODEL
+        # choosing to call create-workspace itself (that was the 0-byte-diff failure mode).
         # Grading is EXTERNAL (the git diff → official harness), so the eval's own dod is a
         # no-op; we only need her to ACT on the working tree.
         import time
@@ -63,18 +66,18 @@ def main():
         ASHA="90e758b2-3cf3-45c1-b100-de7c4ab5a549"
         note=f"swe-{args.instance}"
         task={"id":args.instance,
-              "prompt":(f"You are fixing a real bug in a cloned git repository located at `{repo_dir}`. "
-                        f"FIRST call `code/create-workspace` with workspace_root=\"{repo_dir}\" to open it. "
-                        f"Then use code/read and code/search to find the relevant source, and code/edit or "
-                        f"code/write to fix it IN PLACE. Do not create new top-level files; edit the existing "
-                        f"source. Compile/run checks with code/shell if useful. When done, the working tree "
-                        f"should contain your fix.\n\nISSUE:\n{inst['problem_statement']}"),
+              "prompt":(f"You are fixing a real bug in a git repository. Your workspace is ALREADY rooted at "
+                        f"the repo — just use your tools on it directly. Use code/search and code/read to find "
+                        f"the relevant source, and code/edit to fix it IN PLACE (do NOT create new top-level "
+                        f"files; edit the existing source). Run checks with code/shell if useful. When done, the "
+                        f"working tree should contain your fix.\n\nISSUE:\n{inst['problem_statement']}"),
               "dod_shell":"true","lang":"rust"}
         tf=os.path.join(wd,"task.jsonl"); open(tf,"w").write(json.dumps(task)+"\n")
         led=os.path.expanduser(f"~/.continuum/progress/{ASHA}.jsonl")
         n0=sum(1 for _ in open(led)) if os.path.exists(led) else 0
-        print(f"[ours] dispatching persona on {args.instance} (detached, max_acts=25)")
-        sh([CU,"cognition/eval","--persona_id",ASHA,"--eval_set",tf,"--max_acts","25","--note",note,"--detach","true"],check=False)
+        print(f"[ours] dispatching persona on {args.instance} (workspace rooted at clone, detached, max_acts=25)")
+        sh([CU,"cognition/eval","--persona_id",ASHA,"--eval_set",tf,"--workspace_root",repo_dir,
+            "--max_acts","25","--note",note,"--detach","true"],check=False)
         # poll the ledger for this run to land (she is editing the clone in the background)
         for _ in range(40):
             time.sleep(30)
