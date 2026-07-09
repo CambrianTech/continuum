@@ -351,10 +351,29 @@ pub fn group_categories(tools: &[NativeToolSpec]) -> Vec<(&str, Vec<&str>)> {
 /// her. Only includes a spec that actually resolves in the registry (fail-closed:
 /// a missing command is omitted, never fabricated — [[fallbacks-are-illegal-fail-loud]]).
 pub fn native_tool_specs() -> Vec<NativeToolSpec> {
-    ["commands/list", TOOL_HELP_NAME]
-        .iter()
-        .filter_map(|n| spec_for_command(n))
-        .collect()
+    // The discovery pair (reaches the long tail by name) PLUS the core agentic-coding arc
+    // as REAL native specs. A model TRAINED to tool-call (Devstral, Qwen-Coder) emits native
+    // tool_calls — given only the discovery pair it loops forever on `commands/help{code/search}`
+    // and never acts (glass-boxed: 14/14 SWE acts were `commands/help`, 0 edits, 0 score). Offering
+    // the working set directly lets it search→read→edit→write→run→verify without the help detour,
+    // while a weak model that can't emit native tool_calls still falls back to the text menu +
+    // narrated-call recovery. Bounded (~11 schemas, ~1-2k tokens) so it never overflows the window
+    // the way a full ~150-tool dump did. Only specs that actually resolve are included (fail-closed).
+    // [[adaptive-tool-surface-meets-you-in-the-middle]] [[local-first-tool-call-robustness-is-the-differentiator]]
+    const NATIVE: &[&str] = &[
+        "commands/list",
+        TOOL_HELP_NAME,
+        "code/search",
+        "code/read",
+        "code/list",
+        "code/tree",
+        "code/edit",
+        "code/write",
+        "code/run",
+        "code/shell",
+        "code/git/diff",
+    ];
+    NATIVE.iter().filter_map(|n| spec_for_command(n)).collect()
 }
 
 /// Look up one command by name and project it to a full tool spec — the on-demand
