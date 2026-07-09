@@ -567,7 +567,9 @@ async fn serve_persona_loop_inner(
         // and their text projection. The deliberation faculty reads the turns to
         // assemble role-attributed messages; nothing flattens her own posts into a
         // peer's voice anymore (the identity-bleed/echo root cause).
-        let workspace_burst = crate::cognition::workspace::Burst::from_turns(
+        // Her NOW rides the burst header (task #125): live turns carry real wall-clock
+        // so time is a fact she can perceive; the eval fork passes its own pinned epoch.
+        let workspace_burst = crate::cognition::workspace::Burst::from_turns_at(
             ctx.identity.default_room,
             build_workspace_turns(
                 &composed.deliveries,
@@ -584,6 +586,7 @@ async fn serve_persona_loop_inner(
                     occurred_at_ms: now_ms,
                 }),
             ),
+            Some(now_ms),
         );
         // Mark this world-state as just-deliberated so the next heartbeat tick doesn't
         // re-run the same burst (the message path and the self-tick share the gate;
@@ -1274,7 +1277,7 @@ async fn run_self_cycle(
     // Structured turns (own posts attributed as self → assistant, peers → user),
     // wrapped into a Burst carrying both the turns and their text projection — the
     // SAME shape the message path builds.
-    let burst = crate::cognition::workspace::Burst::from_turns(
+    let burst = crate::cognition::workspace::Burst::from_turns_at(
         ctx.identity.default_room,
         build_workspace_turns(
             &deliveries,
@@ -1286,6 +1289,7 @@ async fn run_self_cycle(
             // turn ~one tick later; anchoring is the message path's job.
             None,
         ),
+        Some(now_ms),
     );
     let Some(cycle) = crate::cognition::persona_workspace::global().get(&ctx.identity.peer_id.as_uuid())
     else {

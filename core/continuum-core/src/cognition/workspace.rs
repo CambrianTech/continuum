@@ -455,9 +455,27 @@ impl Burst {
     /// `build_workspace_burst`) but deliberately kept OUT of `turns` — room
     /// identity is standing context for the system prompt, not a conversation turn.
     pub fn from_turns(room: Uuid, turns: Vec<BurstTurn>) -> Self {
+        Self::from_turns_at(room, turns, None)
+    }
+
+    /// Like [`from_turns`](Self::from_turns) but stamps the persona's NOW into the
+    /// header — the clock in her perception (task #125 prospective memory: a being
+    /// who commits to "tomorrow at 2 PM" must know when now IS; glass-boxed live,
+    /// her prompts carried no time referent at all, so appointments were words she
+    /// could never act on). The clock is a PARAMETER, never an ambient global read:
+    /// the live path passes wall-clock, the eval passes its pinned epoch (exams stay
+    /// byte-reproducible), tests pass fixtures. Rendered at MINUTE granularity so
+    /// the prompt prefix — and the serving KV cache — only changes once a minute.
+    pub fn from_turns_at(room: Uuid, turns: Vec<BurstTurn>, now_ms: Option<u64>) -> Self {
         use std::fmt::Write as _;
         let mut rendered = String::new();
         let _ = writeln!(rendered, "[room {room}]");
+        if let Some(ms) = now_ms {
+            if let Some(dt) = chrono::DateTime::from_timestamp_millis(ms as i64) {
+                let local = dt.with_timezone(&chrono::Local);
+                let _ = writeln!(rendered, "[now {}]", local.format("%Y-%m-%d %H:%M %A"));
+            }
+        }
         for turn in &turns {
             turn.write_line(&mut rendered);
         }
