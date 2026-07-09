@@ -110,11 +110,17 @@ pub fn looks_like_silence_token(text: &str) -> bool {
     // wrote a courtesy close and then `PASS` on its own line — she CHOSE silence, but
     // the strict whole-message match ignored her choice and broadcast the text anyway).
     // Honoring the trailing token respects her decision; a PASS merely mentioned inside
-    // a sentence still does NOT count (the line must be exactly the token).
+    // a sentence still does NOT count — the line must be ONLY the token, allowing the
+    // decoration idioms models reach for: `[PASS]`, `(PASS)`, `*PASS*`, `` `PASS` ``
+    // (glass-boxed live 2026-07-09 round 2: mid-goodbye-loop Asha emitted `[PASS]` as
+    // her final line — she took the hatch and the strict match rejected her over two
+    // brackets, broadcasting the goodbye anyway and re-fueling the loop).
     core.lines()
         .last()
         .map(|l| {
-            let l = l.trim();
+            let l = l
+                .trim()
+                .trim_matches(|c| matches!(c, '[' | ']' | '(' | ')' | '*' | '_' | '`' | '"' | '\''));
             let l = l.strip_suffix('.').unwrap_or(l).trim_end();
             l.eq_ignore_ascii_case(SILENCE_TOKEN)
         })
@@ -717,6 +723,16 @@ mod tests {
         assert!(!looks_like_silence_token(
             "Let's not pass on this opportunity.\nSee you soon!"
         ));
+        // Decorated final-line token still counts (regression for the live 2026-07-09
+        // goodbye loop: Asha emitted `[PASS]` — took the hatch, rejected over brackets).
+        assert!(looks_like_silence_token(
+            "Understood, Claude. See you tomorrow at 2 PM!\n[PASS]"
+        ));
+        assert!(looks_like_silence_token("(pass)"));
+        assert!(looks_like_silence_token("*PASS*"));
+        assert!(looks_like_silence_token("`PASS`."));
+        // A decorated NON-token line must not count.
+        assert!(!looks_like_silence_token("See you soon!\n[NOT A PASS]"));
     }
 
     #[test]
