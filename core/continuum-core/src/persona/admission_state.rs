@@ -659,6 +659,22 @@ impl AdmissionState {
         engrams.iter().rev().take(limit).cloned().collect()
     }
 
+    /// The AMNESIA FLASH (Joel's "MIB lamp"): drop every engram tagged with `context_id`,
+    /// returning how many were forgotten. This is what lets a benchmark be a PROCTORED EXAM of
+    /// the NATURAL living persona — she sits the exam with her full memory intact (never a
+    /// stripped fork), and afterward we neuralyze JUST that exam's episode so the answer key
+    /// can't leak into what she carries forward or trains on. Scoped strictly by `context_id`
+    /// (the exam's own context), so her life's other memories are untouched. In-memory drop;
+    /// the ORM/persistence sink deletion for the durable row is a follow-up (the eval fork uses
+    /// a NoopSink, so nothing durable is written during an exam anyway).
+    /// See [[benchmarks-are-proctored-exams-of-the-natural-living-persona]].
+    pub fn forget_context(&self, context_id: Uuid) -> usize {
+        let mut engrams = self.engrams.lock().unwrap();
+        let before = engrams.len();
+        engrams.retain(|e| e.context_id != Some(context_id));
+        before - engrams.len()
+    }
+
     /// Algorithm 4 recall. Returns the top `limit` engrams ranked by
     /// `salience × recency-decay`, after applying decay to bring each
     /// engram's salience up to `now_ms`. Records a recall hit on the
@@ -1186,6 +1202,44 @@ mod tests {
         assert_eq!(recent[0].id, ids[2]);
         assert_eq!(recent[1].id, ids[1]);
         assert_eq!(recent[2].id, ids[0]);
+    }
+
+    /// What this catches: the amnesia flash (`forget_context`) wipes ONLY the exam episode's
+    /// engrams and leaves her other memory intact — the property that makes a natural proctored
+    /// exam safe (she keeps her life's memory; only the answer-key episode is neuralyzed). A
+    /// regression that widened the scope would erase real memories; one that narrowed it would
+    /// leak exam answers into what she carries forward.
+    /// See [[benchmarks-are-proctored-exams-of-the-natural-living-persona]].
+    #[test]
+    fn forget_context_wipes_only_the_tagged_episode() {
+        let state = AdmissionState::new(Arc::new(
+            crate::persona::recall_metadata::RecallMetadataRegistry::new(),
+        ));
+        admit_n_distinct(
+            &state,
+            &[
+                "her real life memory one worth keeping",
+                "exam question engram to be neuralyzed",
+                "her real life memory two worth keeping",
+            ],
+        );
+        let exam_ctx = Uuid::new_v4();
+        // Stamp the middle engram as belonging to the exam episode (the acting body tags act
+        // results with a context_id in the live path; here we set it directly for the test).
+        {
+            let mut engrams = state.engrams.lock().unwrap();
+            engrams[1].context_id = Some(exam_ctx);
+        }
+        let forgotten = state.forget_context(exam_ctx);
+        assert_eq!(forgotten, 1, "exactly the one exam engram is neuralyzed");
+        let remaining = state.recall_recent(10);
+        assert_eq!(remaining.len(), 2, "her two real memories survive");
+        assert!(
+            remaining.iter().all(|e| e.context_id != Some(exam_ctx)),
+            "no exam-tagged engram remains"
+        );
+        // Flashing an unrelated context wipes nothing (scope safety).
+        assert_eq!(state.forget_context(Uuid::new_v4()), 0);
     }
 
     /// What this catches: recall_recent honors the limit, never exceeds
