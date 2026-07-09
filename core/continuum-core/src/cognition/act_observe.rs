@@ -326,7 +326,17 @@ pub async fn apply_act(
     // is the COLLAPSED reference for the EPISODIC engram that RECALL re-injects on later turns.
     let mut observation = String::new();
     let mut recall_observation = String::new();
+    // Loop-awareness (experience structure): fingerprint each call (name+args) so the mind
+    // perceives when it is RE-ISSUING an identical call. The result HEAD varies turn to turn,
+    // so `entries`/`#seq` alone make a repeat look "new"; the fingerprint keys on the call.
+    let mut max_repeat = 0usize;
     for (i, call) in fg_calls.iter().enumerate() {
+        let fp = format!(
+            "{}|{}",
+            call.name,
+            serde_json::to_string(&call.input).unwrap_or_default()
+        );
+        max_repeat = max_repeat.max(body.working_memory.note_action_fingerprint(&fp));
         let result = outcome.results.get(i);
         let body_text = match result {
             Some(r) => r.content.as_str(),
@@ -358,8 +368,22 @@ pub async fn apply_act(
         recall_observation.push_str(note);
         recall_observation.push_str("\n\n");
     }
-    let observation = observation.trim().to_string();
+    let mut observation = observation.trim().to_string();
     let recall_observation = recall_observation.trim().to_string();
+
+    // If the mind just re-issued an IDENTICAL call, make that redundancy a VIVID perception —
+    // not just the implicit `#seq` window-shift that smaller models don't interpret. A true
+    // fact about her OWN hands: she perceives she is looping and moves on organically. It never
+    // says what to do instead (that would be steering). Glass-boxed: a 14B re-ran the exact
+    // `code/search` 18× with the found file already in memory — structure the experience so the
+    // loop is felt. [[write-cognition-as-a-parent-above-lowered-expectations]]
+    if max_repeat >= 2 {
+        observation = format!(
+            "⚠ I have now issued this EXACT tool call {max_repeat} times; its result has not \
+             changed and is already in my working memory above. Repeating it tells me nothing \
+             new — I already have what this call can give me.\n\n{observation}"
+        );
+    }
 
     // Admit the outcome as an Episodic engram through the ONE production admit
     // path (a self-observation message from the persona to itself). This is the
