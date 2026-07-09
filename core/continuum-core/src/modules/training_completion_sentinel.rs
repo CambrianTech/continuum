@@ -168,6 +168,7 @@ impl TrainingCompletionSentinel {
             };
 
             let params = CognitionEvalParams {
+                run_id: None,
                 persona_id: job.persona_id.to_string(),
                 gene: Some(EvalGene {
                     name: job.trait_kind.clone(),

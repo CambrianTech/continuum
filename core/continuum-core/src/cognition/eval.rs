@@ -540,6 +540,11 @@ pub struct CognitionEvalParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub detach: Option<bool>,
+    /// Handle for a detached run (#86 fire-and-poll). Minted by the command when omitted;
+    /// the progress-ledger row carries it, and `cognition/eval-status` polls by it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub run_id: Option<String>,
     /// Repo-work seam (#49): pin the persona's file engine at this directory (e.g. a SWE-bench
     /// target-repo clone) BEFORE her cycle, by invoking `code/create-workspace` through HER OWN
     /// identity-bearing executor. Deterministic rooting — no reliance on the model choosing to
@@ -605,6 +610,9 @@ pub struct EvalTaskResult {
 
 #[derive(Debug, Clone, Serialize, TS, Default)]
 pub struct CognitionEvalResult {
+    /// The run handle (#86): present on a detached ack AND on the ledger row, so the
+    /// two halves of fire-and-poll join on one id.
+    pub run_id: Option<String>,
     pub persona_id: String,
     /// True = this is a fire-and-poll JOB HANDLE (#86), NOT a completed run: the eval was
     /// spawned detached and its real result is in the progress ledger, not in these fields
@@ -725,8 +733,13 @@ impl ActionCommand for CognitionEval {
         if p.detach.unwrap_or(false) {
             let persona_id = p.persona_id.clone();
             let note = p.note.clone().unwrap_or_default();
+            let run_id = p
+                .run_id
+                .clone()
+                .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
             let mut inner = p.clone();
             inner.detach = Some(false);
+            inner.run_id = Some(run_id.clone());
             tokio::spawn(async move {
                 match CognitionEval::run_eval(inner).await {
                     Ok(r) => tracing::info!(
@@ -743,6 +756,7 @@ impl ActionCommand for CognitionEval {
             return Ok(CognitionEvalResult {
                 detached: true,
                 persona_id,
+                run_id: Some(run_id),
                 ..Default::default()
             });
         }
@@ -1047,7 +1061,8 @@ impl CognitionEval {
             // Guard drops here: her memory frame + real persistence sink restored.
             let verify = self_verify_rate(&gene_results);
             let agg = speed_latency_aggregates(&gene_results);
-            let result = CognitionEvalResult {
+            let mut result = CognitionEvalResult {
+                run_id: None,
                 detached: false,
                 persona_id: persona_uuid.to_string(),
                 score: gene_score,
@@ -1079,7 +1094,9 @@ impl CognitionEval {
                     .as_ref()
                     .and_then(|e| e.footprint_bytes),
             };
-            append_progress_ledger(&result, p.note.as_deref(), &eval_set_label);
+            result.run_id = p.run_id.clone();
+            result.run_id = p.run_id.clone();
+        append_progress_ledger(&result, p.note.as_deref(), &eval_set_label);
             return Ok(result);
         }
 
@@ -1129,7 +1146,8 @@ impl CognitionEval {
         drop(isolation);
         let verify = self_verify_rate(&results);
         let agg = speed_latency_aggregates(&results);
-        let result = CognitionEvalResult {
+        let mut result = CognitionEvalResult {
+            run_id: None,
             detached: false,
             persona_id: persona_uuid.to_string(),
             score,
@@ -1157,6 +1175,7 @@ impl CognitionEval {
             lane_free_vram_bytes: None,
             lane_estimated_footprint_bytes: None,
         };
+        result.run_id = p.run_id.clone();
         append_progress_ledger(&result, p.note.as_deref(), &eval_set_label);
         Ok(result)
     }
@@ -1249,6 +1268,70 @@ fn speed_latency_aggregates(results: &[EvalTaskResult]) -> SpeedAggregates {
 /// is test-graded, `selfVerifyRate` is whether she actually ran her own code —
 /// so the trend can't be gamed by prose. One JSONL line per run at
 /// `~/.continuum/progress/<persona_id>.jsonl`, labelled by `note`.
+/// `cognition/eval-status` — the poll half of fire-and-poll (#86). A detached
+/// `cognition/eval`/`benchmark/run` returns a `run_id` immediately; this command reads the
+/// persona's progress ledger and reports whether that run's row has landed (complete, with
+/// the full result row) or not yet (pending). Read-only, ai-safe: personas can watch their
+/// OWN runs ([[first-class-citizens]] — self-monitoring rides the same registry), clients
+/// poll instead of holding a connection open across a many-minute exam.
+#[derive(Default)]
+pub struct CognitionEvalStatus;
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
+pub struct CognitionEvalStatusParams {
+    /// The examinee persona (whose ledger holds the row).
+    pub persona_id: String,
+    /// The handle returned by the detached run.
+    pub run_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, TS, Default)]
+pub struct CognitionEvalStatusResult {
+    /// True once the run's ledger row exists.
+    pub complete: bool,
+    /// The full ledger row when complete (score/total/passRate/lift/...), else null.
+    pub row: Option<serde_json::Value>,
+}
+
+#[async_trait]
+impl ActionCommand for CognitionEvalStatus {
+    const NAME: &'static str = "cognition/eval-status";
+    const ACCESS: AccessLevel = AccessLevel::AiSafe;
+    const DESCRIPTION: &'static str =
+        "Poll a detached cognition/eval / benchmark/run by its run_id: returns {complete, row} \
+         from the persona's progress ledger. The poll half of fire-and-poll — clients and \
+         personas alike watch long runs without holding a connection open.";
+
+    type Params = CognitionEvalStatusParams;
+    type Output = CognitionEvalStatusResult;
+
+    async fn run(
+        &self,
+        _ctx: &Ctx,
+        p: CognitionEvalStatusParams,
+    ) -> Result<CognitionEvalStatusResult, CommandError> {
+        let home = std::env::var("HOME")
+            .map_err(|_| CommandError::Internal("HOME unset — no progress ledger".into()))?;
+        let path = std::path::PathBuf::from(home)
+            .join(".continuum/progress")
+            .join(format!("{}.jsonl", p.persona_id));
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            // No ledger yet = no completed runs for this persona = pending.
+            return Ok(CognitionEvalStatusResult { complete: false, row: None });
+        };
+        for line in text.lines().rev() {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
+                if v.get("runId").and_then(|r| r.as_str()) == Some(p.run_id.as_str()) {
+                    return Ok(CognitionEvalStatusResult { complete: true, row: Some(v) });
+                }
+            }
+        }
+        Ok(CognitionEvalStatusResult { complete: false, row: None })
+    }
+}
+
+crate::register_stateless_command!(CognitionEvalStatus);
+
 fn append_progress_ledger(result: &CognitionEvalResult, note: Option<&str>, eval_set: &str) {
     let Some(home) = std::env::var("HOME").ok() else {
         return;
@@ -1278,6 +1361,7 @@ fn append_progress_ledger(result: &CognitionEvalResult, note: Option<&str>, eval
         "basePassRate": result.base_pass_rate,
         "lift": result.lift,
         "note": note,
+        "runId": result.run_id,
     });
     use std::io::Write;
     if let Ok(mut f) = std::fs::OpenOptions::new()

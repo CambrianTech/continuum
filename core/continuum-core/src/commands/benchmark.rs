@@ -266,6 +266,7 @@ impl ActionCommand for BenchmarkRun {
                     base_model_id: p.base_model_id.clone(),
                     reviewers: p.reviewers,
                     detach: p.detach,
+                    run_id: None,
                     max_acts: p.max_acts.or(Some(6)),
                     max_retries: Some(0),
                     workspace_root: None,
