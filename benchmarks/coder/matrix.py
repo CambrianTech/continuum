@@ -51,7 +51,14 @@ def h2h(row, args, tmp):
     else:
         cmd += ["--skip-raw"]
     print(f"\n### {row['label']} — head-to-head", file=sys.stderr)
-    subprocess.run(cmd, check=True)
+    # A refused/failed cell must NEVER kill the board: record the failure honestly and
+    # keep going — losing six finished cells' render to one bad row is the real damage
+    # (learned live: a fit-gated 32B aborted the whole humaneval board).
+    r = subprocess.run(cmd)
+    if r.returncode != 0 or not os.path.exists(out):
+        print(f"[cell-failed] {row['label']} (exit {r.returncode}) — recorded, continuing",
+              file=sys.stderr)
+        return {"label": row["label"], "raw": None, "system": None, "failed": True}
     return json.load(open(out))
 
 
@@ -99,7 +106,8 @@ def render(results, args):
         if raw and sysc and raw.get("pass_rate") is not None and sysc.get("pass_rate") is not None:
             d = sysc["pass_rate"] - raw["pass_rate"]
             delta = f"{d:+.0%}"
-        lines.append(f"| {r['label']} | {_pct(raw)} | {_pct(sysc)} | {_pct(opp)} | {delta} |")
+        note = " ⚠ cell failed (see log)" if r.get("failed") else ""
+        lines.append(f"| {r['label']}{note} | {_pct(raw)} | {_pct(sysc)} | {_pct(opp)} | {delta} |")
     lines.append("")
     lines.append("## Reproduce\n")
     lines.append("```bash")
