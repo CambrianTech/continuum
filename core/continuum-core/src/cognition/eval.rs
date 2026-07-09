@@ -806,6 +806,15 @@ impl CognitionEval {
             parse_jsonl(&text, &origin)?
         };
 
+        // Does this exam grade her HANDS or her MOUTH? A task graded from a file she
+        // writes (`solution_file`), a workspace DoD she must satisfy (`dod_shell`), or
+        // a pinned repo she edits (`workspace_root`) needs tools. A purely spoken-graded
+        // task (`test`/`expect`) does not — and offering tools there is a net TAX: a
+        // native-tool-call model loops on the discovery pair (`commands/help`) and never
+        // speaks (the isolator's Devstral 100%→0%). Match the surface to the modality.
+        let needs_tools = p.workspace_root.is_some()
+            || tasks.iter().any(|t| t.solution_file.is_some() || t.dod_shell.is_some());
+
         // Fork an EPHEMERAL measurement copy of her mind — the exam runs on the
         // copy while the LIVING persona keeps living (heartbeat beating, present in
         // the room, never frozen or anesthetized to be measured). The fork carries
@@ -833,7 +842,7 @@ impl CognitionEval {
                 let (lane, adapter, served_ctx, evidence) = spawn_gene_eval_lane(gene).await?;
                 placement_evidence = Some(evidence);
                 let cycle = crate::cognition::persona_workspace::global()
-                    .fork_eval_cycle_with_adapter(&persona_uuid, adapter, served_ctx)
+                    .fork_eval_cycle_with_adapter(&persona_uuid, adapter, served_ctx, needs_tools)
                     .ok_or_else(|| CommandError::NotFound(format!(
                         "no workspace template for persona {persona_uuid} — its mind was not assembled at spawn (register_from_cfg), so eval cannot fork a measurement copy"
                     )))?;
@@ -847,7 +856,7 @@ impl CognitionEval {
                 let (lane, adapter, served_ctx, evidence) = spawn_base_eval_lane(base_id).await?;
                 placement_evidence = Some(evidence);
                 let cycle = crate::cognition::persona_workspace::global()
-                    .fork_eval_cycle_with_adapter(&persona_uuid, adapter, served_ctx)
+                    .fork_eval_cycle_with_adapter(&persona_uuid, adapter, served_ctx, needs_tools)
                     .ok_or_else(|| CommandError::NotFound(format!(
                         "no workspace template for persona {persona_uuid} — its mind was not assembled at spawn (register_from_cfg), so eval cannot fork a measurement copy"
                     )))?;
@@ -856,7 +865,7 @@ impl CognitionEval {
             }
             // Neither → fork onto her LIVE lane (a plain number on whatever she's served on).
             (None, None) => crate::cognition::persona_workspace::global()
-                .fork_eval_cycle(&persona_uuid)
+                .fork_eval_cycle(&persona_uuid, needs_tools)
                 .ok_or_else(|| CommandError::NotFound(format!(
                     "no workspace template for persona {persona_uuid} — its mind was not assembled at spawn (register_from_cfg), so eval cannot fork a measurement copy without measuring her live mind"
                 )))?,
@@ -1105,7 +1114,7 @@ impl CognitionEval {
         let want_team = p.reviewers.unwrap_or(0) >= 1 && p.gene.is_none() && p.base_model_id.is_none();
         let (score, results) = if want_team {
             let reviewer = crate::cognition::persona_workspace::global()
-                .fork_eval_cycle(&persona_uuid)
+                .fork_eval_cycle(&persona_uuid, needs_tools)
                 .ok_or_else(|| CommandError::NotFound(format!(
                     "no workspace template for persona {persona_uuid} — cannot fork a reviewer teammate"
                 )))?;

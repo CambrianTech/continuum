@@ -509,7 +509,7 @@ impl PersonaWorkspaceRegistry {
     /// (never spawned through `register_from_cfg`/`get_or_build`) — the caller
     /// fails loud rather than measuring her live mind. See
     /// [[design-the-persona-as-a-being]] + [[eval-mutates-persona-lift-needs-isolation]].
-    pub fn fork_eval_cycle(&self, persona_id: &Uuid) -> Option<WorkspaceCycle> {
+    pub fn fork_eval_cycle(&self, persona_id: &Uuid, with_tools: bool) -> Option<WorkspaceCycle> {
         let mut cfg = self.templates.lock().unwrap().get(persona_id)?.clone();
         cfg.admission = Arc::new(cfg.admission.fork_detached());
         // The eval fork runs recall + grounding SYNCHRONOUSLY: drive_to_settle's
@@ -517,6 +517,17 @@ impl PersonaWorkspaceRegistry {
         // measure a starved copy. Faithful eval = synchronous perception here.
         cfg.defer_recall = false;
         cfg.defer_grounding = false;
+        // Match the tool surface to the exam's grading MODALITY. A spoken-graded task
+        // (`test`/`expect`, answer read from her mouth) needs NO hands — offering the
+        // discovery-pair tool surface only lets a native-tool-call model loop on
+        // `commands/help` and never SPEAK (Devstral 100%→0% through the loop; the
+        // system-lift isolator's finding). Grade her mouth → don't hand her hands to
+        // fumble; grade her hands (`solution_file`/`dod_shell`/`workspace_root`) → keep
+        // them. This is exam hygiene, the same family as the greedy/directed controls —
+        // [[adaptive-tool-surface-meets-you-in-the-middle]], [[eval-is-an-exam-not-a-life]].
+        if !with_tools {
+            cfg.tool_executor = None;
+        }
         Some(build_workspace_cycle(cfg))
     }
 
@@ -543,6 +554,7 @@ impl PersonaWorkspaceRegistry {
         persona_id: &Uuid,
         adapter: Arc<dyn AIProviderAdapter>,
         context_window: u32,
+        with_tools: bool,
     ) -> Option<WorkspaceCycle> {
         let mut cfg = self.templates.lock().unwrap().get(persona_id)?.clone();
         cfg.admission = Arc::new(cfg.admission.fork_detached());
@@ -551,6 +563,10 @@ impl PersonaWorkspaceRegistry {
         // Synchronous perception on the eval copy (see `fork_eval_cycle`).
         cfg.defer_recall = false;
         cfg.defer_grounding = false;
+        // Speak-only for spoken-graded exams (see `fork_eval_cycle` for why).
+        if !with_tools {
+            cfg.tool_executor = None;
+        }
         Some(build_workspace_cycle(cfg))
     }
 
