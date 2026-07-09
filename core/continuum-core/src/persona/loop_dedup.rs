@@ -99,16 +99,54 @@ fn jaccard(a: &HashSet<String>, b: &HashSet<String>) -> f32 {
     }
 }
 
+/// Content words (>2 chars, lowercased) — the tokenization the repetition-perception
+/// detector validated live (spiral turns ~1.0 containment, novel work ~0.12).
+fn content_words(s: &str) -> HashSet<String> {
+    s.split(|c: char| !c.is_alphanumeric())
+        .filter(|w| w.len() > 2)
+        .map(|w| w.to_lowercase())
+        .collect()
+}
+
+/// Minimum content words before a containment judgment is allowed — below this
+/// there is too little signal to call a turn zero-novelty.
+const CONTAINMENT_MIN_WORDS: usize = 4;
+
+/// Vocabulary-containment bar for "this turn adds nothing" — calibrated by the live
+/// perception detector (spiral ~1.0, novel ~0.12; 0.9 splits them with margin).
+const CONTAINMENT_BAR: f32 = 0.9;
+
+/// Is `target` zero-novelty against `window` — ≥4 content words, ≥0.9 of them
+/// already present in the window's union vocabulary? Length-robust where
+/// trigram-Jaccard is not: a short reworded courtesy vs a long template shares
+/// vocabulary but not shingles (~0.1 Jaccard on exactly the pairs that must match —
+/// measured live 2026-07-09 when the goodbye VARIANTS sailed through both gates).
+fn zero_novelty(target: &HashSet<String>, window: &[HashSet<String>]) -> bool {
+    if target.len() < CONTAINMENT_MIN_WORDS {
+        return false;
+    }
+    let union: HashSet<&String> = window.iter().flatten().collect();
+    let covered = target.iter().filter(|w| union.contains(w)).count() as f32 / target.len() as f32;
+    covered >= CONTAINMENT_BAR
+}
+
 /// Order-preserving collapse of near-duplicate airc turns across all deliveries,
 /// keeping the FIRST occurrence. Non-airc deliveries and empty-content items pass
 /// through untouched. Both self- and peer-authored turns are deduped: repeated OWN
 /// courtesy is the same contamination as repeated peer courtesy
 /// ([[false-refusal-anchor-present-but-positionally-defeated]]), so feeding five copies
 /// of one's own pleasantry as `assistant` precedent is exactly what we must not do.
+///
+/// Two near-dup tests, cheapest first: trigram-Jaccard catches the swapped-id
+/// template; vocabulary CONTAINMENT (vs the kept window) catches the reworded
+/// variant that shares all its words but no shingles — the live goodbye loop's
+/// heartbeat kept waking on exactly those (`persona.selftick.spoke` every ~90s,
+/// each "wrap up here and reconvene" vs "wrap up for today" a fresh fingerprint).
 pub fn dedup_loop_filler(deliveries: &[RagDelivery]) -> Vec<RagDelivery> {
     // Shared dedup state across ALL airc deliveries (chat history may arrive split).
     let mut seen_exact: HashSet<String> = HashSet::new();
     let mut recent_shingles: VecDeque<HashSet<String>> = VecDeque::new();
+    let mut kept_words: VecDeque<HashSet<String>> = VecDeque::new();
 
     let mut out = Vec::with_capacity(deliveries.len());
     for delivery in deliveries {
@@ -133,10 +171,18 @@ pub fn dedup_loop_filler(deliveries: &[RagDelivery]) -> Vec<RagDelivery> {
             if near_dup {
                 continue; // near-identical rewording — drop
             }
+            let words = content_words(&item.content);
+            if zero_novelty(&words, kept_words.make_contiguous()) {
+                continue; // reworded but adds no vocabulary — drop
+            }
             seen_exact.insert(norm);
             recent_shingles.push_back(shingles);
             if recent_shingles.len() > FUZZY_WINDOW {
                 recent_shingles.pop_front();
+            }
+            kept_words.push_back(words);
+            if kept_words.len() > FUZZY_WINDOW {
+                kept_words.pop_front();
             }
             kept.push(item.clone());
         }
@@ -181,36 +227,19 @@ pub fn dedup_loop_filler(deliveries: &[RagDelivery]) -> Vec<RagDelivery> {
 /// draws ([[no-hardcoded-heuristics-to-steer-cognition]]: scheduling hygiene, never
 /// a gate on her decision).
 pub fn defer_as_loop_filler(incoming: &str, recent: &[String]) -> bool {
-    fn content_words(s: &str) -> HashSet<String> {
-        s.split(|c: char| !c.is_alphanumeric())
-            .filter(|w| w.len() > 2)
-            .map(|w| w.to_lowercase())
-            .collect()
-    }
-    const MIN_CONTENT_WORDS: usize = 4;
-    const CONTAINMENT: f32 = 0.9;
     if recent.len() < 4 {
         return false;
     }
     let sets: Vec<HashSet<String>> = recent.iter().map(|s| content_words(s)).collect();
-    let contained = |target: &HashSet<String>, window: &[HashSet<String>]| -> bool {
-        if target.len() < MIN_CONTENT_WORDS {
-            return false;
-        }
-        let union: HashSet<&String> = window.iter().flatten().collect();
-        let covered =
-            target.iter().filter(|w| union.contains(w)).count() as f32 / target.len() as f32;
-        covered >= CONTAINMENT
-    };
     // (1) incoming re-presents known vocabulary only.
-    if !contained(&content_words(incoming), &sets) {
+    if !zero_novelty(&content_words(incoming), &sets) {
         return false;
     }
     // (2) the exchange is already cycling: ≥3 of the last 6 seen messages were
     // themselves zero-novelty against what preceded them.
     let tail_start = recent.len().saturating_sub(6);
     let cycling = (tail_start..recent.len())
-        .filter(|&i| i > 0 && contained(&sets[i], &sets[..i]))
+        .filter(|&i| i > 0 && zero_novelty(&sets[i], &sets[..i]))
         .count();
     cycling >= 3
 }
