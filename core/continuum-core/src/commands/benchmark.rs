@@ -51,6 +51,24 @@ pub fn known_benchmarks() -> &'static [BenchmarkSpec] {
             source_url: None,
         },
         BenchmarkSpec {
+            name: "hard-rs",
+            description: "Hard Rust problems (expression evaluators, algorithmics) — 8 tasks, \
+                          rustc compile+run graded. The difficulty ceiling above humaneval-rs.",
+            grader: Grader::Rust,
+            tasks: 8,
+            eval_set: Some("hard-rs.jsonl"),
+            source_url: None,
+        },
+        BenchmarkSpec {
+            name: "coder-eval",
+            description: "Continuum coder gym — 13 mixed practical Rust tasks, rustc compile+run \
+                          graded (the original held-out genome-loop eval set).",
+            grader: Grader::Rust,
+            tasks: 13,
+            eval_set: Some("coder-eval.jsonl"),
+            source_url: None,
+        },
+        BenchmarkSpec {
             name: "humaneval",
             description: "OpenAI HumanEval (Python) — the original, 164 tasks.",
             grader: Grader::Python,

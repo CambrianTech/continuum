@@ -59,6 +59,10 @@ const EMBEDDED_GYMS: &[(&str, &str)] = &[
         "humaneval-rs.jsonl",
         include_str!("../../../../docs/genome/humaneval-rs.jsonl"),
     ),
+    (
+        "hard-rs.jsonl",
+        include_str!("../../../../docs/genome/hard-rs.jsonl"),
+    ),
 ];
 
 /// Look up a committed gym's embedded bytes by the basename of `reference`.
