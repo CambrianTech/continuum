@@ -195,15 +195,133 @@ pub struct CodeEdit {
     pub state: Arc<CodeState>,
 }
 
+/// The one true shape + the recovery guidance, kept in ONE place so the runtime error and
+/// the field docs never drift.
+const EDIT_MODE_HELP: &str = "edit_mode must be ONE of (preferred = a tagged object): \
+{\"type\":\"search_replace\",\"search\":\"old text\",\"replace\":\"new text\"} | \
+{\"type\":\"line_range\",\"start_line\":N,\"end_line\":M,\"new_content\":\"...\"} | \
+{\"type\":\"insert_at\",\"line\":N,\"content\":\"...\"} | \
+{\"type\":\"append\",\"content\":\"...\"}. A bare mode string (e.g. \"append\") with the fields at top level is also accepted.";
+
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
 pub struct CodeEditParams {
     /// Path to the file, relative to the workspace (repo) root.
     pub file_path: String,
-    /// How to edit: line-range replace, search/replace, insert-at, or append.
-    pub edit_mode: EditMode,
+    /// How to edit. Preferred: a tagged object like `{"type":"search_replace","search":"old","replace":"new"}`,
+    /// `{"type":"line_range","start_line":N,"end_line":M,"new_content":"..."}`,
+    /// `{"type":"insert_at","line":N,"content":"..."}`, or `{"type":"append","content":"..."}`.
+    /// Forgiving: a bare mode string (e.g. `"append"`) with the fields at top level also works.
+    #[serde(default)]
+    #[ts(type = "any")]
+    pub edit_mode: serde_json::Value,
+    // Top-level convenience fields — accepted when edit_mode is given as a bare mode string
+    // (or when the mode is inferred from which of these are present). Forgives the common
+    // flat-call shape a model reaches for instead of the nested tagged object.
+    #[serde(default)]
+    pub content: Option<String>,
+    #[serde(default)]
+    pub search: Option<String>,
+    #[serde(default)]
+    pub replace: Option<String>,
+    #[serde(default)]
+    pub new_content: Option<String>,
+    #[serde(default)]
+    #[ts(optional, type = "number")]
+    pub start_line: Option<u32>,
+    #[serde(default)]
+    #[ts(optional, type = "number")]
+    pub end_line: Option<u32>,
+    #[serde(default)]
+    #[ts(optional, type = "number")]
+    pub line: Option<u32>,
+    #[serde(default)]
+    pub all: Option<bool>,
     /// Optional note describing the change (recorded in the change history).
     #[serde(default)]
     pub description: Option<String>,
+}
+
+/// Normalize a (possibly mis-shaped) code/edit call into a real [`EditMode`]. Forgives the
+/// ways a model mis-calls the tool — glass-boxed live: a 14B sent `edit_mode:"append"` (bare
+/// variant string) with no nested fields. Order: (1) strict tagged object, unchanged; (2) a
+/// bare mode string, or a mode INFERRED from which top-level fields are present; then build the
+/// variant, failing LOUD and naming the missing field (never a silent no-op that scores a false
+/// zero). [[px-persona-experience-tools-as-good-ux]] [[fallbacks-are-illegal-fail-loud]]
+fn normalize_edit_mode(p: &CodeEditParams) -> Result<EditMode, CommandError> {
+    // (1) Strict: already the tagged object — deserialize as-is (the preferred path, unchanged).
+    if p.edit_mode.get("type").is_some() {
+        return serde_json::from_value::<EditMode>(p.edit_mode.clone())
+            .map_err(|e| CommandError::Invalid(format!("code/edit: {e}. {EDIT_MODE_HELP}")));
+    }
+    // A field pulled from top-level OR from an untyped edit_mode object (flat call shapes).
+    let s = |top: &Option<String>, key: &str| -> Option<String> {
+        top.clone()
+            .or_else(|| p.edit_mode.get(key).and_then(|v| v.as_str().map(str::to_string)))
+    };
+    let content = s(&p.content, "content");
+    let search = s(&p.search, "search");
+    let replace = s(&p.replace, "replace");
+    let new_content = s(&p.new_content, "new_content");
+    // (2) The mode name: a bare string, else inferred from which fields are present.
+    let mode = p.edit_mode.as_str().map(str::to_string).or_else(|| {
+        if search.is_some() || replace.is_some() {
+            Some("search_replace".into())
+        } else if p.start_line.is_some() || p.end_line.is_some() || new_content.is_some() {
+            Some("line_range".into())
+        } else if p.line.is_some() {
+            Some("insert_at".into())
+        } else if content.is_some() {
+            Some("append".into())
+        } else {
+            None
+        }
+    });
+    let miss = |what: &str| CommandError::Invalid(format!("code/edit: needs `{what}`. {EDIT_MODE_HELP}"));
+    match mode.as_deref().map(|m| m.trim().to_lowercase()).as_deref() {
+        Some("search_replace") => Ok(EditMode::SearchReplace {
+            search: search.ok_or_else(|| miss("search"))?,
+            replace: replace.ok_or_else(|| miss("replace"))?,
+            all: p.all.unwrap_or(false),
+        }),
+        Some("append") => Ok(EditMode::Append {
+            content: content.ok_or_else(|| miss("content"))?,
+        }),
+        Some("insert_at") => Ok(EditMode::InsertAt {
+            line: p.line.ok_or_else(|| miss("line"))?,
+            content: content.ok_or_else(|| miss("content"))?,
+        }),
+        Some("line_range") => Ok(EditMode::LineRange {
+            start_line: p.start_line.ok_or_else(|| miss("start_line"))?,
+            end_line: p.end_line.ok_or_else(|| miss("end_line"))?,
+            new_content: new_content.ok_or_else(|| miss("new_content"))?,
+        }),
+        _ => Err(CommandError::Invalid(format!(
+            "code/edit: could not determine the edit mode. {EDIT_MODE_HELP}"
+        ))),
+    }
+}
+
+/// Reject a `file_path` that is a PLACEHOLDER rather than a real path. Glass-boxed live: a 14B
+/// wrote `file_path:"<path_to_blueprints.py>"` — it echoed the schema's angle-bracket placeholder
+/// syntax (or a `path_to_X` template) instead of substituting the concrete path it had ALREADY
+/// seen in its own search results. Fail LOUD and point it at where the real value lives, rather
+/// than a bare "file not found" that reads as "wrong file" instead of "you passed a template".
+fn reject_placeholder_path(file_path: &str) -> Result<(), CommandError> {
+    let p = file_path.trim();
+    let looks_placeholder = (p.starts_with('<') && p.ends_with('>'))
+        || p.contains("path_to")
+        || p.contains("/path/to/")
+        || p.contains("your_file")
+        || p.contains("<file")
+        || p.contains("<path");
+    if looks_placeholder {
+        return Err(CommandError::Invalid(format!(
+            "code/edit: file_path '{file_path}' is a PLACEHOLDER, not a real path. Use the concrete \
+             workspace-relative path you saw in your code/search or code/glob results (e.g. \
+             'src/flask/blueprints.py'), not a template."
+        )));
+    }
+    Ok(())
 }
 
 #[async_trait]
@@ -215,9 +333,11 @@ impl ActionCommand for CodeEdit {
     type Output = WriteResult;
 
     async fn run(&self, ctx: &Ctx, p: CodeEditParams) -> Result<WriteResult, CommandError> {
+        reject_placeholder_path(&p.file_path)?;
         let engine = engine!(self, ctx);
+        let mode = normalize_edit_mode(&p)?;
         engine
-            .edit(&p.file_path, &p.edit_mode, p.description.as_deref())
+            .edit(&p.file_path, &mode, p.description.as_deref())
             .map_err(|e| CommandError::Internal(e.to_string()))
     }
 }
@@ -994,6 +1114,54 @@ mod tests {
     use super::*;
     use crate::sdk_codegen::{AccessLevel, Ctx};
     use dashmap::DashMap;
+
+    // what this catches: code/edit forgives the ways a model mis-calls it (glass-boxed: a 14B
+    // sent edit_mode:"append" as a bare string) — strict tagged object still works, a bare mode
+    // string + top-level fields is accepted, the mode is inferred from present fields, and a
+    // MISSING required field fails loud NAMING it (never a silent no-op that scores false-zero).
+    #[test]
+    fn code_edit_normalizes_forgiving_shapes_and_fails_loud() {
+        let mk = |v: serde_json::Value| serde_json::from_value::<CodeEditParams>(v).expect("params");
+        // (1) strict tagged object — unchanged
+        let m = normalize_edit_mode(&mk(serde_json::json!({
+            "file_path": "a.py", "edit_mode": {"type":"append","content":"X"}
+        }))).unwrap();
+        assert!(matches!(m, EditMode::Append { content } if content == "X"));
+        // (2) bare mode string + top-level content
+        let m = normalize_edit_mode(&mk(serde_json::json!({
+            "file_path": "a.py", "edit_mode": "append", "content": "Y"
+        }))).unwrap();
+        assert!(matches!(m, EditMode::Append { content } if content == "Y"));
+        // (3) bare "search_replace" + top-level fields
+        let m = normalize_edit_mode(&mk(serde_json::json!({
+            "file_path": "a.py", "edit_mode": "search_replace", "search": "old", "replace": "new"
+        }))).unwrap();
+        assert!(matches!(m, EditMode::SearchReplace { search, replace, .. } if search=="old" && replace=="new"));
+        // (4) inferred from present fields (no edit_mode at all)
+        let m = normalize_edit_mode(&mk(serde_json::json!({
+            "file_path": "a.py", "search": "o", "replace": "n"
+        }))).unwrap();
+        assert!(matches!(m, EditMode::SearchReplace { .. }));
+        // (5) bare "append" with NO content → loud error naming the missing field (the exact
+        //     glass-boxed failure: edit_mode:"append", no content).
+        let err = normalize_edit_mode(&mk(serde_json::json!({
+            "file_path": "a.py", "edit_mode": "append"
+        }))).unwrap_err();
+        assert!(format!("{err}").contains("content"), "names the missing field: {err}");
+    }
+
+    // what this catches: a placeholder file_path (the 14B echoed `<path_to_blueprints.py>` instead
+    // of the real path it had seen) fails LOUD with guidance toward the concrete path — while a real
+    // path passes untouched (no false positives on ordinary filenames).
+    #[test]
+    fn code_edit_rejects_placeholder_paths_but_passes_real_ones() {
+        for ph in ["<path_to_blueprints.py>", "path_to_file.py", "/path/to/x.py", "<file>", "your_file.rs"] {
+            assert!(reject_placeholder_path(ph).is_err(), "should reject placeholder: {ph}");
+        }
+        for real in ["src/flask/blueprints.py", "core/continuum-core/src/lib.rs", "a.py", "example.py"] {
+            assert!(reject_placeholder_path(real).is_ok(), "should accept real path: {real}");
+        }
+    }
 
     // what this catches: code/search auto-detects a glob-shaped `pattern` (the misuse a local
     // model makes — `**/*.py` as the grep term, glass-boxed looping 12× on it) so it can list
