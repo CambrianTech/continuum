@@ -24,10 +24,6 @@
     "opencode_model": "local/qwen14b"
   },
   {
-    "label": "Qwen2.5-Coder-32B",
-    "base_model_id": "continuum-ai/qwen2.5-coder-32b-instruct-GGUF"
-  },
-  {
     "label": "Devstral-Small-24B",
     "base_model_id": "unsloth/Devstral-Small-2507-GGUF",
     "raw_endpoint": "http://127.0.0.1:58057/v1",
