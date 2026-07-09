@@ -370,6 +370,12 @@ async fn serve_persona_loop_inner(
     // over an unchanged world is free. Shared by both paths: a message turn updates
     // it, so the very next tick doesn't re-deliberate the same burst.
     let mut last_burst_fp: u64 = 0;
+    // Recent inbound texts (bounded ring) — the exchange record the message-path
+    // loop-filler gate below judges against. Inbound only: own posts are filtered
+    // above the gate, and the peer's repeats are what re-arm the resonance.
+    const RECENT_INBOUND_WINDOW: usize = 24;
+    let mut recent_inbound: std::collections::VecDeque<String> =
+        std::collections::VecDeque::with_capacity(RECENT_INBOUND_WINDOW);
 
     loop {
         let wake = tokio::select! {
@@ -410,6 +416,65 @@ async fn serve_persona_loop_inner(
         if msg.peer_id == ctx.identity.peer_id.as_uuid() {
             outcome.turns_skipped += 1;
             continue;
+        }
+
+        // Message-path loop-filler gate (#16): the heartbeat dedups its burst, but
+        // this path ran a full ~55s decode for EVERY inbound message — so two
+        // personas trading one goodbye template cycled forever on a metronome equal
+        // to decode time (glass-boxed 2026-07-09; the [pattern] observation, the
+        // presence clause, and honored PASSes all reached her and the loop survived
+        // on scheduling alone). A near-duplicate of an already-seen contribution
+        // arriving into an ALREADY-CYCLING exchange is not news: ADMIT it to memory
+        // (she remembers hearing it) but defer the dedicated turn to the heartbeat,
+        // whose deduped fingerprint stays stable → the resonance starves. A repeated
+        // sincere question in a non-cycling exchange never defers (the never-ghost
+        // floor) — see `loop_dedup::defer_as_loop_filler` for the two-condition
+        // trigger. Scheduling hygiene, not an output gate
+        // ([[no-hardcoded-heuristics-to-steer-cognition]]).
+        if crate::persona::loop_dedup::defer_as_loop_filler(
+            &msg.text,
+            recent_inbound.make_contiguous(),
+        ) {
+            let now_ms = (opts.now_ms)();
+            let inbox_msg = crate::persona::types::InboxMessage {
+                id: Uuid::new_v4(),
+                room_id: ctx.identity.default_room,
+                sender_id: msg.peer_id,
+                sender_name: format!("peer-{}", &msg.peer_id.to_string()[..8]),
+                sender_type: crate::persona::types::SenderType::Persona,
+                content: msg.text.clone(),
+                timestamp: now_ms,
+                priority: 0.5,
+                source_modality: None,
+                voice_session_id: None,
+            };
+            {
+                let cognition = ctx.cognition.lock().await;
+                if let Err(e) = cognition.admission.admit(&inbox_msg, None) {
+                    tracing::warn!(
+                        lamport = msg.lamport,
+                        error = %e,
+                        "admission.admit failed on deferred loop-filler — engram not formed"
+                    );
+                }
+            }
+            crate::probe!(
+                class = "persona.turn.deferred_loop_filler",
+                persona = %ctx.identity.agent_name,
+                lamport = msg.lamport,
+                text_len = msg.text.len(),
+                "near-duplicate inbound in an already-cycling exchange — admitted to memory, dedicated turn deferred to the heartbeat"
+            );
+            recent_inbound.push_back(msg.text.clone());
+            if recent_inbound.len() > RECENT_INBOUND_WINDOW {
+                recent_inbound.pop_front();
+            }
+            outcome.turns_skipped += 1;
+            continue;
+        }
+        recent_inbound.push_back(msg.text.clone());
+        if recent_inbound.len() > RECENT_INBOUND_WINDOW {
+            recent_inbound.pop_front();
         }
 
         // Per-turn latency clock starts AFTER the filters above —

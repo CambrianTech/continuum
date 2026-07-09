@@ -148,6 +148,55 @@ pub fn dedup_loop_filler(deliveries: &[RagDelivery]) -> Vec<RagDelivery> {
     out
 }
 
+/// Message-path extension of the same hygiene (#16): should this INBOUND message be
+/// serviced with a DEDICATED cognition turn, or deferred to the (deduped) heartbeat?
+///
+/// The heartbeat gate above starves the resonance only on the SELF-TICK path; the
+/// message path runs a full ~55s turn for EVERY inbound peer message unconditionally
+/// (glass-boxed live 2026-07-09, round 3: Asha↔Anwen traded a byte-identical goodbye
+/// template on a metronome exactly equal to decode time — each broadcast admitted →
+/// turn → broadcast → peer turn, forever; the persona's 20% PASS rate was the only
+/// brake). Two conditions must BOTH hold to defer, keeping the trigger far narrower
+/// than the heartbeat dedup:
+///
+/// 1. `incoming` is a near-duplicate (same normalize + trigram bar) of a message
+///    already seen in this exchange — it re-presents a known contribution, and
+/// 2. the exchange is ALREADY measurably cycling — at least 3 of the last 6 seen
+///    messages are themselves near-duplicates of earlier ones.
+///
+/// A repeated sincere question in a non-cycling exchange fails (2) and always gets
+/// its dedicated turn — the never-ghost-a-question floor holds. A deferred message
+/// is still ADMITTED to memory by the caller (she remembers hearing it); what is
+/// withheld is only the substrate's *scheduling* of an immediate dedicated decode —
+/// the same "refuse to re-present the same turn as news" line this module already
+/// draws ([[no-hardcoded-heuristics-to-steer-cognition]]: scheduling hygiene, never
+/// a gate on her decision).
+pub fn defer_as_loop_filler(incoming: &str, recent: &[String]) -> bool {
+    let norm = normalize(incoming);
+    if norm.is_empty() || recent.len() < 4 {
+        return false;
+    }
+    let normed: Vec<String> = recent.iter().map(|s| normalize(s)).collect();
+    let shingled: Vec<HashSet<String>> = normed.iter().map(|n| trigrams(n)).collect();
+    let is_dup_of_earlier = |idx: usize| -> bool {
+        let cur = &shingled[idx];
+        (0..idx).any(|j| normed[j] == normed[idx] || jaccard(cur, &shingled[j]) >= NEAR_DUP_JACCARD)
+    };
+    // (1) incoming re-presents a known contribution (bounded window, same as dedup).
+    let inc_shingles = trigrams(&norm);
+    let window_start = recent.len().saturating_sub(FUZZY_WINDOW);
+    let known = (window_start..recent.len())
+        .any(|j| normed[j] == norm || jaccard(&inc_shingles, &shingled[j]) >= NEAR_DUP_JACCARD);
+    if !known {
+        return false;
+    }
+    // (2) the exchange is already cycling: ≥3 of the last 6 seen messages near-dup
+    // an earlier one.
+    let tail_start = recent.len().saturating_sub(6);
+    let cycling = (tail_start..recent.len()).filter(|&i| is_dup_of_earlier(i)).count();
+    cycling >= 3
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -274,6 +323,48 @@ mod tests {
             deduped[0].items.len(),
             2,
             "curated non-airc items pass through untouched"
+        );
+    }
+
+    // what this catches: the message-path turn-per-inbound hole (#16, glass-boxed
+    // 2026-07-09 round 3). A near-duplicate goodbye arriving into an ALREADY-CYCLING
+    // exchange must defer (no dedicated decode); a repeated sincere question in a
+    // non-cycling exchange must NOT defer (never-ghost floor); novel content amid a
+    // cycling exchange must NOT defer (real news always gets a turn).
+    #[test]
+    fn defer_only_known_contribution_in_already_cycling_exchange() {
+        let goodbye_loop: Vec<String> = vec![
+            "Anwen, the benchmark board is committed — thanks for the review session today!".into(),
+            "You're welcome, Asha. Let's end our conversation here. See you tomorrow at 2 PM!".into(),
+            "Understood, Anwen. See you tomorrow at 2 PM! Have a great rest of your day!".into(),
+            "You're welcome, Asha. Let's end our conversation here. See you tomorrow at 2 PM!".into(),
+            "Understood, Anwen. See you tomorrow at 2 PM! Have a great rest of your day!".into(),
+            "You're welcome, Asha. Let's end our conversation here. See you tomorrow at 2 PM!".into(),
+            "Understood, Anwen. See you tomorrow at 2 PM! Have a great rest of your day!".into(),
+        ];
+        assert!(
+            defer_as_loop_filler(
+                "You're welcome, Asha. Let's end our conversation here. See you tomorrow at 2 PM!",
+                &goodbye_loop
+            ),
+            "another copy of the goodbye template into a cycling exchange must defer"
+        );
+        assert!(
+            !defer_as_loop_filler(
+                "Asha — the eval runner just crashed with a segfault, can you look?",
+                &goodbye_loop
+            ),
+            "novel content must get a dedicated turn even amid a cycling exchange"
+        );
+        let qa: Vec<String> = vec![
+            "Asha, are you there?".into(),
+            "What's the point of a bloom filter, in one sentence?".into(),
+            "And what's its false-positive tradeoff?".into(),
+            "How would you size one for a million keys?".into(),
+        ];
+        assert!(
+            !defer_as_loop_filler("Asha, are you there?", &qa),
+            "a repeated sincere question in a NON-cycling exchange must never defer"
         );
     }
 }
