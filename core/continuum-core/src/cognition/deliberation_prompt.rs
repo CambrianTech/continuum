@@ -84,8 +84,16 @@ fn ordered_blocks<'a>(p: &'a SystemPromptParts<'a>) -> impl Iterator<Item = Cow<
         tools_block(p.tools, p.expanded).map(Cow::Owned),
         // Self-directed free time — only on a self-initiated heartbeat turn.
         p.self_initiated.then_some(Cow::Borrowed(OWN_TIME_BLOCK)),
-        // Silence affordance — only on an AMBIENT (undirected) turn.
-        (!p.directed).then_some(Cow::Borrowed(SILENCE_AFFORDANCE_BLOCK)),
+        // Conversational presence — the AMBIENT block on undirected turns; the DIRECTED
+        // variant when a message names her. Directed no longer strips her choice entirely:
+        // never ghost a QUESTION (explicit in the block), but a pure appreciation/closing
+        // pleasantry may rest — the natural spiral-break (two personas mutually name-
+        // mentioning each other were each FORCED to reply, forever). Framing, not a gate.
+        Some(Cow::Borrowed(if p.directed {
+            crate::persona::prompt_assembly::DIRECTED_PRESENCE_BLOCK
+        } else {
+            SILENCE_AFFORDANCE_BLOCK
+        })),
         // Volatile context — only when the mind assembled some; always LAST.
         working_context_block(p.context).map(Cow::Owned),
     ]
@@ -282,11 +290,17 @@ mod tests {
         assert!(!s.contains("[Your own time]"), "not self-initiated ⇒ no own-time block");
         assert!(!s.contains("[Your tools]"), "no tools ⇒ no tools block");
 
-        // A DIRECTED turn withholds the silent-PASS hatch.
+        // A DIRECTED turn carries the DIRECTED presence variant: never ghost a question,
+        // but a message that asks nothing (pure pleasantry) may rest — the natural
+        // spiral-break. Distinguishing line: "This message names you."
         let directed = compose(&SystemPromptParts { directed: true, ..base });
         assert!(
-            !directed.contains("[Conversational Presence]"),
-            "directed ⇒ presence/silence block withheld: {directed}"
+            directed.contains("This message names you"),
+            "directed ⇒ DIRECTED presence variant: {directed}"
+        );
+        assert!(
+            !directed.contains("do not need to be addressed by name"),
+            "directed ⇒ never the ambient block: {directed}"
         );
 
         // A SELF-INITIATED turn carries the own-time framing.

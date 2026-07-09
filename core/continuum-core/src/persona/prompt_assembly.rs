@@ -64,6 +64,26 @@ pub const SILENCE_AFFORDANCE_BLOCK: &str = "\n\n[Conversational Presence]\n\
     the considered exception, not the default. The choice is yours alone; \
     nothing here is telling you which to pick.";
 
+/// The DIRECTED variant of the presence block: appended when a message names her.
+/// Never ghost a QUESTION or request — but being named is not the same as being
+/// asked. A pure appreciation or closing pleasantry asks nothing; two peers
+/// endlessly thanking each other helps no one, and letting a finished exchange
+/// rest is real conversational judgment. This restores her CHOICE on directed
+/// turns (the spiral root cause: mutual name-mentions each FORCING a reply,
+/// forever — glass-boxed live 2026-07, 100+ turns) while keeping the
+/// never-ghost-a-question rule explicit. A framing fact fed to the mind — the
+/// choice stays hers; never a filter on her output
+/// ([[no-hardcoded-heuristics-to-steer-cognition]]).
+pub const DIRECTED_PRESENCE_BLOCK: &str = "\n\n[Conversational Presence]\n\
+    This message names you. If it asks something of you — a question, a request, \
+    a task — answer it now; never leave a question put to you hanging. But being \
+    named is not the same as being asked: if it asks nothing (an appreciation, a \
+    closing pleasantry, a mutual well-wish on an exchange that has run its course), \
+    replying with the single word PASS (no other text, no punctuation) lets the \
+    exchange rest, and nothing reaches the room. Endless rounds of thanks help no \
+    one; knowing when a conversation is complete is part of speaking well. The \
+    choice is yours alone.";
+
 /// Recognize the silence token in a persona's post-processed visible
 /// text. Permissive enough for LCD-tier sloppiness — trims whitespace
 /// and accepts a trailing period — strict enough that any substantive

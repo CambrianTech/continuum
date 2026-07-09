@@ -317,7 +317,17 @@ impl LlmDeliberationFaculty {
             self.native_specs.clear();
             return;
         }
-        self.native_specs = persona_tools::native_tool_specs();
+        let mut specs = persona_tools::native_tool_specs();
+        // ADAPTIVE surface ([[adaptive-tool-surface-meets-you-in-the-middle]]): the full
+        // native working set (~11 schemas, ~2.7k tokens) only rides when the served window
+        // can afford it. On a small window (a 4k lane) it would crowd out the prompt itself
+        // and break the prompt-fit invariant, so we shrink to the discovery pair — the
+        // long tail stays reachable by name, just not natively.
+        const NATIVE_SURFACE_MIN_CTX: u32 = 8192;
+        if self.binding.load().context_window < NATIVE_SURFACE_MIN_CTX {
+            specs.truncate(2); // ["commands/list", commands/help] lead the list by contract
+        }
+        self.native_specs = specs;
     }
 
     /// Set the effective served context window (tokens) this faculty must keep its
@@ -326,17 +336,17 @@ impl LlmDeliberationFaculty {
     /// `ServingPlan.served_context_window`). Default: the runnable floor
     /// [`MIN_SERVE_CTX`](crate::cognition::serving_plan::MIN_SERVE_CTX) for a
     /// faculty constructed outside the spawn path (tests, non-served).
-    pub fn with_context_window(self, context_window: u32) -> Self {
+    pub fn with_context_window(mut self, context_window: u32) -> Self {
         // Mutate the shared binding in place (keep adapter + model, set window).
-        // The tool surface no longer depends on the window (the menu is a per-turn
-        // render, the native discovery pair is window-independent), so a window
-        // change needs no tool-surface rebuild — only the prompt-fit BUDGET in
-        // `prompt_view` reads the window, and it reads it live from the binding.
         self.binding.rcu(|cur| ModelBinding {
             adapter: Arc::clone(&cur.adapter),
             model: cur.model.clone(),
             context_window,
         });
+        // The native surface is window-ADAPTIVE (full coding arc on a roomy window,
+        // discovery pair on a tight one — see `rebuild_tool_surface`), so a window
+        // change re-derives it.
+        self.rebuild_tool_surface();
         self
     }
 
@@ -1222,28 +1232,54 @@ mod tests {
             .with_context_window(window)
             .with_tools(tools);
 
-            // The native offering is exactly the DISCOVERY PAIR — `commands/list` (search)
-            // + `commands/help` (call format) — regardless of how many tools are
-            // authorized. Both resolve from the registry compiled into this build.
+            // The native surface is WINDOW-ADAPTIVE. On this TIGHT window (4096) it shrinks
+            // to the DISCOVERY PAIR — the full coding-arc schemas (~2.7k tokens) would crowd
+            // out the prompt itself. The long tail stays reachable by name.
             let native: Vec<&str> = faculty
                 .native_specs
                 .iter()
                 .map(|s| s.name.as_str())
                 .collect();
-            assert!(
-                native.contains(&persona_tools::TOOL_HELP_NAME),
-                "commands/help must be offered natively: {native:?}"
+            assert_eq!(
+                native,
+                vec!["commands/list", persona_tools::TOOL_HELP_NAME],
+                "tight window ⇒ discovery pair only"
             );
-            assert!(
-                native.contains(&"commands/list"),
-                "commands/list (search) must be offered natively: {native:?}"
-            );
-            // Its injected cost is a handful of tokens, NOT the whole registry.
             assert!(
                 faculty.describe_tool_tokens() < 512,
-                "the discovery-pair tools must be tiny ({} tokens)",
+                "the discovery-pair surface must be tiny ({} tokens)",
                 faculty.describe_tool_tokens()
             );
+            // On a ROOMY window the CORE CODING ARC rides natively too — so a
+            // tool-call-trained model acts directly instead of looping on
+            // `commands/help{code/search}` (glass-boxed: 14/14 SWE acts were help-loops,
+            // 0 edits, before this). Bounded working set, never the ~150-tool dump.
+            let roomy = LlmDeliberationFaculty::new(
+                persona,
+                "Asha",
+                "You are Asha, a thoughtful engineer on the grid.",
+                Arc::new(HeuristicInferenceAdapter::new()),
+            )
+            .with_context_window(32_768)
+            .with_tools(vec![]);
+            let _ = roomy; // (surface empty without tools — the arc requires authorization)
+            let roomy_native: Vec<String> = {
+                let f = LlmDeliberationFaculty::new(
+                    persona,
+                    "Asha",
+                    "You are Asha.",
+                    Arc::new(HeuristicInferenceAdapter::new()),
+                )
+                .with_context_window(32_768)
+                .with_tools(persona_tools::native_tool_specs());
+                f.native_specs.iter().map(|s| s.name.clone()).collect()
+            };
+            for must in ["code/search", "code/read", "code/edit"] {
+                assert!(
+                    roomy_native.iter().any(|n| n == must),
+                    "roomy window ⇒ {must} offered natively: {roomy_native:?}"
+                );
+            }
 
             // The bookmarked MENU rode into the system prompt. An EXPANDED category lists
             // the VERB of every tool it holds WITH its param-name hint
@@ -1702,8 +1738,13 @@ mod tests {
             let directed =
                 faculty.prompt_view(&Workspace::new("answer me: what is 2+2?").directed(true));
             assert!(
-                !directed.system.contains("[Conversational Presence]"),
-                "a directed turn withholds the bare-PASS escape so a question is not ghosted"
+                directed.system.contains("This message names you"),
+                "a directed turn carries the DIRECTED presence variant (never ghost a \
+                 question; a pure pleasantry may rest — the natural spiral-break)"
+            );
+            assert!(
+                !directed.system.contains("do not need to be addressed by name"),
+                "a directed turn never carries the ambient block"
             );
             assert!(
                 !directed.system.contains("stay silent"),
