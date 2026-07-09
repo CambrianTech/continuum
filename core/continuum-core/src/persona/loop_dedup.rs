@@ -159,10 +159,19 @@ pub fn dedup_loop_filler(deliveries: &[RagDelivery]) -> Vec<RagDelivery> {
 /// brake). Two conditions must BOTH hold to defer, keeping the trigger far narrower
 /// than the heartbeat dedup:
 ///
-/// 1. `incoming` is a near-duplicate (same normalize + trigram bar) of a message
-///    already seen in this exchange — it re-presents a known contribution, and
+/// 1. `incoming` carries ≥4 content words whose vocabulary is ≥0.9 CONTAINED in
+///    the exchange's — it re-presents known contributions, adds nothing, and
 /// 2. the exchange is ALREADY measurably cycling — at least 3 of the last 6 seen
-///    messages are themselves near-duplicates of earlier ones.
+///    messages are themselves ≥0.9 contained in what preceded them.
+///
+/// Containment, not trigram-Jaccard: the live loop's goodbye VARIANTS ("Understood.
+/// Have a great day!" vs the long template) share vocabulary but not length, and
+/// Jaccard punishes length mismatch (~0.1 on exactly the pair that must match) —
+/// the gate's first cut shipped with the Jaccard bar and recorded ZERO deferrals
+/// against the live loop. Containment is the SAME math the repetition-perception
+/// detector validated live (spiral turns ~1.0, novel work ~0.12). A message under
+/// 4 content words never defers (too little signal to judge — it costs a decode,
+/// honestly).
 ///
 /// A repeated sincere question in a non-cycling exchange fails (2) and always gets
 /// its dedicated turn — the never-ghost-a-question floor holds. A deferred message
@@ -172,28 +181,37 @@ pub fn dedup_loop_filler(deliveries: &[RagDelivery]) -> Vec<RagDelivery> {
 /// draws ([[no-hardcoded-heuristics-to-steer-cognition]]: scheduling hygiene, never
 /// a gate on her decision).
 pub fn defer_as_loop_filler(incoming: &str, recent: &[String]) -> bool {
-    let norm = normalize(incoming);
-    if norm.is_empty() || recent.len() < 4 {
+    fn content_words(s: &str) -> HashSet<String> {
+        s.split(|c: char| !c.is_alphanumeric())
+            .filter(|w| w.len() > 2)
+            .map(|w| w.to_lowercase())
+            .collect()
+    }
+    const MIN_CONTENT_WORDS: usize = 4;
+    const CONTAINMENT: f32 = 0.9;
+    if recent.len() < 4 {
         return false;
     }
-    let normed: Vec<String> = recent.iter().map(|s| normalize(s)).collect();
-    let shingled: Vec<HashSet<String>> = normed.iter().map(|n| trigrams(n)).collect();
-    let is_dup_of_earlier = |idx: usize| -> bool {
-        let cur = &shingled[idx];
-        (0..idx).any(|j| normed[j] == normed[idx] || jaccard(cur, &shingled[j]) >= NEAR_DUP_JACCARD)
+    let sets: Vec<HashSet<String>> = recent.iter().map(|s| content_words(s)).collect();
+    let contained = |target: &HashSet<String>, window: &[HashSet<String>]| -> bool {
+        if target.len() < MIN_CONTENT_WORDS {
+            return false;
+        }
+        let union: HashSet<&String> = window.iter().flatten().collect();
+        let covered =
+            target.iter().filter(|w| union.contains(w)).count() as f32 / target.len() as f32;
+        covered >= CONTAINMENT
     };
-    // (1) incoming re-presents a known contribution (bounded window, same as dedup).
-    let inc_shingles = trigrams(&norm);
-    let window_start = recent.len().saturating_sub(FUZZY_WINDOW);
-    let known = (window_start..recent.len())
-        .any(|j| normed[j] == norm || jaccard(&inc_shingles, &shingled[j]) >= NEAR_DUP_JACCARD);
-    if !known {
+    // (1) incoming re-presents known vocabulary only.
+    if !contained(&content_words(incoming), &sets) {
         return false;
     }
-    // (2) the exchange is already cycling: ≥3 of the last 6 seen messages near-dup
-    // an earlier one.
+    // (2) the exchange is already cycling: ≥3 of the last 6 seen messages were
+    // themselves zero-novelty against what preceded them.
     let tail_start = recent.len().saturating_sub(6);
-    let cycling = (tail_start..recent.len()).filter(|&i| is_dup_of_earlier(i)).count();
+    let cycling = (tail_start..recent.len())
+        .filter(|&i| i > 0 && contained(&sets[i], &sets[..i]))
+        .count();
     cycling >= 3
 }
 
