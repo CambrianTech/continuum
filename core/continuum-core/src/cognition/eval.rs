@@ -1344,28 +1344,23 @@ async fn run_pass(
 ) -> (u32, Vec<EvalTaskResult>) {
     let mut pass = 0u32;
     let mut results = Vec::with_capacity(tasks.len());
+    // THE NATURAL PROCTORED EXAM (Joel: "we use our own persona as naturally as possible, as
+    // if these are proctored exams... natural personas even in tests, with memories intact").
+    // She sits down ONCE: rewind to the pre-eval frame at PASS start (each A/B arm still
+    // starts from the identical memory — arm fairness preserved), clear the volatile
+    // mid-thought scratch (she walks into the exam room attending to the exam), and then
+    // she works the whole task sheet CONTINUOUSLY — carrying what she learns on task 3 into
+    // task 4, exactly like a real student. The old per-task reset ("exam hygiene") measured
+    // a rigged amnesiac who could never accumulate — the very cognition+learning the thesis
+    // claims helps was structurally excluded from the measurement. If cross-task memory
+    // helps, that's the system WORKING; if it distracts, that's a real cognition gap the
+    // honest number should show. The exam EPISODE is dropped afterward (the fork is
+    // discarded; `AdmissionState::forget_context` is the amnesia flash for live-self runs),
+    // so the answer key never leaks into training.
+    // [[benchmarks-are-proctored-exams-of-the-natural-living-persona]]
+    cycle.reset_working_memory();
+    isolation.rewind();
     for t in tasks {
-        // Each task is a DISJOINT concern (the grader presents them back-to-back
-        // with no temporal continuity), so reset BOTH memory channels to the
-        // pre-eval frame before it runs — otherwise the prior task's state bleeds
-        // into this one's perception and contaminates an independent measurement:
-        //   (1) the VOLATILE working-memory scratch — the `[action #n]`
-        //       proprioception traces (`reset_working_memory`); and
-        //   (2) the DURABLE admission frame — the Episodic engrams a task admits
-        //       by ACTING (act→observe's result-as-engram), which survive a
-        //       working-memory clear and which recall would otherwise surface next
-        //       task ("based on my earlier code search, SELF_TICK_MS is in…" leaking
-        //       into an unrelated task — observed live 2026-07-02). `isolation.rewind`
-        //       restores the admission frame to the checkpoint the guard took before
-        //       any task ran, so every task starts from the IDENTICAL clean memory.
-        // This is the SAME rewind mechanism the A/B path uses between arms, now
-        // applied at the finer per-task boundary — one rule: every task starts from
-        // the pre-eval frame. The perception assembly + decision path stay identical
-        // to the live heartbeat (which never resets — there concerns flow
-        // continuously and traces age naturally); this is exam hygiene, not a change
-        // to how she thinks.
-        cycle.reset_working_memory();
-        isolation.rewind();
         // Frame the task through the SAME burst formatter the live heartbeat uses
         // (service_loop::build_workspace_burst), as a single airc room message
         // from a peer — so her deliberation perceives an examiner's question with
@@ -1546,16 +1541,21 @@ async fn run_pass_team(
 ) -> (u32, Vec<EvalTaskResult>) {
     let mut pass = 0u32;
     let mut results = Vec::with_capacity(tasks.len());
+    // Natural proctored exam, team edition: both teammates sit down ONCE (rewind to the
+    // pre-eval frame at pass start) and then work the sheet CONTINUOUSLY — the writer carries
+    // what she learned on earlier tasks; the reviewer builds a sense of the writer's habits.
+    // That accumulated familiarity IS part of what a team is. Same rationale as run_pass —
+    // [[benchmarks-are-proctored-exams-of-the-natural-living-persona]].
+    writer.reset_working_memory();
+    writer_iso.rewind();
+    reviewer.reset_working_memory();
+    reviewer_iso.rewind();
     for t in tasks {
-        // WRITER solves (exam-hygiene reset, same delivery as solo run_pass).
-        writer.reset_working_memory();
-        writer_iso.rewind();
+        // WRITER solves (same delivery as solo run_pass).
         let w = eval_settle(writer, room, &t.prompt, max_acts).await;
         let writer_answer = w.spoken.clone().unwrap_or_default();
 
         // REVIEWER reviews the writer's solution and produces the FINAL code.
-        reviewer.reset_working_memory();
-        reviewer_iso.rewind();
         // The reviewer's job is QUALITY CONTROL, not rewriting. The failure mode a glass-box
         // trace exposed: the reviewer eyeballs (acts=0), narrates a review, and "optimizes"
         // WORKING code — regressing tasks the writer got right. So the mandate is explicit:
