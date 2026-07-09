@@ -133,6 +133,15 @@ pub struct WorkingMemory {
     /// break out organically. (2) it reads as a recency ordinal in the bid. Not used
     /// for reasoning entries (chain-of-thought already varies turn to turn).
     next_action_seq: AtomicU64,
+    /// Fingerprints (tool name + args) of recent ACTIONS — the loop-awareness channel.
+    /// Distinct from `entries`, which carries result HEADS that vary turn to turn (so an
+    /// identical call still *looks* new); this keys on the CALL alone, so
+    /// [`note_action_fingerprint`](Self::note_action_fingerprint) can tell the mind "you have
+    /// issued this exact call N times." The `#seq` window-shift alone proved too implicit for
+    /// smaller models to interpret — they re-issue the identical call despite the changing
+    /// window. Explicit repeat-perception (a true fact about her own hands, never a directive)
+    /// lets a looping mind SEE its redundancy and move on organically.
+    action_fps: Mutex<VecDeque<String>>,
 }
 
 impl WorkingMemory {
@@ -143,7 +152,24 @@ impl WorkingMemory {
             last_action: Mutex::new(None),
             dispatched: Mutex::new(HashMap::new()),
             next_action_seq: AtomicU64::new(1),
+            action_fps: Mutex::new(VecDeque::new()),
         }
+    }
+
+    /// Record a fingerprint (tool name + args) of the action the hands just took, and return
+    /// how many times THIS exact call now appears in the recent window (including this one).
+    /// `≥ 2` means the mind is re-issuing an identical call — proprioception the act→observe
+    /// step renders EXPLICITLY so a looping mind perceives its own redundancy and moves on.
+    /// Reports a TRUE fact about her hands; it never dictates what to do instead (that would
+    /// be steering — [[no-hardcoded-heuristics-to-steer-cognition]]). Bounded by `capacity`,
+    /// same rolling window as the recency trail.
+    pub fn note_action_fingerprint(&self, fingerprint: &str) -> usize {
+        let mut fps = self.action_fps.lock();
+        fps.push_back(fingerprint.to_string());
+        while fps.len() > self.capacity {
+            fps.pop_front();
+        }
+        fps.iter().filter(|f| f.as_str() == fingerprint).count()
     }
 
     /// Record the reasoning the persona just produced. Blank/empty is ignored
@@ -297,6 +323,7 @@ impl WorkingMemory {
         self.entries.lock().clear();
         *self.last_action.lock() = None; // the full latest result is proprioception too
         self.dispatched.lock().clear(); // dispatched handles belong to the cleared concern
+        self.action_fps.lock().clear(); // loop-awareness resets with the concern
     }
 
     pub fn is_empty(&self) -> bool {
@@ -415,6 +442,22 @@ impl Faculty for WorkingMemoryFaculty {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches: loop-awareness — `note_action_fingerprint` counts repeats of the
+    // IDENTICAL call so the act→observe step can surface "you've issued this N times." A
+    // different call resets to 1; the count rises only on exact repeats. This is the explicit
+    // proprioception that breaks a smaller model out of the search-loop the glass box caught.
+    #[test]
+    fn note_action_fingerprint_counts_identical_repeats() {
+        let wm = WorkingMemory::new(8);
+        assert_eq!(wm.note_action_fingerprint("code/search|{\"pattern\":\"x\"}"), 1);
+        assert_eq!(wm.note_action_fingerprint("code/search|{\"pattern\":\"x\"}"), 2);
+        assert_eq!(wm.note_action_fingerprint("code/search|{\"pattern\":\"x\"}"), 3);
+        // a DIFFERENT call is its own first occurrence, not a repeat of the above
+        assert_eq!(wm.note_action_fingerprint("code/read|{\"file\":\"a\"}"), 1);
+        // back to the original — still counted across the window
+        assert_eq!(wm.note_action_fingerprint("code/search|{\"pattern\":\"x\"}"), 4);
+    }
 
     // what this catches: THE starvation fix — a large tool result comes back to the mind
     // in FULL (so it can count/read/scan it), while the rolling trail keeps only the head
