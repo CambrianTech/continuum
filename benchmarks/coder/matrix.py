@@ -124,13 +124,21 @@ def main():
     ap = argparse.ArgumentParser(description="Sweep models × {RAW, OURS} + opponents into a matrix.")
     ap.add_argument("--models", required=True, help="JSON list of model rows")
     ap.add_argument("--benchmark", default="humaneval-rs")
-    ap.add_argument("--gym", default=DEFAULT_GYM)
+    ap.add_argument("--gym", default=None,
+                    help="gym jsonl for RAW arms; omitted -> follows --benchmark "
+                         "(docs/genome/<benchmark>.jsonl) so RAW and SYSTEM always "
+                         "grade the SAME tasks")
     ap.add_argument("--limit", type=int, default=40)
     ap.add_argument("--persona-id", default=None,
                     help="resident persona UUID; omitted -> headtohead resolves live from the core")
     ap.add_argument("--cu", default=os.path.expanduser("~/.continuum/cache/cargo-target/debug/cu"))
     ap.add_argument("--out", default=None)
     args = ap.parse_args()
+    if not args.gym:
+        args.gym = os.path.join(HERE, "..", "..", "docs", "genome", f"{args.benchmark}.jsonl")
+        if not os.path.exists(args.gym):
+            raise SystemExit(f"no gym file for benchmark '{args.benchmark}' at {args.gym} — "
+                             "pass --gym explicitly")
 
     rows = json.load(open(args.models))
     tmp = tempfile.mkdtemp(prefix="matrix-")
