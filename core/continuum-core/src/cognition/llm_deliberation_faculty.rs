@@ -550,6 +550,7 @@ impl LlmDeliberationFaculty {
         expanded: &BTreeSet<String>,
         directed: bool,
         self_initiated: bool,
+        now_ms: Option<u64>,
     ) -> String {
         deliberation_prompt::compose(&deliberation_prompt::SystemPromptParts {
             system_prompt: &self.system_prompt,
@@ -558,6 +559,7 @@ impl LlmDeliberationFaculty {
             expanded,
             context,
             directed,
+            now_ms,
             self_initiated,
         })
     }
@@ -620,7 +622,7 @@ impl LlmDeliberationFaculty {
         // (both the silence block and the [Your own time] block are gated and add a
         // few dozen tokens each).
         let framing_tokens =
-            est_tokens(&self.compose_system("", &expanded, ws.directed_at_self, ws.self_initiated));
+            est_tokens(&self.compose_system("", &expanded, ws.directed_at_self, ws.self_initiated, ws.now_ms));
 
         // The conversation — role-attributed turns built from `ws.turns` (own posts
         // → assistant, peers → user), kept to the most-recent tail when it would
@@ -643,6 +645,7 @@ impl LlmDeliberationFaculty {
                 &expanded,
                 ws.directed_at_self,
                 ws.self_initiated,
+                ws.now_ms,
             ),
             messages,
         }
@@ -1288,7 +1291,7 @@ mod tests {
             // `cat` expanded the line is `cat:` followed by `command_0(path), command_1(path),
             // …` — names + arg names, not counts, not full slash-paths.
             let expanded = BTreeSet::from(["cat".to_string()]);
-            let framing = faculty.compose_system("", &expanded, false, false);
+            let framing = faculty.compose_system("", &expanded, false, false, None);
             assert!(
             framing.contains("[Your tools]") && framing.contains("cat: command_0(path"),
             "an expanded category must name each verb + its param hint under its header: {framing}"
@@ -1299,7 +1302,7 @@ mod tests {
         );
             // Collapsed (nothing expanded) the same category renders as a one-line
             // bookmark — the spine still NAMES it, so she can open it on demand.
-            let collapsed = faculty.compose_system("", &BTreeSet::new(), false, false);
+            let collapsed = faculty.compose_system("", &BTreeSet::new(), false, false, None);
             assert!(
             collapsed.contains("cat (60 — commands/list --filter cat)"),
             "a collapsed category is a one-line bookmark naming it + its verb count: {collapsed}"
@@ -1395,7 +1398,7 @@ mod tests {
                 .with_context_window(8192);
 
             // self_initiated = true, undirected.
-            let own_time = faculty.compose_system("", &BTreeSet::new(), false, true);
+            let own_time = faculty.compose_system("", &BTreeSet::new(), false, true, None);
             assert!(
                 own_time.contains("[Your own time]"),
                 "self-initiated turn must carry the own-time framing: {own_time}"
@@ -1424,7 +1427,7 @@ mod tests {
             );
 
             // A non-self-initiated (inbound-driven) turn must NOT carry the own-time block.
-            let ambient = faculty.compose_system("", &BTreeSet::new(), false, false);
+            let ambient = faculty.compose_system("", &BTreeSet::new(), false, false, None);
             assert!(
                 !ambient.contains("[Your own time]"),
                 "ambient/directed turns must not carry the own-time framing: {ambient}"
@@ -1462,7 +1465,7 @@ mod tests {
             // least SOME burst — i.e. framing alone must not consume the window. With
             // nothing expanded (empty context) the menu is its smallest — a spine of
             // collapsed bookmarks — which is the floor case for this fit guard.
-            let collapsed = faculty.compose_system("", &BTreeSet::new(), false, false);
+            let collapsed = faculty.compose_system("", &BTreeSet::new(), false, false, None);
             let framing = est_tokens(&collapsed);
             let reserve = (window / 4).clamp(256, 2048) as usize;
             assert!(

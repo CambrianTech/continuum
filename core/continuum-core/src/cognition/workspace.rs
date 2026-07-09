@@ -439,6 +439,10 @@ impl BurstTurn {
 /// stimulus → a single opaque turn rendered verbatim).
 #[derive(Debug, Clone)]
 pub struct Burst {
+    /// The persona's NOW at assembly (wall-clock ms; eval passes its pinned epoch;
+    /// None for raw-string/test bursts). Threaded to the prompt as a [now …] line
+    /// (task #125 — the rendered header never reaches the structured-turns prompt).
+    pub now_ms: Option<u64>,
     /// The structured conversation — the unit the deliberation faculty attributes
     /// to `assistant`/`user` roles. Excludes the room header (standing context
     /// that belongs in the system prompt, not the conversation).
@@ -479,7 +483,7 @@ impl Burst {
         for turn in &turns {
             turn.write_line(&mut rendered);
         }
-        Self { turns, rendered }
+        Self { turns, rendered, now_ms }
     }
 }
 
@@ -491,6 +495,7 @@ impl From<String> for Burst {
         Self {
             turns: vec![BurstTurn::opaque(s.clone())],
             rendered: s,
+            now_ms: None,
         }
     }
 }
@@ -611,6 +616,9 @@ pub struct Workspace {
     /// the conversation turns stay clean). `false` (the default) = message/eval
     /// driven.
     pub self_initiated: bool,
+    /// The persona's NOW at burst assembly (see [`Burst::now_ms`]) — rendered as a
+    /// [now …] line in the system prompt so time is a fact she can perceive (#125).
+    pub now_ms: Option<u64>,
 }
 
 impl Workspace {
@@ -625,6 +633,7 @@ impl Workspace {
     /// (collapses to one opaque turn — faculty tests, replay).
     pub fn in_room(burst: impl Into<Burst>, room_id: Uuid) -> Self {
         let burst = burst.into();
+        let burst_now = burst.now_ms;
         Self {
             world_state: burst.rendered,
             turns: burst.turns,
@@ -633,6 +642,7 @@ impl Workspace {
             broadcast: Vec::new(),
             directed_at_self: false,
             self_initiated: false,
+            now_ms: burst_now,
         }
     }
 

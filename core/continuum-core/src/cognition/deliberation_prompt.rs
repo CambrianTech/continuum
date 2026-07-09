@@ -57,6 +57,9 @@ pub(super) struct SystemPromptParts<'a> {
     pub context: &'a str,
     /// A turn DIRECTED at her (question/@mention/DM) withholds the silent-PASS hatch.
     pub directed: bool,
+    /// Wall-clock (or eval-pinned) NOW in ms — rendered as `[now …]` standing context
+    /// at minute granularity (#125: without it appointments are words with no referent).
+    pub now_ms: Option<u64>,
     /// A self-initiated (never-stop heartbeat) turn carries the own-time framing.
     pub self_initiated: bool,
 }
@@ -94,6 +97,16 @@ fn ordered_blocks<'a>(p: &'a SystemPromptParts<'a>) -> impl Iterator<Item = Cow<
         } else {
             SILENCE_AFFORDANCE_BLOCK
         })),
+        // Her NOW — a one-line clock (minute granularity; prompt prefix stays
+        // KV-cache-friendly). Eval passes its pinned epoch; tests pass None.
+        p.now_ms
+            .and_then(|ms| chrono::DateTime::from_timestamp_millis(ms as i64))
+            .map(|dt| {
+                Cow::Owned(format!(
+                    "\n\n[now {}]",
+                    dt.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M %A")
+                ))
+            }),
         // Volatile context — only when the mind assembled some; always LAST.
         working_context_block(p.context).map(Cow::Owned),
     ]
