@@ -1,0 +1,16 @@
+[
+  {
+    "label": "Devstral-Small-24B",
+    "base_model_id": "unsloth/Devstral-Small-2507-GGUF",
+    "raw_endpoint": "http://127.0.0.1:58057/v1",
+    "raw_model": "unsloth/Devstral-Small-2507-GGUF"
+  },
+  {
+    "label": "Qwen2.5-Coder-14B",
+    "base_model_id": "continuum-ai/qwen2.5-coder-14b-instruct-GGUF"
+  },
+  {
+    "label": "qwen3.5-4b-code-forged (OURS-forged)",
+    "base_model_id": "continuum-ai/qwen3.5-4b-code-forged-GGUF"
+  }
+]

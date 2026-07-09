@@ -156,3 +156,19 @@ was −10pts, Qwen-Coder ~0, and Devstral −100.
 (bounded) tools as native specs so it can actually act OR just answer; only a non-native-caller
 gets discovery-only + text menu. Until then, our loop is a net TAX on exactly the capable models
 we most want to win with. This is the #1 cognition-refinement target, now with a per-model number.
+
+### FIX LANDED — the tax is dead (2026-07)
+
+The −100% Devstral tax is fixed. Root: we offered a tool surface on a SPOKEN-graded exam, and a
+native-tool-call model looped on discovery instead of answering. Fix (`fix(eval): spoken-graded
+exams run speak-only`): match the tool surface to the grading modality — `test`/`expect` (graded
+from her mouth) → speak-only; `solution_file`/`dod_shell`/`workspace_root` (graded from her hands)
+→ keep tools. Re-measured with the isolator:
+
+| model | before fix | after fix | RAW |
+|---|---|---|---|
+| Devstral-Small-24B | 0/3 (0%) | **5/5 (100%)** | 100% |
+
+Also 4× faster (76s vs 324s — no discovery loops). Zero tax vs raw on a native-tool-caller; the
+SWE-bench tool path (`workspace_root`) is unchanged. Full matrix: `benchmarks/coder/MATRIX.md`
+via `matrix.py --models models.json`.
