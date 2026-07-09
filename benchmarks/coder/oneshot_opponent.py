@@ -50,11 +50,19 @@ def grade(answer_code, test_body, workdir):
     binp = os.path.join(workdir, "prog_bin")
     with open(src, "w") as f:
         f.write(prog)
-    c = subprocess.run(["rustc", "--edition", "2021", src, "-o", binp],
-                       capture_output=True, text=True, timeout=60)
+    try:
+        c = subprocess.run(["rustc", "--edition", "2021", src, "-o", binp],
+                           capture_output=True, text=True, timeout=60)
+    except subprocess.TimeoutExpired:
+        return False, "compile timeout (>60s)"
     if c.returncode != 0:
         return False, "compile error: " + (c.stderr.strip().splitlines() or [""])[0][:120]
-    r = subprocess.run([binp], capture_output=True, text=True, timeout=30)
+    # A solution that hangs (infinite loop) is a FAIL, not a harness crash — kill it and
+    # score it wrong, so one bad answer never aborts the whole benchmark run.
+    try:
+        r = subprocess.run([binp], capture_output=True, text=True, timeout=30)
+    except subprocess.TimeoutExpired:
+        return False, "runtime timeout (>30s — likely infinite loop)"
     return (r.returncode == 0), ("tests passed" if r.returncode == 0
                                  else "test failed: " + (r.stderr.strip()[:120] or "assertion"))
 

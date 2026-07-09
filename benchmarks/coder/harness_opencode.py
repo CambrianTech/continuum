@@ -23,21 +23,40 @@ import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
-from oneshot_opponent import grade  # identical grader: answer + fn main(){test} → rustc → run
+from oneshot_opponent import grade, extract_code  # identical grader + fenced-block extractor
+
+
+def _strip_gym_framing(prompt):
+    """The gym prompt is framed for SPOKEN grading ('give your answer as a fenced code block').
+    That instruction fights an agentic write-to-file harness — opencode obeys it and prints the
+    code instead of writing. Drop the framing paragraph so the ONLY instruction opencode sees is
+    the harness's write-to-file one; keep just the function (docstring + signature) to implement."""
+    head, _, rest = prompt.partition("\n\n")
+    return rest if (rest and "fenced code block" in head.lower()) else prompt
 
 
 def run_opencode(prompt, ws, model, timeout):
-    full = ("Implement this Rust function and write ONLY the finished code to solution.rs "
-            "using your write tool.\n\n" + prompt)
+    # opencode `run --pure` (piped stdio) resolves its write-tool base UNPREDICTABLY —
+    # observed writing to $TMPDIR/opencode/, to cwd, and to its daemon's cwd (the repo
+    # root) across invocations. So we hand it an EXPLICIT ABSOLUTE path and read exactly
+    # there. If it still SPEAKS the answer instead of writing (some models ignore the write
+    # instruction), fall back to a fenced code block in stdout — fair to opencode either way.
+    sol = os.path.join(ws, "solution.rs")
+    task = _strip_gym_framing(prompt)
+    full = (f"Implement this Rust function and write ONLY the finished code to the file at this "
+            f"exact absolute path: {sol}\nUse your write tool with that absolute path.\n\n" + task)
+    stdout = ""
     try:
-        subprocess.run(
+        r = subprocess.run(
             ["opencode", "run", "--pure", "--auto", "-m", model, full],
             cwd=ws, capture_output=True, text=True, timeout=timeout,
         )
+        stdout = r.stdout or ""
     except subprocess.TimeoutExpired:
         pass
-    p = os.path.join(ws, "solution.rs")
-    return open(p).read() if os.path.isfile(p) else ""
+    if os.path.isfile(sol):
+        return open(sol).read()
+    return extract_code(stdout) if "```" in stdout else ""
 
 
 def main():
