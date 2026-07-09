@@ -103,7 +103,22 @@ pub fn looks_like_silence_token(text: &str) -> bool {
     }
     // Allow one trailing `.` for LCD-tier punctuation habit.
     let core = trimmed.strip_suffix('.').unwrap_or(trimmed).trim_end();
-    core.eq_ignore_ascii_case(SILENCE_TOKEN)
+    if core.eq_ignore_ascii_case(SILENCE_TOKEN) {
+        return true;
+    }
+    // A bare PASS on the FINAL line also counts (glass-boxed live 2026-07-09: Asha
+    // wrote a courtesy close and then `PASS` on its own line — she CHOSE silence, but
+    // the strict whole-message match ignored her choice and broadcast the text anyway).
+    // Honoring the trailing token respects her decision; a PASS merely mentioned inside
+    // a sentence still does NOT count (the line must be exactly the token).
+    core.lines()
+        .last()
+        .map(|l| {
+            let l = l.trim();
+            let l = l.strip_suffix('.').unwrap_or(l).trim_end();
+            l.eq_ignore_ascii_case(SILENCE_TOKEN)
+        })
+        .unwrap_or(false)
 }
 
 /// Input to prompt assembly. Carries everything needed to build the
@@ -683,6 +698,27 @@ mod tests {
     /// A future PR that wires per-tier prompts or removes the universal
     /// affordance must update this expectation to reflect the new
     /// contract — silent removal would re-introduce the echo-storm bug.
+    /// What this catches: the trailing-PASS silence contract. Glass-boxed live
+    /// (2026-07-09): Asha wrote a courtesy close then `PASS` on its own final line —
+    /// she CHOSE silence, but the strict whole-message match broadcast the text
+    /// anyway, ignoring her decision. A bare final-line PASS must count as silence;
+    /// PASS merely mentioned inside prose must NOT (a real reply containing the
+    /// word "pass" stays a reply).
+    #[test]
+    fn trailing_pass_line_counts_as_silence() {
+        assert!(looks_like_silence_token("PASS"));
+        assert!(looks_like_silence_token("pass."));
+        assert!(looks_like_silence_token(
+            "Understood, Anwen. See you tomorrow!\nI'll be here if you need anything.\nPASS"
+        ));
+        assert!(!looks_like_silence_token(
+            "I'll pass the results along tomorrow."
+        ));
+        assert!(!looks_like_silence_token(
+            "Let's not pass on this opportunity.\nSee you soon!"
+        ));
+    }
+
     #[test]
     fn assembled_prompt_always_carries_silence_affordance() {
         let input = PromptAssemblyInput {
