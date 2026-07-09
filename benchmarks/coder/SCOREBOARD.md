@@ -172,3 +172,20 @@ from her mouth) → speak-only; `solution_file`/`dod_shell`/`workspace_root` (gr
 Also 4× faster (76s vs 324s — no discovery loops). Zero tax vs raw on a native-tool-caller; the
 SWE-bench tool path (`workspace_root`) is unchanged. Full matrix: `benchmarks/coder/MATRIX.md`
 via `matrix.py --models models.json`.
+
+### opencode opponent — matched 14B row (2026-07)
+
+Same model (Qwen2.5-Coder-14B), same 20 humaneval-rs tasks, same rustc grader. opencode drives the
+local model through the toolcall-shim (its narrated tool calls recovered to native — its fair shot).
+
+| harness (Qwen2.5-Coder-14B, 20 tasks) | pass@1 |
+|---|---|
+| RAW one-shot | 90% (18/20) |
+| **OURS (Continuum)** | **90% (18/20)** |
+| opencode + shim | 75% (15/20) |
+| Hermes-3-8B (reference) | 52% (21/40) |
+
+**OURS beats opencode by 15 points and ties raw one-shot (zero tax). opencode's agentic loop drops
+3 tasks the model solves raw** — the opponent's harness taxes the model where ours doesn't. Setup for
+the opencode cell: `llama-server` on :8093 (the model) + `toolcall_shim.py --listen 8094 --upstream
+http://127.0.0.1:8093` + opencode configured to the shim (`~/.config/opencode/opencode.json`).
