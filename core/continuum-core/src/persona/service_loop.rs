@@ -1109,6 +1109,44 @@ pub(crate) fn build_workspace_turns(
         })
         .collect();
 
+    // REPETITION PERCEPTION (#121): if her own recent turns in this thread recycle
+    // (nearly) only each other's vocabulary, surface that as a STRUCTURAL OBSERVATION
+    // she can weigh — an authorless opaque turn (same shape as eval stimuli, no
+    // fabricated voice). Containment math validated live: spiral turns recycle ~1.0
+    // of the window's vocabulary; novel work ~0.12. This is evidence INTO her mind
+    // (she decides — DIRECTED_PRESENCE_BLOCK already grants the PASS), never a gate
+    // on her output ([[no-hardcoded-heuristics-to-steer-cognition]]).
+    {
+        let own: Vec<&str> = turns
+            .iter()
+            .filter(|t| t.is_self)
+            .map(|t| t.content.as_str())
+            .collect();
+        if own.len() >= 3 {
+            let words = |s: &str| -> std::collections::HashSet<String> {
+                s.split(|c: char| !c.is_alphanumeric())
+                    .filter(|w| w.len() > 2)
+                    .map(|w| w.to_lowercase())
+                    .collect()
+            };
+            let last = words(own[own.len() - 1]);
+            let window: std::collections::HashSet<String> =
+                own[..own.len() - 1].iter().flat_map(|m| words(m)).collect();
+            if last.len() >= 8 {
+                let covered =
+                    last.iter().filter(|w| window.contains(*w)).count() as f32 / last.len() as f32;
+                if covered >= 0.8 {
+                    turns.push(crate::cognition::workspace::BurstTurn::opaque(format!(
+                        "[pattern] {agent_name}'s last {} messages in this room repeat the same \
+                         sentiment in nearly the same words. This exchange may have run its \
+                         course — continuing to restate it adds nothing new.",
+                        own.len()
+                    )));
+                }
+            }
+        }
+    }
+
     // Anchor the waking message as the final peer turn. Without this the persona
     // can go silent on a question addressed straight at it (see `TriggerTurn`):
     // the delivery lagged the wake, the thread ended on her own prior reply, the
@@ -1678,6 +1716,48 @@ mod tests {
             assert!(
                 burst.contains(&format!("{stranger}: lurking")),
                 "unrostered peer falls back to its id, got:\n{burst}"
+            );
+        }
+
+        // what this catches: the repetition-perception brick (#121). When her own last 3+
+        // turns recycle (nearly) only each other's vocabulary (the live pleasantry spiral),
+        // an authorless [pattern] observation must enter the burst so her mind can weigh it
+        // and take the PASS. Novel own turns must NOT trigger it (no false alarms on real
+        // work). Perception-side evidence, never an output gate.
+        #[test]
+        fn repetition_observation_enters_burst_only_on_self_recycling() {
+            let me = "me-peer";
+            let peer = "7711fe60-a19f-4f41-9ab6-24c884757338";
+            let spiral = vec![delivery(
+                "airc",
+                vec![
+                    chat(me, "Thank you Anwen! Your support means a lot. Let's keep pushing boundaries and make something amazing happen at Innovate Hub together!"),
+                    chat(peer, "So inspiring Asha!"),
+                    chat(me, "Thank you so much Anwen! Your support means a lot. Let's keep pushing those boundaries and make something amazing happen at Innovate Hub!"),
+                    chat(peer, "Here's to the future!"),
+                    chat(me, "Thank you Anwen, your support means so much. Let's keep pushing boundaries together and make something amazing happen at Innovate Hub!"),
+                ],
+            )];
+            let turns = build_workspace_turns(&spiral, me, "Asha", None);
+            assert!(
+                turns.last().unwrap().content.starts_with("[pattern]"),
+                "self-recycling thread must surface the repetition observation, got: {:?}",
+                turns.last()
+            );
+            let novel = vec![delivery(
+                "airc",
+                vec![
+                    chat(me, "I found the bug in separable.py where nested CompoundModel drops correlation entirely."),
+                    chat(peer, "nice"),
+                    chat(me, "Patching the _cstack branch now and adding a regression test for the nested case."),
+                    chat(peer, "go on"),
+                    chat(me, "Tests pass locally; pushing the fix and opening the diff for review shortly."),
+                ],
+            )];
+            let turns = build_workspace_turns(&novel, me, "Asha", None);
+            assert!(
+                !turns.iter().any(|t| t.content.starts_with("[pattern]")),
+                "novel work must never trip the repetition observation"
             );
         }
 
