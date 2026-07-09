@@ -435,6 +435,57 @@ pub fn models() -> Vec<Model> {
             stop_sequences: &["<|im_end|>", "<|endoftext|>"],
             ..ModelSpec::default()
         }),
+        // DEVSTRAL SMALL 2507 — the AGENTIC coder (Mistral-Small-3.1 base, 24B, 68% SWE-bench
+        // Verified, runs on a 32GB Mac at Q4_K_M ~14GB). The 14B coder ACTS but loops/mis-plans at
+        // repo scale (glass-boxed); Devstral is built for the search→read→edit→verify arc. FIRST
+        // Arch::Mistral row. `chat_template: None` → use the GGUF's embedded Tekken template
+        // (--jinja renders tools). `multi_party_strategy` is the one field to serve-validate against
+        // Tekken (starting with the single-party collapse the coders use); stop uses Mistral's `</s>`.
+        model(ModelSpec {
+            id: "unsloth/Devstral-Small-2507-GGUF",
+            name: "Devstral-Small-2507 (agentic coder)",
+            provider: "llama-server",
+            arch: Arch::Mistral,
+            context_window: 131_072,
+            max_output_tokens: 8192,
+            tokens_per_second: 10.0,
+            capabilities: &[
+                Capability::TextGeneration,
+                Capability::Chat,
+                Capability::ToolUse,
+                Capability::Streaming,
+            ],
+            gguf_hint: Some("huggingface.co/unsloth/Devstral-Small-2507-GGUF"),
+            chat_template: None,
+            multi_party_strategy: MultiPartyChatStrategy::ProperChatMlSingleParty,
+            stop_sequences: &["</s>"],
+            ..ModelSpec::default()
+        }),
+        // Hermes-3-Llama-3.1-8B — the OPPONENT, made first-class. A general (non-coder) model we
+        // benchmark AGAINST; giving it a real catalog row lets it flow through OURS (base_model_id)
+        // and opencode like any other model, so the head-to-head is model-through-harness fair, not
+        // a hardcoded reference column. Llama-3.1 arch; Hermes ships a ChatML template embedded in
+        // the GGUF, so chat_template: None + --jinja (same pattern as Devstral's Tekken).
+        model(ModelSpec {
+            id: "NousResearch/Hermes-3-Llama-3.1-8B-GGUF",
+            name: "Hermes-3-Llama-3.1-8B (opponent)",
+            provider: "llama-server",
+            arch: Arch::Llama,
+            context_window: 131_072,
+            max_output_tokens: 8192,
+            tokens_per_second: 30.0,
+            capabilities: &[
+                Capability::TextGeneration,
+                Capability::Chat,
+                Capability::ToolUse,
+                Capability::Streaming,
+            ],
+            gguf_hint: Some("huggingface.co/bartowski/Hermes-3-Llama-3.1-8B-GGUF"),
+            chat_template: None,
+            multi_party_strategy: MultiPartyChatStrategy::ProperChatMlSingleParty,
+            stop_sequences: &["<|im_end|>", "<|eot_id|>"],
+            ..ModelSpec::default()
+        }),
         // The Qwen2.5-Coder SIZE LADDER — 0.5B / 1.5B / 3B, so a weak box serves what it can and
         // we can chart small→large on the same benchmark (what a MacBook — or a Pi — gets away
         // with). plan_serving still picks the largest that FITS, so these only serve where the

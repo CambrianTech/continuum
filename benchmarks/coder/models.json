@@ -1,5 +1,21 @@
 [
   {
+    "label": "Hermes-3-Llama-3.1-8B",
+    "base_model_id": "NousResearch/Hermes-3-Llama-3.1-8B-GGUF"
+  },
+  {
+    "label": "Qwen2.5-Coder-1.5B",
+    "base_model_id": "continuum-ai/qwen2.5-coder-1.5b-instruct-GGUF"
+  },
+  {
+    "label": "Qwen2.5-Coder-3B",
+    "base_model_id": "continuum-ai/qwen2.5-coder-3b-instruct-GGUF"
+  },
+  {
+    "label": "qwen3.5-4b-code-forged (OURS-forged)",
+    "base_model_id": "continuum-ai/qwen3.5-4b-code-forged-GGUF"
+  },
+  {
     "label": "Qwen2.5-Coder-14B",
     "base_model_id": "continuum-ai/qwen2.5-coder-14b-instruct-GGUF",
     "raw_endpoint": "http://127.0.0.1:8093/v1",
@@ -8,13 +24,13 @@
     "opencode_model": "local/qwen14b"
   },
   {
+    "label": "Qwen2.5-Coder-32B",
+    "base_model_id": "continuum-ai/qwen2.5-coder-32b-instruct-GGUF"
+  },
+  {
     "label": "Devstral-Small-24B",
     "base_model_id": "unsloth/Devstral-Small-2507-GGUF",
     "raw_endpoint": "http://127.0.0.1:58057/v1",
     "raw_model": "unsloth/Devstral-Small-2507-GGUF"
-  },
-  {
-    "label": "qwen3.5-4b-code-forged (OURS-forged)",
-    "base_model_id": "continuum-ai/qwen3.5-4b-code-forged-GGUF"
   }
 ]
