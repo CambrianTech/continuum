@@ -37,8 +37,10 @@ def h2h(row, args, tmp):
     """Run the RAW+SYSTEM head-to-head for one model row; return its result dict."""
     out = os.path.join(tmp, f"{_slug(row['label'])}.json")
     cmd = [sys.executable, H2H, "--label", row["label"], "--benchmark", args.benchmark,
-           "--gym", args.gym, "--limit", str(args.limit), "--persona-id", args.persona_id,
+           "--gym", args.gym, "--limit", str(args.limit),
            "--cu", args.cu, "--out", out]
+    if args.persona_id:
+        cmd += ["--persona-id", args.persona_id]
     if row.get("base_model_id"):
         cmd += ["--base-model-id", row["base_model_id"]]
     else:
@@ -116,7 +118,8 @@ def main():
     ap.add_argument("--benchmark", default="humaneval-rs")
     ap.add_argument("--gym", default=DEFAULT_GYM)
     ap.add_argument("--limit", type=int, default=40)
-    ap.add_argument("--persona-id", default="90e758b2-3cf3-45c1-b100-de7c4ab5a549")
+    ap.add_argument("--persona-id", default=None,
+                    help="resident persona UUID; omitted -> headtohead resolves live from the core")
     ap.add_argument("--cu", default=os.path.expanduser("~/.continuum/cache/cargo-target/debug/cu"))
     ap.add_argument("--out", default=None)
     args = ap.parse_args()

@@ -33,10 +33,23 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ONESHOT = os.path.join(HERE, "oneshot_opponent.py")
 DEFAULT_GYM = os.path.join(HERE, "..", "..", "docs", "genome", "humaneval-rs.jsonl")
 DEFAULT_CU = os.path.expanduser("~/.continuum/cache/cargo-target/debug/cu")
-# Asha — the resident persona whose cognition runs the SYSTEM arm. Any resident works; the
-# arm swaps her served brain to --base-model-id on an ephemeral lane, so WHO she is doesn't
-# change the measurement (same weights, same gym). Override with --persona-id.
-DEFAULT_PERSONA = "90e758b2-3cf3-45c1-b100-de7c4ab5a549"
+def resolve_persona(cu):
+    """The resident persona whose cognition runs the SYSTEM arm — resolved LIVE from the
+    booted core (`cu cognition/personas`), never a hardcoded id (a baked UUID only exists on
+    one machine and breaks every other install). Any resident works: the arm swaps her served
+    brain to --base-model-id on an ephemeral lane, so WHO she is doesn't change the measurement
+    (same weights, same gym). Fails loud when no persona is resident."""
+    r = subprocess.run([cu, "cognition/personas"], capture_output=True, text=True)
+    try:
+        personas = json.loads(r.stdout).get("personas") or []
+    except json.JSONDecodeError:
+        personas = []
+    if not personas:
+        raise SystemExit("no resident persona (is the core booted?) — cannot run the SYSTEM arm. "
+                         f"cu output: {r.stdout[:200]} {r.stderr[:200]}")
+    p = personas[0]
+    print(f"[persona] {p.get('name')} ({p.get('persona_id')})", file=sys.stderr)
+    return p["persona_id"]
 
 
 def run_raw(args):
@@ -115,7 +128,8 @@ def main():
     ap.add_argument("--benchmark", default="humaneval-rs", help="named benchmark for the SYSTEM arm")
     ap.add_argument("--gym", default=DEFAULT_GYM, help="gym jsonl for the RAW arm (same tasks)")
     ap.add_argument("--limit", type=int, default=10)
-    ap.add_argument("--persona-id", default=DEFAULT_PERSONA)
+    ap.add_argument("--persona-id", default=None,
+                    help="resident persona UUID; omitted -> resolved live from the booted core")
     ap.add_argument("--cu", default=DEFAULT_CU)
     ap.add_argument("--max-tokens", type=int, default=1024)
     ap.add_argument("--timeout", type=int, default=120)
@@ -126,6 +140,8 @@ def main():
     ap.add_argument("--tmp", default=None)
     args = ap.parse_args()
     args.tmp = args.tmp or __import__("tempfile").mkdtemp(prefix="h2h-")
+    if not args.skip_system and not args.persona_id:
+        args.persona_id = resolve_persona(args.cu)
 
     if not args.skip_raw and (not args.endpoint or not args.model):
         ap.error("RAW arm needs --endpoint and --model (or pass --skip-raw)")

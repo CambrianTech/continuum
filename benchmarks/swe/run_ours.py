@@ -63,7 +63,12 @@ def main():
         # no-op; we only need her to ACT on the working tree.
         import time
         CU=os.path.expanduser("~/.continuum/cache/cargo-target/debug/cu")
-        ASHA="90e758b2-3cf3-45c1-b100-de7c4ab5a549"
+        # resolve the resident persona LIVE from the booted core — never a baked UUID
+        # (only exists on one machine; breaks every other install).
+        pr=subprocess.run([CU,"cognition/personas"],capture_output=True,text=True)
+        personas=(json.loads(pr.stdout).get("personas") or []) if pr.stdout.strip().startswith("{") else []
+        if not personas: raise SystemExit("no resident persona (core booted?) — cannot run --solver ours")
+        ASHA=personas[0]["persona_id"]; print(f"[persona] {personas[0].get('name')} ({ASHA})")
         note=f"swe-{args.instance}"
         task={"id":args.instance,
               "prompt":(f"You are fixing a real bug in a git repository. Your workspace is ALREADY rooted at "
@@ -71,7 +76,7 @@ def main():
                         f"the relevant source, and code/edit to fix it IN PLACE (do NOT create new top-level "
                         f"files; edit the existing source). Run checks with code/shell if useful. When done, the "
                         f"working tree should contain your fix.\n\nISSUE:\n{inst['problem_statement']}"),
-              "dod_shell":"true","lang":"rust"}
+              "dod_shell":"true","lang":"python"}  # SWE-bench Lite repos are Python — wrong lang primes her to search **/*.rs → 0 matches → search loop (glass-boxed)
         tf=os.path.join(wd,"task.jsonl"); open(tf,"w").write(json.dumps(task)+"\n")
         led=os.path.expanduser(f"~/.continuum/progress/{ASHA}.jsonl")
         n0=sum(1 for _ in open(led)) if os.path.exists(led) else 0
