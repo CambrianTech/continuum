@@ -1488,7 +1488,7 @@ mod tests {
             // tool exists to call it — glass-box: hidden names → 909 code-fences / 3 native
             // runs). Names ride the expansion, summaries never do.
             let opened =
-                faculty.compose_system("", &BTreeSet::from(["cat0".to_string()]), false, false);
+                faculty.compose_system("", &BTreeSet::from(["cat0".to_string()]), false, false, None);
             assert!(
                 opened.contains("cat0: command_0(path)"),
                 "an expanded category lists its verbs + param hints so she can see them: {opened}"

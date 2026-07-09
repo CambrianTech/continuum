@@ -290,6 +290,7 @@ mod tests {
             context: "CTX",
             directed: false,
             self_initiated: false,
+            now_ms: None,
         };
 
         let s = compose(&base);
@@ -351,6 +352,7 @@ mod tests {
             context: "CTX",
             directed: true,
             self_initiated: false,
+            now_ms: None,
         });
         assert!(s.contains("[Your tools]"), "tools present ⇒ tools block: {s}");
         // The exact false-refusal phrases the base model reaches for are named + forbidden.

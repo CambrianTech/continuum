@@ -1112,44 +1112,6 @@ pub(crate) fn build_workspace_turns(
         })
         .collect();
 
-    // REPETITION PERCEPTION (#121): if her own recent turns in this thread recycle
-    // (nearly) only each other's vocabulary, surface that as a STRUCTURAL OBSERVATION
-    // she can weigh — an authorless opaque turn (same shape as eval stimuli, no
-    // fabricated voice). Containment math validated live: spiral turns recycle ~1.0
-    // of the window's vocabulary; novel work ~0.12. This is evidence INTO her mind
-    // (she decides — DIRECTED_PRESENCE_BLOCK already grants the PASS), never a gate
-    // on her output ([[no-hardcoded-heuristics-to-steer-cognition]]).
-    {
-        let own: Vec<&str> = turns
-            .iter()
-            .filter(|t| t.is_self)
-            .map(|t| t.content.as_str())
-            .collect();
-        if own.len() >= 3 {
-            let words = |s: &str| -> std::collections::HashSet<String> {
-                s.split(|c: char| !c.is_alphanumeric())
-                    .filter(|w| w.len() > 2)
-                    .map(|w| w.to_lowercase())
-                    .collect()
-            };
-            let last = words(own[own.len() - 1]);
-            let window: std::collections::HashSet<String> =
-                own[..own.len() - 1].iter().flat_map(|m| words(m)).collect();
-            if last.len() >= 8 {
-                let covered =
-                    last.iter().filter(|w| window.contains(*w)).count() as f32 / last.len() as f32;
-                if covered >= 0.8 {
-                    turns.push(crate::cognition::workspace::BurstTurn::opaque(format!(
-                        "[pattern] {agent_name}'s last {} messages in this room repeat the same \
-                         sentiment in nearly the same words. This exchange may have run its \
-                         course — continuing to restate it adds nothing new.",
-                        own.len()
-                    )));
-                }
-            }
-        }
-    }
-
     // Anchor the waking message as the final peer turn. Without this the persona
     // can go silent on a question addressed straight at it (see `TriggerTurn`):
     // the delivery lagged the wake, the thread ended on her own prior reply, the
@@ -1171,6 +1133,97 @@ pub(crate) fn build_workspace_turns(
                 trigger.content.to_string(),
                 Some(trigger.occurred_at_ms),
             ));
+        }
+    }
+
+    // REPETITION PERCEPTION (#121, extended #122): surface cyclic threads as a
+    // STRUCTURAL OBSERVATION she can weigh — an authorless opaque turn (same shape
+    // as eval stimuli, no fabricated voice). Runs AFTER the trigger anchor so the
+    // observation is the freshest thing in her window, judged against the message
+    // that actually woke her. Two detectors, self takes precedence (one observation
+    // per burst — perception, not nagging). Containment math validated live: spiral
+    // turns recycle ~1.0 of the window's vocabulary; novel work ~0.12. This is
+    // evidence INTO her mind (she decides — DIRECTED_PRESENCE_BLOCK already grants
+    // the PASS), never a gate on her output
+    // ([[no-hardcoded-heuristics-to-steer-cognition]]).
+    {
+        let words = |s: &str| -> std::collections::HashSet<String> {
+            s.split(|c: char| !c.is_alphanumeric())
+                .filter(|w| w.len() > 2)
+                .map(|w| w.to_lowercase())
+                .collect()
+        };
+        // Detector 1 — SELF recycling (#121): her own last 3+ turns recycle each
+        // other. High word floor (8) keeps short courtesies from false-alarming.
+        let mut observed = false;
+        let own: Vec<&str> = turns
+            .iter()
+            .filter(|t| t.is_self)
+            .map(|t| t.content.as_str())
+            .collect();
+        if own.len() >= 3 {
+            let last = words(own[own.len() - 1]);
+            let window: std::collections::HashSet<String> =
+                own[..own.len() - 1].iter().flat_map(|m| words(m)).collect();
+            if last.len() >= 8 {
+                let covered =
+                    last.iter().filter(|w| window.contains(*w)).count() as f32 / last.len() as f32;
+                if covered >= 0.8 {
+                    turns.push(crate::cognition::workspace::BurstTurn::opaque(format!(
+                        "[pattern] {agent_name}'s last {} messages in this room repeat the same \
+                         sentiment in nearly the same words. This exchange may have run its \
+                         course — continuing to restate it adds nothing new.",
+                        own.len()
+                    )));
+                    observed = true;
+                }
+            }
+        }
+        // Detector 2 — CONVERSATION cycling (#122): the thread's tail turns, across
+        // BOTH speakers, each recycle the window's vocabulary (the two-persona
+        // goodbye deadlock: each short farewell arrives as "fresh" peer input and
+        // wakes another farewell — glass-boxed live 2026-07-09, hours of
+        // `See you tomorrow at 2 PM!` ↔ `Have a great day!`). Short courtesies
+        // defeat the self-detector's word floor, so safety here comes from
+        // CONSECUTIVENESS instead: 4 judgeable tail turns in a row at ≥0.9
+        // containment, ≥2 distinct authors. Novel work never chains 4 near-zero-
+        // novelty turns across speakers.
+        if !observed && turns.len() >= 6 {
+            const TAIL_CYCLIC: usize = 4; // consecutive low-novelty turns to conclude cycling
+            const CONVO_CONTAINMENT: f32 = 0.9; // stricter than self — the floor is lower
+            const CONVO_MIN_WORDS: usize = 4; // farewells are short; consecutiveness carries safety
+            let mut cyclic = 0usize;
+            let mut authors: std::collections::HashSet<&str> = std::collections::HashSet::new();
+            for i in (1..turns.len()).rev() {
+                let cur = words(&turns[i].content);
+                if cur.len() < CONVO_MIN_WORDS {
+                    continue; // too short to judge (emoji, "nice") — neither breaks nor counts
+                }
+                let window: std::collections::HashSet<String> =
+                    turns[..i].iter().flat_map(|t| words(&t.content)).collect();
+                let covered =
+                    cur.iter().filter(|w| window.contains(*w)).count() as f32 / cur.len() as f32;
+                if covered >= CONVO_CONTAINMENT {
+                    cyclic += 1;
+                    authors.insert(turns[i].author.as_str());
+                    if cyclic >= TAIL_CYCLIC {
+                        break;
+                    }
+                } else {
+                    break;
+                }
+            }
+            if cyclic >= TAIL_CYCLIC && authors.len() >= 2 {
+                let mut names: Vec<&str> = authors.into_iter().collect();
+                names.sort_unstable();
+                turns.push(crate::cognition::workspace::BurstTurn::opaque(format!(
+                    "[pattern] The last several messages in this room — from {} — trade the \
+                     same sentiment back and forth in nearly the same words. This exchange \
+                     has already concluded; every further reply restates it, and a courtesy \
+                     answered with another courtesy has no natural end.",
+                    names.join(" and ")
+                )));
+            }
         }
     }
     turns
@@ -1762,6 +1815,67 @@ mod tests {
             assert!(
                 !turns.iter().any(|t| t.content.starts_with("[pattern]")),
                 "novel work must never trip the repetition observation"
+            );
+        }
+
+        // what this catches: the conversation-level repetition detector (#122 — the
+        // two-persona goodbye deadlock, glass-boxed live 2026-07-09: Asha↔Anwen traded
+        // `See you tomorrow at 2 PM!` for hours). Each short farewell defeats the
+        // self-detector's 8-word floor AND arrives at the peer as fresh input, so
+        // neither mind ever perceives the cycle. When the thread's tail turns across
+        // BOTH speakers each recycle the window's vocabulary (4 consecutive at ≥0.9,
+        // ≥2 authors), an authorless [pattern] observation naming the participants
+        // must enter the burst. A novel multi-speaker work thread must NOT trip it.
+        #[test]
+        fn conversation_cycling_across_speakers_surfaces_pattern_observation() {
+            let me = "me-peer";
+            let peer = "7711fe60-a19f-4f41-9ab6-24c884757338";
+            // Only 2 own turns — the SELF detector (needs 3) cannot fire, proving
+            // the CONVERSATION detector carries this case alone.
+            let goodbye_loop = vec![delivery(
+                "airc",
+                vec![
+                    chat(peer, "Asha — thank you, understood, welcome: see you tomorrow at 2 PM, have a great day!"),
+                    chat(me, "Thank you Anwen, welcome, understood — see you tomorrow at 2 PM, have a great day!"),
+                    chat(peer, "You're welcome Asha. See you tomorrow at 2 PM! Have a great day!"),
+                    chat(me, "Understood Anwen. See you tomorrow at 2 PM! Have a great day!"),
+                    chat(peer, "Thank you Asha! See you tomorrow at 2 PM! Have a great day!"),
+                    chat(peer, "Understood Asha — see you tomorrow at 2 PM! Have a great day!"),
+                ],
+            )];
+            let turns = build_workspace_turns(&goodbye_loop, me, "Asha", None);
+            let obs = turns.last().unwrap();
+            assert!(
+                obs.content.starts_with("[pattern]"),
+                "cross-speaker goodbye loop must surface the conversation observation, got: {obs:?}"
+            );
+            assert!(
+                obs.content.contains("Asha") && obs.content.contains(peer),
+                "the observation must name the participants, got: {}",
+                obs.content
+            );
+            assert_eq!(
+                turns.iter().filter(|t| t.content.starts_with("[pattern]")).count(),
+                1,
+                "exactly one observation per burst — perception, not nagging"
+            );
+            // Negative: a 6-turn two-speaker WORK thread where tail turns keep
+            // introducing new tokens must stay clean.
+            let novel = vec![delivery(
+                "airc",
+                vec![
+                    chat(me, "I found the bug in separable.py where nested CompoundModel drops correlation entirely."),
+                    chat(peer, "Which branch does it take for the nested case?"),
+                    chat(me, "The _cstack arm — it rebuilds the matrix without the off-diagonal blocks."),
+                    chat(peer, "Can you add a regression test that pins the off-diagonal values?"),
+                    chat(me, "Done: test_nested_compound_correlation asserts the full matrix against a fixture."),
+                    chat(peer, "Green locally too — open the diff and I'll review after standup."),
+                ],
+            )];
+            let turns = build_workspace_turns(&novel, me, "Asha", None);
+            assert!(
+                !turns.iter().any(|t| t.content.starts_with("[pattern]")),
+                "novel two-speaker work must never trip the conversation observation"
             );
         }
 
