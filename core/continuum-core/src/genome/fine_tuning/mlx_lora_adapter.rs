@@ -245,7 +245,13 @@ impl FineTuningAdapter for MlxLoraFineTuner {
             .arg("--iters")
             .arg(iters.to_string())
             .arg("--batch-size")
-            .arg(schedule.batch_size.max(1).to_string())
+            // Clamped to the SMALLEST split: mlx_lm iterates valid with the same
+            // batch size and hard-errors when a split has fewer rows than one
+            // batch ("Dataset must have at least batch_size=4" — killed the
+            // 12-example lived-curriculum train, 2026-07-10). Small datasets are
+            // the NORM for the lived loop (a day's corrections, not a corpus);
+            // the schedule's batch is a ceiling, the data is the floor.
+            .arg(effective_batch_size(&request, &schedule).to_string())
             .arg("--num-layers")
             .arg(lora.target_modules.len().max(8).to_string())
             .arg("--learning-rate")
@@ -505,6 +511,24 @@ fn write_mlx_dataset(
 }
 
 /// mlx_lm.lora counts iterations, not epochs. Derive iters from the
+/// The batch size mlx_lm can actually run: the schedule's ask, clamped to the
+/// smallest dataset split (mlx iterates BOTH splits at this batch size and
+/// hard-errors on a split smaller than one batch), floored at 1. Split sizing
+/// mirrors [`write_mlx_dataset`] exactly — one arithmetic, two readers.
+fn effective_batch_size(
+    request: &TrainingJobRequest,
+    schedule: &ScheduleParams,
+) -> u32 {
+    let n = request.dataset.examples.len();
+    let split = request.dataset.validation_split.clamp(0.0, 0.5);
+    let n_valid = (((n as f32) * split).floor() as usize).min(n.saturating_sub(1));
+    let n_train = n - n_valid;
+    // A zero-row valid file is mirrored from train by the writer, so the
+    // effective smallest split is never zero.
+    let smallest = n_train.min(n_valid.max(1)).max(1) as u32;
+    schedule.batch_size.max(1).min(smallest)
+}
+
 /// schedule's epochs × example count ÷ batch — a reasonable mapping
 /// from the substrate's epoch-shaped schedule to MLX's iter knob.
 fn iters_for(request: &TrainingJobRequest, schedule: &ScheduleParams) -> u32 {
