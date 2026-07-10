@@ -176,6 +176,11 @@ def render(by_bench, has_chart):
     out.append("¹ *excluded* = a serving/harness failure (degenerate output under GPU contention, a down endpoint) — "
                "never scored as a model 0%. The harness self-flags these ([`headtohead.py`](benchmarks/coder/headtohead.py)) "
                "so no false zero reaches this table.\n")
+    out.append("² A blank **Hermes CLI** cell = Hermes hard-refuses that model: it requires ≥64K context and "
+               "won't start below it. Every model here is served at its **real trained context** (read from GGUF "
+               "metadata, memory-capped — never clamped down), so a 32K-native model like Qwen2.5-Coder genuinely "
+               "cannot be run through Hermes without a quality-degrading rope-overflow. We mark it absent, not 0 — "
+               "and note it's a point *for* the local models: Continuum runs the 32K-native coders Hermes turns away.\n")
     out.append("**Reproduce:** `python3 benchmarks/coder/matrix.py --models benchmarks/coder/models.json --benchmark <name>` "
                "(inner gyms) · `python3 benchmarks/swe/run_ours.py --instance <id> --solver ours` (SWE-bench). "
                "Both append to `RESULTS.jsonl`; re-render with `python3 benchmarks/render_results.py`.\n")

@@ -33,12 +33,68 @@ Usage:
   python3 benchmarks/coder/sweep_all.py --models benchmarks/coder/models-fleet.json \
       --benchmark humaneval-rs --limit 40 [--wait-pid 56248]
 """
-import argparse, json, os, subprocess, sys, time, urllib.request
+import argparse, json, os, struct, subprocess, sys, time, urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 MATRIX = os.path.join(HERE, "matrix.py")
 LLAMA_SERVER = os.path.expanduser("~/.continuum/bin/llama-server")
 OPENCODE_CFG = os.path.expanduser("~/.config/opencode/opencode.json")
+
+# Memory-safe ceiling on served context. We serve each model at min(its REAL trained context,
+# this cap) — NEVER a hardcoded-down number (that would handicap the opponent arm AND misreport
+# the comparison; the core's OURS lane already serves at the model's real capability via
+# serving_plan's fit_ctx.min(model.context_window)). 65536 is chosen so any model that natively
+# supports ≥64K clears the Hermes CLI's hard 64K floor without over-allocating KV on a 128K model.
+CTX_CAP = 65536
+# Hermes CLI refuses any model whose per-slot runtime context is below this. A model whose REAL
+# trained context is under it cannot be run through Hermes honestly (overflowing rope-scale to
+# fake 64K degrades the model) — so its Hermes cell is an honest N/A, not a fake 0.
+HERMES_MIN_CTX = 64000
+
+
+def gguf_n_ctx_train(path):
+    """Read a GGUF model's REAL trained context length from its metadata header (fast — reads
+    only the KV header, not the tensor data). Returns the int, or None if not found. This is the
+    single source of truth for 'how much context does this model actually support' — we never
+    hardcode it."""
+    T = {0: "B", 1: "b", 2: "H", 3: "h", 4: "I", 5: "i", 6: "f",
+         7: "?", 10: "Q", 11: "q", 12: "d"}  # gguf value-type → struct fmt (scalars)
+    SZ = {k: struct.calcsize(v) for k, v in T.items()}
+    try:
+        with open(path, "rb") as fh:
+            if fh.read(4) != b"GGUF":
+                return None
+            struct.unpack("<I", fh.read(4))            # version
+            fh.read(8)                                 # tensor_count (uint64)
+            n_kv = struct.unpack("<Q", fh.read(8))[0]  # metadata_kv_count
+
+            def rstr():
+                n = struct.unpack("<Q", fh.read(8))[0]
+                return fh.read(n).decode("utf-8", "replace")
+
+            def skip_val(vt):
+                if vt == 8:            # string
+                    rstr()
+                elif vt == 9:          # array: elem_type, count, elements
+                    et = struct.unpack("<I", fh.read(4))[0]
+                    cnt = struct.unpack("<Q", fh.read(8))[0]
+                    for _ in range(cnt):
+                        skip_val(et)
+                else:
+                    fh.read(SZ[vt])
+
+            for _ in range(n_kv):
+                key = rstr()
+                vt = struct.unpack("<I", fh.read(4))[0]
+                if key.endswith(".context_length"):
+                    if vt in (4, 10, 5, 11):           # uint32/uint64/int32/int64
+                        return struct.unpack("<" + T[vt], fh.read(SZ[vt]))[0]
+                    skip_val(vt)
+                    return None
+                skip_val(vt)
+    except Exception as e:
+        print(f"[sweep] gguf_n_ctx_train({os.path.basename(path)}) failed: {e}", file=sys.stderr)
+    return None
 
 
 def _slug(s):
@@ -55,13 +111,13 @@ def endpoint_up(url, model=None):
         return False
 
 
-def serve(gguf, alias, port, ctx=65536):
-    """Start a scratch llama-server; return the Popen once /v1/models answers.
+def serve(gguf, alias, port, ctx):
+    """Start a scratch llama-server at `ctx` context; return the Popen once /v1/models answers.
 
-    ctx=65536 with `--parallel 1` gives ONE slot the full 64K context. This is a HARD
-    requirement of the Hermes CLI arm: Hermes refuses any model whose per-slot runtime
-    context is <64K ("below the minimum 64,000 required"). `--parallel 2` would halve the
-    context per slot (64K→32K) and Hermes would refuse — so parallel stays 1 here."""
+    `ctx` is the model's REAL trained context (min'd with the memory cap) — computed by the
+    caller from GGUF metadata, NEVER a hardcoded-down constant (that would handicap the opponent
+    arm and misreport the comparison). `--parallel 1` so the whole `ctx` is ONE slot: parallel 2
+    would halve the per-slot window (and drop a 64K model under the Hermes floor)."""
     url = f"http://127.0.0.1:{port}/v1"
     if endpoint_up(url):
         raise SystemExit(f"[sweep] port {port} already serving — refusing to double-bind")
@@ -101,6 +157,18 @@ def point_harnesses(port, alias):
 def run_model(row, args):
     label = row["label"]
     served_here = None
+    # The model's REAL trained context (GGUF metadata) — the single source of truth for how
+    # much context it supports. We serve at min(real, cap) — never a hardcoded-down number.
+    real_ctx = gguf_n_ctx_train(row["gguf"]) if row.get("gguf") else None
+    serve_ctx = min(real_ctx or CTX_CAP, CTX_CAP)
+    # Hermes CLI refuses models below its 64K floor; a 32K-native model (e.g. Qwen2.5-Coder)
+    # simply cannot be run through Hermes honestly, so its Hermes cell is an honest absence,
+    # not a fake 0 or a degrading rope-overflow to fake 64K.
+    hermes_ok = (real_ctx or 0) >= HERMES_MIN_CTX
+    opponents = ["opencode"] + (["hermes"] if hermes_ok else [])
+    if not hermes_ok:
+        print(f"[sweep] {label}: Hermes SKIPPED — model is {real_ctx or '?'}-ctx, below Hermes's "
+              f"{HERMES_MIN_CTX} floor (honest N/A, not a 0)", file=sys.stderr)
     # 1. ensure an endpoint for RAW + opencode
     if row.get("raw_endpoint") and endpoint_up(row["raw_endpoint"], row.get("alias")):
         endpoint = row["raw_endpoint"]
@@ -108,18 +176,19 @@ def run_model(row, args):
         print(f"[sweep] {label}: reusing already-served {endpoint}", file=sys.stderr)
     else:
         port = row["serve_port"]
-        print(f"[sweep] {label}: serving {row['alias']} on :{port} …", file=sys.stderr)
-        served_here = serve(row["gguf"], row["alias"], port)
+        print(f"[sweep] {label}: serving {row['alias']} on :{port} at ctx={serve_ctx} "
+              f"(real n_ctx_train={real_ctx}) …", file=sys.stderr)
+        served_here = serve(row["gguf"], row["alias"], port, serve_ctx)
         endpoint = f"http://127.0.0.1:{port}/v1"
     try:
         point_harnesses(port, row["alias"])
-        # 2. one-row config for matrix.py: RAW(endpoint) + OURS(ephemeral) + opencode + hermes
+        # 2. one-row config for matrix.py: RAW(endpoint) + OURS(ephemeral) + opencode [+ hermes]
         cfg = [{
             "label": label,
             "base_model_id": row.get("base_model_id"),
             "raw_endpoint": endpoint,
             "raw_model": row["alias"],
-            "opponents": ["opencode", "hermes"],
+            "opponents": opponents,
             "opencode_model": "local/qwen14b",  # opencode's fixed shim name; baseURL is what varies
         }]
         tmp = f"/tmp/sweep-row-{_slug(label)}.json"
