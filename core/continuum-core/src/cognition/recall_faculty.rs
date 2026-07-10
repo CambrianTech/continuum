@@ -52,36 +52,16 @@ use crate::persona::engram::Engram;
 /// limiter on a live persona.
 const DEFAULT_RECALL_LIMIT: usize = 16;
 
-/// Minimum cosine relevance (vs the focused query) for a memory to be surfaced —
-/// the SMALL-POOL fallback gate only (pool < [`STANDOUT_MIN_POOL`], where a
-/// distribution can't be estimated). The primary gate is the pool-relative
-/// STANDOUT gate below. An absolute cosine floor cannot be the primary gate:
-/// it is calibrated against one embedder's similarity distribution and silently
-/// breaks under another's — glass-boxed live 2026-07-10: under the neural
-/// Qwen3-Embedding, UNRELATED texts baseline at cosine ≈ 0.19–0.31 (anisotropy),
-/// so this 0.15 floor filtered NOTHING and saturated-salience room chatter
-/// surfaced identically on 11/11 different coding-exam tasks.
+/// Fallback absolute cosine floor handed to the default [`SignificanceRanker`]
+/// for an UNCALIBRATED embedding space only. An absolute floor can never be the
+/// primary gate: it is calibrated against one embedder's similarity distribution
+/// and silently breaks under another's — glass-boxed live 2026-07-10: under the
+/// neural Qwen3-Embedding (measured unrelated-null μ=0.304), this 0.15 floor sat
+/// 1.8σ BELOW what unrelated texts score, filtered NOTHING, and
+/// saturated-salience room chatter surfaced identically on 11/11 different
+/// coding-exam tasks. The primary gate lives in the [`RecallRanker`] adapter
+/// (significance vs the MEASURED null).
 const RECALL_RELEVANCE_FLOOR: f32 = 0.15;
-
-/// The SIGNIFICANCE gate: a memory surfaces only if its cosine to the query is a
-/// statistical outlier against the embedder's MEASURED unrelated-null
-/// distribution — `(rel − null_mean)/null_std ≥ this`. Classic hypothesis
-/// testing: H₀ = "this memory is unrelated to the query"; surface only on
-/// rejection at 3σ (the conventional significance bar, not an embedder
-/// constant). Embedder-agnostic AND language-agnostic by construction — the
-/// null is measured per-space over multilingual calibration pairs
-/// ([`crate::cognition::embedding::CALIBRATION_PAIRS`]), so pure geometry
-/// decides, never strings/keywords. Handles every pool shape: all-junk (flat at
-/// the null) → nothing surfaces; all-relevant → all pass, the budget picks
-/// top-k; one true match at any pool size → passes regardless of n (a
-/// pool-relative z cannot: max z = √(n−1)).
-const RECALL_SIGNIFICANCE_SIGMA: f32 = 3.0;
-
-/// Numerical guard for a degenerate measured null (σ ≈ 0, e.g. the lexical
-/// space where disjoint vocabularies share no buckets and every unrelated pair
-/// scores exactly 0). Not a tunable — just division safety; with σ this small
-/// any nonzero cosine is significant, which is correct for such a space.
-const NULL_STD_EPSILON: f32 = 1e-4;
 
 /// Fraction of the served context window recall may spend, in tokens. Recall is
 /// ONE perception faculty among many (roster, doctrine, working memory) plus the
@@ -113,7 +93,6 @@ fn recall_count_for_window(context_window: u32) -> usize {
 /// [`RECALL_RELEVANCE_FLOOR`], [`RECALL_WINDOW_FRACTION`].
 struct RecallBudget {
     max_count: usize,
-    relevance_floor: f32,
     token_ceiling: usize,
 }
 
@@ -126,7 +105,6 @@ impl RecallBudget {
         };
         Self {
             max_count: recall_count_for_window(context_window),
-            relevance_floor: RECALL_RELEVANCE_FLOOR,
             token_ceiling,
         }
     }
@@ -155,18 +133,6 @@ const RERANK_CANDIDATE_MULTIPLIER: usize = 4;
 /// the replay A/B bench can sweep 0.0 (pure salience = old behaviour) → 1.0 (pure
 /// relevance) and DIFF the resulting traces — tuning by evidence, not guessing.
 pub const DEFAULT_RELEVANCE_WEIGHT: f32 = 0.5;
-
-/// Blend a precomputed cosine-relevance with the memory's salience-decay score
-/// at relevance `weight` (0.0 = pure salience, 1.0 = pure relevance).
-///
-/// `rel` is precomputed because embedding is now async — recall awaits the
-/// embeds in a loop, then blends; you can't `.await` inside a sort comparator.
-/// `weight` is the per-faculty configurable relevance weight
-/// ([`RecallFaculty::with_relevance_weight`]), so the replay A/B bench can sweep
-/// it.
-fn blend(salience: f32, rel: f32, weight: f32) -> f32 {
-    weight * rel + (1.0 - weight) * salience
-}
 
 /// The query recall conditions on — the CURRENT stimulus, not the whole burst.
 /// Live, `world_state` is the full room transcript; embedding ALL of it dilutes
@@ -229,6 +195,12 @@ pub struct RecallFaculty {
     /// (harness) → the historical default count, no token gate. Threaded from
     /// [`PersonaBrainConfig::context_window`] via `with_context_window`.
     context_window: u32,
+    /// The ranking ADAPTER (see [`crate::cognition::recall_ranker`]): which
+    /// candidates surface and in what order. `None` → a default
+    /// [`SignificanceRanker`] built per tick from `relevance_weight` (impl A,
+    /// statistical). A trained ranker (impl B) is injected via
+    /// [`with_ranker`](Self::with_ranker) and A/B'd on the replay bench.
+    ranker: Option<Arc<dyn crate::cognition::recall_ranker::RecallRanker>>,
     /// The recency channel (working memory), when shared in. Recall is the SEMANTIC
     /// channel for the broader past; the recency channel owns what the persona's
     /// hands JUST did ([[act-results-need-a-recency-channel-not-semantic-recall]]).
@@ -253,8 +225,21 @@ impl RecallFaculty {
             embedder: None,
             relevance_weight: DEFAULT_RELEVANCE_WEIGHT,
             context_window: 0,
+            ranker: None,
             working_memory: None,
         }
+    }
+
+    /// Inject a ranking adapter (a trained reranker, or a tuned statistical one).
+    /// Default (`None`) = [`SignificanceRanker`] at this faculty's
+    /// `relevance_weight` — implementation A, the permanent null model any
+    /// learned ranker must beat on the replay bench before shipping.
+    pub fn with_ranker(
+        mut self,
+        ranker: Arc<dyn crate::cognition::recall_ranker::RecallRanker>,
+    ) -> Self {
+        self.ranker = Some(ranker);
+        self
     }
 
     /// Override the hard safety ceiling on memories surfaced per tick. The
@@ -379,12 +364,13 @@ impl Faculty for RecallFaculty {
         // salience (candidates already in that order) and relevance is 1.0 so the
         // floor never fires (pure salience×recency, backward-compatible).
         // The 4th element is `passes_gate`: did this candidate clear the relevance
-        // gate? With a CALIBRATED embedder the gate is the SIGNIFICANCE test vs
-        // the space's measured unrelated-null (see [`RECALL_SIGNIFICANCE_SIGMA`]);
-        // an uncalibrated embedder falls back to the legacy absolute floor; no
-        // embedder → no relevance signal → always passes (pure salience×recency,
-        // unchanged). Gate only has a voice when relevance does (weight > 0 — the
-        // A/B sweep's weight-0 extreme keeps pure salience×recency ungated).
+        // gate? The DECISION lives behind the [`RecallRanker`] adapter seam —
+        // implementation A ([`SignificanceRanker`]) gates by significance vs the
+        // space's MEASURED unrelated-null and blends for ordering; a trained
+        // ranker (learned head over the same features, rustc-graded labels) slots
+        // in via [`with_ranker`](Self::with_ranker) and is A/B'd on the replay
+        // bench against A before shipping. No embedder → no relevance signal →
+        // everything passes (pure salience×recency, unchanged).
         let null = self
             .embedder
             .as_ref()
@@ -396,30 +382,44 @@ impl Faculty for RecallFaculty {
                 // a serial loop stalled the whole tick on N sequential round-trips —
                 // a starved-FIFO blocker that grew with the over-fetch multiplier.
                 // `join` races the query against the candidate batch as one organic
-                // unit; the cache still collapses repeats to a sync hit. Then blend
-                // at the per-faculty configurable relevance weight (#1656) and sort
-                // (can't .await inside a sort comparator, so relevance is precomputed).
+                // unit; the cache still collapses repeats to a sync hit.
                 let query_fut = embedder.embed(focused_query(&ws.world_state));
                 let cand_futs = join_all(candidates.iter().map(|(e, _)| embedder.embed(&e.content)));
                 let (query, cand_embeds) = join(query_fut, cand_futs).await;
-                let gated = self.relevance_weight > 0.0;
+                // Rank + gate through the adapter (content never crosses the seam —
+                // embeddings and usage signals only, so no ranker CAN regress to
+                // string matching).
+                let ranker_cands: Vec<crate::cognition::recall_ranker::RecallCandidate<'_>> =
+                    cand_embeds
+                        .iter()
+                        .zip(candidates.iter())
+                        .map(|(emb, (_, salience))| {
+                            crate::cognition::recall_ranker::RecallCandidate {
+                                embedding: emb.as_slice(),
+                                salience: *salience,
+                            }
+                        })
+                        .collect();
+                let ranker: Arc<dyn crate::cognition::recall_ranker::RecallRanker> =
+                    self.ranker.clone().unwrap_or_else(|| {
+                        Arc::new(crate::cognition::recall_ranker::SignificanceRanker::new(
+                            self.relevance_weight,
+                            RECALL_RELEVANCE_FLOOR,
+                        ))
+                    });
+                let verdicts = ranker
+                    .rank(
+                        &query,
+                        &ranker_cands,
+                        crate::cognition::recall_ranker::SpaceCalibration {
+                            unrelated_null: null,
+                        },
+                    )
+                    .await;
                 let mut s: Vec<(f32, Engram, f32, bool)> = candidates
                     .into_iter()
-                    .zip(cand_embeds)
-                    .map(|((engram, salience), emb)| {
-                        let rel = cosine_similarity(&query, &emb);
-                        let passes = if !gated {
-                            true
-                        } else if let Some((mu, sd)) = null {
-                            // H₀: "unrelated". Reject (→ surface) at 3σ vs the
-                            // measured null. Pure geometry — no strings, no
-                            // keywords, no per-embedder constants.
-                            (rel - mu) / sd.max(NULL_STD_EPSILON) >= RECALL_SIGNIFICANCE_SIGMA
-                        } else {
-                            rel >= budget.relevance_floor
-                        };
-                        (blend(salience, rel, self.relevance_weight), engram, salience, passes)
-                    })
+                    .zip(verdicts)
+                    .map(|((engram, salience), v)| (v.score, engram, salience, v.passes))
                     .collect();
                 s.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
                 s
