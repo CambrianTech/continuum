@@ -375,7 +375,7 @@ impl Faculty for RecallFaculty {
             .embedder
             .as_ref()
             .and_then(|e| e.unrelated_null());
-        let scored: Vec<(f32, Engram, f32, bool)> = match &self.embedder {
+        let scored: Vec<(f32, Engram, f32, bool, f32)> = match &self.embedder {
             Some(embedder) => {
                 // Embed the query AND every candidate CONCURRENTLY. Each embed is an
                 // independent IO future on the neural/grid backend; awaiting them in
@@ -416,17 +416,19 @@ impl Faculty for RecallFaculty {
                         },
                     )
                     .await;
-                let mut s: Vec<(f32, Engram, f32, bool)> = candidates
+                let mut s: Vec<(f32, Engram, f32, bool, f32)> = candidates
                     .into_iter()
                     .zip(verdicts)
-                    .map(|((engram, salience), v)| (v.score, engram, salience, v.passes))
+                    .map(|((engram, salience), v)| {
+                        (v.score, engram, salience, v.passes, v.attention_bid)
+                    })
                     .collect();
                 s.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
                 s
             }
             None => candidates
                 .into_iter()
-                .map(|(engram, salience)| (salience, engram, salience, true))
+                .map(|(engram, salience)| (salience, engram, salience, true, salience))
                 .collect(),
         };
 
@@ -436,9 +438,9 @@ impl Faculty for RecallFaculty {
         // first; the gate uses `continue` (not `break`) because a low-relevance
         // high-salience nag can rank above a genuinely relevant memory under the
         // blend, and we want to skip the nag and keep scanning for the relevant one.
-        let mut surfaced: Vec<(f32, Engram, f32)> = Vec::with_capacity(surface_count);
+        let mut surfaced: Vec<(f32, Engram, f32, f32)> = Vec::with_capacity(surface_count);
         let mut used_tokens = 0usize;
-        for (blended, engram, salience, passes_gate) in scored.into_iter() {
+        for (blended, engram, salience, passes_gate, attention_bid) in scored.into_iter() {
             if surfaced.len() >= surface_count {
                 break;
             }
@@ -452,7 +454,7 @@ impl Faculty for RecallFaculty {
                 break;
             }
             used_tokens += est;
-            surfaced.push((blended, engram, salience));
+            surfaced.push((blended, engram, salience, attention_bid));
         }
 
         // Recency→semantic handoff: drop any surfaced engram the recency channel
@@ -475,7 +477,7 @@ impl Faculty for RecallFaculty {
                 .filter(|b| b.len() >= WM_DEDUP_MIN_BODY_CHARS)
                 .collect();
             if !wm_bodies.is_empty() {
-                surfaced.retain(|(_, engram, _)| {
+                surfaced.retain(|(_, engram, _, _)| {
                     !wm_bodies.iter().any(|b| engram.content.starts_with(b))
                 });
             }
@@ -491,7 +493,7 @@ impl Faculty for RecallFaculty {
 
         // Close the loop on what we ACTUALLY surface — Hebbian rehearsal on the
         // memories the persona truly used this tick (uplift + persistence).
-        let surfaced_ids: Vec<Uuid> = scored.iter().map(|(_, e, _)| e.id).collect();
+        let surfaced_ids: Vec<Uuid> = scored.iter().map(|(_, e, _, _)| e.id).collect();
         self.admission_state.record_recall_hits(&surfaced_ids, now);
 
         // RTOS probe at the hippocampus seam: WHAT query conditioned recall and
@@ -509,7 +511,7 @@ impl Faculty for RecallFaculty {
             null_std = null.map(|(_, s)| s).unwrap_or(f32::NAN),
             surfaced = %scored
                 .iter()
-                .map(|(blended, e, sal)| format!(
+                .map(|(blended, e, sal, _)| format!(
                     "[blend={blended:.3} sal={sal:.3} | {}]",
                     e.content.chars().take(60).collect::<String>().replace('\n', " ")
                 ))
@@ -526,7 +528,20 @@ impl Faculty for RecallFaculty {
         // in the arbiter — recall now never bids BELOW the surfaced memory's own
         // salience, and a highly-relevant hit can bid ABOVE it. (`f32::max` also
         // returns the finite operand if the other is NaN — defensive.)
-        let top_salience = scored[0].0.max(scored[0].2).clamp(0.0, 1.0);
+        // The faculty's workspace bid: attention honors EVIDENCE. The ranker maps
+        // each surfaced memory's significance to a bid (Φ(z) for the statistical
+        // ranker — the probability the similarity is not noise); the block bids at
+        // the STRONGEST surfaced evidence, so a 5.5σ memory holds its seat against
+        // the 0.9 standing-framing floor instead of being evicted from the prompt
+        // (the utilization failure this fixes: she answered "I don't know" about a
+        // fact her hippocampus HAD surfaced — glass-boxed live 2026-07-10, #130).
+        // Floored by the historical max(blend, salience) so the no-embedder and
+        // uncalibrated paths keep their exact prior bids.
+        let top_salience = scored
+            .iter()
+            .map(|(_, _, _, bid)| *bid)
+            .fold(scored[0].0.max(scored[0].2), f32::max)
+            .clamp(0.0, 1.0);
         // The memory line the MODEL sees carries no internal score — glass-boxed
         // live 2026-07-09: Anwen broadcast "...productive sessions together!
         // (salience 0.99)", parroting the annotation straight from her prompt.
@@ -534,7 +549,7 @@ impl Faculty for RecallFaculty {
         // them), never in the model-visible rendering ([[px-persona-experience-tools-as-good-ux]]).
         let content = scored
             .iter()
-            .map(|(_, engram, _)| format!("- {}", engram.content))
+            .map(|(_, engram, _, _)| format!("- {}", engram.content))
             .collect::<Vec<_>>()
             .join("\n");
         let reasoning = format!(

@@ -39,14 +39,28 @@ pub struct RecallCandidate<'a> {
     pub salience: f32,
 }
 
-/// One candidate's verdict: its ordering score and whether it clears the
-/// relevance gate at all. `score` orders survivors; `passes` decides survival —
-/// kept separate because a high-salience-low-relevance memory can outscore a
-/// relevant one under some blends yet must still be droppable.
+/// One candidate's verdict: its ordering score, whether it clears the relevance
+/// gate at all, and how hard it should bid for WORKSPACE ATTENTION. `score`
+/// orders survivors; `passes` decides survival — kept separate because a
+/// high-salience-low-relevance memory can outscore a relevant one under some
+/// blends yet must still be droppable.
 #[derive(Debug, Clone, Copy)]
 pub struct RankVerdict {
     pub score: f32,
     pub passes: bool,
+    /// The candidate's claim on the bounded workspace, derived from the
+    /// strength of its EVIDENCE (glass-boxed live 2026-07-10: a memory that
+    /// rejected the null at z=5.5σ surfaced from the hippocampus and was then
+    /// EVICTED by the attention arbiter — recall's flat ~0.78 bid structurally
+    /// lost to the 0.9 standing-framing floor on every grounded turn, so her
+    /// memory never reached the prompt precisely when the room was fully
+    /// grounded; she answered "I don't know" about a fact in her own store).
+    /// For the statistical ranker this is Φ(z) — the probability the
+    /// similarity is NOT noise — so acute, extraordinary evidence outbids
+    /// ambient framing exactly when it should, and barely-significant memories
+    /// don't. A learned ranker emits its own calibrated confidence here.
+    /// Geometry flowing into attention; no special-casing, no caste.
+    pub attention_bid: f32,
 }
 
 /// What the ranker knows about the embedding SPACE this turn (measured, never
@@ -115,6 +129,14 @@ fn blend(salience: f32, relevance: f32, weight: f32) -> f32 {
     weight * relevance + (1.0 - weight) * salience
 }
 
+/// The standard logistic approximation of the normal CDF Φ(z) ≈ σ(1.702·z)
+/// (max abs error < 0.0095 — Bowling et al.). Maps a significance z-score to
+/// "probability this similarity is not noise", which IS the memory's honest
+/// claim on attention. Pure math, no tunables.
+fn phi_logistic(z: f32) -> f32 {
+    1.0 / (1.0 + (-1.702 * z).exp())
+}
+
 #[async_trait]
 impl RecallRanker for SignificanceRanker {
     fn id(&self) -> &'static str {
@@ -132,19 +154,26 @@ impl RecallRanker for SignificanceRanker {
             .iter()
             .map(|c| {
                 let rel = crate::cognition::embedding::cosine_similarity(query, c.embedding);
-                let passes = if !gated {
-                    true
+                let score = blend(c.salience, rel, self.relevance_weight);
+                let (passes, attention_bid) = if !gated {
+                    (true, score)
                 } else if let Some((mu, sd)) = space.unrelated_null {
                     // H₀: "unrelated". Reject (→ surface) at `sigma` vs the
                     // MEASURED null — pure geometry, embedder- and
-                    // language-agnostic.
-                    (rel - mu) / sd.max(self.std_epsilon) >= self.sigma
+                    // language-agnostic. The attention bid is Φ(z): the
+                    // probability this similarity is not noise — acute evidence
+                    // (z ≫ sigma) bids near 1.0 and outbids ambient standing
+                    // framing; evidence at the bar bids ~Φ(3)≈0.9986 — attention
+                    // favors the acutely-relevant over the ambient by design.
+                    let z = (rel - mu) / sd.max(self.std_epsilon);
+                    (z >= self.sigma, phi_logistic(z))
                 } else {
-                    rel >= self.uncalibrated_floor
+                    (rel >= self.uncalibrated_floor, score)
                 };
                 RankVerdict {
-                    score: blend(c.salience, rel, self.relevance_weight),
+                    score,
                     passes,
+                    attention_bid,
                 }
             })
             .collect()
@@ -177,6 +206,19 @@ mod tests {
             .await;
         assert!(!v[0].passes, "null-scoring junk must fail even at salience 0.99");
         assert!(v[1].passes, "a significant match must pass from low salience");
+        // Attention honors evidence: the z≈13 match must bid ABOVE the 0.9
+        // standing-framing floor (Φ(13)≈1.0) so it holds its seat in the bounded
+        // workspace; the z≈0.25 junk must bid well below it (Φ(0.25)≈0.6).
+        assert!(
+            v[1].attention_bid > 0.9,
+            "extraordinary evidence must outbid ambient framing; got {}",
+            v[1].attention_bid
+        );
+        assert!(
+            v[0].attention_bid < 0.9,
+            "null-level evidence must NOT outbid framing; got {}",
+            v[0].attention_bid
+        );
 
         // Uncalibrated space: absolute-floor fallback (both clear 0.15 here —
         // legacy behavior preserved for spaces whose null genuinely sits near 0).
