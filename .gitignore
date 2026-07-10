@@ -216,3 +216,12 @@ tools/models/
 !.airc/*.md
 !.airc/manifest.json
 /config.env
+benchmarks/swe/.venv/
+
+# Persona work artifacts (until #49 per-persona workspace isolation lands) — a
+# persona's file engine roots at the process cwd, so her card work lands here.
+# Not repo content; ignore so it never accidentally commits.
+/core/work-*/
+/core/wordstats*
+/core/sample.txt
+/core/reverse*
