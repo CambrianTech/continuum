@@ -171,6 +171,76 @@ pub fn known_benchmarks() -> &'static [BenchmarkSpec] {
             eval_set: None,
             source_url: Some("https://github.com/Aider-AI/polyglot-benchmark"),
         },
+        // ── Whole-app / whole-project / website tier — the real 'build the thing' benchmarks ──
+        BenchmarkSpec {
+            name: "swe-lancer",
+            description: "SWE-Lancer (OpenAI) — real freelance software-engineering gigs (whole \
+                          features + management decisions) worth real money, graded by end-to-end \
+                          tests. The closest public benchmark to 'ship a real feature for pay'.",
+            grader: Grader::Python,
+            tasks: 1488,
+            eval_set: None,
+            source_url: Some("https://github.com/openai/SWELancer-Benchmark"),
+        },
+        BenchmarkSpec {
+            name: "commit0",
+            description: "Commit0 — build an ENTIRE library from a spec + its unit tests (from-scratch \
+                          whole-project synthesis, not a patch). Graded by the library's own test suite.",
+            grader: Grader::Python,
+            tasks: 54,
+            eval_set: None,
+            source_url: Some("https://github.com/commit-0/commit0"),
+        },
+        BenchmarkSpec {
+            name: "mle-bench",
+            description: "MLE-bench (OpenAI) — end-to-end Kaggle competitions: a whole ML project \
+                          (data → model → submission) graded on the real leaderboard metric. \
+                          Long-horizon agentic project work.",
+            grader: Grader::Python,
+            tasks: 75,
+            eval_set: None,
+            source_url: Some("https://github.com/openai/mle-bench"),
+        },
+        BenchmarkSpec {
+            name: "design2code",
+            description: "Design2Code — generate a working webpage from a SCREENSHOT (visual → HTML/CSS), \
+                          scored on visual + structural fidelity. The website-building benchmark; pairs \
+                          with the Screenshotter vision family.",
+            grader: Grader::Python,
+            tasks: 484,
+            eval_set: None,
+            source_url: Some("https://github.com/NoviScl/Design2Code"),
+        },
+        BenchmarkSpec {
+            name: "webarena",
+            description: "WebArena — an agent operating REAL self-hosted websites (e-commerce, forums, \
+                          CMS, GitLab) to complete multi-step tasks. The web-agent gold standard; graded \
+                          by task-outcome checks on the live sites.",
+            grader: Grader::Python,
+            tasks: 812,
+            eval_set: None,
+            source_url: Some("https://github.com/web-arena-x/webarena"),
+        },
+        BenchmarkSpec {
+            name: "appworld",
+            description: "AppWorld — control 9 real apps (calendar, email, shopping, …) via their APIs on \
+                          complex day-in-the-life tasks. Interactive multi-app coordination; graded by \
+                          world-state outcomes.",
+            grader: Grader::Python,
+            tasks: 750,
+            eval_set: None,
+            source_url: Some("https://github.com/StonyBrookNLP/appworld"),
+        },
+        BenchmarkSpec {
+            name: "terminal-bench",
+            description: "Terminal-Bench — end-to-end tasks completed in a real terminal (build, debug, \
+                          configure, script). Graded by outcome checks; plays directly to code/shell + \
+                          the recovery loop.",
+            grader: Grader::Python,
+            tasks: 100,
+            eval_set: None,
+            source_url: Some("https://github.com/laude-institute/terminal-bench"),
+        },
     ]
 }
 
