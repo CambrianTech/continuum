@@ -44,7 +44,7 @@ use super::embedding::{cosine_similarity, EmbeddingProvider};
 use super::working_memory::WorkingMemory;
 use super::workspace::{Contribution, Faculty, FacultyId, Workspace};
 use crate::persona::admission_state::AdmissionState;
-use crate::persona::engram::Engram;
+use crate::persona::engram::{Engram, EngramOrigin};
 
 /// Hard safety ceiling on memories surfaced per tick, regardless of model size —
 /// the [`RecallBudget`] picks the ACTUAL count (smaller) within this. `with_limit`
@@ -547,9 +547,28 @@ impl Faculty for RecallFaculty {
         // (salience 0.99)", parroting the annotation straight from her prompt.
         // Scores stay in probes/captures/introspection (where the debugger reads
         // them), never in the model-visible rendering ([[px-persona-experience-tools-as-good-ux]]).
+        //
+        // But PROVENANCE is not a score — it is what makes a memory READ as a
+        // memory. Glass-boxed live 2026-07-10 (silver-harbor): the block rendered
+        // as bare unattributed quotes, three of five being the QUESTION itself,
+        // so the natural completion of the pattern "this question keeps being
+        // asked with no answer visible" was "I don't know" — about a fact sitting
+        // two lines below, in the same block. The engram KNOWS who spoke and
+        // when ([`EngramOrigin`]); dropping that at render time was the positron
+        // failure (right data, hostile projection — Joel: "positron in coding
+        // view ought to be more accommodating and ergonomic or we have failed").
+        // Structural attribution only: origin variant + speaker identity + age —
+        // never content inspection ([[no-hardcoded-heuristics-to-steer-cognition]]).
+        let now_ms = (self.clock)();
         let content = scored
             .iter()
-            .map(|(_, engram, _, _)| format!("- {}", engram.content))
+            .map(|(_, engram, _, _)| {
+                format!(
+                    "- {}{}",
+                    provenance_prefix(engram, self.persona_id, now_ms),
+                    engram.content
+                )
+            })
             .collect::<Vec<_>>()
             .join("\n");
         let reasoning = format!(
@@ -572,9 +591,101 @@ impl Faculty for RecallFaculty {
     }
 }
 
+/// Structural provenance for a rendered memory line: WHO the memory came from
+/// (relative to `persona_id`) and HOW LONG AGO it was admitted — read from
+/// [`EngramOrigin`] + `admitted_at_ms`, never from the content. This is the
+/// positron move at the recall seam: the store already knows the provenance;
+/// the projection must carry it or a fact and a bystander's question render
+/// identically (the silver-harbor IDK — see the call site).
+fn provenance_prefix(engram: &Engram, persona_id: Uuid, now_ms: u64) -> String {
+    let age = humanize_age(now_ms.saturating_sub(engram.admitted_at_ms));
+    let who = match &engram.origin {
+        EngramOrigin::Chat(r) => {
+            if r.sender_id == persona_id {
+                "you said"
+            } else {
+                "heard"
+            }
+        }
+        EngramOrigin::Airc(r) => {
+            if r.sender_id == persona_id.to_string() {
+                "you said"
+            } else {
+                "heard"
+            }
+        }
+        EngramOrigin::Tool(_) => "you did",
+        EngramOrigin::SelfReflection { .. } => "you reflected",
+    };
+    format!("({who}, {age}) ")
+}
+
+/// Coarse human age buckets — a memory's rough distance in time, not a
+/// timestamp. Coarseness is deliberate: "2h ago" orients; "7,243,118ms"
+/// is noise the model would parrot.
+fn humanize_age(delta_ms: u64) -> String {
+    const MIN: u64 = 60_000;
+    const HOUR: u64 = 60 * MIN;
+    const DAY: u64 = 24 * HOUR;
+    match delta_ms {
+        d if d < 2 * MIN => "moments ago".to_string(),
+        d if d < 2 * HOUR => format!("{}m ago", d / MIN),
+        d if d < 2 * DAY => format!("{}h ago", d / HOUR),
+        d => format!("{}d ago", d / DAY),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches: the rendered [recall] line carries STRUCTURAL provenance
+    // (who + age from EngramOrigin, never content inspection). Regression for the
+    // silver-harbor IDK (2026-07-10): bare unattributed quotes made a taught fact
+    // and a bystander's question render identically, and the model completed the
+    // "question repeated, no answer visible" pattern with "I don't know" — about
+    // a fact two lines below in the same block.
+    #[test]
+    fn provenance_prefix_attributes_who_and_age_structurally() {
+        let me = Uuid::new_v4();
+        let peer = Uuid::new_v4();
+        let now: u64 = 10 * 24 * 60 * 60 * 1000;
+        let engram_from = |sender: Uuid, age_ms: u64| Engram {
+            context_id: None,
+            id: Uuid::new_v4(),
+            kind: EngramKind::Episodic,
+            content: "staging gateway is on port 58057".to_string(),
+            origin: EngramOrigin::Chat(ChatMessageRef {
+                message_id: Uuid::new_v4(),
+                room_id: Uuid::new_v4(),
+                sender_id: sender,
+                posted_at_ms: now - age_ms,
+                content_hash: "h".to_string(),
+            }),
+            recall_keys: Vec::new(),
+            admitted_at_ms: now - age_ms,
+            trust_state_at_admission: TrustState::ApprovedPeer,
+            admission_trace_id: None,
+        };
+        // A peer's words render as heard; her own as said — and the age buckets
+        // stay coarse and human, never raw milliseconds for the model to parrot.
+        assert_eq!(
+            provenance_prefix(&engram_from(peer, 3 * 60 * 60 * 1000), me, now),
+            "(heard, 3h ago) "
+        );
+        assert_eq!(
+            provenance_prefix(&engram_from(me, 5 * 60 * 1000), me, now),
+            "(you said, 5m ago) "
+        );
+        assert_eq!(
+            provenance_prefix(&engram_from(peer, 30_000), me, now),
+            "(heard, moments ago) "
+        );
+        assert_eq!(
+            provenance_prefix(&engram_from(peer, 3 * 24 * 60 * 60 * 1000), me, now),
+            "(heard, 3d ago) "
+        );
+    }
     use crate::persona::engram::{ChatMessageRef, Engram, EngramKind, EngramOrigin, TrustState};
     use crate::persona::recall_metadata::{RecallMetadata, RecallMetadataRegistry};
 
