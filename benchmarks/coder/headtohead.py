@@ -95,19 +95,29 @@ def run_system(args):
         raise SystemExit(f"[system] no JSON in cu output:\n{r.stdout}\n{r.stderr}")
     total = blob.get("total", 0) or 0
     elapsed = time.time() - t0
-    print(f"[system] {blob.get('score')}/{total} in {elapsed:.0f}s", file=sys.stderr)
-    # A zero that completed impossibly fast is NOT a measurement: full-cognition
-    # cannot finish a task in under ~3s, so score==0 with sub-floor wall-time means
-    # the lane/eval infra refused (the 14B hard-rs cell 2026-07-10: 0/8 in 23s —
-    # the ephemeral lane never came up under GPU contention, and 8 infra errors
-    # rendered as a 0% model claim). Excluded, loudly — never a zero on the board.
-    suspect = blob.get("score", 0) == 0 and total > 0 and elapsed < 3.0 * total
+    mean_out = blob.get("meanOutputTokensPerTask", None)
+    print(f"[system] {blob.get('score')}/{total} in {elapsed:.0f}s "
+          f"({mean_out:.0f} out-tok/task)" if mean_out is not None else
+          f"[system] {blob.get('score')}/{total} in {elapsed:.0f}s", file=sys.stderr)
+    # A zero is a MODEL claim only if the model actually GENERATED. Two infra tells,
+    # either of which excludes the cell (never a false 0% on the README):
+    #  (a) impossibly fast — full cognition can't finish a task under ~3s, so a
+    #      sub-floor wall-time zero means the lane never came up (14B: 0/8 in 23s).
+    #  (b) degenerate output — the lane served but generated near-nothing, so no
+    #      answer could contain code (forged-4B ~65 tok/task, 14B ~2 tok/task).
+    DEGENERATE_FLOOR = 40  # tokens/task — below this, no Rust fn can exist
+    too_fast = blob.get("score", 0) == 0 and total > 0 and elapsed < 3.0 * total
+    degenerate = (blob.get("score", 0) == 0 and mean_out is not None
+                  and mean_out < DEGENERATE_FLOOR)
+    suspect = too_fast or degenerate
     if suspect:
-        print(f"[system] ⚠ EXCLUDED: 0/{total} in {elapsed:.0f}s is faster than any real "
-              f"cognition pass — infra failure, not a model score", file=sys.stderr)
+        why = ("lane never came up (sub-floor wall-time)" if too_fast
+               else f"degenerate output ({mean_out:.0f} tok/task < {DEGENERATE_FLOOR}) — serving suspect")
+        print(f"[system] ⚠ EXCLUDED: 0/{total} — {why}, not a model score", file=sys.stderr)
     return {"passed": blob.get("score", 0), "tasks": total,
             "pass_rate": blob.get("pass_rate", 0.0), "excluded": suspect,
-            "elapsed_s": round(elapsed)}
+            "elapsed_s": round(elapsed),
+            "mean_output_tokens": round(mean_out) if mean_out is not None else None}
 
 
 def _last_json(text):
@@ -189,7 +199,10 @@ def main():
                   + (f"   [{raw['endpoint_errors']} endpoint-errs excluded]" if raw.get('endpoint_errors') else ""))
     if system:
         if not sys_valid:
-            print(f"  SYSTEM (full Continuum)    — EXCLUDED (0/{system['tasks']} in {system.get('elapsed_s', '?')}s — infra, not model)")
+            mo = system.get("mean_output_tokens")
+            why = (f"{mo} tok/task — degenerate serving" if mo is not None and mo < 40
+                   else f"0/{system['tasks']} in {system.get('elapsed_s', '?')}s — infra")
+            print(f"  SYSTEM (full Continuum)    — EXCLUDED ({why}, not model)")
         else:
             print(f"  SYSTEM (full Continuum)    {system['passed']:>3}/{system['tasks']:<3}  {system['pass_rate']:.0%}")
     if delta is not None:

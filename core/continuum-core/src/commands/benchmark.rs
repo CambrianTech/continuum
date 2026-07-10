@@ -198,6 +198,18 @@ pub struct BenchmarkRunResult {
     pub total: u32,
     #[ts(type = "number")]
     pub pass_rate: f64,
+    /// Total tokens the model actually GENERATED across the set. A 0% that produced
+    /// almost no output is a SERVING failure, not a model score — the harness reads
+    /// mean tokens/task to flag a degenerate lane instead of publishing a false 0%
+    /// (forged-4B ~65 tok/answer, 14B ~2 tok/answer under GPU contention, 2026-07-10).
+    #[serde(rename = "outputTokens")]
+    #[ts(type = "number")]
+    pub output_tokens: u32,
+    /// `output_tokens / total` — mean generated tokens per task. The matrix flags a
+    /// cell as "degenerate output (serving suspect)" below a floor rather than 0%.
+    #[serde(rename = "meanOutputTokensPerTask")]
+    #[ts(type = "number")]
+    pub mean_output_tokens_per_task: f64,
 }
 
 /// `benchmark/run` — compete a persona on a named benchmark. Thin wrapper over
@@ -286,6 +298,12 @@ impl ActionCommand for BenchmarkRun {
             score: result.score,
             total: result.total,
             pass_rate: result.pass_rate,
+            output_tokens: result.total_output_tokens,
+            mean_output_tokens_per_task: if result.total > 0 {
+                result.total_output_tokens as f64 / result.total as f64
+            } else {
+                0.0
+            },
         })
     }
 }
