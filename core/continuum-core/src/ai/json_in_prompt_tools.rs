@@ -397,8 +397,14 @@ impl ToolCallFormat for NarratedScriptFormat {
             // rust/rs ONLY: code/run is the Rust organism's hand and fails loud on
             // other languages, so a ```python fence stays an [unfulfilled] promise
             // rather than a guaranteed-useless call.
-            if first_person_intent(&narration)
+            let post = leading_narration(&text[fence.end.min(text.len())..]);
+            let run_signal = (first_person_intent(&narration)
+                || first_person_intent(&post)
+                || first_person_execution_claim(&post)
+                || first_person_execution_claim(&narration))
                 && !addressed_to_peer(&narration)
+                && !addressed_to_peer(&post);
+            if run_signal
                 && matches!(fence.lang.as_str(), "rust" | "rs")
                 && !fence.body.trim().is_empty()
             {
@@ -479,6 +485,9 @@ pub fn narrates_fenced_action(text: &str) -> bool {
 /// (lowercased, may be empty), and the body with the language line stripped.
 struct FencedBlock {
     open: usize,
+    /// Byte offset just past the CLOSING fence — where any trailing narration
+    /// ("I have already run this…") begins.
+    end: usize,
     lang: String,
     body: String,
 }
@@ -499,12 +508,13 @@ fn fenced_blocks(text: &str) -> Vec<FencedBlock> {
         let Some(close) = body_zone.find("```") else {
             break;
         };
+        let consumed = open + 3 + body_start + close + 3;
         out.push(FencedBlock {
             open: base + open,
+            end: base + consumed,
             lang,
             body: body_zone[..close].to_string(),
         });
-        let consumed = open + 3 + body_start + close + 3;
         base += consumed;
         rest = &rest[consumed..];
     }
@@ -526,6 +536,47 @@ fn trailing_narration(before: &str) -> String {
         .collect::<Vec<_>>()
         .join("\n")
         .to_lowercase()
+}
+
+/// The narration IMMEDIATELY after a fence: the first few lines before the next
+/// fence (or message end). Where a model states what it claims it DID with the
+/// code it just presented ("I have already run this program and received: …").
+fn leading_narration(after: &str) -> String {
+    let before_next_fence = match after.find("```") {
+        Some(idx) => &after[..idx],
+        None => after,
+    };
+    before_next_fence
+        .lines()
+        .take(4)
+        .collect::<Vec<_>>()
+        .join("\n")
+        .to_lowercase()
+}
+
+/// Does this narration CLAIM the speaker already executed the thing? Past-tense
+/// first-person execution ("I have already run…", "I ran it and got…"). Glass-
+/// boxed live 2026-07-10 (card 34d8aff7): Anwen posted a complete program, wrote
+/// "I have already run this program and received the following output:", and
+/// fabricated the output — WRONG output ("muitnednoc" for reverse("continuum"),
+/// letters not even in the input) — which her teammate then validated as correct.
+/// Lifting the claim RUNS the code, so the real output reaches her before the
+/// fabrication reaches the room: the substrate makes her words true or shows her
+/// they weren't. Same veto as intent: peer-addressed narration never lifts.
+fn first_person_execution_claim(narration: &str) -> bool {
+    const MARKERS: &[&str] = &[
+        "i have already run",
+        "i have run ",
+        "i've run ",
+        "i've already run",
+        "i ran ",
+        "i have executed",
+        "i've executed",
+        "i executed ",
+        "i compiled and ran",
+        "i have compiled and run",
+    ];
+    MARKERS.iter().any(|m| narration.contains(m))
 }
 
 /// Is this narration the SPEAKER's own stated intent to do the thing? Markers are
@@ -1022,6 +1073,24 @@ print('hi')
 fn r() {}
 ```";
         assert!(parse_tool_calls(example).is_empty(), "no intent, no lift");
+    }
+
+    // what this catches: a PAST-TENSE first-person execution claim after the fence
+    // lifts too — Anwen's live fabrication (2026-07-10, card 34d8aff7): posted a
+    // complete program, claimed "I have already run this program and received the
+    // following output:", and invented WRONG output which her teammate validated.
+    // Running the claim puts the REAL output in front of her before the
+    // fabrication becomes shared room truth. Peer-addressed past tense stays inert.
+    #[test]
+    fn past_tense_execution_claim_after_fence_lifts_and_grounds_the_fabrication() {
+        let text = "```rust\nfn reverse_string(s: &str) -> String {\n    s.chars().rev().collect()\n}\nfn main() {\n    println!(\"{}\", reverse_string(\"continuum\"));\n}\n```\nI have already run this program and received the following output:\n```\nmuitnednoc\n```";
+        let calls = parse_tool_calls(text);
+        assert_eq!(calls.len(), 1, "the claimed-run fence lifts: {calls:?}");
+        assert_eq!(calls[0].name, "code/run");
+        assert!(calls[0].input["code"].as_str().unwrap().contains("fn main"));
+        // Reviewing a PEER's claimed run stays quotation, never execution.
+        let peer = "```rust\nfn main() {}\n```\nYou've run this already and it worked, right?";
+        assert!(parse_tool_calls(peer).is_empty(), "peer-addressed past tense never lifts");
     }
 
     // what this catches: the safety line. A REVIEW of a peer's work quotes commands
