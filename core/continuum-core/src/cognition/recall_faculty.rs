@@ -142,11 +142,22 @@ pub const DEFAULT_RELEVANCE_WEIGHT: f32 = 0.5;
 /// last non-empty, non-room-header line, with a `[t=...]` timestamp prefix stripped.
 /// A single-line `world_state` (a tidy query) returns unchanged — backward compatible.
 /// Structural extraction (most-recent line), not content interpretation.
+///
+/// Annotation lines are never the stimulus: the burst carries bracket-tagged
+/// STRUCTURAL annotations (`[room …]` headers, the `[pattern]` repetition
+/// brick) alongside `[t=…]`-stamped messages. Glass-boxed 2026-07-10: a
+/// directed gateway question arrived with the `[pattern]` brick appended
+/// after it, the brick became the recall query, and recall surfaced
+/// spiral/work memories instead of the asked-about fact (the live-room
+/// query-dilution failure; the controlled eval passed because its burst was
+/// only the question). The rule is bracket-tag GRAMMAR — a line starting
+/// with `[` is an annotation unless it is a `[t=…]` message stamp — never
+/// content inspection.
 fn focused_query(world_state: &str) -> &str {
     let line = world_state
         .lines()
         .map(str::trim)
-        .filter(|l| !l.is_empty() && !l.starts_with("[room "))
+        .filter(|l| !l.is_empty() && (!l.starts_with('[') || l.starts_with("[t=")))
         .last()
         .unwrap_or(world_state.trim());
     if let Some(rest) = line.strip_prefix("[t=") {
@@ -638,6 +649,27 @@ fn humanize_age(delta_ms: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches: bracket-tagged perception annotations ([pattern], [room …])
+    // are never the recall query — the query is the newest MESSAGE. Regression for
+    // the 2026-07-10 live query-dilution: the [pattern] brick, appended after a
+    // directed question, became the query and recall surfaced spiral memories
+    // instead of the asked-about fact. [t=…]-stamped messages still qualify.
+    #[test]
+    fn focused_query_skips_annotation_lines() {
+        let burst = "[room general]\n\
+                     [t=100] Claude: what port does silver-harbor point to?\n\
+                     [pattern] Anwen's last 9 messages repeat the same sentiment.";
+        assert_eq!(
+            focused_query(burst),
+            "Claude: what port does silver-harbor point to?"
+        );
+        // A trailing plain message still wins over everything.
+        let burst2 = "[room general]\nAsha: hello\nClaude: the real question";
+        assert_eq!(focused_query(burst2), "Claude: the real question");
+        // All-annotation burst degrades to the trimmed whole (never panics).
+        assert_eq!(focused_query("[room general]"), "[room general]");
+    }
 
     // what this catches: the rendered [recall] line carries STRUCTURAL provenance
     // (who + age from EngramOrigin, never content inspection). Regression for the
