@@ -752,6 +752,21 @@ pub fn providers() -> Vec<Provider> {
             ..Default::default()
         }),
         provider(ProviderSpec {
+            // Google via its OpenAI-COMPATIBLE endpoint — the modern fix for the
+            // legacy era's broken bespoke-API integration (Joel 2026-07-10:
+            // "something was wrong with the Google"). One data row, zero custom
+            // adapter: Gemini serves /v1/chat/completions under /v1beta/openai.
+            id: "google",
+            name: "Google (Gemini, OpenAI-compat)",
+            base_url: "https://generativelanguage.googleapis.com/v1beta/openai",
+            api_key_env: Some("GOOGLE_API_KEY"),
+            default_model: Some("gemini-2.0-flash"),
+            auth: AuthKind::Bearer,
+            kind: ProviderKind::Cloud,
+            model_prefixes: &["gemini"],
+            ..Default::default()
+        }),
+        provider(ProviderSpec {
             id: "xai",
             name: "xAI",
             base_url: "https://api.x.ai",
