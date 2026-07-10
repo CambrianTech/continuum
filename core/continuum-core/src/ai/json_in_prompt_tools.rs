@@ -384,6 +384,29 @@ impl ToolCallFormat for NarratedScriptFormat {
                     name: "code/shell".to_string(),
                     input: serde_json::json!({ "cmd": fence.body.trim() }),
                 });
+                continue;
+            }
+            // A rust-tagged fence with the same explicit first-person RUN intent and
+            // no filename lifts into `code/run` — the standalone "does this little
+            // program do what I think?" hand. Glass-boxed live 2026-07-10: Anwen's
+            // "I'll compile and run this function" + ```rust fence fell BETWEEN
+            // NarratedWriteFormat (no filename) and the shell arm (not a shell
+            // fence), leaving three [unfulfilled] promises on the reverse-string
+            // card. A snippet without `fn main` compile-fails HONESTLY — she sees
+            // rustc's error next tick and corrects (errors as data, never silence).
+            // rust/rs ONLY: code/run is the Rust organism's hand and fails loud on
+            // other languages, so a ```python fence stays an [unfulfilled] promise
+            // rather than a guaranteed-useless call.
+            if first_person_intent(&narration)
+                && !addressed_to_peer(&narration)
+                && matches!(fence.lang.as_str(), "rust" | "rs")
+                && !fence.body.trim().is_empty()
+            {
+                out.push(ToolCall {
+                    id: format!("jip-{}", Uuid::new_v4()),
+                    name: "code/run".to_string(),
+                    input: serde_json::json!({ "lang": "rust", "code": fence.body }),
+                });
             }
         }
         out
@@ -960,6 +983,45 @@ I'll paste the output here once it's ready.";
         // The faculty's one-step-per-generation path takes the FIRST — the rest
         // re-emerge across the drive_to_settle loop as results land in memory.
         assert_eq!(parse_tool_call(text).unwrap().name, "code/shell");
+    }
+
+    // what this catches: a rust-tagged fence with first-person compile/run intent
+    // and NO filename lifts into code/run — the gap between NarratedWriteFormat
+    // (needs a filename) and the shell arm (needs a shell fence). Anwen's live
+    // reverse-string message, verbatim shape (prompt-captures 2026-07-10): three
+    // [unfulfilled] promises on card 34d8aff7 before this arm existed.
+    #[test]
+    fn narrated_rust_fence_with_run_intent_lifts_into_code_run() {
+        let text = "Let me proceed with card 34d8aff7 and write the code to reverse a string in Rust.
+
+```rust
+fn reverse_string(s: &str) -> String {
+    s.chars().rev().collect()
+}
+```
+
+I'll compile and run this function to ensure it works correctly.";
+        let calls = parse_tool_calls(text);
+        assert_eq!(calls.len(), 1, "the rust fence lifts once: {calls:?}");
+        assert_eq!(calls[0].name, "code/run");
+        assert_eq!(calls[0].input["lang"], "rust");
+        assert!(calls[0].input["code"].as_str().unwrap().contains("reverse_string"));
+        // A python fence with the same intent does NOT lift — code/run is the Rust
+        // organism's hand; a guaranteed-useless call is worse than the honest
+        // [unfulfilled] proprioception the Speak arm records.
+        let py = "I'll run this now.
+
+```python
+print('hi')
+```";
+        assert!(parse_tool_calls(py).is_empty(), "non-rust fences stay unlifted");
+        // A bare example fence with no intent framing stays inert.
+        let example = "Here's how reverse looks in Rust:
+
+```rust
+fn r() {}
+```";
+        assert!(parse_tool_calls(example).is_empty(), "no intent, no lift");
     }
 
     // what this catches: the safety line. A REVIEW of a peer's work quotes commands
