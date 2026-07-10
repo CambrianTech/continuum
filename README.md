@@ -376,40 +376,40 @@ Every number here is rendered from [`benchmarks/RESULTS.jsonl`](benchmarks/RESUL
 
 - **RAW** — the model one-shot against its own `/v1`.  
 - **OURS** — the same weights through the full continuum cognition loop (memory, tools, act→observe, recovery).  
-- **opencode** — the same weights through the opencode agentic harness (fair narrated-tool-call shim).  
-- **Δ vs opencode** — points OURS beats the standard local harness by, same weights. **This is the claim.**
+- **opencode CLI / Hermes CLI** — the same weights driven by the coding CLIs people actually use, on the same tasks + grader.  
+- **Δ vs opencode / Δ vs Hermes** — points OURS beats each competing local coding CLI by, on identical weights. **This is the claim.**
 
 ### Lab-grade (the headline)
 
 **SWE-bench Lite** — real GitHub issues in real repos, official swebench scorer
 
-| model | RAW | OURS | opencode | Δ vs opencode | Hermes-3-8B |
-|---|---|---|---|---|---|
-| **Devstral-Small-24B** | — | ***pending*** | — | — | — |
+| model | RAW | OURS | opencode CLI | Hermes CLI | Δ vs opencode | Δ vs Hermes |
+|---|---|---|---|---|---|---|
+| **Devstral-Small-24B** | — | ***pending*** | — | — | — | — |
 
 ### Fast verifiable gyms (regression + training signal)
 
 **HumanEval-Rust** — function-level, rustc compile+run graded
 
-| model | RAW | OURS | opencode | Δ vs opencode | Hermes-3-8B |
-|---|---|---|---|---|---|
-| **Devstral-Small-24B** | 100% (5/5) | **100% (5/5)** | — | — | — |
-| **Qwen2.5-Coder-14B** | 90% (18/20) | **90% (18/20)** | 75% (15/20) | **+15** | — |
-| **Hermes-3-Llama-3.1-8B** | — | **52% (21/40)** | — | — | — |
+| model | RAW | OURS | opencode CLI | Hermes CLI | Δ vs opencode | Δ vs Hermes |
+|---|---|---|---|---|---|---|
+| **Devstral-Small-24B** | 100% (5/5) | **100% (5/5)** | — | — | — | — |
+| **Qwen2.5-Coder-14B** | 90% (18/20) | **90% (18/20)** | 75% (15/20) | — | **+15** | — |
+| **Hermes-3-Llama-3.1-8B** | — | **52% (21/40)** | — | — | — | — |
 
 **Hard-Rust** — expression evaluators + algorithmics
 
-| model | RAW | OURS | opencode | Δ vs opencode | Hermes-3-8B |
-|---|---|---|---|---|---|
-| **Qwen2.5-Coder-14B** | — | ***excluded¹*** | — | — | — |
-| **Devstral-Small-24B** | 38% (3/8) | **38% (3/8)** | — | — | — |
-| **Qwen2.5-Coder-3B** | — | **25% (2/8)** | — | — | — |
+| model | RAW | OURS | opencode CLI | Hermes CLI | Δ vs opencode | Δ vs Hermes |
+|---|---|---|---|---|---|---|
+| **Qwen2.5-Coder-14B** | — | ***excluded¹*** | — | — | — | — |
+| **Devstral-Small-24B** | 38% (3/8) | **38% (3/8)** | — | — | — | — |
+| **Qwen2.5-Coder-3B** | — | **25% (2/8)** | — | — | — | — |
 
 **Frontier-Rust** — Dijkstra · Levenshtein · LIS · topo-sort · bignum · calc · regex
 
-| model | RAW | OURS | opencode | Δ vs opencode | Hermes-3-8B |
-|---|---|---|---|---|---|
-| **Devstral-Small-24B** | — | ***pending*** | — | — | — |
+| model | RAW | OURS | opencode CLI | Hermes CLI | Δ vs opencode | Δ vs Hermes |
+|---|---|---|---|---|---|---|
+| **Devstral-Small-24B** | — | ***pending*** | — | — | — | — |
 
 ¹ *excluded* = a serving/harness failure (degenerate output under GPU contention, a down endpoint) — never scored as a model 0%. The harness self-flags these ([`headtohead.py`](benchmarks/coder/headtohead.py)) so no false zero reaches this table.
 

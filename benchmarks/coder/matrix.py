@@ -62,24 +62,40 @@ def h2h(row, args, tmp):
     return json.load(open(out))
 
 
-def opencode_cell(row, args, tmp):
-    """Optional opponent cell: the same model through the opencode agentic harness."""
-    print(f"\n### {row['label']} — opencode opponent", file=sys.stderr)
+# Opponent harnesses people actually use to drive a local model. Each runs the SAME gym +
+# rustc grader (harness_*.py), so its cell is apples-to-apples with RAW/OURS. `model_key` is
+# the row field carrying the model name that harness expects (opencode wants its shim alias;
+# hermes wants the served /v1 model id, i.e. raw_model).
+OPPONENTS = {
+    "opencode": {"script": OPENCODE,
+                 "model_key": "opencode_model", "model_default": "local/qwen14b"},
+    "hermes":   {"script": os.path.join(HERE, "harness_hermes.py"),
+                 "model_key": "raw_model", "model_default": "local/qwen14b"},
+}
+
+
+def opponent_cell(name, row, args):
+    """Run ONE opponent harness (opencode | hermes) for a model row; parse its scoreboard row."""
+    spec = OPPONENTS[name]
+    model = row.get(spec["model_key"], spec["model_default"])
+    print(f"\n### {row['label']} — {name} opponent", file=sys.stderr)
     r = subprocess.run(
-        [sys.executable, OPENCODE, "--gym", args.gym, "--limit", str(args.limit),
-         "--model", row.get("opencode_model", "local/qwen14b"),
-         "--label", f"{row['label']} (opencode)"],
+        [sys.executable, spec["script"], "--gym", args.gym, "--limit", str(args.limit),
+         "--model", model, "--label", f"{row['label']} ({name})"],
         capture_output=True, text=True)
-    # harness_opencode prints a scoreboard row; parse the pass count from its last line
+    # harness_*.py prints a scoreboard row `| label | passed/tasks | … |`; parse the pass count
     passed = tasks = None
     for line in r.stdout.splitlines():
         if line.strip().startswith("|"):
-            parts = [p.strip() for p in line.split("|")]
-            for p in parts:
+            for p in (x.strip() for x in line.split("|")):
                 if "/" in p and p.replace("/", "").isdigit():
                     passed, tasks = (int(x) for x in p.split("/"))
+    if passed is None:
+        print(f"[{name}-cell] {row['label']}: no scoreboard row parsed (harness may have errored)",
+              file=sys.stderr)
+        return None
     return {"passed": passed, "tasks": tasks,
-            "pass_rate": (passed / tasks) if tasks else None} if passed is not None else None
+            "pass_rate": (passed / tasks) if tasks else None}
 
 
 def _slug(s):
@@ -145,8 +161,12 @@ def main():
     results = []
     for row in rows:
         res = h2h(row, args, tmp)
-        if row.get("opponent") == "opencode":
-            res["opencode"] = opencode_cell(row, args, tmp)
+        # opponents: a list of the coding CLIs people use to drive this model (opencode, hermes).
+        # Back-compat: a bare "opponent": "opencode" still works.
+        opponents = row.get("opponents") or ([row["opponent"]] if row.get("opponent") else [])
+        for name in opponents:
+            if name in OPPONENTS:
+                res[name] = opponent_cell(name, row, args)
         results.append(res)
 
     table = render(results, args)
@@ -188,7 +208,8 @@ def append_ledger(results, args):
     try:
         with open(ledger, "a") as f:
             for r in results:
-                for arm, key in [("RAW", "raw"), ("OURS", "system"), ("opencode", "opencode")]:
+                for arm, key in [("RAW", "raw"), ("OURS", "system"),
+                                 ("opencode", "opencode"), ("hermes", "hermes")]:
                     rec = row(r["label"], arm, r.get(key))
                     if rec:
                         f.write(json.dumps(rec) + "\n")

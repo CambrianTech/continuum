@@ -55,15 +55,20 @@ def endpoint_up(url, model=None):
         return False
 
 
-def serve(gguf, alias, port, ctx=16384):
-    """Start a scratch llama-server; return the Popen once /v1/models answers."""
+def serve(gguf, alias, port, ctx=65536):
+    """Start a scratch llama-server; return the Popen once /v1/models answers.
+
+    ctx=65536 with `--parallel 1` gives ONE slot the full 64K context. This is a HARD
+    requirement of the Hermes CLI arm: Hermes refuses any model whose per-slot runtime
+    context is <64K ("below the minimum 64,000 required"). `--parallel 2` would halve the
+    context per slot (64K→32K) and Hermes would refuse — so parallel stays 1 here."""
     url = f"http://127.0.0.1:{port}/v1"
     if endpoint_up(url):
         raise SystemExit(f"[sweep] port {port} already serving — refusing to double-bind")
     log = open(f"/tmp/sweep-serve-{port}.log", "w")
     proc = subprocess.Popen(
         [LLAMA_SERVER, "-m", gguf, "--alias", alias, "--host", "127.0.0.1",
-         "--port", str(port), "-c", str(ctx), "--parallel", "2", "--cache-reuse", "256", "--jinja"],
+         "--port", str(port), "-c", str(ctx), "--parallel", "1", "--cache-reuse", "256", "--jinja"],
         stdout=log, stderr=subprocess.STDOUT)
     for _ in range(180):  # up to 3 min to load
         if endpoint_up(url):
@@ -75,11 +80,22 @@ def serve(gguf, alias, port, ctx=16384):
     raise RuntimeError(f"llama-server for {alias} never became ready on :{port}")
 
 
-def point_opencode(port):
-    """Repoint opencode's local shim baseURL at the given port (for the opencode arm)."""
+def point_harnesses(port, alias):
+    """Repoint BOTH opponent CLIs at the served model on `port`, so each drives identical weights.
+    opencode via its shim baseURL; Hermes via `hermes config set` (provider custom + base_url +
+    default model + the 64K context override it demands)."""
+    # opencode
     d = json.load(open(OPENCODE_CFG))
     d["provider"]["local"]["options"]["baseURL"] = f"http://127.0.0.1:{port}/v1"
     json.dump(d, open(OPENCODE_CFG, "w"), indent=2)
+    # hermes
+    for k, v in [("model.provider", "custom"),
+                 ("model.base_url", f"http://127.0.0.1:{port}/v1"),
+                 ("model.default", alias),
+                 ("model.context_length", "65536"),
+                 ("model.ollama_num_ctx", "65536")]:
+        subprocess.run(["hermes", "config", "set", k, v],
+                       capture_output=True, text=True)
 
 
 def run_model(row, args):
@@ -96,15 +112,15 @@ def run_model(row, args):
         served_here = serve(row["gguf"], row["alias"], port)
         endpoint = f"http://127.0.0.1:{port}/v1"
     try:
-        point_opencode(port)
-        # 2. one-row config for matrix.py: RAW(endpoint) + OURS(ephemeral) + opencode(harness)
+        point_harnesses(port, row["alias"])
+        # 2. one-row config for matrix.py: RAW(endpoint) + OURS(ephemeral) + opencode + hermes
         cfg = [{
             "label": label,
             "base_model_id": row.get("base_model_id"),
             "raw_endpoint": endpoint,
             "raw_model": row["alias"],
-            "opponent": "opencode",
-            "opencode_model": "local/qwen14b",  # opencode's fixed model name; baseURL is what varies
+            "opponents": ["opencode", "hermes"],
+            "opencode_model": "local/qwen14b",  # opencode's fixed shim name; baseURL is what varies
         }]
         tmp = f"/tmp/sweep-row-{_slug(label)}.json"
         json.dump(cfg, open(tmp, "w"))

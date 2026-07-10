@@ -41,16 +41,16 @@ BENCH_META = {
     "games-rs":     ("Games-Rust", "buildable game logic — Conway · win-checkers · 2048 merge · knight moves", "inner"),
     "swe-bench-lite":("SWE-bench Lite", "real GitHub issues in real repos, official swebench scorer", "outer"),
 }
-# The arm the chart/tables treat as the primary opponent for the Δ "sell" column.
-OPP = "opencode"
+# The competing local coding CLIs — the Δ "sell" columns are OURS minus each of these.
+OPPONENTS = ["opencode", "hermes"]
 # Arm → (display, bar color that reads on both light + dark GitHub canvases).
 ARM = {
     "OURS":     ("OURS (Continuum)", "#2ea043"),
     "RAW":      ("RAW one-shot",     "#6e7681"),
-    "opencode": ("opencode",         "#d29922"),
-    "Hermes-3-Llama-3.1-8B": ("Hermes-3-8B", "#a371f7"),
+    "opencode": ("opencode CLI",     "#d29922"),
+    "hermes":   ("Hermes CLI",       "#a371f7"),
 }
-ARM_TABLE_ORDER = ["RAW", "OURS", "opencode", "Hermes-3-Llama-3.1-8B"]
+ARM_TABLE_ORDER = ["RAW", "OURS", "opencode", "hermes"]
 
 
 def _pr(row):
@@ -149,8 +149,8 @@ def render(by_bench, has_chart):
         out.append(f"![Continuum vs opencode vs raw — coding pass-rate]({CHART_REL})\n")
     out.append("- **RAW** — the model one-shot against its own `/v1`.  ")
     out.append("- **OURS** — the same weights through the full continuum cognition loop (memory, tools, act→observe, recovery).  ")
-    out.append("- **opencode** — the same weights through the opencode agentic harness (fair narrated-tool-call shim).  ")
-    out.append("- **Δ vs opencode** — points OURS beats the standard local harness by, same weights. **This is the claim.**\n")
+    out.append("- **opencode CLI / Hermes CLI** — the same weights driven by the coding CLIs people actually use, on the same tasks + grader.  ")
+    out.append("- **Δ vs opencode / Δ vs Hermes** — points OURS beats each competing local coding CLI by, on identical weights. **This is the claim.**\n")
 
     for tier, title in [("outer", "### Lab-grade (the headline)"),
                         ("inner", "### Fast verifiable gyms (regression + training signal)")]:
@@ -160,18 +160,18 @@ def render(by_bench, has_chart):
         for b in benches:
             disp, frame, _ = BENCH_META[b]
             out.append(f"**{disp}** — {frame}\n")
-            out.append("| model | RAW | OURS | opencode | Δ vs opencode | Hermes-3-8B |")
-            out.append("|---|---|---|---|---|---|")
+            out.append("| model | RAW | OURS | opencode CLI | Hermes CLI | Δ vs opencode | Δ vs Hermes |")
+            out.append("|---|---|---|---|---|---|---|")
             models = by_bench[b]
             def key(m):
                 pr = _pr(models[m].get("OURS"))
                 return (-1 if pr is None else -pr, m)
             for m in sorted(models, key=key):
                 a = models[m]
-                herm = a.get("Hermes-3-Llama-3.1-8B")
                 mark = " *(we forged it)*" if "forged" in m else ""
                 out.append(f"| **{m}**{mark} | {cell(a.get('RAW'))} | **{cell(a.get('OURS'))}** | "
-                           f"{cell(a.get(OPP))} | {delta(a.get('OURS'), a.get(OPP))} | {cell(herm)} |")
+                           f"{cell(a.get('opencode'))} | {cell(a.get('hermes'))} | "
+                           f"{delta(a.get('OURS'), a.get('opencode'))} | {delta(a.get('OURS'), a.get('hermes'))} |")
             out.append("")
     out.append("¹ *excluded* = a serving/harness failure (degenerate output under GPU contention, a down endpoint) — "
                "never scored as a model 0%. The harness self-flags these ([`headtohead.py`](benchmarks/coder/headtohead.py)) "
