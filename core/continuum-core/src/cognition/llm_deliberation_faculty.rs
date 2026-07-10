@@ -489,6 +489,26 @@ impl LlmDeliberationFaculty {
     /// philosophy as `FlexboxRagBudgetAdapter`.
     fn render_assembled_context_within(&self, ws: &Workspace, budget_tokens: usize) -> String {
         if budget_tokens == 0 {
+            // Received-vs-rendered receipt even on the zero-budget path — a turn
+            // whose entire context vanished must say so, not render silently empty
+            // (the silver-harbor failure class: recall surfaced with the winning
+            // bid, yet [recall] never reached the prompt; WHERE it vanished was
+            // undebuggable without this seam probe).
+            crate::probe!(
+                class = "delib.context.render",
+                persona = %self.persona_name,
+                budget_tokens = 0usize,
+                received = ws.broadcast.iter().filter(|c| c.decision.is_none()).count(),
+                rendered = 0usize,
+                dropped = %ws
+                    .broadcast
+                    .iter()
+                    .filter(|c| c.decision.is_none())
+                    .map(|c| c.faculty.as_str())
+                    .collect::<Vec<_>>()
+                    .join(","),
+                "assembled context suppressed: zero token budget"
+            );
             return String::new();
         }
         let mut ctx: Vec<_> = ws
@@ -501,21 +521,48 @@ impl LlmDeliberationFaculty {
                 .partial_cmp(&a.salience)
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
+        let received = ctx.len();
         // SELECTION (by salience): walk highest-salience-first and keep whole items
         // that fit the budget — a half-truncated engram is noise, so a smaller
         // lower-salience item that still fits is preferred over a mangled high one.
         let mut selected: Vec<&Contribution> = Vec::with_capacity(ctx.len());
+        let mut dropped: Vec<String> = Vec::new();
         let mut used = 0usize;
         for c in ctx {
             // "\n[faculty]\n<content>\n" — count the framing chars too (~2 tokens).
             let piece = est_tokens(c.faculty.as_str()) + est_tokens(&c.content) + 2;
             if used + piece > budget_tokens {
                 // Drop this whole item; a smaller lower-salience one may still fit.
+                dropped.push(format!(
+                    "{}(sal={:.2},tok={})",
+                    c.faculty.as_str(),
+                    c.salience,
+                    piece
+                ));
                 continue;
             }
             selected.push(c);
             used += piece;
         }
+        // Received-vs-rendered receipt at the ONE seam where a surfaced
+        // contribution can silently vanish between attention and the prompt.
+        // Glass box: what recall/grounding WON upstream must be attributable
+        // HERE if it never renders (#130).
+        crate::probe!(
+            class = "delib.context.render",
+            persona = %self.persona_name,
+            budget_tokens,
+            used_tokens = used,
+            received,
+            rendered = selected.len(),
+            kept = %selected
+                .iter()
+                .map(|c| format!("{}(sal={:.2})", c.faculty.as_str(), c.salience))
+                .collect::<Vec<_>>()
+                .join(","),
+            dropped = %dropped.join(","),
+            "assembled context: {}/{} contributions fit", selected.len(), received
+        );
         // SERIALIZATION (by volatility): stable standing-framing FIRST (roster,
         // doctrine, map) so it lands in the cacheable KV-prefix region adjacent to
         // the static system prompt it resembles; volatile grounding (recall, working

@@ -1366,6 +1366,32 @@ impl WorkspaceCycle {
         let focused = self
             .arbiter
             .focus(context_bids.clone(), self.capacity, &focus_ctx);
+        // Bids-vs-focused receipt at the attention seam. Together with
+        // `delib.context.render` (received-vs-rendered) this closes the glass box
+        // over a surfaced finding's whole path: faculty bid → attention →
+        // prompt. The silver-harbor failure (recall surfaced at z=5.5σ, [recall]
+        // absent from the prompt) was unattributable because BOTH seams were
+        // dark (#130).
+        crate::probe!(
+            class = "workspace.attention.focus",
+            capacity = self.capacity,
+            bids = context_bids.len(),
+            focused = focused.len(),
+            kept = %focused
+                .iter()
+                .map(|c| format!("{}(sal={:.2})", c.faculty.as_str(), c.salience))
+                .collect::<Vec<_>>()
+                .join(","),
+            evicted = %context_bids
+                .iter()
+                .filter(|b| !focused.iter().any(|f| f.faculty == b.faculty))
+                .map(|b| format!("{}(sal={:.2})", b.faculty.as_str(), b.salience))
+                .collect::<Vec<_>>()
+                .join(","),
+            "attention: {}/{} bids focused",
+            focused.len(),
+            context_bids.len()
+        );
         ws.broadcast = focused;
         let context_broadcast = ws.broadcast.clone();
 
