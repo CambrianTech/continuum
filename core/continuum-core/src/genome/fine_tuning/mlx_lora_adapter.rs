@@ -180,6 +180,32 @@ impl FineTuningAdapter for MlxLoraFineTuner {
             &request.base_model,
         )
         .map_err(FineTuningError::InvalidRequest)?;
+        // Prefer a LOCAL 4-bit MLX conversion of the base when one exists
+        // (`<genome>/models/mlx-q4/<hf id with '/'→'_'>`). QLoRA on the
+        // quantized base is how a 24B trains NEXT TO its own living serving
+        // lane on unified memory: the bf16 base (44GB) + the 25GB server
+        // SIGABRT'd Metal on the first lived-curriculum train (2026-07-10);
+        // the 12GB 4-bit conversion coexists. A deliberate, LOGGED preference
+        // for a stronger-fitting artifact — not a fallback: absent the
+        // conversion we train the full base exactly as before, and its OOM
+        // stays loud.
+        let train_base = {
+            let q4 = dirs::home_dir()
+                .unwrap_or_else(|| std::path::PathBuf::from("."))
+                .join(".continuum/genome/models/mlx-q4")
+                .join(train_base.replace('/', "_"));
+            if q4.join("config.json").exists() {
+                crate::probe!(
+                    class = "genome.train.base",
+                    base = %train_base,
+                    local_q4 = %q4.display(),
+                    "training against the local 4-bit MLX conversion (fits beside the living lane)"
+                );
+                q4.to_string_lossy().into_owned()
+            } else {
+                train_base
+            }
+        };
         if request.dataset.examples.is_empty() {
             return Err(FineTuningError::InvalidRequest(
                 "dataset has no examples".into(),
