@@ -72,6 +72,18 @@ pub fn known_benchmarks() -> &'static [BenchmarkSpec] {
             source_url: None,
         },
         BenchmarkSpec {
+            name: "games-rs",
+            description: "Games-Rust — OUR games benchmark, the tier public benchmarks lack (they \
+                          grade an agent PLAYING a game, not BUILDING one). Auto-verifiable game LOGIC: \
+                          Conway's Life step, tic-tac-toe + connect-4 win-checkers, a 2048 merge, chess \
+                          knight moves, minesweeper counts. 6 tasks, reference-verified; the runnable \
+                          complement to the whole-game project cards.",
+            grader: Grader::Rust,
+            tasks: 6,
+            eval_set: Some("games-rs.jsonl"),
+            source_url: None,
+        },
+        BenchmarkSpec {
             name: "coder-eval",
             description: "Continuum coder gym — 13 mixed practical Rust tasks, rustc compile+run \
                           graded (the original held-out genome-loop eval set).",

@@ -73,6 +73,15 @@ const EMBEDDED_GYMS: &[(&str, &str)] = &[
         "frontier-rs.jsonl",
         include_str!("../../../../docs/genome/frontier-rs.jsonl"),
     ),
+    (
+        // games-rs: OUR games benchmark — the tier public benchmarks lack (they grade
+        // an agent PLAYING, not BUILDING). Auto-verifiable game LOGIC: a Conway step,
+        // a tic-tac-toe/connect-4 win-checker, a 2048 merge, knight moves, minesweeper
+        // counts. Every task reference-verified. The runnable complement to the Conway/
+        // Snake whole-game project cards.
+        "games-rs.jsonl",
+        include_str!("../../../../docs/genome/games-rs.jsonl"),
+    ),
 ];
 
 /// Look up a committed gym's embedded bytes by the basename of `reference`.
