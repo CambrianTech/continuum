@@ -211,7 +211,9 @@ impl FineTuningAdapter for MlxLoraFineTuner {
                 adapter_dir.display()
             ))
         })?;
-        write_mlx_dataset(&data_dir, &request)?;
+        let chat_template =
+            tokenizer_has_chat_template(&self.python, &job_dir, &train_base).await?;
+        write_mlx_dataset(&data_dir, &request, chat_template)?;
 
         // ── Build the mlx_lm.lora --train invocation ───────────────
         let schedule = request.schedule.clone().unwrap_or_else(default_schedule);
@@ -411,15 +413,52 @@ fn sanitize(s: &str) -> String {
         .collect()
 }
 
-/// Write the dataset into MLX's expected `train.jsonl` / `valid.jsonl`
-/// using the `{"prompt","completion"}` schema mlx_lm.lora accepts
-/// natively (maps 1:1 from [`super::types::TrainingExample`]). The
+/// Does `train_base`'s tokenizer carry a chat template? Decides the dataset
+/// schema: mlx_lm renders `{"prompt","completion"}` rows THROUGH
+/// `tokenizer.apply_chat_template`, so a template-less base (Devstral/Tekken —
+/// its template lives outside tokenizer_config) exits 1 mid-train ("Cannot use
+/// chat template functions"; killed the first lived-curriculum train,
+/// 2026-07-10). Probed under the SAME interpreter that runs mlx_lm.lora, from
+/// the authoritative source (the tokenizer itself — the #74 doctrine), never
+/// guessed from the model name. Probe failure is loud: a base whose tokenizer
+/// can't even load will not train either.
+async fn tokenizer_has_chat_template(
+    python: &Path,
+    job_dir: &Path,
+    train_base: &str,
+) -> Result<bool, FineTuningError> {
+    let probe_path = job_dir.join("probe_chat_template.py");
+    std::fs::write(&probe_path, include_str!("probe_chat_template.py")).map_err(|e| {
+        FineTuningError::LocalTrainerFailed(format!("write chat-template probe: {e}"))
+    })?;
+    let out = tokio::process::Command::new(python)
+        .arg(&probe_path)
+        .arg(train_base)
+        .output()
+        .await
+        .map_err(|e| FineTuningError::LocalTrainerFailed(format!("spawn probe: {e}")))?;
+    if !out.status.success() {
+        return Err(FineTuningError::LocalTrainerFailed(format!(
+            "chat-template probe failed for {train_base}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        )));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).trim() == "yes")
+}
+
+/// Write the dataset into MLX's expected `train.jsonl` / `valid.jsonl`.
+/// `chat_template: true` → the `{"prompt","completion"}` schema (maps 1:1 from
+/// [`super::types::TrainingExample`]; mlx_lm renders it through the tokenizer's
+/// template). `false` → the raw `{"text"}` schema (prompt + completion joined),
+/// the only schema a template-less tokenizer can train on — whole-text LM loss
+/// instead of completion-masked, the honest capability of such a base. The
 /// validation split is honored; with too few examples for a split we
 /// still emit a (possibly 1-line) valid file so mlx_lm doesn't error on
 /// a missing file.
 fn write_mlx_dataset(
     data_dir: &Path,
     request: &TrainingJobRequest,
+    chat_template: bool,
 ) -> Result<(), FineTuningError> {
     let examples = &request.dataset.examples;
     let split = request.dataset.validation_split.clamp(0.0, 0.5);
@@ -431,10 +470,16 @@ fn write_mlx_dataset(
     let to_jsonl = |rows: &[super::types::TrainingExample]| -> Result<String, FineTuningError> {
         let mut s = String::new();
         for ex in rows {
-            let line = serde_json::json!({
-                "prompt": ex.prompt,
-                "completion": ex.completion,
-            });
+            let line = if chat_template {
+                serde_json::json!({
+                    "prompt": ex.prompt,
+                    "completion": ex.completion,
+                })
+            } else {
+                serde_json::json!({
+                    "text": format!("{}\n{}", ex.prompt, ex.completion),
+                })
+            };
             s.push_str(
                 &serde_json::to_string(&line)
                     .map_err(|e| FineTuningError::LocalTrainerFailed(format!("encode row: {e}")))?,
@@ -609,7 +654,7 @@ mod tests {
             ("p4", "c4"),
             ("p5", "c5"),
         ]);
-        write_mlx_dataset(&dir, &r).unwrap();
+        write_mlx_dataset(&dir, &r, true).unwrap();
 
         let train = std::fs::read_to_string(dir.join("train.jsonl")).unwrap();
         let valid = std::fs::read_to_string(dir.join("valid.jsonl")).unwrap();
@@ -624,6 +669,25 @@ mod tests {
         assert!(first.get("prompt").is_some());
         assert!(first.get("completion").is_some());
 
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // what this catches: a template-less base (Devstral/Tekken) gets the raw
+    // {"text"} schema — the only one its tokenizer can train on. Regression for
+    // the 2026-07-10 recall-trust train that died mid-job on
+    // "Cannot use chat template functions".
+    #[test]
+    fn template_less_base_writes_text_schema() {
+        let dir = std::env::temp_dir().join(format!("mlx_ds_{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let r = req(vec![("the prompt", "the completion"), ("p2", "c2")]);
+        write_mlx_dataset(&dir, &r, false).unwrap();
+        let train = std::fs::read_to_string(dir.join("train.jsonl")).unwrap();
+        let first: serde_json::Value =
+            serde_json::from_str(train.lines().next().unwrap()).unwrap();
+        assert!(first.get("prompt").is_none(), "no chat schema without a template");
+        let text = first["text"].as_str().unwrap();
+        assert!(text.contains("the prompt") && text.contains("the completion"));
         std::fs::remove_dir_all(&dir).ok();
     }
 
