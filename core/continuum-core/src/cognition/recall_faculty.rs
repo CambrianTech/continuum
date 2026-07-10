@@ -117,9 +117,10 @@ impl RecallBudget {
 /// memory or two — below this, recall would be silently empty.
 const MIN_RECALL_TOKENS: usize = 256;
 
-/// Cheap token estimate for one surfaced memory: the body plus the
-/// `- … (salience X.XX)\n` framing, at the ~4-chars-per-token rule of thumb. Used
-/// only to keep recall within its window budget — an estimate, not a tokenizer.
+/// Cheap token estimate for one surfaced memory: the body plus the `- …\n` list
+/// framing (padded generously — the score annotation it once covered is no longer
+/// model-visible), at the ~4-chars-per-token rule of thumb. Used only to keep
+/// recall within its window budget — an estimate, not a tokenizer.
 fn estimate_recall_tokens(content: &str) -> usize {
     (content.chars().count() + 24) / 4 + 1
 }
@@ -469,11 +470,14 @@ impl Faculty for RecallFaculty {
         // salience, and a highly-relevant hit can bid ABOVE it. (`f32::max` also
         // returns the finite operand if the other is NaN — defensive.)
         let top_salience = scored[0].0.max(scored[0].2).clamp(0.0, 1.0);
+        // The memory line the MODEL sees carries no internal score — glass-boxed
+        // live 2026-07-09: Anwen broadcast "...productive sessions together!
+        // (salience 0.99)", parroting the annotation straight from her prompt.
+        // Scores stay in probes/captures/introspection (where the debugger reads
+        // them), never in the model-visible rendering ([[px-persona-experience-tools-as-good-ux]]).
         let content = scored
             .iter()
-            .map(|(_, engram, salience)| {
-                format!("- {} (salience {:.2})", engram.content, salience)
-            })
+            .map(|(_, engram, _)| format!("- {}", engram.content))
             .collect::<Vec<_>>()
             .join("\n");
         let reasoning = format!(
