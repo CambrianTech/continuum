@@ -7,7 +7,8 @@
     "opencode_model": "local/qwen14b",
     "opponents": [
       "opencode",
-      "hermes"
+      "hermes",
+      "aider"
     ]
   }
 ]

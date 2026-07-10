@@ -140,18 +140,20 @@ def point_harnesses(port, alias):
     """Repoint BOTH opponent CLIs at the served model on `port`, so each drives identical weights.
     opencode via its shim baseURL; Hermes via `hermes config set` (provider custom + base_url +
     default model + the 64K context override it demands)."""
-    # opencode
+    url = f"http://127.0.0.1:{port}/v1"
+    # opencode — persistent shim baseURL
     d = json.load(open(OPENCODE_CFG))
-    d["provider"]["local"]["options"]["baseURL"] = f"http://127.0.0.1:{port}/v1"
+    d["provider"]["local"]["options"]["baseURL"] = url
     json.dump(d, open(OPENCODE_CFG, "w"), indent=2)
-    # hermes
-    for k, v in [("model.provider", "custom"),
-                 ("model.base_url", f"http://127.0.0.1:{port}/v1"),
+    # hermes — persistent config
+    for k, v in [("model.provider", "custom"), ("model.base_url", url),
                  ("model.default", alias),
-                 ("model.context_length", "65536"),
-                 ("model.ollama_num_ctx", "65536")]:
-        subprocess.run(["hermes", "config", "set", k, v],
-                       capture_output=True, text=True)
+                 ("model.context_length", "65536"), ("model.ollama_num_ctx", "65536")]:
+        subprocess.run(["hermes", "config", "set", k, v], capture_output=True, text=True)
+    # aider — takes its endpoint per-invocation; export it so the (subprocess) matrix + aider
+    # harness inherit OPENAI_API_BASE without any persistent config file.
+    os.environ["OPENAI_API_BASE"] = url
+    os.environ["OPENAI_API_KEY"] = "sk-none"
 
 
 def run_model(row, args):
@@ -165,7 +167,8 @@ def run_model(row, args):
     # simply cannot be run through Hermes honestly, so its Hermes cell is an honest absence,
     # not a fake 0 or a degrading rope-overflow to fake 64K.
     hermes_ok = (real_ctx or 0) >= HERMES_MIN_CTX
-    opponents = ["opencode"] + (["hermes"] if hermes_ok else [])
+    # opencode + aider run on any context; hermes only clears its own 64K floor.
+    opponents = ["opencode", "aider"] + (["hermes"] if hermes_ok else [])
     if not hermes_ok:
         print(f"[sweep] {label}: Hermes SKIPPED — model is {real_ctx or '?'}-ctx, below Hermes's "
               f"{HERMES_MIN_CTX} floor (honest N/A, not a 0)", file=sys.stderr)

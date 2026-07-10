@@ -71,6 +71,8 @@ OPPONENTS = {
                  "model_key": "opencode_model", "model_default": "local/qwen14b"},
     "hermes":   {"script": os.path.join(HERE, "harness_hermes.py"),
                  "model_key": "raw_model", "model_default": "local/qwen14b"},
+    "aider":    {"script": os.path.join(HERE, "harness_aider.py"),
+                 "model_key": "raw_model", "model_default": "local/qwen14b"},
 }
 
 
@@ -209,7 +211,7 @@ def append_ledger(results, args):
         with open(ledger, "a") as f:
             for r in results:
                 for arm, key in [("RAW", "raw"), ("OURS", "system"),
-                                 ("opencode", "opencode"), ("hermes", "hermes")]:
+                                 ("opencode", "opencode"), ("hermes", "hermes"), ("aider", "aider")]:
                     rec = row(r["label"], arm, r.get(key))
                     if rec:
                         f.write(json.dumps(rec) + "\n")

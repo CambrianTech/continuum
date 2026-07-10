@@ -376,14 +376,14 @@ Every number here is rendered from [`benchmarks/RESULTS.jsonl`](benchmarks/RESUL
 
 - **RAW** — the model one-shot against its own `/v1`.  
 - **OURS** — the same weights through the full continuum cognition loop (memory, tools, act→observe, recovery).  
-- **opencode CLI / Hermes CLI** — the same weights driven by the coding CLIs people actually use, on the same tasks + grader.  
-- **Δ vs opencode / Δ vs Hermes** — points OURS beats each competing local coding CLI by, on identical weights. **This is the claim.**
+- **opencode / Hermes / aider CLI** — the same weights driven by the coding CLIs people actually use, on the same tasks + grader.  
+- **Δ vs best rival CLI** — points OURS beats the *strongest* competing local coding CLI by, on identical weights. **This is the claim.**
 
 ### Lab-grade (the headline)
 
 **SWE-bench Lite** — real GitHub issues in real repos, official swebench scorer
 
-| model | RAW | OURS | opencode CLI | Hermes CLI | Δ vs opencode | Δ vs Hermes |
+| model | RAW | OURS | opencode | Hermes | aider | Δ vs best rival |
 |---|---|---|---|---|---|---|
 | **Devstral-Small-24B** | — | ***pending*** | — | — | — | — |
 
@@ -391,15 +391,15 @@ Every number here is rendered from [`benchmarks/RESULTS.jsonl`](benchmarks/RESUL
 
 **HumanEval-Rust** — function-level, rustc compile+run graded
 
-| model | RAW | OURS | opencode CLI | Hermes CLI | Δ vs opencode | Δ vs Hermes |
+| model | RAW | OURS | opencode | Hermes | aider | Δ vs best rival |
 |---|---|---|---|---|---|---|
 | **Devstral-Small-24B** | 100% (5/5) | **100% (5/5)** | — | — | — | — |
-| **Qwen2.5-Coder-14B** | 90% (18/20) | **90% (18/20)** | 75% (15/20) | — | **+15** | — |
+| **Qwen2.5-Coder-14B** | 90% (18/20) | **90% (18/20)** | 75% (15/20) | — | — | **+15** vs opencode |
 | **Hermes-3-Llama-3.1-8B** | — | **52% (21/40)** | — | — | — | — |
 
 **Hard-Rust** — expression evaluators + algorithmics
 
-| model | RAW | OURS | opencode CLI | Hermes CLI | Δ vs opencode | Δ vs Hermes |
+| model | RAW | OURS | opencode | Hermes | aider | Δ vs best rival |
 |---|---|---|---|---|---|---|
 | **Qwen2.5-Coder-14B** | — | ***excluded¹*** | — | — | — | — |
 | **Devstral-Small-24B** | 38% (3/8) | **38% (3/8)** | — | — | — | — |
@@ -407,7 +407,7 @@ Every number here is rendered from [`benchmarks/RESULTS.jsonl`](benchmarks/RESUL
 
 **Frontier-Rust** — Dijkstra · Levenshtein · LIS · topo-sort · bignum · calc · regex
 
-| model | RAW | OURS | opencode CLI | Hermes CLI | Δ vs opencode | Δ vs Hermes |
+| model | RAW | OURS | opencode | Hermes | aider | Δ vs best rival |
 |---|---|---|---|---|---|---|
 | **Devstral-Small-24B** | — | ***pending*** | — | — | — | — |
 
