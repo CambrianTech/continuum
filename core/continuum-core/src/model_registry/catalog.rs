@@ -456,6 +456,11 @@ pub fn models() -> Vec<Model> {
                 Capability::Streaming,
             ],
             gguf_hint: Some("huggingface.co/unsloth/Devstral-Small-2507-GGUF"),
+            // The trainable HF safetensors base (mistralai upstream) — what the
+            // genome forge trains LoRA against; the GGUF above is serving-only.
+            // Without this, genome/job-create fails loud ("no hf_source"), which
+            // blocked the first lived-curriculum train (recall-trust, 2026-07-10).
+            hf_source: Some("mistralai/Devstral-Small-2507"),
             chat_template: None,
             multi_party_strategy: MultiPartyChatStrategy::ProperChatMlSingleParty,
             stop_sequences: &["</s>"],
