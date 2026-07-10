@@ -56,3 +56,17 @@ Keys land → verify allocate sees them → spawn ONE cloud citizen (deepseek or
 groq first — the legacy-proven good ones) → mentor dynamics in the live room
 (cross-capability curricula: strong-mind corrections become weak-mind training
 pairs and vice versa) → then gaps 2–5 as the population grows.
+
+## Doctrine (Joel, 2026-07-10) — cost is the ONLY new axis
+
+Cloud = the same lane as local with one extra number: token price (local = 0).
+Therefore:
+- **Free-first is a hard invariant**: the system operates out of the box
+  entirely free, no gating. Cloud is additive, never load-bearing.
+- **Budgeting is financial and user-preferenced**: a spend ceiling on the
+  Model row's price columns; the governor treats dollars like it treats VRAM.
+- **Cloud's role is teacher/mentor**: paid tokens preferentially land on
+  TEACHING moments (curriculum synthesis, review, correction of locals) —
+  where they convert into permanent local weights and engrams. Every cloud
+  turn should leave residue. The goal is making them obsolete; until then,
+  extract knowledge and experience — distillation as exit strategy.
