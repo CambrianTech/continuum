@@ -402,21 +402,31 @@ impl ActionCommand for BenchmarkRun {
         })?;
 
         // The eval runs a whole eval_set and has no task limit; a full 164-task agentic run is
-        // impractical live. Resolve the gym CONTENT (embedded or on-disk), slice to `limit`,
-        // and hand the eval a temp file. Default a small, quick slice.
-        let (_gym_name, content) =
+        // impractical live. Resolve the gym CONTENT (embedded or on-disk), slice to `limit`, and
+        // hand the eval the parsed tasks INLINE. Inline `tasks` takes precedence over `eval_set`
+        // and — unlike a temp-file path — carries no CWD dependence and no cleanup race: a DETACHED
+        // run's eval executes in a spawned task that outlives this handler, so a temp file we wrote
+        // here and removed on return (the old shape) had already vanished by the time the detached
+        // eval tried to read it ("no such file on disk"). Inline tasks live in the params moved
+        // into the spawned task — they cannot go missing. Default a small, quick slice.
+        let (gym_name, content) =
             crate::cognition::gym::resolve_gym(eval_set).map_err(CommandError::Invalid)?;
         let limit = p.limit.unwrap_or(20) as usize;
-        let sliced: String = content
+        let sliced_tasks: Vec<crate::cognition::eval::EvalTask> = content
             .lines()
             .filter(|l| !l.trim().is_empty())
             .take(limit)
-            .collect::<Vec<_>>()
-            .join("\n");
-        let tmp = std::env::temp_dir()
-            .join(format!("benchmark_{}_{}.jsonl", spec.name, std::process::id()));
-        std::fs::write(&tmp, &sliced)
-            .map_err(|e| CommandError::Internal(format!("benchmark slice write failed: {e}")))?;
+            .enumerate()
+            .map(|(n, l)| {
+                serde_json::from_str::<crate::cognition::eval::EvalTask>(l).map_err(|e| {
+                    CommandError::Invalid(format!(
+                        "benchmark '{}' gym ({gym_name}) line {}: malformed EvalTask: {e}",
+                        spec.name,
+                        n + 1,
+                    ))
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
 
         // Delegate to the ONE grader (cognition/eval) — never reimplement it here.
         let result = CognitionEval
@@ -426,8 +436,8 @@ impl ActionCommand for BenchmarkRun {
                     persona_id: p.persona_id,
                     gene: None,
                     room_id: None,
-                    tasks: None,
-                    eval_set: Some(tmp.display().to_string()),
+                    tasks: Some(sliced_tasks),
+                    eval_set: None,
                     base_model_id: p.base_model_id.clone(),
                     reviewers: p.reviewers,
                     detach: p.detach,
@@ -442,9 +452,7 @@ impl ActionCommand for BenchmarkRun {
                     }),
                 },
             )
-            .await;
-        let _ = std::fs::remove_file(&tmp);
-        let result = result?;
+            .await?;
 
         Ok(BenchmarkRunResult {
             benchmark: spec.name.to_string(),
