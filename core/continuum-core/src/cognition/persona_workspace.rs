@@ -153,6 +153,14 @@ pub struct GroundingSource {
     /// bg via [`GroundingSource::defer_tolerant`], having decided its first-tick
     /// miss is tolerable).
     pub deferrability: Deferrability,
+    /// CAPABILITY CONSISTENCY: this grounding DESCRIBES the persona's hands
+    /// (tool paths, "drill in with code/list…"), so it must only be delivered
+    /// into a cycle that HAS hands. Glass-boxed 2026-07-10: every spoken-graded
+    /// exam prompt carried the workspace-map telling her to use tools that were
+    /// stripped for the exam — the RAG lying to her about her own affordances.
+    /// A perception surface must never describe affordances that don't exist
+    /// this cycle. `false` (default) = capability-neutral grounding.
+    pub requires_hands: bool,
 }
 
 impl GroundingSource {
@@ -164,7 +172,15 @@ impl GroundingSource {
             source,
             policy: SaliencePolicy::StandingFraming,
             deferrability: Deferrability::ColdStartCritical,
+            requires_hands: false,
         }
+    }
+
+    /// Mark this grounding as DESCRIBING the persona's hands — it is dropped
+    /// from any cycle whose tools are stripped (see field docs).
+    pub fn requires_hands(mut self) -> Self {
+        self.requires_hands = true;
+        self
     }
 
     /// Retrieved grounding (engram, conversation) — competes on relevance.
@@ -173,6 +189,7 @@ impl GroundingSource {
             source,
             policy: SaliencePolicy::Retrieved,
             deferrability: Deferrability::ColdStartCritical,
+            requires_hands: false,
         }
     }
 
@@ -527,6 +544,11 @@ impl PersonaWorkspaceRegistry {
         // [[adaptive-tool-surface-meets-you-in-the-middle]], [[eval-is-an-exam-not-a-life]].
         if !with_tools {
             cfg.tool_executor = None;
+            // Capability consistency: grounding that DESCRIBES her hands
+            // (workspace-map's tool paths + "drill in with code/list…") must not
+            // be delivered into a hands-stripped cycle — a perception surface
+            // never describes affordances that don't exist this cycle.
+            cfg.grounding_sources.retain(|g| !g.requires_hands);
         }
         Some(build_workspace_cycle(cfg))
     }
@@ -566,6 +588,11 @@ impl PersonaWorkspaceRegistry {
         // Speak-only for spoken-graded exams (see `fork_eval_cycle` for why).
         if !with_tools {
             cfg.tool_executor = None;
+            // Capability consistency: grounding that DESCRIBES her hands
+            // (workspace-map's tool paths + "drill in with code/list…") must not
+            // be delivered into a hands-stripped cycle — a perception surface
+            // never describes affordances that don't exist this cycle.
+            cfg.grounding_sources.retain(|g| !g.requires_hands);
         }
         Some(build_workspace_cycle(cfg))
     }
@@ -959,6 +986,88 @@ mod tests {
         // retrieved() (the other constructor) also defaults to the safe side.
         let retrieved = GroundingSource::retrieved(Arc::clone(&s));
         assert_eq!(retrieved.deferrability, Deferrability::ColdStartCritical);
+    }
+
+    // what this catches: capability consistency on the eval fork — grounding
+    // marked requires_hands (workspace-map: "drill in with code/list and
+    // code/tree") must be DROPPED from a tools-stripped fork and KEPT on a
+    // handed fork. Glass-boxed 2026-07-10: every captured spoken-exam prompt
+    // (484/484) carried the workspace-map telling her to use tools that were
+    // stripped for the exam — the RAG lying to her about her own affordances.
+    #[tokio::test]
+    async fn eval_fork_drops_hands_describing_grounding_when_tools_stripped() {
+        const HANDS_MARKER: &str = "drill in with code/list and code/tree";
+        let registry = PersonaWorkspaceRegistry::new();
+        let persona = Uuid::new_v4();
+        // SlowGrounding's fixed roster line stands in for capability-NEUTRAL
+        // grounding; the hands-describing source is its own tiny stub.
+        struct HandsMap;
+        #[async_trait::async_trait]
+        impl RagSource for HandsMap {
+            fn source_id(&self) -> &'static str {
+                "workspace-map"
+            }
+            async fn deliver(
+                &self,
+                _ctx: &crate::persona::rag_budget::RagContext,
+                _budget: u32,
+                resolution: crate::persona::rag_budget::ResolutionPreference,
+            ) -> crate::persona::rag_budget::RagDelivery {
+                crate::persona::rag_budget::RagDelivery {
+                    source_id: "workspace-map".to_string(),
+                    items: vec![crate::persona::rag_budget::RagItem {
+                        content: format!("workspace layout — {HANDS_MARKER}"),
+                        tokens: 12,
+                        metadata: serde_json::Value::Null,
+                    }],
+                    tokens_used: 12,
+                    continuation: None,
+                    resolution_used: resolution,
+                }
+            }
+            async fn deliver_continuation(
+                &self,
+                _ctx: &crate::persona::rag_budget::RagContext,
+                _cursor: crate::persona::rag_budget::ContinuationCursor,
+                _budget: u32,
+            ) -> Option<crate::persona::rag_budget::RagDelivery> {
+                None
+            }
+        }
+        let mut cfg = cfg_for(persona);
+        cfg.grounding_sources = vec![
+            GroundingSource::framing(Arc::new(HandsMap)).requires_hands(),
+            GroundingSource::framing(Arc::new(SlowGrounding { delay_ms: 0 })),
+        ];
+        registry.register_from_cfg(cfg);
+
+        // Spoken exam (no hands): the workspace-map must not reach her mind.
+        let spoken = registry
+            .fork_eval_cycle(&persona, false)
+            .expect("template retained");
+        let ws = spoken.run("proctor: reverse a string in Rust").await;
+        assert!(
+            !ws.perceived().contains(HANDS_MARKER),
+            "tool-stripped fork must NOT perceive hands-describing grounding:\n{}",
+            ws.perceived()
+        );
+        // Neutral grounding survives the filter — only hands-claims are dropped.
+        assert!(
+            ws.perceived().contains("roster:"),
+            "capability-neutral grounding must survive the hands filter:\n{}",
+            ws.perceived()
+        );
+
+        // Handed exam: the map is real guidance and must be delivered.
+        let handed = registry
+            .fork_eval_cycle(&persona, true)
+            .expect("template retained");
+        let ws = handed.run("proctor: reverse a string in Rust").await;
+        assert!(
+            ws.perceived().contains(HANDS_MARKER),
+            "handed fork must keep the workspace-map:\n{}",
+            ws.perceived()
+        );
     }
 
     /// A grounding RagSource whose deliver is deliberately slow — models the real

@@ -814,11 +814,15 @@ pub async fn materialize_adapters(
                     .defer_tolerant(),
                     // WHERE code lives — the real workspace layout as enriching
                     // framing, so a reasoner can avoid blind globs like `src/**/*.rs`
-                    // from the prompt alone. Defer-tolerant.
+                    // from the prompt alone. Defer-tolerant. requires_hands: the
+                    // block SAYS "drill in with code/list and code/tree" — it must
+                    // vanish from a tool-stripped cycle (spoken exams) or the RAG
+                    // is lying to her about her own affordances.
                     crate::cognition::persona_workspace::GroundingSource::framing(
                         workspace_map_source,
                     )
-                    .defer_tolerant(),
+                    .defer_tolerant()
+                    .requires_hands(),
                     // The room's pinned shared documents (airc wall) as
                     // enriching framing — the plan/instructions/recipe that
                     // shape HOW the persona works here, read from the exact
