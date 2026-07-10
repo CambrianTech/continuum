@@ -62,11 +62,12 @@ pub fn known_benchmarks() -> &'static [BenchmarkSpec] {
         BenchmarkSpec {
             name: "frontier-rs",
             description: "Frontier Rust — real algorithms (Levenshtein, Dijkstra, O(n log n) LIS, \
-                          topological sort, arbitrary-precision add, precedence-climbing calculator, \
-                          `.`/`*` regex). 7 tasks; the strive-toward tier where the write→compile→ \
-                          test→fix loop earns problems a small model rarely nails one-shot.",
+                          topo-sort, bignum add, precedence calculator, regex, word-break, min-window, \
+                          N-queens count, coin-change, median-of-two-sorted). 12 tasks; the strive-toward \
+                          tier where the write→compile→test→fix loop earns problems a small model rarely \
+                          nails one-shot.",
             grader: Grader::Rust,
-            tasks: 7,
+            tasks: 12,
             eval_set: Some("frontier-rs.jsonl"),
             source_url: None,
         },
@@ -110,6 +111,65 @@ pub fn known_benchmarks() -> &'static [BenchmarkSpec] {
             tasks: 300,
             eval_set: None,
             source_url: Some("https://huggingface.co/datasets/princeton-nlp/SWE-bench_Lite"),
+        },
+        BenchmarkSpec {
+            name: "swe-bench-verified",
+            description: "SWE-bench Verified — the 500 human-validated instances (OpenAI). The current \
+                          agentic headline the frontier labs report; solution = a repo patch that passes \
+                          the real test suite. Official swebench Docker scorer.",
+            grader: Grader::Python,
+            tasks: 500,
+            eval_set: None,
+            source_url: Some("https://huggingface.co/datasets/princeton-nlp/SWE-bench_Verified"),
+        },
+        BenchmarkSpec {
+            name: "bigcodebench",
+            description: "BigCodeBench — practical tasks with real library calls + rich function-call \
+                          reasoning (harder + more realistic than HumanEval). Complete + Instruct splits.",
+            grader: Grader::Python,
+            tasks: 1140,
+            eval_set: None,
+            source_url: Some("https://huggingface.co/datasets/bigcode/bigcodebench"),
+        },
+        BenchmarkSpec {
+            name: "evalplus",
+            description: "EvalPlus (HumanEval+ / MBPP+) — the same prompts with ~80x more test cases, \
+                          catching the subtle-bug passes HumanEval misses. The contamination-resistant \
+                          upgrade of the classic function benchmarks.",
+            grader: Grader::Python,
+            tasks: 164,
+            eval_set: None,
+            source_url: Some("https://huggingface.co/datasets/evalplus/humanevalplus"),
+        },
+        BenchmarkSpec {
+            name: "apps",
+            description: "APPS — 10,000 competitive-programming problems (Introductory / Interview / \
+                          Competition). Genuinely hard: full-program synthesis graded on hidden test \
+                          cases. The reach tier for the grid.",
+            grader: Grader::Python,
+            tasks: 10_000,
+            eval_set: None,
+            source_url: Some("https://huggingface.co/datasets/codeparrot/apps"),
+        },
+        BenchmarkSpec {
+            name: "cruxeval",
+            description: "CRUXEval — code REASONING, not generation: predict a function's output for a \
+                          given input (and the inverse). Measures the model's execution model, which \
+                          the recovery loop + tools should dominate.",
+            grader: Grader::Python,
+            tasks: 800,
+            eval_set: None,
+            source_url: Some("https://huggingface.co/datasets/cruxeval-org/cruxeval"),
+        },
+        BenchmarkSpec {
+            name: "aider-polyglot",
+            description: "Aider polyglot — 225 hard Exercism problems across 6 languages, graded by \
+                          EDITING existing files (not writing from scratch). The real-workflow edit \
+                          benchmark; plays directly to code/edit + the recovery loop.",
+            grader: Grader::Python,
+            tasks: 225,
+            eval_set: None,
+            source_url: Some("https://github.com/Aider-AI/polyglot-benchmark"),
         },
     ]
 }
