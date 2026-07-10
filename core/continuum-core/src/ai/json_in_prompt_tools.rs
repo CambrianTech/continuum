@@ -346,7 +346,9 @@ impl ToolCallFormat for NarratedScriptFormat {
         let mut out = Vec::new();
         for fence in fenced_blocks(text) {
             let narration = trailing_narration(&text[..fence.open]);
-            if !first_person_intent(&narration) || addressed_to_peer(&narration) {
+            // Peer-addressed framing (a review, a request) vetoes ANY lift — never
+            // execute quoted code on someone's behalf.
+            if addressed_to_peer(&narration) {
                 continue;
             }
             // The fence body is ITSELF a rendered tool call — the model illustrated
@@ -372,7 +374,11 @@ impl ToolCallFormat for NarratedScriptFormat {
                 }
                 continue;
             }
-            if fence_is_shell(&fence) && !fence.body.trim().is_empty() {
+            // Shell execution needs EXPLICIT first-person intent ("I'll run…") — a
+            // shell command is higher-stakes than writing a file she's presenting, so
+            // it never lifts from a bare fence (file-authoring is gated by the
+            // authoring framing inside extract_created_file_name above).
+            if first_person_intent(&narration) && fence_is_shell(&fence) && !fence.body.trim().is_empty() {
                 out.push(ToolCall {
                     id: format!("jip-{}", Uuid::new_v4()),
                     name: "code/shell".to_string(),
@@ -543,23 +549,56 @@ fn addressed_to_peer(narration: &str) -> bool {
     MARKERS.iter().any(|m| narration.contains(m))
 }
 
-/// Extract the file name from creation framing: "create/write a file called|named
-/// `X`" (backtick-, quote-, or whitespace-delimited). None → not a file creation.
+/// Extract the target file name from file-authoring narration. Two shapes:
+///   1. explicit "create/write a file called|named `X`"
+///   2. any save/write/create intent + a BACKTICK-QUOTED filename-with-extension
+///      anywhere in the narration (`reverse.rs`, `lib.rs`), e.g. "Here's the code for
+///      `reverse.rs`:", "I've saved this to `reverse.rs`", "the `wordstats.rs` program".
+/// Shape 2 was added after glass-boxing Asha 2026-07-10: she narrated "Here's the code
+/// for `reverse.rs`" + a fence and asserted "I've saved this to reverse.rs" — but the
+/// old detector only matched "file called/named", so nothing lifted and the save was
+/// confabulated. Meeting the idiom ([[local-first-tool-call-robustness-is-the-differentiator]]).
+/// None → not a file authoring (the shell/other paths handle it).
 fn extract_created_file_name(narration: &str) -> Option<String> {
-    if !(narration.contains("create") || narration.contains("write")) {
+    const AUTHOR_INTENT: &[&str] =
+        &["create", "write", "save", "here's the", "here is the", "code for", "program"];
+    if !AUTHOR_INTENT.iter().any(|k| narration.contains(k)) {
         return None;
     }
-    let idx = narration
+    // Shape 1: "file called|named `X`".
+    if let Some(idx) = narration
         .find("file called")
         .map(|i| i + "file called".len())
-        .or_else(|| narration.find("file named").map(|i| i + "file named".len()))?;
-    let after = narration[idx..].trim_start();
-    let name: String = after
-        .trim_start_matches(['`', '"', '\''])
-        .chars()
-        .take_while(|c| !c.is_whitespace() && !matches!(c, '`' | '"' | '\'' | ',' | ':' | ';'))
-        .collect();
-    (!name.is_empty() && name.contains('.')).then_some(name)
+        .or_else(|| narration.find("file named").map(|i| i + "file named".len()))
+    {
+        let after = narration[idx..].trim_start();
+        let name: String = after
+            .trim_start_matches(['`', '"', '\''])
+            .chars()
+            .take_while(|c| !c.is_whitespace() && !matches!(c, '`' | '"' | '\'' | ',' | ':' | ';'))
+            .collect();
+        if !name.is_empty() && name.contains('.') {
+            return Some(name);
+        }
+    }
+    // Shape 2: the first backtick-quoted `filename.ext` token in the narration. A
+    // filename = has a dot with a short alphanumeric extension and no path separator
+    // spaces, so prose in backticks (`the value`) is not mistaken for a file.
+    for seg in narration.split('`').skip(1).step_by(2) {
+        let tok = seg.trim();
+        if let Some((stem, ext)) = tok.rsplit_once('.') {
+            let ext_ok = !ext.is_empty()
+                && ext.len() <= 5
+                && ext.chars().all(|c| c.is_ascii_alphanumeric());
+            let stem_ok = !stem.is_empty()
+                && !tok.contains(' ')
+                && tok.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '/'));
+            if ext_ok && stem_ok {
+                return Some(tok.to_string());
+            }
+        }
+    }
+    None
 }
 
 /// Is this fence a runnable shell block? Either shell-tagged, or untagged with a
@@ -985,6 +1024,29 @@ Please provide the output so I can review it.";
         assert_eq!(c3[0].name, "code/write");
         assert_eq!(c3[0].input["file_path"], "lib.rs");
         assert!(c3[0].input["content"].as_str().unwrap().contains("pub fn add"));
+    }
+
+    // what this catches: the file-authoring idiom coverage gap (#122, glass-boxed
+    // Asha 2026-07-10). "Here's the code for `reverse.rs`:" + fence, and "I've saved
+    // this to `reverse.rs`", must lift to code/write — the old detector only matched
+    // "file called/named X", so her save was confabulated (asserted, never executed).
+    // Prose in backticks (`the value`) must NOT be mistaken for a filename.
+    #[test]
+    fn backtick_filename_under_author_intent_lifts_to_write() {
+        let asha = "Sure thing! Here's the code for `reverse.rs`:\n\
+```rust\nuse std::env;\nfn main() { let a: Vec<String> = env::args().collect(); println!(\"{}\", a[1].chars().rev().collect::<String>()); }\n```";
+        let c = parse_tool_calls(asha);
+        assert_eq!(c.len(), 1);
+        assert_eq!(c[0].name, "code/write");
+        assert_eq!(c[0].input["file_path"], "reverse.rs");
+        assert!(c[0].input["content"].as_str().unwrap().contains("env::args"));
+        // A subdirectory path filename lifts too.
+        let sub = "I'll write the program. Here's `work-x/main.rs`:\n```rust\nfn main(){}\n```";
+        assert_eq!(parse_tool_calls(sub)[0].input["file_path"], "work-x/main.rs");
+        // Prose in backticks with intent words nearby must NOT become a file write.
+        let prose = "I'll write a clear explanation of `the design` for you.\n```text\nsome notes\n```";
+        assert!(parse_tool_calls(prose).is_empty(),
+            "backtick prose with no filename-shaped token must not lift as a write");
     }
 
     // what this catches: EDIT is crucial (Joel 2026-07-10) — a persona that can only
