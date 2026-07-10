@@ -100,12 +100,34 @@ impl RoomBoardReader for airc_lib::Airc {
 /// Persona-bound source reading the current room's whole work board.
 pub struct RoomBoardSource {
     persona_id: uuid::Uuid,
+    /// The room whose board this source grounds. The reader answers for the
+    /// persona's airc connection's room; this names it explicitly so delivery
+    /// can be scoped to the TURN'S context (the room gate in `deliver`). Bound
+    /// at assembly from the room the persona joined at bootstrap
+    /// (`identity.default_room`). `None` = unscoped (legacy/test construction):
+    /// deliver regardless of turn context, exactly the pre-gate behavior.
+    room_id: Option<uuid::Uuid>,
     reader: Arc<dyn RoomBoardReader>,
 }
 
 impl RoomBoardSource {
     pub fn new(persona_id: uuid::Uuid, reader: Arc<dyn RoomBoardReader>) -> Self {
-        Self { persona_id, reader }
+        Self {
+            persona_id,
+            room_id: None,
+            reader,
+        }
+    }
+
+    /// Bind this source to the room its reader answers for. A context-stamped
+    /// turn (`ctx.airc_room`) in ANY other context — another room, or a synthetic
+    /// context like the eval fork's nil room — then gets an empty delivery
+    /// instead of this room's board (the exam-bleed fix: stale board imperatives
+    /// injected into a coding exam derailed agentically-trained models).
+    /// [[identity-context-session-three-axes]]
+    pub fn for_room(mut self, room_id: uuid::Uuid) -> Self {
+        self.room_id = Some(room_id);
+        self
     }
 
     fn empty() -> RagDelivery {
@@ -155,6 +177,15 @@ impl RagSource for RoomBoardSource {
         // Persona-scoped: a cross-persona ctx gets nothing (defense in depth,
         // same shape as the wall / active-work / roster sources).
         if ctx.persona_id != self.persona_id {
+            return Self::empty();
+        }
+        // Room-scoped: a context-stamped turn in a DIFFERENT context than the
+        // room this board belongs to gets nothing — room A's kanban must not
+        // ground a turn in room B, nor a synthetic context (the eval fork's nil
+        // room). The ONE shared gate (`room_scope_allows`) probes every abstain
+        // with both rooms named, so a mis-binding shows in the log instead of a
+        // silent blank grounding block. [[identity-context-session-three-axes]]
+        if !crate::persona::rag_budget::room_scope_allows(self.room_id, ctx, SOURCE_ID) {
             return Self::empty();
         }
 
@@ -504,5 +535,48 @@ mod tests {
         );
         assert!(delivery.items.len() < 50, "truncated below the full board");
         assert!(delivery.continuation.is_none());
+    }
+
+    // what this catches: the exam-bleed regression (glass-boxed live 2026-07-10,
+    // Hermes-8B OURS 38% < RAW 52%) — a room-BOUND board delivering into a turn
+    // in a DIFFERENT context. A turn stamped with another room (or the eval
+    // fork's nil room) must get an empty delivery, never this room's cards +
+    // work/claim invitations; the SAME room still delivers; an UNSTAMPED ctx
+    // (None — background/legacy) keeps pre-gate behavior.
+    #[tokio::test]
+    async fn room_bound_board_abstains_outside_its_room() {
+        let home = uuid::Uuid::new_v4();
+        let p = persona();
+        let reader = Arc::new(StubReader::new(snapshot(vec![card(
+            "write wordstats",
+            CardState::Open,
+            None,
+        )])));
+        let source = RoomBoardSource::new(p, reader).for_room(home);
+
+        // Turn stamped with the SAME room → delivers.
+        let same = RagContext::for_persona_in_room(p, 1_000, home);
+        assert!(
+            !source.deliver(&same, 500, ResolutionPreference::Raw).await.items.is_empty(),
+            "same-room turn must still receive the board"
+        );
+        // Turn stamped with a DIFFERENT room → abstains.
+        let other = RagContext::for_persona_in_room(p, 1_000, uuid::Uuid::new_v4());
+        assert!(
+            source.deliver(&other, 500, ResolutionPreference::Raw).await.items.is_empty(),
+            "another room's turn must NOT receive this room's board"
+        );
+        // The eval fork's synthetic nil context → abstains (the exam-bleed fix).
+        let exam = RagContext::for_persona_in_room(p, 1_000, uuid::Uuid::nil());
+        assert!(
+            source.deliver(&exam, 500, ResolutionPreference::Raw).await.items.is_empty(),
+            "a synthetic exam context must NOT receive the room board"
+        );
+        // Unstamped ctx (None) → pre-gate behavior (delivers).
+        let unstamped = RagContext::for_persona(p, 1_000);
+        assert!(
+            !source.deliver(&unstamped, 500, ResolutionPreference::Raw).await.items.is_empty(),
+            "an unstamped ctx keeps legacy behavior"
+        );
     }
 }

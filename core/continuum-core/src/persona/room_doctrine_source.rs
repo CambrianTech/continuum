@@ -73,12 +73,29 @@ impl AircDoctrineReader for airc_lib::Airc {
 /// `AircDoctrineReader`.
 pub struct RoomDoctrineSource {
     persona_id: uuid::Uuid,
+    /// The room whose doctrine this source grounds — see the room gate in
+    /// `deliver` and [`for_room`](Self::for_room). `None` = unscoped
+    /// (legacy/test construction): pre-gate behavior.
+    room_id: Option<uuid::Uuid>,
     reader: Arc<dyn AircDoctrineReader>,
 }
 
 impl RoomDoctrineSource {
     pub fn new(persona_id: uuid::Uuid, reader: Arc<dyn AircDoctrineReader>) -> Self {
-        Self { persona_id, reader }
+        Self {
+            persona_id,
+            room_id: None,
+            reader,
+        }
+    }
+
+    /// Bind this source to the room its reader answers for, so a context-stamped
+    /// turn in ANY other context (another room, the eval fork's nil room) gets an
+    /// empty delivery instead of this room's doctrine (the exam-bleed fix).
+    /// [[identity-context-session-three-axes]]
+    pub fn for_room(mut self, room_id: uuid::Uuid) -> Self {
+        self.room_id = Some(room_id);
+        self
     }
 
     /// Fit the doctrine body to `budget` tokens. A doctrine is a single
@@ -139,6 +156,11 @@ impl RagSource for RoomDoctrineSource {
 
         // Persona-scoped (defense in depth, same shape as the roster).
         if ctx.persona_id != self.persona_id {
+            return empty(ResolutionPreference::Placeholder);
+        }
+        // Room-scoped: the ONE shared gate (`room_scope_allows`) — probes every
+        // abstain with both rooms named (see RoomBoardSource for the rationale).
+        if !crate::persona::rag_budget::room_scope_allows(self.room_id, ctx, SOURCE_ID) {
             return empty(ResolutionPreference::Placeholder);
         }
 

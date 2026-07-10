@@ -133,12 +133,30 @@ impl AircRosterReader for airc_lib::Airc {
 /// `AircRosterReader`.
 pub struct RoomRosterSource {
     persona_id: uuid::Uuid,
+    /// The room whose presence this source grounds — see the room gate in
+    /// `deliver` and [`for_room`](Self::for_room). `None` = unscoped
+    /// (legacy/test construction): pre-gate behavior.
+    room_id: Option<uuid::Uuid>,
     reader: Arc<dyn AircRosterReader>,
 }
 
 impl RoomRosterSource {
     pub fn new(persona_id: uuid::Uuid, reader: Arc<dyn AircRosterReader>) -> Self {
-        Self { persona_id, reader }
+        Self {
+            persona_id,
+            room_id: None,
+            reader,
+        }
+    }
+
+    /// Bind this source to the room its reader answers for, so a context-stamped
+    /// turn in ANY other context (another room, the eval fork's nil room) gets an
+    /// empty delivery instead of this room's roster — a turn must never be told
+    /// who is present in a room it isn't in (the exam-bleed fix).
+    /// [[identity-context-session-three-axes]]
+    pub fn for_room(mut self, room_id: uuid::Uuid) -> Self {
+        self.room_id = Some(room_id);
+        self
     }
 
     /// Format one present citizen as a roster grounding line from the neutral
@@ -202,6 +220,17 @@ impl RagSource for RoomRosterSource {
         // Persona-scoped: a cross-persona ctx gets nothing (defense in
         // depth, same shape as AircRagSource).
         if ctx.persona_id != self.persona_id {
+            return RagDelivery {
+                source_id: SOURCE_ID.to_string(),
+                items: Vec::new(),
+                tokens_used: 0,
+                continuation: None,
+                resolution_used: ResolutionPreference::Placeholder,
+            };
+        }
+        // Room-scoped: the ONE shared gate (`room_scope_allows`) — probes every
+        // abstain with both rooms named (see RoomBoardSource for the rationale).
+        if !crate::persona::rag_budget::room_scope_allows(self.room_id, ctx, SOURCE_ID) {
             return RagDelivery {
                 source_id: SOURCE_ID.to_string(),
                 items: Vec::new(),

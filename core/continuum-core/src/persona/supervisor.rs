@@ -628,7 +628,12 @@ pub async fn materialize_adapters(
             Arc::new(crate::persona::room_roster_source::RoomRosterSource::new(
                 identity.peer_id.as_uuid(),
                 runtime.clone(),
-            ));
+            )
+                // Bound to the room she joined at bootstrap — the room her airc
+                // connection (the reader) answers for. The room gate in deliver then
+                // keeps this grounding out of turns in OTHER contexts (another room,
+                // the eval fork's nil room) — the exam-bleed fix (#127).
+                .for_room(identity.default_room));
         // Clone the Arc: the SAME source feeds both the legacy compose path
         // (set_roster_source) and the brain (as a bridged grounding faculty,
         // below). One source of truth, two consumers during the cutover
@@ -642,7 +647,12 @@ pub async fn materialize_adapters(
             Arc::new(crate::persona::room_doctrine_source::RoomDoctrineSource::new(
                 identity.peer_id.as_uuid(),
                 runtime.clone(),
-            ));
+            )
+                // Bound to the room she joined at bootstrap — the room her airc
+                // connection (the reader) answers for. The room gate in deliver then
+                // keeps this grounding out of turns in OTHER contexts (another room,
+                // the eval fork's nil room) — the exam-bleed fix (#127).
+                .for_room(identity.default_room));
         // Same dual-wire as the roster: one Arc, legacy path + brain faculty.
         cognition.set_doctrine_source(doctrine_source.clone());
 
@@ -684,7 +694,12 @@ pub async fn materialize_adapters(
             Arc::new(crate::persona::wall_source::WallSource::new(
                 identity.peer_id.as_uuid(),
                 runtime.clone(),
-            ));
+            )
+                // Bound to the room she joined at bootstrap — the room her airc
+                // connection (the reader) answers for. The room gate in deliver then
+                // keeps this grounding out of turns in OTHER contexts (another room,
+                // the eval fork's nil room) — the exam-bleed fix (#127).
+                .for_room(identity.default_room));
 
         // Room-board source: grounds the persona in the CURRENT ROOM's WHOLE
         // work board — every card, its column, priority, and owner — read live
@@ -701,7 +716,12 @@ pub async fn materialize_adapters(
             Arc::new(crate::persona::room_board_source::RoomBoardSource::new(
                 identity.peer_id.as_uuid(),
                 runtime.clone(),
-            ));
+            )
+                // Bound to the room she joined at bootstrap — the room her airc
+                // connection (the reader) answers for. The room gate in deliver then
+                // keeps this grounding out of turns in OTHER contexts (another room,
+                // the eval fork's nil room) — the exam-bleed fix (#127).
+                .for_room(identity.default_room));
 
         // Disk-backed, per-persona memory: open <home>/engrams.sqlite and
         // rehydrate prior engrams + recall metadata, so memory SURVIVES restart.

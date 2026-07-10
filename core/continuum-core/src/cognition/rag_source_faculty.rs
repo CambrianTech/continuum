@@ -191,9 +191,19 @@ impl Faculty for RagSourceFaculty {
     // state, not the burst, so the bridge does not pass the world_state as a
     // query; a future query-conditioned source would extend RagContext, not this
     // seam.
-    async fn contribute(&self, _ws: &Workspace) -> Option<Contribution> {
+    async fn contribute(&self, ws: &Workspace) -> Option<Contribution> {
         let now = (self.clock)();
-        let ctx = RagContext::for_persona(self.persona_id, now);
+        // Thread the turn's CONTEXT (the WHERE axis — `Workspace::room_id`, the
+        // tick's contextId) into the delivery context, so room-scoped sources
+        // ground THE TURN'S room, never wherever they happened to be bound at
+        // build time. This is what keeps room A's kanban/roster/doctrine out of
+        // a turn in room B — and out of a synthetic context like the eval fork's
+        // nil room (the exam-bleed bug: stale board imperatives injected into a
+        // coding exam derailed agentically-trained models; glass-boxed live,
+        // Hermes-8B OURS 38% < RAW 52%). A nil room is deliberately threaded as
+        // Some(nil): it IS a context — one that is no room — so every room-bound
+        // source honestly mismatches and abstains. [[identity-context-session-three-axes]]
+        let ctx = RagContext::for_persona_in_room(self.persona_id, now, ws.room_id);
         let delivery = self
             .source
             .deliver(&ctx, self.budget, ResolutionPreference::Raw)
