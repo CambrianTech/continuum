@@ -394,8 +394,11 @@ Every number here is rendered from [`benchmarks/RESULTS.jsonl`](benchmarks/RESUL
 | model | RAW | OURS | opencode | Hermes | aider | Δ vs best rival |
 |---|---|---|---|---|---|---|
 | **Devstral-Small-24B** | 100% (5/5) | **100% (5/5)** | — | — | — | — |
-| **Qwen2.5-Coder-14B** | 90% (18/20) | **90% (18/20)** | 75% (15/20) | — | — | **+15** vs opencode |
-| **Hermes-3-Llama-3.1-8B** | — | **52% (21/40)** | — | — | — | — |
+| **Qwen2.5-Coder-14B** | 86% (43/50) | **92% (46/50)** | *excluded¹* | — | — | — |
+| **Qwen2.5-Coder-3B** | 32% (13/40) | **72% (29/40)** | *excluded¹* | — | 80% (32/40) | -8 vs aider |
+| **Qwen2.5-Coder-1.5B** | 45% (18/40) | **50% (20/40)** | *excluded¹* | — | 50% (20/40) | ±0 vs aider |
+| **Hermes-3-Llama-3.1-8B** | 52% (21/40) | **38% (15/40)** | *excluded¹* | 22% (9/40) | 48% (19/40) | -10 vs aider |
+| **qwen3.5-4b-code-forged (OURS-forged)** *(we forged it)* | 70% (28/40) | **30% (12/40)** | *excluded¹* | 62% (25/40) | 72% (29/40) | -42 vs aider |
 
 **Hard-Rust** — expression evaluators + algorithmics
 
