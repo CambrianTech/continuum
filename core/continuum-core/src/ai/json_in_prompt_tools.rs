@@ -281,14 +281,22 @@ impl ToolCallFormat for NarratedWriteFormat {
         if !text.contains("code/write") {
             return Vec::new();
         }
-        let (Some(path), Some(content)) =
-            (extract_file_path(text), extract_first_code_fence(text))
-        else {
+        let Some(content) = extract_first_code_fence(text) else {
             return Vec::new();
         };
         if content.trim().is_empty() {
             return Vec::new();
         }
+        // The fence is itself the rendered `code/write(...)` call — recover it AS the
+        // call (real content + path) rather than writing the envelope verbatim into
+        // the file (the sample.txt corruption, #122). Only when the WHOLE naive path
+        // would otherwise mis-extract `file_path` FROM the envelope text.
+        if let Some(call) = recover_call_from_fence_body(&content) {
+            return vec![call];
+        }
+        let Some(path) = extract_file_path(text) else {
+            return Vec::new();
+        };
         vec![ToolCall {
             id: format!("jip-{}", Uuid::new_v4()),
             name: "code/write".to_string(),
@@ -341,6 +349,19 @@ impl ToolCallFormat for NarratedScriptFormat {
             if !first_person_intent(&narration) || addressed_to_peer(&narration) {
                 continue;
             }
+            // The fence body is ITSELF a rendered tool call — the model illustrated
+            // the CALL inside a fence rather than emitting it bare. Lift THAT, not the
+            // envelope-as-content. Glass-boxed live 2026-07-09: Anwen narrated "I'll use
+            // code/write to create sample.txt" then fenced `code/write({"content": …,
+            // "file_path": …})`, and the whole envelope got written verbatim INTO
+            // sample.txt as content. Recover the real intent instead of corrupting the
+            // file. (Precise formats only — a fence of ordinary code never false-parses
+            // as an envelope: it needs the `{"tool_call"|"name","arguments"}` shape or a
+            // `code/write(` call form.)
+            if let Some(call) = recover_call_from_fence_body(&fence.body) {
+                out.push(call);
+                continue;
+            }
             if let Some(path) = extract_created_file_name(&narration) {
                 if !fence.body.trim().is_empty() {
                     out.push(ToolCall {
@@ -361,6 +382,42 @@ impl ToolCallFormat for NarratedScriptFormat {
         }
         out
     }
+}
+
+/// A fenced block whose CONTENT is a rendered tool call (the model illustrated the
+/// call inside a fence). Recover the actual call via the precise formats + the
+/// `code/write("json")` prose call-form. Returns `None` for ordinary code/text — so
+/// a fence of real source is never mistaken for a call.
+fn recover_call_from_fence_body(body: &str) -> Option<ToolCall> {
+    // Precise object formats first (envelope / tagged / bare) — the machine-readable
+    // shapes; ordinary code lacks the `{"tool_call"…}` / `{"name","arguments"}` shape.
+    if let Some(c) = EnvelopeFormat
+        .parse(body)
+        .into_iter()
+        .chain(TaggedFormat.parse(body))
+        .chain(BareFormat.parse(body))
+        .next()
+    {
+        return Some(c);
+    }
+    // The `code/write({ "content": …, "file_path": … })` call-FORM: a JSON object
+    // wrapped in a `<name>( … )` invocation. Pull the inner object and parse its
+    // fields (this is the exact shape that corrupted sample.txt).
+    let trimmed = body.trim();
+    if let Some(rest) = trimmed.strip_prefix("code/write") {
+        let inner = rest.trim_start().strip_prefix('(')?.trim();
+        let obj_end = inner.rfind(')').unwrap_or(inner.len());
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(inner[..obj_end].trim()) {
+            let content = v.get("content").and_then(|c| c.as_str())?;
+            let file_path = v.get("file_path").and_then(|p| p.as_str())?;
+            return Some(ToolCall {
+                id: format!("jip-{}", Uuid::new_v4()),
+                name: "code/write".to_string(),
+                input: serde_json::json!({ "file_path": file_path, "content": content }),
+            });
+        }
+    }
+    None
 }
 
 /// Does this text NARRATE an action the speaker intends to take — a fence preceded
@@ -887,6 +944,36 @@ Please provide the output so I can review it.";
         let calls = parse_tool_calls(with_envelope);
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].name, "ping");
+    }
+
+    // what this catches: the sample.txt corruption (#122, glass-boxed live 2026-07-09).
+    // Anwen narrated "I'll use code/write to create sample.txt" then fenced the RENDERED
+    // call `code/write({"content": …, "file_path": …})` — and the whole envelope got
+    // written verbatim INTO the file as content. A fence body that IS a tool call must
+    // be recovered AS the call, not wrapped; a fence of ordinary code must still write.
+    #[test]
+    fn fenced_rendered_call_is_recovered_not_written_as_content() {
+        let corrupting = "I'll create a file called `sample.txt`:\n\
+```\ncode/write({\n  \"content\": \"hello world\",\n  \"file_path\": \"work-x/sample.txt\"\n})\n```";
+        let calls = parse_tool_calls(corrupting);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].name, "code/write");
+        assert_eq!(calls[0].input["content"], "hello world", "content is the INNER text, not the envelope");
+        assert_eq!(calls[0].input["file_path"], "work-x/sample.txt");
+        // A fenced ENVELOPE with intent narration is likewise recovered as the call.
+        let enveloped = "Let me write it:\n\
+```json\n{\"tool_call\": {\"name\": \"code/write\", \"arguments\": {\"file_path\": \"a.rs\", \"content\": \"fn main(){}\"}}}\n```";
+        let c2 = parse_tool_calls(enveloped);
+        assert_eq!(c2.len(), 1);
+        assert_eq!(c2[0].input["content"], "fn main(){}");
+        // BUT a fence of ordinary code under creation framing still writes verbatim.
+        let real_file = "I'll create a file called `lib.rs`:\n\
+```rust\npub fn add(a: i32, b: i32) -> i32 { a + b }\n```";
+        let c3 = parse_tool_calls(real_file);
+        assert_eq!(c3.len(), 1);
+        assert_eq!(c3[0].name, "code/write");
+        assert_eq!(c3[0].input["file_path"], "lib.rs");
+        assert!(c3[0].input["content"].as_str().unwrap().contains("pub fn add"));
     }
 
     // what this catches: the unfulfilled-promise backstop's predicate (#122). Narrated
