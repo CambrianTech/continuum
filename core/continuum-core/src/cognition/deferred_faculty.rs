@@ -211,7 +211,19 @@ impl Faculty for DeferredFaculty {
     /// to run full deliberation — negligible next to decode.
     async fn contribute(&self, ws: &Workspace) -> Option<Contribution> {
         if ws.directed_at_self {
-            return self.inner.contribute(ws).await;
+            // Orienting response: fresh inner perception on this burst. Probe the
+            // outcome — glass-boxed 2026-07-10: a directed silver-harbor question
+            // 30s after boot produced NO recall bid and the seam was dark; whether
+            // the inner ran-and-found-nothing vs never-ran was unattributable.
+            let found = self.inner.contribute(ws).await;
+            crate::probe!(
+                class = "deferred.serve",
+                faculty = %self.id.as_str(),
+                mode = "sync-directed",
+                found = found.is_some(),
+                "orienting response: inner ran synchronously"
+            );
+            return found;
         }
         // Publish the current world for the worker (always-latest, never blocks).
         // Ignore send error: worker gone = serve whatever last-good we have.
@@ -226,10 +238,21 @@ impl Faculty for DeferredFaculty {
         // memory into this turn. A same-room-but-stale finding is REPROJECTED
         // forward (slice 3, below); a different-room finding is simply not ours.
         let guard = self.latest.borrow();
-        match guard.as_ref() {
-            Some(found) if found.room_id == ws.room_id => Some(reproject_to_now(found, ws)),
-            _ => None,
-        }
+        let (served, mode) = match guard.as_ref() {
+            Some(found) if found.room_id == ws.room_id => {
+                (Some(reproject_to_now(found, ws)), "last-good")
+            }
+            Some(_) => (None, "other-room-withheld"),
+            None => (None, "cold-miss"),
+        };
+        crate::probe!(
+            class = "deferred.serve",
+            faculty = %self.id.as_str(),
+            mode,
+            found = served.is_some(),
+            "deferred lane served"
+        );
+        served
     }
 
     /// A deferred faculty is perception-tier (see [`DeferredFaculty::spawn`]): it
