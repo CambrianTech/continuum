@@ -63,6 +63,16 @@ const EMBEDDED_GYMS: &[(&str, &str)] = &[
         "hard-rs.jsonl",
         include_str!("../../../../docs/genome/hard-rs.jsonl"),
     ),
+    (
+        // frontier-rs: the "strive-toward" tier — real algorithms (Levenshtein,
+        // Dijkstra, O(n log n) LIS, topological sort, arbitrary-precision add, a
+        // precedence-climbing calculator, `.`/`*` regex matching). Problems a small
+        // local model rarely nails one-shot; the system's write→compile→test→read-
+        // error→fix loop is where it earns them. Every task's assertions are
+        // reference-verified (a wrong test poisons the benchmark).
+        "frontier-rs.jsonl",
+        include_str!("../../../../docs/genome/frontier-rs.jsonl"),
+    ),
 ];
 
 /// Look up a committed gym's embedded bytes by the basename of `reference`.

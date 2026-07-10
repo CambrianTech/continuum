@@ -60,6 +60,17 @@ pub fn known_benchmarks() -> &'static [BenchmarkSpec] {
             source_url: None,
         },
         BenchmarkSpec {
+            name: "frontier-rs",
+            description: "Frontier Rust — real algorithms (Levenshtein, Dijkstra, O(n log n) LIS, \
+                          topological sort, arbitrary-precision add, precedence-climbing calculator, \
+                          `.`/`*` regex). 7 tasks; the strive-toward tier where the write→compile→ \
+                          test→fix loop earns problems a small model rarely nails one-shot.",
+            grader: Grader::Rust,
+            tasks: 7,
+            eval_set: Some("frontier-rs.jsonl"),
+            source_url: None,
+        },
+        BenchmarkSpec {
             name: "coder-eval",
             description: "Continuum coder gym — 13 mixed practical Rust tasks, rustc compile+run \
                           graded (the original held-out genome-loop eval set).",
