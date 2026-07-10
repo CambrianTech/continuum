@@ -179,6 +179,59 @@ impl RagSource for RoomBoardSource {
         let mut items: Vec<RagItem> = Vec::new();
         let mut tokens_used: u32 = 0;
         let mut dropped: usize = 0;
+
+        // AVAILABLE-WORK SALIENCE (#122): unclaimed cards are work waiting for
+        // someone to pick up. Glass-boxed live 2026-07-10: with hands proven and an
+        // open card sitting on the board, both personas drifted to identity-monologue
+        // chatter instead of noticing the available work — an unclaimed card, flat in
+        // the list, out-salienced by nothing. Lead the delivery with the open cards
+        // as a distinct perceived FACT (their count + titles + how to pick one up), so
+        // available work is the first thing seen, not buried. A true structural fact
+        // she WEIGHS — it names what's available and how claiming works; it never says
+        // she must ([[no-hardcoded-heuristics-to-steer-cognition]]). Whole board still
+        // follows verbatim in airc's own order — this adds a salience lead, it does not
+        // re-rank or filter the board itself.
+        let open: Vec<&airc_work::WorkCard> = board
+            .cards
+            .iter()
+            .filter(|c| c.owner.is_none() && matches!(c.state, airc_work::CardState::Open))
+            .collect();
+        if !open.is_empty() {
+            let titles = open
+                .iter()
+                .take(5)
+                .map(|c| {
+                    let id8: String =
+                        c.card_id.as_uuid().to_string().chars().take(8).collect();
+                    format!("  {id8}: \"{}\" ({:?})", c.title, c.priority)
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            let more = open.len().saturating_sub(5);
+            let tail = if more > 0 {
+                format!("\n  …and {more} more unclaimed")
+            } else {
+                String::new()
+            };
+            let lead = format!(
+                "[available work] {n} card(s) on this board are unclaimed — open work \
+                 no one holds yet:\n{titles}{tail}\nA card is picked up with \
+                 `work/claim` (its id); once claimed it is yours to work with your \
+                 tools. Unclaimed work waits until someone chooses it.",
+                n = open.len(),
+            );
+            let lead_tokens = estimate_tokens(&lead);
+            if lead_tokens <= budget {
+                tokens_used += lead_tokens;
+                items.push(RagItem {
+                    content: lead,
+                    tokens: lead_tokens,
+                    metadata: json!({ "kind": "available-work-lead", "open_count": open.len() }),
+                });
+            }
+        }
+
+        let mut cards_delivered = 0usize;
         for card in &board.cards {
             let content = Self::render(card);
             let tokens = estimate_tokens(&content);
@@ -186,10 +239,12 @@ impl RagSource for RoomBoardSource {
                 // Budget exhausted — a truncated board is still truthful for the
                 // cards it names. Count the drops so truncation is visible, not
                 // silent. Atomic unit = one card; no continuation (see module doc).
-                dropped = board.cards.len() - items.len();
+                // Counted over CARDS, excluding the available-work lead item.
+                dropped = board.cards.len() - cards_delivered;
                 break;
             }
             tokens_used += tokens;
+            cards_delivered += 1;
             items.push(RagItem {
                 content,
                 tokens,
@@ -329,15 +384,55 @@ mod tests {
         ])));
         let source = RoomBoardSource::new(persona(), reader);
         let delivery = source.deliver(&ctx(), 1_000, ResolutionPreference::Raw).await;
-        assert_eq!(delivery.items.len(), 2);
-        assert!(delivery.items[0].content.contains("Wire the projector"));
-        assert!(delivery.items[0].content.contains("[InProgress]"));
+        // With one Open card, an available-work lead precedes the card list.
+        assert_eq!(delivery.items.len(), 3);
+        assert_eq!(delivery.items[0].metadata["kind"], "available-work-lead");
+        let cards: Vec<&RagItem> = delivery
+            .items
+            .iter()
+            .filter(|i| i.metadata.get("card_id").is_some())
+            .collect();
+        assert_eq!(cards.len(), 2);
+        assert!(cards[0].content.contains("Wire the projector"));
+        assert!(cards[0].content.contains("[InProgress]"));
         let owner8: String = holder.as_uuid().to_string().chars().take(8).collect();
-        assert!(delivery.items[0].content.contains(&owner8));
+        assert!(cards[0].content.contains(&owner8));
         // An unclaimed card is surfaced as such — all owners visible on the board.
-        assert!(delivery.items[1].content.contains("unclaimed"));
-        assert_eq!(delivery.items[1].metadata["state"], "Open");
+        assert!(cards[1].content.contains("unclaimed"));
+        assert_eq!(cards[1].metadata["state"], "Open");
         assert!(delivery.continuation.is_none());
+    }
+
+    // what this catches: the available-work salience lead (#122). Unclaimed cards
+    // must be surfaced PROMINENTLY (first item, naming them + how to claim) so a
+    // persona perceives available work instead of drifting to idle chatter with an
+    // open card sitting on the board. A board with NO open cards adds no lead.
+    #[tokio::test]
+    async fn open_cards_get_an_available_work_lead() {
+        let holder = airc_core::PeerId::new();
+        let reader = Arc::new(StubReader::new(snapshot(vec![
+            card("Compile wordstats", CardState::Open, None),
+            card("sha256 exercise", CardState::Open, None),
+            card("Already mine", CardState::InProgress, Some(holder)),
+        ])));
+        let source = RoomBoardSource::new(persona(), reader);
+        let d = source.deliver(&ctx(), 2_000, ResolutionPreference::Raw).await;
+        assert_eq!(d.items[0].metadata["kind"], "available-work-lead");
+        assert_eq!(d.items[0].metadata["open_count"], 2);
+        assert!(d.items[0].content.contains("[available work]"));
+        assert!(d.items[0].content.contains("Compile wordstats"));
+        assert!(d.items[0].content.contains("work/claim"));
+
+        // A board with only claimed cards → no lead, just the card list.
+        let claimed_only = Arc::new(StubReader::new(snapshot(vec![card(
+            "Held",
+            CardState::InProgress,
+            Some(holder),
+        )])));
+        let d2 = RoomBoardSource::new(persona(), claimed_only)
+            .deliver(&ctx(), 2_000, ResolutionPreference::Raw)
+            .await;
+        assert!(d2.items.iter().all(|i| i.metadata.get("kind").is_none()));
     }
 
     // what this catches: a room with NO cards renders no block (backwards-
