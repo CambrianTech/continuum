@@ -184,7 +184,13 @@ trait ToolCallFormat: Send + Sync {
 /// The supported surface formats, most-specific first. Extend this list to support
 /// a new base model — the only edit a new format requires.
 fn tool_call_formats() -> &'static [&'static dyn ToolCallFormat] {
-    &[&EnvelopeFormat, &TaggedFormat, &BareFormat, &NarratedWriteFormat]
+    &[
+        &EnvelopeFormat,
+        &TaggedFormat,
+        &BareFormat,
+        &NarratedWriteFormat,
+        &NarratedScriptFormat,
+    ]
 }
 
 /// `{"tool_call": {"name": "...", "arguments": {...}}}` — continuum's injected
@@ -289,6 +295,231 @@ impl ToolCallFormat for NarratedWriteFormat {
             input: serde_json::json!({ "file_path": path, "content": content }),
         }]
     }
+}
+
+/// A model that NARRATES a whole working session — prose steps, each followed by a
+/// fenced block — instead of emitting any machine-readable call. Observed live from
+/// Devstral-Small-2507 (2026-07-09, the wordstats card): "I'll create a file called
+/// `wordstats.rs` with the following content: ```rust …```", "Next, I'll compile:
+/// ```bash rustc wordstats.rs```", "I'll paste the output here once it's ready" —
+/// parsed as Speak, NOTHING executed, and two personas then hallucinated a shared
+/// workspace neither had touched. The `[Acting]` prompt block already scolds exactly
+/// this in prose; telling doesn't work — the parser meets the idiom (the same
+/// differentiator as `<tools>`-in-content and the `[PASS]` bracket fix).
+///
+/// LAST-RESORT format: walks the message's fences IN ORDER and lifts each into a
+/// real call — but ONLY when the narration immediately before the fence is
+/// FIRST-PERSON INTENT ("I'll run…", "Let me try…", "Next, I'll compile…"):
+/// - creation framing ("create/write a file called `X`") + any fence → `code/write`
+/// - shell-shaped fence (```bash/sh/zsh, or first token a known command) → `code/shell`
+///
+/// The safety line (each arm test-pinned): second-person / request framing near the
+/// fence ("you've written…", "please provide…", "could you run…") NEVER lifts —
+/// reviewing a peer's code must not execute it; bare example fences with no intent
+/// framing NEVER lift. No privilege expansion: the executor ACL gates every lifted
+/// call identically to a hand-written envelope.
+///
+/// KNOWN LIMITATION (Joel 2026-07-09, accepted as a bridge): the intent/veto
+/// predicates are English string tables — locked to English, brittle to phrasing
+/// (#70/#124 string-matching smell). The durable exits, in preference order:
+/// (1) the LoRA loop trains the narration reflex toward the canonical envelope,
+///     making this format VESTIGIAL — its live hit-rate (telemetry id
+///     "narrated-script") is the signal it can be retired;
+/// (2) if narrated lifting must persist, intent classification moves to the
+///     embedding/classifier layer (semantic, language-neutral), not string tables.
+/// Until then her hands work when she describes the work —
+/// [[local-first-tool-call-robustness-is-the-differentiator]].
+struct NarratedScriptFormat;
+impl ToolCallFormat for NarratedScriptFormat {
+    fn id(&self) -> &'static str {
+        "narrated-script"
+    }
+    fn parse(&self, text: &str) -> Vec<ToolCall> {
+        let mut out = Vec::new();
+        for fence in fenced_blocks(text) {
+            let narration = trailing_narration(&text[..fence.open]);
+            if !first_person_intent(&narration) || addressed_to_peer(&narration) {
+                continue;
+            }
+            if let Some(path) = extract_created_file_name(&narration) {
+                if !fence.body.trim().is_empty() {
+                    out.push(ToolCall {
+                        id: format!("jip-{}", Uuid::new_v4()),
+                        name: "code/write".to_string(),
+                        input: serde_json::json!({ "file_path": path, "content": fence.body }),
+                    });
+                }
+                continue;
+            }
+            if fence_is_shell(&fence) && !fence.body.trim().is_empty() {
+                out.push(ToolCall {
+                    id: format!("jip-{}", Uuid::new_v4()),
+                    name: "code/shell".to_string(),
+                    input: serde_json::json!({ "cmd": fence.body.trim() }),
+                });
+            }
+        }
+        out
+    }
+}
+
+/// One ```…``` fenced block: byte offset of the opening fence, the language token
+/// (lowercased, may be empty), and the body with the language line stripped.
+struct FencedBlock {
+    open: usize,
+    lang: String,
+    body: String,
+}
+
+/// All fenced blocks in `text`, in order. An unterminated final fence is ignored
+/// (half-written code is not an executable intent).
+fn fenced_blocks(text: &str) -> Vec<FencedBlock> {
+    let mut out = Vec::new();
+    let mut rest = text;
+    let mut base = 0usize;
+    while let Some(open) = rest.find("```") {
+        let after = &rest[open + 3..];
+        let (lang, body_start) = match after.find('\n') {
+            Some(nl) => (after[..nl].trim().to_lowercase(), nl + 1),
+            None => break,
+        };
+        let body_zone = &after[body_start..];
+        let Some(close) = body_zone.find("```") else {
+            break;
+        };
+        out.push(FencedBlock {
+            open: base + open,
+            lang,
+            body: body_zone[..close].to_string(),
+        });
+        let consumed = open + 3 + body_start + close + 3;
+        base += consumed;
+        rest = &rest[consumed..];
+    }
+    out
+}
+
+/// The narration IMMEDIATELY before a fence: the text after the previous fence (or
+/// message start), bounded to the last few lines so early-message framing can't
+/// leak intent onto a distant fence.
+fn trailing_narration(before: &str) -> String {
+    let after_prev_fence = match before.rfind("```") {
+        Some(idx) => &before[idx + 3..],
+        None => before,
+    };
+    let lines: Vec<&str> = after_prev_fence.lines().rev().take(4).collect();
+    lines
+        .into_iter()
+        .rev()
+        .collect::<Vec<_>>()
+        .join("\n")
+        .to_lowercase()
+}
+
+/// Is this narration the SPEAKER's own stated intent to do the thing? Markers are
+/// first-person-future doing ("I'll…", "let me…", "next, i…"). This is the positive
+/// gate; [`addressed_to_peer`] is the veto.
+fn first_person_intent(narration: &str) -> bool {
+    const MARKERS: &[&str] = &[
+        "i'll ",
+        "i will ",
+        "i'm going to",
+        "i am going to",
+        "let me ",
+        "let's ",
+        "next, i",
+        "now, i",
+        "first, i",
+        "then, i",
+        "finally, ",
+        "now, let",
+        "next, let",
+        "finally, let",
+    ];
+    MARKERS.iter().any(|m| narration.contains(m))
+}
+
+/// Is this narration aimed at SOMEONE ELSE doing/having done the thing? A request
+/// or a review of a peer's work must never execute — the fence there is quotation.
+fn addressed_to_peer(narration: &str) -> bool {
+    const MARKERS: &[&str] = &[
+        "you've ",
+        "you have ",
+        "you wrote",
+        "you ran",
+        "your code",
+        "please ",
+        "could you",
+        "would you",
+        "can you ",
+        "here's how you",
+        "here is how you",
+        "you would",
+        "you can ",
+    ];
+    MARKERS.iter().any(|m| narration.contains(m))
+}
+
+/// Extract the file name from creation framing: "create/write a file called|named
+/// `X`" (backtick-, quote-, or whitespace-delimited). None → not a file creation.
+fn extract_created_file_name(narration: &str) -> Option<String> {
+    if !(narration.contains("create") || narration.contains("write")) {
+        return None;
+    }
+    let idx = narration
+        .find("file called")
+        .map(|i| i + "file called".len())
+        .or_else(|| narration.find("file named").map(|i| i + "file named".len()))?;
+    let after = narration[idx..].trim_start();
+    let name: String = after
+        .trim_start_matches(['`', '"', '\''])
+        .chars()
+        .take_while(|c| !c.is_whitespace() && !matches!(c, '`' | '"' | '\'' | ',' | ':' | ';'))
+        .collect();
+    (!name.is_empty() && name.contains('.')).then_some(name)
+}
+
+/// Is this fence a runnable shell block? Either shell-tagged, or untagged with a
+/// first token that is unmistakably a command (a `./binary` or a well-known CLI).
+fn fence_is_shell(fence: &FencedBlock) -> bool {
+    if matches!(
+        fence.lang.as_str(),
+        "bash" | "sh" | "shell" | "zsh" | "console" | "terminal"
+    ) {
+        return true;
+    }
+    if !fence.lang.is_empty() {
+        return false;
+    }
+    let first = fence
+        .body
+        .lines()
+        .find(|l| !l.trim().is_empty())
+        .and_then(|l| l.trim().split_whitespace().next())
+        .unwrap_or("");
+    first.starts_with("./")
+        || matches!(
+            first,
+            "rustc"
+                | "cargo"
+                | "echo"
+                | "ls"
+                | "cat"
+                | "python"
+                | "python3"
+                | "pip"
+                | "git"
+                | "make"
+                | "mkdir"
+                | "touch"
+                | "grep"
+                | "find"
+                | "curl"
+                | "sha256sum"
+                | "shasum"
+                | "npm"
+                | "node"
+        )
 }
 
 /// Pull `file_path`'s value out of prose: `file_path="x"`, `file_path=x`,
@@ -568,5 +799,78 @@ mod tests {
     fn prose_with_a_name_field_is_not_a_tool_call() {
         assert!(parse_tool_calls(r#"I think {"name": "Asha"} is a nice handle."#).is_empty());
         assert!(parse_tool_call("just answering normally, no tools today").is_none());
+    }
+
+    // what this catches: the narrated-script gap (#122, glass-boxed live 2026-07-09).
+    // Devstral narrates a whole session — first-person intent + fences — and it parsed
+    // as Speak; nothing executed; two personas hallucinated a shared workspace. The
+    // format must lift the ORDERED sequence: shell, file write (creation framing),
+    // shell, shell — and the faculty's single-step path takes the first.
+    #[test]
+    fn narrated_session_lifts_ordered_shell_and_write_calls() {
+        // Anwen's live wordstats message, verbatim shape (prompt-captures 2026-07-09).
+        let text = "I'll start by creating a sample text file for testing purposes.\n\n\
+```bash\necho 'the quick brown fox the lazy dog the end' > sample.txt\n```\n\n\
+Now, let's write the Rust code for the word frequency program. I'll create a file called `wordstats.rs` with the following content:\n\n\
+```rust\nuse std::collections::HashMap;\nfn main() { println!(\"hi\"); }\n```\n\n\
+Next, I'll compile the Rust code using `rustc`:\n\n\
+```bash\nrustc wordstats.rs\n```\n\n\
+Finally, let's run the program with the sample text file:\n\n\
+```bash\n./wordstats sample.txt\n```\n\n\
+I'll paste the output here once it's ready.";
+        let calls = parse_tool_calls(text);
+        assert_eq!(calls.len(), 4, "all four narrated steps lift, in order: {calls:?}");
+        assert_eq!(calls[0].name, "code/shell");
+        assert_eq!(
+            calls[0].input["cmd"],
+            "echo 'the quick brown fox the lazy dog the end' > sample.txt"
+        );
+        assert_eq!(calls[1].name, "code/write");
+        assert_eq!(calls[1].input["file_path"], "wordstats.rs");
+        assert!(calls[1].input["content"]
+            .as_str()
+            .unwrap()
+            .contains("HashMap"));
+        assert_eq!(calls[2].name, "code/shell");
+        assert_eq!(calls[2].input["cmd"], "rustc wordstats.rs");
+        assert_eq!(calls[3].name, "code/shell");
+        assert_eq!(calls[3].input["cmd"], "./wordstats sample.txt");
+        // The faculty's one-step-per-generation path takes the FIRST — the rest
+        // re-emerge across the drive_to_settle loop as results land in memory.
+        assert_eq!(parse_tool_call(text).unwrap().name, "code/shell");
+    }
+
+    // what this catches: the safety line. A REVIEW of a peer's work quotes commands
+    // in fences — executing them would run someone else's (possibly wrong) code on
+    // her key. Second-person / request framing must never lift. (Anwen's live review
+    // message, verbatim shape.)
+    #[test]
+    fn peer_review_and_request_fences_never_lift() {
+        let review = "It looks like you've written and compiled the Rust code for the word \
+frequency program. Now, let's run the program with the sample text file to see the output.\n\n\
+```bash\n./wordstats sample.txt\n```\n\n\
+Please provide the output so I can review it.";
+        assert!(
+            parse_tool_calls(review).is_empty(),
+            "review-quoted fence must not execute"
+        );
+        let request = "Could you run this for me?\n```bash\nls -la\n```";
+        assert!(parse_tool_calls(request).is_empty(), "a request is not my intent");
+    }
+
+    // what this catches: bare example fences with no intent framing are teaching
+    // material, not action — and non-shell fences without creation framing stay inert.
+    #[test]
+    fn example_fences_without_intent_stay_inert() {
+        let example = "Here's how you would count words in bash:\n```bash\nwc -w file.txt\n```";
+        assert!(parse_tool_calls(example).is_empty());
+        let plain = "The algorithm looks like:\n```rust\nfn main() {}\n```";
+        assert!(parse_tool_calls(plain).is_empty());
+        // A precise format present anywhere still wins outright (most-specific-first).
+        let with_envelope = "I'll run it.\n```bash\nls\n```\n\
+{\"tool_call\": {\"name\": \"ping\", \"arguments\": {}}}";
+        let calls = parse_tool_calls(with_envelope);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].name, "ping");
     }
 }
