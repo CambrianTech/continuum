@@ -1731,6 +1731,18 @@ pub fn start_server(
             crate::provisioning::Provisioner::default().cache_report()
         );
         let (hw_cap, tier_cat, tier_id) = serving_daemon.detected_tier();
+        // Persona floor — how many citizens to host (read early: it is ALSO the
+        // serving plan's lane DEMAND, so it must be set before the first
+        // compute_plan; see below for the full doc).
+        let persona_floor = crate::config_env::read("CONTINUUM_PERSONA_FLOOR")
+            .and_then(|v| v.trim().parse::<usize>().ok())
+            .filter(|&n| n >= 1)
+            .unwrap_or(1);
+        // Lanes serve DEMAND: the floor is how many minds need a concurrent
+        // lane. Without this, the planner maximized lane count and split the KV
+        // budget across slots nobody asked for — 2 personas served through 4
+        // slots at a quarter-window each (the 2026-07-10 starvation).
+        serving_daemon.set_lane_demand(persona_floor as u32);
         // The plan is the single grouped source of truth (model + lanes +
         // host-fit served window). Pass it by reference to the spawner per
         // [[pass-the-model-struct-no-param-hell]] — no destructured loose
@@ -1763,10 +1775,6 @@ pub fn start_server(
         // signal (rooms → recorder → dataset → genome). Config-owned
         // ([[config-env-single-owner]]); once minted, citizens persist + resume
         // even if the floor is later lowered.
-        let persona_floor = crate::config_env::read("CONTINUUM_PERSONA_FLOOR")
-            .and_then(|v| v.trim().parse::<usize>().ok())
-            .filter(|&n| n >= 1)
-            .unwrap_or(1);
         let supervisor = crate::persona::host::PersonaSpawnSupervisor::new(
             crate::persona::spawner_module::PersonaSpawnerModule::new(hw_cap, tier_cat)
                 .with_serving(serving_plan.as_ref())
