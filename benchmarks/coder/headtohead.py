@@ -65,8 +65,11 @@ def run_raw(args):
     print(f"[raw] one-shot {args.model} @ {args.endpoint} ({args.limit} tasks)…", file=sys.stderr)
     subprocess.run(cmd, check=True)
     d = json.load(open(out))
-    return {"passed": d["passed"], "tasks": d["tasks"], "pass_rate": d["pass_rate"],
-            "endpoint_errors": d.get("endpoint_errors", 0)}
+    return {"passed": d["passed"], "tasks": d["tasks"],
+            "attempted": d.get("attempted", d["tasks"]),
+            "pass_rate": d["pass_rate"],
+            "endpoint_errors": d.get("endpoint_errors", 0),
+            "excluded": d.get("excluded", False)}
 
 
 def run_system(args):
@@ -91,9 +94,20 @@ def run_system(args):
     if blob is None:
         raise SystemExit(f"[system] no JSON in cu output:\n{r.stdout}\n{r.stderr}")
     total = blob.get("total", 0) or 0
-    print(f"[system] {blob.get('score')}/{total} in {time.time()-t0:.0f}s", file=sys.stderr)
+    elapsed = time.time() - t0
+    print(f"[system] {blob.get('score')}/{total} in {elapsed:.0f}s", file=sys.stderr)
+    # A zero that completed impossibly fast is NOT a measurement: full-cognition
+    # cannot finish a task in under ~3s, so score==0 with sub-floor wall-time means
+    # the lane/eval infra refused (the 14B hard-rs cell 2026-07-10: 0/8 in 23s —
+    # the ephemeral lane never came up under GPU contention, and 8 infra errors
+    # rendered as a 0% model claim). Excluded, loudly — never a zero on the board.
+    suspect = blob.get("score", 0) == 0 and total > 0 and elapsed < 3.0 * total
+    if suspect:
+        print(f"[system] ⚠ EXCLUDED: 0/{total} in {elapsed:.0f}s is faster than any real "
+              f"cognition pass — infra failure, not a model score", file=sys.stderr)
     return {"passed": blob.get("score", 0), "tasks": total,
-            "pass_rate": blob.get("pass_rate", 0.0)}
+            "pass_rate": blob.get("pass_rate", 0.0), "excluded": suspect,
+            "elapsed_s": round(elapsed)}
 
 
 def _last_json(text):
@@ -149,8 +163,12 @@ def main():
     raw = None if args.skip_raw else run_raw(args)
     system = None if args.skip_system else run_system(args)
 
+    # Δ only exists between two VALID measurements — an excluded arm poisons the
+    # comparison, never quietly zero-fills it.
+    raw_valid = raw and not raw.get("excluded") and raw.get("pass_rate") is not None
+    sys_valid = system and not system.get("excluded")
     delta = None
-    if raw and system:
+    if raw_valid and sys_valid:
         delta = system["pass_rate"] - raw["pass_rate"]
 
     result = {"label": args.label, "benchmark": args.benchmark, "limit": args.limit,
@@ -164,19 +182,33 @@ def main():
     print(f"HEAD-TO-HEAD — {args.label}  ({args.benchmark}, {args.limit} tasks)")
     print("=" * 64)
     if raw:
-        print(f"  RAW    (one-shot /v1)      {raw['passed']:>3}/{raw['tasks']:<3}  {raw['pass_rate']:.0%}"
-              + (f"   [{raw['endpoint_errors']} endpoint-errs]" if raw.get('endpoint_errors') else ""))
+        if not raw_valid:
+            print(f"  RAW    (one-shot /v1)      — EXCLUDED ({raw.get('endpoint_errors', 0)} endpoint errors — harness, not model)")
+        else:
+            print(f"  RAW    (one-shot /v1)      {raw['passed']:>3}/{raw['attempted']:<3}  {raw['pass_rate']:.0%}"
+                  + (f"   [{raw['endpoint_errors']} endpoint-errs excluded]" if raw.get('endpoint_errors') else ""))
     if system:
-        print(f"  SYSTEM (full Continuum)    {system['passed']:>3}/{system['tasks']:<3}  {system['pass_rate']:.0%}")
+        if not sys_valid:
+            print(f"  SYSTEM (full Continuum)    — EXCLUDED (0/{system['tasks']} in {system.get('elapsed_s', '?')}s — infra, not model)")
+        else:
+            print(f"  SYSTEM (full Continuum)    {system['passed']:>3}/{system['tasks']:<3}  {system['pass_rate']:.0%}")
     if delta is not None:
         verdict = "LIFT ✅" if delta > 0.001 else ("TAX ⚠️" if delta < -0.001 else "neutral")
         print(f"  Δ  SYSTEM − RAW            {delta:+.0%}   {verdict}")
+    elif raw or system:
+        print("  Δ  SYSTEM − RAW            n/a (an arm was excluded — no comparison claimed)")
     print("=" * 64)
-    # Ready-to-paste SCOREBOARD rows
+    # Ready-to-paste SCOREBOARD rows — excluded arms render as excluded, never 0%.
     if raw:
-        print(f"| {args.label} | {raw['passed']}/{raw['tasks']} | {raw['pass_rate']:.0%} | RAW one-shot /v1 | |")
+        if raw_valid:
+            print(f"| {args.label} | {raw['passed']}/{raw['attempted']} | {raw['pass_rate']:.0%} | RAW one-shot /v1 | |")
+        else:
+            print(f"| {args.label} | — | EXCLUDED | RAW one-shot /v1 | endpoint errors |")
     if system:
-        print(f"| {args.label} | {system['passed']}/{system['tasks']} | {system['pass_rate']:.0%} | SYSTEM (full loop) | |")
+        if sys_valid:
+            print(f"| {args.label} | {system['passed']}/{system['tasks']} | {system['pass_rate']:.0%} | SYSTEM (full loop) | |")
+        else:
+            print(f"| {args.label} | — | EXCLUDED | SYSTEM (full loop) | infra failure |")
 
 
 if __name__ == "__main__":

@@ -95,13 +95,22 @@ def main():
         results.append({"id": t["id"], "ok": ok, "grade": g})
         print(f"  {t['id'][:30]:30} {'PASS' if ok else 'fail'}  {g[:50]}", file=sys.stderr)
 
-    n = len(tasks) or 1
+    # A 0% is a claim about the MODEL; an endpoint error is a claim about the
+    # HARNESS. Score over ATTEMPTED tasks only — an arm where nothing was attempted
+    # is EXCLUDED, never a zero (the 14B hard-rs cell 2026-07-10: 8/8 ENDPOINT-ERR
+    # against a down endpoint rendered as 0%, a false claim headed for the README).
+    attempted = len(tasks) - infra_err
+    pass_rate = (passed / attempted) if attempted else None
     out = {"label": args.label, "endpoint": args.endpoint, "model": args.model,
-           "tasks": len(tasks), "passed": passed, "pass_rate": passed / n,
-           "endpoint_errors": infra_err, "results": results}
+           "tasks": len(tasks), "attempted": attempted, "passed": passed,
+           "pass_rate": pass_rate, "endpoint_errors": infra_err, "results": results,
+           "excluded": attempted == 0}
     if args.out:
         json.dump(out, open(args.out, "w"), indent=2)
-    print(f"\n| {args.label} | {passed}/{len(tasks)} | {passed/n:.0%} | one-shot /v1 | endpoint-errs {infra_err} |")
+    if attempted == 0:
+        print(f"\n| {args.label} | — | EXCLUDED | one-shot /v1 | endpoint down: {infra_err}/{len(tasks)} errs |")
+    else:
+        print(f"\n| {args.label} | {passed}/{attempted} | {pass_rate:.0%} | one-shot /v1 | endpoint-errs {infra_err} |")
 
 if __name__ == "__main__":
     main()
