@@ -52,7 +52,17 @@ fn persona_airc(
         .caller
         .as_ref()
         .map(|c| c.peer_id.as_uuid())
-        .ok_or_else(|| CommandError::Denied("work commands require a persona caller".into()))?;
+        .ok_or_else(|| {
+            CommandError::Denied(
+                "work commands act as the caller's own airc identity, and the \
+                 substrate-local operator has none in-core (yet — the self-peer gap, \
+                 task #27). Until the core carries a machine-scope airc runtime, use \
+                 `airc work <verb> ...` for operator-identity board writes; personas \
+                 calling through their toolbelt act as themselves and need nothing \
+                 special."
+                    .into(),
+            )
+        })?;
     let rt = registry
         .get(peer)
         .ok_or_else(|| CommandError::NotFound(format!("no live airc runtime for persona {peer}")))?;
