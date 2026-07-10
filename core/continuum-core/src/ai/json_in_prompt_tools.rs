@@ -400,21 +400,32 @@ fn recover_call_from_fence_body(body: &str) -> Option<ToolCall> {
     {
         return Some(c);
     }
-    // The `code/write({ "content": …, "file_path": … })` call-FORM: a JSON object
-    // wrapped in a `<name>( … )` invocation. Pull the inner object and parse its
-    // fields (this is the exact shape that corrupted sample.txt).
+    // The `<tool/name>({ … })` call-FORM: a JSON object wrapped in a
+    // `category/verb( … )` invocation the model rendered as text. Recover it as a
+    // call to THAT tool with the inner object as arguments — so code/write,
+    // code/edit, code/shell, code/read, etc. ALL lift when narrated this way, not
+    // just code/write (edit is crucial — a persona that can only rewrite whole
+    // files can't do surgical changes). The name must look like a real tool path
+    // (`a/b`, lowercase + slash) so prose like `foo(x)` never false-parses.
     let trimmed = body.trim();
-    if let Some(rest) = trimmed.strip_prefix("code/write") {
-        let inner = rest.trim_start().strip_prefix('(')?.trim();
-        let obj_end = inner.rfind(')').unwrap_or(inner.len());
-        if let Ok(v) = serde_json::from_str::<serde_json::Value>(inner[..obj_end].trim()) {
-            let content = v.get("content").and_then(|c| c.as_str())?;
-            let file_path = v.get("file_path").and_then(|p| p.as_str())?;
-            return Some(ToolCall {
-                id: format!("jip-{}", Uuid::new_v4()),
-                name: "code/write".to_string(),
-                input: serde_json::json!({ "file_path": file_path, "content": content }),
-            });
+    if let Some(open) = trimmed.find('(') {
+        let name = trimmed[..open].trim();
+        let looks_like_tool = name.contains('/')
+            && name
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c == '/' || c == '_' || c == '-');
+        if looks_like_tool {
+            let after = &trimmed[open + 1..];
+            let obj_end = after.rfind(')').unwrap_or(after.len());
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(after[..obj_end].trim()) {
+                if v.is_object() {
+                    return Some(ToolCall {
+                        id: format!("jip-{}", Uuid::new_v4()),
+                        name: name.to_string(),
+                        input: v,
+                    });
+                }
+            }
         }
     }
     None
@@ -974,6 +985,28 @@ Please provide the output so I can review it.";
         assert_eq!(c3[0].name, "code/write");
         assert_eq!(c3[0].input["file_path"], "lib.rs");
         assert!(c3[0].input["content"].as_str().unwrap().contains("pub fn add"));
+    }
+
+    // what this catches: EDIT is crucial (Joel 2026-07-10) — a persona that can only
+    // rewrite whole files can't make surgical changes. The generalized call-form
+    // recovery lifts ANY rendered `category/verb({json})` in a fence, so code/edit,
+    // code/shell, code/read all work when narrated as a call — not just code/write.
+    #[test]
+    fn any_rendered_tool_call_in_a_fence_lifts_including_edit() {
+        let edit = "I'll apply the fix with code/edit:\n\
+```\ncode/edit({\"file_path\": \"wordstats.rs\", \"search\": \"replace(x)\", \"replace\": \"filter(y)\"})\n```";
+        let c = parse_tool_calls(edit);
+        assert_eq!(c.len(), 1);
+        assert_eq!(c[0].name, "code/edit");
+        assert_eq!(c[0].input["file_path"], "wordstats.rs");
+        assert_eq!(c[0].input["search"], "replace(x)");
+        assert_eq!(c[0].input["replace"], "filter(y)");
+        // A rendered code/read call likewise lifts.
+        let read = "Let me read it:\n```\ncode/read({\"file_path\": \"lib.rs\"})\n```";
+        let r = parse_tool_calls(read);
+        assert_eq!(r[0].name, "code/read");
+        // Prose that merely mentions a slash isn't a call — `and/or(this)` never lifts.
+        assert!(parse_tool_calls("I'll consider this and/or(that) approach.").is_empty());
     }
 
     // what this catches: the unfulfilled-promise backstop's predicate (#122). Narrated
