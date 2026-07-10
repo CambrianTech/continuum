@@ -407,15 +407,83 @@ async fn serve_persona_loop_inner(
                 m
             }
         };
-        if msg.lamport <= high_water {
-            outcome.turns_skipped += 1;
-            continue;
-        }
-        high_water = msg.lamport.max(high_water);
 
-        if msg.peer_id == ctx.identity.peer_id.as_uuid() {
-            outcome.turns_skipped += 1;
-            continue;
+        // ── Resync-to-now (#131, the human standard) ─────────────────────────
+        // Turns take ~60–100s of decode while messages can arrive faster, so a
+        // FIFO one-turn-per-message drain leaves her perpetually answering the
+        // room as it was N messages ago (glass-boxed live 2026-07-10: her turn
+        // saw 3 STALE messages; the assignment and her peer's commitment were
+        // still queued behind them; she rationally re-asked the same question
+        // five times — "a human reads the last few messages and continues like
+        // nothing ever happened"). So: drain EVERYTHING already queued before
+        // turning, and turn ONCE on the newest addressed message (else the
+        // newest overall). Older drained messages are not lost — the composed
+        // room transcript carries them into the same turn as context; they just
+        // don't each get a dedicated 60s reply to a conversation that has moved
+        // on. Same always-latest coalescing the substrate uses everywhere else
+        // (watch channels; positron's resync contract: reconnect RESYNCS state,
+        // never replays stale events).
+        let mut backlog: Vec<IncomingMessage> = vec![msg];
+        let mut stream_ended = false;
+        loop {
+            // Zero-ish window: anything already buffered resolves immediately;
+            // an empty queue times out and we proceed. ≤50ms per wake vs the
+            // 60s-per-stale-turn it replaces.
+            match tokio::time::timeout(
+                std::time::Duration::from_millis(50),
+                next_event(conversation, &mut outcome),
+            )
+            .await
+            {
+                Ok(Some(next)) => backlog.push(next),
+                Ok(None) => {
+                    stream_ended = true;
+                    break;
+                }
+                Err(_) => break, // nothing more queued — backlog drained
+            }
+        }
+        // Qualifying = newer than the high-water mark and not her own echo.
+        // Advance the high-water past EVERYTHING drained so a stale item can
+        // never re-trigger; count skips honestly.
+        let self_id = ctx.identity.peer_id.as_uuid();
+        let mut qualifying: Vec<IncomingMessage> = Vec::with_capacity(backlog.len());
+        for m in backlog {
+            let stale = m.lamport <= high_water;
+            high_water = m.lamport.max(high_water);
+            if stale || m.peer_id == self_id {
+                outcome.turns_skipped += 1;
+            } else {
+                qualifying.push(m);
+            }
+        }
+        // Trigger = newest ADDRESSED message in the backlog (a question put to
+        // her outranks newer ambient chatter — she answers it WITH the newer
+        // context visible in the transcript), else the newest overall.
+        let coalesced = qualifying.len().saturating_sub(1);
+        let msg = match qualifying
+            .iter()
+            .rposition(|m| ctx.identity.persona_identity().mentions(&m.text))
+            .map(|i| qualifying.swap_remove(i))
+            .or_else(|| qualifying.pop())
+        {
+            Some(m) => m,
+            None => {
+                if stream_ended {
+                    break;
+                }
+                continue; // everything drained was stale/self — no turn
+            }
+        };
+        if coalesced > 0 {
+            outcome.turns_skipped += coalesced;
+            tracing::info!(
+                probe_class = "persona.wake.coalesced",
+                persona_id = %self_id,
+                coalesced = coalesced,
+                trigger_lamport = msg.lamport,
+                "resync-to-now: coalesced the queued backlog into ONE turn on the newest message"
+            );
         }
 
         // Message-path loop-filler gate (#16): the heartbeat dedups its burst, but
