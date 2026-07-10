@@ -93,6 +93,15 @@ pub struct DeferredFaculty {
     latest: watch::Receiver<Option<StampedFinding>>,
     /// Hot path pushes the current world here for the worker to recompute against.
     world_tx: watch::Sender<DeferredInput>,
+    /// The wrapped faculty, retained for the DIRECTED-turn bypass: an addressed
+    /// question runs the inner faculty SYNCHRONOUSLY on ITS OWN burst (the
+    /// orienting response — acute stimulus interrupts), because the deferred
+    /// lane structurally serves the PREVIOUS turn's finding, so an acute
+    /// question could never benefit from its own recall (glass-boxed live
+    /// 2026-07-10: the fact surfaced at z=5.5σ one turn too late; the rendered
+    /// prompt had no [recall]; she confabulated "port 3001" and her peer
+    /// absorbed it as shared truth). Ambient turns keep the cheap lane.
+    inner: Arc<dyn Faculty>,
     /// Owns the worker task so it's aborted when this faculty is dropped — no
     /// orphaned compute outliving the mind it served.
     _worker: DropGuard,
@@ -124,6 +133,7 @@ impl DeferredFaculty {
         let (world_tx, mut world_rx) = watch::channel(DeferredInput::sentinel());
         let (latest_tx, latest) = watch::channel::<Option<StampedFinding>>(None);
 
+        let inner_for_hot_path = Arc::clone(&inner);
         let worker = tokio::spawn(async move {
             let mut consecutive_panics: u32 = 0;
             // Event-triggered, not a sleep-loop: wake only when the hot path
@@ -178,6 +188,7 @@ impl DeferredFaculty {
             id,
             latest,
             world_tx,
+            inner: inner_for_hot_path,
             _worker: DropGuard(worker),
         }
     }
@@ -189,10 +200,19 @@ impl Faculty for DeferredFaculty {
         self.id.clone()
     }
 
-    /// Non-blocking: kick the worker with the current world and return the
-    /// last-good finding. NEVER awaits the inner faculty — that's the whole point
-    /// of the lane.
+    /// AMBIENT turns: non-blocking — kick the worker with the current world and
+    /// return the last-good finding, never awaiting the inner faculty (the whole
+    /// point of the lane). DIRECTED turns: the ORIENTING RESPONSE — run the inner
+    /// faculty synchronously on THIS burst, because the deferred lane
+    /// structurally serves the PREVIOUS turn's finding and an addressed question
+    /// must benefit from its OWN recall (the eval fork already runs perception
+    /// synchronously for the same reason; this brings the live directed path to
+    /// parity). Cost: one fresh perception pass on turns that were already going
+    /// to run full deliberation — negligible next to decode.
     async fn contribute(&self, ws: &Workspace) -> Option<Contribution> {
+        if ws.directed_at_self {
+            return self.inner.contribute(ws).await;
+        }
         // Publish the current world for the worker (always-latest, never blocks).
         // Ignore send error: worker gone = serve whatever last-good we have.
         let _ = self.world_tx.send(DeferredInput {
@@ -368,6 +388,43 @@ mod tests {
             "the late finding must carry the cycle it reasoned against, not the current tick"
         );
         assert_eq!(late.faculty, FacultyId::Recall);
+    }
+
+    // what this catches: the ORIENTING RESPONSE — a DIRECTED turn (addressed
+    // question) runs the inner faculty synchronously on ITS OWN burst instead of
+    // serving the previous turn's last-good. Without this, an acute question can
+    // never benefit from its own recall (glass-boxed live 2026-07-10: the taught
+    // fact surfaced at z=5.5σ one turn too late, the prompt had no [recall], and
+    // the persona confabulated "port 3001" — which her peer then absorbed as
+    // shared truth). Ambient turns keep the non-blocking deferred lane.
+    #[tokio::test]
+    async fn directed_turn_gets_fresh_perception_not_last_good() {
+        let deferred = DeferredFaculty::spawn(Arc::new(SlowRecall));
+
+        // Directed turn, cycle 1, NOTHING computed yet: the ambient lane would
+        // return None — the orienting response must instead await the inner
+        // faculty and return the FRESH finding for THIS burst.
+        let ws = Workspace::in_room("which port is the staging gateway on?", Uuid::nil())
+            .with_cycle(CycleId(1))
+            .directed(true);
+        let r = deferred.contribute(&ws).await;
+        let fresh = r.expect("a directed turn must get fresh perception, not stale None");
+        assert_eq!(fresh.faculty, FacultyId::Recall);
+        assert!(
+            fresh.content.contains("slow, late recall finding"),
+            "the finding must be the inner faculty's own output"
+        );
+
+        // The same tick UNDIRECTED still behaves as the deferred lane (fast, None
+        // until the worker lands) — ambience never pays the synchronous cost.
+        let ws_ambient = Workspace::in_room("idle chatter", Uuid::nil()).with_cycle(CycleId(2));
+        let t = tokio::time::Instant::now();
+        let _ = deferred.contribute(&ws_ambient).await;
+        assert!(
+            t.elapsed() < std::time::Duration::from_millis(15),
+            "ambient turns must stay non-blocking; waited {:?}",
+            t.elapsed()
+        );
     }
 
     // what this catches: the context guard — a finding computed against room A
