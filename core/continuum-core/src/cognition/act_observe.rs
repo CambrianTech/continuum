@@ -674,6 +674,27 @@ pub async fn settle_step(
             if let Some(body) = cycle.acting() {
                 let head: String = text.chars().take(WM_ACTION_HEAD_CHARS).collect();
                 body.working_memory.record_settlement(&head);
+                // Unfulfilled-promise backstop (#122): a Speak that NARRATES action
+                // (first-person intent + fence) which nothing lifted/executed —
+                // reaching this arm means no format recognized it — leaves her
+                // believing work happened that never did (the shared-hallucinated-
+                // workspace failure, 2026-07-09). Record the structural fact as
+                // proprioception so next tick she perceives her own unkept promise.
+                // Perception-side only, mirrors the answer-now nudge above; never a
+                // gate on her output ([[no-hardcoded-heuristics-to-steer-cognition]]).
+                if crate::ai::json_in_prompt_tools::narrates_fenced_action(&text) {
+                    body.working_memory.record_action(
+                        "[unfulfilled] I said I would run commands, but no tool ran — \
+                         the fenced text was words only. Nothing exists in the \
+                         workspace until a tool call actually executes it.",
+                    );
+                    crate::probe!(
+                        class = "persona.act.unfulfilled_promise",
+                        persona = %body.persona_name,
+                        room_id = %room_id,
+                        "spoken narration promised action but no format lifted it — recorded unfulfilled-promise proprioception"
+                    );
+                }
             }
             SettleStep::Spoke(text)
         }
@@ -1476,6 +1497,82 @@ mod tests {
         assert!(
             matches!(step, SettleStep::InferenceFailed { error } if error == "lane refused model"),
             "an inference failure must surface LOUD, never collapse to Passed"
+        );
+    }
+
+    /// Deliberation faculty that Speaks a fixed text — for exercising the Speak arm.
+    struct SpeaksText(&'static str);
+    #[async_trait]
+    impl Faculty for SpeaksText {
+        fn id(&self) -> FacultyId {
+            FacultyId::Deliberation
+        }
+        fn reacts_to_broadcast(&self) -> bool {
+            true
+        }
+        async fn contribute(&self, _ws: &Workspace) -> Option<Contribution> {
+            Some(Contribution::verdict(
+                Decision::Speak { text: self.0.into() },
+                0.9,
+                "speaks",
+            ))
+        }
+    }
+
+    // what this catches: the unfulfilled-promise backstop (#122, glass-boxed live
+    // 2026-07-09). A Speak that NARRATES action (first-person intent + fence) which
+    // no format lifted must leave an [unfulfilled] proprioception line in working
+    // memory — next tick she perceives her own unkept promise instead of believing
+    // the work happened. A plain prose Speak must leave no such line.
+    #[tokio::test]
+    async fn spoken_narrated_action_records_unfulfilled_promise() {
+        let exec = Arc::new(RecordingExecutor {
+            seen_context: Mutex::new(None),
+            result_content: "ok".into(),
+        });
+        let promise =
+            "I'll run this script to check:\n```python\nprint(2+2)\n```\nOutput soon!";
+        let wm = Arc::new(WorkingMemory::new(4));
+        let cycle = WorkspaceCycle::new(
+            vec![Arc::new(SpeaksText(promise)) as Arc<dyn Faculty>],
+            Arc::new(SalienceArbiter),
+            8,
+        )
+        .with_acting(body_with_wm(exec.clone(), admission(), Arc::clone(&wm)));
+        let (step, _) = settle_step(
+            &cycle,
+            "[eval]\npeer: can you check 2+2?",
+            Uuid::new_v4(),
+            true,
+            TurnFraming::ambient(),
+        )
+        .await;
+        assert!(matches!(step, SettleStep::Spoke(_)));
+        assert!(
+            wm.recent().iter().any(|l| l.contains("[unfulfilled]")),
+            "narrated-but-unexecuted promise must enter proprioception: {:?}",
+            wm.recent()
+        );
+
+        let wm2 = Arc::new(WorkingMemory::new(4));
+        let cycle2 = WorkspaceCycle::new(
+            vec![Arc::new(SpeaksText("the answer is 4, plainly.")) as Arc<dyn Faculty>],
+            Arc::new(SalienceArbiter),
+            8,
+        )
+        .with_acting(body_with_wm(exec, admission(), Arc::clone(&wm2)));
+        let (step2, _) = settle_step(
+            &cycle2,
+            "[eval]\npeer: can you check 2+2?",
+            Uuid::new_v4(),
+            true,
+            TurnFraming::ambient(),
+        )
+        .await;
+        assert!(matches!(step2, SettleStep::Spoke(_)));
+        assert!(
+            !wm2.recent().iter().any(|l| l.contains("[unfulfilled]")),
+            "plain prose must never trip the promise backstop"
         );
     }
 }

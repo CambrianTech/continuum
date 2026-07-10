@@ -363,6 +363,21 @@ impl ToolCallFormat for NarratedScriptFormat {
     }
 }
 
+/// Does this text NARRATE an action the speaker intends to take — a fence preceded
+/// by first-person intent, not addressed to a peer — regardless of whether any
+/// format could LIFT it? The act→observe Speak arm uses this as the backstop: a
+/// Speak that narrates action which nothing executed gets an `[unfulfilled]`
+/// proprioception line, so next tick she perceives her own unkept promise instead
+/// of believing the work happened (the shared-hallucinated-workspace failure,
+/// 2026-07-09). Broader than the lift conditions on purpose — e.g. a ```python
+/// fence with "I'll run this" is narrated action we can't lift into `code/shell`.
+pub fn narrates_fenced_action(text: &str) -> bool {
+    fenced_blocks(text).iter().any(|f| {
+        let narration = trailing_narration(&text[..f.open]);
+        first_person_intent(&narration) && !addressed_to_peer(&narration)
+    })
+}
+
 /// One ```…``` fenced block: byte offset of the opening fence, the language token
 /// (lowercased, may be empty), and the body with the language line stripped.
 struct FencedBlock {
@@ -872,5 +887,23 @@ Please provide the output so I can review it.";
         let calls = parse_tool_calls(with_envelope);
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].name, "ping");
+    }
+
+    // what this catches: the unfulfilled-promise backstop's predicate (#122). Narrated
+    // action we can't LIFT (a python fence with run-intent — not shell, not file
+    // creation) must still register as a promise so the Speak arm records the
+    // [unfulfilled] proprioception; peer-addressed and example fences must not.
+    #[test]
+    fn narrated_action_predicate_is_broader_than_the_lift() {
+        let unliftable = "I'll run this script to check:\n```python\nprint(2+2)\n```";
+        assert!(parse_tool_calls(unliftable).is_empty(), "python isn't liftable");
+        assert!(narrates_fenced_action(unliftable), "but it IS a narrated promise");
+        assert!(!narrates_fenced_action(
+            "Here's how you would do it:\n```python\nprint(2+2)\n```"
+        ));
+        assert!(!narrates_fenced_action(
+            "Could you run this?\n```bash\nls\n```"
+        ));
+        assert!(!narrates_fenced_action("just prose, no fences at all"));
     }
 }
