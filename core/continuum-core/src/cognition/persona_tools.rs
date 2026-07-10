@@ -297,19 +297,20 @@ pub fn render_tool_menu(
     }
     // Same grouping as render_tool_catalog — stable (BTreeMap) order so the spine is
     // a byte-stable prefix; only the per-category expansion differs. An expanded
-    // category renders its verbs WITH param-name hints (`verb(param, param?)`, see
-    // [`render_param_hint`]) so an expanded surface is byte-identical to the same
-    // slice of [`render_tool_catalog`] — the field-name-guessing fix (measured
-    // 2026-07-01) must not regress just because the verb rides the menu instead of
-    // the catalog. Collapsed categories carry no hints (their verbs aren't shown).
+    // category renders BARE verb names — no param hints. Measured 2026-07-10: the
+    // hinted always-expanded menu was 8.4k chars of a 16.5k live system prompt
+    // (77% instruction boilerplate vs 21% live world — Joel: "prompts that are
+    // more boilerplate than logic"). Verbs stay visible (the she-must-see-her-
+    // hands invariant holds); ARGS are on-demand — `commands/help` is progressive
+    // disclosure's home, and since #1916 a wrong call gets the exact shape
+    // inlined in the SAME error observation, a stronger net at the correction
+    // seam than a hint buried in an 8k wall. (The 2026-07-01 field-name-guessing
+    // fix moved seams: menu-hint → error-manual.)
     let mut by_cat: BTreeMap<&str, Vec<String>> = BTreeMap::new();
     for t in tools {
         let cat = extract_category(&t.name);
         let verb = t.name.strip_prefix(cat).and_then(|r| r.strip_prefix('/')).unwrap_or(&t.name);
-        by_cat
-            .entry(cat)
-            .or_default()
-            .push(format!("{verb}{}", render_param_hint(&t.input_schema)));
+        by_cat.entry(cat).or_default().push(verb.to_string());
     }
     let mut out = String::new();
     for (cat, mut verbs) in by_cat {

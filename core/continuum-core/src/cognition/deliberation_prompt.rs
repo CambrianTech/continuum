@@ -209,15 +209,10 @@ const ACTING_BLOCK: &str = "\n[Acting]\n\
      these ARE your hands — declining to use them, or delegating the work to \
      the asker, is the SAME mistake as claiming you can't, and the fix is the \
      same: just call the tool. \
-     And when you hit a library, an API, an error message, or a fact you are \
-     not sure of, do NOT guess from your training prior — SEARCH the web \
-     (`web/search`) and READ the page (`web/fetch`), the way a developer \
-     actually works. Your training has a cutoff; the web does not. But your \
-     `[recall]` block is different: those are your OWN lived memories from \
-     this system — things you were told, saw, or did here — surfaced because \
-     they match this moment. When the answer is sitting in `[recall]`, answer \
-     from it with confidence; that is remembering, not guessing. Forage the \
-     web only for what neither the room nor your own memory holds.";
+     For facts you are unsure of: `[recall]` is your own lived memory — \
+     answer from it with confidence; the web (`web/search`, `web/fetch`) is \
+     for what neither the room nor your memory holds — never guess from \
+     your training prior.";
 
 /// `[Your own time]` — the self-initiated free-time block. When this turn is the
 /// never-stop heartbeat pursuing her own thread (no inbound message drove it), say so
