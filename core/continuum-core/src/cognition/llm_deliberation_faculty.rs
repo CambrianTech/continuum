@@ -740,10 +740,21 @@ impl LlmDeliberationFaculty {
     /// cause — PERSONA-COGNITION-PIPELINE §7.5).
     fn messages_within(&self, ws: &Workspace, budget_tokens: usize) -> Vec<ChatMessage> {
         // Collapse consecutive same-role turns into one message each (chronological).
+        // Her OWN verbatim-duplicate turns collapse to a marker after the first:
+        // replaying `assistant: X` three times teaches the model that repeating X
+        // is its established behavior — glass-boxed 2026-07-10, the courtesy
+        // spiral's strongest fuel was up to 3 byte-identical assistant turns in
+        // one thread, each making the next more likely. The transcript is data;
+        // the thread is HER projection — byte equality only, never similarity
+        // ([[no-hardcoded-heuristics-to-steer-cognition]]).
         let mut groups: Vec<(&'static str, Vec<String>)> = Vec::new();
+        let mut seen_self: std::collections::HashSet<String> = std::collections::HashSet::new();
         for turn in &ws.turns {
             let role = if turn.is_self { "assistant" } else { "user" };
-            let line = turn_message_line(turn);
+            let mut line = turn_message_line(turn);
+            if turn.is_self && !seen_self.insert(line.clone()) {
+                line = "(you sent this same message again, verbatim)".to_string();
+            }
             match groups.last_mut() {
                 Some((r, lines)) if *r == role => lines.push(line),
                 _ => groups.push((role, vec![line])),
@@ -1048,6 +1059,54 @@ mod tests {
     // framing — never on the generated text.
     mod prompt_shaping {
         use super::*;
+
+        // what this catches: a persona's VERBATIM-duplicate turns collapse to a
+        // marker after the first in her thread projection — replaying
+        // `assistant: X` three times teaches the model that repeating X is its
+        // established behavior (the courtesy spiral's strongest fuel, glass-boxed
+        // 2026-07-10: up to 3 byte-identical assistant turns per thread). Byte
+        // equality only; distinct messages and peers' repeats are untouched.
+        #[test]
+        fn own_verbatim_duplicates_collapse_in_the_thread() {
+            let persona = Uuid::new_v4();
+            let faculty = LlmDeliberationFaculty::new(
+                persona,
+                "Anwen",
+                "You are Anwen.",
+                Arc::new(HeuristicInferenceAdapter::new()),
+            )
+            .with_context_window(32_768);
+            let same = "I apologize for any repetition. Is there something specific?";
+            let ws = Workspace::new(crate::cognition::workspace::Burst::from_turns(
+                Uuid::new_v4(),
+                vec![
+                    BurstTurn::attributed(false, "Asha", "hello!", None),
+                    BurstTurn::attributed(true, "Anwen", same, None),
+                    BurstTurn::attributed(false, "Asha", "still here", None),
+                    BurstTurn::attributed(true, "Anwen", same, None),
+                    BurstTurn::attributed(false, "Asha", "ok", None),
+                    BurstTurn::attributed(true, "Anwen", same, None),
+                ],
+            ));
+            let msgs = faculty.messages_within(&ws, 8_192);
+            let thread: String = msgs
+                .iter()
+                .filter(|m| m.role == "assistant")
+                .map(|m| m.content_text())
+                .collect::<Vec<_>>()
+                .join("\n");
+            assert_eq!(
+                thread.matches(same).count(),
+                1,
+                "only the FIRST verbatim occurrence renders in full: {thread}"
+            );
+            assert_eq!(
+                thread.matches("same message again, verbatim").count(),
+                2,
+                "later duplicates collapse to the marker: {thread}"
+            );
+        }
+
 
         // what this catches: end-to-end through a REAL adapter (the deterministic
         // heuristic stand-in) — the faculty calls inference and produces a verdict
