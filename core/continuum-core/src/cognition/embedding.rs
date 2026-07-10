@@ -47,6 +47,53 @@ pub trait EmbeddingProvider: Send + Sync {
     fn dim(&self) -> usize;
     /// Embed text into a (typically L2-normalized) vector of length `dim()`.
     async fn embed(&self, text: &str) -> Vec<f32>;
+    /// The MEASURED null distribution of this embedder's cosine over UNRELATED
+    /// text pairs: `(mean, std)`. Neural embedding spaces are anisotropic —
+    /// unrelated texts do NOT score ~0 (Qwen3-Embedding baselines near 0.25–0.3)
+    /// — so any absolute cosine threshold calibrated for one embedder silently
+    /// breaks under another (glass-boxed live 2026-07-10: a 0.15 recall floor
+    /// filtered nothing under the neural embedder and saturated-salience chatter
+    /// surfaced identically on 11/11 unrelated coding tasks). Consumers gate by
+    /// SIGNIFICANCE against this null — "does this pair score like an unrelated
+    /// pair?" — pure geometry, embedder-agnostic and language-agnostic by
+    /// construction (never strings/keywords: a German room must work identically).
+    /// `None` = this provider has not calibrated; consumers fall back to their
+    /// legacy behavior. Implementations MEASURE it (embed [`CALIBRATION_PAIRS`]
+    /// once at init), never assume it.
+    fn unrelated_null(&self) -> Option<(f32, f32)> {
+        None
+    }
+}
+
+/// Canned UNRELATED text pairs for measuring an embedder's cosine null
+/// distribution. Calibration probes (measurement data), not matching logic —
+/// deliberately diverse in topic, register, length AND LANGUAGE (an English-only
+/// null would mis-measure the space a multilingual room actually queries in).
+pub const CALIBRATION_PAIRS: &[(&str, &str)] = &[
+    ("the invoice for March is overdue", "a heron stood motionless in the shallows"),
+    ("fn main() { println!(\"hello\"); }", "she packed two sweaters for the trip north"),
+    ("die Sitzung wurde auf Donnerstag verschoben", "el río bajaba turbio después de la tormenta"),
+    ("our quarterly revenue grew eight percent", "the sonata's third movement is in A minor"),
+    ("git rebase rewrites commit history", "la soupe manque de sel et d'une feuille de laurier"),
+    ("降雨量は流域全体で予想を上回った", "the defendant waived the right to a jury"),
+    ("the cache invalidation bug ships tomorrow", "auf dem Bergrücken blühten die Wildblumen früh"),
+    ("please review the attached slide deck", "der Springer gabelte Dame und Turm"),
+];
+
+/// Measure an embedder's unrelated-cosine null distribution over
+/// [`CALIBRATION_PAIRS`]: embed each pair, cosine each, return `(mean, std)`.
+/// Population std — the pairs ARE the calibration population. ~16 embeds, paid
+/// once at init (and cached by the content-addressed cache wrapper).
+pub async fn measure_unrelated_null(provider: &dyn EmbeddingProvider) -> (f32, f32) {
+    let mut cosines = Vec::with_capacity(CALIBRATION_PAIRS.len());
+    for (a, b) in CALIBRATION_PAIRS {
+        let (va, vb) = futures::join!(provider.embed(a), provider.embed(b));
+        cosines.push(cosine_similarity(&va, &vb));
+    }
+    let n = cosines.len() as f32;
+    let mean = cosines.iter().sum::<f32>() / n;
+    let std = (cosines.iter().map(|c| (c - mean).powi(2)).sum::<f32>() / n).sqrt();
+    (mean, std)
 }
 
 /// Cosine similarity in `[-1, 1]` (≈`[0,1]` for non-negative vectors). Returns
@@ -85,19 +132,71 @@ pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
 /// query sharing vocabulary with a memory scores high regardless of recency.
 pub struct LexicalEmbedder {
     dim: usize,
+    /// Measured unrelated-cosine null (mean, std) over [`CALIBRATION_PAIRS`] —
+    /// computed at construction (pure CPU, trivial). For a token-overlap space
+    /// this is genuinely ≈ (0, 0): disjoint vocabularies share no buckets.
+    null: (f32, f32),
 }
 
 impl Default for LexicalEmbedder {
     fn default() -> Self {
         // 512 buckets — enough to keep collisions low for short engram/burst text
         // without paying for a real model.
-        Self { dim: 512 }
+        let mut s = Self {
+            dim: 512,
+            null: (0.0, 0.0),
+        };
+        s.null = s.measure_null_sync();
+        s
     }
 }
 
 impl LexicalEmbedder {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Sync calibration over [`CALIBRATION_PAIRS`] — the embed body is pure CPU,
+    /// so the lexical space can measure its null at construction, no async needed.
+    fn measure_null_sync(&self) -> (f32, f32) {
+        let cosines: Vec<f32> = CALIBRATION_PAIRS
+            .iter()
+            .map(|(a, b)| cosine_similarity(&self.embed_sync(a), &self.embed_sync(b)))
+            .collect();
+        let n = cosines.len() as f32;
+        let mean = cosines.iter().sum::<f32>() / n;
+        let std = (cosines.iter().map(|c| (c - mean).powi(2)).sum::<f32>() / n).sqrt();
+        (mean, std)
+    }
+
+    /// The pure embed body — shared by the async trait method and the sync
+    /// construction-time calibration (one implementation, two entry points).
+    fn embed_sync(&self, text: &str) -> Vec<f32> {
+        let mut v = vec![0.0f32; self.dim];
+        let mut token = String::new();
+        let mut push = |tok: &mut String, v: &mut [f32]| {
+            if !tok.is_empty() {
+                let idx = (Self::hash_token(tok) as usize) % v.len();
+                v[idx] += 1.0;
+                tok.clear();
+            }
+        };
+        for ch in text.chars() {
+            if ch.is_alphanumeric() {
+                token.extend(ch.to_lowercase());
+            } else {
+                push(&mut token, &mut v);
+            }
+        }
+        push(&mut token, &mut v);
+        // L2-normalize so cosine == dot product.
+        let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+        if norm > 0.0 {
+            for x in &mut v {
+                *x /= norm;
+            }
+        }
+        v
     }
 
     /// FNV-1a — a small, fast, deterministic, dependency-free string hash. We do
@@ -124,31 +223,11 @@ impl EmbeddingProvider for LexicalEmbedder {
     }
 
     async fn embed(&self, text: &str) -> Vec<f32> {
-        let mut v = vec![0.0f32; self.dim];
-        let mut token = String::new();
-        let mut push = |tok: &mut String, v: &mut [f32]| {
-            if !tok.is_empty() {
-                let idx = (Self::hash_token(tok) as usize) % v.len();
-                v[idx] += 1.0;
-                tok.clear();
-            }
-        };
-        for ch in text.chars() {
-            if ch.is_alphanumeric() {
-                token.extend(ch.to_lowercase());
-            } else {
-                push(&mut token, &mut v);
-            }
-        }
-        push(&mut token, &mut v);
-        // L2-normalize so cosine == dot product.
-        let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
-        if norm > 0.0 {
-            for x in &mut v {
-                *x /= norm;
-            }
-        }
-        v
+        self.embed_sync(text)
+    }
+
+    fn unrelated_null(&self) -> Option<(f32, f32)> {
+        Some(self.null)
     }
 }
 
@@ -246,6 +325,12 @@ impl EmbeddingProvider for CachingEmbeddingProvider {
         self.inner.dim()
     }
 
+    fn unrelated_null(&self) -> Option<(f32, f32)> {
+        // The null is a property of the embedding SPACE — the cache wrapper
+        // changes nothing about the geometry, so it delegates.
+        self.inner.unrelated_null()
+    }
+
     async fn embed(&self, text: &str) -> Vec<f32> {
         let key = EmbeddingCache::key(self.inner.id(), text);
         if let Some(v) = self.cache.map.get(&key) {
@@ -289,6 +374,10 @@ pub struct NeuralEmbeddingProvider {
     model_slug: String,
     /// Vector dimensionality (Qwen3-Embedding-0.6B = 1024).
     dim: usize,
+    /// Measured unrelated-cosine null — set once by [`calibrate`](Self::calibrate)
+    /// at resolve time (a neural space MUST measure its anisotropy; assuming ~0
+    /// is the bug class that let a 0.15 floor filter nothing).
+    null: std::sync::OnceLock<(f32, f32)>,
 }
 
 impl NeuralEmbeddingProvider {
@@ -301,7 +390,18 @@ impl NeuralEmbeddingProvider {
             adapter,
             model_slug: model_slug.into(),
             dim,
+            null: std::sync::OnceLock::new(),
         }
+    }
+
+    /// Measure this space's unrelated-cosine null over [`CALIBRATION_PAIRS`]
+    /// (~16 forward passes, paid once at resolve time). Idempotent.
+    pub async fn calibrate(&self) -> (f32, f32) {
+        if let Some(n) = self.null.get() {
+            return *n;
+        }
+        let measured = measure_unrelated_null(self).await;
+        *self.null.get_or_init(|| measured)
     }
 }
 
@@ -342,6 +442,10 @@ impl EmbeddingProvider for NeuralEmbeddingProvider {
                 Vec::new()
             }
         }
+    }
+
+    fn unrelated_null(&self) -> Option<(f32, f32)> {
+        self.null.get().copied()
     }
 }
 
@@ -411,8 +515,23 @@ async fn try_neural_embedder(
 ) -> Option<Arc<dyn EmbeddingProvider>> {
     let neural = NeuralEmbeddingProvider::new(adapter, model.to_string(), CANONICAL_EMBED_DIM);
     let probe = neural.embed("probe").await;
-    probe_indicates_usable(&probe)
-        .then(|| Arc::new(CachingEmbeddingProvider::new(Arc::new(neural))) as Arc<dyn EmbeddingProvider>)
+    if !probe_indicates_usable(&probe) {
+        return None;
+    }
+    // Calibrate the space's unrelated-cosine null NOW (~16 forward passes, once
+    // per resolve). Neural spaces are anisotropic — consumers gate relevance by
+    // significance against this MEASURED null, never an assumed-zero baseline
+    // (the assumed-zero floor is the bug that let saturated chatter surface on
+    // 11/11 unrelated coding tasks, 2026-07-10).
+    let (mean, std) = neural.calibrate().await;
+    crate::probe!(
+        class = "recall.embedder.calibrated",
+        model = %model,
+        null_mean = mean,
+        null_std = std,
+        "measured unrelated-cosine null for the embedding space"
+    );
+    Some(Arc::new(CachingEmbeddingProvider::new(Arc::new(neural))) as Arc<dyn EmbeddingProvider>)
 }
 
 /// Resolve the embedder for the live recall path. Tries, in order:

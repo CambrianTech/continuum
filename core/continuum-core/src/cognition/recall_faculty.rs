@@ -52,17 +52,36 @@ use crate::persona::engram::Engram;
 /// limiter on a live persona.
 const DEFAULT_RECALL_LIMIT: usize = 16;
 
-/// Minimum cosine relevance (vs the focused query) for a memory to be surfaced at
-/// all. The closest-match gate the recall budget enforces: a memory the
-/// hippocampus holds at high SALIENCE but that is topically UNRELATED to what's
-/// happening now (cosine ≈ 0) is junk in the prompt — it spends the small model's
-/// attention on noise. Gates on the relevance COMPONENT, never the blended score:
-/// a salience-1.0 nag blends to `0.5·0 + 0.5·1.0 = 0.5` and would sail over any
-/// blended floor, yet its cosine is ~0 and it must be dropped. Only meaningful
-/// when an embedder is present (lexical or neural); the no-embedder path has no
-/// relevance signal and is never floor-filtered. Tunable; the replay A/B bench can
-/// sweep it alongside [`DEFAULT_RELEVANCE_WEIGHT`].
+/// Minimum cosine relevance (vs the focused query) for a memory to be surfaced —
+/// the SMALL-POOL fallback gate only (pool < [`STANDOUT_MIN_POOL`], where a
+/// distribution can't be estimated). The primary gate is the pool-relative
+/// STANDOUT gate below. An absolute cosine floor cannot be the primary gate:
+/// it is calibrated against one embedder's similarity distribution and silently
+/// breaks under another's — glass-boxed live 2026-07-10: under the neural
+/// Qwen3-Embedding, UNRELATED texts baseline at cosine ≈ 0.19–0.31 (anisotropy),
+/// so this 0.15 floor filtered NOTHING and saturated-salience room chatter
+/// surfaced identically on 11/11 different coding-exam tasks.
 const RECALL_RELEVANCE_FLOOR: f32 = 0.15;
+
+/// The SIGNIFICANCE gate: a memory surfaces only if its cosine to the query is a
+/// statistical outlier against the embedder's MEASURED unrelated-null
+/// distribution — `(rel − null_mean)/null_std ≥ this`. Classic hypothesis
+/// testing: H₀ = "this memory is unrelated to the query"; surface only on
+/// rejection at 3σ (the conventional significance bar, not an embedder
+/// constant). Embedder-agnostic AND language-agnostic by construction — the
+/// null is measured per-space over multilingual calibration pairs
+/// ([`crate::cognition::embedding::CALIBRATION_PAIRS`]), so pure geometry
+/// decides, never strings/keywords. Handles every pool shape: all-junk (flat at
+/// the null) → nothing surfaces; all-relevant → all pass, the budget picks
+/// top-k; one true match at any pool size → passes regardless of n (a
+/// pool-relative z cannot: max z = √(n−1)).
+const RECALL_SIGNIFICANCE_SIGMA: f32 = 3.0;
+
+/// Numerical guard for a degenerate measured null (σ ≈ 0, e.g. the lexical
+/// space where disjoint vocabularies share no buckets and every unrelated pair
+/// scores exactly 0). Not a tunable — just division safety; with σ this small
+/// any nonzero cosine is significant, which is correct for such a space.
+const NULL_STD_EPSILON: f32 = 1e-4;
 
 /// Fraction of the served context window recall may spend, in tokens. Recall is
 /// ONE perception faculty among many (roster, doctrine, working memory) plus the
@@ -359,7 +378,18 @@ impl Faculty for RecallFaculty {
         // Without an embedder there is no relevance signal: blended_score IS
         // salience (candidates already in that order) and relevance is 1.0 so the
         // floor never fires (pure salience×recency, backward-compatible).
-        let scored: Vec<(f32, Engram, f32, f32)> = match &self.embedder {
+        // The 4th element is `passes_gate`: did this candidate clear the relevance
+        // gate? With a CALIBRATED embedder the gate is the SIGNIFICANCE test vs
+        // the space's measured unrelated-null (see [`RECALL_SIGNIFICANCE_SIGMA`]);
+        // an uncalibrated embedder falls back to the legacy absolute floor; no
+        // embedder → no relevance signal → always passes (pure salience×recency,
+        // unchanged). Gate only has a voice when relevance does (weight > 0 — the
+        // A/B sweep's weight-0 extreme keeps pure salience×recency ungated).
+        let null = self
+            .embedder
+            .as_ref()
+            .and_then(|e| e.unrelated_null());
+        let scored: Vec<(f32, Engram, f32, bool)> = match &self.embedder {
             Some(embedder) => {
                 // Embed the query AND every candidate CONCURRENTLY. Each embed is an
                 // independent IO future on the neural/grid backend; awaiting them in
@@ -372,12 +402,23 @@ impl Faculty for RecallFaculty {
                 let query_fut = embedder.embed(focused_query(&ws.world_state));
                 let cand_futs = join_all(candidates.iter().map(|(e, _)| embedder.embed(&e.content)));
                 let (query, cand_embeds) = join(query_fut, cand_futs).await;
-                let mut s: Vec<(f32, Engram, f32, f32)> = candidates
+                let gated = self.relevance_weight > 0.0;
+                let mut s: Vec<(f32, Engram, f32, bool)> = candidates
                     .into_iter()
                     .zip(cand_embeds)
                     .map(|((engram, salience), emb)| {
                         let rel = cosine_similarity(&query, &emb);
-                        (blend(salience, rel, self.relevance_weight), engram, salience, rel)
+                        let passes = if !gated {
+                            true
+                        } else if let Some((mu, sd)) = null {
+                            // H₀: "unrelated". Reject (→ surface) at 3σ vs the
+                            // measured null. Pure geometry — no strings, no
+                            // keywords, no per-embedder constants.
+                            (rel - mu) / sd.max(NULL_STD_EPSILON) >= RECALL_SIGNIFICANCE_SIGMA
+                        } else {
+                            rel >= budget.relevance_floor
+                        };
+                        (blend(salience, rel, self.relevance_weight), engram, salience, passes)
                     })
                     .collect();
                 s.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
@@ -385,34 +426,24 @@ impl Faculty for RecallFaculty {
             }
             None => candidates
                 .into_iter()
-                .map(|(engram, salience)| (salience, engram, salience, 1.0))
+                .map(|(engram, salience)| (salience, engram, salience, true))
                 .collect(),
         };
 
-        // Apply the budget: closest-match floor (drop topically-irrelevant junk),
-        // capability-scaled count, and a context-window token ceiling. Ordered by
-        // blended score, so we take the most relevant+salient first; the floor uses
-        // `continue` (not `break`) because a low-relevance high-salience nag can
-        // rank above a genuinely relevant memory under the blend, and we want to
-        // skip the nag and keep scanning for the relevant one.
-        //
-        // The floor belongs to the relevance machinery: it gates only when
-        // relevance actually has a voice (`relevance_weight > 0`). At weight 0.0
-        // (pure salience×recency — the A/B-sweep extreme and the no-embedder path,
-        // where `rel` is 1.0) there is no relevance gate, preserving that mode.
-        let relevance_floor = if self.relevance_weight > 0.0 {
-            budget.relevance_floor
-        } else {
-            f32::NEG_INFINITY
-        };
+        // Apply the budget: the relevance gate (standout / small-pool floor,
+        // computed above), capability-scaled count, and a context-window token
+        // ceiling. Ordered by blended score, so we take the most relevant+salient
+        // first; the gate uses `continue` (not `break`) because a low-relevance
+        // high-salience nag can rank above a genuinely relevant memory under the
+        // blend, and we want to skip the nag and keep scanning for the relevant one.
         let mut surfaced: Vec<(f32, Engram, f32)> = Vec::with_capacity(surface_count);
         let mut used_tokens = 0usize;
-        for (blended, engram, salience, rel) in scored.into_iter() {
+        for (blended, engram, salience, passes_gate) in scored.into_iter() {
             if surfaced.len() >= surface_count {
                 break;
             }
-            if rel < relevance_floor {
-                continue; // topically irrelevant — junk in the prompt
+            if !passes_gate {
+                continue; // does not stand out from the pool — junk in the prompt
             }
             let est = estimate_recall_tokens(&engram.content);
             // Always admit the first qualifying memory (don't starve recall on a
@@ -462,6 +493,32 @@ impl Faculty for RecallFaculty {
         // memories the persona truly used this tick (uplift + persistence).
         let surfaced_ids: Vec<Uuid> = scored.iter().map(|(_, e, _)| e.id).collect();
         self.admission_state.record_recall_hits(&surfaced_ids, now);
+
+        // RTOS probe at the hippocampus seam: WHAT query conditioned recall and
+        // WHAT won, with the scores the model never sees. This is how a
+        // wrong-memory-surfaced bug is diagnosed from the log (glass-boxed live
+        // 2026-07-10: 11 different coding exam tasks each recalled the identical
+        // stale room imperative — without this probe the ranking was a black box).
+        tracing::info!(
+            probe_class = "recall.surface",
+            persona_id = %self.persona_id,
+            query = %focused_query(&ws.world_state).chars().take(90).collect::<String>(),
+            embedder = self.embedder.is_some(),
+            relevance_weight = self.relevance_weight,
+            null_mean = null.map(|(m, _)| m).unwrap_or(f32::NAN),
+            null_std = null.map(|(_, s)| s).unwrap_or(f32::NAN),
+            surfaced = %scored
+                .iter()
+                .map(|(blended, e, sal)| format!(
+                    "[blend={blended:.3} sal={sal:.3} | {}]",
+                    e.content.chars().take(60).collect::<String>().replace('\n', " ")
+                ))
+                .collect::<Vec<_>>()
+                .join(" "),
+            "recall surfaced {} memor{}",
+            scored.len(),
+            if scored.len() == 1 { "y" } else { "ies" }
+        );
 
         // The faculty's bid salience: max(blended score, intrinsic_salience). The
         // `.max` removes the regression where a lexically-thin burst (cosine ≈ 0)
@@ -1380,6 +1437,120 @@ mod tests {
             c.content.contains("code/run(source=fn is_prime)"),
             "without a working-memory channel, recall must keep the act; got:\n{}",
             c.content
+        );
+    }
+
+    /// Test-only anisotropic embedding space: unrelated pairs baseline at a
+    /// NONZERO cosine (like the neural Qwen3 space, measured ≈0.25–0.3), with a
+    /// calibrated null. `embed` keys canned contents to fixed 2-d unit vectors —
+    /// a geometry fixture, not matching logic.
+    struct AnisotropicStub;
+
+    #[async_trait]
+    impl crate::cognition::embedding::EmbeddingProvider for AnisotropicStub {
+        fn id(&self) -> &str {
+            "test-anisotropic"
+        }
+        fn dim(&self) -> usize {
+            2
+        }
+        async fn embed(&self, text: &str) -> Vec<f32> {
+            if text.contains("BLUEHERON") {
+                vec![0.8, 0.6] // cos vs query = 0.8 → z = (0.8−0.27)/0.04 ≈ 13 — significant
+            } else if text.contains("deploy codename") {
+                vec![1.0, 0.0] // the query
+            } else {
+                vec![0.28, 0.96] // cos vs query = 0.28 ≈ the null — NOT significant
+            }
+        }
+        fn unrelated_null(&self) -> Option<(f32, f32)> {
+            Some((0.27, 0.04)) // the measured anisotropy of this space
+        }
+    }
+
+    // what this catches: the live 2026-07-10 hippocampus bug — under an
+    // ANISOTROPIC space (unrelated baseline ≈0.27, NOT 0) the old absolute floor
+    // (0.15 < baseline) filtered nothing, so a salience-saturated room nag
+    // surfaced identically on 11/11 unrelated coding tasks. The calibrated
+    // SIGNIFICANCE gate must (a) DROP null-scoring junk even at salience 0.99,
+    // (b) SURFACE a true match (several σ above the null) despite lower salience,
+    // and (c) surface NOTHING when no memory rejects the null — never pad the
+    // prompt with the least-irrelevant memory.
+    #[tokio::test]
+    async fn significance_gate_beats_saturated_salience_under_anisotropic_space() {
+        let now = 1_000_000_000u64;
+        let query = "what was the deploy codename again?";
+        let seed = |with_match: bool| {
+            let recall_meta = Arc::new(RecallMetadataRegistry::new());
+            let state = Arc::new(AdmissionState::new(recall_meta.clone()));
+            let mut mk = |content: &str, salience: f32| {
+                let id = Uuid::new_v4();
+                state.push_for_test(Engram {
+                    context_id: None,
+                    id,
+                    kind: EngramKind::Episodic,
+                    content: content.to_string(),
+                    origin: EngramOrigin::Chat(ChatMessageRef {
+                        message_id: Uuid::new_v4(),
+                        room_id: Uuid::new_v4(),
+                        sender_id: Uuid::new_v4(),
+                        posted_at_ms: now,
+                        content_hash: "h".to_string(),
+                    }),
+                    recall_keys: Vec::new(),
+                    admitted_at_ms: now,
+                    trust_state_at_admission: TrustState::ApprovedPeer,
+                    admission_trace_id: None,
+                });
+                recall_meta.admit(
+                    id,
+                    RecallMetadata {
+                        salience,
+                        access_count: 0,
+                        last_accessed_ms: 0,
+                        protected_until_ms: 0,
+                        last_decayed_ms: now,
+                    },
+                );
+            };
+            // Rehearsal-saturated junk (the "enough goodbyes" class): max salience,
+            // cosine AT the null.
+            mk("enough goodbyes, the board has real work", 0.99);
+            mk("hello, how can I assist you today", 0.99);
+            mk("let me check the current task at hand", 0.99);
+            if with_match {
+                // The genuinely relevant memory — LOWER salience.
+                mk("the codename is BLUEHERON-7", 0.4);
+            }
+            state
+        };
+
+        // (a)+(b): the true match surfaces; every saturated-junk memory is dropped.
+        let recall = RecallFaculty::new(Uuid::new_v4(), seed(true))
+            .with_clock(Arc::new(move || now))
+            .with_embedder(Arc::new(AnisotropicStub));
+        let c = recall
+            .contribute(&Workspace::new(query))
+            .await
+            .expect("the significant memory must surface");
+        assert!(
+            c.content.contains("BLUEHERON"),
+            "the true match must surface despite lower salience; got:\n{}",
+            c.content
+        );
+        assert!(
+            !c.content.contains("goodbyes") && !c.content.contains("assist you"),
+            "null-scoring junk must be dropped even at salience 0.99; got:\n{}",
+            c.content
+        );
+
+        // (c): with NO memory rejecting the null, recall surfaces NOTHING.
+        let recall = RecallFaculty::new(Uuid::new_v4(), seed(false))
+            .with_clock(Arc::new(move || now))
+            .with_embedder(Arc::new(AnisotropicStub));
+        assert!(
+            recall.contribute(&Workspace::new(query)).await.is_none(),
+            "an all-junk pool must surface nothing, never the least-irrelevant memory"
         );
     }
 }
