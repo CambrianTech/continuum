@@ -2955,6 +2955,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "conway_game_of_life"
+version = "0.1.0"
+
+[[package]]
 name = "cookie"
 version = "0.18.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

@@ -317,7 +317,15 @@ impl LlmDeliberationFaculty {
             self.native_specs.clear();
             return;
         }
-        let mut specs = persona_tools::native_tool_specs();
+        // Offer the working set in the WIRE DIALECT — the conventional names
+        // (bash, read_file, edit_file…) tool-trained models reach for by reflex,
+        // charset-legal per the OpenAI function-name spec our slashed names
+        // violate. Calls map back to canonical commands on return (ONE table:
+        // [`crate::cognition::tool_dialect`]). [[joel-boundary-design-values]]
+        let mut specs: Vec<_> = persona_tools::native_tool_specs()
+            .into_iter()
+            .map(crate::cognition::tool_dialect::to_wire_spec)
+            .collect();
         // ADAPTIVE surface ([[adaptive-tool-surface-meets-you-in-the-middle]]): the full
         // native working set (~11 schemas, ~2.7k tokens) only rides when the served window
         // can afford it. On a small window (a 4k lane) it would crowd out the prompt itself
@@ -977,7 +985,13 @@ impl Faculty for LlmDeliberationFaculty {
         //      ignore the native tool channel) — strictly better than dropping it.
         if !self.tools.is_empty() {
             if matches!(resp.finish_reason, FinishReason::ToolUse) {
-                let calls = resp.tool_calls.clone().unwrap_or_default();
+                let mut calls = resp.tool_calls.clone().unwrap_or_default();
+                // Wire dialect → canonical command names, BEFORE the
+                // authorization gate and the executor ever see them (the
+                // reverse half of the offer-side rename above).
+                for c in &mut calls {
+                    c.name = crate::cognition::tool_dialect::from_wire_name(&c.name).to_string();
+                }
                 if !calls.is_empty() {
                     return Some(self.act_verdict(calls, &resp));
                 }
@@ -1290,10 +1304,12 @@ mod tests {
                 .iter()
                 .map(|s| s.name.as_str())
                 .collect();
+            // Names on the wire ride the DIALECT (tool_dialect): the conventional,
+            // charset-legal aliases tool-trained models actually saw in training.
             assert_eq!(
                 native,
-                vec!["commands/list", persona_tools::TOOL_HELP_NAME],
-                "tight window ⇒ discovery pair only"
+                vec!["list_commands", "help"],
+                "tight window ⇒ discovery pair only (wire dialect)"
             );
             assert!(
                 faculty.describe_tool_tokens() < 512,
@@ -1324,24 +1340,24 @@ mod tests {
                 .with_tools(persona_tools::native_tool_specs());
                 f.native_specs.iter().map(|s| s.name.clone()).collect()
             };
-            for must in ["code/search", "code/read", "code/edit"] {
+            // Wire names are the DIALECT aliases (tool_dialect) — the coding arc
+            // rides under the names the model was trained on, never our slashes.
+            for must in ["grep", "read_file", "edit_file", "bash"] {
                 assert!(
                     roomy_native.iter().any(|n| n == must),
                     "roomy window ⇒ {must} offered natively: {roomy_native:?}"
                 );
             }
 
-            // The bookmarked MENU rode into the system prompt. An EXPANDED category lists
-            // the VERB of every tool it holds WITH its param-name hint
-            // (`category: verb(param), …`), so the persona sees real tool names + arg names
-            // without a 60-schema dump. The 60 tools all share category `cat`, so with
-            // `cat` expanded the line is `cat:` followed by `command_0(path), command_1(path),
-            // …` — names + arg names, not counts, not full slash-paths.
+            // The bookmarked MENU rode into the system prompt. An EXPANDED category
+            // lists the BARE verb of every tool it holds (`category: verb, …`) — names
+            // only since the 2026-07-10 prompt diet; args live in commands/help + the
+            // #1916 inline error-manual, never an 8k menu wall.
             let expanded = BTreeSet::from(["cat".to_string()]);
             let framing = faculty.compose_system("", &expanded, false, false, None);
             assert!(
-            framing.contains("[Your tools]") && framing.contains("cat: command_0(path"),
-            "an expanded category must name each verb + its param hint under its header: {framing}"
+            framing.contains("[Your tools]") && framing.contains("cat: command_0"),
+            "an expanded category must name each verb under its header: {framing}"
         );
             assert!(
             !framing.contains("cat/command_0"),
@@ -1536,9 +1552,11 @@ mod tests {
             // runs). Names ride the expansion, summaries never do.
             let opened =
                 faculty.compose_system("", &BTreeSet::from(["cat0".to_string()]), false, false, None);
+            // Bare verb names since the 2026-07-10 prompt diet — args live in
+            // commands/help + the #1916 inline error-manual, not an 8k menu wall.
             assert!(
-                opened.contains("cat0: command_0(path)"),
-                "an expanded category lists its verbs + param hints so she can see them: {opened}"
+                opened.contains("cat0: command_0"),
+                "an expanded category lists its verbs so she can see them: {opened}"
             );
         }
     } // mod prompt_shaping

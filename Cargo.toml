@@ -29,7 +29,7 @@ members = [
     "client/continuum-client-ffi",
 
     # apps/ — first-party UI shells / embodiments
-    "apps/cli",
+    "apps/cli", "conway_game_of_life",
 ]
 # Shared dependencies - workers inherit these versions
 [workspace.dependencies]

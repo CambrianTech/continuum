@@ -61,6 +61,7 @@ pub mod rag_source_faculty;
 pub mod rate_proposals;
 pub mod recall_faculty;
 pub mod recall_ranker;
+pub mod tool_dialect;
 pub mod resource_admission;
 pub mod response_orchestrator;
 pub mod response_validator;

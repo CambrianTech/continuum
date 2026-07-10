@@ -36,10 +36,16 @@ struct ToolCallEnvelope {
 /// no-arg tool can be called as `{"tool_call": {"name": "ping"}}`.
 #[derive(Debug, Deserialize)]
 struct ToolCallJson {
+    /// `name` is canonical; `function`/`tool` are accepted as aliases — observed
+    /// live 2026-07-10: Asha, after a day of narrating, finally emitted a
+    /// STRUCTURED call — `{"function": "work/claim", "params": {…}}` — and the
+    /// parser rejected it on key SPELLING alone ([[pass-must-be-trained-not-told]]:
+    /// check the action parser before declaring a model gap; she DID emit it).
+    #[serde(alias = "function", alias = "tool")]
     name: String,
-    /// `arguments` is the canonical key; `parameters` is accepted as an alias so
-    /// Llama/Mistral-style bare calls (`{"name", "parameters"}`) normalize cleanly.
-    #[serde(default, alias = "parameters")]
+    /// `arguments` is canonical; `parameters`/`params`/`input` are aliases so
+    /// Llama/Mistral/OpenAI-ish bare calls all normalize cleanly.
+    #[serde(default, alias = "parameters", alias = "params", alias = "input")]
     arguments: Value,
 }
 
@@ -252,7 +258,12 @@ impl ToolCallFormat for BareFormat {
     }
     fn parse(&self, text: &str) -> Vec<ToolCall> {
         scan_objects(text, |obj| {
-            if !obj.contains("\"arguments\"") && !obj.contains("\"parameters\"") {
+            let has_args = ["\"arguments\"", "\"parameters\"", "\"params\"", "\"input\""]
+                .iter()
+                .any(|k| obj.contains(k));
+            let has_name =
+                ["\"name\"", "\"function\"", "\"tool\""].iter().any(|k| obj.contains(k));
+            if !has_args || !has_name {
                 return None; // not a tool call — avoid false positives
             }
             serde_json::from_str::<ToolCallJson>(obj)
@@ -1073,6 +1084,25 @@ print('hi')
 fn r() {}
 ```";
         assert!(parse_tool_calls(example).is_empty(), "no intent, no lift");
+    }
+
+    // what this catches: key-spelling tolerance on structured calls. Asha's live
+    // 2026-07-10 claim — her FIRST structured emission after a day of narration —
+    // used {"function","params"} and the strict {"name","arguments"} parser
+    // rejected it on spelling alone. All common spellings normalize; prose JSON
+    // without a name+args shape still never false-parses.
+    #[test]
+    fn function_params_key_spellings_normalize() {
+        let asha = "I'll claim a card for my Conway project.\n```json\n{\"function\": \"work/claim\", \"params\": {\"card_id\": \"33a0e899\"}}\n```";
+        let calls = parse_tool_calls(asha);
+        assert_eq!(calls.len(), 1, "her structured claim must lift: {calls:?}");
+        assert_eq!(calls[0].name, "work/claim");
+        assert_eq!(calls[0].input["card_id"], "33a0e899");
+        // {"tool","input"} spelling too.
+        let alt = "{\"tool\": \"code/read\", \"input\": {\"file_path\": \"a.rs\"}}";
+        assert_eq!(parse_tool_call(alt).unwrap().name, "code/read");
+        // Ordinary JSON data (no name/args shape) still never false-parses.
+        assert!(parse_tool_calls("{\"count\": 3, \"items\": []}").is_empty());
     }
 
     // what this catches: a PAST-TENSE first-person execution claim after the fence
