@@ -155,6 +155,47 @@ def main():
         print(f"\n[matrix] wrote {args.out}", file=sys.stderr)
     print("\n" + table)
 
+    # DURABLE: append every cell to the committed results ledger so a number is never
+    # lost to a scrollback (benchmarks/RESULTS.jsonl is the single source of truth the
+    # README renders from — render_results.py). Best-effort: a ledger failure never
+    # fails the sweep.
+    append_ledger(results, args)
+
+
+def _git_sha():
+    try:
+        return subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=HERE,
+                              capture_output=True, text=True).stdout.strip() or "unknown"
+    except Exception:
+        return "unknown"
+
+
+def append_ledger(results, args):
+    import datetime, platform
+    ledger = os.path.join(HERE, "..", "RESULTS.jsonl")
+    sha = _git_sha()
+    day = datetime.date.today().isoformat()
+    mach = platform.node() or "unknown"
+    def row(label, arm, cell):
+        if not cell:
+            return None
+        return {"benchmark": args.benchmark, "model": label, "arm": arm,
+                "score": cell.get("passed"), "total": cell.get("attempted", cell.get("tasks")),
+                "pass_rate": cell.get("pass_rate"),
+                "mean_output_tokens": cell.get("mean_output_tokens"),
+                "excluded": bool(cell.get("excluded")), "captured": day,
+                "git_sha": sha, "machine": mach, "note": None}
+    try:
+        with open(ledger, "a") as f:
+            for r in results:
+                for arm, key in [("RAW", "raw"), ("OURS", "system"), ("opencode", "opencode")]:
+                    rec = row(r["label"], arm, r.get(key))
+                    if rec:
+                        f.write(json.dumps(rec) + "\n")
+        print(f"[matrix] appended cells to {ledger}", file=sys.stderr)
+    except Exception as e:
+        print(f"[matrix] WARN: ledger append failed (sweep still valid): {e}", file=sys.stderr)
+
 
 if __name__ == "__main__":
     main()

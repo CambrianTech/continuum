@@ -367,62 +367,53 @@ But continuum goes beyond routing. **Routing picks from what exists. continuum c
 
 ---
 
-## Benchmarks — reproducible, honest proof
+<!-- BENCHMARKS:START -->
+## Benchmarks — reproducible, definitive, never lost
 
-Claims are cheap; a rustc compile-and-run grader is not. Every number below is produced by
-`benchmarks/coder/matrix.py` on the same tasks, the same grader, one command — and anyone can
-re-run it against their own endpoint. We never depend on an opponent (Hermes, opencode, a cloud
-API); they're optional external cells reached through a toolchain-free script.
+Every number here is rendered from [`benchmarks/RESULTS.jsonl`](benchmarks/RESULTS.jsonl) — an append-only, committed ledger. Re-run a sweep, it appends; `python3 benchmarks/render_results.py` regenerates this section. No hand-edited claims: **edit the data, re-render.** Identical model weights across RAW / OURS / opencode, so every delta is an honest system effect, not a model-fit confound.
 
-The matrix measures each model up to **four ways** on the same gym: **RAW** (the model one-shot
-against its own `/v1`), **OURS** (the same model through the full continuum cognition loop),
-**opencode** (the same model through the opencode agentic harness, with a fairness shim that
-recovers its narrated tool calls), and **Hermes-3-8B** as a fixed opponent. Identical weights
-across RAW/OURS/opencode, so the deltas are honest system effects — no model-fit confound.
+- **RAW** — the model one-shot against its own `/v1`.  
+- **OURS** — the same weights through the full continuum cognition loop (memory, tools, act→observe, recovery).  
+- **opencode** — the same weights through the opencode agentic harness (fair narrated-tool-call shim).  
+- **Hermes-3-8B** — a fixed opponent baseline.
 
-**HumanEval-Rust, rustc compile+run graded** (run on a MacBook — small slices are a proof-of-method;
-the full 40-task board and a bigger-machine sweep with more models run with the identical command).
-Task counts shown per cell so nothing is cherry-picked:
+### Lab-grade (the headline)
 
-| model | RAW one-shot | OURS (continuum) | opencode | Hermes-3-8B |
+**SWE-bench Lite** — real GitHub issues in real repos, official swebench scorer
+
+| model | RAW | OURS | opencode | Hermes-3-8B |
 |---|---|---|---|---|
-| **Qwen2.5-Coder-14B** (20 tasks) | 90% (18/20) | **90% (18/20)** | 75% (15/20) | 52% (21/40) |
-| Devstral-Small-24B (5 tasks) | 100% (5/5) | **100% (5/5)** | — | 52% (21/40) |
-| qwen3.5-4b-code-forged *(we forged it)* (5 tasks) | — | **80% (4/5)** | — | 52% (21/40) |
+| **Devstral-Small-24B** | — | ***pending*** | — | — |
 
-**On the matched 14B row, OURS beats opencode by 15 points (90% vs 75%) and Hermes by 38 —
-with zero tax vs the model's own one-shot.** opencode's loop *drops* three tasks the model gets
-right raw; ours keeps them. That's the whole thesis: our loop lifts, or at worst matches, a
-model's own ceiling — it never taxes it.
+### Fast verifiable gyms (regression + training signal)
 
-The other half of the story is the **tax column**. A capable model *trained* to call tools (Devstral)
-originally scored **0% through our loop** while acing it one-shot — it drowned in a tool-discovery
-loop and never answered. The system-lift isolator caught it; the fix (match the tool surface to
-the task — a spoken-graded exam needs no hands) took it **0% → 100%**. That's the "win every model
-out of the box" discipline: measure the tax, kill it, prove it's dead.
+**HumanEval-Rust** — function-level, rustc compile+run graded
 
-### Reproduce
+| model | RAW | OURS | opencode | Hermes-3-8B |
+|---|---|---|---|---|
+| **Devstral-Small-24B** | 100% (5/5) | **100% (5/5)** | — | — |
+| **Qwen2.5-Coder-14B** | 90% (18/20) | **90% (18/20)** | 75% (15/20) | — |
+| **Hermes-3-Llama-3.1-8B** | — | **52% (21/40)** | — | — |
 
-```bash
-# 1. boot a continuum core (it serves your local model)
-# 2. run the matrix — RAW + OURS for every model in the config, same grader:
-python3 benchmarks/coder/matrix.py \
-    --models benchmarks/coder/models.json --benchmark humaneval-rs --limit 40 \
-    --out benchmarks/coder/MATRIX.md
+**Hard-Rust** — expression evaluators + algorithmics
 
-# score any external model one-shot (Hermes, a cloud API, an airc peer) — zero deps:
-python3 benchmarks/coder/oneshot_opponent.py \
-    --endpoint http://127.0.0.1:8080/v1 --model hermes-3 --label "Hermes-3-8B" --limit 40
+| model | RAW | OURS | opencode | Hermes-3-8B |
+|---|---|---|---|---|
+| **Devstral-Small-24B** | 38% (3/8) | **38% (3/8)** | — | — |
+| **Qwen2.5-Coder-3B** | — | **25% (2/8)** | — | — |
+| **Qwen2.5-Coder-14B** | — | ***excluded¹*** | — | — |
 
-# score the opencode agentic harness on the same model (fairness shim recovers its tool calls):
-llama-server -m <qwen14b.gguf> --port 8093 -c 32768 --jinja &
-python3 benchmarks/coder/toolcall_shim.py --listen 8094 --upstream http://127.0.0.1:8093 &
-python3 benchmarks/coder/harness_opencode.py --gym docs/genome/humaneval-rs.jsonl \
-    --limit 20 --model local/qwen14b --label "Qwen2.5-Coder-14B (opencode)"
-```
+**Frontier-Rust** — Dijkstra · Levenshtein · LIS · topo-sort · bignum · calc · regex
 
-Add a model = one row in `benchmarks/coder/models.json`. Full running board + methodology:
-[`benchmarks/coder/SCOREBOARD.md`](benchmarks/coder/SCOREBOARD.md).
+| model | RAW | OURS | opencode | Hermes-3-8B |
+|---|---|---|---|---|
+| **Devstral-Small-24B** | — | ***pending*** | — | — |
+
+¹ *excluded* = a serving/harness failure (degenerate output under GPU contention, a down endpoint) — never scored as a model 0%. The harness self-flags these ([`headtohead.py`](benchmarks/coder/headtohead.py)) so no false zero reaches this table.
+
+**Reproduce:** `python3 benchmarks/coder/matrix.py --models benchmarks/coder/models.json --benchmark <name>` (inner gyms) · `python3 benchmarks/swe/run_ours.py --instance <id> --solver ours` (SWE-bench). Both append to `RESULTS.jsonl`; re-render with `benchmarks/render_results.py`.
+
+<!-- BENCHMARKS:END -->
 
 ---
 
