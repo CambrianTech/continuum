@@ -370,48 +370,50 @@ But continuum goes beyond routing. **Routing picks from what exists. continuum c
 <!-- BENCHMARKS:START -->
 ## Benchmarks — reproducible, definitive, never lost
 
-Every number here is rendered from [`benchmarks/RESULTS.jsonl`](benchmarks/RESULTS.jsonl) — an append-only, committed ledger. Re-run a sweep, it appends; `python3 benchmarks/render_results.py` regenerates this section. No hand-edited claims: **edit the data, re-render.** Identical model weights across RAW / OURS / opencode, so every delta is an honest system effect, not a model-fit confound.
+Every number here is rendered from [`benchmarks/RESULTS.jsonl`](benchmarks/RESULTS.jsonl) — an append-only, committed ledger. Re-run a sweep, it appends; `python3 benchmarks/render_results.py` regenerates this section (chart included). No hand-edited claims: **edit the data, re-render.** Identical model weights across RAW / OURS / opencode, so every delta is an honest system effect, not a model-fit confound.
+
+![Continuum vs opencode vs raw — coding pass-rate](benchmarks/charts/coder-headline.svg)
 
 - **RAW** — the model one-shot against its own `/v1`.  
 - **OURS** — the same weights through the full continuum cognition loop (memory, tools, act→observe, recovery).  
 - **opencode** — the same weights through the opencode agentic harness (fair narrated-tool-call shim).  
-- **Hermes-3-8B** — a fixed opponent baseline.
+- **Δ vs opencode** — points OURS beats the standard local harness by, same weights. **This is the claim.**
 
 ### Lab-grade (the headline)
 
 **SWE-bench Lite** — real GitHub issues in real repos, official swebench scorer
 
-| model | RAW | OURS | opencode | Hermes-3-8B |
-|---|---|---|---|---|
-| **Devstral-Small-24B** | — | ***pending*** | — | — |
+| model | RAW | OURS | opencode | Δ vs opencode | Hermes-3-8B |
+|---|---|---|---|---|---|
+| **Devstral-Small-24B** | — | ***pending*** | — | — | — |
 
 ### Fast verifiable gyms (regression + training signal)
 
 **HumanEval-Rust** — function-level, rustc compile+run graded
 
-| model | RAW | OURS | opencode | Hermes-3-8B |
-|---|---|---|---|---|
-| **Devstral-Small-24B** | 100% (5/5) | **100% (5/5)** | — | — |
-| **Qwen2.5-Coder-14B** | 90% (18/20) | **90% (18/20)** | 75% (15/20) | — |
-| **Hermes-3-Llama-3.1-8B** | — | **52% (21/40)** | — | — |
+| model | RAW | OURS | opencode | Δ vs opencode | Hermes-3-8B |
+|---|---|---|---|---|---|
+| **Devstral-Small-24B** | 100% (5/5) | **100% (5/5)** | — | — | — |
+| **Qwen2.5-Coder-14B** | 90% (18/20) | **90% (18/20)** | 75% (15/20) | **+15** | — |
+| **Hermes-3-Llama-3.1-8B** | — | **52% (21/40)** | — | — | — |
 
 **Hard-Rust** — expression evaluators + algorithmics
 
-| model | RAW | OURS | opencode | Hermes-3-8B |
-|---|---|---|---|---|
-| **Devstral-Small-24B** | 38% (3/8) | **38% (3/8)** | — | — |
-| **Qwen2.5-Coder-3B** | — | **25% (2/8)** | — | — |
-| **Qwen2.5-Coder-14B** | — | ***excluded¹*** | — | — |
+| model | RAW | OURS | opencode | Δ vs opencode | Hermes-3-8B |
+|---|---|---|---|---|---|
+| **Qwen2.5-Coder-14B** | — | ***excluded¹*** | — | — | — |
+| **Devstral-Small-24B** | 38% (3/8) | **38% (3/8)** | — | — | — |
+| **Qwen2.5-Coder-3B** | — | **25% (2/8)** | — | — | — |
 
 **Frontier-Rust** — Dijkstra · Levenshtein · LIS · topo-sort · bignum · calc · regex
 
-| model | RAW | OURS | opencode | Hermes-3-8B |
-|---|---|---|---|---|
-| **Devstral-Small-24B** | — | ***pending*** | — | — |
+| model | RAW | OURS | opencode | Δ vs opencode | Hermes-3-8B |
+|---|---|---|---|---|---|
+| **Devstral-Small-24B** | — | ***pending*** | — | — | — |
 
 ¹ *excluded* = a serving/harness failure (degenerate output under GPU contention, a down endpoint) — never scored as a model 0%. The harness self-flags these ([`headtohead.py`](benchmarks/coder/headtohead.py)) so no false zero reaches this table.
 
-**Reproduce:** `python3 benchmarks/coder/matrix.py --models benchmarks/coder/models.json --benchmark <name>` (inner gyms) · `python3 benchmarks/swe/run_ours.py --instance <id> --solver ours` (SWE-bench). Both append to `RESULTS.jsonl`; re-render with `benchmarks/render_results.py`.
+**Reproduce:** `python3 benchmarks/coder/matrix.py --models benchmarks/coder/models.json --benchmark <name>` (inner gyms) · `python3 benchmarks/swe/run_ours.py --instance <id> --solver ours` (SWE-bench). Both append to `RESULTS.jsonl`; re-render with `python3 benchmarks/render_results.py`.
 
 <!-- BENCHMARKS:END -->
 
