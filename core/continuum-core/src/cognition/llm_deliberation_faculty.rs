@@ -740,13 +740,18 @@ impl LlmDeliberationFaculty {
     /// cause — PERSONA-COGNITION-PIPELINE §7.5).
     fn messages_within(&self, ws: &Workspace, budget_tokens: usize) -> Vec<ChatMessage> {
         // Collapse consecutive same-role turns into one message each (chronological).
-        // Her OWN verbatim-duplicate turns collapse to a marker after the first:
-        // replaying `assistant: X` three times teaches the model that repeating X
-        // is its established behavior — glass-boxed 2026-07-10, the courtesy
-        // spiral's strongest fuel was up to 3 byte-identical assistant turns in
-        // one thread, each making the next more likely. The transcript is data;
-        // the thread is HER projection — byte equality only, never similarity
-        // ([[no-hardcoded-heuristics-to-steer-cognition]]).
+        // Her OWN verbatim-duplicate turns are DROPPED after the first: replaying
+        // `assistant: X` three times teaches the model that repeating X is its
+        // established behavior — glass-boxed 2026-07-10, the courtesy spiral's
+        // strongest fuel was up to 3 byte-identical assistant turns in one thread.
+        // Dropped, not replaced with a marker: the first cut rendered
+        // "(you sent this same message again, verbatim)" in her assistant history,
+        // and the same law fired again — words in assistant turns are words the
+        // model says, and Anwen BROADCAST the marker to the room that night.
+        // Perception-side repetition awareness is the repetition brick's job
+        // (structural fact in the world channel, #121), never assistant-voice
+        // text we author ([[no-hardcoded-heuristics-to-steer-cognition]]). Byte
+        // equality only, never similarity.
         let mut groups: Vec<(&'static str, Vec<String>)> = Vec::new();
         let mut seen_self: std::collections::HashSet<String> = std::collections::HashSet::new();
         // Every display name in the window (peers + self) — the participant set
@@ -765,9 +770,9 @@ impl LlmDeliberationFaculty {
         participants.dedup();
         for turn in &ws.turns {
             let role = if turn.is_self { "assistant" } else { "user" };
-            let mut line = turn_message_line_addressed(turn, &participants, &self.persona_name);
+            let line = turn_message_line_addressed(turn, &participants, &self.persona_name);
             if turn.is_self && !seen_self.insert(line.clone()) {
-                line = "(you sent this same message again, verbatim)".to_string();
+                continue;
             }
             match groups.last_mut() {
                 Some((r, lines)) if *r == role => lines.push(line),
@@ -1074,12 +1079,16 @@ mod tests {
     mod prompt_shaping {
         use super::*;
 
-        // what this catches: a persona's VERBATIM-duplicate turns collapse to a
-        // marker after the first in her thread projection — replaying
-        // `assistant: X` three times teaches the model that repeating X is its
-        // established behavior (the courtesy spiral's strongest fuel, glass-boxed
-        // 2026-07-10: up to 3 byte-identical assistant turns per thread). Byte
-        // equality only; distinct messages and peers' repeats are untouched.
+        // what this catches: a persona's VERBATIM-duplicate turns are DROPPED
+        // after the first in her thread projection — replaying `assistant: X`
+        // three times teaches the model that repeating X is its established
+        // behavior (the courtesy spiral's strongest fuel, glass-boxed 2026-07-10:
+        // up to 3 byte-identical assistant turns per thread). Dropped, NOT
+        // replaced with marker text: the marker cut put authored words in her
+        // assistant voice and Anwen broadcast "(you sent this same message
+        // again, verbatim)" to the live room the same night — assistant-turn
+        // content IS the model's speech repertoire. Byte equality only; distinct
+        // messages and peers' repeats are untouched.
         #[test]
         fn own_verbatim_duplicates_collapse_in_the_thread() {
             let persona = Uuid::new_v4();
@@ -1112,12 +1121,12 @@ mod tests {
             assert_eq!(
                 thread.matches(same).count(),
                 1,
-                "only the FIRST verbatim occurrence renders in full: {thread}"
+                "only the FIRST verbatim occurrence renders at all: {thread}"
             );
-            assert_eq!(
-                thread.matches("same message again, verbatim").count(),
-                2,
-                "later duplicates collapse to the marker: {thread}"
+            assert!(
+                !thread.contains("same message again"),
+                "no authored marker text in her assistant voice — duplicates \
+                 drop silently (the marker got broadcast to the live room): {thread}"
             );
         }
 
