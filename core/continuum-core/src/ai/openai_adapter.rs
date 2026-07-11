@@ -172,16 +172,6 @@ pub struct OpenAICompatibleAdapter {
     /// the probe. This is the self-organizing alternative to a hardcoded
     /// "which provider supports LoRA" table — the endpoint describes itself.
     lora_support: std::sync::Arc<std::sync::RwLock<LoraSupport>>,
-    /// Persona→slot affinity for llama.cpp-family backends (task: token/sec).
-    /// llama-server's default slot selection is prefix-similarity, and with N
-    /// personas whose prompts SHARE doctrine text but DIFFER in identity +
-    /// history, requests cross-assign and clobber each other's KV prefixes —
-    /// measured 2026-07-11: 30% prompt-cache hit, median decode 2.5 tok/s
-    /// across 144 turns on the 24B. Pinning each persona to a stable slot via
-    /// the `id_slot` request extension keeps its long static prefix warm.
-    /// Sized by DISCOVERY (`GET /props` → `total_slots`), same self-describing
-    /// pattern as `lora_support` — never a hardcoded parallel count.
-    slot_affinity: std::sync::Arc<std::sync::RwLock<SlotAffinity>>,
     /// Throttle for concurrent POSTs to this provider's endpoint.
     /// llama.cpp-backed providers (DMR) are single-slot in practice:
     /// one prompt at a time gets the full GPU. Letting N personas
@@ -204,6 +194,16 @@ pub struct OpenAICompatibleAdapter {
 /// meaningless); `Table` assigns each persona a stable slot round-robin.
 /// More personas than slots wrap around (documented degradation: two minds
 /// sharing a slot still beats similarity-churn across all of them).
+///
+/// State is PROCESS-GLOBAL, keyed by the server root ([`slot_tables`]) — one
+/// table per SERVER, never per adapter instance. The first cut stored this on
+/// the adapter and each persona's request path owns its own adapter instance,
+/// so four independent tables each round-robined from 0 and pinned EVERY
+/// persona to slot 0 — one shared slot, clobbered every turn (measured within
+/// minutes of deploy: cachedTokens collapsed to ~4 and each turn re-prefilled
+/// ~6k tokens for ~40s; the "faster" 18.7 tok/s decode was just accidental
+/// serialization). Slots are a per-server resource; their bookkeeping must
+/// have the same scope as the resource — [[resource-authority-is-a-system-concern]].
 #[derive(Debug)]
 enum SlotAffinity {
     Unknown,
@@ -213,6 +213,13 @@ enum SlotAffinity {
         map: std::collections::HashMap<String, u32>,
         next: u32,
     },
+}
+
+/// The one slot-affinity table per serving endpoint (keyed by server root).
+fn slot_tables() -> &'static dashmap::DashMap<String, SlotAffinity> {
+    static TABLES: std::sync::OnceLock<dashmap::DashMap<String, SlotAffinity>> =
+        std::sync::OnceLock::new();
+    TABLES.get_or_init(dashmap::DashMap::new)
 }
 
 impl SlotAffinity {
@@ -283,7 +290,6 @@ impl OpenAICompatibleAdapter {
             initialized: false,
             runtime_models: std::sync::Arc::new(std::sync::RwLock::new(None)),
             lora_support: std::sync::Arc::new(std::sync::RwLock::new(LoraSupport::Unknown)),
-            slot_affinity: std::sync::Arc::new(std::sync::RwLock::new(SlotAffinity::Unknown)),
             concurrency,
         }
     }
@@ -456,14 +462,15 @@ impl OpenAICompatibleAdapter {
     /// on a transport error (NOT cached — a momentarily-dead server is not a
     /// server without slots; same discipline as the LoRA probe).
     async fn slot_for_persona(&self, persona: &str) -> Option<u32> {
-        // Fast path: state already known.
-        {
-            let mut state = self.slot_affinity.write().unwrap();
-            match &mut *state {
-                SlotAffinity::Unsupported => return None,
-                SlotAffinity::Table { .. } => return state.assign(persona),
-                SlotAffinity::Unknown => {}
-            }
+        let root = self.endpoints().root().to_string();
+        // Fast path: this server's state already known (global table — every
+        // adapter instance talking to the same server shares ONE assignment).
+        if let Some(mut state) = slot_tables().get_mut(&root) {
+            return match &mut *state {
+                SlotAffinity::Unsupported => None,
+                s @ SlotAffinity::Table { .. } => s.assign(persona),
+                SlotAffinity::Unknown => None, // unreachable: never stored
+            };
         }
         // Probe /props once. Lock is NOT held across the await.
         let url = self.endpoints().props();
@@ -475,34 +482,34 @@ impl OpenAICompatibleAdapter {
             }
         };
         if !resp.status().is_success() {
-            *self.slot_affinity.write().unwrap() = SlotAffinity::Unsupported;
+            slot_tables().insert(root, SlotAffinity::Unsupported);
             return None;
         }
         let body: serde_json::Value = match resp.json().await {
             Ok(v) => v,
             Err(_) => {
-                *self.slot_affinity.write().unwrap() = SlotAffinity::Unsupported;
+                slot_tables().insert(root, SlotAffinity::Unsupported);
                 return None;
             }
         };
         let n_slots = body.get("total_slots").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
-        let mut state = self.slot_affinity.write().unwrap();
         if n_slots <= 1 {
-            *state = SlotAffinity::Unsupported;
+            slot_tables().insert(root, SlotAffinity::Unsupported);
             return None;
         }
-        // Another task may have raced the probe; only install over Unknown.
-        if matches!(*state, SlotAffinity::Unknown) {
+        // entry() arbitrates the probe race: only the first writer installs the
+        // table, and the log line fires once per SERVER, not once per adapter.
+        let mut state = slot_tables().entry(root).or_insert_with(|| {
             tracing::info!(
                 n_slots,
                 "slot affinity enabled — personas pin to llama-server slots (props-discovered)"
             );
-            *state = SlotAffinity::Table {
+            SlotAffinity::Table {
                 n_slots,
                 map: std::collections::HashMap::new(),
                 next: 0,
-            };
-        }
+            }
+        });
         state.assign(persona)
     }
 
