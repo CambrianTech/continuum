@@ -214,11 +214,12 @@ pub async fn apply_act(
     // greedy instruct model re-emits the identical `Act` forever. The `[action #n]`
     // stamp shift was supposed to break this and does not (see
     // `all_calls_already_satisfied`). So do NOT re-execute: record an EXPLICIT
-    // "already satisfied — answer now" trace so the redundancy is PERCEIVED rather
-    // than merely present, and let the caller re-perceive. This decides nothing about
-    // WHAT she answers; it only stops her being blind to the fact she already acted —
-    // symmetric to the recency channel itself and the loop-filler dedup (context
-    // hygiene, not cognition steering; [[no-hardcoded-heuristics-to-steer-cognition]]).
+    // "already satisfied" trace so the redundancy is PERCEIVED rather than merely
+    // present, and let the caller re-perceive. The trace states ONLY the fact — it
+    // must not privilege answering over a DIFFERENT act (the first mined exam showed
+    // the earlier "I should ANSWER the question now" phrasing being obeyed literally:
+    // she settled with a diagnosis instead of trying the repair edit). Context
+    // hygiene, not cognition steering; [[no-hardcoded-heuristics-to-steer-cognition]].
     let recent = body.working_memory.recent();
     if all_calls_already_satisfied(&recent, calls) {
         let names = calls
@@ -230,9 +231,10 @@ pub async fn apply_act(
             .collect::<Vec<_>>()
             .join(", ");
         let nudge = format!(
-            "I already ran {names} this turn — the result is in my working memory above. \
-             Running it again returns nothing new. I have what I need; I should ANSWER the \
-             question now from that result instead of acting again."
+            "I already ran {names} this turn — the result is in my working memory above, \
+             and re-running the identical call returns nothing new. Whatever I do next \
+             must be something DIFFERENT: a different action, or an answer built from \
+             what I already have."
         );
         body.working_memory.record_action(&nudge);
         crate::probe!(
@@ -240,7 +242,7 @@ pub async fn apply_act(
             persona = %body.persona_name,
             room_id = %room_id,
             calls = calls.len(),
-            "identical act already satisfied this turn — recorded answer-now proprioception, skipped re-execution"
+            "identical act already satisfied this turn — recorded already-satisfied proprioception, skipped re-execution"
         );
         return Some(nudge);
     }

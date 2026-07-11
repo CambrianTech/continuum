@@ -986,12 +986,15 @@ impl Faculty for LlmDeliberationFaculty {
         // faculty on the NEXT tick with the result folded into perception, and that
         // tick captures itself. Best-effort; never affects the turn.
         if let Some(cap) = &self.prompt_capture {
+            let offered: Vec<String> =
+                self.native_specs.iter().map(|s| s.name.clone()).collect();
             cap.record(
                 self.persona_id,
                 ws.room_id,
                 0,
                 &view.system,
                 &messages,
+                &offered,
                 &resp,
             );
         }
