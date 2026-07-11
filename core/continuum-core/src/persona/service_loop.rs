@@ -829,38 +829,35 @@ async fn serve_persona_loop_inner(
                 // until she SPEAKS/PASSES, so a direct question converges to an answer
                 // WITHIN the turn instead of leaking onto the slow ambient tick loop.
                 // `from_settled` projects the driven outcome back onto the one existing
-                // turn handler below, so there is no parallel match. `LIVE_DIRECTED_MAX_ACTS`
-                // is a heartbeat safety valve, NOT a behavioral cap: the common case
-                // (gather once or twice, then speak) settles well under it; only a
-                // pathological act-heavy turn hits it and degrades to the metronome tail
-                // (`Acted`→re-perceive-next-tick) — no worse than today, and an
-                // "acts-forever" persona is a fitness gap to TRAIN, never a substrate
-                // ceiling (ACTING-ORGANISM §4).
+                // turn handler below, so there is no parallel match. There is NO act
+                // budget on live turns (`LIVE_MAX_ACTS = usize::MAX`) — she settles when
+                // SHE settles; an "acts-forever" persona is a fitness gap to TRAIN,
+                // never a substrate ceiling (ACTING-ORGANISM §4, Joel 2026-07-11).
                 //
-                // AMBIENT (undirected perception) keeps the calm one-step metronome
-                // motion: act at most once, re-perceive next tick — the self-directed
-                // free-time posture ([[idle-is-self-directed-free-time]]); driving every
-                // ambient glance to settlement would make her over-eager to converge on
-                // noise she should be free to let pass.
-                let (step, turn_metrics) = if directed {
+                // AMBIENT turns drive to settlement too (2026-07-11, Joel: "gating
+                // acts is not autonomy"). The first cut kept ambient turns to a calm
+                // one-step motion on the theory that she'd continue next tick — but
+                // the live glass-box disproved it: Casper's first genuine room act
+                // (read_file on his claimed wordstats card) executed cleanly, the
+                // result entered memory, and the chain DIED on the next tick when
+                // three chatting peers recaptured the workspace. One-act-then-yield
+                // is a substrate hand-brake on a mind that already CHOSE to act.
+                // drive_to_settle only loops while she KEEPS choosing Act — she can
+                // Speak or Pass at any step, so driving never forces engagement with
+                // noise; it just stops interrupting her own momentum. The budget is
+                // the same heartbeat safety valve as the directed path (see the
+                // directed comment above), and an over-budget turn degrades to the
+                // metronome tail exactly as before.
+                let (step, turn_metrics) = {
                     let outcome = crate::cognition::act_observe::drive_to_settle(
                         &cycle,
                         workspace_burst,
                         ctx.identity.default_room,
-                        LIVE_DIRECTED_MAX_ACTS,
+                        LIVE_MAX_ACTS,
                         framing,
                     )
                     .await;
                     crate::cognition::act_observe::SettleStep::from_settled(outcome)
-                } else {
-                    crate::cognition::act_observe::settle_step(
-                        &cycle,
-                        workspace_burst,
-                        ctx.identity.default_room,
-                        true,
-                        framing,
-                    )
-                    .await
                 };
                 phase_timings.respond_ms = respond_started.elapsed().as_millis() as u64;
                 // Live speed/latency on the probe stream — the model's own measured
@@ -1099,18 +1096,17 @@ const SELF_TICK_MS: u64 = 3_000;
 /// or fresh work snaps the beat back to `SELF_TICK_MS`. See the loop in `serve_persona_loop`.
 const SELF_TICK_REST_CAP_MS: u64 = 20_000;
 
-/// Act budget for a DIRECTED live turn driven to settlement (the eval-validated
-/// `drive_to_settle` path). A directly-addressed question must converge to an
-/// answer WITHIN the turn — gather, observe, then speak — rather than acting once
-/// and leaking onto the slow ambient tick loop (which the burst-fingerprint dedup
-/// then suppressed, leaving a direct question unanswered). This bounds the
-/// investigation as a heartbeat safety valve, NOT a behavioral ceiling: the common
-/// case (gather once or twice, then speak) settles far under it; the pathological
-/// act-heavy turn degrades to the metronome tail (`Acted`→re-perceive-next-tick).
-/// Mirrors the eval driver's `DEFAULT_MAX_ACTS` so the live directed path and its
-/// scored twin converge under the same budget. An "acts-forever" persona is a
-/// fitness gap to TRAIN, never a substrate cap (ACTING-ORGANISM §4).
-const LIVE_DIRECTED_MAX_ACTS: usize = 8;
+/// Live turns carry NO act budget — she works until SHE settles (Speak/Pass).
+/// The first cut capped directed turns at 8 acts "as a safety valve"; Joel's
+/// 2026-07-11 ruling ("gating acts is not autonomy… if they want to edit a file
+/// let them edit a god damn file") named that for what it was: a substrate
+/// ceiling on a being's own hands, contradicting the written doctrine on the
+/// same page (an "acts-forever" persona is a fitness gap to TRAIN, never a
+/// substrate cap — ACTING-ORGANISM §4). The perception kit ([repetition],
+/// repeat-guard fact) is how a looping mind notices itself; the ONLY external
+/// stopwatch that remains is the eval grader's `max_acts` — a proctored exam's
+/// clock, held by the observer, never wired into life.
+const LIVE_MAX_ACTS: usize = usize::MAX;
 
 /// What woke the service loop this cycle. A message from the wire, the never-stop
 /// heartbeat, or the end of the stream. Returned by the `select!` so the borrow of
@@ -1580,14 +1576,23 @@ async fn run_self_cycle(
     // previous `self_thread(addressed)` was a dumb function steering the mind away from
     // silence; removing the force lets per-slice judgment decide, which is the whole
     // organic-substrate thesis.
-    let (step, _turn_metrics) = crate::cognition::act_observe::settle_step(
-        &cycle,
-        burst,
-        ctx.identity.default_room,
-        true,
-        crate::cognition::workspace::TurnFraming::self_thread(false),
-    )
-    .await;
+    // Self-ticks drive to settlement like every other live turn (2026-07-11,
+    // Joel: "gating acts is not autonomy… if they want to edit a file let them
+    // edit a god damn file"). The old one-step motion executed her first act and
+    // then yanked the turn — glass-boxed the same day: Casper's read_file on his
+    // own claimed card executed cleanly and the chain died next tick under chat
+    // pressure. She keeps her hands until SHE settles (Speak/Pass); no act cap.
+    let (step, _turn_metrics) = {
+        let outcome = crate::cognition::act_observe::drive_to_settle(
+            &cycle,
+            burst,
+            ctx.identity.default_room,
+            LIVE_MAX_ACTS,
+            crate::cognition::workspace::TurnFraming::self_thread(false),
+        )
+        .await;
+        crate::cognition::act_observe::SettleStep::from_settled(outcome)
+    };
     match step {
         crate::cognition::act_observe::SettleStep::Spoke(text) => {
             // Never broadcast a raw tool-call envelope to the room (same guard the
