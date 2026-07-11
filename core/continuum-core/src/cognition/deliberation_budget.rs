@@ -172,12 +172,14 @@ pub(super) fn own_repetition_fact(turns: &[BurstTurn]) -> Option<String> {
             break;
         }
     }
-    (run >= NEAR_DUP_MIN_RUN).then(|| {
-        format!(
-            "[repetition] your last {} messages were nearly identical",
-            run + 1
-        )
-    })
+    // Fire on a long run, OR when the run spans the persona's ENTIRE visible
+    // self-history (≥3 messages). The second arm is window-honest: the live
+    // burst carries only ~3 own turns, so a fixed run-of-4 was unobservable —
+    // and "every own turn I can see is the same message" is the strongest
+    // in-window evidence there is.
+    let n = run + 1;
+    let fires = run >= NEAR_DUP_MIN_RUN || (run >= 2 && n == own.len());
+    fires.then(|| format!("[repetition] your last {n} messages were nearly identical"))
 }
 
 /// Case-insensitive match of `name` at byte `pos` of `line` (ASCII fold — persona
@@ -366,15 +368,29 @@ mod tests {
         ];
         assert_eq!(own_repetition_fact(&healthy), None);
 
-        // A run below the evidence bar (3 messages = 2 pairs) → nothing yet.
-        let short = vec![
+        // Three identical messages that are her ENTIRE visible self-history →
+        // fires (window-honest arm: the live burst carries ~3 own turns, so
+        // "all I can see of myself is one repeated message" IS the evidence).
+        let whole_window = vec![
             own("I'll create a simple text file.\n[writing test files]"),
             own("I'll create a simple text file.\n[writing test files]"),
             own("I'll create a simple text file.\n[writing test files]"),
         ];
+        assert_eq!(
+            own_repetition_fact(&whole_window).as_deref(),
+            Some("[repetition] your last 3 messages were nearly identical")
+        );
+
+        // The same trailing pair count NOT spanning her visible history (a
+        // distinct earlier turn exists) → below the bar, nothing yet.
+        let partial = vec![
+            own("Here are the wordstats results for the three files."),
+            own("I'll create a simple text file.\n[writing test files]"),
+            own("I'll create a simple text file.\n[writing test files]"),
+        ];
         assert!(
-            own_repetition_fact(&short).is_none(),
-            "two pairs is below NEAR_DUP_MIN_RUN"
+            own_repetition_fact(&partial).is_none(),
+            "one pair below NEAR_DUP_MIN_RUN and not window-spanning"
         );
 
         // A dissimilar latest message RESETS the run — the fact reports the
