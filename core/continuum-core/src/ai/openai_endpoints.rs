@@ -74,6 +74,14 @@ impl OpenAiBase {
         format!("{}/lora-adapters", self.root)
     }
 
+    /// `GET /props` — llama.cpp's server-properties endpoint (also NOT under
+    /// `/v1`). Reports `total_slots` (the `--parallel` count), which the
+    /// adapter's slot-affinity table sizes itself from — discovered, never
+    /// hardcoded.
+    pub fn props(&self) -> String {
+        format!("{}/props", self.root)
+    }
+
     /// Build a `/v1/<path>` URL against the normalized root.
     fn v1(&self, path: &str) -> String {
         format!("{}/v1/{path}", self.root)

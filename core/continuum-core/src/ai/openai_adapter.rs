@@ -172,6 +172,16 @@ pub struct OpenAICompatibleAdapter {
     /// the probe. This is the self-organizing alternative to a hardcoded
     /// "which provider supports LoRA" table — the endpoint describes itself.
     lora_support: std::sync::Arc<std::sync::RwLock<LoraSupport>>,
+    /// Persona→slot affinity for llama.cpp-family backends (task: token/sec).
+    /// llama-server's default slot selection is prefix-similarity, and with N
+    /// personas whose prompts SHARE doctrine text but DIFFER in identity +
+    /// history, requests cross-assign and clobber each other's KV prefixes —
+    /// measured 2026-07-11: 30% prompt-cache hit, median decode 2.5 tok/s
+    /// across 144 turns on the 24B. Pinning each persona to a stable slot via
+    /// the `id_slot` request extension keeps its long static prefix warm.
+    /// Sized by DISCOVERY (`GET /props` → `total_slots`), same self-describing
+    /// pattern as `lora_support` — never a hardcoded parallel count.
+    slot_affinity: std::sync::Arc<std::sync::RwLock<SlotAffinity>>,
     /// Throttle for concurrent POSTs to this provider's endpoint.
     /// llama.cpp-backed providers (DMR) are single-slot in practice:
     /// one prompt at a time gets the full GPU. Letting N personas
@@ -186,6 +196,40 @@ pub struct OpenAICompatibleAdapter {
     /// DMR → 1 slot (single-slot llama.cpp backend).
     /// Cloud providers (OpenAI / Groq / etc.) → high slot count (no throttle).
     concurrency: std::sync::Arc<tokio::sync::Semaphore>,
+}
+
+/// Persona→slot pinning state for llama.cpp-family backends. `Unknown` until
+/// the first persona-attributed request probes `GET /props`; `Unsupported`
+/// when the endpoint has no props surface or a single slot (pinning is
+/// meaningless); `Table` assigns each persona a stable slot round-robin.
+/// More personas than slots wrap around (documented degradation: two minds
+/// sharing a slot still beats similarity-churn across all of them).
+#[derive(Debug)]
+enum SlotAffinity {
+    Unknown,
+    Unsupported,
+    Table {
+        n_slots: u32,
+        map: std::collections::HashMap<String, u32>,
+        next: u32,
+    },
+}
+
+impl SlotAffinity {
+    /// Stable slot for `persona` — same persona always maps to the same slot
+    /// within a boot; new personas take the next slot round-robin.
+    fn assign(&mut self, persona: &str) -> Option<u32> {
+        let SlotAffinity::Table { n_slots, map, next } = self else {
+            return None;
+        };
+        if let Some(slot) = map.get(persona) {
+            return Some(*slot);
+        }
+        let slot = *next % *n_slots;
+        *next += 1;
+        map.insert(persona.to_string(), slot);
+        Some(slot)
+    }
 }
 
 impl OpenAICompatibleAdapter {
@@ -239,6 +283,7 @@ impl OpenAICompatibleAdapter {
             initialized: false,
             runtime_models: std::sync::Arc::new(std::sync::RwLock::new(None)),
             lora_support: std::sync::Arc::new(std::sync::RwLock::new(LoraSupport::Unknown)),
+            slot_affinity: std::sync::Arc::new(std::sync::RwLock::new(SlotAffinity::Unknown)),
             concurrency,
         }
     }
@@ -405,6 +450,62 @@ impl OpenAICompatibleAdapter {
     /// and NOT cached — a momentarily-dead server is not a server without LoRA
     /// support. llama.cpp `llama-server` returns the array of adapters it
     /// loaded at launch, each `{ "id": N, "path": "...", "scale": S }`.
+    /// Stable slot for a persona's requests, discovering the backend's slot
+    /// count on first use (`GET /props` → `total_slots`). Returns `None` when
+    /// the backend has no props surface / one slot (cached as Unsupported) or
+    /// on a transport error (NOT cached — a momentarily-dead server is not a
+    /// server without slots; same discipline as the LoRA probe).
+    async fn slot_for_persona(&self, persona: &str) -> Option<u32> {
+        // Fast path: state already known.
+        {
+            let mut state = self.slot_affinity.write().unwrap();
+            match &mut *state {
+                SlotAffinity::Unsupported => return None,
+                SlotAffinity::Table { .. } => return state.assign(persona),
+                SlotAffinity::Unknown => {}
+            }
+        }
+        // Probe /props once. Lock is NOT held across the await.
+        let url = self.endpoints().props();
+        let resp = match self.client.get(&url).send().await {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::debug!(error = %e, url = %url, "props probe transport error — slot affinity deferred");
+                return None;
+            }
+        };
+        if !resp.status().is_success() {
+            *self.slot_affinity.write().unwrap() = SlotAffinity::Unsupported;
+            return None;
+        }
+        let body: serde_json::Value = match resp.json().await {
+            Ok(v) => v,
+            Err(_) => {
+                *self.slot_affinity.write().unwrap() = SlotAffinity::Unsupported;
+                return None;
+            }
+        };
+        let n_slots = body.get("total_slots").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+        let mut state = self.slot_affinity.write().unwrap();
+        if n_slots <= 1 {
+            *state = SlotAffinity::Unsupported;
+            return None;
+        }
+        // Another task may have raced the probe; only install over Unknown.
+        if matches!(*state, SlotAffinity::Unknown) {
+            tracing::info!(
+                n_slots,
+                "slot affinity enabled — personas pin to llama-server slots (props-discovered)"
+            );
+            *state = SlotAffinity::Table {
+                n_slots,
+                map: std::collections::HashMap::new(),
+                next: 0,
+            };
+        }
+        state.assign(persona)
+    }
+
     pub(crate) async fn probe_lora_catalog(&self) -> Result<(), String> {
         let url = self.endpoints().lora_adapters();
         let mut req = self.client.get(&url);
@@ -1363,6 +1464,20 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
                 // OpenAI-compat providers reject the non-standard field.
                 obj.insert("cache_prompt".to_string(), json!(true));
             }
+            // Persona→slot pinning (`id_slot`, llama.cpp extension): keep each
+            // persona's long static prefix warm in ITS OWN slot instead of
+            // letting prefix-similarity selection cross-assign N personas'
+            // near-identical doctrine prefixes and clobber the caches (30%
+            // hit / 2.5 tok/s median, measured 2026-07-11). Slot count is
+            // props-discovered; non-persona traffic (evals, probes) stays
+            // unpinned so it can't evict a citizen's warm slot.
+            if let Some(persona) = request.persona_id.as_deref() {
+                if let Some(slot) = self.slot_for_persona(persona).await {
+                    if let Some(obj) = body.as_object_mut() {
+                        obj.insert("id_slot".to_string(), json!(slot));
+                    }
+                }
+            }
         }
 
         // LoRA page-in: project the persona's genome onto the serving backend as
@@ -2123,6 +2238,37 @@ mod tests {
     // under thinking — the 1000+ silently-dead self-ticks of 2026-07-10/11), while a
     // thread already ending with user/system stays untouched. Regression for
     // close_trailing_assistant.
+    // what this catches: the slot-affinity contract (measured 2026-07-11: 30%
+    // cache hit / 2.5 tok/s median from prefix-similarity churn across four
+    // personas). Same persona → same slot every time within a boot; distinct
+    // personas → distinct slots until the table wraps; non-Table states never
+    // pin. // regression for the token/sec directive
+    #[test]
+    fn slot_affinity_pins_personas_stably_and_wraps() {
+        let mut table = SlotAffinity::Table {
+            n_slots: 4,
+            map: std::collections::HashMap::new(),
+            next: 0,
+        };
+        let a = table.assign("persona-a").unwrap();
+        let b = table.assign("persona-b").unwrap();
+        let c = table.assign("persona-c").unwrap();
+        let d = table.assign("persona-d").unwrap();
+        // Stable: repeat lookups return the same slot.
+        assert_eq!(table.assign("persona-a").unwrap(), a);
+        assert_eq!(table.assign("persona-c").unwrap(), c);
+        // Distinct until full: four personas occupy four distinct slots.
+        let mut slots = vec![a, b, c, d];
+        slots.sort_unstable();
+        assert_eq!(slots, vec![0, 1, 2, 3], "four personas fill four slots");
+        // Fifth persona wraps rather than erroring — shared slot beats churn.
+        let e = table.assign("persona-e").unwrap();
+        assert!(e < 4, "wrap stays in range");
+        // Non-table states never pin.
+        assert_eq!(SlotAffinity::Unknown.assign("persona-a"), None);
+        assert_eq!(SlotAffinity::Unsupported.assign("persona-a"), None);
+    }
+
     #[test]
     fn trailing_assistant_thread_is_closed_with_continuation_fact() {
         let mut msgs = vec![
