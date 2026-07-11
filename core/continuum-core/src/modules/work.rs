@@ -84,6 +84,55 @@ fn parse_card_id(s: &str) -> Result<WorkCardId, CommandError> {
         .map_err(|e| CommandError::Invalid(format!("invalid card_id '{s}': {e}")))
 }
 
+/// Resolve a card id THE WAY THE BOARD TEACHES IT. The board projection renders
+/// cards with 8-char short ids (`card 08ece9e8 [Open]`); the lifecycle verbs
+/// demanded the full 32-char UUID, so a persona quoting the id she was SHOWN
+/// was rejected — glass-boxed 2026-07-10 minutes after the verbs opened: Anwen
+/// AND Asha both executed real `work/claim({"card_id":"08ece9e8"})` calls and
+/// both bounced on "expected length 32". A handle a projection displays must
+/// be accepted by the verbs that consume it (positron consistency). Full UUIDs
+/// still parse directly; a hex prefix (≥4 chars) resolves against the live
+/// board — exactly one match wins, zero/many fail loud with what WAS found.
+async fn resolve_card_id(
+    airc: &std::sync::Arc<airc_lib::Airc>,
+    s: &str,
+) -> Result<WorkCardId, CommandError> {
+    let s = s.trim();
+    if let Ok(id) = Uuid::parse_str(s) {
+        return Ok(WorkCardId::from_uuid(id));
+    }
+    let is_hex_prefix =
+        s.len() >= 4 && s.len() < 32 && s.chars().all(|c| c.is_ascii_hexdigit());
+    if !is_hex_prefix {
+        return parse_card_id(s); // fail with the real parse error
+    }
+    let board = airc
+        .work_board_complete(airc_lib::WORK_BOARD_PROJECTION_PAGE_SIZE)
+        .await
+        .map_err(|e| CommandError::Internal(format!("board read for id resolution: {e}")))?
+        .snapshot();
+    let needle = s.to_ascii_lowercase();
+    let matches: Vec<&airc_lib::WorkCard> = board
+        .cards
+        .iter()
+        .filter(|c| c.card_id.as_uuid().simple().to_string().starts_with(&needle))
+        .collect();
+    match matches.as_slice() {
+        [one] => Ok(one.card_id),
+        [] => Err(CommandError::Invalid(format!(
+            "no card on this room's board matches id prefix '{s}' — check the              [room-kanban] block for current card ids"
+        ))),
+        many => Err(CommandError::Invalid(format!(
+            "id prefix '{s}' is ambiguous ({} cards match: {}) — give more characters",
+            many.len(),
+            many.iter()
+                .map(|c| c.card_id.as_uuid().simple().to_string()[..12].to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ))),
+    }
+}
+
 fn parse_claim_id(s: &str) -> Result<ClaimId, CommandError> {
     Uuid::parse_str(s)
         .map(ClaimId::from_uuid)
@@ -148,7 +197,7 @@ impl ActionCommand for WorkClaim {
 
     async fn run(&self, ctx: &Ctx, p: WorkClaimParams) -> Result<WorkClaimResult, CommandError> {
         let airc = persona_airc(&self.registry, ctx)?;
-        let card_id = parse_card_id(&p.card_id)?;
+        let card_id = resolve_card_id(&airc, &p.card_id).await?;
         let claim_id = airc
             .claim_work_card(ClaimWorkCard {
                 card_id,
@@ -250,7 +299,7 @@ impl ActionCommand for WorkRelease {
 
     async fn run(&self, ctx: &Ctx, p: WorkReleaseParams) -> Result<WorkReleaseResult, CommandError> {
         let airc = persona_airc(&self.registry, ctx)?;
-        let card_id = parse_card_id(&p.card_id)?;
+        let card_id = resolve_card_id(&airc, &p.card_id).await?;
         let claim_id = ClaimId::from_uuid(
             Uuid::parse_str(&p.claim_id)
                 .map_err(|e| CommandError::Invalid(format!("invalid claim_id: {e}")))?,
@@ -299,7 +348,7 @@ impl ActionCommand for WorkState {
 
     async fn run(&self, ctx: &Ctx, p: WorkStateParams) -> Result<WorkStateResult, CommandError> {
         let airc = persona_airc(&self.registry, ctx)?;
-        let card_id = parse_card_id(&p.card_id)?;
+        let card_id = resolve_card_id(&airc, &p.card_id).await?;
         let state = parse_state(&p.state)?;
         airc.change_work_card_state(ChangeWorkCardState { card_id, state })
             .await
@@ -345,7 +394,7 @@ impl ActionCommand for WorkHeartbeat {
 
     async fn run(&self, ctx: &Ctx, p: WorkHeartbeatParams) -> Result<WorkHeartbeatResult, CommandError> {
         let airc = persona_airc(&self.registry, ctx)?;
-        let card_id = parse_card_id(&p.card_id)?;
+        let card_id = resolve_card_id(&airc, &p.card_id).await?;
         let claim_id = parse_claim_id(&p.claim_id)?;
         airc.heartbeat_work_claim(HeartbeatWorkClaim {
             card_id,
