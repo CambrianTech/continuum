@@ -371,9 +371,26 @@ impl ShellSession {
             .ok_or_else(|| "Execution vanished".to_string())?
             .clone();
 
-        // Await completion using the notify mechanism
+        // Completion is REPORTED by the spawned `run_shell_command` task (status +
+        // notify). If that task dies silently (a panic in a spawned task drops the
+        // JoinHandle with no log line), status stays Running forever and a bare
+        // `notified().await` hangs the caller — glass-boxed 2026-07-11: two eval
+        // runs froze mid-exam on a `cargo test` act with NO child process alive.
+        // So completion must be STRUCTURAL, not trusted: re-check state at least
+        // every 2s regardless of notifications, and enforce a hard deadline
+        // (caller timeout + grace; generous default — cargo builds are long) after
+        // which we fail LOUD with the execution id instead of hanging
+        // ([[fallbacks-are-illegal-fail-loud]], task #85).
+        const RECHECK_EVERY: Duration = Duration::from_secs(2);
+        const DEADLINE_GRACE_MS: u64 = 30_000;
+        const DEFAULT_DEADLINE_MS: u64 = 600_000;
+        let deadline = Duration::from_millis(
+            timeout_ms.map_or(DEFAULT_DEADLINE_MS, |t| t.saturating_add(DEADLINE_GRACE_MS)),
+        );
+        let started = std::time::Instant::now();
+
         loop {
-            let (is_done, notify) = {
+            let notify = {
                 let s = state_arc
                     .lock()
                     .map_err(|e| format!("Lock poisoned: {e}"))?;
@@ -386,13 +403,21 @@ impl ShellSession {
                         exit_code: s.exit_code,
                     });
                 }
-                (false, s.output_notify.clone())
+                s.output_notify.clone()
             };
 
-            if !is_done {
-                // Wait for notification (non-blocking async wait)
-                notify.notified().await;
+            if started.elapsed() >= deadline {
+                return Err(format!(
+                    "shell execution '{execution_id}' still reports Running after \
+                     {}s with no completion signal — the runner task likely died \
+                     without reporting; refusing to wait forever",
+                    deadline.as_secs()
+                ));
             }
+
+            // Bounded wait: a notification wakes us immediately; a lost/never-sent
+            // one degrades to a 2s re-check instead of an infinite hang.
+            let _ = tokio::time::timeout(RECHECK_EVERY, notify.notified()).await;
         }
     }
 

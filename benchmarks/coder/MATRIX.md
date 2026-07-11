@@ -41,3 +41,20 @@ intention→action texture as the live room (#122's curriculum; Scenario Library
 do not record the native `tools` array (cannot audit whether edit_file/write_file were
 offered), and the repeat-guard nudge text ("I should ANSWER…") biases Speak over a
 different act.
+
+Follow-up runs (same tasks, instrument hardening between each — the mistake-driven loop
+applied to the HARNESS):
+
+| run | outcome | verdict |
+|---|---|---|
+| run3 | froze at tick 2 (act decided, no shell child, no error) | INSTRUMENT — trailing-assistant threads 400'd under thinking ("prefill incompatible"); 1000+ live self-ticks had died silently over 2 days; fixed (close_trailing_assistant) |
+| run4a | failed loud at launch | INSTRUMENT — raced the reboot's persona spawn ("no workspace template"); fail-loud worked; eval-status gap: a dead detached run reports complete:false forever (#86) |
+| run4b | froze at tick 14 on task 2's `cargo test` (no child process, status Running forever) | INSTRUMENT — `execute_and_wait_async` trusted the runner task to always report; a silent task death hung the waiter; fixed (bounded re-check + hard deadline, #85 slice 1) |
+
+Positive instrument signal from run4b before the freeze: with honest NotFound errors her
+tool mix shifted read-heavy (46 read / 28 shell / 10 tree at tick 14) vs run2's
+shell-dominant mix (12/76/18) — she navigates with her file hands when they tell the truth.
+The clean full pass (run5) awaits the deadline fix deployed. Board acts note: the citizen-layer
+work files (reverse_string.rs 04:19, conway_game_of_life.rs 05:28) were written BEFORE the
+prefill fix; claims of "I've just run it" remain unbacked by any execution (confabulation
+class, Scenario Library).
