@@ -43,6 +43,7 @@ const DIALECT: &[(&str, &str)] = &[
     ("code/tree", "file_tree"),
     ("code/run", "run_code"),
     ("code/git/diff", "git_diff"),
+    ("interface/screenshot", "screenshot"),
     ("commands/list", "list_commands"),
     ("commands/help", "help"),
     ("work/claim", "claim_task"),

@@ -373,6 +373,11 @@ pub fn native_tool_specs() -> Vec<NativeToolSpec> {
         "code/run",
         "code/shell",
         "code/git/diff",
+        // Observation parity (Joel 2026-07-11): seeing the screen is a first-class
+        // work verb, not a special capability — "if they can observe like we do,
+        // they can build like we do." Routed to a client adapter (WireShape::
+        // Provided); fails loud when no UI adapter is connected, never fabricates.
+        "interface/screenshot",
         // The shared-board lifecycle: claiming work as yourself is core to the
         // room workflow (rides the wire as `claim_task` via the dialect).
         "work/claim",

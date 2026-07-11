@@ -674,6 +674,9 @@ pub async fn settle_step(
             // as honest proprioception — "I already answered this" — next tick). Only
             // when she has hands; a handless persona never spins on a tool.
             if let Some(body) = cycle.acting() {
+                // Snapshot the concern BEFORE the settlement marker lands, so the
+                // observation scan below sees this concern's acts, not an empty tail.
+                let pre_settle = body.working_memory.recent();
                 let head: String = text.chars().take(WM_ACTION_HEAD_CHARS).collect();
                 body.working_memory.record_settlement(&head);
                 // Unfulfilled-promise backstop (#122): a Speak that NARRATES action
@@ -738,12 +741,59 @@ pub async fn settle_step(
                         "spoken narration promised action but no format lifted it — recorded unfulfilled-promise proprioception"
                     );
                 }
+                // Observation-gap fact (Joel, 2026-07-11: "iterating and observing
+                // like a real engineer" — the run+observe half of the creation loop
+                // must be part of THEIR process). If this concern MUTATED the
+                // workspace (code/write or code/edit) and no later act ran or
+                // inspected anything, the mutation's real effect is unobserved —
+                // a structural truth about the workspace, not advice. She decides
+                // whether a given artifact needs observing (a .md may not);
+                // perception-side only ([[no-hardcoded-heuristics-to-steer-cognition]]).
+                if wrote_without_observation(&pre_settle) {
+                    body.working_memory.record_action(
+                        "[unobserved] I changed files this concern and nothing has \
+                         run or read them since — the change's real effect is \
+                         unobserved. Only a tool result (run, test, read, screenshot) \
+                         can show what actually happened.",
+                    );
+                    crate::probe!(
+                        class = "persona.act.unobserved_mutation",
+                        persona = %body.persona_name,
+                        room_id = %room_id,
+                        "concern settled with workspace mutations and no subsequent observation act — recorded unobserved-mutation proprioception"
+                    );
+                }
             }
             SettleStep::Spoke(text)
         }
         Some(Decision::Pass) | None => SettleStep::Passed,
     };
     (step, metrics)
+}
+
+/// Did the CURRENT concern mutate the workspace without a later observation act?
+///
+/// Scans a working-memory snapshot (oldest → newest, taken BEFORE the settlement
+/// marker lands) from the last `[settled]` boundary: true when a `code/write` or
+/// `code/edit` act appears with NO subsequent run/read/screenshot-class act after
+/// the LAST mutation. Pure geometry over the trace — no judgment about whether
+/// the artifact needed observing; the recorded fact leaves that to her.
+fn wrote_without_observation(recent: &[String]) -> bool {
+    let start = recent
+        .iter()
+        .rposition(|l| l.starts_with(crate::cognition::working_memory::WM_SETTLEMENT_PREFIX))
+        .map_or(0, |i| i + 1);
+    let concern = &recent[start..];
+    let last_mutation = concern
+        .iter()
+        .rposition(|l| l.contains("I ran code/write(") || l.contains("I ran code/edit("));
+    let Some(m) = last_mutation else { return false };
+    !concern[m + 1..].iter().any(|l| {
+        l.contains("I ran code/run(")
+            || l.contains("I ran code/shell(")
+            || l.contains("I ran code/read(")
+            || l.contains("I ran interface/screenshot(")
+    })
 }
 
 /// Epoch-ms wall clock for stamping a self-observation. A real timestamp (not a
@@ -1690,5 +1740,35 @@ mod tests {
             "drafting with a clean conscience is never taxed: {:?}",
             wm2.recent()
         );
+    }
+
+    // what this catches: the observation-gap geometry (Joel 2026-07-11 — the
+    // run+observe half of the creation loop is part of THEIR process). A concern
+    // that mutated the workspace (code/write / code/edit) with no LATER
+    // observation act (run/shell/read/screenshot) is unobserved; observation
+    // BEFORE the mutation doesn't count; a prior settled concern's writes don't
+    // nag the next one.
+    #[test]
+    fn unobserved_mutation_geometry() {
+        let w = "[action #1] I ran code/write({\"file_path\":\"game.rs\"}) …".to_string();
+        let r = "[action #2] I ran code/shell({\"cmd\":\"cargo run\"}) …".to_string();
+        let read_first = "[action #0] I ran code/read({\"file_path\":\"game.rs\"}) …".to_string();
+
+        // write with no later observation → unobserved
+        assert!(wrote_without_observation(&[w.clone()]));
+        // write then run → observed
+        assert!(!wrote_without_observation(&[w.clone(), r.clone()]));
+        // read BEFORE the write doesn't count as observing the write
+        assert!(wrote_without_observation(&[read_first, w.clone()]));
+        // a prior settled concern's write never leaks into this concern
+        let settled = format!(
+            "{} I answered: done",
+            crate::cognition::working_memory::WM_SETTLEMENT_PREFIX
+        );
+        assert!(!wrote_without_observation(&[w, settled, r]));
+        // no mutation at all → nothing to observe
+        assert!(!wrote_without_observation(&[
+            "[action #1] I ran code/tree({}) …".to_string()
+        ]));
     }
 }
