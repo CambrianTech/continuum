@@ -451,6 +451,13 @@ pub struct EvalTask {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub solution_file: Option<String>,
+    /// Task-state SETUP: a shell command run BEFORE the prompt is posed, restoring the
+    /// task's initial workspace state so runs are repeatable (a `gym/mine` task re-breaks
+    /// its checkout: `git checkout <commit>^ -- src/lib.rs`). Setup failure is a named
+    /// infra grade, never a silent broken workspace ([[fallbacks-are-illegal-fail-loud]]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub setup_shell: Option<String>,
 }
 
 /// A gene to page in for the candidate arm of an A/B. The persona runs the eval
@@ -1445,6 +1452,29 @@ async fn run_pass(
     cycle.reset_working_memory();
     isolation.rewind();
     for t in tasks {
+        // Task-state SETUP (gym/mine tasks re-break their checkout so runs are
+        // repeatable). A failed setup is a NAMED infra grade — the persona is
+        // never examined against a workspace in an unknown state.
+        if let Some(setup) = &t.setup_shell {
+            let (setup_ok, setup_out) = run_dod(setup).await;
+            if !setup_ok {
+                results.push(EvalTaskResult {
+                    id: t.id.clone(),
+                    ok: false,
+                    grade: format!("setup failed (infra, not capability): {setup_out}"),
+                    acts: 0,
+                    answer: String::new(),
+                    latency_ms: 0,
+                    output_tokens: 0,
+                    tokens_per_second: 0.0,
+                    decode_tokens_per_second: 0.0,
+                    cache_hit_rate: 0.0,
+                    prefill_ms: 0,
+                    decode_ms: 0,
+                });
+                continue;
+            }
+        }
         // Frame the task through the SAME burst formatter the live heartbeat uses
         // (service_loop::build_workspace_burst), as a single airc room message
         // from a peer — so her deliberation perceives an examiner's question with

@@ -836,7 +836,10 @@ mod tests {
 
         fn persona_over(executor: Arc<CommandExecutor>) -> CommandToolExecutor {
             let transport =
-                InProcessTransport::new(executor, Some(CallerIdentity::airc(Uuid::new_v4())));
+                InProcessTransport::new(
+                executor,
+                Some(CallerIdentity::airc(crate::identity::PeerId::from_uuid(Uuid::new_v4()))),
+            );
             CommandToolExecutor::new(Connection::new(transport))
         }
 

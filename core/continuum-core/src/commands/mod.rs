@@ -18,6 +18,7 @@ pub mod avatar;
 pub mod benchmark;
 pub mod ai;
 pub mod catalog;
+pub mod gym;
 pub mod keys;
 pub mod chat;
 pub mod code;
