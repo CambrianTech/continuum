@@ -373,6 +373,9 @@ pub fn native_tool_specs() -> Vec<NativeToolSpec> {
         "code/run",
         "code/shell",
         "code/git/diff",
+        // The shared-board lifecycle: claiming work as yourself is core to the
+        // room workflow (rides the wire as `claim_task` via the dialect).
+        "work/claim",
     ];
     NATIVE.iter().filter_map(|n| spec_for_command(n)).collect()
 }

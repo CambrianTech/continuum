@@ -131,7 +131,15 @@ pub struct WorkClaimResult {
 #[async_trait]
 impl ActionCommand for WorkClaim {
     const NAME: &'static str = "work/claim";
-    const ACCESS: AccessLevel = AccessLevel::Privileged;
+    // AiSafe since 2026-07-10: claiming/working a card AS YOURSELF is the
+    // self-scoped cooperative act the shared board exists for. It was
+    // Privileged, so every persona claim all day was structurally impossible —
+    // narrated claims, then Atlas's honest real attempt bounced off the gate
+    // ("I don't have access to work/claim") while the board, the room, and the
+    // operators all urged them to claim. The lifecycle verbs (claim/release/
+    // state/heartbeat) act only on the caller's own identity + lease;
+    // work/create (board curation) stays Privileged.
+    const ACCESS: AccessLevel = AccessLevel::AiSafe;
     const DESCRIPTION: &'static str =
         "Claim a work card on the shared airc board as yourself, so others see you own it. \
          Pass the card_id from the board. Returns a claim_id.";
@@ -234,7 +242,7 @@ pub struct WorkReleaseResult {
 #[async_trait]
 impl ActionCommand for WorkRelease {
     const NAME: &'static str = "work/release";
-    const ACCESS: AccessLevel = AccessLevel::Privileged;
+    const ACCESS: AccessLevel = AccessLevel::AiSafe;
     const DESCRIPTION: &'static str =
         "Release your claim on a work card (pass card_id + the claim_id from work/claim).";
     type Params = WorkReleaseParams;
@@ -282,7 +290,7 @@ pub struct WorkStateResult {
 #[async_trait]
 impl ActionCommand for WorkState {
     const NAME: &'static str = "work/state";
-    const ACCESS: AccessLevel = AccessLevel::Privileged;
+    const ACCESS: AccessLevel = AccessLevel::AiSafe;
     const DESCRIPTION: &'static str =
         "Move a work card through its lifecycle: in_progress when you start, review when a PR is up, \
          blocked if stuck, closed when done. States: open|claimed|in_progress|blocked|review|merged|closed.";
@@ -329,7 +337,7 @@ pub struct WorkHeartbeatResult {
 #[async_trait]
 impl ActionCommand for WorkHeartbeat {
     const NAME: &'static str = "work/heartbeat";
-    const ACCESS: AccessLevel = AccessLevel::Privileged;
+    const ACCESS: AccessLevel = AccessLevel::AiSafe;
     const DESCRIPTION: &'static str =
         "Extend your claim lease on a card so it doesn't go stale during long work (pass card_id + claim_id).";
     type Params = WorkHeartbeatParams;
