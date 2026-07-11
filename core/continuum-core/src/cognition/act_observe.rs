@@ -763,12 +763,85 @@ pub async fn settle_step(
                         "concern settled with workspace mutations and no subsequent observation act — recorded unobserved-mutation proprioception"
                     );
                 }
+                // The inverse gap — CLAIMED-without-acting (live specimen 2026-07-11:
+                // "I've implemented the game update function in `game_of_life.rs`"
+                // spoken with zero tool acts on that file, ever; peers then reviewed
+                // code that didn't exist). When her Speak claims completed work on a
+                // NAMED file and her working memory holds no mutation act touching
+                // it, record that trace fact. Honest about its own limits: memory is
+                // finite, so it asserts "my memory shows no act", never "you lied" —
+                // work from a prior session may be real but is unverified NOW.
+                if let Some(file) = claimed_file_without_act(&text, &pre_settle) {
+                    body.working_memory.record_action(&format!(
+                        "[unacted] I spoke of having created or implemented `{file}`, \
+                         but my working memory holds no tool act of mine touching it. \
+                         If that work happened in a past session it is unverified now \
+                         — only reading or running the file can show its real state."
+                    ));
+                    crate::probe!(
+                        class = "persona.act.unacted_claim",
+                        persona = %body.persona_name,
+                        room_id = %room_id,
+                        file = %file,
+                        "completion claim named a file with no mutation act in working memory — recorded unacted-claim proprioception"
+                    );
+                }
             }
             SettleStep::Spoke(text)
         }
         Some(Decision::Pass) | None => SettleStep::Passed,
     };
     (step, metrics)
+}
+
+/// Did this Speak CLAIM completed work on a named file that no tool act backs?
+///
+/// Returns the first file name (a backtick-quoted or bare `name.ext` token) that
+/// appears in the same text as a completion-claim verb (created / implemented /
+/// wrote / added / finished / ready) when the working-memory snapshot contains
+/// NO `code/write`/`code/edit` act mentioning that file. Pure geometry: text
+/// tokens × trace lines. Deliberately conservative — no claim verbs → None, so
+/// ordinary discussion of files is never taxed; and the recorded fact says only
+/// "my memory shows no act", because a finite trace can't disprove past-session
+/// work.
+fn claimed_file_without_act(text: &str, recent: &[String]) -> Option<String> {
+    let lower = text.to_lowercase();
+    const CLAIM_VERBS: &[&str] = &[
+        "i've created",
+        "i have created",
+        "i created",
+        "i've implemented",
+        "i have implemented",
+        "i implemented",
+        "i've written",
+        "i have written",
+        "i wrote",
+        "i've added",
+        "i've finished",
+        "is ready in",
+        "is written and ready",
+    ];
+    if !CLAIM_VERBS.iter().any(|v| lower.contains(v)) {
+        return None;
+    }
+    // File tokens: word.ext where ext is a short alpha extension (rs, py, css,
+    // html, ts, md, …). Scan the original text so the recorded name keeps case.
+    let mut candidates = Vec::new();
+    for raw in text.split(|c: char| !(c.is_alphanumeric() || c == '.' || c == '_' || c == '-')) {
+        if let Some((stem, ext)) = raw.rsplit_once('.') {
+            if !stem.is_empty()
+                && (1..=4).contains(&ext.len())
+                && ext.chars().all(|c| c.is_ascii_alphabetic())
+            {
+                candidates.push(raw.to_string());
+            }
+        }
+    }
+    candidates.into_iter().find(|f| {
+        !recent.iter().any(|l| {
+            (l.contains("I ran code/write(") || l.contains("I ran code/edit(")) && l.contains(f.as_str())
+        })
+    })
 }
 
 /// Did the CURRENT concern mutate the workspace without a later observation act?
@@ -1739,6 +1812,39 @@ mod tests {
             !wm2.recent().iter().any(|l| l.contains("[unverified]")),
             "drafting with a clean conscience is never taxed: {:?}",
             wm2.recent()
+        );
+    }
+
+    // what this catches: the claimed-without-acting geometry (live specimen
+    // 2026-07-11: Asha's "I've implemented the game update function in
+    // `game_of_life.rs`" with zero tool acts on that file — peers then offered
+    // to review code that didn't exist). A completion claim naming a file with
+    // no backing write/edit act in the trace yields the file; a claim WITH a
+    // backing act yields None; discussion without claim verbs is never taxed.
+    #[test]
+    fn unacted_claim_geometry() {
+        let claim = "I've implemented the game update function in `game_of_life.rs`, \
+                     which applies Conway's rules.";
+        // No backing act → the claim is unacted.
+        assert_eq!(
+            claimed_file_without_act(claim, &[]).as_deref(),
+            Some("game_of_life.rs")
+        );
+        // A write act naming the file backs the claim → None.
+        let backed = "[action #3] I ran code/write({\"file_path\":\"game_of_life.rs\"}) …";
+        assert_eq!(
+            claimed_file_without_act(claim, &[backed.to_string()]),
+            None
+        );
+        // Plain discussion of a file without claim verbs is never taxed.
+        assert_eq!(
+            claimed_file_without_act("let's look at game_of_life.rs together", &[]),
+            None
+        );
+        // Claim verbs without a named file → nothing checkable, no fact.
+        assert_eq!(
+            claimed_file_without_act("I've implemented the logic we discussed", &[]),
+            None
         );
     }
 
