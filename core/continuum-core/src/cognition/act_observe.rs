@@ -387,6 +387,27 @@ pub async fn apply_act(
         );
     }
 
+    // Investigation-shape perception: once a concern has accumulated a few acts,
+    // render the mind's own act DISTRIBUTION as a standing structural fact. The
+    // fingerprint note above catches exact repeats; this catches the wider
+    // pattern a mind can't otherwise see about itself — e.g. "9 acts so far,
+    // all code/search" (glass-boxed on SWE flask-4045: distinct-but-all-search
+    // acts never tripped the exact-repeat note, and the imbalance itself was
+    // invisible). A tally of her own hands is truth, not steering: it names
+    // what happened, never what to do next.
+    let tally = body.working_memory.action_verb_tally();
+    let tally_total: usize = tally.iter().map(|(_, c)| c).sum();
+    if tally_total >= 3 {
+        let dist = tally
+            .iter()
+            .map(|(n, c)| format!("{n} ×{c}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        observation = format!(
+            "[investigation] my acts this concern so far: {dist}.\n\n{observation}"
+        );
+    }
+
     // Admit the outcome as an Episodic engram through the ONE production admit
     // path (a self-observation message from the persona to itself). This is the
     // result-as-memory choice: next tick, recall can surface "I ran X → got Y" the

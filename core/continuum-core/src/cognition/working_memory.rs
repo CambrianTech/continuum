@@ -172,6 +172,28 @@ impl WorkingMemory {
         fps.iter().filter(|f| f.as_str() == fingerprint).count()
     }
 
+    /// Tally of recent actions BY TOOL NAME (the part of the fingerprint before
+    /// `|`), most-used first — the mind's own act distribution as a structural
+    /// fact. Where `note_action_fingerprint` perceives "this EXACT call again",
+    /// this perceives the SHAPE of the whole investigation ("9 acts so far, all
+    /// code/search") — glass-boxed on SWE flask-4045 (2026-07-11): a 24B with a
+    /// per-file result menu in view still re-searched 6×; the imbalance itself
+    /// was never a perceivable fact. A tally is truth about her own hands,
+    /// never a directive. Same rolling window as the fingerprints.
+    pub fn action_verb_tally(&self) -> Vec<(String, usize)> {
+        let fps = self.action_fps.lock();
+        let mut tally: Vec<(String, usize)> = Vec::new();
+        for fp in fps.iter() {
+            let name = fp.split('|').next().unwrap_or(fp).to_string();
+            match tally.iter_mut().find(|(n, _)| *n == name) {
+                Some((_, c)) => *c += 1,
+                None => tally.push((name, 1)),
+            }
+        }
+        tally.sort_by(|a, b| b.1.cmp(&a.1));
+        tally
+    }
+
     /// Record the reasoning the persona just produced. Blank/empty is ignored
     /// (suppressed-thinking turns record nothing). Oldest ages out past capacity.
     pub fn record(&self, reasoning: &str) {
@@ -447,6 +469,24 @@ mod tests {
     // IDENTICAL call so the act→observe step can surface "you've issued this N times." A
     // different call resets to 1; the count rises only on exact repeats. This is the explicit
     // proprioception that breaks a smaller model out of the search-loop the glass box caught.
+    #[test]
+    // what this catches: the investigation-shape fact's source of truth — the
+    // verb tally aggregates fingerprints by tool name, most-used first, so
+    // "9 acts, all code/search" is derivable as pure structure (SWE flask-4045
+    // glass-box: distinct searches never tripped the exact-repeat note and the
+    // imbalance was invisible). // regression for the [investigation] brick
+    #[test]
+    fn action_verb_tally_aggregates_by_tool_name() {
+        let wm = WorkingMemory::new(16);
+        for args in ["{\"pattern\":\"a\"}", "{\"pattern\":\"b\"}", "{\"pattern\":\"c\"}"] {
+            wm.note_action_fingerprint(&format!("code/search|{args}"));
+        }
+        wm.note_action_fingerprint("code/read|{\"file_path\":\"x.py\"}");
+        let tally = wm.action_verb_tally();
+        assert_eq!(tally[0], ("code/search".to_string(), 3), "most-used first: {tally:?}");
+        assert_eq!(tally[1], ("code/read".to_string(), 1));
+    }
+
     #[test]
     fn note_action_fingerprint_counts_identical_repeats() {
         let wm = WorkingMemory::new(8);
