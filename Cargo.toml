@@ -29,8 +29,15 @@ members = [
     "client/continuum-client-ffi",
 
     # apps/ — first-party UI shells / embodiments
-    "apps/cli", "conway_game_of_life", "wordstats",
+    "apps/cli",
 ]
+# Citizen project dirs are STANDALONE crates, never substrate-workspace members:
+# `cargo new` inside the checkout auto-adds members (rewriting THIS file
+# non-atomically — a persona's git_diff caught a torn 2-line read of it live,
+# 2026-07-11), and membership makes OUR builds compile THEIR projects. Exclude
+# keeps their in-dir cargo builds working while the substrate manifest stays
+# substrate-only. The real fix is workspace isolation (#49); this is the fence.
+exclude = ["wordstats", "work-wordstats", "conway_game_of_life", "work-08ece9e8"]
 # Shared dependencies - workers inherit these versions
 [workspace.dependencies]
 # airc substrate — git-pinned to a stable SHA for efficient-passthrough
