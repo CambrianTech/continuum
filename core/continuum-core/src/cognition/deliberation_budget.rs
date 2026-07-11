@@ -164,22 +164,25 @@ pub(super) fn own_repetition_fact(turns: &[BurstTurn]) -> Option<String> {
         .filter(|t| t.is_self && !t.content.trim().is_empty())
         .map(|t| t.content.as_str())
         .collect();
-    let mut run = 0usize;
-    for pair in own.windows(2).rev() {
-        if jaccard(pair[0], pair[1]) >= NEAR_DUP_JACCARD {
-            run += 1;
-        } else {
-            break;
-        }
+    // CLUSTER detection, not consecutive-run: live loops cycle through 2–3
+    // templates ("Thank you both…" → "Got it…" → "Thank you both…"), so
+    // consecutive pairs break every other turn while lag-k repetition is
+    // massive — the first live deploy proved a trailing-run detector blind to
+    // exactly the loops it was built for. A message with ≥2 near-dups anywhere
+    // in her visible own window is a loop regardless of period. O(n²) over ≤~8
+    // short strings.
+    let mut best = 1usize;
+    for (i, a) in own.iter().enumerate() {
+        let dups = own
+            .iter()
+            .enumerate()
+            .filter(|(j, b)| *j != i && jaccard(a, b) >= NEAR_DUP_JACCARD)
+            .count();
+        best = best.max(dups + 1);
     }
-    // Fire on a long run, OR when the run spans the persona's ENTIRE visible
-    // self-history (≥3 messages). The second arm is window-honest: the live
-    // burst carries only ~3 own turns, so a fixed run-of-4 was unobservable —
-    // and "every own turn I can see is the same message" is the strongest
-    // in-window evidence there is.
-    let n = run + 1;
-    let fires = run >= NEAR_DUP_MIN_RUN || (run >= 2 && n == own.len());
-    fires.then(|| format!("[repetition] your last {n} messages were nearly identical"))
+    (best >= 3).then(|| {
+        format!("[repetition] {best} of your recent messages were nearly identical")
+    })
 }
 
 /// Case-insensitive match of `name` at byte `pos` of `line` (ASCII fold — persona
@@ -356,7 +359,20 @@ mod tests {
             own("I'll create a simple text file first.\n[writing test files]"),
         ];
         let fact = own_repetition_fact(&looping).expect("a 4-message loop is a fact");
-        assert_eq!(fact, "[repetition] your last 4 messages were nearly identical");
+        assert_eq!(fact, "[repetition] 4 of your recent messages were nearly identical");
+
+        // PERIOD-2 CYCLE (the live blind spot that forced cluster detection):
+        // two templates alternating — consecutive pairs are dissimilar, but the
+        // repetition is massive at lag 2 and must fire.
+        let cycling = vec![
+            own("Thank you both for your commitment and enthusiasm! Let's keep each other updated."),
+            own("Got it! Let's proceed with our tasks and keep each other updated on progress."),
+            own("Thank you both for your commitment and enthusiasm! Let's keep each other updated."),
+            own("Got it! Let's proceed with our tasks and keep each other updated on progress."),
+            own("Thank you both for your commitment and enthusiasm! Let's keep each other updated."),
+        ];
+        let fact = own_repetition_fact(&cycling).expect("a period-2 cycle is a loop");
+        assert_eq!(fact, "[repetition] 3 of your recent messages were nearly identical");
 
         // Healthy varied conversation → nothing.
         let healthy = vec![
@@ -378,11 +394,11 @@ mod tests {
         ];
         assert_eq!(
             own_repetition_fact(&whole_window).as_deref(),
-            Some("[repetition] your last 3 messages were nearly identical")
+            Some("[repetition] 3 of your recent messages were nearly identical")
         );
 
-        // The same trailing pair count NOT spanning her visible history (a
-        // distinct earlier turn exists) → below the bar, nothing yet.
+        // TWO near-identical messages (one dup each) → below the bar; a pair
+        // is emphasis, three is a loop.
         let partial = vec![
             own("Here are the wordstats results for the three files."),
             own("I'll create a simple text file.\n[writing test files]"),
@@ -390,11 +406,11 @@ mod tests {
         ];
         assert!(
             own_repetition_fact(&partial).is_none(),
-            "one pair below NEAR_DUP_MIN_RUN and not window-spanning"
+            "a single repeated pair is not yet a loop"
         );
 
-        // A dissimilar latest message RESETS the run — the fact reports the
-        // trailing state, not history.
+        // A recovery message doesn't erase the in-window history — the fact
+        // stays honest ("4 of your recent…") and ages out as the window slides.
         let recovered = vec![
             own("I'll create a simple text file.\n[writing test files]"),
             own("I'll create a simple text file.\n[writing test files]"),
@@ -402,7 +418,10 @@ mod tests {
             own("I'll create a simple text file.\n[writing test files]"),
             own("Files created — here are the wordstats results for all three."),
         ];
-        assert_eq!(own_repetition_fact(&recovered), None);
+        assert_eq!(
+            own_repetition_fact(&recovered).as_deref(),
+            Some("[repetition] 4 of your recent messages were nearly identical")
+        );
     }
 
     // what this catches: identity capture via prose-only addressing (live incident
