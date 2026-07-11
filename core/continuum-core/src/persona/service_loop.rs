@@ -2502,6 +2502,7 @@ mod tests {
             RoleId::Helper,
             RoleId::Coder,
             RoleId::Sentinel,
+            RoleId::Designer,
             RoleId::Custom,
         ];
         for role in variants {
@@ -2527,6 +2528,7 @@ mod tests {
             RoleId::Helper => (),
             RoleId::Coder => (),
             RoleId::Sentinel => (),
+            RoleId::Designer => (),
             RoleId::Custom => (),
         };
     }
