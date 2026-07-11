@@ -1,0 +1,8 @@
+[package]
+name = "wordstats"
+edition.workspace = true
+version.workspace = true
+authors.workspace = true
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
