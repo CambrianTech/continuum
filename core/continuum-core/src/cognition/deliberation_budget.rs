@@ -118,7 +118,7 @@ pub(super) fn turn_message_line_addressed(
 /// the ambiguous band. Template-family variants (~0.5) slip through v1 —
 /// documented limitation, better under- than over-fire
 /// ([[no-hardcoded-heuristics-to-steer-cognition]]).
-const NEAR_DUP_JACCARD: f64 = 0.6;
+pub(super) const NEAR_DUP_JACCARD: f64 = 0.6;
 
 /// Minimum run length (consecutive near-identical PAIRS, so `3` = four messages
 /// in a row) before the repetition fact renders. Same calibration: the longest
@@ -136,8 +136,11 @@ fn token_set(s: &str) -> std::collections::HashSet<String> {
         .collect()
 }
 
-/// Unigram-token Jaccard similarity of two messages.
-fn jaccard(a: &str, b: &str) -> f64 {
+/// Unigram-token Jaccard similarity of two messages. Shared with the render's
+/// own-turn near-dup drop (`messages_within`) so "nearly identical" is ONE
+/// definition: the same geometry that counts a pair as repetition evidence
+/// decides that re-rendering the later copy would re-teach the loop.
+pub(super) fn jaccard(a: &str, b: &str) -> f64 {
     let (ta, tb) = (token_set(a), token_set(b));
     let union = ta.union(&tb).count();
     if union == 0 {

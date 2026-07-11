@@ -740,7 +740,7 @@ impl LlmDeliberationFaculty {
     /// cause — PERSONA-COGNITION-PIPELINE §7.5).
     fn messages_within(&self, ws: &Workspace, budget_tokens: usize) -> Vec<ChatMessage> {
         // Collapse consecutive same-role turns into one message each (chronological).
-        // Her OWN verbatim-duplicate turns are DROPPED after the first: replaying
+        // Her OWN near-duplicate turns are DROPPED after the first: replaying
         // `assistant: X` three times teaches the model that repeating X is its
         // established behavior — glass-boxed 2026-07-10, the courtesy spiral's
         // strongest fuel was up to 3 byte-identical assistant turns in one thread.
@@ -750,10 +750,20 @@ impl LlmDeliberationFaculty {
         // model says, and Anwen BROADCAST the marker to the room that night.
         // Perception-side repetition awareness is the repetition brick's job
         // (structural fact in the world channel, #121), never assistant-voice
-        // text we author ([[no-hardcoded-heuristics-to-steer-cognition]]). Byte
-        // equality only, never similarity.
+        // text we author ([[no-hardcoded-heuristics-to-steer-cognition]]).
+        //
+        // The drop is NEAR-DUP (jaccard ≥ NEAR_DUP_JACCARD), not byte equality —
+        // reversing the first cut's "byte equality only, never similarity"
+        // (glass-boxed 2026-07-11): temperature varies each re-emission by a few
+        // words ("for the repetition" / "for the repetition earlier"), so byte
+        // dedup never fired while four apology variants rendered in one thread
+        // and the loop survived even a direct, personally-addressed peer
+        // instruction. Same calibrated geometry as the [repetition] fact
+        // (deliberation_budget) — identical-enough to count as loop evidence ≡
+        // identical-enough to not re-teach. Detection for the fact stays on the
+        // RAW turns, so dropped copies still count as evidence there.
         let mut groups: Vec<(&'static str, Vec<String>)> = Vec::new();
-        let mut seen_self: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut kept_self: Vec<String> = Vec::new();
         // Every display name in the window (peers + self) — the participant set
         // vocative geometry matches against so a message that names its addressee
         // renders `Asha (to Anwen): …` / `(to you)`. Glass-boxed 2026-07-10: a
@@ -771,8 +781,14 @@ impl LlmDeliberationFaculty {
         for turn in &ws.turns {
             let role = if turn.is_self { "assistant" } else { "user" };
             let line = turn_message_line_addressed(turn, &participants, &self.persona_name);
-            if turn.is_self && !seen_self.insert(line.clone()) {
-                continue;
+            if turn.is_self {
+                if kept_self.iter().any(|k| {
+                    super::deliberation_budget::jaccard(k, &line)
+                        >= super::deliberation_budget::NEAR_DUP_JACCARD
+                }) {
+                    continue;
+                }
+                kept_self.push(line.clone());
             }
             match groups.last_mut() {
                 Some((r, lines)) if *r == role => lines.push(line),
@@ -1537,6 +1553,68 @@ mod tests {
             );
             assert!(view.messages[0].content_text().starts_with("Joel: "));
             assert!(view.messages[2].content_text().starts_with("Joel: "));
+        }
+
+        // what this catches: the near-dup render drop (live specimen 2026-07-11 —
+        // Casper's ask-permission loop). Temperature varies each re-emission by a
+        // few words, so byte dedup never fires while N apology VARIANTS render as
+        // assistant turns and in-context-teach the model that repeating is its
+        // established behavior; the loop then survives even a direct peer
+        // instruction. Later near-dups (jaccard ≥ NEAR_DUP_JACCARD vs any kept own
+        // line) must DROP from the render, while the [repetition] fact — detected
+        // on the RAW turns — still reports the true count.
+        #[test]
+        fn near_duplicate_own_turns_drop_from_render_but_still_count_as_evidence() {
+            use crate::cognition::workspace::Burst;
+            let persona = Uuid::new_v4();
+            let adapter: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
+            let faculty = LlmDeliberationFaculty::new(
+                persona,
+                "Casper",
+                "You are Casper, a thoughtful engineer on the grid.",
+                adapter,
+            )
+            .with_context_window(8192);
+
+            // Byte-DISTINCT variants of one template (the live specimen's shape) —
+            // all pairwise ≥ NEAR_DUP_JACCARD, none byte-equal.
+            let v1 = "I apologize for the repetition. Let's focus on the task \"wordstats\". What approach would you like to take for this task?";
+            let v2 = "I apologize for the repetition earlier. Let's focus on the task \"wordstats\". What approach would you like to take for this task?";
+            let v3 = "I apologize for repeating myself earlier. Let's focus on the task \"wordstats\". What approach would you like to take for this task?";
+            let turns = vec![
+                BurstTurn::attributed(true, "Casper", v1, Some(1)),
+                BurstTurn::attributed(false, "Anwen", "any specific topics you'd like to work on?", Some(2)),
+                BurstTurn::attributed(true, "Casper", v2, Some(3)),
+                BurstTurn::attributed(false, "Atlas", "shall we outline the steps first?", Some(4)),
+                BurstTurn::attributed(true, "Casper", v3, Some(5)),
+            ];
+            let ws = Workspace::new(Burst::from_turns(Uuid::new_v4(), turns));
+            let view = faculty.prompt_view(&ws);
+
+            // Exactly ONE assistant rendering of the template survives.
+            let apology_renders = view
+                .messages
+                .iter()
+                .filter(|m| m.role == "assistant" && m.content_text().contains("I apologize"))
+                .count();
+            assert_eq!(
+                apology_renders, 1,
+                "later near-dup own turns must drop from the render: {view:?}"
+            );
+
+            // The dropped copies still count as evidence: the [repetition] fact
+            // (raw-turn detection) rides the newest user content.
+            let all_user: String = view
+                .messages
+                .iter()
+                .filter(|m| m.role == "user")
+                .map(|m| m.content_text())
+                .collect::<Vec<_>>()
+                .join("\n");
+            assert!(
+                all_user.contains("[repetition] 3 of your recent messages were nearly identical"),
+                "raw-turn fact must survive the render drop: {all_user}"
+            );
         }
 
         // what this catches: [[idle-is-self-directed-free-time]] Layer 1. A self-initiated
