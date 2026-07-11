@@ -439,7 +439,7 @@ pub struct EvalTask {
     /// `cargo test --test foo`), not code extracted from her chat answer. Supersedes
     /// `test`/`expect`; the recovery loop feeds its stdout+stderr back on failure so she
     /// iterates against the real compiler/test output until it goes green.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, alias = "dodShell", skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub dod_shell: Option<String>,
     /// ARTIFACT grade: a relative in-workspace path she is told to write her solution to. When
@@ -448,14 +448,14 @@ pub struct EvalTask {
     /// append `test`, compile, run). This is how an ACTING persona is measured — the act→verify
     /// loop is only visible if we grade what she actually wrote + compiled, not what she narrated.
     /// The file lands in the workspace root (= core cwd, where `code/write` sandboxes writes).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, alias = "solutionFile", skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub solution_file: Option<String>,
     /// Task-state SETUP: a shell command run BEFORE the prompt is posed, restoring the
     /// task's initial workspace state so runs are repeatable (a `gym/mine` task re-breaks
     /// its checkout: `git checkout <commit>^ -- src/lib.rs`). Setup failure is a named
     /// infra grade, never a silent broken workspace ([[fallbacks-are-illegal-fail-loud]]).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, alias = "setupShell", skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub setup_shell: Option<String>,
 }

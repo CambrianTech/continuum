@@ -433,6 +433,33 @@ mod tests {
         assert!(is_candidate(&c, false), "_tests.rs classifies as test evidence");
     }
 
+    // what this catches: the "superset of the EvalTask wire fields" claim on the
+    // ACTUAL wire — MinedTask serializes camelCase (`dodShell`) while EvalTask's
+    // fields are snake_case with every field defaulted, so without serde aliases
+    // the mined JSONL silently degrades to an empty substring-graded task (grade
+    // rot, not an error). Regression for the tasks.jsonl → cognition/eval seam.
+    #[test]
+    fn mined_task_jsonl_deserializes_as_eval_task() {
+        let mined = MinedTask {
+            id: "mine_abc".into(),
+            prompt: "fix the bug".into(),
+            dod_shell: "cargo test".into(),
+            setup_shell: "git checkout HEAD^ -- src/lib.rs".into(),
+            commit: "abc".into(),
+            source_file: "src/lib.rs".into(),
+            failing_output: "1 test failed".into(),
+        };
+        let wire = serde_json::to_string(&mined).unwrap();
+        assert!(wire.contains("dodShell"), "MinedTask wire stays camelCase");
+        let task: crate::cognition::eval::EvalTask = serde_json::from_str(&wire).unwrap();
+        assert_eq!(task.dod_shell.as_deref(), Some("cargo test"));
+        assert_eq!(
+            task.setup_shell.as_deref(),
+            Some("git checkout HEAD^ -- src/lib.rs")
+        );
+        assert_eq!(task.id, "mine_abc");
+    }
+
     // what this catches: the END-TO-END mining contract against a real (synthetic)
     // git repo — bug commit, then fix+test commit; the miner must emit exactly one
     // doubly-verified task whose setup re-breaks and whose DoD restores canonical
