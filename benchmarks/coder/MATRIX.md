@@ -60,3 +60,30 @@ prefill fix; claims of "I've just run it" remain unbacked by any execution (conf
 class, Scenario Library).
 
 | run5 (all instrument fixes) | 0/3 | 132 acts (32 read / 92 shell / 8 tree / 0 edit) | clean: 0 false errors, 11 honest NotFound (recovered), 0 deadline fires | HONEST ZERO — replicates run2; neutral nudge changed nothing. Diagnose-without-repair is the reproducible finding → #122 training target |
+
+## § swe-bench — flask-4045 cell (Devstral-Small-2507 24B resident, OURS arm, 2026-07-11)
+
+Scoring: official `swebench` Docker harness. Instance is hermetic (gold control RESOLVED).
+Controls already banked: **gold patch → RESOLVED** (spine proof); **Claude-as-agent, same
+tools → RESOLVED** (tool ceiling proof — the hands carry a real fix; the model is the variable).
+
+| attempt | perception layer added | acts | verdict |
+|---|---|---|---|
+| 1 | (baseline: rooted seam, glass box, forgiving edit+search, loop-note) | 25/25 code/search, 0 read, 0 edit | honest 0 — 101-hit result walls |
+| 2 | search OVERFLOW SUMMARY (68a43efb3) — verified in her perception | 26 acts: 25 search + 1 list, 0 read | honest 0 — menu in view, no conversion |
+| 3 | [investigation] act-distribution fact (7737e73f6) — verified rendering "code/search ×3" beside repeat-note + menu | 17+ acts: all search + 1 work/claim, 0 read | honest 0 — perception arsenal EXHAUSTED |
+
+**Conclusion:** every structural cause eliminated by instrument (results real, window real
+at ~5k tokens with no context-shift, facts verified in view). The search→read→edit
+transition in EXAM framing is a weights/curriculum gap → #122 LoRA target. Corpus banked:
+3 negative traces + Claude's RESOLVED positive + the room's genuine read→write→run chains.
+Context-inversion data point: the SAME persona (Anwen) chained read→build→run in the live
+room all afternoon — exam framing, not capability, gates the transition
+([[eval-is-an-exam-not-a-life]]).
+
+**Matrix axes locked (2026-07-11):** rows = every Mac-runnable coder (+cloud rows later);
+cols = raw / opencode(fair shim) / OURS / OURS+genome; third axis = hardware tier
+(one MacBook / +5090 / small grid) with cost-per-resolved-task reported beside
+resolve-rate. Target benchmarks by mindshare: SWE-bench Verified/Lite, Terminal-Bench,
+Aider polyglot, BFCL; the two headline formats no leaderboard can copy: same-weights
+before/after genome training, and $/resolved-task vs cloud.
