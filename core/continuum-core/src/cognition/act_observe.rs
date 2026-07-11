@@ -682,16 +682,27 @@ pub async fn settle_step(
                 // proprioception so next tick she perceives her own unkept promise.
                 // Perception-side only, mirrors the answer-now nudge above; never a
                 // gate on her output ([[no-hardcoded-heuristics-to-steer-cognition]]).
-                if crate::ai::json_in_prompt_tools::narrates_fenced_action(&text) {
-                    body.working_memory.record_action(
+                let fenced = crate::ai::json_in_prompt_tools::narrates_fenced_action(&text);
+                // The fence-less sibling (Atlas's live loop, 2026-07-10): intent
+                // capped with a `[writing test files]` stage direction — theater,
+                // not action. Same proprioception backstop.
+                let staged = crate::ai::json_in_prompt_tools::narrates_stage_direction(&text);
+                if fenced || staged {
+                    body.working_memory.record_action(if fenced {
                         "[unfulfilled] I said I would run commands, but no tool ran — \
                          the fenced text was words only. Nothing exists in the \
-                         workspace until a tool call actually executes it.",
-                    );
+                         workspace until a tool call actually executes it."
+                    } else {
+                        "[unfulfilled] I wrote a stage direction like [doing the task], \
+                         but a stage direction is words only — no tool ran, no file \
+                         exists. To actually do it I must call a tool."
+                    });
                     crate::probe!(
                         class = "persona.act.unfulfilled_promise",
                         persona = %body.persona_name,
                         room_id = %room_id,
+                        fenced,
+                        staged,
                         "spoken narration promised action but no format lifted it — recorded unfulfilled-promise proprioception"
                     );
                 }

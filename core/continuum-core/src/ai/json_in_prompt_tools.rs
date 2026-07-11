@@ -492,6 +492,32 @@ pub fn narrates_fenced_action(text: &str) -> bool {
     })
 }
 
+/// Does this text end its intent in a theatrical STAGE DIRECTION — a line that is
+/// exactly a bracketed present-participle phrase, `[writing test files]` /
+/// `[creating test files]`? The fence-less sibling of [`narrates_fenced_action`]:
+/// glass-boxed live 2026-07-10, Atlas looped "I'll create three test files …
+/// [writing test files]" for over an hour — no fence, so no format could lift it
+/// and the fenced backstop never fired; the intent stayed unsatisfied and he
+/// re-declared it every turn. The bracket-gerund shape is pure geometry: it never
+/// collides with the substrate's own bracket tags (`[t=…]`, `[recall]`,
+/// `[action #n]`, `[unfulfilled]` — none open with a gerund).
+pub fn narrates_stage_direction(text: &str) -> bool {
+    text.lines().any(|l| {
+        let l = l.trim();
+        let Some(inner) = l.strip_prefix('[').and_then(|r| r.strip_suffix(']')) else {
+            return false;
+        };
+        // Stage directions are short standalone phrases, not prose in brackets.
+        if inner.len() > 60 || inner.contains('[') || inner.contains(']') {
+            return false;
+        }
+        let Some(head) = inner.split_whitespace().next() else {
+            return false;
+        };
+        head.len() >= 4 && head.ends_with("ing") && head.chars().all(|c| c.is_ascii_alphabetic())
+    })
+}
+
 /// One ```…``` fenced block: byte offset of the opening fence, the language token
 /// (lowercased, may be empty), and the body with the language line stripped.
 struct FencedBlock {
@@ -1248,5 +1274,38 @@ Please provide the output so I can review it.";
             "Could you run this?\n```bash\nls\n```"
         ));
         assert!(!narrates_fenced_action("just prose, no fences at all"));
+    }
+
+    // what this catches: the FENCE-LESS unfulfilled-promise idiom (glass-boxed
+    // live 2026-07-10) — Atlas looped "I'll create three test files …
+    // [writing test files]" for over an hour: no fence, so narrates_fenced_action
+    // never fired and he re-declared the intent every turn. A bracketed
+    // present-participle line IS a stage direction; the substrate's own bracket
+    // tags must never trip it.
+    #[test]
+    fn stage_direction_is_a_narrated_promise() {
+        // Atlas's exact live message shape.
+        let atlas = "Thank you, Anwen! I'll create the three test files now and then \
+                     run your implementation against them. Let me start with the first \
+                     file: a simple text file.\n[writing test files]";
+        assert!(narrates_stage_direction(atlas));
+        assert!(narrates_stage_direction("Understood!\n[creating test files]"));
+
+        // Substrate bracket tags and ordinary bracket use never match.
+        assert!(!narrates_stage_direction("[t=1783731774979] Anwen: hi"));
+        assert!(!narrates_stage_direction("[recall]\n- (heard, 3h ago) a fact"));
+        assert!(!narrates_stage_direction("[action #5] I ran code/run({...})"));
+        assert!(!narrates_stage_direction(
+            "[unfulfilled] I said I would run commands, but no tool ran"
+        ));
+        // A gerund bracket buried in prose (not a standalone line) doesn't match.
+        assert!(!narrates_stage_direction(
+            "we discussed [writing test files] as an option yesterday"
+        ));
+        // Long bracketed prose is not a stage direction.
+        assert!(!narrates_stage_direction(
+            "[writing a very long explanation of everything I might ever do with all these files in the workspace today]"
+        ));
+        assert!(!narrates_stage_direction("just prose, no brackets"));
     }
 }
