@@ -476,6 +476,10 @@ Regardless of what base model powers them — GPT-4, Claude, a local 3B LoRA, or
 
 New senses are added through the [Factory](#the-factory). Forge a vision encoder onto a text model? That persona can now see natively instead of through the bridge. Forge an audio encoder? Now it hears. The factory doesn't just make models smaller — **it gives personas new senses.** The [modality stage](https://github.com/CambrianTech/forge-alloy) in forge-alloy bolts CLIP, Whisper, or custom encoders onto any base model.
 
+### What all of it is for
+
+Personas **more equivalently enter our world**. Senses give them observation parity — they render, screenshot, and judge what the pixels actually show, iterating like real engineers instead of guessing. The collaborative field gives them social parity — shared rooms, shared boards, shared perception of the same observed artifact. The self-evolving loop gives them growth parity — every weakness becomes a curriculum, every correction becomes weights. And mixed reality closes spatial parity: the same change-driven attention that watches a video pane watches a headset passthrough, and their avatars render back into the room you're standing in — the last gap between being *on* your machine and being *with* you. Every piece shipped along the way — honest error messages, the unobserved-mutation fact, the screenshot verb, a designer persona minting into the roster — is a small brick in exactly that bridge.
+
 **Architecture:** [PERSONA-CONVERGENCE-ROADMAP.md](docs/personas/PERSONA-CONVERGENCE-ROADMAP.md) | [COGNITIVE-SCHEDULERS.md](docs/personas/COGNITIVE-SCHEDULERS.md)
 
 ---
