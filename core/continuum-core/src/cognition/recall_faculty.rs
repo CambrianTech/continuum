@@ -573,13 +573,7 @@ impl Faculty for RecallFaculty {
         let now_ms = (self.clock)();
         let content = scored
             .iter()
-            .map(|(_, engram, _, _)| {
-                format!(
-                    "- {}{}",
-                    provenance_prefix(engram, self.persona_id, now_ms),
-                    engram.content
-                )
-            })
+            .map(|(_, engram, _, _)| render_memory_line(engram, self.persona_id, now_ms))
             .collect::<Vec<_>>()
             .join("\n");
         let reasoning = format!(
@@ -629,6 +623,31 @@ fn provenance_prefix(engram: &Engram, persona_id: Uuid, now_ms: u64) -> String {
         EngramOrigin::SelfReflection { .. } => "you reflected",
     };
     format!("({who}, {age}) ")
+}
+
+/// One rendered memory line: provenance prefix + content, with PEER-HEARD speech
+/// additionally wrapped in quotation marks. The quotes are typography, not
+/// content editing — recalled speech IS a quotation, and rendering it bare
+/// invites replaying it as one's own words. Verified live 2026-07-11 (#134
+/// specimen 2): a persona's recall showed `- (heard, 2h ago) I see that I've
+/// been repeating myself…` with honest provenance, and she still broadcast the
+/// peer's first-person message verbatim as her own. Quote marks are the
+/// strongest structural signal a transcript-trained model has that words belong
+/// to someone else.
+fn render_memory_line(engram: &Engram, persona_id: Uuid, now_ms: u64) -> String {
+    let prefix = provenance_prefix(engram, persona_id, now_ms);
+    let heard = matches!(
+        &engram.origin,
+        EngramOrigin::Chat(r) if r.sender_id != persona_id
+    ) || matches!(
+        &engram.origin,
+        EngramOrigin::Airc(r) if r.sender_id != persona_id.to_string()
+    );
+    if heard {
+        format!("- {prefix}\u{201c}{}\u{201d}", engram.content)
+    } else {
+        format!("- {prefix}{}", engram.content)
+    }
 }
 
 /// Coarse human age buckets — a memory's rough distance in time, not a
@@ -716,6 +735,20 @@ mod tests {
         assert_eq!(
             provenance_prefix(&engram_from(peer, 3 * 24 * 60 * 60 * 1000), me, now),
             "(heard, 3d ago) "
+        );
+
+        // PEER-HEARD speech renders QUOTED — recalled speech is a quotation
+        // (#134 specimen 2: honest provenance alone didn't stop a persona
+        // broadcasting a peer's first-person recalled message as her own; quote
+        // marks are the strongest structural not-your-words signal). Her OWN
+        // words render bare — quoting yourself invites parroting yourself.
+        assert_eq!(
+            render_memory_line(&engram_from(peer, 3 * 60 * 60 * 1000), me, now),
+            "- (heard, 3h ago) \u{201c}staging gateway is on port 58057\u{201d}"
+        );
+        assert_eq!(
+            render_memory_line(&engram_from(me, 5 * 60 * 1000), me, now),
+            "- (you said, 5m ago) staging gateway is on port 58057"
         );
     }
     use crate::persona::engram::{ChatMessageRef, Engram, EngramKind, EngramOrigin, TrustState};

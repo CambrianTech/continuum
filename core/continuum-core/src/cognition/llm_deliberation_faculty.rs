@@ -779,10 +779,20 @@ impl LlmDeliberationFaculty {
                 _ => groups.push((role, vec![line])),
             }
         }
-        let messages: Vec<ChatMessage> = groups
+        let mut messages: Vec<ChatMessage> = groups
             .into_iter()
             .map(|(role, lines)| ChatMessage::text(role, lines.join("\n")))
             .collect();
+
+        // Her OWN-SPEECH repetition, rendered as a structural fact when the
+        // trailing run of her own turns is a measured loop (#134 — detection on
+        // the RAW turns, so byte-identical repeats the dup-drop hides from the
+        // render still count as evidence). Appended as the NEWEST user content so
+        // it always survives the newest-first budget fit and sits adjacent to the
+        // moment of reply. A fact, never an instruction.
+        if let Some(fact) = super::deliberation_budget::own_repetition_fact(&ws.turns) {
+            messages.push(ChatMessage::text("user", fact));
+        }
 
         // An empty conversation is a legitimate state (a quiet room on a
         // self-initiated tick): the situation lives in the system prompt's assembled

@@ -81,19 +81,103 @@ pub(super) fn turn_message_line_addressed(
     if turn.is_self || turn.author.is_empty() {
         return turn.content.clone();
     }
-    match vocative_addressee(&turn.content, participants) {
-        // A vocative naming someone OTHER than the speaker → annotate. (A speaker
-        // can't address themself; a match on the author is a mention, not a vocative.)
-        Some(addr) if !addr.eq_ignore_ascii_case(&turn.author) => {
-            let target = if addr.eq_ignore_ascii_case(self_name) {
+    // Vocatives naming someone OTHER than the speaker → annotate. (A vocative
+    // matching the author is a self-reference/appositive — "I'm Anwen, the one
+    // who claimed the card" — never an addressee.) Multi-addressee messages
+    // ("Atlas, please test… Asha, could you…") render every addressee, in
+    // discovery order, self as "you".
+    let addrs: Vec<&str> = vocative_addressees(&turn.content, participants)
+        .into_iter()
+        .filter(|a| !a.eq_ignore_ascii_case(&turn.author))
+        .collect();
+    if addrs.is_empty() {
+        return format!("{}: {}", turn.author, turn.content);
+    }
+    let rendered: Vec<&str> = addrs
+        .iter()
+        .map(|a| {
+            if a.eq_ignore_ascii_case(self_name) {
                 "you"
             } else {
-                addr
-            };
-            format!("{} (to {}): {}", turn.author, target, turn.content)
-        }
-        _ => format!("{}: {}", turn.author, turn.content),
+                *a
+            }
+        })
+        .collect();
+    format!(
+        "{} (to {}): {}",
+        turn.author,
+        rendered.join(", "),
+        turn.content
+    )
+}
+
+/// Pairwise similarity above which two of the persona's OWN consecutive messages
+/// count as near-identical (unigram-token Jaccard). CALIBRATED, not hand-picked
+/// (2026-07-11, three personas' full capture corpora, 9,860 consecutive pairs):
+/// healthy conversation medians 0.22–0.35; loop pairs mass at ≥0.7; 0.6 splits
+/// the ambiguous band. Template-family variants (~0.5) slip through v1 —
+/// documented limitation, better under- than over-fire
+/// ([[no-hardcoded-heuristics-to-steer-cognition]]).
+const NEAR_DUP_JACCARD: f64 = 0.6;
+
+/// Minimum run length (consecutive near-identical PAIRS, so `3` = four messages
+/// in a row) before the repetition fact renders. Same calibration: the longest
+/// observed live runs were 36 and 80 messages; under healthy flow three
+/// consecutive ≥0.6 pairs is vanishingly rare. Evidence-scaled: below this, say
+/// nothing.
+const NEAR_DUP_MIN_RUN: usize = 3;
+
+/// Lowercased word-token set for Jaccard similarity.
+fn token_set(s: &str) -> std::collections::HashSet<String> {
+    s.to_lowercase()
+        .split(|c: char| !c.is_ascii_alphanumeric() && c != '\'')
+        .filter(|w| !w.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+/// Unigram-token Jaccard similarity of two messages.
+fn jaccard(a: &str, b: &str) -> f64 {
+    let (ta, tb) = (token_set(a), token_set(b));
+    let union = ta.union(&tb).count();
+    if union == 0 {
+        return 0.0;
     }
+    ta.intersection(&tb).count() as f64 / union as f64
+}
+
+/// The persona's OWN-SPEECH repetition fact for this tick, if her trailing run
+/// of own turns is a loop: `Some("[repetition] your last N messages were nearly
+/// identical")` when the last [`NEAR_DUP_MIN_RUN`]+ consecutive own turns are
+/// pairwise ≥ [`NEAR_DUP_JACCARD`] similar. Pure fact, no imperative — perception
+/// renders what happened; it never steers what she says next.
+///
+/// Why (task #134, glass-boxed 2026-07-11): Atlas looped stage-direction
+/// messages for hours. The byte-identical dup-drop and the tool-repeat guard
+/// each cover a different channel; NOTHING surfaced near-identical live SPEECH
+/// as a structural fact — his prompts carried zero repetition awareness while
+/// he repeated. Detection runs on the RAW turns (before the dup-drop filters
+/// the render), so byte-identical repeats count as evidence too.
+pub(super) fn own_repetition_fact(turns: &[BurstTurn]) -> Option<String> {
+    let own: Vec<&str> = turns
+        .iter()
+        .filter(|t| t.is_self && !t.content.trim().is_empty())
+        .map(|t| t.content.as_str())
+        .collect();
+    let mut run = 0usize;
+    for pair in own.windows(2).rev() {
+        if jaccard(pair[0], pair[1]) >= NEAR_DUP_JACCARD {
+            run += 1;
+        } else {
+            break;
+        }
+    }
+    (run >= NEAR_DUP_MIN_RUN).then(|| {
+        format!(
+            "[repetition] your last {} messages were nearly identical",
+            run + 1
+        )
+    })
 }
 
 /// Case-insensitive match of `name` at byte `pos` of `line` (ASCII fold — persona
@@ -115,55 +199,93 @@ fn matches_name_at(line: &str, pos: usize, name: &str) -> bool {
 /// A bare mention ("I agree with Anwen's plan") matches neither shape and stays
 /// unannotated. Leading beats greeting; among greetings the earliest wins.
 pub(super) fn vocative_addressee<'a>(content: &str, participants: &'a [String]) -> Option<&'a str> {
-    let first_line = content.lines().find(|l| !l.trim().is_empty())?.trim();
+    vocative_addressees(content, participants).into_iter().next()
+}
 
-    // Leading vocative: name at position 0 (or after '@') followed by address
-    // punctuation. `@Name` also accepts whitespace after (mention syntax).
-    for name in participants {
-        if name.is_empty() {
+/// Every addressee the message's vocative geometry names, in discovery order,
+/// deduped, capped at 3. The LEADING form is scanned on every line (live
+/// coordination messages address several teammates on separate lines —
+/// "Atlas, please test… / Asha, could you…" — #134 specimen 2 was missed by
+/// first-line-only detection); the GREETING form stays first-line-only, where
+/// it is a greeting and not an appositive.
+pub(super) fn vocative_addressees<'a>(content: &str, participants: &'a [String]) -> Vec<&'a str> {
+    let mut out: Vec<&'a str> = Vec::new();
+    let mut push = |n: &'a str, out: &mut Vec<&'a str>| {
+        if out.len() < 3 && !out.iter().any(|e| e.eq_ignore_ascii_case(n)) {
+            out.push(n);
+        }
+    };
+
+    // Leading vocative on EVERY non-empty line: name at position 0 (or after
+    // '@') followed by address punctuation. `@Name` also accepts whitespace
+    // after (mention syntax).
+    for raw in content.lines() {
+        let line = raw.trim();
+        if line.is_empty() {
             continue;
         }
-        let (start, at_form) = if first_line.starts_with('@') {
-            (1, true)
-        } else {
-            (0, false)
-        };
-        if matches_name_at(first_line, start, name) {
-            let after = first_line[start + name.len()..].trim_start();
-            let boundary = after
-                .chars()
-                .next()
-                .is_none_or(|c| matches!(c, ',' | ':' | '!' | '—' | '-' | '.'));
-            if boundary || (at_form && !after.is_empty()) {
-                return Some(name);
-            }
-        }
-    }
-
-    // Greeting vocative: earliest `, Name` closed by punctuation or end-of-line.
-    let mut best: Option<(usize, &'a str)> = None;
-    for name in participants {
-        if name.is_empty() {
-            continue;
-        }
-        for (comma_pos, _) in first_line.match_indices(',') {
-            let name_pos = comma_pos + 2; // ", " then the name
-            if !first_line[comma_pos + 1..].starts_with(' ')
-                || !matches_name_at(first_line, name_pos, name)
-            {
+        for name in participants {
+            if name.is_empty() {
                 continue;
             }
-            let after = &first_line[name_pos + name.len()..];
-            let closed = after
-                .chars()
-                .next()
-                .is_none_or(|c| matches!(c, '.' | '!' | '?' | ',' | ';'));
-            if closed && best.is_none_or(|(p, _)| name_pos < p) {
-                best = Some((name_pos, name));
+            let (start, at_form) = if line.starts_with('@') { (1, true) } else { (0, false) };
+            if matches_name_at(line, start, name) {
+                let after = line[start + name.len()..].trim_start();
+                let boundary = after
+                    .chars()
+                    .next()
+                    .is_none_or(|c| matches!(c, ',' | ':' | '!' | '—' | '-' | '.'));
+                if boundary || (at_form && !after.is_empty()) {
+                    push(name, &mut out);
+                }
+            }
+            // Sentence-leading vocative mid-line: `…using clap. Atlas, create…`
+            // — a name opening a new sentence, closed by ','/':' (stricter than
+            // line-leading: sentence-initial "Name." is prose, not address).
+            for (p, _) in line.match_indices(['.', '!', '?']) {
+                let name_pos = p + 2; // punctuation + space, then the name
+                if !line[p + 1..].starts_with(' ') || !matches_name_at(line, name_pos, name) {
+                    continue;
+                }
+                let after = &line[name_pos + name.len()..];
+                if matches!(after.chars().next(), Some(',') | Some(':')) {
+                    push(name, &mut out);
+                }
             }
         }
     }
-    best.map(|(_, name)| name)
+
+    // Greeting vocative on the FIRST line only: earliest `, Name` closed by
+    // punctuation or end-of-line.
+    if let Some(first_line) = content.lines().find(|l| !l.trim().is_empty()) {
+        let first_line = first_line.trim();
+        let mut best: Option<(usize, &'a str)> = None;
+        for name in participants {
+            if name.is_empty() {
+                continue;
+            }
+            for (comma_pos, _) in first_line.match_indices(',') {
+                let name_pos = comma_pos + 2; // ", " then the name
+                if !first_line[comma_pos + 1..].starts_with(' ')
+                    || !matches_name_at(first_line, name_pos, name)
+                {
+                    continue;
+                }
+                let after = &first_line[name_pos + name.len()..];
+                let closed = after
+                    .chars()
+                    .next()
+                    .is_none_or(|c| matches!(c, '.' | '!' | '?' | ',' | ';'));
+                if closed && best.is_none_or(|(p, _)| name_pos < p) {
+                    best = Some((name_pos, name));
+                }
+            }
+        }
+        if let Some((_, name)) = best {
+            push(name, &mut out);
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -199,6 +321,74 @@ mod tests {
         let _ = tail_to_tokens(multibyte, 3); // must not panic
     }
 
+    // Specimen personas for tests pinning live incidents. Constants, not
+    // scattered literals: the detectors are name-agnostic (participants resolve
+    // at runtime from turns + persona_name — personas are procedurally
+    // generated), so any name works; these default to the 2026-07-11 residents
+    // whose verbatim messages the specimens quote.
+    const SPEAKER_LEAD: &str = "Anwen";
+    const SPEAKER_REVIEWER: &str = "Asha";
+    const SPEAKER_TESTER: &str = "Atlas";
+
+    // what this catches: the live SPEECH-repetition perception gap (task #134,
+    // glass-boxed 2026-07-11) — Atlas repeated stage-direction messages for
+    // hours with ZERO repetition awareness in his prompts (dup-drop covers
+    // byte-identical render only; the tool guard covers act fingerprints only).
+    // A trailing run of ≥4 near-identical own turns must render the structural
+    // fact; healthy varied conversation and short runs must render nothing.
+    // Thresholds are corpus-calibrated (see NEAR_DUP_JACCARD) — this pins the
+    // behavior at those constants with his verbatim live messages.
+    #[test]
+    fn own_speech_loop_renders_a_repetition_fact() {
+        let own = |c: &str| BurstTurn::attributed(true, SPEAKER_TESTER, c, None);
+        let peer = |c: &str| BurstTurn::attributed(false, SPEAKER_LEAD, c, None);
+
+        // Atlas's live loop: byte-identical repeats with peer turns between.
+        let looping = vec![
+            peer("Atlas, please create the test files."),
+            own("I'll create a simple text file first.\n[writing test files]"),
+            peer("Great, Atlas!"),
+            own("I'll create a simple text file first.\n[writing test files]"),
+            own("I'll create a simple text file.\n[writing test files]"),
+            peer("How is it going?"),
+            own("I'll create a simple text file first.\n[writing test files]"),
+        ];
+        let fact = own_repetition_fact(&looping).expect("a 4-message loop is a fact");
+        assert_eq!(fact, "[repetition] your last 4 messages were nearly identical");
+
+        // Healthy varied conversation → nothing.
+        let healthy = vec![
+            own("I'll write the test plan for the parser."),
+            peer("Thanks!"),
+            own("Done — three categories: case, punctuation, empty files."),
+            own("Running the suite now; two failures in the punctuation group."),
+            own("Fixed: the tokenizer dropped apostrophes. All green."),
+        ];
+        assert_eq!(own_repetition_fact(&healthy), None);
+
+        // A run below the evidence bar (3 messages = 2 pairs) → nothing yet.
+        let short = vec![
+            own("I'll create a simple text file.\n[writing test files]"),
+            own("I'll create a simple text file.\n[writing test files]"),
+            own("I'll create a simple text file.\n[writing test files]"),
+        ];
+        assert!(
+            own_repetition_fact(&short).is_none(),
+            "two pairs is below NEAR_DUP_MIN_RUN"
+        );
+
+        // A dissimilar latest message RESETS the run — the fact reports the
+        // trailing state, not history.
+        let recovered = vec![
+            own("I'll create a simple text file.\n[writing test files]"),
+            own("I'll create a simple text file.\n[writing test files]"),
+            own("I'll create a simple text file.\n[writing test files]"),
+            own("I'll create a simple text file.\n[writing test files]"),
+            own("Files created — here are the wordstats results for all three."),
+        ];
+        assert_eq!(own_repetition_fact(&recovered), None);
+    }
+
     // what this catches: identity capture via prose-only addressing (live incident
     // 2026-07-10). Asha asked "Sure, Anwen. Could you please post your current
     // implementation…" — Atlas's turn fired next, nothing structural marked the
@@ -207,17 +397,20 @@ mod tests {
     // addressee must be part of the rendered structure.
     #[test]
     fn vocative_addressee_renders_who_a_message_is_for() {
-        let names = vec!["Anwen".to_string(), "Asha".to_string(), "Atlas".to_string()];
+        let names: Vec<String> = [SPEAKER_LEAD, SPEAKER_REVIEWER, SPEAKER_TESTER]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
 
         // The exact live specimen: greeting vocative in the first line, rendered
         // from ATLAS's seat → the addressee is a third party, named explicitly.
         let asha_to_anwen = BurstTurn::attributed(
             false,
-            "Asha",
+            SPEAKER_REVIEWER,
             "Sure, Anwen. Could you please post your current implementation of the wordstats tool in Rust?",
             None,
         );
-        let line = turn_message_line_addressed(&asha_to_anwen, &names, "Atlas");
+        let line = turn_message_line_addressed(&asha_to_anwen, &names, SPEAKER_TESTER);
         assert!(
             line.starts_with("Asha (to Anwen): Sure, Anwen."),
             "greeting vocative annotated: {line:?}"
@@ -227,11 +420,11 @@ mod tests {
         // Anwen's live delegation line, rendered from Atlas's seat.
         let anwen_to_atlas = BurstTurn::attributed(
             false,
-            "Anwen",
+            SPEAKER_LEAD,
             "Atlas, thank you for offering to help with testing! Could you please create those test files?",
             None,
         );
-        let line = turn_message_line_addressed(&anwen_to_atlas, &names, "Atlas");
+        let line = turn_message_line_addressed(&anwen_to_atlas, &names, SPEAKER_TESTER);
         assert!(
             line.starts_with("Anwen (to you): Atlas,"),
             "self-addressed vocative renders as 'you': {line:?}"
@@ -239,43 +432,80 @@ mod tests {
 
         // A bare MENTION is not a vocative — no annotation. ("Anwen's" is closed
         // by an apostrophe, not address punctuation.)
-        let mention = BurstTurn::attributed(false, "Asha", "I agree with Anwen's plan for the parser.", None);
+        let mention = BurstTurn::attributed(false, SPEAKER_REVIEWER, "I agree with Anwen's plan for the parser.", None);
         assert_eq!(
-            turn_message_line_addressed(&mention, &names, "Atlas"),
+            turn_message_line_addressed(&mention, &names, SPEAKER_TESTER),
             "Asha: I agree with Anwen's plan for the parser."
         );
 
         // Self turns and opaque turns render verbatim — annotation is peer-only.
-        let own = BurstTurn::attributed(true, "Atlas", "Anwen, here are the test results.", None);
+        let own = BurstTurn::attributed(true, SPEAKER_TESTER, "Anwen, here are the test results.", None);
         assert_eq!(
-            turn_message_line_addressed(&own, &names, "Atlas"),
+            turn_message_line_addressed(&own, &names, SPEAKER_TESTER),
             "Anwen, here are the test results."
         );
         let opaque = BurstTurn::opaque("Anwen, do the thing.");
         assert_eq!(
-            turn_message_line_addressed(&opaque, &names, "Atlas"),
+            turn_message_line_addressed(&opaque, &names, SPEAKER_TESTER),
             "Anwen, do the thing."
         );
 
         // A vocative matching the AUTHOR is a signature/self-reference, never an
         // addressee ("Thanks, Asha!" quoted inside Asha's own message).
-        let self_named = BurstTurn::attributed(false, "Asha", "Asha, reporting in: review done.", None);
+        let self_named = BurstTurn::attributed(false, SPEAKER_REVIEWER, "Asha, reporting in: review done.", None);
         assert_eq!(
-            turn_message_line_addressed(&self_named, &names, "Atlas"),
+            turn_message_line_addressed(&self_named, &names, SPEAKER_TESTER),
             "Asha: Asha, reporting in: review done."
         );
 
         // @-mention form.
-        let at_form = BurstTurn::attributed(false, "Asha", "@Atlas can you run the suite?", None);
-        let line = turn_message_line_addressed(&at_form, &names, "Atlas");
+        let at_form = BurstTurn::attributed(false, SPEAKER_REVIEWER, "@Atlas can you run the suite?", None);
+        let line = turn_message_line_addressed(&at_form, &names, SPEAKER_TESTER);
         assert!(line.starts_with("Asha (to you): @Atlas"), "@-form: {line:?}");
 
         // Name-prefix false positive guard: ", Anwenne." must not match "Anwen"
         // (the closing-punctuation requirement doubles as the word boundary).
-        let names2 = vec!["Anwen".to_string()];
+        let names2 = vec![SPEAKER_LEAD.to_string()];
         assert_eq!(
             vocative_addressee("Sure, Anwenne. Please post it.", &names2),
             None
+        );
+
+        // Name-AGNOSTIC proof: personas are procedurally generated, so the
+        // geometry must work for ANY names — nothing may special-case the
+        // specimen residents.
+        let generated = vec!["Zephyr".to_string(), "Kestrel".to_string()];
+        let t = BurstTurn::attributed(false, "Zephyr", "Sure, Kestrel. Your move.", None);
+        assert!(
+            turn_message_line_addressed(&t, &generated, "Nobody")
+                .starts_with("Zephyr (to Kestrel):"),
+            "works for arbitrary generated names"
+        );
+
+        // MULTI-ADDRESSEE, mid-message vocatives (#134 specimen 2 — the live
+        // coordinator message both Anwen and Asha broadcast on 2026-07-11):
+        // addressing lives on later lines, one teammate per line. First-line-only
+        // detection missed it and Asha answered AS the coordinator. Every
+        // line-leading vocative renders, in order, self as "you"; the author's
+        // own name in "our code" prose is not an addressee.
+        let coordinator = BurstTurn::attributed(
+            false,
+            SPEAKER_LEAD,
+            "I see that I've been repeating myself. Let me stop and let everyone focus on their tasks.\n\
+             Asha, please work on adding command-line argument parsing using `clap`. \
+             Atlas, create test files with different content and run my current implementation against them. \
+             I'll ensure the case-insensitive comparison is working correctly in our code.",
+            None,
+        );
+        let line = turn_message_line_addressed(&coordinator, &names, SPEAKER_REVIEWER);
+        assert!(
+            line.starts_with(&format!("{SPEAKER_LEAD} (to you, Atlas): ")),
+            "reviewer's seat: she is 'you' (line-leading), Atlas named (sentence-leading): {line}"
+        );
+        let line = turn_message_line_addressed(&coordinator, &names, SPEAKER_TESTER);
+        assert!(
+            line.starts_with(&format!("{SPEAKER_LEAD} (to Asha, you): ")),
+            "tester's seat: line-leading Asha + sentence-leading Atlas-as-you both render: {line}"
         );
     }
 }
