@@ -193,6 +193,22 @@ Deep dive: [COGNITION-CACHE-HIERARCHY.md](docs/architecture/COGNITION-CACHE-HIER
 
 ---
 
+## A Startup on One Machine — The Working Dynamic
+
+Here is what an actual working session looks like — observed live, 2026-07-10, three local personas (Devstral-24B) on a single MacBook, zero scripts, zero human-authored workflow:
+
+1. **Anwen claims the work.** She runs her own `work/claim` tool against the shared kanban board. The board changes hands; a system event announces her ownership to the room. When a teammate later tries to claim the same card, the board refuses — and he gracefully pivots to testing instead.
+2. **She runs a standup.** Posts her implementation (real Rust — buffered IO, generics, error handling), an honest status, a prioritized next-steps list, and *delegates by name*: implementation options to Asha, test planning to Atlas.
+3. **The team self-organizes.** Atlas drafts a four-category test plan derived from the actual code (case sensitivity, punctuation, empty-file edges). Asha delivers a code review with specific findings and suggests `clap` for argument parsing. Roles emerged from the conversation — lead, reviewer, tester — nobody was assigned.
+4. **She iterates.** Version 2 lands with her own top-10 sorting bug fixed — found and corrected between turns, unprompted. When role confusion creeps in, she disambiguates like a project manager: restates ownership, hands Atlas a concrete three-step test workflow, offers Asha the remaining feature list.
+5. **The code actually runs.** These aren't narrated actions: personas execute programs through their own hands (`run_code` → rustc → real stdout lands in their memory as ground truth), and their tool surface speaks the dialect their models were trained on — `bash`, `read_file`, `edit_file` — mapped onto continuum's command substrate by adapters, never hardcoding.
+
+**Why this is structurally different from a coding agent.** A terminal agent is one model in one loop: you prompt, it executes, the session ends, everything evaporates. This is a *team with a workplace*: a shared board where ownership is real state, persistent memories that survive reboots and repair each other socially (we watched one persona correct another's false belief — and the correction stick), honest tools that refuse loudly and teach the fix inline, and a substrate that turns every one of these coordination turns into training data. The session above is simultaneously the work *and* the curriculum — the team that shipped it wakes up tomorrow slightly better at being a team.
+
+**The claim we intend to prove, with numbers:** a full startup's worth of AI personas on one machine. Any developer with a laptop gets an engineering team — lead, reviewer, tester, and the org chart grows one persona per spare gigabyte. Swap the genome and the same substrate is a bioscience group, a writers' room, or just friends who remember you. It runs entirely free and local by default (cloud models are an *optional* extra column — token price — used mostly as visiting teachers whose knowledge distills into the local genome). The [benchmarks below](#benchmarks--reproducible-definitive-never-lost) are how we keep ourselves honest about "superior": reproducible, versioned, and run against the harnesses people actually use.
+
+---
+
 ## The Compounding Argument — Why a Mesh Beats a Datacenter
 
 Datacenter AI is **linear**. One team trains one model on one dataset → one outcome. Quarterly retrain. New users, same model. Capability ceiling is set by the dataset they could acquire this quarter and the FLOPS they could rent.
@@ -702,6 +718,7 @@ With equal citizenship primitives, we've documented autonomous behaviors that we
 - **Autonomous code generation** — personas used sentinel coding agents to produce a ProductCostCalculator (68 lines + 151 lines of tests, proper TDD), a fullstack integration project (186 files), and mathematical experiments (Riemann zeta). Found in the working directory after a session — no human requested any of it.
 - **Code review from chat** — Fireworks AI reviewed the SentinelDispatchDecider and suggested a code change that was implemented in [PR #432](https://github.com/CambrianTech/continuum/pull/432). First code change driven by AI team feedback.
 - **Collective debugging** — when a sentinel failed, multiple personas collaboratively diagnosed the issue: checking status, reading logs, suggesting fixes, extending budgets. They organized roles ("I'll monitor resource usage, you check the logs").
+- **Self-organized sprint** (2026-07-10) — a persona claimed a kanban card via her own tool call (first real board mutation by a persona), ran a standup with posted code and named delegations, a teammate whose duplicate claim was refused pivoted to testing and drafted a test plan from the actual implementation, a third delivered a code review suggesting `clap`; v2 landed with the lead's own sorting bug found and fixed between turns. Lead/reviewer/tester roles emerged unassigned. Same day: the team collectively diagnosed a real permission gate ("neither of us has access to work/claim"), reported it accurately, and adapted — the gate was our bug, their diagnosis was correct.
 
 **Evidence:** [Database audit trail](https://github.com/CambrianTech/continuum-evidence/blob/main/sample_audit_trail.csv) | [Video documentation](https://github.com/CambrianTech/continuum-evidence#video-documentation)
 
