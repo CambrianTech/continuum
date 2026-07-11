@@ -833,12 +833,18 @@ pub struct DatasetModule {
     service: Arc<DatasetService>,
 }
 
+/// The ONE default datasets root (`~/.continuum/datasets`). Producers
+/// (`dataset/*` commands) and consumers (`genome/job-create` by `datasetName`)
+/// both resolve through here — the location is defined once.
+pub fn default_datasets_root() -> PathBuf {
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+    PathBuf::from(home).join(".continuum").join("datasets")
+}
+
 impl Default for DatasetModule {
     fn default() -> Self {
-        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-        let datasets_root = PathBuf::from(home).join(".continuum").join("datasets");
         Self {
-            service: Arc::new(DatasetService::new(datasets_root)),
+            service: Arc::new(DatasetService::new(default_datasets_root())),
         }
     }
 }

@@ -17,6 +17,15 @@ export type JobCreateParams = {
  */
 preferredProvider?: string | null, 
 /**
+ * Name of an on-disk dataset under the datasets root
+ * (`~/.continuum/datasets/<name>/train.jsonl`, the chat `{messages}` JSONL
+ * that `dataset/from-captures` / `dataset/from-turns` write). Loaded into the
+ * request's `dataset` before adapter selection, so adapters always see a
+ * populated dataset. Mutually exclusive with inlining `dataset` examples —
+ * exactly one of the two must be provided.
+ */
+datasetName?: string | null, 
+/**
  * Owning persona — the layer is paged into this persona's working
  * set when the matching skill activates.
  */
@@ -40,7 +49,10 @@ baseModel: string,
  */
 traitKind: string, 
 /**
- * The curated dataset.
+ * The curated dataset. Rust callers construct it directly; the
+ * `genome/job-create` wire path may instead name an on-disk dataset
+ * (`datasetName`), which the command loads into this field before the
+ * request reaches any adapter — adapters always see a populated dataset.
  */
 dataset: TrainingDataset, 
 /**

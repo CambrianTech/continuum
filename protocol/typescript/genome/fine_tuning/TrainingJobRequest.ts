@@ -39,7 +39,10 @@ baseModel: string,
  */
 traitKind: string, 
 /**
- * The curated dataset.
+ * The curated dataset. Rust callers construct it directly; the
+ * `genome/job-create` wire path may instead name an on-disk dataset
+ * (`datasetName`), which the command loads into this field before the
+ * request reaches any adapter — adapters always see a populated dataset.
  */
 dataset: TrainingDataset, 
 /**

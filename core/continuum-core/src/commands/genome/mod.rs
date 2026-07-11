@@ -151,7 +151,14 @@ pub(crate) mod test_support {
 
     pub(crate) fn dataset() -> TrainingDataset {
         TrainingDataset {
-            examples: vec![],
+            // One real pair: an empty dataset is now REJECTED by job-create's
+            // resolution gate before adapter selection (it would burn a job on
+            // nothing), so the shared fixture must be trainable-shaped.
+            examples: vec![crate::genome::fine_tuning::TrainingExample {
+                prompt: "ctx".into(),
+                completion: "act".into(),
+                metadata: None,
+            }],
             source: TrainingSource::OperatorCurated,
             validation_split: 0.0,
         }
