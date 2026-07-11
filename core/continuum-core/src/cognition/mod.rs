@@ -59,6 +59,7 @@ pub mod prompt_capture;
 pub mod replay;
 pub mod rag_source_faculty;
 pub mod rate_proposals;
+pub mod focus_policy;
 pub mod recall_faculty;
 pub mod recall_ranker;
 pub mod tool_dialect;

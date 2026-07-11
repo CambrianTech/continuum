@@ -223,6 +223,13 @@ pub struct RecallFaculty {
     /// recency→semantic handoff, never both at once. `None` → no dedup (harness /
     /// backward-compatible).
     working_memory: Option<Arc<WorkingMemory>>,
+    /// The focus→thresholds junction (docs/cognition/FOCUS-AS-ATTENTION-
+    /// TEMPERATURE.md). Default = [`CalibratedConstants`] — a behavioral no-op
+    /// until something moves the dial (recipe defaults, the `focus/hold` verb,
+    /// or a learned policy — same seam for all three).
+    focus_policy: Arc<dyn crate::cognition::focus_policy::FocusPolicy>,
+    /// This tick's focus state. NEUTRAL until the concern/verb plumbing lands.
+    focus: crate::cognition::focus_policy::FocusState,
 }
 
 impl RecallFaculty {
@@ -238,7 +245,22 @@ impl RecallFaculty {
             context_window: 0,
             ranker: None,
             working_memory: None,
+            focus_policy: Arc::new(crate::cognition::focus_policy::CalibratedConstants),
+            focus: crate::cognition::focus_policy::FocusState::NEUTRAL,
         }
+    }
+
+    /// Inject a focus policy (formula or learned) and/or a focus state. The
+    /// junction where "focus cleans up the RAG": at high intensity the recall
+    /// significance bar rises so only exceptional memories intrude.
+    pub fn with_focus(
+        mut self,
+        policy: Arc<dyn crate::cognition::focus_policy::FocusPolicy>,
+        focus: crate::cognition::focus_policy::FocusState,
+    ) -> Self {
+        self.focus_policy = policy;
+        self.focus = focus;
+        self
     }
 
     /// Inject a ranking adapter (a trained reranker, or a tuned statistical one).
@@ -413,10 +435,14 @@ impl Faculty for RecallFaculty {
                         .collect();
                 let ranker: Arc<dyn crate::cognition::recall_ranker::RecallRanker> =
                     self.ranker.clone().unwrap_or_else(|| {
-                        Arc::new(crate::cognition::recall_ranker::SignificanceRanker::new(
+                        // The significance bar comes from the focus junction:
+                        // σ(focus), anchored so NEUTRAL == the conventional 3σ.
+                        let mut r = crate::cognition::recall_ranker::SignificanceRanker::new(
                             self.relevance_weight,
                             RECALL_RELEVANCE_FLOOR,
-                        ))
+                        );
+                        r.sigma = self.focus_policy.recall_sigma(self.focus);
+                        Arc::new(r)
                     });
                 let verdicts = ranker
                     .rank(
