@@ -144,9 +144,15 @@ impl RoomBoardSource {
     /// and owner (or `unclaimed`) — the shape a teammate reads off the board.
     /// The whole board carries all owners, so owner is always surfaced (unlike
     /// the active-work source, which is implicitly self-owned).
-    fn render(card: &airc_work::WorkCard) -> String {
+    fn render(card: &airc_work::WorkCard, self_id: uuid::Uuid) -> String {
         let id8: String = card.card_id.as_uuid().to_string().chars().take(8).collect();
         let owner = match card.owner {
+            // Her OWN claim must read as HERS — glass-boxed 2026-07-11: cards she
+            // held rendered as `owner 90e758b2`, a hex prefix she cannot recognize
+            // as herself, so claimed work carried zero self-relevance and the room
+            // drifted to chatter over held cards. Identity is a structural fact
+            // the projection must carry (same law as (to you) addressing).
+            Some(o) if o.as_uuid() == self_id => "owner YOU".to_string(),
             Some(o) => {
                 let o8: String = o.as_uuid().to_string().chars().take(8).collect();
                 format!("owner {o8}")
@@ -211,6 +217,53 @@ impl RagSource for RoomBoardSource {
         let mut tokens_used: u32 = 0;
         let mut dropped: usize = 0;
 
+        // YOUR-WORK SALIENCE (2026-07-11, "did they wander off and forget they
+        // can work on things?"): all three personas held claimed cards, zero
+        // completions — a claim was one event, then the card's self-relevance
+        // vanished from perception while fresh chatter arrived every tick. Lead
+        // with the cards SHE holds as a distinct perceived fact (hers, by title,
+        // with state), so her own unfinished work is standing perception, not a
+        // fading memory. A fact she weighs, never an instruction
+        // ([[no-hardcoded-heuristics-to-steer-cognition]]).
+        let mine: Vec<&airc_work::WorkCard> = board
+            .cards
+            .iter()
+            .filter(|c| {
+                c.owner.map(|o| o.as_uuid() == self.persona_id).unwrap_or(false)
+                    && !matches!(
+                        c.state,
+                        airc_work::CardState::Merged | airc_work::CardState::Closed
+                    )
+            })
+            .collect();
+        if !mine.is_empty() {
+            let titles = mine
+                .iter()
+                .take(5)
+                .map(|c| {
+                    let id8: String =
+                        c.card_id.as_uuid().to_string().chars().take(8).collect();
+                    format!("  {id8}: \"{}\" [{:?}]", c.title, c.state)
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            let lead = format!(
+                "[your work] you HOLD {n} card(s) on this board — claimed by you, not \
+                 yet done:\n{titles}\nThey remain yours until finished (work/state) or \
+                 released (work/release); your tools do the work.",
+                n = mine.len(),
+            );
+            let lead_tokens = estimate_tokens(&lead);
+            if lead_tokens <= budget {
+                tokens_used += lead_tokens;
+                items.push(RagItem {
+                    content: lead,
+                    tokens: lead_tokens,
+                    metadata: serde_json::json!({ "kind": "your-work-lead" }),
+                });
+            }
+        }
+
         // AVAILABLE-WORK SALIENCE (#122): unclaimed cards are work waiting for
         // someone to pick up. Glass-boxed live 2026-07-10: with hands proven and an
         // open card sitting on the board, both personas drifted to identity-monologue
@@ -264,7 +317,7 @@ impl RagSource for RoomBoardSource {
 
         let mut cards_delivered = 0usize;
         for card in &board.cards {
-            let content = Self::render(card);
+            let content = Self::render(card, self.persona_id);
             let tokens = estimate_tokens(&content);
             if tokens_used.saturating_add(tokens) > budget {
                 // Budget exhausted — a truncated board is still truthful for the
@@ -513,6 +566,49 @@ mod tests {
             .await;
         assert!(delivery.items.is_empty());
         assert_eq!(delivery.resolution_used, ResolutionPreference::Placeholder);
+    }
+
+    // what this catches: the your-work salience (2026-07-11, "did they wander
+    // off and forget they can work on things?") — a card the perceiving persona
+    // HOLDS must lead the delivery as "[your work] you HOLD…" and render as
+    // "owner YOU", never as her own unrecognizable hex prefix. Another peer's
+    // claim stays hex-attributed and produces no your-work lead.
+    #[tokio::test]
+    async fn held_cards_lead_as_your_work_and_render_owner_you() {
+        let me = persona();
+        let mine = card(
+            "reverse a string",
+            CardState::Claimed,
+            Some(airc_core::PeerId::from_uuid(me)),
+        );
+        let theirs = card(
+            "sha256 exercise",
+            CardState::Claimed,
+            Some(airc_core::PeerId::new()),
+        );
+        let reader = Arc::new(StubReader::new(snapshot(vec![mine, theirs])));
+        let source = RoomBoardSource::new(me, reader);
+        let delivery = source.deliver(&ctx(), 2_000, ResolutionPreference::Raw).await;
+        let all: String = delivery
+            .items
+            .iter()
+            .map(|i| i.content.clone())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            all.contains("[your work] you HOLD 1 card(s)"),
+            "her held card leads as a your-work fact: {all}"
+        );
+        assert!(
+            all.contains("reverse a string"),
+            "the lead names HER card: {all}"
+        );
+        assert!(all.contains("owner YOU"), "her claim renders as YOU: {all}");
+        // The peer's card keeps hex attribution and never enters her lead.
+        assert!(
+            !all.contains("you HOLD 2"),
+            "another peer's claim is not hers: {all}"
+        );
     }
 
     // what this catches: a board too large for the budget truncates to the
