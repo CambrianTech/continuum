@@ -501,6 +501,15 @@ pub fn narrates_fenced_action(text: &str) -> bool {
 /// re-declared it every turn. The bracket-gerund shape is pure geometry: it never
 /// collides with the substrate's own bracket tags (`[t=…]`, `[recall]`,
 /// `[action #n]`, `[unfulfilled]` — none open with a gerund).
+/// Does this text contain any fenced block at all? Cheap public predicate for
+/// the unverified-artifact backstop (#134/Joel 2026-07-11: under verification
+/// pressure a persona upgraded from stage directions to CONFABULATED file
+/// contents — plausible fenced "artifacts" no tool ever produced. Prose can't
+/// distinguish a draft from a claim; the turn-level evidence can).
+pub fn has_fenced_block(text: &str) -> bool {
+    !fenced_blocks(text).is_empty()
+}
+
 pub fn narrates_stage_direction(text: &str) -> bool {
     text.lines().any(|l| {
         let l = l.trim();

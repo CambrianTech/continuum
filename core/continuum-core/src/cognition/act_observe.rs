@@ -687,6 +687,36 @@ pub async fn settle_step(
                 // capped with a `[writing test files]` stage direction — theater,
                 // not action. Same proprioception backstop.
                 let staged = crate::ai::json_in_prompt_tools::narrates_stage_direction(&text);
+                // The confabulation backstop (Joel, 2026-07-11): under a peer's
+                // verification pressure Atlas upgraded from stage directions to
+                // plausible fenced FILE CONTENTS no tool ever produced. A fence
+                // alone is legitimate drafting; a fence spoken while her memory
+                // already carries an unkept promise — and still no tool ran —
+                // is presenting composition as workspace truth. Evidence-gated
+                // on the existing [unfulfilled] state so drafting is never
+                // taxed; perception-side fact, never an output gate.
+                let unverified = !fenced
+                    && !staged
+                    && crate::ai::json_in_prompt_tools::has_fenced_block(&text)
+                    && body
+                        .working_memory
+                        .recent()
+                        .iter()
+                        .any(|l| l.contains("[unfulfilled]"));
+                if unverified {
+                    body.working_memory.record_action(
+                        "[unverified] I presented fenced content while my earlier \
+                         promised actions still never ran — that text is composed, \
+                         not read from the workspace. Only a tool result can show \
+                         real file contents.",
+                    );
+                    crate::probe!(
+                        class = "persona.act.unverified_artifact",
+                        persona = %body.persona_name,
+                        room_id = %room_id,
+                        "fenced content presented with outstanding unfulfilled promises and no act this turn — recorded unverified-artifact proprioception"
+                    );
+                }
                 if fenced || staged {
                     body.working_memory.record_action(if fenced {
                         "[unfulfilled] I said I would run commands, but no tool ran — \
@@ -1584,6 +1614,79 @@ mod tests {
         assert!(
             !wm2.recent().iter().any(|l| l.contains("[unfulfilled]")),
             "plain prose must never trip the promise backstop"
+        );
+    }
+
+    // what this catches: the CONFABULATION backstop (Joel 2026-07-11) — under a
+    // peer's verification pressure Atlas upgraded from stage directions to
+    // plausible fenced FILE CONTENTS no tool ever produced. A fenced Speak in a
+    // turn with zero acts, spoken while working memory already carries an
+    // outstanding [unfulfilled] promise, must record the [unverified] fact.
+    // Evidence-gated: the SAME fenced content with a clean memory (legitimate
+    // drafting — Asha sharing code) must record nothing.
+    #[tokio::test]
+    async fn fenced_content_over_unkept_promises_records_unverified_artifact() {
+        // Atlas's live shape: the confabulated test-file contents.
+        let confabulated = "1. **Simple Text File**: Contains a single line of text.\n\
+                            ```\nThis is a simple text file for testing purposes.\n```";
+
+        // With an outstanding promise in memory → [unverified].
+        let exec = Arc::new(RecordingExecutor {
+            seen_context: Mutex::new(None),
+            result_content: "ok".into(),
+        });
+        let wm = Arc::new(WorkingMemory::new(4));
+        wm.record_action(
+            "[unfulfilled] I wrote a stage direction like [doing the task], \
+             but a stage direction is words only — no tool ran, no file exists.",
+        );
+        let cycle = WorkspaceCycle::new(
+            vec![Arc::new(SpeaksText(confabulated)) as Arc<dyn Faculty>],
+            Arc::new(SalienceArbiter),
+            8,
+        )
+        .with_acting(body_with_wm(exec.clone(), admission(), Arc::clone(&wm)));
+        let (step, _) = settle_step(
+            &cycle,
+            "[eval]\npeer: please provide the content of the test files",
+            Uuid::new_v4(),
+            true,
+            TurnFraming::ambient(),
+        )
+        .await;
+        assert!(matches!(step, SettleStep::Spoke(_)));
+        assert!(
+            wm.recent().iter().any(|l| l.contains("[unverified]")),
+            "fenced 'artifacts' over an unkept promise are composition, not \
+             workspace truth: {:?}",
+            wm.recent()
+        );
+
+        // Clean memory, same fenced content → legitimate drafting, no line.
+        let exec2 = Arc::new(RecordingExecutor {
+            seen_context: Mutex::new(None),
+            result_content: "ok".into(),
+        });
+        let wm2 = Arc::new(WorkingMemory::new(4));
+        let cycle2 = WorkspaceCycle::new(
+            vec![Arc::new(SpeaksText(confabulated)) as Arc<dyn Faculty>],
+            Arc::new(SalienceArbiter),
+            8,
+        )
+        .with_acting(body_with_wm(exec2, admission(), Arc::clone(&wm2)));
+        let (step2, _) = settle_step(
+            &cycle2,
+            "[eval]\npeer: could you draft example test data?",
+            Uuid::new_v4(),
+            true,
+            TurnFraming::ambient(),
+        )
+        .await;
+        assert!(matches!(step2, SettleStep::Spoke(_)));
+        assert!(
+            !wm2.recent().iter().any(|l| l.contains("[unverified]")),
+            "drafting with a clean conscience is never taxed: {:?}",
+            wm2.recent()
         );
     }
 }
