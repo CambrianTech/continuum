@@ -32,7 +32,7 @@ use async_trait::async_trait;
 use std::collections::BTreeSet;
 use uuid::Uuid;
 
-use super::deliberation_budget::{est_tokens, tail_to_tokens, turn_message_line};
+use super::deliberation_budget::{est_tokens, tail_to_tokens, turn_message_line_addressed};
 use super::deliberation_parse::decision_from_response;
 use super::deliberation_prompt;
 use super::persona_tools;
@@ -749,9 +749,23 @@ impl LlmDeliberationFaculty {
         // ([[no-hardcoded-heuristics-to-steer-cognition]]).
         let mut groups: Vec<(&'static str, Vec<String>)> = Vec::new();
         let mut seen_self: std::collections::HashSet<String> = std::collections::HashSet::new();
+        // Every display name in the window (peers + self) — the participant set
+        // vocative geometry matches against so a message that names its addressee
+        // renders `Asha (to Anwen): …` / `(to you)`. Glass-boxed 2026-07-10: a
+        // prose-only vocative ("Sure, Anwen. Could you post your implementation…")
+        // let the wrong persona answer AS the addressee — identity capture.
+        let mut participants: Vec<String> = ws
+            .turns
+            .iter()
+            .filter(|t| !t.author.is_empty())
+            .map(|t| t.author.clone())
+            .collect();
+        participants.push(self.persona_name.clone());
+        participants.sort();
+        participants.dedup();
         for turn in &ws.turns {
             let role = if turn.is_self { "assistant" } else { "user" };
-            let mut line = turn_message_line(turn);
+            let mut line = turn_message_line_addressed(turn, &participants, &self.persona_name);
             if turn.is_self && !seen_self.insert(line.clone()) {
                 line = "(you sent this same message again, verbatim)".to_string();
             }
