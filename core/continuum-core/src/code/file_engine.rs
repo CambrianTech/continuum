@@ -47,7 +47,13 @@ impl std::error::Error for FileEngineError {}
 
 impl From<PathSecurityError> for FileEngineError {
     fn from(e: PathSecurityError) -> Self {
-        Self::Security(e)
+        match e {
+            // In-sandbox ENOENT is not a security event and must never render with
+            // the "Security:" prefix — that framing reads as FORBIDDEN and stops a
+            // persona from correcting the path (the bitflags-exam 58-dead-reads bug).
+            PathSecurityError::NotFound { .. } => Self::NotFound(e.to_string()),
+            other => Self::Security(other),
+        }
     }
 }
 

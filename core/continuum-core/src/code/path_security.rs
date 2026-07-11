@@ -35,6 +35,13 @@ pub enum PathSecurityError {
     InvalidPath { path: String },
     /// Workspace root does not exist or is not a directory.
     InvalidWorkspace { path: String },
+    /// Path is INSIDE the workspace but nothing exists there. Distinct from
+    /// `TraversalBlocked` on purpose: reporting ENOENT as a security refusal
+    /// teaches the caller (persona or human) that the file is FORBIDDEN rather
+    /// than ABSENT, and they stop probing paths instead of correcting the path.
+    /// Glass-boxed 2026-07-11: 58/65 exam reads died on this lie and the solver
+    /// never reached the file she was asked to fix.
+    NotFound { path: String, workspace: String },
 }
 
 impl std::fmt::Display for PathSecurityError {
@@ -51,6 +58,14 @@ impl std::fmt::Display for PathSecurityError {
             }
             Self::InvalidWorkspace { path } => {
                 write!(f, "Invalid workspace root: '{}'", path)
+            }
+            Self::NotFound { path, workspace } => {
+                write!(
+                    f,
+                    "No file at '{}' under workspace '{}' (path is inside the sandbox; \
+                     nothing exists there — check the path, e.g. with code/list or code/tree)",
+                    path, workspace
+                )
             }
         }
     }
@@ -102,9 +117,10 @@ impl PathSecurity {
     /// Returns the absolute, canonicalized path.
     pub fn validate_read(&self, relative_path: &str) -> Result<PathBuf, PathSecurityError> {
         // Try workspace root first
-        if let Ok(path) = self.resolve_within(&self.workspace_root, relative_path) {
-            return Ok(path);
-        }
+        let ws_err = match self.resolve_within(&self.workspace_root, relative_path) {
+            Ok(path) => return Ok(path),
+            Err(e) => e,
+        };
 
         // Try read-only roots
         for root in &self.read_roots {
@@ -113,10 +129,10 @@ impl PathSecurity {
             }
         }
 
-        Err(PathSecurityError::TraversalBlocked {
-            path: relative_path.to_string(),
-            workspace: self.workspace_root.display().to_string(),
-        })
+        // Propagate the workspace root's verdict rather than rewrapping it: an
+        // in-sandbox ENOENT must surface as NotFound (correctable), never be
+        // laundered into a security refusal (terminal). [[fallbacks-are-illegal-fail-loud]]
+        Err(ws_err)
     }
 
     /// Validate and resolve a path for write operations.
@@ -174,8 +190,19 @@ impl PathSecurity {
             });
         }
 
-        // For non-existing paths, resolve parent and check
-        Err(PathSecurityError::TraversalBlocked {
+        // Non-existing path: resolve lexically and check the prefix (what the doc
+        // above always promised). A path INSIDE the root that simply isn't there is
+        // NotFound — an honest ENOENT the caller can correct — never a security
+        // refusal, which reads as "forbidden" and stops the caller from ever
+        // finding the real path (the 58-dead-reads exam bug).
+        let normalized = self.normalize_path(relative_path);
+        if normalized.starts_with("..") || normalized.contains("/../") {
+            return Err(PathSecurityError::TraversalBlocked {
+                path: relative_path.to_string(),
+                workspace: root.display().to_string(),
+            });
+        }
+        Err(PathSecurityError::NotFound {
             path: relative_path.to_string(),
             workspace: root.display().to_string(),
         })
@@ -336,6 +363,27 @@ mod tests {
         let result = security.validate_read("../../etc/passwd");
         assert!(matches!(
             result,
+            Err(PathSecurityError::TraversalBlocked { .. })
+        ));
+    }
+
+    // what this catches: a missing file INSIDE the sandbox must report NotFound,
+    // never TraversalBlocked — reporting ENOENT as "escapes workspace" reads as
+    // FORBIDDEN and stops a persona from ever correcting the path. Regression for
+    // the bitflags exam (58/65 reads of 'src/lib.rs' at the wrong depth died on
+    // the false security refusal; solver scored 0/3 without touching the bug).
+    #[test]
+    fn missing_file_inside_sandbox_is_not_found_not_a_security_refusal() {
+        let (_dir, security) = setup_workspace();
+        let result = security.validate_read("src/does_not_exist.rs");
+        assert!(
+            matches!(result, Err(PathSecurityError::NotFound { .. })),
+            "in-sandbox ENOENT must be NotFound, got: {result:?}"
+        );
+        // Traversal via a nonexistent path still refuses as traversal, not NotFound.
+        let escape = security.validate_read("../nope/also_missing.rs");
+        assert!(matches!(
+            escape,
             Err(PathSecurityError::TraversalBlocked { .. })
         ));
     }
