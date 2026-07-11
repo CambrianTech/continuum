@@ -43,15 +43,24 @@ Grading stays GEOMETRY (executor logs, fs state, similarity math) — the same
 discipline as the perception fixes; a judged eval would re-import the
 subjectivity the library exists to remove.
 
-## The evolving process = L6's real definition
+## The librarian is a TEACHER — this is literally the Academy
 
-The gap-driven sentinel (#101) is the librarian: it watches the live probe
-stream, and a weakness class that keeps firing OPENS A CARD to add/extend a
-generator — the same way every glass wall that broke AR segmentation became a
-texture class. Humans (and mentor AIs) contribute generators the way artists
-contributed textures; personas themselves eventually forage for "similar
-material" (#93) when their own probes embarrass them —
-[[self-improvement-is-a-control-loop]] with the library as the actuator.
+Joel's correction (2026-07-11): the generator-authoring role is not a substrate
+daemon, it's a citizen's PROFESSION — the Academy was always "recipes +
+sentinels over the genome," authored by a teacher persona (or cloud mentor —
+paid tokens landing on teaching moments) who watches her students live, notices
+where they break, and designs the next exercise. She does L6 (#101) as her JOB
+through the same commands everyone has: read the probes, spec the scenario,
+submit the training job, grade the lift, iterate. Expressible over scripted
+([[emergent-society-build-the-field]]): give her the verbs and the field, and
+curriculum design becomes emergent work — claimable on the same kanban as
+wordstats. And teaching makes engrams: authoring curricula trains the TEACHER
+too — the improvement loop stays fractal
+([[teacher-is-a-student-too-teaching-makes-engrams]]). The bare sentinel remains
+only as her instrument panel (probe-frequency summaries), never the author.
+Personas eventually forage their own "similar material" (#93) when their own
+probes embarrass them — [[self-improvement-is-a-control-loop]] with the library
+as the actuator.
 
 ## Build order
 
