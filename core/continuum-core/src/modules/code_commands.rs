@@ -146,7 +146,17 @@ pub(crate) fn ensure_engine(state: &CodeState, who: &str) -> Result<(), CommandE
         std::env::current_dir()
             .map_err(|e| CommandError::Internal(format!("workspace root unavailable: {e}")))?
     } else {
-        ensure_citizen_layer(who)?
+        let citizen_root = ensure_citizen_layer(who)?;
+        // Every citizen workspace is git-backed from birth
+        // ([[workspace-is-a-cow-diff-from-shared-always-git]]): no-op when .git
+        // exists; otherwise init + root commit, so diff→share→apply works the
+        // moment a citizen first touches files. Glass-boxed 2026-07-11: three
+        // parallel Conway implementations across un-versioned workspaces had no
+        // consolidation path, and the team asked for one. Loud on failure — a
+        // workspace that silently can't version work is a quiet defect.
+        crate::code::git_bridge::git_init_if_needed(&citizen_root)
+            .map_err(|e| CommandError::Internal(format!("workspace git init failed: {e}")))?;
+        citizen_root
     };
     let security = PathSecurity::new(&root)
         .map_err(|e| CommandError::Internal(format!("workspace security init failed: {e}")))?;

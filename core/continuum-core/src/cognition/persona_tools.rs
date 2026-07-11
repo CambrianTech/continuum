@@ -373,6 +373,12 @@ pub fn native_tool_specs() -> Vec<NativeToolSpec> {
         "code/run",
         "code/shell",
         "code/git/diff",
+        // The consolidation rail (2026-07-11): status/commit/apply are how
+        // parallel workspaces converge — diff→post→apply, the loop the Conway
+        // team invented socially before the rails existed.
+        "code/git/status",
+        "code/git/commit",
+        "code/git/apply",
         // Observation parity (Joel 2026-07-11): seeing the screen is a first-class
         // work verb, not a special capability — "if they can observe like we do,
         // they can build like we do." Routed to a client adapter (WireShape::

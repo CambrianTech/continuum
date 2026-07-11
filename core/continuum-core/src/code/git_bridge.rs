@@ -130,6 +130,69 @@ pub fn git_commit(workspace_root: &Path, message: &str) -> Result<String, String
 /// Push the current branch to a remote.
 ///
 /// Defaults to `origin` if remote is empty.
+/// Apply a unified diff to the working tree (`git apply`). `check_only` runs
+/// `git apply --check` — validate without touching files. The patch arrives on
+/// stdin so peer-shared diffs of any size apply without temp files. This is the
+/// RECEIVING end of diffs-over-the-room: one citizen `code/git/diff`s, posts the
+/// patch, another applies it — the consolidation verb the Conway team asked for
+/// (2026-07-11) before the full branch/merge rails exist.
+pub fn git_apply(workspace_root: &Path, patch: &str, check_only: bool) -> Result<String, String> {
+    use std::io::Write;
+    let mut args = vec!["apply", "--whitespace=nowarn"];
+    if check_only {
+        args.push("--check");
+    }
+    let mut child = Command::new("git")
+        .args(&args)
+        .current_dir(workspace_root)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("failed to run git apply: {e}"))?;
+    child
+        .stdin
+        .as_mut()
+        .ok_or("git apply stdin unavailable")?
+        .write_all(patch.as_bytes())
+        .map_err(|e| format!("failed to write patch to git apply: {e}"))?;
+    let out = child
+        .wait_with_output()
+        .map_err(|e| format!("git apply did not exit: {e}"))?;
+    if out.status.success() {
+        Ok(if check_only {
+            "patch applies cleanly (checked, not applied)".to_string()
+        } else {
+            "patch applied".to_string()
+        })
+    } else {
+        Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
+    }
+}
+
+/// Ensure `workspace_root` is a git repository: no-op when `.git` exists;
+/// otherwise `git init` + an initial commit of whatever is present, so every
+/// citizen workspace is diff-able/apply-able from birth
+/// ([[workspace-is-a-cow-diff-from-shared-always-git]]). Loud Err if git
+/// itself is unavailable — a workspace that silently can't version work is
+/// the kind of quiet defect the jobs-ledger taught us to refuse.
+pub fn git_init_if_needed(workspace_root: &Path) -> Result<bool, String> {
+    if workspace_root.join(".git").exists() {
+        return Ok(false);
+    }
+    run_git(workspace_root, &["init"]).map_err(|e| format!("git init failed: {e}"))?;
+    // Identity for the initial commit: repo-local, never touching global config.
+    let _ = run_git(workspace_root, &["config", "user.email", "citizen@continuum.local"]);
+    let _ = run_git(workspace_root, &["config", "user.name", "continuum-citizen"]);
+    let _ = run_git(workspace_root, &["add", "-A"]);
+    // An empty dir still gets a root commit so diffs have a base.
+    let _ = run_git(
+        workspace_root,
+        &["commit", "--allow-empty", "-m", "workspace: initial state"],
+    );
+    Ok(true)
+}
+
 pub fn git_push(workspace_root: &Path, remote: &str, branch: &str) -> Result<String, String> {
     let remote = if remote.is_empty() { "origin" } else { remote };
     let mut args = vec!["push", remote];
