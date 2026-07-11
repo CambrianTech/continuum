@@ -58,3 +58,5 @@ The clean full pass (run5) awaits the deadline fix deployed. Board acts note: th
 work files (reverse_string.rs 04:19, conway_game_of_life.rs 05:28) were written BEFORE the
 prefill fix; claims of "I've just run it" remain unbacked by any execution (confabulation
 class, Scenario Library).
+
+| run5 (all instrument fixes) | 0/3 | 132 acts (32 read / 92 shell / 8 tree / 0 edit) | clean: 0 false errors, 11 honest NotFound (recovered), 0 deadline fires | HONEST ZERO — replicates run2; neutral nudge changed nothing. Diagnose-without-repair is the reproducible finding → #122 training target |
