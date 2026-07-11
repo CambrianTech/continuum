@@ -57,22 +57,97 @@ pub(crate) fn caller_id(ctx: &Ctx) -> String {
     ctx.caller
         .as_ref()
         .map(|c| c.peer_id.to_string())
-        .unwrap_or_else(|| "local-owner".to_string())
+        .unwrap_or_else(|| LOCAL_OWNER.to_string())
 }
 
-/// Lazily ensure a workspace [`FileEngine`] exists for `who`, rooted at the repo
-/// (the core's current working dir) so a persona reads/edits the project like any
-/// other peer — no separate `create-workspace` step the model must know to call.
-/// Idempotent and defers to an engine a prior call already created (so an explicit
-/// `create-workspace` with a specific root still wins). Per-caller `FileEngine`s
-/// keep each peer's change-DAG isolated while sharing the repo, exactly like
-/// multiple editor tabs.
+/// The caller id assigned when a command arrives with NO peer identity — the
+/// substrate-local operator (cu CLI, boot plumbing). The ONE caller whose
+/// workspace is the core's own cwd; every identified peer gets a layer.
+pub(crate) const LOCAL_OWNER: &str = "local-owner";
+
+/// Resolve (and provision on first use) the citizen LAYER for an identified peer
+/// caller: a copy-on-write clone of the shared base (the core's cwd — the repo)
+/// under `<continuum home>/citizens/peers/<peer>/workspace`.
+///
+/// Joel 2026-07-10: "each persona is only the diff from the shared." On APFS
+/// `cp -c` clones via `clonefile(2)`, so the layer SHARES every block with the
+/// base and physically stores only what the peer later modifies. It is a real
+/// directory (shell, rustc, git all just work), but its marginal disk cost is
+/// the diff — and `git diff` inside it against the base branch IS the
+/// publishable delta the peer shares over the mesh. The layer is durable
+/// citizen state: an existing layer is reused across reboots. Non-CoW
+/// filesystems fail LOUD rather than silently eating a full copy per peer
+/// ([[fallbacks-are-illegal-fail-loud]]).
+///
+/// Why this exists (glass-boxed 2026-07-10): all personas shared the core's cwd
+/// — OUR checkout — and one persona's misdirected `[dependencies]` edit replaced
+/// the root workspace manifest, breaking every build path. Isolation of WRITES
+/// with full collaboration over the mesh (chat, board, diffs) is the airc
+/// model; a shared mutable checkout never was.
+pub(crate) fn ensure_citizen_layer(peer: &str) -> Result<std::path::PathBuf, CommandError> {
+    let home = std::env::var("CONTINUUM_HOME")
+        .map(std::path::PathBuf::from)
+        .ok()
+        .or_else(|| dirs::home_dir().map(|h| h.join(".continuum")))
+        .ok_or_else(|| CommandError::Internal("no home dir for citizen layer".into()))?;
+    let layer = home.join("citizens").join("peers").join(peer).join("workspace");
+    if layer.is_dir() {
+        return Ok(layer);
+    }
+    let base = std::env::current_dir()
+        .map_err(|e| CommandError::Internal(format!("shared base unavailable: {e}")))?;
+    let parent = layer
+        .parent()
+        .ok_or_else(|| CommandError::Internal("citizen layer has no parent".into()))?;
+    std::fs::create_dir_all(parent)
+        .map_err(|e| CommandError::Internal(format!("citizen layer mkdir failed: {e}")))?;
+    let started = std::time::Instant::now();
+    let out = std::process::Command::new("cp")
+        .arg("-cR")
+        .arg(&base)
+        .arg(&layer)
+        .output()
+        .map_err(|e| CommandError::Internal(format!("citizen layer clone spawn failed: {e}")))?;
+    if !out.status.success() {
+        // Never leave a half-materialized layer for the next call to mistake
+        // for a real one.
+        let _ = std::fs::remove_dir_all(&layer);
+        return Err(CommandError::Internal(format!(
+            "citizen layer CoW clone failed for peer {peer} (base {}): {}. \
+             The base and <continuum home> must be on the same APFS volume — \
+             copy-on-write is the contract, a silent full copy per peer is not.",
+            base.display(),
+            String::from_utf8_lossy(&out.stderr).trim()
+        )));
+    }
+    crate::probe!(
+        class = "workspace.layer.provision",
+        peer = %peer,
+        base = %base.display(),
+        layer = %layer.display(),
+        elapsed_ms = started.elapsed().as_millis() as u64,
+        "citizen layer provisioned — CoW clone of shared base (stores only the diff)"
+    );
+    Ok(layer)
+}
+
+/// Lazily ensure a workspace [`FileEngine`] exists for `who`. The local operator
+/// (no peer identity) roots at the core's cwd — their own checkout. An
+/// IDENTIFIED peer (persona or remote agent) roots at their citizen LAYER (see
+/// [`ensure_citizen_layer`]): writes land in their own copy-on-write clone, and
+/// the shared checkout is never writable through a peer's hands. Idempotent and
+/// defers to an engine a prior call already created (so an explicit
+/// `create-workspace` with a specific root still wins).
 pub(crate) fn ensure_engine(state: &CodeState, who: &str) -> Result<(), CommandError> {
     if state.file_engines.contains_key(who) {
         return Ok(());
     }
-    let root = std::env::current_dir()
-        .map_err(|e| CommandError::Internal(format!("workspace root unavailable: {e}")))?;
+    let root = if who == LOCAL_OWNER {
+        std::env::current_dir()
+            .map_err(|e| CommandError::Internal(format!("workspace root unavailable: {e}")))?
+    } else {
+        ensure_citizen_layer(who)?
+    };
     let security = PathSecurity::new(&root)
         .map_err(|e| CommandError::Internal(format!("workspace security init failed: {e}")))?;
     state
@@ -82,15 +157,24 @@ pub(crate) fn ensure_engine(state: &CodeState, who: &str) -> Result<(), CommandE
     Ok(())
 }
 
-/// Lazily ensure a persistent shell session exists for `who`, rooted at the repo
-/// (cwd). Idempotent; one bash session per caller, reused across `code/shell`
-/// calls so `cd`/env persist like a real terminal.
+/// Lazily ensure a persistent shell session exists for `who`, rooted at the
+/// caller's ENGINE root — the one workspace authority per caller (the operator's
+/// cwd, a peer's citizen layer, or whatever `create-workspace` pinned). Never a
+/// second independent cwd fallthrough: before this, a peer's shell rooted at the
+/// core's cwd even when her file engine didn't, which is how narrated shell
+/// commands landed in the shared checkout. Idempotent; one bash session per
+/// caller, reused across `code/shell` calls so `cd`/env persist like a real
+/// terminal.
 fn ensure_shell(state: &CodeState, who: &str) -> Result<(), CommandError> {
     if state.shell_sessions.contains_key(who) {
         return Ok(());
     }
-    let root = std::env::current_dir()
-        .map_err(|e| CommandError::Internal(format!("shell root unavailable: {e}")))?;
+    ensure_engine(state, who)?;
+    let root = state
+        .file_engines
+        .get(&who.to_string())
+        .map(|e| e.workspace_root())
+        .ok_or_else(|| CommandError::Internal("engine vanished after provisioning".into()))?;
     let session_id = uuid::Uuid::new_v4().to_string();
     let shell = ShellSession::new(&session_id, who, &root)
         .map_err(|e| CommandError::Internal(format!("shell init failed: {e}")))?;
@@ -1256,5 +1340,59 @@ mod tests {
         for n in ["code/delete", "code/diff", "code/undo", "code/history"] {
             assert!(names.contains(&n), "command_objects missing {n}; got {names:?}");
         }
+    }
+
+    // what this catches: the citizen-layer workspace policy (Joel 2026-07-10:
+    // "each persona is only the diff from the shared"). An IDENTIFIED peer's
+    // engine must NEVER root at the core's cwd — the live incident: a persona's
+    // misdirected [dependencies] edit replaced the repo-root Cargo.toml through
+    // the shared-cwd default, breaking every build path. The peer's root is a
+    // CoW clone under <CONTINUUM_HOME>/citizens/peers/<peer>/workspace, seeded
+    // from the base, durable across calls; the anonymous local operator keeps
+    // cwd. regression for commit 3ad97cc2e (the manifest-clobber repair).
+    #[test]
+    fn identified_peer_roots_at_citizen_layer_never_shared_cwd() {
+        // Scoped homes so the test never touches the real ~/.continuum. A tiny
+        // base dir keeps the CoW clone instant.
+        let base = tempfile::tempdir().expect("base");
+        std::fs::write(base.path().join("Cargo.toml"), "[workspace]\n").unwrap();
+        let home = tempfile::tempdir().expect("home");
+        let old_cwd = std::env::current_dir().unwrap();
+        std::env::set_current_dir(base.path()).unwrap();
+        std::env::set_var("CONTINUUM_HOME", home.path());
+
+        let peer = "test-peer-1234";
+        let layer = ensure_citizen_layer(peer).expect("layer provisions");
+        assert!(
+            layer.starts_with(home.path()),
+            "layer lives under CONTINUUM_HOME: {layer:?}"
+        );
+        assert_ne!(
+            layer.canonicalize().unwrap(),
+            base.path().canonicalize().unwrap(),
+            "peer layer is NOT the shared base"
+        );
+        assert!(
+            layer.join("Cargo.toml").is_file(),
+            "layer is seeded from the base (CoW clone)"
+        );
+        // A peer WRITE lands in the layer, never the base.
+        std::fs::write(layer.join("Cargo.toml"), "[dependencies]\n").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(base.path().join("Cargo.toml")).unwrap(),
+            "[workspace]\n",
+            "the shared base is untouched by layer writes"
+        );
+        // Idempotent: second call reuses the existing layer (her diff survives).
+        let again = ensure_citizen_layer(peer).expect("layer reused");
+        assert_eq!(again, layer);
+        assert_eq!(
+            std::fs::read_to_string(again.join("Cargo.toml")).unwrap(),
+            "[dependencies]\n",
+            "the peer's divergence is durable"
+        );
+
+        std::env::remove_var("CONTINUUM_HOME");
+        std::env::set_current_dir(old_cwd).unwrap();
     }
 }

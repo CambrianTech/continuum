@@ -1166,11 +1166,18 @@ mod tests {
         assert!(read.is_err()); // File should not exist
     }
 
+    // what this catches: the write boundary is the SANDBOX, not a file-extension
+    // allowlist — a822d6337 (#1908) deleted the extension list deliberately, and
+    // this pins the new contract so the list doesn't creep back. (This test
+    // previously asserted `.exe` writes fail; it was stale against that commit.)
     #[test]
-    fn test_write_blocked_extension() {
+    fn test_write_any_extension_inside_sandbox() {
         let (_dir, engine) = setup_engine();
-        let result = engine.write("src/malware.exe", "bad", None);
-        assert!(result.is_err());
+        let result = engine.write("src/tool.exe", "bytes", None);
+        assert!(
+            result.is_ok(),
+            "extension is not a boundary; the sandbox is: {result:?}"
+        );
     }
 
     #[test]
