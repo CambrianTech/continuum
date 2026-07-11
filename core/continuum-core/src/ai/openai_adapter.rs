@@ -948,6 +948,35 @@ fn apply_enable_thinking_false(body: &mut Value) {
     }
 }
 
+/// Close a message thread that ENDS with an assistant turn — wire-illegal on
+/// thinking models: llama-server treats a trailing assistant message as response
+/// PREFILL and rejects the request 400 ("Assistant response prefill is
+/// incompatible with enable_thinking"). Glass-boxed 2026-07-11: 1000+ self-tick
+/// deliberations silently died over two days whenever the persona had spoken
+/// last (her own posts are attributed role=assistant, task #92). We never intend
+/// prefill semantics — those are past TURNS — so append a structural continuation
+/// fact (true by construction, decides nothing about her reply;
+/// [[no-hardcoded-heuristics-to-steer-cognition]]). Thinking stays ON
+/// ([[thinking-is-primary-never-suppress]]); suppressing it instead would trade
+/// a wire bug for a cognition downgrade. No-op on threads already ending with a
+/// user/system/tool message.
+fn close_trailing_assistant(messages: &mut Vec<Value>) {
+    let ends_with_assistant = messages
+        .last()
+        .and_then(|m| m.get("role"))
+        .and_then(|r| r.as_str())
+        .map(|r| r == "assistant")
+        .unwrap_or(false);
+    if ends_with_assistant {
+        messages.push(json!({
+            "role": "user",
+            "content": "[continuation] The transcript above ends with your own \
+                        last turn; nothing external arrived after it. You are \
+                        continuing your own thread."
+        }));
+    }
+}
+
 #[derive(Debug, Deserialize)]
 struct OpenAIUsage {
     prompt_tokens: u32,
@@ -1269,6 +1298,8 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
                 messages.push(json!({ "role": "system", "content": block }));
             }
         }
+
+        close_trailing_assistant(&mut messages);
 
         let mut body = json!({
             "model": model,
@@ -2085,6 +2116,42 @@ mod tests {
         let (text, reasoning) = extract_reasoning("<think></think>\n\n{\"ok\":true}", None);
         assert_eq!(text, "{\"ok\":true}");
         assert!(reasoning.is_none(), "empty think block confers no reasoning");
+    }
+
+    // what this catches: a thread ending with an assistant turn must be closed with
+    // the continuation user message (llama-server 400s trailing-assistant as prefill
+    // under thinking — the 1000+ silently-dead self-ticks of 2026-07-10/11), while a
+    // thread already ending with user/system stays untouched. Regression for
+    // close_trailing_assistant.
+    #[test]
+    fn trailing_assistant_thread_is_closed_with_continuation_fact() {
+        let mut msgs = vec![
+            json!({"role": "system", "content": "be helpful"}),
+            json!({"role": "user", "content": "peer turn"}),
+            json!({"role": "assistant", "content": "my own last post"}),
+        ];
+        close_trailing_assistant(&mut msgs);
+        assert_eq!(msgs.len(), 4, "continuation appended");
+        assert_eq!(msgs[3]["role"], json!("user"));
+        assert!(
+            msgs[3]["content"].as_str().unwrap().contains("[continuation]"),
+            "closure is the structural continuation fact"
+        );
+
+        // Already-legal threads are untouched (user-final and system-final).
+        let mut user_final = vec![
+            json!({"role": "assistant", "content": "earlier"}),
+            json!({"role": "user", "content": "newest peer turn"}),
+        ];
+        close_trailing_assistant(&mut user_final);
+        assert_eq!(user_final.len(), 2, "user-final thread unchanged");
+
+        let mut system_final = vec![
+            json!({"role": "assistant", "content": "earlier"}),
+            json!({"role": "system", "content": "tool block"}),
+        ];
+        close_trailing_assistant(&mut system_final);
+        assert_eq!(system_final.len(), 2, "system-final thread unchanged");
     }
 
     // what this catches: the thinking toggle's mechanism — `/no_think` is appended
