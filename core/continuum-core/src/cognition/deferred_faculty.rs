@@ -102,6 +102,11 @@ pub struct DeferredFaculty {
     /// prompt had no [recall]; she confabulated "port 3001" and her peer
     /// absorbed it as shared truth). Ambient turns keep the cheap lane.
     inner: Arc<dyn Faculty>,
+    /// The cold-start self-warm's publish handle: the FIRST tick's synchronous
+    /// finding lands in `latest` through this, so subsequent ambient ticks
+    /// serve it as last-good instead of re-paying the synchronous cost until
+    /// the background worker's first publish.
+    warm_tx: watch::Sender<Option<StampedFinding>>,
     /// Owns the worker task so it's aborted when this faculty is dropped — no
     /// orphaned compute outliving the mind it served.
     _worker: DropGuard,
@@ -132,6 +137,7 @@ impl DeferredFaculty {
         let id = inner.id();
         let (world_tx, mut world_rx) = watch::channel(DeferredInput::sentinel());
         let (latest_tx, latest) = watch::channel::<Option<StampedFinding>>(None);
+        let warm_tx = latest_tx.clone();
 
         let inner_for_hot_path = Arc::clone(&inner);
         let worker = tokio::spawn(async move {
@@ -186,6 +192,7 @@ impl DeferredFaculty {
 
         Self {
             id,
+            warm_tx,
             latest,
             world_tx,
             inner: inner_for_hot_path,
@@ -216,6 +223,14 @@ impl Faculty for DeferredFaculty {
             // 30s after boot produced NO recall bid and the seam was dark; whether
             // the inner ran-and-found-nothing vs never-ran was unattributable.
             let found = self.inner.contribute(ws).await;
+            if let Some(c) = &found {
+                // A directed run's fresh finding seeds last-good too — the next
+                // ambient tick serves it non-blocking instead of a cold miss.
+                let _ = self.warm_tx.send(Some(StampedFinding {
+                    room_id: ws.room_id,
+                    contribution: c.clone(),
+                }));
+            }
             crate::probe!(
                 class = "deferred.serve",
                 faculty = %self.id.as_str(),
@@ -237,22 +252,59 @@ impl Faculty for DeferredFaculty {
         // where it's irrelevant" — withhold it rather than inject a cross-context
         // memory into this turn. A same-room-but-stale finding is REPROJECTED
         // forward (slice 3, below); a different-room finding is simply not ours.
-        let guard = self.latest.borrow();
-        let (served, mode) = match guard.as_ref() {
-            Some(found) if found.room_id == ws.room_id => {
-                (Some(reproject_to_now(found, ws)), "last-good")
+        let cold = {
+            let guard = self.latest.borrow();
+            match guard.as_ref() {
+                Some(found) if found.room_id == ws.room_id => {
+                    let served = Some(reproject_to_now(found, ws));
+                    crate::probe!(
+                        class = "deferred.serve",
+                        faculty = %self.id.as_str(),
+                        mode = "last-good",
+                        found = true,
+                        "deferred lane served"
+                    );
+                    return served;
+                }
+                Some(_) => {
+                    crate::probe!(
+                        class = "deferred.serve",
+                        faculty = %self.id.as_str(),
+                        mode = "other-room-withheld",
+                        found = false,
+                        "deferred lane served"
+                    );
+                    return None;
+                }
+                None => true,
             }
-            Some(_) => (None, "other-room-withheld"),
-            None => (None, "cold-miss"),
         };
+        debug_assert!(cold);
+        // COLD START: no last-good exists yet (first tick after boot). Serving
+        // None here made every persona's first turns BLIND — three observed
+        // post-reboot greeting rounds on 2026-07-10: no roster, no kanban, no
+        // doctrine in the first prompt, so they re-introduced themselves to a
+        // room they'd lived in all day. Self-warm instead: run the inner
+        // faculty synchronously ONCE (the same move the orienting response
+        // makes for directed turns); the bg worker takes over from tick 2.
+        // Boot pays one slow first tick; the room keeps its continuity.
+        let found = self.inner.contribute(ws).await;
+        if let Some(c) = &found {
+            // Publish the warm finding as last-good so the NEXT ambient tick
+            // serves it non-blocking — the cold cost is paid exactly once.
+            let _ = self.warm_tx.send(Some(StampedFinding {
+                room_id: ws.room_id,
+                contribution: c.clone(),
+            }));
+        }
         crate::probe!(
             class = "deferred.serve",
             faculty = %self.id.as_str(),
-            mode,
-            found = served.is_some(),
-            "deferred lane served"
+            mode = "cold-start-sync",
+            found = found.is_some(),
+            "deferred lane self-warmed on first tick"
         );
-        served
+        found
     }
 
     /// A deferred faculty is perception-tier (see [`DeferredFaculty::spawn`]): it
@@ -385,17 +437,28 @@ mod tests {
     async fn deferred_faculty_never_blocks_and_lands_late_with_its_own_cycle() {
         let deferred = DeferredFaculty::spawn(Arc::new(SlowRecall));
 
-        // Tick 1 (cycle 1): nothing computed yet → None, and it must return FAST
-        // (the inner sleeps 40ms; the hot path must not wait that long).
+        // Tick 1 (cycle 1): COLD START — the lane self-warms by running the
+        // inner synchronously (the 2026-07-10 fix for post-boot blind turns:
+        // three observed greeting rounds because first prompts carried no
+        // grounding). The first tick pays the inner cost and returns the FRESH
+        // finding; it also publishes it as last-good.
         let ws1 = Workspace::in_room("burst one", Uuid::nil()).with_cycle(CycleId(1));
-        let t = tokio::time::Instant::now();
         let r1 = deferred.contribute(&ws1).await;
+        assert!(r1.is_some(), "cold start self-warms: the first tick carries grounding");
+
+        // Tick 2 immediately after (before the worker publishes anything): the
+        // warm finding serves as last-good, NON-BLOCKING — the cold cost is
+        // paid exactly once, and the steady-state hot path never waits on the
+        // slow inner (it sleeps 40ms; we demand <15ms).
+        let ws2 = Workspace::in_room("burst two", Uuid::nil()).with_cycle(CycleId(2));
+        let t = tokio::time::Instant::now();
+        let r2 = deferred.contribute(&ws2).await;
         assert!(
             t.elapsed() < std::time::Duration::from_millis(15),
-            "hot path waited on the slow inner ({:?}) — the lane isn't deferred",
+            "steady-state hot path waited on the slow inner ({:?}) — the lane isn't deferred",
             t.elapsed()
         );
-        assert!(r1.is_none(), "no last-good finding on the very first tick");
+        assert!(r2.is_some(), "the warm finding serves as last-good");
 
         // Give the worker time to compute against cycle 1 and publish.
         tokio::time::sleep(std::time::Duration::from_millis(80)).await;
@@ -405,10 +468,10 @@ mod tests {
         let ws5 = Workspace::in_room("burst five", Uuid::nil()).with_cycle(CycleId(5));
         let r5 = deferred.contribute(&ws5).await;
         let late = r5.expect("the slow finding has landed by now");
-        assert_eq!(
-            late.cycle,
-            CycleId(1),
-            "the late finding must carry the cycle it reasoned against, not the current tick"
+        assert!(
+            late.cycle.0 < 5 && late.cycle != CycleId::UNSTAMPED,
+            "the late finding must carry the (older) cycle it reasoned against,              not the current tick; got {:?}",
+            late.cycle
         );
         assert_eq!(late.faculty, FacultyId::Recall);
     }
@@ -438,8 +501,9 @@ mod tests {
             "the finding must be the inner faculty's own output"
         );
 
-        // The same tick UNDIRECTED still behaves as the deferred lane (fast, None
-        // until the worker lands) — ambience never pays the synchronous cost.
+        // The same tick UNDIRECTED still behaves as the deferred lane (fast —
+        // the directed run warm-published, so this serves last-good) — ambience
+        // never pays the synchronous cost.
         let ws_ambient = Workspace::in_room("idle chatter", Uuid::nil()).with_cycle(CycleId(2));
         let t = tokio::time::Instant::now();
         let _ = deferred.contribute(&ws_ambient).await;
