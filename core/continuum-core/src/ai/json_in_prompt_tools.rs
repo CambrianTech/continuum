@@ -196,6 +196,8 @@ fn tool_call_formats() -> &'static [&'static dyn ToolCallFormat] {
         &BareFormat,
         &BbcodeCallFormat,
         &BracketTagFormat,
+        &FencedCallFormat,
+        &CliFlagFormat,
         &NarratedWriteFormat,
         &NarratedScriptFormat,
         &NarratedBareArgsFormat,
@@ -390,6 +392,249 @@ fn bracket_tag_args(mut s: &str) -> Option<serde_json::Map<String, serde_json::V
         );
         s = &rest[end + 1..];
     }
+}
+
+/// A model that writes the tool call CLI-style on its own line — the dominant
+/// live idiom of 2026-07-12 (all three personas converged on it within an hour):
+///   `code/write --path "sample.txt" --content="The quick brown fox..."`   (Atlas)
+///   `code/create-workspace --name word_freq_analysis`                     (Anwen, Casper)
+///   `code/write --path "x.py" --content """\n...multiline...\n"""`        (Casper)
+///   `code/write path=README.md content=f"{readme_content}"`               (Asha — MUST NOT lift)
+///   `code/shell "echo -n 'continuum' | sha256sum"`                        (Anwen — bare positional)
+/// Bare on a line OR inside a ```python fence — the personas write these inside
+/// pseudo-scripts, so the parser reads lines, not fences. Precision guards:
+/// - first token must be a slash-token (same shape rules as [`BracketTagFormat`]:
+///   '/' required keeps prose words + provenance markers inert), no '.' (so file
+///   citations `docs/x.md` on their own line stay speech), no trailing '/';
+/// - at least one argument (a bare `system/memory-budget` line stays inert —
+///   the BracketTag ≥1-arg precedent);
+/// - UNRESOLVED-TEMPLATE guard: a value that is an f-string (`f"..."`) or
+///   contains `{...}` is words, not a call — that CALL is rejected while sibling
+///   calls on other lines still lift (per-call, not per-message, rejection);
+/// - flags accept `--key "v"`, `--key="v"`, `key=v`, `key="v"`, and
+///   triple-quoted multiline values (`--content """…"""` spanning lines);
+///   a trailing `# comment` after the last value is tolerated (their fences
+///   are commented pseudo-code);
+/// - ONE bare quoted positional maps to the tool's live-observed default key
+///   (`code/shell`→`command`, `code/read`→`file_path`) — other tools require
+///   named flags.
+/// An invented name (`root/health-check`) lifts and fails LOUD at the executor —
+/// honest feedback that teaches the real surface (NarratedBareArgs precedent).
+/// ACL unchanged: a lifted call is gated identically to a hand-written envelope.
+struct CliFlagFormat;
+impl ToolCallFormat for CliFlagFormat {
+    fn id(&self) -> &'static str {
+        "cli-flag"
+    }
+    fn parse(&self, text: &str) -> Vec<ToolCall> {
+        let mut out = Vec::new();
+        let lines: Vec<&str> = text.lines().collect();
+        let mut i = 0usize;
+        while i < lines.len() {
+            let line = lines[i].trim();
+            i += 1;
+            let Some((name, rest)) = split_cli_head(line) else {
+                continue;
+            };
+            // Triple-quoted value opening on this line without closing → consume
+            // following lines until the closer (Casper's multiline --content).
+            let mut logical = rest.to_string();
+            if unclosed_triple_quote(&logical) {
+                let mut closed = false;
+                while i < lines.len() {
+                    logical.push('\n');
+                    logical.push_str(lines[i]);
+                    i += 1;
+                    if !unclosed_triple_quote(&logical) {
+                        closed = true;
+                        break;
+                    }
+                }
+                if !closed {
+                    continue; // half-written heredoc is not an executable intent
+                }
+            }
+            let Some(args) = cli_flag_args(&logical, name) else {
+                continue;
+            };
+            if args.is_empty() {
+                continue; // bare tool-name line stays speech (≥1-arg precedent)
+            }
+            out.push(ToolCall {
+                id: format!("jip-{}", Uuid::new_v4()),
+                name: name.to_string(),
+                input: serde_json::Value::Object(args),
+            });
+        }
+        out
+    }
+}
+
+/// Split a candidate CLI line into (tool-name, args-remainder). `None` unless the
+/// first token is a plausible slash-token tool name (see [`CliFlagFormat`] guards).
+fn split_cli_head(line: &str) -> Option<(&str, &str)> {
+    let line = line.trim_start();
+    let head_end = line
+        .find(char::is_whitespace)
+        .unwrap_or(line.len());
+    let (name, rest) = line.split_at(head_end);
+    let ok = name.contains('/')
+        && !name.contains('.')
+        && !name.ends_with('/')
+        && !name.starts_with('/')
+        && name.len() <= 64
+        && !name.starts_with("http")
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '/' || c == '-');
+    if !ok || rest.trim().is_empty() {
+        return None; // bare name (no args) handled by caller via empty-args guard
+    }
+    Some((name, rest.trim_start()))
+}
+
+/// True while a `"""` heredoc opened on the accumulated text has no closer yet.
+fn unclosed_triple_quote(s: &str) -> bool {
+    s.matches("\"\"\"").count() % 2 == 1
+}
+
+/// Parse the CLI-flag argument grammar for [`CliFlagFormat`]. `None` = this is
+/// words, not a call (unparseable remainder, or a template-marker value).
+fn cli_flag_args(
+    s: &str,
+    tool: &str,
+) -> Option<serde_json::Map<String, serde_json::Value>> {
+    let mut map = serde_json::Map::new();
+    let mut rest = s.trim();
+    // ONE bare quoted positional → the tool's live-observed default key.
+    if rest.starts_with('"') && !rest.starts_with("\"\"\"") {
+        let inner = &rest[1..];
+        let end = inner.find('"')?;
+        let (value, tail) = (&inner[..end], inner[end + 1..].trim());
+        if !(tail.is_empty() || tail.starts_with('#')) {
+            return None;
+        }
+        let key = match tool {
+            "code/shell" => "command",
+            "code/read" => "file_path",
+            _ => return None,
+        };
+        map.insert(key.into(), serde_json::Value::String(value.to_string()));
+        return Some(map);
+    }
+    while !rest.is_empty() {
+        if rest.starts_with('#') {
+            break; // trailing comment after the last value
+        }
+        // key, optionally --prefixed; separator is '=' or whitespace — but a
+        // whitespace separator REQUIRES the -- prefix. Without that rule any
+        // prose line starting with a path-ish token ("analysis_modules/x is
+        // for NLP") would parse as bare `key value` pairs; every live specimen
+        // carries `--` or `=`, so flag-shape is the precision line.
+        let dashed = rest.starts_with("--");
+        let key_src = rest.trim_start_matches('-');
+        let sep = key_src.find(|c: char| c == '=' || c.is_whitespace())?;
+        if !dashed && !key_src[sep..].starts_with('=') {
+            return None;
+        }
+        let key = &key_src[..sep];
+        if key.is_empty()
+            || !key
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+        {
+            return None;
+        }
+        let mut val_src = key_src[sep..].trim_start_matches('=').trim_start();
+        // f-string prefix — Asha's `content=f"{var}"` — unresolved template.
+        let is_fstring = val_src.starts_with("f\"") || val_src.starts_with("f'");
+        if is_fstring {
+            val_src = &val_src[1..];
+        }
+        let (value, tail) = if let Some(body) = val_src.strip_prefix("\"\"\"") {
+            let end = body.find("\"\"\"")?;
+            (
+                body[..end].trim_start_matches('\\').trim().to_string(),
+                &body[end + 3..],
+            )
+        } else if let Some(body) = val_src.strip_prefix('"') {
+            let end = body.find('"')?;
+            (body[..end].to_string(), &body[end + 1..])
+        } else if let Some(body) = val_src.strip_prefix('\'') {
+            let end = body.find('\'')?;
+            (body[..end].to_string(), &body[end + 1..])
+        } else {
+            let end = val_src
+                .find(char::is_whitespace)
+                .unwrap_or(val_src.len());
+            (val_src[..end].to_string(), &val_src[end..])
+        };
+        if is_fstring {
+            // `content=f"{var}"` — an UNRESOLVED template referencing fence
+            // state we can't evaluate; the whole call is words. (Plain `{...}`
+            // braces stay legal: shell brace-expansion is real syntax.)
+            return None;
+        }
+        map.insert(key.to_string(), serde_json::Value::String(value));
+        rest = tail.trim_start();
+    }
+    Some(map)
+}
+
+/// A model that wraps ONE paren-call in a code fence or inline code span —
+/// ```` ```code/shell(command="cargo test")``` ```` (idiom 8, Asha's verbatim
+/// line, pinned in #153). The fence delimiters are the intent markers (the
+/// BbcodeCall logic — the span exists to set the call apart from prose), and
+/// the entire span content must BE the call: a slash-token name + `(args)` and
+/// nothing else. Multi-line fences whose sole body is one paren-call also lift
+/// (same emission, wrapped). Args via [`paren_call_args`] (JSON-object
+/// passthrough included). Prose fences, code examples, and anything with
+/// leftover text stay speech.
+struct FencedCallFormat;
+impl ToolCallFormat for FencedCallFormat {
+    fn id(&self) -> &'static str {
+        "fenced-call"
+    }
+    fn parse(&self, text: &str) -> Vec<ToolCall> {
+        let mut out = Vec::new();
+        let mut rest = text;
+        while let Some(open) = rest.find("```") {
+            let after = &rest[open + 3..];
+            let Some(close) = after.find("```") else { break };
+            let span = after[..close].trim();
+            rest = &after[close + 3..];
+            let Some(call) = lift_sole_paren_call(span) else {
+                continue;
+            };
+            out.push(call);
+        }
+        out
+    }
+}
+
+/// `name(args)` and NOTHING else (modulo whitespace) with a slash-token name →
+/// a lifted call. The '/' requirement keeps ordinary `function()` mentions in
+/// fenced code inert.
+fn lift_sole_paren_call(span: &str) -> Option<ToolCall> {
+    let span = span.trim();
+    let paren = span.find('(')?;
+    let name = span[..paren].trim();
+    let ok = name.contains('/')
+        && !name.contains('.')
+        && name.len() <= 64
+        && !name.starts_with("http")
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '/' || c == '-');
+    if !ok || !span.ends_with(')') {
+        return None;
+    }
+    let args = paren_call_args(&span[paren + 1..span.len() - 1])?;
+    Some(ToolCall {
+        id: format!("jip-{}", Uuid::new_v4()),
+        name: name.to_string(),
+        input: serde_json::Value::Object(args),
+    })
 }
 
 /// A model that NAMES the tool in prose and puts ONLY the bare arguments in a JSON
@@ -1840,5 +2085,144 @@ Please provide the output so I can review it.";
             "[writing a very long explanation of everything I might ever do with all these files in the workspace today]"
         ));
         assert!(!narrates_stage_direction("just prose, no brackets"));
+    }
+
+    // ── CliFlagFormat (idioms 9+10) + FencedCallFormat (idiom 8) — the
+    // 2026-07-12 afternoon corpus: all three personas converged on CLI-flag
+    // calls and none lifted (task #153 metadata carries each verbatim). ──
+
+    // what this catches: Atlas's bare-line CLI-flag write (idiom 9). The
+    // dominant live idiom must lift with both `--key "v"` and `--key="v"`.
+    #[test]
+    fn cli_flag_bare_line_write_lifts() {
+        let text = "I'd rather create the sample text file now to get us started.\n\
+             code/write --path \"sample.txt\" --content=\"The quick brown fox jumps over the lazy dog.\"";
+        let calls = parse_tool_calls(text);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].name, "code/write");
+        assert_eq!(calls[0].input["path"], "sample.txt");
+        assert_eq!(
+            calls[0].input["content"],
+            "The quick brown fox jumps over the lazy dog."
+        );
+    }
+
+    // what this catches: Anwen/Casper's workspace-create inside a ```python
+    // fence with a space-separated bare-token flag value, plus a trailing
+    // `# comment` line above it that must stay inert.
+    #[test]
+    fn cli_flag_inside_python_fence_lifts() {
+        let text = "Let me set up our project properly:\n\
+             ```python\n\
+             # First, create a dedicated workspace to keep everything organized\n\
+             code/create-workspace --name word_freq_analysis\n\
+             ```";
+        let calls = parse_tool_calls(text);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].name, "code/create-workspace");
+        assert_eq!(calls[0].input["name"], "word_freq_analysis");
+    }
+
+    // what this catches: Casper's triple-quoted MULTILINE --content value plus
+    // a second call in the same fence — both lift, in order.
+    #[test]
+    fn cli_flag_triple_quote_multiline_and_sibling_lift_in_order() {
+        let text = "```python\n\
+             code/write --path \"word_freq_analysis/text_cleaner.py\" --content \"\"\"\\\n\
+             import re\n\
+             class TextCleaner:\n\
+                 pass\n\
+             \"\"\"\n\
+             code/list --path \"word_freq_analysis/\"\n\
+             ```";
+        let calls = parse_tool_calls(text);
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0].name, "code/write");
+        assert_eq!(
+            calls[0].input["path"],
+            "word_freq_analysis/text_cleaner.py"
+        );
+        let content = calls[0].input["content"].as_str().unwrap();
+        assert!(content.contains("class TextCleaner"));
+        assert_eq!(calls[1].name, "code/list");
+        assert_eq!(calls[1].input["path"], "word_freq_analysis/");
+    }
+
+    // what this catches: Asha's mixed fence — an f-string templated call MUST
+    // stay words (unresolved `content=f"{readme_content}"`) while the sibling
+    // bare-positional `code/shell "…"` on another line still lifts, including
+    // shell brace-expansion braces (NOT a template).
+    #[test]
+    fn cli_flag_fstring_call_stays_words_but_positional_sibling_lifts() {
+        let text = "```python\n\
+             readme_content = \"some docs\"\n\
+             code/shell \"mkdir -p analysis_modules/{text_processing,data_analysis}\"\n\
+             code/write path=README.md content=f\"{readme_content}\"\n\
+             ```";
+        let calls = parse_tool_calls(text);
+        assert_eq!(calls.len(), 1, "the f-string call is words, not a call");
+        assert_eq!(calls[0].name, "code/shell");
+        assert_eq!(
+            calls[0].input["command"],
+            "mkdir -p analysis_modules/{text_processing,data_analysis}"
+        );
+    }
+
+    // what this catches: idiom-10 bare positional args map to each tool's
+    // live-observed default key, and an UNRESOLVED f-string positional
+    // (`code/read f"{file}"`) stays inert.
+    #[test]
+    fn cli_flag_bare_positional_maps_default_key() {
+        let calls =
+            parse_tool_calls("code/shell \"echo -n 'continuum' | sha256sum\"");
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].name, "code/shell");
+        assert_eq!(calls[0].input["command"], "echo -n 'continuum' | sha256sum");
+
+        assert!(
+            parse_tool_calls("code/read f\"{file}\"").is_empty(),
+            "an f-string positional is an unresolved template — words"
+        );
+    }
+
+    // what this catches: the precision line. Prose lines starting with a
+    // path-ish token, dotted file citations, and bare tool names with no args
+    // must all stay speech — only flag-shaped (`--` or `=`) remainders lift.
+    #[test]
+    fn cli_flag_prose_and_citations_stay_inert() {
+        for text in [
+            "analysis_modules/text_processing is for NLP components",
+            "word_freq_analysis/text_cleaner.py handles normalization",
+            "system/memory-budget",
+            "the src/main entry point loads config",
+        ] {
+            assert!(
+                parse_tool_calls(text).is_empty(),
+                "must stay speech: {text}"
+            );
+        }
+    }
+
+    // what this catches: idiom 8 — a fence whose ENTIRE content is one
+    // paren-call lifts (the fence delimiters are the intent markers), while a
+    // fence containing a call plus other code does not match THIS format.
+    #[test]
+    fn fenced_sole_paren_call_lifts() {
+        let calls = parse_tool_calls("```code/shell(command=\"cargo test\")```");
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].name, "code/shell");
+        assert_eq!(calls[0].input["command"], "cargo test");
+
+        // Block form with the call as the sole body also lifts.
+        let calls = parse_tool_calls("```\ncode/shell(command=\"ls -la\")\n```");
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].input["command"], "ls -la");
+
+        // An ordinary code fence full of python stays speech for THIS format
+        // (function() mentions carry no slash-token).
+        assert!(parse_tool_calls(
+            "```python\ndef tokenize(text):\n    return text.split()\n```"
+        )
+        .is_empty());
     }
 }
