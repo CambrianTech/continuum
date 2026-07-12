@@ -470,6 +470,242 @@ impl ActionCommand for BenchmarkRun {
 }
 crate::register_stateless_command!(BenchmarkRun);
 
+// ---- benchmark/record + benchmark/matrix (the evidence engine, #123) -----------------------
+//
+// Every comparative claim we ever publish must decompose into ledger ROWS a stranger
+// can re-run: one row = one (model × harness-arm × benchmark) result CARRYING its own
+// replication command. The matrix is a PROJECTION of those rows — never hand-authored
+// (the same recipe→artifact doctrine as the forge alloy). "Undeniable" = the row says
+// exactly how to reproduce the cell; "viral" = anyone can render the table themselves.
+
+/// The one benchmark results ledger (`~/.continuum/benchmarks/ledger.jsonl`).
+fn benchmark_ledger_path() -> std::path::PathBuf {
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+    std::path::PathBuf::from(home)
+        .join(".continuum")
+        .join("benchmarks")
+        .join("ledger.jsonl")
+}
+
+/// One comparative result — a cell contribution in the models × harness matrix.
+#[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../protocol/typescript/benchmark/BenchmarkRecordParams.ts")]
+pub struct BenchmarkRecordParams {
+    /// Model identity for the row — the served id (e.g. `unsloth/Devstral-Small-2507-GGUF`),
+    /// with any gene noted in `gene`, never folded into this string.
+    pub model: String,
+    /// Harness arm: `raw` (bare /v1), `opencode`, `ours`, `ours+genome` — or a named
+    /// competitor (`hermes`). Free string so new arms need no code change.
+    pub harness: String,
+    /// Benchmark name (a `benchmark/list` row, e.g. `swe-bench-lite`, `humaneval-rs`).
+    pub benchmark: String,
+    /// Tasks resolved / passed.
+    #[ts(type = "number")]
+    pub resolved: u32,
+    /// Tasks attempted.
+    #[ts(type = "number")]
+    pub total: u32,
+    /// The EXACT command that reproduces this row. Required — a result nobody can
+    /// re-run is a claim, not evidence.
+    pub replication: String,
+    /// Hardware tier the run executed on (e.g. `macbook-m4-pro-64gb`, `rtx5090`).
+    pub hardware: String,
+    /// Genome layer identity when the arm ran with a gene paged in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub gene: Option<String>,
+    /// Total generated tokens (degenerate-serving guard — see BenchmarkRunResult).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional, type = "number")]
+    pub output_tokens: Option<u32>,
+    /// Wall-clock seconds for the run (feeds cost-per-resolved-task).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional, type = "number")]
+    pub wall_seconds: Option<u32>,
+    /// Free-text context (instrument caveats, instance list, capture dir).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub notes: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, TS)]
+pub struct BenchmarkRecordResult {
+    /// Ledger rows now on file (this row included).
+    #[ts(type = "number")]
+    pub rows: u32,
+    pub ledger: String,
+}
+
+/// `benchmark/record` — append one comparative result to the evidence ledger.
+#[derive(Default)]
+pub struct BenchmarkRecord;
+
+#[async_trait]
+impl ActionCommand for BenchmarkRecord {
+    const NAME: &'static str = "benchmark/record";
+    const ACCESS: AccessLevel = AccessLevel::AiSafe;
+    const DESCRIPTION: &'static str =
+        "Record one benchmark result (model × harness × benchmark, resolved/total, hardware, and \
+         the EXACT replication command) into the evidence ledger. benchmark/matrix renders the \
+         comparison table from these rows.";
+    type Params = BenchmarkRecordParams;
+    type Output = BenchmarkRecordResult;
+
+    async fn run(&self, _ctx: &Ctx, p: BenchmarkRecordParams) -> Result<BenchmarkRecordResult, CommandError> {
+        if p.total == 0 {
+            return Err(CommandError::Invalid("total must be > 0 — an empty run is not a result".into()));
+        }
+        if p.resolved > p.total {
+            return Err(CommandError::Invalid(format!(
+                "resolved ({}) exceeds total ({})",
+                p.resolved, p.total
+            )));
+        }
+        if p.replication.trim().is_empty() {
+            return Err(CommandError::Invalid(
+                "replication is required — a result nobody can re-run is a claim, not evidence".into(),
+            ));
+        }
+        let path = benchmark_ledger_path();
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir)
+                .map_err(|e| CommandError::Internal(format!("create {}: {e}", dir.display())))?;
+        }
+        let mut row = serde_json::to_value(&p)
+            .map_err(|e| CommandError::Internal(format!("encode row: {e}")))?;
+        row["atMs"] = serde_json::json!(chrono::Utc::now().timestamp_millis());
+        let line = serde_json::to_string(&row)
+            .map_err(|e| CommandError::Internal(format!("encode row: {e}")))?;
+        use std::io::Write;
+        let mut f = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .map_err(|e| CommandError::Internal(format!("open {}: {e}", path.display())))?;
+        writeln!(f, "{line}").map_err(|e| CommandError::Internal(format!("append: {e}")))?;
+        let rows = std::fs::read_to_string(&path)
+            .map(|s| s.lines().filter(|l| !l.trim().is_empty()).count() as u32)
+            .unwrap_or(0);
+        Ok(BenchmarkRecordResult { rows, ledger: path.display().to_string() })
+    }
+}
+crate::register_stateless_command!(BenchmarkRecord);
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, TS, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct BenchmarkMatrixParams {
+    /// Only render rows for this benchmark. Omit for all benchmarks (one table each).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub benchmark: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, TS)]
+pub struct BenchmarkMatrixResult {
+    /// The rendered comparison — GitHub-flavored markdown, ready to paste anywhere.
+    pub markdown: String,
+    /// Ledger rows that fed the render.
+    #[ts(type = "number")]
+    pub rows: u32,
+}
+
+/// `benchmark/matrix` — render the models × harness comparison from the evidence ledger.
+#[derive(Default)]
+pub struct BenchmarkMatrix;
+
+#[async_trait]
+impl ActionCommand for BenchmarkMatrix {
+    const NAME: &'static str = "benchmark/matrix";
+    const ACCESS: AccessLevel = AccessLevel::AiSafe;
+    const DESCRIPTION: &'static str =
+        "Render the models × harness benchmark comparison table (markdown) from the evidence \
+         ledger benchmark/record writes. Every cell aggregates its rows; the replication \
+         appendix lists the exact command behind each row.";
+    type Params = BenchmarkMatrixParams;
+    type Output = BenchmarkMatrixResult;
+
+    async fn run(&self, _ctx: &Ctx, p: BenchmarkMatrixParams) -> Result<BenchmarkMatrixResult, CommandError> {
+        let path = benchmark_ledger_path();
+        let raw = std::fs::read_to_string(&path).map_err(|_| {
+            CommandError::NotFound(format!(
+                "no evidence ledger at {} — record a result with benchmark/record first",
+                path.display()
+            ))
+        })?;
+        let rows: Vec<BenchmarkRecordParams> = raw
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .filter_map(|l| serde_json::from_str(l).ok())
+            .filter(|r: &BenchmarkRecordParams| {
+                p.benchmark.as_deref().is_none_or(|b| r.benchmark == b)
+            })
+            .collect();
+        if rows.is_empty() {
+            return Err(CommandError::NotFound(match &p.benchmark {
+                Some(b) => format!("no ledger rows for benchmark {b:?}"),
+                None => "the evidence ledger is empty".into(),
+            }));
+        }
+        Ok(BenchmarkMatrixResult { markdown: render_matrix(&rows), rows: rows.len() as u32 })
+    }
+}
+crate::register_stateless_command!(BenchmarkMatrix);
+
+/// Pure render: ledger rows → one markdown table per benchmark (models down, harness
+/// arms across, `resolved/total (rate)` cells aggregated over contributing rows) + a
+/// replication appendix. Split from the command so the projection is unit-testable.
+fn render_matrix(rows: &[BenchmarkRecordParams]) -> String {
+    use std::collections::BTreeMap;
+    // benchmark → arm set + (model[, gene]) → arm → (resolved, total)
+    let mut by_bench: BTreeMap<&str, (Vec<&str>, BTreeMap<String, BTreeMap<&str, (u32, u32)>>)> =
+        BTreeMap::new();
+    for r in rows {
+        let (arms, cells) = by_bench.entry(&r.benchmark).or_default();
+        if !arms.contains(&r.harness.as_str()) {
+            arms.push(&r.harness);
+        }
+        let model_key = match &r.gene {
+            Some(g) => format!("{} + {}", r.model, g),
+            None => r.model.clone(),
+        };
+        let cell = cells.entry(model_key).or_default().entry(&r.harness).or_insert((0, 0));
+        cell.0 += r.resolved;
+        cell.1 += r.total;
+    }
+    let mut md = String::new();
+    for (bench, (arms, cells)) in &by_bench {
+        md.push_str(&format!("## {bench}\n\n| model | {} |\n|---|{}\n", arms.join(" | "),
+            "---|".repeat(arms.len())));
+        for (model, per_arm) in cells {
+            let row_cells: Vec<String> = arms
+                .iter()
+                .map(|a| match per_arm.get(a) {
+                    Some((res, tot)) => {
+                        format!("{res}/{tot} ({:.0}%)", (*res as f64 / *tot as f64) * 100.0)
+                    }
+                    None => "—".to_string(),
+                })
+                .collect();
+            md.push_str(&format!("| {model} | {} |\n", row_cells.join(" | ")));
+        }
+        md.push('\n');
+    }
+    md.push_str("### Replication\n\n");
+    for r in rows {
+        md.push_str(&format!(
+            "- **{} × {} × {}** on `{}`: `{}`{}\n",
+            r.model,
+            r.harness,
+            r.benchmark,
+            r.hardware,
+            r.replication,
+            r.notes.as_deref().map(|n| format!(" — {n}")).unwrap_or_default(),
+        ));
+    }
+    md
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -489,5 +725,41 @@ mod tests {
             crate::cognition::gym::resolve_gym(b.eval_set.unwrap())
                 .unwrap_or_else(|e| panic!("benchmark '{}' eval_set does not resolve: {e}", b.name));
         }
+    }
+
+    // what this catches: the evidence-engine projection (#123) — rows aggregate into
+    // per-benchmark model × arm cells, a model with no result in an arm renders "—"
+    // (never a fabricated 0%), gene rows are their own model identity (the same-weights
+    // before/after-genome headline), and EVERY row's replication command survives into
+    // the appendix. A matrix that drops or invents a cell publishes a false claim.
+    #[test]
+    fn matrix_renders_cells_and_replication_from_rows() {
+        let row = |model: &str, harness: &str, gene: Option<&str>, res, tot| BenchmarkRecordParams {
+            model: model.into(),
+            harness: harness.into(),
+            benchmark: "swe-bench-lite".into(),
+            resolved: res,
+            total: tot,
+            replication: format!("cu benchmark/run --name swe-bench-lite --arm {harness}"),
+            hardware: "macbook-m4-pro-64gb".into(),
+            gene: gene.map(Into::into),
+            output_tokens: None,
+            wall_seconds: None,
+            notes: None,
+        };
+        let rows = vec![
+            row("devstral-24b", "ours", None, 0, 3),
+            row("devstral-24b", "ours", None, 1, 3), // same cell aggregates: 1/6
+            row("devstral-24b", "opencode", None, 1, 3),
+            row("devstral-24b", "ours", Some("coder-act-transition"), 2, 3),
+        ];
+        let md = render_matrix(&rows);
+        assert!(md.contains("## swe-bench-lite"), "{md}");
+        assert!(md.contains("| devstral-24b | 1/6 (17%) | 1/3 (33%) |"), "{md}");
+        assert!(
+            md.contains("| devstral-24b + coder-act-transition | 2/3 (67%) | — |"),
+            "gene row is its own identity, absent arm renders —: {md}"
+        );
+        assert_eq!(md.matches("cu benchmark/run").count(), 4, "all replication cmds survive: {md}");
     }
 }
