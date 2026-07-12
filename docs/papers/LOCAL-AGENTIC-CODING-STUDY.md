@@ -93,6 +93,22 @@ Full table + replication commands: `cu benchmark/matrix`.
   RQ2's fixed-model cross-harness design is the control.
 - Grader is rustc/pytest outcome-based — partial credit invisible.
 
+## 8. Exhibits — annotated interaction traces
+
+Quantitative cells say WHAT happened; exhibits show HOW. Each exhibit is a verbatim
+act→observe trace from the capture record (provenance: capture file + timestamp),
+annotated, never edited beyond truncation marks. Planned set, one per claim:
+
+- **E1 Recovery**: a model receives a rustc error mid-exam and returns the corrected
+  solution — the loop mechanism behind RQ2's lift.
+- **E2 Self-verification**: write → compile → run → posts REAL program output (the
+  wordstats chain, live room, 2026-07-11).
+- **E3 Team review** (RQ4): reviewer persona catches a defect the solver missed;
+  both turns shown.
+- **E4 Honest failure**: a full trace of a zero — the search-loop exam texture —
+  because showing the failure mode is what makes the successes credible.
+- **E5 Before/after genome** (RQ3): the same task, same weights, gene off vs on.
+
 ## Appendix A — Reproduction procedure
 
 The system was built so that reproduction is the SAME path we use ourselves — no
