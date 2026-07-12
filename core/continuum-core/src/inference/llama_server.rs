@@ -1031,7 +1031,16 @@ impl LlamaServerControl for LlamaServerProcess {
             // pure optimization flag: absent it we just re-prefill (correct, slow);
             // present it we reuse (correct, fast) — no fallback, no behavior change.
             .arg("--cache-reuse")
-            .arg("256");
+            .arg("256")
+            // Overflow must FAIL, never silently amputate. With context shift on
+            // (the llama.cpp default), a prompt larger than the slot's window has
+            // its MIDDLE evicted and generation proceeds on the mutilated prompt —
+            // exam-corrupting amnesia no log line reports (#139: 44k-token prompts
+            // observed riding ~13.4k slots with no error anywhere). Disabled, the
+            // server 400s ("exceeds context size") and the caller's fail-loud path
+            // surfaces the real defect: a RAG budget that overshot the served
+            // window ([[fallbacks-are-illegal-fail-loud]]).
+            .arg("--no-context-shift");
         // `--embeddings` is deliberately NOT set on this GENERATION lane. On the
         // current llama.cpp build it puts the server in embedding (non-causal)
         // mode, which makes generation fail with `500 "Compute error."` on EVERY

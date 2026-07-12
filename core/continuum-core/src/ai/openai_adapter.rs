@@ -206,7 +206,6 @@ pub struct OpenAICompatibleAdapter {
 /// have the same scope as the resource — [[resource-authority-is-a-system-concern]].
 #[derive(Debug)]
 enum SlotAffinity {
-    Unknown,
     Unsupported,
     Table {
         n_slots: u32,
@@ -220,6 +219,18 @@ fn slot_tables() -> &'static dashmap::DashMap<String, SlotAffinity> {
     static TABLES: std::sync::OnceLock<dashmap::DashMap<String, SlotAffinity>> =
         std::sync::OnceLock::new();
     TABLES.get_or_init(dashmap::DashMap::new)
+}
+
+/// Served PER-SLOT context window by server root, captured from the same
+/// `/props` probe that discovers slots (`default_generation_settings.n_ctx` —
+/// llama-server reports the per-slot share there, already divided by
+/// `--parallel`). This is the ground truth the registry row can only claim:
+/// a consumer budgeting against the model's trained window while the server
+/// slices `-c` across N slots silently overshoots (#139). Keyed per SERVER
+/// like `slot_tables`, shared across adapter instances.
+fn served_ctx_by_root() -> &'static dashmap::DashMap<String, u32> {
+    static CTX: std::sync::OnceLock<dashmap::DashMap<String, u32>> = std::sync::OnceLock::new();
+    CTX.get_or_init(dashmap::DashMap::new)
 }
 
 impl SlotAffinity {
@@ -469,7 +480,6 @@ impl OpenAICompatibleAdapter {
             return match &mut *state {
                 SlotAffinity::Unsupported => None,
                 s @ SlotAffinity::Table { .. } => s.assign(persona),
-                SlotAffinity::Unknown => None, // unreachable: never stored
             };
         }
         // Probe /props once. Lock is NOT held across the await.
@@ -492,6 +502,16 @@ impl OpenAICompatibleAdapter {
                 return None;
             }
         };
+        // Capture the served PER-SLOT window while we hold the props body —
+        // the ONE authoritative source for what a request can actually carry
+        // (#139). Recorded even for single-slot servers (the window truth is
+        // independent of whether affinity is useful).
+        if let Some(n_ctx) = body
+            .pointer("/default_generation_settings/n_ctx")
+            .and_then(|v| v.as_u64())
+        {
+            served_ctx_by_root().insert(root.clone(), n_ctx as u32);
+        }
         let n_slots = body.get("total_slots").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
         if n_slots <= 1 {
             slot_tables().insert(root, SlotAffinity::Unsupported);
@@ -1484,6 +1504,36 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
                         obj.insert("id_slot".to_string(), json!(slot));
                     }
                 }
+                // #139 overshoot alarm: name the RAG-budget bug BEFORE the
+                // server rejects. With context shift disabled at spawn the
+                // server 400s on overflow instead of silently amputating the
+                // prompt's middle; this WARN turns that 400 from a mystery
+                // into a diagnosis. Chars/4 is a deliberately conservative
+                // token estimate — an alarm that only fires when the overshoot
+                // is unambiguous.
+                if let Some(served) = served_ctx_by_root().get(self.endpoints().root()) {
+                    let approx_tokens = body
+                        .get("messages")
+                        .and_then(|m| m.as_array())
+                        .map(|msgs| {
+                            msgs.iter()
+                                .filter_map(|m| m.get("content").and_then(|c| c.as_str()))
+                                .map(|c| c.len() / 4)
+                                .sum::<usize>()
+                        })
+                        .unwrap_or(0);
+                    if approx_tokens > *served as usize {
+                        tracing::warn!(
+                            probe_class = "serving.ctx_overshoot",
+                            approx_tokens,
+                            served_per_slot_ctx = *served,
+                            persona,
+                            "prompt likely exceeds the served per-slot window — the RAG \
+                             budget overshot what llama-server actually serves (#139); \
+                             expect a context-size rejection, fix the budget not the server"
+                        );
+                    }
+                }
             }
         }
 
@@ -2272,7 +2322,6 @@ mod tests {
         let e = table.assign("persona-e").unwrap();
         assert!(e < 4, "wrap stays in range");
         // Non-table states never pin.
-        assert_eq!(SlotAffinity::Unknown.assign("persona-a"), None);
         assert_eq!(SlotAffinity::Unsupported.assign("persona-a"), None);
     }
 
