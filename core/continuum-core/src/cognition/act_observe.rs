@@ -762,6 +762,34 @@ pub async fn settle_step(
                         "spoken narration promised action but no format lifted it — recorded unfulfilled-promise proprioception"
                     );
                 }
+                // The fabricated-execution backstop (#144, Joel 2026-07-11/12): a
+                // Speak that CLAIMS a past tool run ("I ran `x` and got…", "the
+                // tool returned…") while ZERO acts executed this concern is
+                // confabulated execution — observed live when a persona presented
+                // self-authored poems as a gpt-4 run that never happened
+                // (log-verified: zero generate invocations) and a PEER adopted the
+                // fabricated result as room truth. Receipts are the gate: real
+                // executions leave [action #n] lines, so honest reporting is never
+                // taxed. Perception-side fact, never an output gate
+                // ([[no-hardcoded-heuristics-to-steer-cognition]]).
+                let claimed_past =
+                    crate::ai::json_in_prompt_tools::claims_past_tool_run(&text);
+                if claimed_past && !pre_settle.iter().any(|l| l.contains("[action")) {
+                    body.working_memory.record_action(
+                        "[confabulation] I described having run a tool, but no \
+                         action actually executed this concern — the claimed \
+                         result was composed by me, not returned by anything. \
+                         Real executions leave [action #n] receipts; I must only \
+                         report acts that actually ran, and own my compositions \
+                         as my own work.",
+                    );
+                    crate::probe!(
+                        class = "persona.act.confabulated_execution",
+                        persona = %body.persona_name,
+                        room_id = %room_id,
+                        "past-tense tool-run claim with zero act receipts this concern — recorded confabulation proprioception"
+                    );
+                }
                 // Observation-gap fact (Joel, 2026-07-11: "iterating and observing
                 // like a real engineer" — the run+observe half of the creation loop
                 // must be part of THEIR process). If this concern MUTATED the

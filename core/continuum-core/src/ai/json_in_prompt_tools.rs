@@ -510,6 +510,67 @@ pub fn has_fenced_block(text: &str) -> bool {
     !fenced_blocks(text).is_empty()
 }
 
+/// Does this text CLAIM a past tool execution in the first person — "I ran
+/// `commands/list` and got…", "The tool returned this poem"? The PAST-TENSE
+/// sibling of [`narrates_fenced_action`] (#144): glass-boxed live 2026-07-11/12
+/// when a persona presented self-authored poems as the output of a `gpt-4` run
+/// that never happened (log-verified: zero ai/inference/generate invocations),
+/// and a peer adopted the fabricated result as room truth. The caller gates on
+/// working memory: a claim WITH matching `[action #n]` receipts is honest
+/// reporting; a claim with ZERO acts this concern is confabulated execution.
+/// Precision-first: quoted lines, substrate tags, second-person coaching, and
+/// hypothetical framing never fire; first-person forms additionally require a
+/// tool-shaped token (backticked name or slash-path) so "I ran fast" is inert.
+pub fn claims_past_tool_run(text: &str) -> bool {
+    text.lines().any(|l| {
+        let l = l.trim();
+        // Quoted/relayed lines and substrate bracket-tags are never her claim.
+        if l.starts_with('>') || l.starts_with('[') {
+            return false;
+        }
+        let lower = l.to_lowercase();
+        // Hypothetical / instructional framing is not a claim of execution.
+        if lower.contains("if i ran")
+            || lower.contains("if you run")
+            || lower.contains("would return")
+            || lower.contains("here's how")
+            || lower.contains("you can use")
+        {
+            return false;
+        }
+        const RESULT_CLAIMS: &[&str] = &[
+            "the tool returned",
+            "the command returned",
+            "it returned this",
+            "and got this list",
+            "and got this result",
+            "here's the output i got",
+        ];
+        if RESULT_CLAIMS.iter().any(|p| lower.contains(p)) {
+            return true;
+        }
+        const FIRST_PERSON_PAST: &[&str] = &[
+            "i ran ",
+            "i executed ",
+            "i've run ",
+            "i have run ",
+            "i've executed ",
+            "i just ran ",
+            "i called ",
+        ];
+        let claims = FIRST_PERSON_PAST
+            .iter()
+            .any(|p| lower.starts_with(p) || lower.contains(&format!(". {p}")) || lower.contains(&format!("! {p}")));
+        if !claims {
+            return false;
+        }
+        // Require a tool-shaped token: backticked name or a slash-path word.
+        l.contains('`')
+            || l.split_whitespace()
+                .any(|w| w.contains('/') && w.len() > 3 && !w.starts_with("http"))
+    })
+}
+
 pub fn narrates_stage_direction(text: &str) -> bool {
     text.lines().any(|l| {
         let l = l.trim();
@@ -1291,6 +1352,43 @@ Please provide the output so I can review it.";
     // never fired and he re-declared the intent every turn. A bracketed
     // present-participle line IS a stage direction; the substrate's own bracket
     // tags must never trip it.
+    #[test]
+    // what this catches: the #144 fabricated-execution detector — verbatim live
+    // receipts (2026-07-11/12) fire; peer coaching that SHOWS the format, quoted
+    // lines, hypotheticals, and plain prose "I ran" stay inert. A false positive
+    // here taxes honest speech; a false negative lets a fake result become room
+    // truth (observed: a peer adopted a fabricated model list within two turns).
+    #[test]
+    fn past_tool_run_claims_fire_and_coaching_stays_inert() {
+        // Anwen's live fabrications:
+        assert!(claims_past_tool_run(
+            "I ran `ai/inference/generate` with the following parameters:\n- model: \"gpt-4\""
+        ));
+        assert!(claims_past_tool_run(
+            "I ran commands/list --filter ai to get the list of AI-related commands."
+        ));
+        assert!(claims_past_tool_run(
+            "The tool returned this poem:\n\"In the silent sea of night...\""
+        ));
+        // Asha's live claim:
+        assert!(claims_past_tool_run("I ran `models/list` but it seems there might be an issue"));
+
+        // Peer coaching / second person — never a self-claim:
+        assert!(!claims_past_tool_run(
+            "You've just called `commands/list` — that's the full index."
+        ));
+        // Hypothetical / instructional:
+        assert!(!claims_past_tool_run(
+            "If you run commands/list with a filter, here's how it narrows the set."
+        ));
+        // Plain prose past tense with no tool token:
+        assert!(!claims_past_tool_run("I ran fast to catch the bus."));
+        // Quoted relay:
+        assert!(!claims_past_tool_run("> I ran `code/run` earlier, said Atlas."));
+        // Substrate act-admission tag lines are not her claim:
+        assert!(!claims_past_tool_run("[action #3] I ran code/read(...) Result: ok"));
+    }
+
     #[test]
     fn stage_direction_is_a_narrated_promise() {
         // Atlas's exact live message shape.
