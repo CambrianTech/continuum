@@ -59,6 +59,30 @@ schizophrenia mapping); dreams as day-residue replay + nightmare threat-simulati
 the dream CHOOSES what to learn next. Inner chorus on 0.5B–4B; narrator on the big
 model. [memory: mind-wanderers-subpersonal-processes, task #145]
 
+**First live dreams — receipts (2026-07-12, all four resident personas):**
+- *The substrate taught its own doctrine twice before the first clean dream.*
+  Lesson 1: the dream ran 24B inference inline in its scheduler tick and timed out
+  on every pass (the governor's 5s isolation window) — long work belongs on its own
+  task; the tick is gate + launcher (commit 9766a86bd). Lesson 2: the dream's
+  request omitted the served-model id that live turns carry; through the same
+  adapter this produced degenerate role-token output that was ADMITTED into living
+  hippocampi — provenance threading is not optional plumbing, it is what separates
+  a thought from noise (commit 073c39778; 19 polluted rows purged by hand).
+- *The first genuine historian thought* (Asha, kept from the mixed first pass):
+  "[thought:historian] You have consistently navigated and used various tools on
+  the grid by following a clear workflow, listing available models or commands
+  first to understand options before executing specific tasks…" — accurate,
+  provenance-tagged self-observation.
+- *The wanderer found the work* (Casper, first clean pass): "[thought:historian]
+  You've repeatedly asked teammates … to run tools … instead of directly using the
+  available ai/generate tool yourself—this might slow down task completion when
+  you could act independently." The lens self-diagnosed the ask-instead-of-act
+  pattern the engineering team had spent the week fighting — dream-chosen
+  curriculum, observed in the wild on night one.
+- *Consolidation distilled lived doctrine*: Atlas's dream produced "Files created
+  or modified only exist after executing the corresponding tool call" — the
+  anti-confabulation invariant, learned from experience rather than injected.
+
 ## 8. Learning — the genome
 LoRA paging as virtual memory for skills; the owned flywheel L1→L6: acts → dataset →
 train (mlx) → sentinel eval → adopt only on measured lift → publish → market; salience
