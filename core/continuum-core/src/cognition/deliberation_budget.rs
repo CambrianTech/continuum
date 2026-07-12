@@ -252,6 +252,15 @@ pub(super) fn own_repetition_fact(turns: &[BurstTurn], spoken: &[String]) -> Opt
     })
 }
 
+/// Shared "near-identical AND substantial" predicate for the RAG-side collapse
+/// (Joel 2026-07-12: "repetition almost always bad RAG" — fix what she READS
+/// first). Same geometry as the perception facts — one definition of "nearly
+/// identical" across detection and compression — plus the ≥12-token floor so
+/// short acks never collapse.
+pub(crate) fn near_identical_substantial(a: &str, b: &str) -> bool {
+    token_set(a).len() >= 12 && token_set(b).len() >= 12 && jaccard(a, b) >= NEAR_DUP_JACCARD
+}
+
 /// The persona's PEER-ECHO fact for this tick: her last utterance is nearly
 /// identical to a PEER's visible message. The cross-persona sibling of
 /// [`own_repetition_fact`] — same geometry ([`jaccard`] ≥ [`NEAR_DUP_JACCARD`]),

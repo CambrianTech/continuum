@@ -1203,6 +1203,46 @@ pub(crate) fn project_room_roster(
     }
 }
 
+/// Collapse near-identical substantial turns to their NEWEST copy, annotating
+/// the surviving turn's author with "(×N near-identical)". Same-`is_self` only
+/// (role attribution stays intact), authorless opaque turns pass through
+/// untouched, and the geometry is [`near_identical_substantial`]'s — one
+/// definition of "nearly identical" shared with the perception facts. See the
+/// call site in [`build_workspace_turns`] for the why (repetition ≈ bad RAG).
+pub(crate) fn collapse_near_duplicate_turns(
+    turns: Vec<crate::cognition::workspace::BurstTurn>,
+) -> Vec<crate::cognition::workspace::BurstTurn> {
+    use crate::cognition::deliberation_budget::near_identical_substantial;
+    let mut kept: Vec<crate::cognition::workspace::BurstTurn> = Vec::with_capacity(turns.len());
+    let mut counts: Vec<usize> = Vec::new();
+    // Newest-first so the surviving representative is the freshest copy (the
+    // one the trigger anchor and reply context care about).
+    for t in turns.into_iter().rev() {
+        if t.author.trim().is_empty() {
+            kept.push(t);
+            counts.push(1);
+            continue;
+        }
+        if let Some(i) = kept.iter().position(|k| {
+            !k.author.trim().is_empty()
+                && k.is_self == t.is_self
+                && near_identical_substantial(&k.content, &t.content)
+        }) {
+            counts[i] += 1;
+        } else {
+            kept.push(t);
+            counts.push(1);
+        }
+    }
+    for (k, c) in kept.iter_mut().zip(counts.iter()) {
+        if *c > 1 {
+            k.author = format!("{} (×{c} near-identical)", k.author);
+        }
+    }
+    kept.reverse();
+    kept
+}
+
 pub(crate) fn build_workspace_turns(
     deliveries: &[crate::persona::rag_budget::RagDelivery],
     own_peer: &str,
@@ -1365,6 +1405,17 @@ pub(crate) fn build_workspace_turns(
             }
         }
     }
+
+    // NEAR-DUP COLLAPSE (Joel 2026-07-12: "repetition almost always bad RAG").
+    // The 4-way mirror-halls fed each mind 4-8 copies of one message — her
+    // context WAS the loop, and continuation-completion reproduced it no matter
+    // what perception flagged. Compress at the source: near-identical
+    // substantial turns collapse to their NEWEST copy, author annotated
+    // "(×N near-identical)" so the repetition stays perceptible as a FACT
+    // while the copies stop being reading material. Runs AFTER the [pattern]
+    // detectors (they need the raw evidence) and never touches opaque
+    // (authorless) observation turns.
+    turns = collapse_near_duplicate_turns(turns);
 
     // WAKE BRIEFING (#147): when a wake carries NO conversation at all — fresh
     // spawn, post-restart, a quiet room — her first perception is ORIENTATION
@@ -1729,6 +1780,49 @@ async fn next_event(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches: the RAG-side mirror-hall cure (Joel 2026-07-12,
+    // "repetition almost always bad RAG"). Near-identical substantial turns
+    // collapse to their NEWEST copy with an "(×N near-identical)" author
+    // annotation; distinct turns, short acks (token floor), and opaque
+    // observation turns pass through untouched. Specimens are the live
+    // grep/file_tree loop that fed each mind 4-8 copies of one message.
+    #[test]
+    fn near_dup_turns_collapse_to_annotated_newest_copy() {
+        use crate::cognition::workspace::BurstTurn;
+        let loop_msg = "I see that we're all trying to find Rust files in the workspace. \
+                        Let me use file_tree with a deeper recursion limit to explore the \
+                        layout before drilling deeper: file_tree(max_depth=5)";
+        let turns = vec![
+            BurstTurn::attributed(false, "Anwen", loop_msg, Some(1)),
+            BurstTurn::attributed(false, "Asha", loop_msg, Some(2)),
+            BurstTurn::attributed(false, "Atlas", "thanks!", Some(3)),
+            BurstTurn::attributed(false, "Casper", "thanks!", Some(4)),
+            BurstTurn::opaque("[pattern] the room is cycling"),
+            BurstTurn::attributed(
+                false,
+                "Atlas",
+                &format!("{loop_msg} — and honestly the results aren't being returned"),
+                Some(5),
+            ),
+        ];
+        let out = collapse_near_duplicate_turns(turns);
+        // 3 loop copies → 1 (the NEWEST, Atlas's variant); 2 short acks kept
+        // (token floor); opaque observation kept.
+        assert_eq!(out.len(), 4, "{:?}", out.iter().map(|t| &t.author).collect::<Vec<_>>());
+        let survivor = out
+            .iter()
+            .find(|t| t.content.contains("find Rust files"))
+            .expect("one representative survives");
+        assert!(
+            survivor.author.contains("Atlas") && survivor.author.contains("(×3 near-identical)"),
+            "newest copy, annotated: {}",
+            survivor.author
+        );
+        assert!(survivor.content.contains("aren't being returned"), "newest copy is the representative");
+        assert_eq!(out.iter().filter(|t| t.content == "thanks!").count(), 2);
+        assert!(out.iter().any(|t| t.content.starts_with("[pattern]")));
+    }
 
     // what this catches: #147 — a wake with NO conversation must carry the
     // orientation briefing, not a void (the void gets filled with imagined
