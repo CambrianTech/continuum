@@ -268,6 +268,14 @@ fn paren_call_args(s: &str) -> Option<serde_json::Map<String, serde_json::Value>
     if s.is_empty() {
         return Some(map);
     }
+    // A JSON object passed whole — `name({"cmd": "..."})` (Casper live,
+    // 2026-07-12): the args ARE the object.
+    if s.starts_with('{') {
+        return match serde_json::from_str::<serde_json::Value>(s) {
+            Ok(serde_json::Value::Object(obj)) => Some(obj),
+            _ => None,
+        };
+    }
     for part in s.split(',') {
         let part = part.trim();
         let eq = part.find('=')?;
@@ -1667,6 +1675,18 @@ Please provide the output so I can review it.";
     // [/tool_call] (2026-07-12, probe-confirmed non-lift at the time) now lifts;
     // args parse; malformed bodies and prose mentions stay inert.
     #[test]
+    // what this catches: Casper's live multiline BBCode with a JSON-object
+    // arg — [tool_call]\ncode/shell({"cmd":"..."})\n[/tool_call] — lifts with
+    // the object as the args verbatim (wrong param names fail loud downstream).
+    #[test]
+    fn bbcode_json_object_args_lift() {
+        let live = "I'll run this command now:\n[tool_call]\ncode/shell({\"cmd\":\"printf %s continuum | shasum -a 256\"})\n[/tool_call]";
+        let calls = parse_tool_calls(live);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].name, "code/shell");
+        assert_eq!(calls[0].input["cmd"], "printf %s continuum | shasum -a 256");
+    }
+
     fn bbcode_call_lifts_and_prose_mentions_stay_inert() {
         // Casper's exact live line.
         let live = "Let me check what's accessible here by listing all of them first.\n[tool_call]list_commands()[/tool_call]";
