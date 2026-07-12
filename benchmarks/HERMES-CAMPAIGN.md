@@ -160,3 +160,25 @@ Pilot verdict: four common models beat the Hermes flagship through OURS; the 14B
 definitive full-set runs + raw/aider/opencode arms next per the paper's §3.
 Identity incident + fix during the round: #142 (serving plan swapped persona brains
 to the 36B; pinned back; eligibility flag filed). Paper: docs/papers/LOCAL-AGENTIC-CODING-STUDY.md.
+
+## DEFINITIVE round-1 verdict (full-set n=156, overnight 2026-07-12)
+
+The comparative rows Joel asked for all week now exist, with CIs
+(`benchmarks/coder/MATRIX.md` § definitive board; ledger rows 12–17):
+
+| model | pass rate (n=156) | Wilson 95% CI |
+|---|---|---|
+| Qwen2.5-Coder-32B | **84.0%** | [0.774, 0.889] |
+| Qwen2.5-Coder-14B | **84.0%** | [0.774, 0.889] |
+| Qwen3-Coder-30B-A3B (community champion) | **83.3%** | [0.767, 0.884] |
+| Devstral-24B | 67.9% | [0.603, 0.748] |
+| **Hermes-4.3-36B (their flagship)** | **67.9%** | [0.603, 0.748] |
+| Hermes-3-8B | 24.4% | [0.183, 0.317] |
+
+**Headline, now statistically backed (non-overlapping CIs): the Hermes-4.3-36B flagship
+loses to three common Qwen models on our harness — including the 14B that runs in less
+than half its memory and a quarter of its wall time.** The pilot's 80% for Hermes-4.3 was
+first-20 easy-slice inflation (fell to 67.9% on the full set, exactly like Devstral's
+95%→67.9%) — the methodology's pilot-bias warning proven on the opponent too, fairness
+intact. Next lever: aider-polyglot replication (their published 16.4%/40% Qwen rows),
+raw one-shot arms for the system-lift isolator, and the team/genome arms.

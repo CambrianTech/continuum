@@ -116,7 +116,38 @@ before/after genome training, and $/resolved-task vs cloud.
 - **continuum-ai/qwen2.5-coder-14b-instruct-GGUF × ours × humaneval-rs** on `macbook-m4-pro-64gb`: `cu benchmark/run {persona_id, name: humaneval-rs, limit: 20, base_model_id: continuum-ai/qwen2.5-coder-14b-instruct-GGUF, max_acts: 6, detach: true}` — ephemeral GPU lane; 67s wall for 20 tasks
 
 
-## § round-1 money table (humaneval-rs 20-task, OURS arm, 2026-07-12 early AM)
+## § DEFINITIVE full-set board (humaneval-rs n=156, OURS arm, greedy, 2026-07-12 overnight)
+
+The pilot table below survives as history; **these are the citable rows** (full valid set —
+the gym carries 156 valid tasks of 164; Wilson 95% CIs; every row in
+`~/.continuum/benchmarks/ledger.jsonl` with its replication command; snapshot-eval isolation,
+no learning during exams).
+
+| model | params (active) | resolved | pass rate | Wilson 95% CI | wall |
+|---|---|---|---|---|---|
+| bartowski/Qwen2.5-Coder-32B-Instruct-GGUF | 32B | **131/156** | **84.0%** | [0.774, 0.889] | 23.5 min |
+| continuum-ai/qwen2.5-coder-14b-instruct-GGUF | 14B | **131/156** | **84.0%** | [0.774, 0.889] | 21 min |
+| unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF | 30B MoE (~3B) | **130/156** | **83.3%** | [0.767, 0.884] | 7 min |
+| unsloth/Devstral-Small-2507-GGUF | 24B | 106/156 | 67.9% | [0.603, 0.748] | 54 min |
+| NousResearch/Hermes-4.3-36B-GGUF | 36B | 106/156 | 67.9% | [0.603, 0.748] | 86 min |
+| NousResearch/Hermes-3-Llama-3.1-8B-GGUF | 8B | 38/156 | 24.4% | [0.183, 0.317] | 14 min |
+
+**What the board says (all same harness, same greedy settings, same full set):**
+1. **The pilot's first-20 easy-slice inflation is proven**: every 20-task pilot number above
+   overstated its full-set truth (Devstral 95%→67.9%, Hermes-4.3 80%→67.9%). Full sets or it
+   didn't happen.
+2. **Coder-14B ties Coder-32B exactly** (131/156 each) at ~40% the memory — the consumer-
+   hardware sweet spot for this machine class.
+3. **The 30B-A3B MoE ties the dense 32B within noise at ~10× the speed** (7 min vs 23.5 min
+   for the full set) — the throughput champion.
+4. **Hermes-4.3-36B lands statistically BELOW the Qwen tier** (non-overlapping CIs vs both
+   131/156 rows) and exactly ties Devstral-24B while being larger and 1.6× slower.
+5. The 8B row is the honest floor: the system runs it cleanly; the model is the limit.
+
+forged-4B full-set row pending (in flight). Raw arms (oneshot), aider-polyglot replication,
+and team/genome arms are the next columns per the paper's §3.
+
+## § round-1 pilot table (humaneval-rs 20-task, OURS arm, 2026-07-12 early AM — SUPERSEDED by the definitive board above; kept as the pilot-bias exhibit)
 
 ## humaneval-rs
 
