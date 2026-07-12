@@ -97,9 +97,24 @@ solo, tight; run last).
 
 ## Rules of engagement
 
+- **Structural-first applies to the COMPETITOR's arm too** (Joel 2026-07-11): a 0% in
+  their harness gets the same glass-box treatment as a 0% in ours — check serving
+  config, tool-call format mismatch, degenerate output — short of patching their repo.
+  A win over a competitor's misconfiguration is a fake win that a fan of theirs will
+  demolish in one comment.
+- **Fight their champions, not their strays**: each competitor arm runs the model its
+  OWN community raves about (aider forums/leaderboard: Qwen2.5-Coder-32B is the local
+  darling; check current threads before locking each round's pick). Beating the config
+  users actually love is the only win that converts them.
+- **Replicate their published numbers FIRST**: before any comparison ships, reproduce
+  the competitor's own claimed score for that model+benchmark on our hardware (aider
+  publishes polyglot scores per model). Our replication landing within tolerance of
+  their claim is the proof our setup is faithful — THEN the same instance set runs
+  through ours. Both rows in the ledger, replication commands on each.
 - Fairness: every model gets its best-known serving config; opencode/other harnesses
   get native-tool-call endpoints ([[local-first-tool-call-robustness]] fairness note).
-- Honest zeros stay in the ledger. Cells render "—" until run — never inferred.
+- Honest zeros stay in the ledger. Cells render "—" until run — never inferred. A
+  degenerate-output cell (mean tokens/task under floor) is flagged "serving suspect,"
+  never printed as the opponent's loss.
 - The fight runs with the instrument we HAVE. Instrument gaps found mid-fight get
-  fixed in follow-up rounds, not by pausing the war
-  ([[the-fight-comes-first]]).
+  fixed in follow-up rounds, not by pausing the war ([[the-fight-comes-first]]).
