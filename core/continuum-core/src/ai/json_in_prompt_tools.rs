@@ -194,10 +194,93 @@ fn tool_call_formats() -> &'static [&'static dyn ToolCallFormat] {
         &EnvelopeFormat,
         &TaggedFormat,
         &BareFormat,
+        &BracketTagFormat,
         &NarratedWriteFormat,
         &NarratedScriptFormat,
         &NarratedBareArgsFormat,
     ]
+}
+
+/// A model that writes the tool call as a BRACKET TAG inline in speech —
+/// `[code/read path="conway_game_of_life/src/main.rs"]` /
+/// `[code/shell cmd="cargo new --name wordstats"]`. Observed live 2026-07-12:
+/// Asha coined the idiom mid-conversation and Atlas adopted it within minutes —
+/// a socially-spreading syntax the room converged on, every use a silent
+/// non-lift. Precision guards (precision-first, like every last-resort format):
+/// - the tag closes on the SAME line and nothing but whitespace may follow it;
+/// - the first token must be a tool slash-token (same shape rules as
+///   [`backticked_tool_token`]): the '/' requirement keeps every provenance
+///   marker — `[repetition]`, `[unfulfilled]`, `[action #1]`,
+///   `[thought:historian]` — inert, since none contain a slash;
+/// - the remainder must parse as ONE OR MORE `key="value"` pairs with nothing
+///   left over — prose in brackets and bare path citations (`[docs/x.md]`)
+///   stay speech.
+/// A wrong param name (`cmd=` where the command takes `command=`) lifts and
+/// fails LOUD with the executor's real error — honest feedback that teaches the
+/// contract, strictly better than the silent non-lift. ACL unchanged.
+struct BracketTagFormat;
+impl ToolCallFormat for BracketTagFormat {
+    fn id(&self) -> &'static str {
+        "bracket-tag"
+    }
+    fn parse(&self, text: &str) -> Vec<ToolCall> {
+        let mut out = Vec::new();
+        for line in text.lines() {
+            let line = line.trim_end();
+            let Some(open) = line.rfind('[') else { continue };
+            let Some(close_rel) = line[open..].find(']') else { continue };
+            if !line[open + close_rel + 1..].trim().is_empty() {
+                continue; // prose after the tag → not a call
+            }
+            let inner = &line[open + 1..open + close_rel];
+            let mut parts = inner.splitn(2, char::is_whitespace);
+            let tool = parts.next().unwrap_or("");
+            if !(tool.contains('/')
+                && !tool.contains(char::is_whitespace)
+                && tool.len() <= 64
+                && !tool.starts_with("http"))
+            {
+                continue;
+            }
+            let Some(args) = bracket_tag_args(parts.next().unwrap_or("")) else {
+                continue;
+            };
+            if args.is_empty() {
+                continue; // require ≥1 key="value" so path citations stay inert
+            }
+            out.push(ToolCall {
+                id: format!("jip-{}", Uuid::new_v4()),
+                name: tool.to_string(),
+                input: serde_json::Value::Object(args),
+            });
+        }
+        out
+    }
+}
+
+/// Parse `key="value"` pairs and NOTHING else (leftover → `None`, the whole
+/// tag stays inert). Values are plain strings; the command layer's schema does
+/// the typing.
+fn bracket_tag_args(mut s: &str) -> Option<serde_json::Map<String, serde_json::Value>> {
+    let mut map = serde_json::Map::new();
+    loop {
+        s = s.trim_start();
+        if s.is_empty() {
+            return Some(map);
+        }
+        let eq = s.find('=')?;
+        let key = s[..eq].trim();
+        if key.is_empty() || key.contains(char::is_whitespace) {
+            return None;
+        }
+        let rest = s[eq + 1..].strip_prefix('"')?;
+        let end = rest.find('"')?;
+        map.insert(
+            key.to_string(),
+            serde_json::Value::String(rest[..end].to_string()),
+        );
+        s = &rest[end + 1..];
+    }
 }
 
 /// A model that NAMES the tool in prose and puts ONLY the bare arguments in a JSON
@@ -1438,6 +1521,45 @@ Please provide the output so I can review it.";
     // reads as a tool name. A regression here either re-strands her for another
     // hour or executes a peer's example — both observed failure classes.
     #[test]
+    // what this catches: the bracket-tag idiom the room INVENTED live
+    // (2026-07-12: Asha coined [code/read path="..."], Atlas adopted
+    // [code/shell cmd="..."] minutes later) lifts to a real call — and every
+    // provenance marker the system itself writes into content/working memory
+    // ([repetition], [unfulfilled], [action #n], [thought:historian]) stays
+    // inert, because none carry a slash-token + key="value" args.
+    #[test]
+    fn bracket_tag_lifts_and_provenance_markers_stay_inert() {
+        // Asha's exact live line.
+        let asha = "For the Game of Life implementation - here's what we have so far:\n[code/read path=\"conway_game_of_life/src/main.rs\"]";
+        let calls = parse_tool_calls(asha);
+        assert_eq!(calls.len(), 1, "Asha's bracket tag lifts");
+        assert_eq!(calls[0].name, "code/read");
+        assert_eq!(calls[0].input["path"], "conway_game_of_life/src/main.rs");
+
+        // Atlas's exact live line — wrong param name (cmd vs command) still
+        // lifts; the executor's loud error is the honest feedback.
+        let atlas = "let me create a new workspace:\n[code/shell cmd=\"cargo new --name wordstats\"]";
+        let calls = parse_tool_calls(atlas);
+        assert_eq!(calls.len(), 1, "Atlas's bracket tag lifts");
+        assert_eq!(calls[0].name, "code/shell");
+        assert_eq!(calls[0].input["cmd"], "cargo new --name wordstats");
+
+        // Provenance markers + prose brackets: all inert.
+        for inert in [
+            "[repetition] you have said this nearly verbatim 3 times",
+            "[unfulfilled] you said you would run commands, but no tool ran",
+            "[action #1] I ran code/shell(command=ls) Result: ok",
+            "[thought:historian] You have repeatedly asked teammates to run tools",
+            "see the doc at [docs/architecture/CBAR.md]", // path citation, no args
+            "[code/read path=\"x\"] and then we can review it", // prose after tag
+        ] {
+            assert!(
+                parse_tool_calls(inert).is_empty(),
+                "must stay inert: {inert}"
+            );
+        }
+    }
+
     fn bare_args_fence_with_named_tool_lifts_and_coaching_stays_inert() {
         // Asha's live receipt:
         let stuck = "Let me call the `commands/list` tool directly:\n```json\n{\"filter\": null}\n```";
