@@ -359,7 +359,7 @@ impl FineTuningAdapter for MlxLoraFineTuner {
 /// terminal [`TrainingStatus`] into the watch channel. Canonical
 /// own-task + `watch::Sender` shape (CONCURRENCY-STYLE-GUIDE).
 fn spawn_watcher(
-    child: tokio::process::Child,
+    mut child: tokio::process::Child,
     tx: watch::Sender<TrainingStatus>,
     cancel: Arc<tokio::sync::Notify>,
     adapter_dir: PathBuf,
@@ -373,9 +373,35 @@ fn spawn_watcher(
         });
         let started = Instant::now();
 
+        // Stream the trainer's pipes LIVE instead of buffering to exit
+        // (`wait_with_output`), which made a running job unfalsifiable: no loss
+        // curve existed anywhere until the process died. Every line lands in
+        // `trainer.log`; `Iter N: … loss X` lines additionally parse into
+        // `loss.jsonl` (the live learning proof `genome/job-status` and the
+        // evidence engine can read). The last stderr lines are kept for the
+        // failure message the old path built from the buffered output.
+        let stderr_tail: Arc<std::sync::Mutex<std::collections::VecDeque<String>>> =
+            Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new()));
+        if let Some(stdout) = child.stdout.take() {
+            tokio::spawn(stream_trainer_pipe(
+                stdout,
+                adapter_dir.join("trainer.log"),
+                adapter_dir.join("loss.jsonl"),
+                None,
+            ));
+        }
+        if let Some(stderr) = child.stderr.take() {
+            tokio::spawn(stream_trainer_pipe(
+                stderr,
+                adapter_dir.join("trainer.log"),
+                adapter_dir.join("loss.jsonl"),
+                Some(stderr_tail.clone()),
+            ));
+        }
+
         let outcome = tokio::select! {
             // mlx_lm.lora ran to completion (or failed).
-            res = child.wait_with_output() => res,
+            res = child.wait() => res,
             // Operator cancelled — kill is via kill_on_drop when we
             // drop the child by leaving the select with a Cancelled.
             _ = cancel.notified() => {
@@ -387,7 +413,7 @@ fn spawn_watcher(
 
         let wall_clock_ms = started.elapsed().as_millis() as u64;
         let status = match outcome {
-            Ok(out) if out.status.success() => {
+            Ok(exit) if exit.success() => {
                 let safetensors = adapter_dir.join("adapters.safetensors");
                 if !safetensors.exists() {
                     TrainingStatus::Failed {
@@ -418,11 +444,17 @@ fn spawn_watcher(
                     }
                 }
             }
-            Ok(out) => {
-                let stderr = String::from_utf8_lossy(&out.stderr);
-                let tail: String = stderr.lines().rev().take(8).collect::<Vec<_>>().join("\n");
+            Ok(exit) => {
+                let tail: String = stderr_tail
+                    .lock()
+                    .map(|d| d.iter().rev().take(8).cloned().collect::<Vec<_>>())
+                    .unwrap_or_default()
+                    .into_iter()
+                    .rev()
+                    .collect::<Vec<_>>()
+                    .join("\n");
                 TrainingStatus::Failed {
-                    error: format!("mlx_lm.lora exited {}: {tail}", out.status),
+                    error: format!("mlx_lm.lora exited {exit}: {tail}"),
                 }
             }
             Err(e) => TrainingStatus::Failed {
@@ -431,6 +463,76 @@ fn spawn_watcher(
         };
         let _ = tx.send(status);
     });
+}
+
+/// Stream one trainer pipe: every line appends to `log_path`; `Iter N: … loss X`
+/// lines additionally append a `{"iter","kind","loss","atMs"}` row to `loss_path`;
+/// when `tail` is given (the stderr pipe) the last ~40 lines are retained for the
+/// failure message. Line-buffered writes — the trainer emits a handful of lines
+/// per minute, so this costs nothing.
+async fn stream_trainer_pipe(
+    pipe: impl tokio::io::AsyncRead + Unpin + Send + 'static,
+    log_path: PathBuf,
+    loss_path: PathBuf,
+    tail: Option<Arc<std::sync::Mutex<std::collections::VecDeque<String>>>>,
+) {
+    use tokio::io::AsyncBufReadExt;
+    let mut lines = tokio::io::BufReader::new(pipe).lines();
+    while let Ok(Some(line)) = lines.next_line().await {
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&log_path) {
+            use std::io::Write;
+            let _ = writeln!(f, "{line}");
+        }
+        if let Some((iter, kind, loss)) = parse_loss_line(&line) {
+            if let Ok(mut f) =
+                std::fs::OpenOptions::new().create(true).append(true).open(&loss_path)
+            {
+                use std::io::Write;
+                let _ = writeln!(
+                    f,
+                    "{}",
+                    serde_json::json!({
+                        "iter": iter,
+                        "kind": kind,
+                        "loss": loss,
+                        "atMs": chrono::Utc::now().timestamp_millis(),
+                    })
+                );
+            }
+        }
+        if let Some(t) = &tail {
+            if let Ok(mut d) = t.lock() {
+                d.push_back(line);
+                while d.len() > 40 {
+                    d.pop_front();
+                }
+            }
+        }
+    }
+}
+
+/// Parse an mlx_lm loss line — `Iter 100: Train loss 1.234, …` /
+/// `Iter 200: Val loss 1.5, …` → `(100, "train", 1.234)`. Hand-rolled (no regex
+/// dep): anything that isn't exactly this shape returns `None` and stays a plain
+/// log line.
+fn parse_loss_line(line: &str) -> Option<(u64, &'static str, f64)> {
+    let rest = line.strip_prefix("Iter ")?;
+    let (iter_s, rest) = rest.split_once(':')?;
+    let iter: u64 = iter_s.trim().parse().ok()?;
+    let kind = if rest.contains("Train loss") {
+        "train"
+    } else if rest.contains("Val loss") {
+        "val"
+    } else {
+        return None;
+    };
+    let after = rest.split("loss").nth(1)?.trim_start();
+    let num: String = after
+        .chars()
+        .take_while(|c| c.is_ascii_digit() || *c == '.' || *c == '-')
+        .collect();
+    let loss: f64 = num.parse().ok()?;
+    Some((iter, kind, loss))
 }
 
 /// `~/.continuum/genome/<persona>/<trait_kind>/<job_uuid>/` — honors an
@@ -617,6 +719,30 @@ fn lora_config_yaml(lora: &LoRAHyperparams) -> String {
 mod tests {
     use super::*;
     use crate::genome::fine_tuning::types::{TrainingDataset, TrainingExample, TrainingSource};
+
+    // what this catches: the live-learning-proof parser — mlx_lm's `Iter N: Train/Val
+    // loss X` lines become loss.jsonl rows, and everything else (tqdm bars, checkpoint
+    // saves, blank lines) stays a plain log line. A parser that mis-reads a bar as a
+    // loss point poisons the curve the evidence engine renders.
+    #[test]
+    fn loss_lines_parse_and_noise_does_not() {
+        assert_eq!(
+            parse_loss_line("Iter 100: Train loss 1.234, Learning Rate 1e-05, It/sec 0.12"),
+            Some((100, "train", 1.234))
+        );
+        assert_eq!(
+            parse_loss_line("Iter 200: Val loss 0.987, Val took 30.1s"),
+            Some((200, "val", 0.987))
+        );
+        for noise in [
+            "Calculating loss...:  12%|█▎        | 2/16 [00:50<06:19, 27.11s/it]",
+            "Iter 300: Saved adapter weights to adapters/0000300_adapters.safetensors",
+            "Loading pretrained model",
+            "",
+        ] {
+            assert_eq!(parse_loss_line(noise), None, "noise parsed as loss: {noise:?}");
+        }
+    }
 
     fn req(examples: Vec<(&str, &str)>) -> TrainingJobRequest {
         TrainingJobRequest {
