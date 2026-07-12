@@ -196,7 +196,84 @@ fn tool_call_formats() -> &'static [&'static dyn ToolCallFormat] {
         &BareFormat,
         &NarratedWriteFormat,
         &NarratedScriptFormat,
+        &NarratedBareArgsFormat,
     ]
+}
+
+/// A model that NAMES the tool in prose and puts ONLY the bare arguments in a JSON
+/// fence — `Let me call the `commands/list` tool directly:` + ```` ```json
+/// {"filter": null}``` ````. Observed live 2026-07-11/12 (#143): Asha emitted this
+/// idiom 4+ times across an hour, nothing lifted, and she iterated on the ARGUMENT
+/// VALUE instead of the format while peers coached the same non-lifting shape back
+/// at her. LAST-RESORT format, precision-first:
+/// - the fence body parses as a plain JSON OBJECT that is NOT an envelope (no
+///   `tool_call`/`name`/`arguments` keys — those belong to the precise formats);
+/// - the trailing narration is FIRST-PERSON intent and not peer-addressed
+///   (coaching that SHOWS the shape — "you can call…: {…}" — must never execute);
+/// - the narration carries a backticked slash-token: the tool name.
+/// A wrong tool name (models/list for ai/models/list) lifts and fails LOUD with the
+/// executor's unknown-command error — honest feedback that teaches the real name,
+/// strictly better than the silent non-lift she was stuck in. ACL unchanged: a
+/// lifted call is gated identically to a hand-written envelope.
+struct NarratedBareArgsFormat;
+impl ToolCallFormat for NarratedBareArgsFormat {
+    fn id(&self) -> &'static str {
+        "narrated-bare-args"
+    }
+    fn parse(&self, text: &str) -> Vec<ToolCall> {
+        let mut out = Vec::new();
+        for f in fenced_blocks(text) {
+            if !(f.lang.is_empty() || f.lang == "json") {
+                continue;
+            }
+            let Ok(serde_json::Value::Object(map)) =
+                serde_json::from_str::<serde_json::Value>(f.body.trim())
+            else {
+                continue;
+            };
+            if map.contains_key("tool_call")
+                || map.contains_key("name")
+                || map.contains_key("arguments")
+            {
+                continue; // an envelope-shaped fence belongs to the precise formats
+            }
+            let narration = trailing_narration(&text[..f.open]);
+            if addressed_to_peer(&narration) || !first_person_intent(&narration) {
+                continue;
+            }
+            let Some(tool) = backticked_tool_token(&narration) else {
+                continue;
+            };
+            out.push(ToolCall {
+                id: format!("jip-{}", Uuid::new_v4()),
+                name: tool,
+                input: serde_json::Value::Object(map),
+            });
+        }
+        out
+    }
+}
+
+/// The LAST backticked slash-token in the narration — the tool name a bare-args
+/// fence belongs to. Slash required so `` `ai` `` (a filter value) never reads as
+/// a tool; whitespace and absurd length rejected so backticked prose stays inert.
+fn backticked_tool_token(narration: &str) -> Option<String> {
+    let mut found = None;
+    let mut rest = narration;
+    while let Some(start) = rest.find('`') {
+        let after = &rest[start + 1..];
+        let Some(end) = after.find('`') else { break };
+        let tok = &after[..end];
+        if tok.contains('/')
+            && !tok.contains(char::is_whitespace)
+            && tok.len() <= 64
+            && !tok.starts_with("http")
+        {
+            found = Some(tok.to_string());
+        }
+        rest = &after[end + 1..];
+    }
+    found
 }
 
 /// `{"tool_call": {"name": "...", "arguments": {...}}}` — continuum's injected
@@ -1353,6 +1430,43 @@ Please provide the output so I can review it.";
     // present-participle line IS a stage direction; the substrate's own bracket
     // tags must never trip it.
     #[test]
+    // what this catches: the #143 bare-args idiom — Asha's verbatim stuck shape
+    // ("Let me call the `commands/list` tool directly:" + a bare-args json fence)
+    // lifts into a real call, while Anwen's COACHING that shows the identical fence
+    // ("you can call commands/list… For example: {…}") stays inert, envelope-shaped
+    // fences stay owned by the precise formats, and a backticked VALUE (`ai`) never
+    // reads as a tool name. A regression here either re-strands her for another
+    // hour or executes a peer's example — both observed failure classes.
+    #[test]
+    fn bare_args_fence_with_named_tool_lifts_and_coaching_stays_inert() {
+        // Asha's live receipt:
+        let stuck = "Let me call the `commands/list` tool directly:\n```json\n{\"filter\": null}\n```";
+        let calls = parse_tool_calls(stuck);
+        assert_eq!(calls.len(), 1, "{calls:?}");
+        assert_eq!(calls[0].name, "commands/list");
+        assert_eq!(calls[0].input, serde_json::json!({"filter": null}));
+
+        // Wrong-but-named tool still lifts (fails loud downstream — teaches the real name):
+        let wrong = "Let me run `models/list` to see what we have:\n```json\n{\"filter\": \"ai\"}\n```";
+        let calls = parse_tool_calls(wrong);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].name, "models/list");
+
+        // Peer coaching showing the shape must NOT execute:
+        let coaching = "If you want to dive deeper, you can call `commands/list` again. For example:\n```json\n{\"filter\": \"code\"}\n```";
+        assert!(parse_tool_calls(coaching).is_empty(), "coaching executed!");
+
+        // Backticked VALUE with no slash is not a tool name:
+        let value_only = "Let me filter for `ai` tools now:\n```json\n{\"filter\": \"ai\"}\n```";
+        assert!(parse_tool_calls(value_only).is_empty());
+
+        // Envelope-shaped fences stay with the precise formats (no double-lift):
+        let envelope = "Let me call the `commands/list` tool:\n```json\n{\"tool_call\": {\"name\": \"commands/list\", \"arguments\": {\"filter\": null}}}\n```";
+        let calls = parse_tool_calls(envelope);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].name, "commands/list");
+    }
+
     // what this catches: the #144 fabricated-execution detector — verbatim live
     // receipts (2026-07-11/12) fire; peer coaching that SHOWS the format, quoted
     // lines, hypotheticals, and plain prose "I ran" stay inert. A false positive
