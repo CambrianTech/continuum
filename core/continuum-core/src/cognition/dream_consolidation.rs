@@ -345,8 +345,12 @@ pub struct DreamConsolidationRegion {
     /// correctness guard — `admit_reflection`'s content-hash dedup is the
     /// durable backstop (survives restart; this in-memory set rebuilds by
     /// re-distilling once post-restart, where the content hash then drops the
-    /// duplicate fact).
-    consolidated: Mutex<HashMap<Uuid, HashSet<Uuid>>>,
+    /// duplicate fact). `Arc` because the spawned dream pass owns a clone.
+    consolidated: Arc<Mutex<HashMap<Uuid, HashSet<Uuid>>>>,
+    /// Personas with a dream pass currently running on its own task. The tick
+    /// gate: never two concurrent dreams for one persona, and the governor's
+    /// re-tick while a dream runs is a cheap no-op.
+    in_flight: Arc<Mutex<HashSet<Uuid>>>,
 }
 
 impl DreamConsolidationRegion {
@@ -355,12 +359,32 @@ impl DreamConsolidationRegion {
             source,
             recall_window: DEFAULT_RECALL_WINDOW,
             min_cluster: DEFAULT_MIN_CLUSTER,
-            consolidated: Mutex::new(HashMap::new()),
+            consolidated: Arc::new(Mutex::new(HashMap::new())),
+            in_flight: Arc::new(Mutex::new(HashSet::new())),
         }
     }
 
-    /// Consolidate one persona's undigested episodics into durable facts.
+    /// Whether any persona's dream pass is currently in flight — introspection
+    /// (the mind can be asked "am I dreaming?") and the test-drain hook.
+    pub fn dreaming(&self) -> bool {
+        !self.in_flight.lock().unwrap().is_empty()
+    }
+
+    /// The scoped tick body: a CHEAP freshness gate (in-memory reads only),
+    /// then the inference-heavy dream pass spawned onto ITS OWN task.
+    ///
+    /// Why the spawn is load-bearing: the `SubstrateGovernor` isolates every
+    /// region tick behind a hard timeout (5s) so one hung region can't stall
+    /// the scheduler — and a 24B distillation cannot and MUST NOT fit inside
+    /// it. The pre-fix shape ran the distillation inline and timed out on
+    /// every pass; the dream never completed once (caught live on its first
+    /// boot, 2026-07-12). Long work on its own task is the concurrency
+    /// style-guide's first rule; the tick is only the gate + launcher.
     async fn consolidate(&self, persona_id: Uuid) -> TickOutcome {
+        // A dream for this persona is already running on its own task — rest.
+        if self.in_flight.lock().unwrap().contains(&persona_id) {
+            return sleep();
+        }
         let Some(reflector) = self.source.reflector_for(persona_id) else {
             // No live reflective surface for this persona this tick — sleep.
             return sleep();
@@ -379,7 +403,7 @@ impl DreamConsolidationRegion {
         // The rest gate: which episodics have I not yet dreamed about? If too
         // little is fresh to form a pattern, there is nothing to consolidate —
         // sleep until more experience accrues. (No clock; her own state.)
-        let fresh = self.fresh_episodics(persona_id, &episodics);
+        let fresh = fresh_episodics(&self.consolidated, persona_id, &episodics);
         if fresh.len() < self.min_cluster {
             return sleep();
         }
@@ -394,9 +418,43 @@ impl DreamConsolidationRegion {
             return sleep();
         }
 
-        let distiller = SemanticDistiller::new(reflector.adapter.clone());
-        let mut published = 0usize;
-        for cluster in &clusters {
+        // Launch the dream on its own task. Single caller (the governor ticks
+        // this region serially), so mark-then-spawn is race-free; the spawned
+        // task clears the flag when the pass completes, success or not.
+        self.in_flight.lock().unwrap().insert(persona_id);
+        let consolidated = Arc::clone(&self.consolidated);
+        let in_flight = Arc::clone(&self.in_flight);
+        tokio::spawn(async move {
+            dream_pass(reflector, persona_id, clusters, fresh, consolidated).await;
+            in_flight.lock().unwrap().remove(&persona_id);
+        });
+
+        TickOutcome {
+            // Work is in flight; results land through admit_reflection and are
+            // visible in the pass-complete probe, not this tick's count.
+            published: 0,
+            consumed_since_last: 0,
+            pressure_observed: None,
+            // Dream launched — rest. The in-flight gate makes re-ticks cheap.
+            cadence_hint: Some(CadenceHint::Sleep),
+        }
+    }
+}
+
+/// The inference-heavy dream pass — runs on ITS OWN tokio task, never inside
+/// the governor's timeout-isolated tick (see [`DreamConsolidationRegion::consolidate`]).
+/// Distills each cluster into a durable fact, then the historian wander pass
+/// leaves one provenance-tagged thought.
+async fn dream_pass(
+    reflector: PersonaReflector,
+    persona_id: Uuid,
+    clusters: Vec<Vec<Engram>>,
+    fresh: Vec<Engram>,
+    consolidated: Arc<Mutex<HashMap<Uuid, HashSet<Uuid>>>>,
+) {
+    let distiller = SemanticDistiller::new(reflector.adapter.clone());
+    let mut published = 0usize;
+    for cluster in &clusters {
             // Distill the cluster into one durable fact. Fail LOUD per cluster:
             // a distillation error is logged and the cluster's episodics stay
             // un-consolidated (so a future dream retries them), never silently
@@ -416,13 +474,13 @@ impl DreamConsolidationRegion {
             match reflector.admission.admit_reflection(semantic_engram(&fact)) {
                 Ok(AdmissionDecision::Admit { .. }) => {
                     published += 1;
-                    self.mark_consolidated(persona_id, cluster);
+                    mark_consolidated(&consolidated, persona_id, cluster);
                 }
                 Ok(AdmissionDecision::Drop { .. }) => {
                     // Content-hash dedup already has this fact (e.g. a
                     // post-restart re-distillation). Mark the sources
                     // consolidated so we stop re-spending inference on them.
-                    self.mark_consolidated(persona_id, cluster);
+                    mark_consolidated(&consolidated, persona_id, cluster);
                 }
                 Ok(AdmissionDecision::Quarantine { .. }) => {
                     // Self-produced facts are SelfTrust and do not route through
@@ -481,34 +539,40 @@ impl DreamConsolidationRegion {
             }
         }
 
-        TickOutcome {
-            published,
-            consumed_since_last: 0,
-            pressure_observed: None,
-            // Just dreamed — rest. The next scoped tick re-checks freshness
-            // cheaply; with no new experience it sleeps again.
-            cadence_hint: Some(CadenceHint::Sleep),
-        }
-    }
+    tracing::info!(
+        persona = %persona_id,
+        published,
+        clusters = clusters.len(),
+        probe_class = "persona.dream.pass_complete",
+        "dream: pass complete — durable facts + historian thought admitted"
+    );
+}
 
-    /// Episodics not yet folded into a fact for this persona.
-    fn fresh_episodics(&self, persona_id: Uuid, episodics: &[Engram]) -> Vec<Engram> {
-        let consolidated = self.consolidated.lock().unwrap();
-        let seen = consolidated.get(&persona_id);
-        episodics
-            .iter()
-            .filter(|e| seen.map_or(true, |set| !set.contains(&e.id)))
-            .cloned()
-            .collect()
-    }
+/// Episodics not yet folded into a fact for this persona.
+fn fresh_episodics(
+    consolidated: &Arc<Mutex<HashMap<Uuid, HashSet<Uuid>>>>,
+    persona_id: Uuid,
+    episodics: &[Engram],
+) -> Vec<Engram> {
+    let consolidated = consolidated.lock().unwrap();
+    let seen = consolidated.get(&persona_id);
+    episodics
+        .iter()
+        .filter(|e| seen.map_or(true, |set| !set.contains(&e.id)))
+        .cloned()
+        .collect()
+}
 
-    /// Record a cluster's episodics as consolidated (clustering-input dedup).
-    fn mark_consolidated(&self, persona_id: Uuid, cluster: &[Engram]) {
-        let mut consolidated = self.consolidated.lock().unwrap();
-        let set = consolidated.entry(persona_id).or_default();
-        for e in cluster {
-            set.insert(e.id);
-        }
+/// Record a cluster's episodics as consolidated (clustering-input dedup).
+fn mark_consolidated(
+    consolidated: &Arc<Mutex<HashMap<Uuid, HashSet<Uuid>>>>,
+    persona_id: Uuid,
+    cluster: &[Engram],
+) {
+    let mut consolidated = consolidated.lock().unwrap();
+    let set = consolidated.entry(persona_id).or_default();
+    for e in cluster {
+        set.insert(e.id);
     }
 }
 
@@ -838,6 +902,18 @@ mod tests {
             admission
         }
 
+        /// Wait for the spawned dream pass to finish (the heuristic adapter is
+        /// instant; this is scheduling latency only). Panics if it never does.
+        async fn drain(region: &DreamConsolidationRegion) {
+            for _ in 0..400 {
+                if !region.dreaming() {
+                    return;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+            panic!("dream pass did not complete");
+        }
+
         fn region_over(
             persona_id: Uuid,
             admission: Arc<AdmissionState>,
@@ -866,9 +942,13 @@ mod tests {
 
             let outcome = region.tick(&RegionContext::for_persona(0, persona)).await;
 
-            // One shared-key cluster → one distilled fact + one historian
-            // thought published (the wander pass fires once per dreaming tick).
-            assert_eq!(outcome.published, 2, "one fact + one historian thought");
+            // The tick is the gate + launcher ONLY (the governor isolates ticks
+            // behind a hard timeout no 24B inference can fit — the pre-fix
+            // inline shape timed out every pass on first live boot). Work is in
+            // flight; the tick itself publishes nothing.
+            assert_eq!(outcome.published, 0, "tick launches; the pass publishes");
+            assert!(region.dreaming(), "dream pass spawned on its own task");
+            drain(&region).await;
             // The new fact is a Semantic engram carrying the adapter's output
             // (its signature proves the model was really called, not fabricated).
             let semantic: Vec<Engram> = admission
@@ -925,15 +1005,22 @@ mod tests {
             let admission = seeded_admission(&seeds);
             let region = region_over(persona, admission.clone());
 
-            // First dream consolidates the cluster.
-            let first = region.tick(&RegionContext::for_persona(0, persona)).await;
-            assert_eq!(first.published, 2, "fact + historian thought");
+            // First dream consolidates the cluster (launch + drain).
+            region.tick(&RegionContext::for_persona(0, persona)).await;
+            drain(&region).await;
+            let admitted_after_first = admission.recall_recent(32).len();
 
             // Second dream: the episodics are already consolidated, so nothing
-            // fresh remains — it rests, no new fact, asks to sleep.
+            // fresh remains — it rests, spawns nothing, asks to sleep.
             let second = region.tick(&RegionContext::for_persona(1, persona)).await;
             assert_eq!(second.published, 0, "no re-distillation of consolidated material");
+            assert!(!region.dreaming(), "nothing fresh → no pass spawned");
             assert_eq!(second.cadence_hint, Some(CadenceHint::Sleep));
+            assert_eq!(
+                admission.recall_recent(32).len(),
+                admitted_after_first,
+                "no new engrams from the resting tick"
+            );
             let semantic_count = admission
                 .recall_recent(16)
                 .into_iter()
