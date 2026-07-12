@@ -1133,6 +1133,17 @@ impl WorkspaceCycle {
         }
     }
 
+    /// The inference adapter this mind CURRENTLY deliberates through — read from
+    /// the same shared binding [`rebind_model`](Self::rebind_model) writes, so it
+    /// tracks re-homes. `None` for a cycle with no deliberation faculty. The seam
+    /// background regions (dream consolidation, wanderers) resolve their adapter
+    /// from, instead of a spawn-time snapshot that would go stale on failover.
+    pub fn current_adapter(&self) -> Option<Arc<dyn crate::ai::adapter::AIProviderAdapter>> {
+        self.model_binding
+            .as_ref()
+            .map(|handle| handle.load().adapter.clone())
+    }
+
     /// Page a gene (set of LoRA layers) into the persona's genome — the next
     /// generation runs the base model adapted by these layers. Wait-free swap.
     /// This is the measured page-in: the genome loop pages in a freshly forged

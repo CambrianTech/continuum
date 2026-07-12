@@ -1551,16 +1551,32 @@ pub fn start_server(
                 crate::cognition::channel_substrate::global_channel_digest_buffer(),
             ),
         );
+        // The dream/consolidation region goes LIVE (#145 slice B): per live persona,
+        // on a material-driven cadence (dreams only when undigested episodic
+        // experience accrues, `CadenceHint::Sleep` otherwise), it distills episodic
+        // clusters into durable Semantic facts and leaves ONE `[thought:historian]`
+        // SelfReflection per dreaming tick — the first mind-wanderer. Hippocampus +
+        // adapter resolve per tick from the live workspace registry (re-home-safe),
+        // never a parallel persona→adapter map.
+        let dream_region: Arc<dyn crate::runtime::BrainRegion> = Arc::new(
+            crate::cognition::dream_consolidation::DreamConsolidationRegion::new(
+                crate::cognition::persona_workspace::global()
+                    as Arc<dyn crate::cognition::dream_consolidation::PersonaReflectionSource>,
+            ),
+        );
         // Wire the live memory-pressure feed (R4 slice 3): each pass sizes its slice
         // budget to the host's current memory band so a society of inference-bearing
         // background regions can't stampede the model backend under load. A homeostatic
         // protection, not cognition steering — and on a healthy host the band is Normal
         // → budget None → behavior is identical to the uncapped default the digest
-        // region runs under today (the digest runs no inference, so this is the safe
-        // floor that lets the dark consolidation region go LIVE next).
+        // region runs under today (the digest runs no inference; the consolidation
+        // region is the first InferenceHeavy tenant under this floor).
         runtime.register(Arc::new(
-            crate::runtime::SubstrateGovernor::new(vec![digest_region], registry.clone())
-                .with_pressure_gate(pressure_monitor.subscribe()),
+            crate::runtime::SubstrateGovernor::new(
+                vec![digest_region, dream_region],
+                registry.clone(),
+            )
+            .with_pressure_gate(pressure_monitor.subscribe()),
         ));
         let instance_manager = Arc::new(
             crate::modules::persona_instance_manager::PersonaInstanceManagerModule::new(

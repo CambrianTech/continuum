@@ -261,11 +261,9 @@ impl SemanticDistiller {
 ///
 /// Mirrors `PersonaChannelReader` (channel_digest_region.rs): the region depends
 /// on a TRAIT, not a concrete registry, so it is unit-testable against a stub.
-/// The production impl (slice 4 — gated on the governor honoring `CadenceHint` +
-/// lease-aware inference placement, see the wiring note on
-/// [`DreamConsolidationRegion`]) resolves `Arc<AdmissionState>` from the live
-/// `PersonaWorkspaceRegistry` and the adapter from the existing `ai_provider`
-/// registry. It MUST resolve the adapter, never store a parallel
+/// The production impl is `PersonaWorkspaceRegistry` itself (below): admission
+/// from the retained fork-template, adapter from the live cycle's model binding
+/// (re-home-safe). It resolves the adapter per tick, never stores a parallel
 /// persona→adapter map (compression — `[[rag-as-persistent-cache]]`).
 pub trait PersonaReflectionSource: Send + Sync {
     /// Personas with a live reflective surface this pass.
@@ -324,20 +322,16 @@ const DEFAULT_MIN_CLUSTER: usize = 2;
 /// All three are distinct SelfDirected/Speciation processes; this one is the
 /// memory-consolidation distiller.
 ///
-/// ## Live wiring is still deferred, and that is deliberate
+/// ## Live wiring (#145 slice B)
 ///
-/// This region is [`ComputeClass::InferenceHeavy`]. The `SubstrateGovernor` now
-/// honors `CadenceHint` (R1 — a `Sleep` hint rests a pair on a low re-check
-/// floor) and budgets the orientation classes (R2–R4), so the *within-budget*
-/// safety is in place. What it does NOT yet do is drive its scarcity knob
-/// (`slices_per_pass`) from live inference/VRAM pressure (R4 slice 3): at boot
-/// the budget is uncapped, so it admits *every* due pair. Add this
-/// `InferenceHeavy` region to the boot list under that uncapped default and a
-/// society of N personas with fresh material would fire N distillations a pass —
-/// a backend stampede. So the region still ships DARK — built and unit-tested
-/// against a stub adapter — until the governor pressure-gates inference
-/// placement (and `RegionContext` carries a rest signal so "dream during rest"
-/// is honored, not just "dream when there's material").
+/// This region is [`ComputeClass::InferenceHeavy`]. The gates that kept it dark
+/// have landed: the `SubstrateGovernor` honors `CadenceHint` (R1 — a `Sleep`
+/// hint rests a pair on a low re-check floor), budgets the orientation classes
+/// (R2–R4), and sizes its slice budget from the live memory-pressure band (R4
+/// slice 3, `with_pressure_gate` at the ipc wiring site). It is registered
+/// beside the `ChannelDigestRegion`, with `PersonaWorkspaceRegistry` as the
+/// production reflection source. Under pressure the interiority budget shrinks
+/// first, so dreams yield to reactive responding before anything else does.
 pub struct DreamConsolidationRegion {
     source: Arc<dyn PersonaReflectionSource>,
     /// How many recent engrams to scan per tick for undigested experience.
@@ -444,6 +438,44 @@ impl DreamConsolidationRegion {
                         persona = %persona_id,
                         error = %err,
                         "dream: admit_reflection failed"
+                    );
+                }
+            }
+        }
+
+        // The wander pass (#145 outlier A): when the dream actually digested
+        // something, the historian takes ONE look across the same fresh window
+        // and leaves ONE provenance-tagged thought about the pattern in her own
+        // recent history. Gated on `published > 0` so it fires at most once per
+        // dreaming tick and never on already-consolidated material (the next
+        // tick finds nothing fresh and sleeps) — bounded interiority, not a
+        // second automaton.
+        if published > 0 {
+            match distiller
+                .distill_with(LENS_HISTORIAN, Some(persona_id), &fresh)
+                .await
+            {
+                Ok(thought) => {
+                    match reflector
+                        .admission
+                        .admit_reflection(thought_engram(&thought, LENS_HISTORIAN))
+                    {
+                        Ok(AdmissionDecision::Admit { .. }) => published += 1,
+                        Ok(_) => {}
+                        Err(err) => {
+                            tracing::warn!(
+                                persona = %persona_id,
+                                error = %err,
+                                "wander: admit_reflection failed for historian thought"
+                            );
+                        }
+                    }
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        persona = %persona_id,
+                        error = %err,
+                        "wander: historian distillation failed; no thought this dream"
                     );
                 }
             }
@@ -575,6 +607,37 @@ fn semantic_engram(fact: &DistilledFact) -> Engram {
         admitted_at_ms: now_ms(),
         trust_state_at_admission: TrustState::SelfTrust,
         admission_trace_id: None,
+    }
+}
+
+/// A wanderer thought as an engram: `SelfReflection` KIND (inner speech about
+/// her own history, not distilled world-knowledge — the kind axis separates it
+/// from the consolidator's `Semantic` facts), same `SelfReflection` origin +
+/// `SelfTrust` as any self-produced cognition. The content already carries its
+/// `[thought:<lens>]` provenance tag (prefixed at synthesis in `distill_with`);
+/// `thought:<lens>` is also added as a recall key so introspection can query
+/// one lens's stream directly.
+fn thought_engram(fact: &DistilledFact, lens: Lens) -> Engram {
+    let mut engram = semantic_engram(fact);
+    engram.kind = EngramKind::SelfReflection;
+    engram.recall_keys.push(format!("thought:{}", lens.name));
+    engram
+}
+
+/// Production reflection source: the process-global persona-workspace registry.
+/// Every live mind's hippocampus + adapter are already retained there as the
+/// fork-template handles — the dream resolves them per tick, never stores a
+/// parallel persona→adapter map (the wiring contract documented on
+/// [`PersonaReflectionSource`]). Mirrors `impl PersonaChannelReader for
+/// PersonaAircRuntimeRegistry` in channel_digest_region.rs.
+impl PersonaReflectionSource for crate::cognition::persona_workspace::PersonaWorkspaceRegistry {
+    fn live_personas(&self) -> Vec<Uuid> {
+        self.roster().into_iter().map(|(id, _)| id).collect()
+    }
+
+    fn reflector_for(&self, persona_id: Uuid) -> Option<PersonaReflector> {
+        self.reflector_handles(&persona_id)
+            .map(|(admission, adapter)| PersonaReflector { admission, adapter })
     }
 }
 
@@ -803,8 +866,9 @@ mod tests {
 
             let outcome = region.tick(&RegionContext::for_persona(0, persona)).await;
 
-            // One shared-key cluster → one distilled fact published.
-            assert_eq!(outcome.published, 1, "one cluster should distill one fact");
+            // One shared-key cluster → one distilled fact + one historian
+            // thought published (the wander pass fires once per dreaming tick).
+            assert_eq!(outcome.published, 2, "one fact + one historian thought");
             // The new fact is a Semantic engram carrying the adapter's output
             // (its signature proves the model was really called, not fabricated).
             let semantic: Vec<Engram> = admission
@@ -823,6 +887,28 @@ mod tests {
                 semantic[0].origin,
                 EngramOrigin::SelfReflection { .. }
             ));
+            // The wander pass (#145): ONE historian thought admitted alongside
+            // the fact — SelfReflection KIND, provenance tag in-content, lens
+            // queryable by recall key. what this catches: the dream going live
+            // without its wanderer, or the thought losing its typed provenance.
+            let thoughts: Vec<Engram> = admission
+                .recall_recent(16)
+                .into_iter()
+                .filter(|e| e.kind == EngramKind::SelfReflection)
+                .collect();
+            assert_eq!(thoughts.len(), 1, "exactly one historian thought admitted");
+            assert!(
+                thoughts[0].content.starts_with("[thought:historian] "),
+                "inner speech must carry its provenance tag, got: {}",
+                thoughts[0].content
+            );
+            assert!(
+                thoughts[0]
+                    .recall_keys
+                    .iter()
+                    .any(|k| k == "thought:historian"),
+                "the lens stream must be queryable by recall key"
+            );
         }
 
         // what this catches: the organism rests instead of running on a clock —
@@ -841,7 +927,7 @@ mod tests {
 
             // First dream consolidates the cluster.
             let first = region.tick(&RegionContext::for_persona(0, persona)).await;
-            assert_eq!(first.published, 1);
+            assert_eq!(first.published, 2, "fact + historian thought");
 
             // Second dream: the episodics are already consolidated, so nothing
             // fresh remains — it rests, no new fact, asks to sleep.

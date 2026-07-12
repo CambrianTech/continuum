@@ -611,6 +611,29 @@ impl PersonaWorkspaceRegistry {
             .collect()
     }
 
+    /// The reflective handles for one persona's mind: its hippocampus + the
+    /// inference adapter it currently deliberates through. The seam the
+    /// `DreamConsolidationRegion`'s production `PersonaReflectionSource` reads —
+    /// admission from the retained fork-template (the SAME `Arc` the live
+    /// cycle's recall shares), adapter from the live cycle's model binding so a
+    /// re-home is tracked (falling back to the template's spawn adapter for a
+    /// pure-cognition cycle with no binding). Resolved per call, never cached —
+    /// no parallel persona→adapter map ([[rag-as-persistent-cache]]).
+    pub fn reflector_handles(
+        &self,
+        persona_id: &Uuid,
+    ) -> Option<(Arc<AdmissionState>, Arc<dyn AIProviderAdapter>)> {
+        // Lock order contract: `cycles` THEN `templates` (see struct docs).
+        // `get` takes + releases the cycles lock before we touch templates.
+        let cycle = self.get(persona_id)?;
+        let templates = self.templates.lock().unwrap();
+        let cfg = templates.get(persona_id)?;
+        let adapter = cycle
+            .current_adapter()
+            .unwrap_or_else(|| cfg.adapter.clone());
+        Some((Arc::clone(&cfg.admission), adapter))
+    }
+
     /// Re-home EVERY resident persona onto a newly served model — atomically swap
     /// the shared {adapter, model, context_window} binding on each cycle (see
     /// [`WorkspaceCycle::rebind_model`]). On a single-serve host ALL personas share
