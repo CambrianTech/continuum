@@ -853,11 +853,19 @@ impl LlmDeliberationFaculty {
         // DO exist they speak for themselves; this is only the zero-case made
         // visible. A fact, never an instruction ([[no-hardcoded-heuristics-
         // to-steer-cognition]]).
+        // Digit-aware: the proprioception teaching texts mention the literal
+        // placeholder "[action #n]", and a bare substring match read the
+        // MENTION as a receipt — the [actions] zero-fact vanished from every
+        // prompt the moment any backstop fact rendered (glass-boxed
+        // 2026-07-12: the medicine suppressed the diagnosis).
         let has_action_receipts = ws
             .broadcast
             .iter()
-            .any(|c| c.content.contains("[action #"))
-            || ws.turns.iter().any(|t| t.content.contains("[action #"));
+            .any(|c| super::act_observe::has_real_action_receipt(&c.content))
+            || ws
+                .turns
+                .iter()
+                .any(|t| super::act_observe::has_real_action_receipt(&t.content));
         if !has_action_receipts {
             messages.push(ChatMessage::text(
                 "user",

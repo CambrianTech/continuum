@@ -630,6 +630,22 @@ impl SettleStep {
     }
 }
 
+/// True only for a REAL receipt line — `[action #<digit>`. The proprioception
+/// TEACHING texts mention the literal placeholder `[action #n]` ("real
+/// executions leave [action #n] receipts"), and a bare `contains("[action #")`
+/// matches the mention: the medicine suppressed the diagnosis (glass-boxed
+/// 2026-07-12 — the [actions] zero-fact vanished from every prompt the moment
+/// any backstop fact rendered, and the confab backstop went blind after its
+/// own first firing). Receipts are numbered; placeholders are not.
+pub(crate) fn has_real_action_receipt(text: &str) -> bool {
+    text.match_indices("[action #").any(|(i, _)| {
+        text[i + "[action #".len()..]
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_digit())
+    })
+}
+
 /// ONE step of settlement — the single place a `Decision` becomes speech-or-action,
 /// shared by the live heartbeat (`persona::service_loop`, called ONCE per metronome
 /// tick) and the eval driver ([`drive_to_settle`], which loops steps because the
@@ -782,7 +798,7 @@ pub async fn settle_step(
                 // ([[no-hardcoded-heuristics-to-steer-cognition]]).
                 let claimed_past =
                     crate::ai::json_in_prompt_tools::claims_past_tool_run(&text);
-                if claimed_past && !pre_settle.iter().any(|l| l.contains("[action")) {
+                if claimed_past && !pre_settle.iter().any(|l| has_real_action_receipt(l)) {
                     body.working_memory.record_action(
                         "[confabulation] I described having run a tool, but no \
                          action actually executed this concern — the claimed \
