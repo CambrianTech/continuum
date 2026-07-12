@@ -56,6 +56,45 @@ claim is proven on hostile ground.
 **Round 3 — scale:** full slices, more common models (llama, gemma, mistral tiers),
 publish the matrix + replication doc. Cloud rows later per Joel.
 
+## The roster — reasonable weights for a 64GB M-series Mac
+
+Eval serves ONE model at a time in an ephemeral lane (snapshot-eval #59), so 64GB
+unified memory caps single-model size, not roster size. Q4_K_M throughout.
+
+**Core six (phase 1 — every cell, both arms):**
+| model | size | why | on disk |
+|---|---|---|---|
+| Hermes-3-Llama-3.1-8B | 8B | the named opponent, small tier | ✅ |
+| Hermes-4.3-36B | 36B | their CURRENT flagship-mid | ✅ 20GB |
+| Devstral-Small-2507 | 24B | our resident persona base + tonight's gene | ✅ |
+| Qwen2.5-Coder-14B | 14B | the most-downloaded local coder mid | ✅ |
+| Qwen2.5-Coder-32B | 32B | the local-coder ceiling most 64GB users run | ⬇ pulling |
+| qwen3.5-4B-code-forged | 4B | OURS — the tiny-forged-beats-big thesis | ✅ |
+
+**Wave 2 (after core six have cells):** Qwen2.5-Coder-7B, Phi-4-14B, Gemma-3-27B,
+Hermes-4-14B, Llama-3.1-8B. **Ceiling row (optional):** Llama-3.3-70B Q4 (~40GB — fits
+solo, tight; run last).
+
+## Schedule
+
+- **Tonight:** trainer completes → sentinel eval (gene lift) → release reboot (5 queued
+  commits incl. evidence engine) → smoke matrix DETACHED overnight: core six × {raw,
+  ours} on humaneval-rs 20-task (~12 cells). Every cell → `benchmark/record`.
+- **Morning:** `cu benchmark/matrix` prints the first comparison table. Triage: any
+  degenerate-output cells (mean tokens/task floor) re-run before conclusions.
+- **Day 2:** polyglot-rust importer (30 Exercism exercises → EvalTask JSONL, existing
+  rustc grader) → HEADLINE run across core six; SWE-lite 10-instance slice on the top
+  3 models; before/after-genome chart for Devstral. First README table + replication doc.
+- **Day 3+:** wave-2 models; Terminal-Bench harness (needs task-container runner —
+  real work, not a dataset pull); polyglot full-language graders; publish.
+
+## Machine constraints (this Mac, 64GB)
+
+- One eval lane at a time; living personas' llama-server pauses/tiers during big evals
+  (tonight's 500-compute-error lesson — #56 governor is the eventual fix).
+- 36B Q4 ≈ 21GB weights + KV: fits with room. 70B Q4 ≈ 40GB: solo only, short contexts.
+- Disk after all pulls: ~80GB models on 164GB free — fine.
+
 ## Rules of engagement
 
 - Fairness: every model gets its best-known serving config; opencode/other harnesses
