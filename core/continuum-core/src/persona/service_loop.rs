@@ -1018,6 +1018,16 @@ async fn serve_persona_loop_inner(
         let turn_duration_ms = turn_started.elapsed().as_millis() as u64;
         outcome.turn_latency.record(turn_duration_ms);
 
+        // #148: record the utterance into her own-speech ring AFTER the publish
+        // succeeded (only REAL utterances are self-history). This is what keeps
+        // the repetition detector sighted when the burst window is too small to
+        // carry her own turns — her knowledge of what she said must never
+        // depend on the room's context budget.
+        crate::cognition::deliberation_budget::record_own_speech(
+            ctx.identity.peer_id,
+            &response_text,
+        );
+
         // RTOS-debugger breakpoint: turn completed successfully.
         // The phase fields below are the per-phase decomposition
         // from #195 slice 1 — together they let an operator find

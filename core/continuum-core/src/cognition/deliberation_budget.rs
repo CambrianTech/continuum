@@ -127,6 +127,52 @@ pub(super) const NEAR_DUP_JACCARD: f64 = 0.6;
 /// nothing.
 const NEAR_DUP_MIN_RUN: usize = 3;
 
+/// How many of her own recent utterances the spoken ring retains — the
+/// repetition detector's self-history window. Sized past NEAR_DUP_MIN_RUN
+/// with slack for interleaved non-loop turns; utterances are short-lived
+/// evidence, not memory (the hippocampus owns memory).
+const OWN_SPEECH_RING: usize = 8;
+
+/// Process-global per-persona ring of recent OWN utterances, keyed by the
+/// canonical PeerId (persona_id == peer_id post-collapse). Written at the say
+/// seam (service_loop, after a successful publish — only REAL utterances),
+/// read by the deliberation faculty when rendering the repetition fact. Same
+/// process-global registry pattern as `channel_substrate` — the seam between
+/// the speaking path and the perceiving path.
+fn own_speech_rings(
+) -> &'static std::sync::Mutex<std::collections::HashMap<crate::identity::PeerId, std::collections::VecDeque<String>>> {
+    static RINGS: std::sync::OnceLock<
+        std::sync::Mutex<
+            std::collections::HashMap<crate::identity::PeerId, std::collections::VecDeque<String>>,
+        >,
+    > = std::sync::OnceLock::new();
+    RINGS.get_or_init(Default::default)
+}
+
+/// Record one real spoken utterance (call ONLY after the publish succeeded —
+/// an utterance that never reached the room is not self-history).
+pub fn record_own_speech(peer: crate::identity::PeerId, text: &str) {
+    if text.trim().is_empty() {
+        return;
+    }
+    let mut rings = own_speech_rings().lock().unwrap();
+    let ring = rings.entry(peer).or_default();
+    ring.push_back(text.to_string());
+    while ring.len() > OWN_SPEECH_RING {
+        ring.pop_front();
+    }
+}
+
+/// Her recent own utterances, oldest-first (empty if she has not spoken).
+pub fn recent_own_speech(peer: crate::identity::PeerId) -> Vec<String> {
+    own_speech_rings()
+        .lock()
+        .unwrap()
+        .get(&peer)
+        .map(|r| r.iter().cloned().collect())
+        .unwrap_or_default()
+}
+
 /// Lowercased word-token set for Jaccard similarity.
 fn token_set(s: &str) -> std::collections::HashSet<String> {
     s.to_lowercase()
@@ -161,12 +207,30 @@ pub(super) fn jaccard(a: &str, b: &str) -> f64 {
 /// as a structural fact — his prompts carried zero repetition awareness while
 /// he repeated. Detection runs on the RAW turns (before the dup-drop filters
 /// the render), so byte-identical repeats count as evidence too.
-pub(super) fn own_repetition_fact(turns: &[BurstTurn]) -> Option<String> {
-    let own: Vec<&str> = turns
+pub(super) fn own_repetition_fact(turns: &[BurstTurn], spoken: &[String]) -> Option<String> {
+    // Self-history source (#148): her knowledge of what SHE said must never
+    // depend on the room's context budget. Under small serving slots the live
+    // burst carries ~2 turns TOTAL (verified 2026-07-12: a persona 4× into a
+    // verbatim loop had ZERO of her own turns visible, so this detector was
+    // structurally blind while the loop ran all morning). The spoken ring —
+    // recorded at the say seam, one entry per real utterance — is the primary
+    // source; burst is_self turns are the fallback for paths that never record
+    // (eval forks, replay). Not both: one utterance may appear in both, and
+    // double-counting an event would fabricate repetition evidence.
+    let from_ring: Vec<&str> = spoken
         .iter()
-        .filter(|t| t.is_self && !t.content.trim().is_empty())
-        .map(|t| t.content.as_str())
+        .map(String::as_str)
+        .filter(|s| !s.trim().is_empty())
         .collect();
+    let own: Vec<&str> = if from_ring.is_empty() {
+        turns
+            .iter()
+            .filter(|t| t.is_self && !t.content.trim().is_empty())
+            .map(|t| t.content.as_str())
+            .collect()
+    } else {
+        from_ring
+    };
     // CLUSTER detection, not consecutive-run: live loops cycle through 2–3
     // templates ("Thank you both…" → "Got it…" → "Thank you both…"), so
     // consecutive pairs break every other turn while lag-k repetition is
@@ -347,6 +411,28 @@ mod tests {
     // Thresholds are corpus-calibrated (see NEAR_DUP_JACCARD) — this pins the
     // behavior at those constants with his verbatim live messages.
     #[test]
+    // what this catches: the #148 starvation regression — under small serving
+    // slots the live burst carries ~2 turns and ZERO of her own repeats (a
+    // persona 4x into a verbatim loop had no is_self turns visible, so the
+    // detector was structurally blind all morning, 2026-07-12). The spoken
+    // ring is the PRIMARY self-history source: repetition must fire from the
+    // ring alone with an EMPTY burst, and a healthy ring stays silent.
+    #[test]
+    fn ring_alone_fires_with_empty_burst_and_healthy_ring_stays_silent() {
+        let msg = "I'm ready to get started on the wordstats task! I'll create a new project structure right now.".to_string();
+        let ring = vec![msg.clone(), msg.clone(), msg.clone()];
+        let fact = own_repetition_fact(&[], &ring)
+            .expect("3 verbatim ring entries are a loop even with no burst turns");
+        assert!(fact.starts_with("[repetition]"), "got: {fact}");
+
+        let healthy = vec![
+            "Morning! What are we building today?".to_string(),
+            "The definitive board landed overnight.".to_string(),
+            "Let me review the error handling changes.".to_string(),
+        ];
+        assert_eq!(own_repetition_fact(&[], &healthy), None);
+    }
+
     fn own_speech_loop_renders_a_repetition_fact() {
         let own = |c: &str| BurstTurn::attributed(true, SPEAKER_TESTER, c, None);
         let peer = |c: &str| BurstTurn::attributed(false, SPEAKER_LEAD, c, None);
@@ -361,7 +447,7 @@ mod tests {
             peer("How is it going?"),
             own("I'll create a simple text file first.\n[writing test files]"),
         ];
-        let fact = own_repetition_fact(&looping).expect("a 4-message loop is a fact");
+        let fact = own_repetition_fact(&looping, &[]).expect("a 4-message loop is a fact");
         assert_eq!(fact, "[repetition] 4 of your recent messages were nearly identical");
 
         // PERIOD-2 CYCLE (the live blind spot that forced cluster detection):
@@ -374,7 +460,7 @@ mod tests {
             own("Got it! Let's proceed with our tasks and keep each other updated on progress."),
             own("Thank you both for your commitment and enthusiasm! Let's keep each other updated."),
         ];
-        let fact = own_repetition_fact(&cycling).expect("a period-2 cycle is a loop");
+        let fact = own_repetition_fact(&cycling, &[]).expect("a period-2 cycle is a loop");
         assert_eq!(fact, "[repetition] 3 of your recent messages were nearly identical");
 
         // Healthy varied conversation → nothing.
@@ -385,7 +471,7 @@ mod tests {
             own("Running the suite now; two failures in the punctuation group."),
             own("Fixed: the tokenizer dropped apostrophes. All green."),
         ];
-        assert_eq!(own_repetition_fact(&healthy), None);
+        assert_eq!(own_repetition_fact(&healthy, &[]), None);
 
         // Three identical messages that are her ENTIRE visible self-history →
         // fires (window-honest arm: the live burst carries ~3 own turns, so
@@ -396,7 +482,7 @@ mod tests {
             own("I'll create a simple text file.\n[writing test files]"),
         ];
         assert_eq!(
-            own_repetition_fact(&whole_window).as_deref(),
+            own_repetition_fact(&whole_window, &[]).as_deref(),
             Some("[repetition] 3 of your recent messages were nearly identical")
         );
 
@@ -408,7 +494,7 @@ mod tests {
             own("I'll create a simple text file.\n[writing test files]"),
         ];
         assert!(
-            own_repetition_fact(&partial).is_none(),
+            own_repetition_fact(&partial, &[]).is_none(),
             "a single repeated pair is not yet a loop"
         );
 
@@ -422,7 +508,7 @@ mod tests {
             own("Files created — here are the wordstats results for all three."),
         ];
         assert_eq!(
-            own_repetition_fact(&recovered).as_deref(),
+            own_repetition_fact(&recovered, &[]).as_deref(),
             Some("[repetition] 4 of your recent messages were nearly identical")
         );
     }

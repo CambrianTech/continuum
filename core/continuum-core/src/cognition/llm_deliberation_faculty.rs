@@ -806,7 +806,10 @@ impl LlmDeliberationFaculty {
         // render still count as evidence). Appended as the NEWEST user content so
         // it always survives the newest-first budget fit and sits adjacent to the
         // moment of reply. A fact, never an instruction.
-        if let Some(fact) = super::deliberation_budget::own_repetition_fact(&ws.turns) {
+        let spoken = super::deliberation_budget::recent_own_speech(
+            crate::identity::PeerId::from_uuid(self.persona_id),
+        );
+        if let Some(fact) = super::deliberation_budget::own_repetition_fact(&ws.turns, &spoken) {
             messages.push(ChatMessage::text("user", fact));
         }
 
