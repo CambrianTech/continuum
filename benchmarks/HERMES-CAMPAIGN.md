@@ -75,6 +75,30 @@ unified memory caps single-model size, not roster size. Q4_K_M throughout.
 Hermes-4-14B, Llama-3.1-8B. **Ceiling row (optional):** Llama-3.3-70B Q4 (~40GB — fits
 solo, tight; run last).
 
+## Published numbers to replicate (researched 2026-07-11)
+
+Aider polyglot (their board, 225 Exercism exercises, % correct) — the 64GB-class rows:
+
+| model | aider's published score | our target |
+|---|---|---|
+| Qwen3-32B | **40.0%** (diff format) | replicate, then beat with same weights |
+| Qwen2.5-Coder-32B | **16.4%** (whole format) | replicate, then beat |
+| Codestral 25.01 | 11.1% | reference |
+| Gemma-3-27B | 4.9% | reference |
+| (context: cloud top = gpt-5 88%; DeepSeek-V3.2 74.2% but 600B-class) | | |
+
+Source: https://aider.chat/docs/leaderboards/ . The strategic read: **local models get
+crushed on polyglot under aider** — the 64GB ceiling on their board is 40%. Any run
+where OUR system pushes the same weights meaningfully above their published number is
+the headline; the gap between 16.4% (Qwen2.5-Coder-32B) and what an agentic loop with
+recovery can do is our opportunity.
+
+**Community champions to add (LocalLLaMA raves, 2026):** Qwen3-Coder-30B-A3B (MoE, 3B
+active — THE local agentic coder for RAM-rich machines; we already forged
+qwen3-coder-30b-a3b-compacted-19b from it, so the forged-vs-base story attaches
+directly) and Qwen3.6-27B-MTP (current darling for local agentic coding). Both join
+the roster.
+
 ## Schedule
 
 - **Tonight:** trainer completes → sentinel eval (gene lift) → release reboot (5 queued
