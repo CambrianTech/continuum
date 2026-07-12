@@ -861,7 +861,13 @@ impl LlmDeliberationFaculty {
         if !has_action_receipts {
             messages.push(ChatMessage::text(
                 "user",
-                "[actions] no tool has executed in this conversation — anything described as already run, created, tested, committed, or merged does not exist yet; running a tool is what makes it real",
+                // "including the part you cannot see": within minutes of the
+                // [context] bounds fact going live (2026-07-12), Anwen parked
+                // fabricated receipts exactly in the disclosed blind spot
+                // ("file_tree and code/list ran while I was reasoning") — an
+                // honest void becomes a confabulation SHELTER unless the
+                // zero-receipts fact explicitly covers the invisible region.
+                "[actions] no tool has executed in this conversation — not in the messages you can see and not before them; anything described as already run, created, tested, committed, or merged does not exist yet; running a tool is what makes it real",
             ));
         }
 
