@@ -1,4 +1,21 @@
-# The Hermes Campaign — order of battle
+# The Open-Source Coding-Agent Campaign — order of battle
+
+**The reader we must convince** (Joel 2026-07-11): a skeptical dev with an M-series Mac
+and a local GGUF, currently on aider / opencode / ollama+X. What converts them, in order:
+1. **Beat their current tool on its own turf with their model** — Aider polyglot (the
+   aider community's home metric) and Terminal-Bench are the HEADLINE benchmarks; a win
+   there is legible to the exact audience we want without explanation. Humaneval is
+   smoke-test only — saturated, gamed, convinces nobody.
+2. **The claim nobody else can make:** your local agent got BETTER overnight. One chart,
+   same weights before/after genome, the LoRA published on HF, reproducible by a
+   stranger in 30 minutes. The viral unit.
+3. **A ledger, not a landing page:** honest zeros stay published; every row carries its
+   replication command. Falsifiability converts skeptics, and skeptics repost.
+4. **Thirty minutes to first proof:** install → point at their existing GGUF → reproduce
+   one claimed number, or the rest is fiction to them.
+
+Hermes below is ONE opponent among several (aider, opencode, ollama-based stacks); the
+axes apply to all of them.
 
 Standing goal (Joel, all week): **beat Hermes with a variety of common models — clear,
 undeniable, reproducible wins.** This file is the strategy; the evidence ledger
