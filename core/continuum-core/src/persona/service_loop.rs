@@ -1615,6 +1615,15 @@ async fn run_self_cycle(
                 tracing::warn!(persona = %ctx.identity.agent_name, error = %e, "self-cycle say failed");
                 return;
             }
+            // #148: self-tick utterances are self-history too — the live
+            // repeat loops are mostly idle-tick re-announcements, and the
+            // first ring deploy missed THIS say path entirely (4 verbatim
+            // repeats, no [repetition], caught live 2026-07-12 10:20).
+            // Every successful say records, whichever path spoke.
+            crate::cognition::deliberation_budget::record_own_speech(
+                ctx.identity.peer_id,
+                &text,
+            );
             crate::probe!(
                 class = "persona.selftick.spoke",
                 persona = %ctx.identity.agent_name,
