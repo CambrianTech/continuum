@@ -115,3 +115,16 @@ ground truth, structurally — no prose fact to suppress, no marker to
 misparse. Same idea as the operator's transcript, more elegant because
 memory-backed: the ledger survives context rotation while a transcript
 scrolls away.
+
+## Unification: perception sections ARE positron components (Joel 2026-07-12)
+
+"It's like technical writing but with adapters, positron and other well
+structured code to form it. Good pluggable architectures — if leaning on
+positron, should be more unified." The render layer is not bespoke prompt
+carpentry: each perception section (steps-ledger, notices, tool menu, roster,
+kanban) is a DEFINE-ONCE component with per-consumer renderers — TEXT for the
+LLM prompt (PX), widget for the human desktop (UX, #141 telemetry panels),
+per [[handles-events-expansion-one-universal-primitive]] (positron UX =
+continuum PX = same component, different projection). The steps-ledger a
+persona reads and the jobs-panel a human watches are ONE definition. When the
+tablet work (#141) lands, it consumes these components — not re-derives them.
