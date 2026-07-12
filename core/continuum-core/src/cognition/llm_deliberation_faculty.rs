@@ -1117,7 +1117,7 @@ impl Faculty for LlmDeliberationFaculty {
         // ([[no-hardcoded-heuristics-to-steer-cognition]])
         if let Some(wm) = &self.working_memory {
             if crate::persona::prompt_assembly::looks_like_silence_token(&resp.text) {
-                wm.record_action("chose silence — said nothing to the room");
+                wm.record_fact("chose silence — said nothing to the room");
             } else if let Some(reasoning) = &resp.reasoning {
                 wm.record(reasoning);
             }

@@ -236,7 +236,7 @@ pub async fn apply_act(
              must be something DIFFERENT: a different action, or an answer built from \
              what I already have."
         );
-        body.working_memory.record_action(&nudge);
+        body.working_memory.record_fact(&nudge);
         crate::probe!(
             class = "persona.act.repeat_short_circuited",
             persona = %body.persona_name,
@@ -450,7 +450,7 @@ pub async fn apply_act(
     // Pass the FULL observation — WorkingMemory keeps the latest whole (so the mind can
     // work with what it just fetched) and derives the trail head itself. This is the fix
     // for live agents being starved to the head of their own tool results.
-    body.working_memory.record_action(&observation);
+    body.working_memory.record_receipt(&observation);
 
     crate::probe!(
         class = "persona.act.observed",
@@ -762,7 +762,7 @@ pub async fn settle_step(
                         .iter()
                         .any(|l| l.contains("[unfulfilled]"));
                 if unverified {
-                    body.working_memory.record_action(
+                    body.working_memory.record_fact(
                         "[unverified] I presented fenced content while my earlier \
                          promised actions still never ran — that text is composed, \
                          not read from the workspace. Only a tool result can show \
@@ -776,7 +776,7 @@ pub async fn settle_step(
                     );
                 }
                 if fenced || staged {
-                    body.working_memory.record_action(if fenced {
+                    body.working_memory.record_fact(if fenced {
                         // The name-diagnosis tail (2026-07-12): the room looped an
                         // INVENTED tool name (`file_tree`) for an hour while this
                         // fact told them only THAT nothing ran, never WHY — 56
@@ -815,7 +815,7 @@ pub async fn settle_step(
                 let claimed_past =
                     crate::ai::json_in_prompt_tools::claims_past_tool_run(&text);
                 if claimed_past && !pre_settle.iter().any(|l| has_real_action_receipt(l)) {
-                    body.working_memory.record_action(
+                    body.working_memory.record_fact(
                         "[confabulation] I described having run a tool, but no \
                          action actually executed this concern — the claimed \
                          result was composed by me, not returned by anything. \
@@ -839,7 +839,7 @@ pub async fn settle_step(
                 // whether a given artifact needs observing (a .md may not);
                 // perception-side only ([[no-hardcoded-heuristics-to-steer-cognition]]).
                 if wrote_without_observation(&pre_settle) {
-                    body.working_memory.record_action(
+                    body.working_memory.record_fact(
                         "[unobserved] I changed files this concern and nothing has \
                          run or read them since — the change's real effect is \
                          unobserved. Only a tool result (run, test, read, screenshot) \
@@ -861,7 +861,7 @@ pub async fn settle_step(
                 // finite, so it asserts "my memory shows no act", never "you lied" —
                 // work from a prior session may be real but is unverified NOW.
                 if let Some(file) = claimed_file_without_act(&text, &pre_settle) {
-                    body.working_memory.record_action(&format!(
+                    body.working_memory.record_fact(&format!(
                         "[unacted] I spoke of having created or implemented `{file}`, \
                          but my working memory holds no tool act of mine touching it. \
                          If that work happened in a past session it is unverified now \
@@ -1850,7 +1850,7 @@ mod tests {
             result_content: "ok".into(),
         });
         let wm = Arc::new(WorkingMemory::new(4));
-        wm.record_action(
+        wm.record_receipt(
             "[unfulfilled] I wrote a stage direction like [doing the task], \
              but a stage direction is words only — no tool ran, no file exists.",
         );

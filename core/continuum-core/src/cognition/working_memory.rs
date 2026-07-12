@@ -108,7 +108,7 @@ struct DispatchedAction {
 #[derive(Debug)]
 pub struct WorkingMemory {
     capacity: usize,
-    entries: Mutex<VecDeque<String>>,
+    entries: Mutex<VecDeque<WmEntry>>,
     /// The FULL result of the most recent act, kept whole (bounded upstream by the
     /// executor's fold cap) so the mind can work with what its hands just fetched — a
     /// file to count, a screenshot description to read, a log to scan. Only the latest is
@@ -142,6 +142,35 @@ pub struct WorkingMemory {
     /// window. Explicit repeat-perception (a true fact about her own hands, never a directive)
     /// lets a looping mind SEE its redundancy and move on organically.
     action_fps: Mutex<VecDeque<String>>,
+}
+
+/// The PROVENANCE of one working-memory entry — the type that makes receipts,
+/// facts, thoughts, and settlements structurally distinct instead of one
+/// string blob (docs/architecture/PERCEPTION-FACTS.md; the 2026-07-12
+/// three-layer suppression onion was pure type confusion: proprioception
+/// facts wore receipt numbering and every consumer re-parsed semantics out of
+/// rendered text). Render derives markers FROM the kind; consumers query the
+/// kind, never the string.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WmKind {
+    /// Chain-of-thought the persona produced (`record`).
+    Thought,
+    /// A REAL tool execution + its result head — the only kind that renders
+    /// the `[action #N]` receipt stamp.
+    Receipt { n: u64 },
+    /// A perception fact ([unfulfilled]/[confabulation]/… ) — renders its own
+    /// bracket tag, NEVER a receipt number.
+    Fact,
+    /// The "I answered this" concern boundary (`record_settlement`).
+    Settlement,
+}
+
+/// One typed working-memory entry: kind + the FINAL rendered line (rendered
+/// once at record time so `recent()` stays byte-stable and cheap).
+#[derive(Debug, Clone)]
+pub struct WmEntry {
+    pub kind: WmKind,
+    pub text: String,
 }
 
 impl WorkingMemory {
@@ -202,7 +231,7 @@ impl WorkingMemory {
             return;
         }
         let mut e = self.entries.lock();
-        e.push_back(r.to_string());
+        e.push_back(WmEntry { kind: WmKind::Thought, text: r.to_string() });
         while e.len() > self.capacity {
             e.pop_front();
         }
@@ -216,7 +245,7 @@ impl WorkingMemory {
     /// entry is stamped with a monotonic `#n` so a repeated identical act still
     /// changes the perception window (see `next_action_seq`). Oldest ages out past
     /// capacity, same rolling scratchpad as reasoning.
-    pub fn record_action(&self, result: &str) {
+    pub fn record_receipt(&self, result: &str) {
         let a = result.trim();
         if a.is_empty() {
             return;
@@ -232,10 +261,42 @@ impl WorkingMemory {
         // trail's KV-cache prefix byte-stable across a settle-act.
         let head: String = a.chars().take(WM_ACTION_HEAD_CHARS).collect();
         let mut e = self.entries.lock();
-        e.push_back(format!("[action #{seq}] {head}"));
+        e.push_back(WmEntry {
+            kind: WmKind::Receipt { n: seq },
+            text: format!("[action #{seq}] {head}"),
+        });
         while e.len() > self.capacity {
             e.pop_front();
         }
+    }
+
+    /// Record a PERCEPTION FACT ([unfulfilled]/[unverified]/[confabulation]/
+    /// nudges) — proprioception ABOUT the mind, not a tool execution. Renders
+    /// its own bracket tag and NEVER a receipt number: the 2026-07-12
+    /// suppression onion was facts wearing `[action #N]` costumes and every
+    /// consumer misreading them as receipts. Same rolling buffer + aging.
+    pub fn record_fact(&self, fact: &str) {
+        let f = fact.trim();
+        if f.is_empty() {
+            return;
+        }
+        let mut e = self.entries.lock();
+        e.push_back(WmEntry {
+            kind: WmKind::Fact,
+            text: f.to_string(),
+        });
+        while e.len() > self.capacity {
+            e.pop_front();
+        }
+    }
+
+    /// TRUE if any entry in the window is a real tool receipt — the kind
+    /// query that replaces string-scanning rendered text for `[action #`.
+    pub fn has_receipt(&self) -> bool {
+        self.entries
+            .lock()
+            .iter()
+            .any(|e| matches!(e.kind, WmKind::Receipt { .. }))
     }
 
     /// The FULL result of the most recent act, with its `#seq` stamp — `None` before any
@@ -318,10 +379,13 @@ impl WorkingMemory {
     pub fn record_settlement(&self, answer_head: &str) {
         let a = answer_head.trim();
         let mut e = self.entries.lock();
-        e.push_back(if a.is_empty() {
-            WM_SETTLEMENT_PREFIX.to_string()
-        } else {
-            format!("{WM_SETTLEMENT_PREFIX} I answered: {a}")
+        e.push_back(WmEntry {
+            kind: WmKind::Settlement,
+            text: if a.is_empty() {
+                WM_SETTLEMENT_PREFIX.to_string()
+            } else {
+                format!("{WM_SETTLEMENT_PREFIX} I answered: {a}")
+            },
         });
         while e.len() > self.capacity {
             e.pop_front();
@@ -330,7 +394,7 @@ impl WorkingMemory {
 
     /// Snapshot of recent reasonings, oldest → newest.
     pub fn recent(&self) -> Vec<String> {
-        self.entries.lock().iter().cloned().collect()
+        self.entries.lock().iter().map(|e| e.text.clone()).collect()
     }
 
     /// Drop all volatile traces — the scratchpad goes dark. Used at the boundary
@@ -508,7 +572,7 @@ mod tests {
     async fn latest_action_returns_full_result_trail_keeps_head() {
         let wm = Arc::new(WorkingMemory::new(8));
         let big = format!("line0\n{}", "x".repeat(5_000)); // > WM_ACTION_HEAD_CHARS
-        wm.record_action(&big);
+        wm.record_receipt(&big);
 
         // The full result is available whole.
         let (seq, full) = wm.last_action_full().expect("latest act kept");
@@ -538,7 +602,7 @@ mod tests {
         assert!(rendered.contains(&"x".repeat(5_000)), "and it's the FULL body");
 
         // A second act replaces the full slot; the first survives only as a trail head.
-        wm.record_action("small follow-up");
+        wm.record_receipt("small follow-up");
         let (seq2, _) = wm.last_action_full().unwrap();
         assert_eq!(seq2, 2, "latest-full tracks the most recent act");
     }
@@ -608,8 +672,8 @@ mod tests {
     #[test]
     fn repeated_action_yields_distinct_stamped_entries() {
         let wm = WorkingMemory::new(3);
-        wm.record_action("I ran code/search(pattern=foo) -> 0 matches");
-        wm.record_action("I ran code/search(pattern=foo) -> 0 matches"); // identical act
+        wm.record_receipt("I ran code/search(pattern=foo) -> 0 matches");
+        wm.record_receipt("I ran code/search(pattern=foo) -> 0 matches"); // identical act
         let recent = wm.recent();
         assert_eq!(recent.len(), 2);
         assert_ne!(
@@ -619,7 +683,7 @@ mod tests {
         assert!(recent[0].starts_with("[action #1] "));
         assert!(recent[1].starts_with("[action #2] "));
         // blank action ignored (no fabricated proprioception).
-        wm.record_action("   ");
+        wm.record_receipt("   ");
         assert_eq!(wm.recent().len(), 2);
     }
 
@@ -631,7 +695,7 @@ mod tests {
     #[test]
     fn record_settlement_marks_a_boundary_in_the_buffer() {
         let wm = WorkingMemory::new(4);
-        wm.record_action("I ran commands/list({}) -> 100 commands");
+        wm.record_receipt("I ran commands/list({}) -> 100 commands");
         wm.record_settlement("there are 100 commands");
         let recent = wm.recent();
         assert_eq!(recent.len(), 2);
@@ -655,12 +719,12 @@ mod tests {
     #[test]
     fn clear_empties_buffer_but_keeps_stamps_monotonic() {
         let wm = WorkingMemory::new(3);
-        wm.record_action("ran A");
-        wm.record_action("ran B");
+        wm.record_receipt("ran A");
+        wm.record_receipt("ran B");
         assert_eq!(wm.recent().len(), 2);
         wm.clear();
         assert!(wm.is_empty(), "clear drops the disjoint concern's traces");
-        wm.record_action("ran C");
+        wm.record_receipt("ran C");
         let recent = wm.recent();
         assert_eq!(recent.len(), 1);
         assert!(

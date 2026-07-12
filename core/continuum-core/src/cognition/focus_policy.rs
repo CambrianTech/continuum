@@ -9,38 +9,20 @@
 //! complex algorithms or ML. Pick what's feasible first, or even the constants
 //! if lazy as your first adapter." The seam signature never changes across the
 //! three maturity stages: constants → formula → learned policy; the persona's
-//! own `focus/hold` verb and per-recipe mode defaults (exam=1.0, dream→0) feed
-//! the SAME inputs.
+//! own `focus/nudge` verb (the kernel's existing agency seam) and per-recipe
+//! mode defaults (exam=1.0, dream→0) feed the SAME inputs.
 //!
-//! Every method's return at [`FocusState::NEUTRAL`] must equal the calibrated
+//! Every method's return at [`crate::persona::focus::RESTING_FOCUS`] must equal the calibrated
 //! constant the seam replaced — installing this junction changes NOTHING until
 //! something moves the dial. That identity is pinned by test.
 
-/// The persona's current focus. v1 carries intensity only; the focus TARGET (a
-/// handle — file, card, thread) arrives with the `focus/hold` verb and narrows
-/// recall queries to the target's embedding neighborhood. Intensity without a
-/// target still meaningfully shapes ADMISSION (how high the bars sit); the
-/// target shapes DIRECTION (what the queries are about).
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct FocusState {
-    /// 0..1 attention intensity — inverse temperature on the attention economy.
-    /// ~0.5 is the organic default (every calibrated constant anchors here);
-    /// →1 is tunnel clarity (exam mode); →0 is diffuse association (idle /
-    /// incubation; dreaming is the limit).
-    pub intensity: f32,
-}
-
-impl FocusState {
-    /// The organic default — the point where every policy function returns the
-    /// calibrated constant it replaced.
-    pub const NEUTRAL: FocusState = FocusState { intensity: 0.5 };
-}
-
-impl Default for FocusState {
-    fn default() -> Self {
-        Self::NEUTRAL
-    }
-}
+/// The focus SCALAR this junction consumes is the persona focus kernel's —
+/// [`crate::persona::focus::FocusState::focus`] (0..1, resting setpoint
+/// [`crate::persona::focus::RESTING_FOCUS`]). One dial, one home
+/// ([[compression|one logical decision, one place]]): the kernel owns the
+/// state (scalar + sticky cursor + mutes, set via `focus/nudge` etc.); this
+/// module owns only the PROJECTION of that scalar into cognition thresholds —
+/// the "perceptual consumer" the kernel's docs anticipated.
 
 /// The policy junction: focus in, thresholds out. One method per seam the
 /// design doc names; each grows here as its seam is wired (recall first —
@@ -54,7 +36,7 @@ pub trait FocusPolicy: Send + Sync {
     /// exceptional memories intrude — the smoke-alarm property is inherent:
     /// truly exceptional salience clears any finite bar. At low focus weak
     /// associations surface (incubation).
-    fn recall_sigma(&self, focus: FocusState) -> f32;
+    fn recall_sigma(&self, focus: f32) -> f32;
 }
 
 /// The conventional recall significance bar — 3σ vs the measured null, the
@@ -74,7 +56,7 @@ impl FocusPolicy for CalibratedConstants {
         "constants"
     }
 
-    fn recall_sigma(&self, _focus: FocusState) -> f32 {
+    fn recall_sigma(&self, _focus: f32) -> f32 {
         NEUTRAL_RECALL_SIGMA
     }
 }
@@ -88,7 +70,7 @@ impl FocusPolicy for CalibratedConstants {
 /// behind the same signature.
 #[derive(Debug)]
 pub struct LinearBeta {
-    /// σ at [`FocusState::NEUTRAL`] — the calibrated anchor.
+    /// σ at [`crate::persona::focus::RESTING_FOCUS`] — the calibrated anchor.
     pub neutral_sigma: f32,
     /// How far the bar travels from neutral to either extreme, in σ.
     pub span: f32,
@@ -112,8 +94,8 @@ impl FocusPolicy for LinearBeta {
         "linear-beta"
     }
 
-    fn recall_sigma(&self, focus: FocusState) -> f32 {
-        let f = focus.intensity.clamp(0.0, 1.0);
+    fn recall_sigma(&self, focus: f32) -> f32 {
+        let f = focus.clamp(0.0, 1.0);
         (self.neutral_sigma + self.span * (2.0 * f - 1.0)).max(self.floor)
     }
 }
@@ -121,6 +103,8 @@ impl FocusPolicy for LinearBeta {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use crate::persona::focus::RESTING_FOCUS;
 
     // what this catches: the junction's install contract — at NEUTRAL focus
     // every adapter must return the calibrated constant the seam replaced, so
@@ -133,35 +117,33 @@ mod tests {
         let b = LinearBeta::default();
 
         // Install contract: neutral == the pre-junction constant, both adapters.
-        assert_eq!(a.recall_sigma(FocusState::NEUTRAL), NEUTRAL_RECALL_SIGMA);
-        assert_eq!(b.recall_sigma(FocusState::NEUTRAL), NEUTRAL_RECALL_SIGMA);
+        assert_eq!(a.recall_sigma(RESTING_FOCUS), NEUTRAL_RECALL_SIGMA);
+        assert_eq!(b.recall_sigma(RESTING_FOCUS), NEUTRAL_RECALL_SIGMA);
 
         // Adapter A is focus-blind by design (the lazy-first adapter).
         assert_eq!(
-            a.recall_sigma(FocusState { intensity: 1.0 }),
+            a.recall_sigma(1.0),
             NEUTRAL_RECALL_SIGMA
         );
 
         // Adapter B: tunnel focus raises the bar; diffuse focus lowers it to
         // the floor, never below (a dreaming mind still gates pure noise).
-        assert!(b.recall_sigma(FocusState { intensity: 1.0 }) > NEUTRAL_RECALL_SIGMA);
-        let dreaming = b.recall_sigma(FocusState { intensity: 0.0 });
+        assert!(b.recall_sigma(1.0) > NEUTRAL_RECALL_SIGMA);
+        let dreaming = b.recall_sigma(0.0);
         assert!(dreaming < NEUTRAL_RECALL_SIGMA && dreaming >= b.floor);
 
         // Monotone: more focus never lowers the bar.
         let mut last = f32::MIN;
         for i in 0..=10 {
-            let s = b.recall_sigma(FocusState {
-                intensity: i as f32 / 10.0,
-            });
+            let s = b.recall_sigma(i as f32 / 10.0);
             assert!(s >= last, "monotone in intensity");
             last = s;
         }
 
         // Out-of-range intensity clamps rather than extrapolating.
         assert_eq!(
-            b.recall_sigma(FocusState { intensity: 7.0 }),
-            b.recall_sigma(FocusState { intensity: 1.0 })
+            b.recall_sigma(7.0),
+            b.recall_sigma(1.0)
         );
     }
 }

@@ -225,11 +225,11 @@ pub struct RecallFaculty {
     working_memory: Option<Arc<WorkingMemory>>,
     /// The focus→thresholds junction (docs/cognition/FOCUS-AS-ATTENTION-
     /// TEMPERATURE.md). Default = [`CalibratedConstants`] — a behavioral no-op
-    /// until something moves the dial (recipe defaults, the `focus/hold` verb,
-    /// or a learned policy — same seam for all three).
+    /// until something moves the dial (recipe defaults, `focus/nudge`, or a
+    /// learned policy — same seam for all three). The SCALAR it consumes is
+    /// read per tick from the persona focus kernel
+    /// ([`crate::persona::focus::registry`]) — one home for focus state.
     focus_policy: Arc<dyn crate::cognition::focus_policy::FocusPolicy>,
-    /// This tick's focus state. NEUTRAL until the concern/verb plumbing lands.
-    focus: crate::cognition::focus_policy::FocusState,
 }
 
 impl RecallFaculty {
@@ -246,20 +246,17 @@ impl RecallFaculty {
             ranker: None,
             working_memory: None,
             focus_policy: Arc::new(crate::cognition::focus_policy::CalibratedConstants),
-            focus: crate::cognition::focus_policy::FocusState::NEUTRAL,
         }
     }
 
-    /// Inject a focus policy (formula or learned) and/or a focus state. The
-    /// junction where "focus cleans up the RAG": at high intensity the recall
-    /// significance bar rises so only exceptional memories intrude.
-    pub fn with_focus(
+    /// Inject a focus policy (formula or learned). The junction where "focus
+    /// cleans up the RAG": at a high kernel scalar the recall significance bar
+    /// rises so only exceptional memories intrude.
+    pub fn with_focus_policy(
         mut self,
         policy: Arc<dyn crate::cognition::focus_policy::FocusPolicy>,
-        focus: crate::cognition::focus_policy::FocusState,
     ) -> Self {
         self.focus_policy = policy;
-        self.focus = focus;
         self
     }
 
@@ -441,7 +438,18 @@ impl Faculty for RecallFaculty {
                             self.relevance_weight,
                             RECALL_RELEVANCE_FLOOR,
                         );
-                        r.sigma = self.focus_policy.recall_sigma(self.focus);
+                        // The scalar comes from HER focus kernel, per tick —
+                        // peek only (a persona who never touched focus reads
+                        // the resting setpoint; no state is created for her).
+                        let scalar = crate::persona::focus::registry()
+                            .get(&self.persona_id)
+                            .map(|h| {
+                                h.lock()
+                                    .expect("focus state mutex poisoned by a prior panic")
+                                    .focus()
+                            })
+                            .unwrap_or(crate::persona::focus::RESTING_FOCUS);
+                        r.sigma = self.focus_policy.recall_sigma(scalar);
                         Arc::new(r)
                     });
                 let verdicts = ranker
@@ -1579,7 +1587,7 @@ mod tests {
         // The recency channel carries the SAME act (its head, stamped), exactly as
         // apply_act records it after executing the Decision::Act.
         let wm = Arc::new(WorkingMemory::new(3));
-        wm.record_action(own_act);
+        wm.record_receipt(own_act);
 
         // No embedder → pure salience×recency, relevance floor disabled → both would
         // surface if not for the working-memory dedup. Large window so count is not the
