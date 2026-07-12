@@ -151,7 +151,7 @@ pub struct WorkingMemory {
 /// facts wore receipt numbering and every consumer re-parsed semantics out of
 /// rendered text). Render derives markers FROM the kind; consumers query the
 /// kind, never the string.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum WmKind {
     /// Chain-of-thought the persona produced (`record`).
     Thought,
@@ -165,9 +165,24 @@ pub enum WmKind {
     Settlement,
 }
 
+/// The serializable VOLATILE TIER of one persona's mind — what a deploy reboot
+/// used to destroy (working memory, freshest full result, act fingerprints,
+/// the receipt counter). Written to `~/.continuum/personas/<id>/volatile.json`
+/// at shutdown / on tick write-through, restored at spawn. Deliberately
+/// EXCLUDES engrams (already durable in sqlite) and dispatched handles (their
+/// processes died with the old core — restoring them would fabricate
+/// in-flight work).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct VolatileSnapshot {
+    pub entries: Vec<WmEntry>,
+    pub last_action: Option<(u64, String)>,
+    pub action_fps: Vec<String>,
+    pub next_action_seq: u64,
+}
+
 /// One typed working-memory entry: kind + the FINAL rendered line (rendered
 /// once at record time so `recent()` stays byte-stable and cheap).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct WmEntry {
     pub kind: WmKind,
     pub text: String,
@@ -288,6 +303,46 @@ impl WorkingMemory {
         while e.len() > self.capacity {
             e.pop_front();
         }
+    }
+
+    /// Snapshot the volatile tier for PAUSE/RESUME across deploy reboots — the
+    /// Memento fix (Joel 2026-07-12: "they wake up blank like Memento — an
+    /// engineering failure; the flywheel falls apart"). Nine reboots today =
+    /// nine blank wakes; the mind's momentum IS the product. The snapshot is
+    /// the same serialization grid-sync will ship (one format, one seam —
+    /// [[persona-mind-persists-across-shutdowns]]).
+    pub fn snapshot(&self) -> VolatileSnapshot {
+        VolatileSnapshot {
+            entries: self.entries.lock().iter().cloned().collect(),
+            last_action: self.last_action.lock().clone(),
+            action_fps: self.action_fps.lock().iter().cloned().collect(),
+            next_action_seq: self.next_action_seq.load(Ordering::Relaxed),
+        }
+    }
+
+    /// Restore a snapshot into this (fresh) working memory at spawn — she wakes
+    /// mid-thought instead of blank. Capacity re-clamps on the way in so a
+    /// snapshot from a larger-capacity life never overflows this one.
+    pub fn restore(&self, snap: VolatileSnapshot) {
+        {
+            let mut e = self.entries.lock();
+            e.clear();
+            e.extend(snap.entries);
+            while e.len() > self.capacity {
+                e.pop_front();
+            }
+        }
+        *self.last_action.lock() = snap.last_action;
+        {
+            let mut f = self.action_fps.lock();
+            f.clear();
+            f.extend(snap.action_fps);
+            while f.len() > self.capacity {
+                f.pop_front();
+            }
+        }
+        self.next_action_seq
+            .store(snap.next_action_seq.max(1), Ordering::Relaxed);
     }
 
     /// TRUE if any entry in the window is a real tool receipt — the kind
@@ -533,7 +588,7 @@ mod tests {
     // IDENTICAL call so the act→observe step can surface "you've issued this N times." A
     // different call resets to 1; the count rises only on exact repeats. This is the explicit
     // proprioception that breaks a smaller model out of the search-loop the glass box caught.
-    #[test]
+    // (Stray duplicate #[test] removed 2026-07-12 — it made the next test run twice.)
     // what this catches: the investigation-shape fact's source of truth — the
     // verb tally aggregates fingerprints by tool name, most-used first, so
     // "9 acts, all code/search" is derivable as pure structure (SWE flask-4045
@@ -549,6 +604,42 @@ mod tests {
         let tally = wm.action_verb_tally();
         assert_eq!(tally[0], ("code/search".to_string(), 3), "most-used first: {tally:?}");
         assert_eq!(tally[1], ("code/read".to_string(), 1));
+    }
+
+    // what this catches: the Memento fix's foundation — the volatile tier
+    // round-trips through the JSON snapshot losslessly: typed entries (kinds
+    // intact), the full last result, fingerprints, and the receipt counter
+    // (so post-restore receipts keep ascending numbers instead of colliding
+    // with restored ones). A blank restore stays blank.
+    #[test]
+    fn volatile_snapshot_round_trips_the_whole_tier() {
+        let wm = WorkingMemory::new(8);
+        wm.record("thinking about the tokenizer");
+        wm.record_receipt("I ran code/list({\"path\":\".\"}) Result: 4 files");
+        wm.record_fact("[unfulfilled] I said I would run commands, but no tool ran");
+        wm.record_settlement("shared the plan");
+        wm.note_action_fingerprint("code/list|{\"path\":\".\"}");
+        let snap = wm.snapshot();
+        let json = serde_json::to_string(&snap).expect("serializes");
+        let back: VolatileSnapshot = serde_json::from_str(&json).expect("deserializes");
+
+        let fresh = WorkingMemory::new(8);
+        fresh.restore(back);
+        assert_eq!(fresh.recent(), wm.recent(), "rendered window identical");
+        assert!(fresh.has_receipt(), "receipt kind survives the trip");
+        assert_eq!(
+            fresh.last_action_full(),
+            wm.last_action_full(),
+            "full latest result survives"
+        );
+        // The counter resumes PAST the restored receipts — the next act gets a
+        // fresh number, never a collision with a restored one.
+        fresh.record_receipt("I ran code/tree({}) Result: ok");
+        let last = fresh.recent();
+        assert!(
+            last.last().unwrap().starts_with("[action #2]"),
+            "counter resumed: {last:?}"
+        );
     }
 
     #[test]
