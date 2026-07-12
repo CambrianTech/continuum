@@ -1144,6 +1144,21 @@ impl WorkspaceCycle {
             .map(|handle| handle.load().adapter.clone())
     }
 
+    /// The adapter AND the served-model id it must be asked for, as one read of
+    /// the shared binding. Background regions must send BOTH: the model id
+    /// selects the route/template on the serving side, and omitting it produced
+    /// degenerate role-token runaway on the dream's first live pass
+    /// (2026-07-12) while normal turns — which send `binding.model` — were
+    /// clean through the same adapter.
+    pub fn current_model_route(
+        &self,
+    ) -> Option<(Arc<dyn crate::ai::adapter::AIProviderAdapter>, Option<String>)> {
+        self.model_binding.as_ref().map(|handle| {
+            let b = handle.load();
+            (b.adapter.clone(), b.model.clone())
+        })
+    }
+
     /// Page a gene (set of LoRA layers) into the persona's genome — the next
     /// generation runs the base model adapted by these layers. Wait-free swap.
     /// This is the measured page-in: the genome loop pages in a freshly forged

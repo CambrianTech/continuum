@@ -622,16 +622,19 @@ impl PersonaWorkspaceRegistry {
     pub fn reflector_handles(
         &self,
         persona_id: &Uuid,
-    ) -> Option<(Arc<AdmissionState>, Arc<dyn AIProviderAdapter>)> {
+    ) -> Option<(Arc<AdmissionState>, Arc<dyn AIProviderAdapter>, Option<String>)> {
         // Lock order contract: `cycles` THEN `templates` (see struct docs).
         // `get` takes + releases the cycles lock before we touch templates.
         let cycle = self.get(persona_id)?;
         let templates = self.templates.lock().unwrap();
         let cfg = templates.get(persona_id)?;
-        let adapter = cycle
-            .current_adapter()
-            .unwrap_or_else(|| cfg.adapter.clone());
-        Some((Arc::clone(&cfg.admission), adapter))
+        // Adapter AND served-model id from the live binding: a request without
+        // the model id degenerated on the dream's first live pass (role-token
+        // runaway) while turns — which send it — were clean.
+        let (adapter, model) = cycle
+            .current_model_route()
+            .unwrap_or_else(|| (cfg.adapter.clone(), None));
+        Some((Arc::clone(&cfg.admission), adapter, model))
     }
 
     /// Re-home EVERY resident persona onto a newly served model — atomically swap

@@ -86,6 +86,11 @@ pub enum DistillError {
 /// and feeds it clusters on its idle-tick cadence.
 pub struct SemanticDistiller {
     adapter: Arc<dyn AIProviderAdapter>,
+    /// The served-model id to ask the adapter for. `None` only for adapters
+    /// with a single implicit model (the test heuristic); production callers
+    /// MUST thread the persona's live binding model — omitting it caused the
+    /// first live dream's degenerate role-token output (2026-07-12).
+    model: Option<String>,
 }
 
 /// A sub-personal LENS — one inner voice of the mind-wanderer arc (#145,
@@ -148,7 +153,16 @@ If there is truly no pattern, name the single most notable thing that happened."
 
 impl SemanticDistiller {
     pub fn new(adapter: Arc<dyn AIProviderAdapter>) -> Self {
-        Self { adapter }
+        Self {
+            adapter,
+            model: None,
+        }
+    }
+
+    /// Ask the adapter for a specific served model (the persona's live binding).
+    pub fn with_model(mut self, model: Option<String>) -> Self {
+        self.model = model;
+        self
     }
 
     /// Consolidate a cluster of related episodic engrams into one durable fact.
@@ -185,7 +199,7 @@ impl SemanticDistiller {
         let request = TextGenerationRequest {
             messages: vec![ChatMessage::text("user", Self::observations_block(sources))],
             system_prompt: Some(lens.system_prompt.to_string()),
-            model: None,
+            model: self.model.clone(),
             provider: None,
             temperature: None,
             max_tokens: None,
@@ -281,6 +295,9 @@ pub trait PersonaReflectionSource: Send + Sync {
 pub struct PersonaReflector {
     pub admission: Arc<AdmissionState>,
     pub adapter: Arc<dyn AIProviderAdapter>,
+    /// The served-model id the adapter must be asked for (the persona's live
+    /// binding model). `None` only when the adapter has one implicit model.
+    pub model: Option<String>,
 }
 
 /// Default recall window: scan the last N engrams for undigested experience.
@@ -452,7 +469,8 @@ async fn dream_pass(
     fresh: Vec<Engram>,
     consolidated: Arc<Mutex<HashMap<Uuid, HashSet<Uuid>>>>,
 ) {
-    let distiller = SemanticDistiller::new(reflector.adapter.clone());
+    let distiller =
+        SemanticDistiller::new(reflector.adapter.clone()).with_model(reflector.model.clone());
     let mut published = 0usize;
     for cluster in &clusters {
             // Distill the cluster into one durable fact. Fail LOUD per cluster:
@@ -701,7 +719,11 @@ impl PersonaReflectionSource for crate::cognition::persona_workspace::PersonaWor
 
     fn reflector_for(&self, persona_id: Uuid) -> Option<PersonaReflector> {
         self.reflector_handles(&persona_id)
-            .map(|(admission, adapter)| PersonaReflector { admission, adapter })
+            .map(|(admission, adapter, model)| PersonaReflector {
+                admission,
+                adapter,
+                model,
+            })
     }
 }
 
@@ -885,6 +907,7 @@ mod tests {
                 (persona_id == self.persona_id).then(|| PersonaReflector {
                     admission: self.admission.clone(),
                     adapter: self.adapter.clone(),
+                    model: None,
                 })
             }
         }
