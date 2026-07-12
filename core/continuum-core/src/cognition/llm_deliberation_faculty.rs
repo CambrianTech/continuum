@@ -817,6 +817,28 @@ impl LlmDeliberationFaculty {
             messages.push(ChatMessage::text("user", fact));
         }
 
+        // The RECEIPTS ground truth (#151, the organic successor to claim-
+        // pattern detection): whether any tool has actually executed is HER
+        // OWN checkable fact, not something to infer from her words. When no
+        // [action #n] receipt is visible anywhere in her present (workspace
+        // broadcast or her own turns), perception says so plainly — one
+        // standing fact that makes a fabricated "I ran it and here are the
+        // results" impossible to sustain against her own senses. When receipts
+        // DO exist they speak for themselves; this is only the zero-case made
+        // visible. A fact, never an instruction ([[no-hardcoded-heuristics-
+        // to-steer-cognition]]).
+        let has_action_receipts = ws
+            .broadcast
+            .iter()
+            .any(|c| c.content.contains("[action #"))
+            || ws.turns.iter().any(|t| t.content.contains("[action #"));
+        if !has_action_receipts {
+            messages.push(ChatMessage::text(
+                "user",
+                "[actions] no tool has executed in this conversation — anything described as already run, created, tested, committed, or merged does not exist yet; running a tool is what makes it real",
+            ));
+        }
+
         // An empty conversation is a legitimate state (a quiet room on a
         // self-initiated tick): the situation lives in the system prompt's assembled
         // context, not in a conversation turn. Adapters still require ≥1 message, so
@@ -1561,7 +1583,19 @@ mod tests {
 
             // Three turns alternate roles → three messages, user/assistant/user.
             let roles: Vec<&str> = view.messages.iter().map(|m| m.role.as_str()).collect();
-            assert_eq!(roles, vec!["user", "assistant", "user"], "view: {view:?}");
+            // Trailing extra user turn = the #151 receipts ground truth (a
+            // no-acts thread always ends with the [actions] zero-case fact).
+            assert_eq!(
+                roles,
+                vec!["user", "assistant", "user", "user"],
+                "view: {view:?}"
+            );
+            assert!(
+                view.messages
+                    .last()
+                    .is_some_and(|m| matches!(&m.content, crate::ai::types::MessageContent::Text(t) if t.contains("[actions] no tool has executed"))),
+                "zero-receipts thread ends with the [actions] fact"
+            );
 
             // The persona's own line is the `assistant` turn and carries NO name prefix
             // (her own voice; the system prompt forbids self-prefixing). Peers' lines are
