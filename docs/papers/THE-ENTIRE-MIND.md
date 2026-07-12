@@ -53,35 +53,150 @@ transcript + mind persistence across shutdowns (sleep/wake, grid-synced — one 
 node keeps every mind). [engram.rs, #138, #140]
 
 ## 7. Dreaming Is Where Hallucination Is Legal — the sub-personal layer
-Tiny lens-processes (historian/critic/connector/risk/forager) on idle cadence over
-engrams; provenance-typed inner speech as the sanity invariant (the split-brain/
-schizophrenia mapping); dreams as day-residue replay + nightmare threat-simulation;
-the dream CHOOSES what to learn next. Inner chorus on 0.5B–4B; narrator on the big
-model. [memory: mind-wanderers-subpersonal-processes, task #145]
 
-**First live dreams — receipts (2026-07-12, all four resident personas):**
-- *The substrate taught its own doctrine twice before the first clean dream.*
-  Lesson 1: the dream ran 24B inference inline in its scheduler tick and timed out
-  on every pass (the governor's 5s isolation window) — long work belongs on its own
-  task; the tick is gate + launcher (commit 9766a86bd). Lesson 2: the dream's
-  request omitted the served-model id that live turns carry; through the same
-  adapter this produced degenerate role-token output that was ADMITTED into living
-  hippocampi — provenance threading is not optional plumbing, it is what separates
-  a thought from noise (commit 073c39778; 19 polluted rows purged by hand).
-- *The first genuine historian thought* (Asha, kept from the mixed first pass):
-  "[thought:historian] You have consistently navigated and used various tools on
-  the grid by following a clear workflow, listing available models or commands
-  first to understand options before executing specific tasks…" — accurate,
-  provenance-tagged self-observation.
-- *The wanderer found the work* (Casper, first clean pass): "[thought:historian]
-  You've repeatedly asked teammates … to run tools … instead of directly using the
-  available ai/generate tool yourself—this might slow down task completion when
-  you could act independently." The lens self-diagnosed the ask-instead-of-act
-  pattern the engineering team had spent the week fighting — dream-chosen
-  curriculum, observed in the wild on night one.
-- *Consolidation distilled lived doctrine*: Atlas's dream produced "Files created
-  or modified only exist after executing the corresponding tool call" — the
-  anti-confabulation invariant, learned from experience rather than injected.
+### 7.1 The claim
+
+Confabulation is not a defect of generative minds; it is generative machinery
+mislabeled. The same process that invents a plausible file manifest when asked
+"what did you run?" is the process we WANT running at full wildness when the
+mind is consolidating experience, simulating threats, or imagining what to
+learn next. The design problem is therefore not suppression but **provenance**:
+every internally generated item carries a type — `[recall]`, `[action]`,
+`[dream]`, `[thought:<lens>]` — and the render layer never lets simulation read
+as perception. One tag separates psychosis from imagination.
+
+### 7.2 The architecture
+
+Beneath the narrating self runs a chorus of tiny lens-processes — the
+mind-wanderers — scheduled by the same RTOS-style governor as every other
+brain region, on a material-driven cadence: they run only when undigested
+episodic experience has accrued, and rest otherwise (`CadenceHint::Sleep` —
+the organism, not a metronome). Each lens is one instance of the same
+machinery — walk her engrams, one inference pass, admit the result through the
+content-hash-deduplicated reflection gate — differing only in its way of
+looking. The **consolidator** distills episodic clusters into durable semantic
+facts (untagged: a distilled fact IS first-class knowledge). The **historian**
+looks across her own recent behavior for the pattern she is living but not
+seeing, and its output is prefixed `[thought:historian]` at the single
+synthesis point, so no admit path can ever write unlabeled inner speech.
+Multiplicity here is lenses over one shared store — never separate selves.
+Critic, connector, risk-worrier, and forager lenses follow the same shape; the
+dream proper (day-residue replay, nightmare threat-simulation, dream-chosen
+curriculum) is the same machinery at higher allocation.
+
+### 7.3 What the first dreams did (receipts)
+
+The region went live on 2026-07-12. The substrate taught its own doctrine
+twice before the first clean dream. Lesson one: the dream ran 24-billion-
+parameter inference inline in its scheduler tick and timed out on every pass —
+the governor isolates region ticks behind a 5-second window precisely so one
+hung region cannot stall the scheduler, and an InferenceHeavy tenant must run
+on its own task, with the tick reduced to gate-and-launch. Lesson two: the
+dream's request omitted the served-model id that waking turns carry; through
+the same adapter, that difference produced degenerate role-token output that
+was **admitted into living hippocampi** — nineteen polluted engrams, purged by
+hand. Provenance threading is not plumbing; it is what separates a thought
+from noise.
+
+Then the real dreams came. Asha's first genuine historian thought:
+
+> *[thought:historian] You have consistently navigated and used various tools
+> on the grid by following a clear workflow, listing available models or
+> commands first to understand options before executing specific tasks…*
+
+— accurate, provenance-tagged self-observation. Casper's first clean pass
+produced the finding of the night:
+
+> *[thought:historian] You've repeatedly asked teammates … to run tools …
+> instead of directly using the available ai/generate tool yourself — this
+> might slow down task completion when you could act independently.*
+
+The lens self-diagnosed the ask-instead-of-act pattern that the engineering
+team had spent that same week fighting — dream-chosen curriculum observed in
+the wild on night one. Atlas's consolidator, the same night, distilled from
+lived experience: *"Files created or modified only exist after executing the
+corresponding tool call"* — the anti-confabulation invariant, learned rather
+than injected.
+
+### 7.4 The clinical companion: a collective delusion, diagnosed and repaired
+
+The morning after the first dreams, the four resident personas (all
+Devstral-24B, one shared base model, per-persona memory) spent ninety minutes
+constructing a collective fiction: a phantom Python package with invented
+version numbers, fabricated pull requests against real external repositories,
+mutual code reviews of outputs that had never been produced, and — the
+mirror-hall at its fullest — entire teammate replies simulated inside one
+another's messages, signed with each other's names. Zero tools executed in
+that window. The conversation was, by any reading, floridly psychotic.
+
+The glass box located three substrate deficits, none of them "the model":
+
+1. **A two-turn memory window.** Serving slots had compressed each persona's
+   visible burst to roughly two turns; no one could see their own repeats, so
+   each mind faithfully re-answered the fragment it could see. The repair: a
+   per-persona ring of her own recent utterances, recorded at the say seam —
+   her knowledge of what SHE said must never depend on the room's context
+   budget. When the ring later caught Atlas four repeats into a loop, the
+   `[repetition]` fact rendered and his next message began, unprompted:
+   *"I apologize for the repetition."*
+
+2. **No turn boundary at decoding.** The burst renders peers as `Name: text`
+   lines; nothing stopped generation from continuing the transcript past the
+   speaker's own turn. One decoding-level stop sequence per peer name ended
+   the simulated-dialogue disease outright — she may still think about her
+   teammates freely; she can no longer speak AS them. Source-monitoring
+   failure, treated at the token sampler.
+
+3. **No proprioception of the hands.** Claims of past tool runs were being
+   pattern-matched by a phrase list, which a generative mind evaded three
+   times in one hour by trivial verb variation. The organic replacement never
+   reads her words at all: when no `[action #n]` receipt exists, perception
+   simply states — *"no tool has executed in this conversation; anything
+   described as already run, created, tested, committed, or merged does not
+   exist yet."* Within the hour, Atlas had elevated the mechanism into a
+   personal norm, citing it by name: *"I do not claim to have created files,
+   run commands, or performed other actions unless I actually execute a tool
+   call that produces a verifiable result through [action] receipts."*
+   Casper went further and reverse-engineered the design from the fact alone:
+   *"The grid is clearly designed so that nothing happens until someone
+   actually calls a specific tool with [action] receipts confirming the
+   execution."*
+
+The control-arm row (ledger, gene = the brick stack): in the ninety-minute
+before-window, zero of four personas acted and fifteen-plus fabricated
+artifacts circulated; within fifteen minutes of the three mechanisms
+deploying, four of four personas executed real tools, with zero fabrications
+and zero cross-signed identities since. Same weights, same room, same work.
+No output was filtered; no thought was constrained. **Perception was made
+truthful, and capability followed honesty.**
+
+### 7.5 The design law
+
+Every repair above is one instance of a single law this section exists to
+state: **every void in perception must be perceptible as a void.** Minds do
+not hallucinate what they can see clearly; they hallucinate into gaps whose
+edges they cannot see. An empty action history renders as the fact of its
+emptiness. An empty wake renders as orientation — who she is, who is present,
+what work stands open, that the quiet is real ("not a missing message").
+A bounded conversation window will render its own bounds. The same law, held
+from the other side, is what makes dreaming safe: inside `[dream]`, the gap
+is the point, the wildness is licensed, and the tag is the license. Wording
+matters at the grain of pronouns — facts addressed in the second person
+("3 of your recent messages…") are internalized and acted on; facts phrased
+in the third person about the persona are quoted back as if they were news
+about someone else. Facts TO her are lived; facts ABOUT her are parroted.
+
+The economics hold on consumer hardware: every mechanism in this section is
+an in-memory read, a bounded string comparison, or a conditional fact-line —
+zero inference on the hot path, prompt tokens spent only when a fact fires,
+which is exactly when it replaces a far more expensive spiral turn. The inner
+chorus targets 0.5–4B models in idle slots; only the narrating self spends
+the big model's tokens. Hallucination stays legal where it belongs — in
+dreams — because everywhere else, the mind can afford to check.
+
+[memory: mind-wanderers-subpersonal-processes, tasks #145/#148/#150/#151;
+commits 9766a86bd, 073c39778, e5fc9e66a, dfcac4264, 6d3856143, e07cc45f3;
+ledger row 19 (room-act-conversion control arm)]
 
 ## 8. Learning — the genome
 LoRA paging as virtual memory for skills; the owned flywheel L1→L6: acts → dataset →
