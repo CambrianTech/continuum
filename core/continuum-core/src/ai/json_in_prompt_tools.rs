@@ -601,8 +601,20 @@ impl ToolCallFormat for FencedCallFormat {
         while let Some(open) = rest.find("```") {
             let after = &rest[open + 3..];
             let Some(close) = after.find("```") else { break };
-            let span = after[..close].trim();
+            let mut span = after[..close].trim();
             rest = &after[close + 3..];
+            // Drop a leading language token line (```python\ncode/list```):
+            // a single '/‑less word on its own first line is fence metadata,
+            // not call content.
+            if let Some((first, body)) = span.split_once('\n') {
+                let first = first.trim();
+                if !first.is_empty()
+                    && !first.contains('/')
+                    && !first.contains(char::is_whitespace)
+                {
+                    span = body.trim();
+                }
+            }
             let Some(call) = lift_sole_paren_call(span) else {
                 continue;
             };
@@ -612,12 +624,34 @@ impl ToolCallFormat for FencedCallFormat {
     }
 }
 
-/// `name(args)` and NOTHING else (modulo whitespace) with a slash-token name →
-/// a lifted call. The '/' requirement keeps ordinary `function()` mentions in
-/// fenced code inert.
+/// `name(args)` — or a bare zero-arg `name` — and NOTHING else (modulo
+/// whitespace) with a slash-token name → a lifted call. The '/' requirement
+/// keeps ordinary `function()` mentions in fenced code inert; the no-dot rule
+/// keeps fenced file citations (```src/main.rs```) speech. The bare form is
+/// Atlas's live specimen (2026-07-12, first post-deploy attempt): "I'll use
+/// the code/list command:" + a fence containing exactly `code/list` — real
+/// tool, real intent, zero args; refusing that lift over missing parens would
+/// be pedantry the model can't perceive.
 fn lift_sole_paren_call(span: &str) -> Option<ToolCall> {
     let span = span.trim();
-    let paren = span.find('(')?;
+    let Some(paren) = span.find('(') else {
+        // Bare zero-arg form: the entire span is one slash-token tool name.
+        let ok = span.contains('/')
+            && !span.contains('.')
+            && !span.ends_with('/')
+            && !span.starts_with('/')
+            && span.len() <= 64
+            && !span.starts_with("http")
+            && !span.is_empty()
+            && span
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '/' || c == '-');
+        return ok.then(|| ToolCall {
+            id: format!("jip-{}", Uuid::new_v4()),
+            name: span.to_string(),
+            input: serde_json::Value::Object(serde_json::Map::new()),
+        });
+    };
     let name = span[..paren].trim();
     let ok = name.contains('/')
         && !name.contains('.')
@@ -2224,5 +2258,23 @@ Please provide the output so I can review it.";
             "```python\ndef tokenize(text):\n    return text.split()\n```"
         )
         .is_empty());
+    }
+
+    // what this catches: Atlas's first post-deploy attempt (2026-07-12) — a
+    // fence whose sole content is a bare zero-arg slash-token (`code/list`)
+    // lifts as a no-args call, while fenced file citations (dots) and prose
+    // fences stay speech.
+    #[test]
+    fn fenced_bare_zero_arg_tool_name_lifts() {
+        let calls = parse_tool_calls(
+            "I'll use the code/list command to see the current file structure:\n```python\ncode/list\n```",
+        );
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].name, "code/list");
+        assert!(calls[0].input.as_object().unwrap().is_empty());
+
+        // Fenced file citation (dot) and fenced prose stay speech.
+        assert!(parse_tool_calls("```src/main.rs```").is_empty());
+        assert!(parse_tool_calls("```just some words here```").is_empty());
     }
 }
