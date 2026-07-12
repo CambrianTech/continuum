@@ -252,6 +252,33 @@ pub(super) fn own_repetition_fact(turns: &[BurstTurn], spoken: &[String]) -> Opt
     })
 }
 
+/// Stop sequences that end generation at the TURN BOUNDARY (#150): one
+/// `\n<Name>:` per OTHER live participant. The burst renders peers as
+/// `Name: text` lines, which teaches the model the continuation pattern —
+/// left unstopped, it completes the transcript PAST its own turn, fabricating
+/// teammates' replies (observed live 2026-07-12: personas writing each
+/// other's messages and signing each other's names — source-monitoring
+/// failure at the decoding level). Her OWN name is never a stop (she may
+/// legitimately quote or list herself); this is decoding hygiene, not
+/// cognition steering — the model may still THINK about peers freely, it
+/// just cannot speak AS them.
+pub(super) fn peer_stop_sequences(turns: &[BurstTurn]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for t in turns {
+        if t.is_self || t.author.trim().is_empty() {
+            continue;
+        }
+        let stop = format!("\n{}:", t.author);
+        if !out.contains(&stop) {
+            out.push(stop);
+        }
+        if out.len() >= 8 {
+            break;
+        }
+    }
+    out
+}
+
 /// Case-insensitive match of `name` at byte `pos` of `line` (ASCII fold — persona
 /// display names are ASCII by genesis convention).
 fn matches_name_at(line: &str, pos: usize, name: &str) -> bool {
@@ -411,6 +438,24 @@ mod tests {
     // Thresholds are corpus-calibrated (see NEAR_DUP_JACCARD) — this pins the
     // behavior at those constants with his verbatim live messages.
     #[test]
+    // what this catches: #150 — the turn-boundary stop derivation. Peers in
+    // the burst become "\n<Name>:" stops (the shape the model completes when
+    // it fabricates teammates' replies — observed live: personas writing each
+    // other's messages and signing each other's names); her OWN name is never
+    // a stop, and unnamed/empty authors are skipped.
+    #[test]
+    fn peer_stop_sequences_cover_peers_never_self() {
+        let turns = vec![
+            BurstTurn::attributed(false, "Anwen", "hi", None),
+            BurstTurn::attributed(true, "Casper", "hello", None),
+            BurstTurn::attributed(false, "Atlas", "hey", None),
+            BurstTurn::attributed(false, "Anwen", "again", None),
+        ];
+        let stops = peer_stop_sequences(&turns);
+        assert_eq!(stops, vec!["\nAnwen:".to_string(), "\nAtlas:".to_string()]);
+        assert!(!stops.iter().any(|s| s.contains("Casper")), "own name is never a stop");
+    }
+
     // what this catches: the #148 starvation regression — under small serving
     // slots the live burst carries ~2 turns and ZERO of her own repeats (a
     // persona 4x into a verbatim loop had no is_self turns visible, so the

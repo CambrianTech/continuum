@@ -384,6 +384,7 @@ impl LlmDeliberationFaculty {
         messages: Vec<ChatMessage>,
         tools: Option<Vec<NativeToolSpec>>,
         system_prompt: String,
+        stop_sequences: Option<Vec<String>>,
     ) -> TextGenerationRequest {
         TextGenerationRequest {
             messages,
@@ -420,7 +421,10 @@ impl LlmDeliberationFaculty {
             // temperature) onto the Model row so it's a per-model default the faculty
             // passes through, not an adapter magic number.
             repeat_penalty: None,
-            stop_sequences: None,
+            // #150: peer-name turn-boundary stops when the caller derived them
+            // from the burst (`peer_stop_sequences`) — generation ends where
+            // her turn ends, never continuing the transcript as a teammate.
+            stop_sequences,
             tools,
             tool_choice: None,
             response_format: None,
@@ -979,7 +983,16 @@ impl Faculty for LlmDeliberationFaculty {
         };
 
         let request =
-            self.build_request_within(&binding, messages.clone(), tools, view.system.clone());
+            self.build_request_within(
+            &binding,
+            messages.clone(),
+            tools,
+            view.system.clone(),
+            {
+                let stops = super::deliberation_budget::peer_stop_sequences(&ws.turns);
+                (!stops.is_empty()).then_some(stops)
+            },
+        );
         let resp = match binding.adapter.generate_text(request).await {
             Ok(r) => r,
             // Inference FAILED (timeout, 5xx, the serving lane refusing a model it
@@ -1300,7 +1313,13 @@ mod tests {
             // binding carries the served window the request is bounded to.
             let binding = faculty.binding.load_full();
             let request =
-                faculty.build_request_within(&binding, view.messages.clone(), None, view.system.clone());
+                faculty.build_request_within(
+                    &binding,
+                    view.messages.clone(),
+                    None,
+                    view.system.clone(),
+                    None,
+                );
             // Generation is bounded — never the unbounded `None` that overran n_ctx.
             let cap = request
                 .max_tokens
