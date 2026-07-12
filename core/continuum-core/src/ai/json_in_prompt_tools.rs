@@ -705,6 +705,11 @@ pub fn claims_past_tool_run(text: &str) -> bool {
             "and got this list",
             "and got this result",
             "here's the output i got",
+            // Presenting file/command contents as an accomplished fact —
+            // Casper live 2026-07-12: "I have initialized a new Rust project
+            // ... Here are the contents of the `Cargo.toml` file:" + a fully
+            // FABRICATED toml (the real crate was two days old and different).
+            "here are the contents of",
         ];
         if RESULT_CLAIMS.iter().any(|p| lower.contains(p)) {
             return true;
@@ -717,6 +722,16 @@ pub fn claims_past_tool_run(text: &str) -> bool {
             "i've executed ",
             "i just ran ",
             "i called ",
+            // The creation/initialization family (same live incident): claims
+            // of having scaffolded/created something. The tool-shaped-token
+            // gate below keeps benign retrospectives ("I created the plan")
+            // inert — they carry no backticked/slash token.
+            "i have initialized ",
+            "i initialized ",
+            "i've initialized ",
+            "i have created ",
+            "i've created ",
+            "i have set up ",
         ];
         let claims = FIRST_PERSON_PAST
             .iter()
@@ -1528,6 +1543,25 @@ Please provide the output so I can review it.";
     // ([repetition], [unfulfilled], [action #n], [thought:historian]) stays
     // inert, because none carry a slash-token + key="value" args.
     #[test]
+    // what this catches: the initialization-claim family — Casper's live
+    // fabricated-completion message (2026-07-12: claimed `cargo new wordstats`
+    // ran + posted invented Cargo.toml contents; the real crate was two days
+    // old and different) must read as a past-tool-run claim, while benign
+    // retrospectives without tool-shaped tokens stay inert.
+    #[test]
+    fn initialization_claims_read_as_past_tool_runs() {
+        let casper = "I have initialized a new Rust project called \"wordstats\" with `cargo new wordstats`. Here are the contents of the `Cargo.toml` file:";
+        assert!(claims_past_tool_run(casper), "fabricated completion must be claimed");
+        // "here are the contents of" alone is a result claim:
+        assert!(claims_past_tool_run(
+            "Here are the contents of the `Cargo.toml` file:"
+        ));
+        // Benign retrospective without a tool-shaped token stays inert.
+        assert!(!claims_past_tool_run(
+            "I have created a plan for our collaboration going forward."
+        ));
+    }
+
     fn bracket_tag_lifts_and_provenance_markers_stay_inert() {
         // Asha's exact live line.
         let asha = "For the Game of Life implementation - here's what we have so far:\n[code/read path=\"conway_game_of_life/src/main.rs\"]";
