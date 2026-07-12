@@ -136,3 +136,18 @@ prompt carpentry — the prompt is a rendered positron component TREE (sections
 smell; composition through the abstract positron layer is the rule. This
 makes prompt structure inspectable/testable exactly like UI structure, and
 the PX/UX unification stops being an analogy and becomes shared code.
+
+**Responsive PX (Joel 2026-07-12): density adapts to the MODEL, automatically.**
+"These models are much less capable than you, especially low-context ones —
+positron should meet models in the middle by budget. It doesn't need to be
+the same between personas of radically different sizes. One like [Arden]
+might want it more complex." Components render RESPONSIVELY: the viewport is
+(model capability × context window × measured PX density, #132 — calibrated
+from the benchmark ledger, never vibes). A 24B/10k persona gets fewer,
+simpler, more explicit sections (short sentences, one idea each, zero
+ambiguity — "so they can't get confused"); a frontier-class mind gets the
+dense projection. Same component tree, per-density renderers — responsive
+design's breakpoint discipline applied to minds. Extensible + automatic:
+density selection is a policy input to the compositor, not per-callsite
+hand-tuning; "more ideal as you go" = each density tier is measured (ledger
+rows) and re-calibrated as models/genomes improve.
