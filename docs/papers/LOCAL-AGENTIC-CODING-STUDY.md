@@ -92,3 +92,41 @@ Full table + replication commands: `cu benchmark/matrix`.
 - Our harness co-evolved with Devstral (persona base) — home-field advantage named;
   RQ2's fixed-model cross-harness design is the control.
 - Grader is rustc/pytest outcome-based — partial credit invisible.
+
+## Appendix A — Reproduction procedure
+
+The system was built so that reproduction is the SAME path we use ourselves — no
+bespoke lab scripts. Everything below assumes one prerequisite, stated once:
+
+> **With continuum installed** (one-line installer from the README; installs the core,
+> the `cu` CLI, and manages its own `llama-server` binary), on a 64GB Apple-silicon
+> Mac or equivalent.
+
+**Out-of-repo dependencies (the complete list):**
+- Model weights: pulled by HF repo id (`hf download <repo> --include "*Q4_K_M*"
+  --local-dir ~/.continuum/genome/models/<short-name>`); the registry resolves GGUFs
+  by id-token derivation — no config edits. Exact repo ids per model are in each
+  ledger row's replication field.
+- Training arms only (RQ3): a Python venv with `mlx_lm` (Apple silicon). The core
+  drives it; you never invoke Python directly.
+- Competitor arms: aider / opencode installed per their own docs, versions pinned in
+  the results tables.
+- Nothing else. No API keys for the local arms; no Docker for the OURS arm
+  (SWE-bench's official grader uses its own Docker per its docs).
+
+**Per-cell reproduction:** every ledger row carries its exact command. The general
+shapes:
+
+```bash
+# OURS arm, any registered model:
+cu benchmark/run '{"persona_id":"<any persona uuid>","name":"humaneval-rs",
+  "limit":20,"base_model_id":"<model id>","max_acts":6,"detach":true}'
+# result lands in ~/.continuum/progress/<persona>.jsonl; record it:
+cu benchmark/record '{...model/harness/benchmark/resolved/total/replication/...}'
+# render the comparison from all recorded rows:
+cu benchmark/matrix
+```
+
+Runs are greedy-decoded and snapshot-isolated: same weights + same tasks → same
+verdicts. The `benchmark/list` catalog names every runnable benchmark; `limit`
+omitted runs the full set (the definitive-run configuration in §3).
