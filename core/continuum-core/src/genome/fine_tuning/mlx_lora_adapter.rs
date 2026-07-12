@@ -282,6 +282,13 @@ impl FineTuningAdapter for MlxLoraFineTuner {
             .arg(lora.target_modules.len().max(8).to_string())
             .arg("--learning-rate")
             .arg(format!("{:e}", schedule.learning_rate))
+            // Sequence cap is a MEMORY control, not just quality: activation
+            // memory scales with batch × seq × model size, and mlx_lm's silent
+            // 2048 default meant the schedule's sequence_length never reached
+            // the trainer (found on job a96e2341 — Metal OOM at batch 4 beside
+            // a resident llama-server; the operator's 3072 was never applied).
+            .arg("--max-seq-length")
+            .arg(schedule.sequence_length.to_string())
             .arg("-c")
             .arg(&config_path)
             .stdout(Stdio::piped())
