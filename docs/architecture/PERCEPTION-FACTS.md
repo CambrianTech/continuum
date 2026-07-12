@@ -128,3 +128,11 @@ per [[handles-events-expansion-one-universal-primitive]] (positron UX =
 continuum PX = same component, different projection). The steps-ledger a
 persona reads and the jobs-panel a human watches are ONE definition. When the
 tablet work (#141) lands, it consumes these components — not re-derives them.
+
+**Sharpened (Joel): positron IS the RAG compositor.** Not "component-like"
+prompt carpentry — the prompt is a rendered positron component TREE (sections
+= components, budget = layout constraint, text = one projection target),
+"like yours, not some dump." String concatenation in prompt assembly is the
+smell; composition through the abstract positron layer is the rule. This
+makes prompt structure inspectable/testable exactly like UI structure, and
+the PX/UX unification stops being an analogy and becomes shared code.
