@@ -817,6 +817,32 @@ impl LlmDeliberationFaculty {
             messages.push(ChatMessage::text("user", fact));
         }
 
+        // The PEER-ECHO sibling (#152): her last utterance reproducing a
+        // TEAMMATE's message is invisible to the self-detector (the ring is
+        // per-persona). Same geometry, cross-persona axis — the 4-way
+        // mirror-hall of 2026-07-12 ran 90 minutes because nobody PERCEIVED
+        // they were copying. A fact, never an instruction.
+        if let Some(fact) = super::deliberation_budget::peer_echo_fact(
+            &ws.turns,
+            spoken.last().map(String::as_str),
+        ) {
+            messages.push(ChatMessage::text("user", fact));
+        }
+
+        // The [context] BOUNDS fact (#152, the conversational-memory sibling
+        // of [actions]): perception states how much history is actually
+        // visible, so "as discussed earlier" claims about turns outside the
+        // window are checkable against her own senses instead of assumed.
+        // Design law: every void in perception must be perceptible AS a void.
+        let visible = ws.turns.len();
+        messages.push(ChatMessage::text(
+            "user",
+            format!(
+                "[context] you can currently see the last {visible} message{} of this conversation — anything earlier is not in view unless you recall it from memory",
+                if visible == 1 { "" } else { "s" }
+            ),
+        ));
+
         // The RECEIPTS ground truth (#151, the organic successor to claim-
         // pattern detection): whether any tool has actually executed is HER
         // OWN checkable fact, not something to infer from her words. When no
@@ -1583,12 +1609,20 @@ mod tests {
 
             // Three turns alternate roles → three messages, user/assistant/user.
             let roles: Vec<&str> = view.messages.iter().map(|m| m.role.as_str()).collect();
-            // Trailing extra user turn = the #151 receipts ground truth (a
-            // no-acts thread always ends with the [actions] zero-case fact).
+            // Trailing extra user turns = the standing perception facts: the
+            // #152 [context] bounds fact (always present) and the #151
+            // receipts ground truth (a no-acts thread ends with the [actions]
+            // zero-case fact).
             assert_eq!(
                 roles,
-                vec!["user", "assistant", "user", "user"],
+                vec!["user", "assistant", "user", "user", "user"],
                 "view: {view:?}"
+            );
+            assert!(
+                view.messages
+                    .iter()
+                    .any(|m| matches!(&m.content, crate::ai::types::MessageContent::Text(t) if t.contains("[context] you can currently see the last 3 messages"))),
+                "the [context] bounds fact states the visible window"
             );
             assert!(
                 view.messages

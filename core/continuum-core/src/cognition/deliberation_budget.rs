@@ -252,6 +252,43 @@ pub(super) fn own_repetition_fact(turns: &[BurstTurn], spoken: &[String]) -> Opt
     })
 }
 
+/// The persona's PEER-ECHO fact for this tick: her last utterance is nearly
+/// identical to a PEER's visible message. The cross-persona sibling of
+/// [`own_repetition_fact`] — same geometry ([`jaccard`] ≥ [`NEAR_DUP_JACCARD`]),
+/// different axis: the own-speech ring is per-persona, so a persona reproducing
+/// a TEAMMATE's message wholesale carries zero repetition awareness from the
+/// self-detector. Pure fact, no imperative — perception renders what happened.
+///
+/// Why (task #152, glass-boxed 2026-07-12): the room spent 90 minutes in a
+/// FOUR-WAY mirror-hall — Asha's script re-posted verbatim by Atlas, then
+/// Casper, then Anwen (invented hash comment and all), then Asha again; later
+/// the main.py proposal circulated byte-identical through three authors. Not a
+/// sampling artifact (deliberation runs at 0.7): attention-copying of
+/// in-context text, which only PERCEIVING the echo can interrupt. The room
+/// then attributed ideas to whoever repeated them last — echo also corrupts
+/// the social credit ledger.
+pub(super) fn peer_echo_fact(turns: &[BurstTurn], own_last: Option<&str>) -> Option<String> {
+    let last = own_last?.trim();
+    if last.is_empty() {
+        return None;
+    }
+    // Newest-first so the fact names the most recent echoed peer; substantial
+    // messages only (a short ack matching a short ack is conversation, not
+    // copying — token floor keeps "Thanks, all!" pairs inert).
+    turns
+        .iter()
+        .rev()
+        .filter(|t| !t.is_self && !t.author.trim().is_empty())
+        .filter(|t| token_set(&t.content).len() >= 12)
+        .find(|t| jaccard(last, &t.content) >= NEAR_DUP_JACCARD)
+        .map(|t| {
+            format!(
+                "[repetition] your last message and {}'s message are nearly identical — an echo, not a new contribution",
+                t.author
+            )
+        })
+}
+
 /// Stop sequences that end generation at the TURN BOUNDARY (#150): one
 /// `\n<Name>:` per OTHER live participant. The burst renders peers as
 /// `Name: text` lines, which teaches the model the continuation pattern —
@@ -433,11 +470,67 @@ mod tests {
     // glass-boxed 2026-07-11) — Atlas repeated stage-direction messages for
     // hours with ZERO repetition awareness in his prompts (dup-drop covers
     // byte-identical render only; the tool guard covers act fingerprints only).
-    // A trailing run of ≥4 near-identical own turns must render the structural
-    // fact; healthy varied conversation and short runs must render nothing.
-    // Thresholds are corpus-calibrated (see NEAR_DUP_JACCARD) — this pins the
-    // behavior at those constants with his verbatim live messages.
+    // A cluster of ≥3 near-identical own turns must render the structural
+    // fact; healthy varied conversation must render nothing. (Restored
+    // 2026-07-12: a prior edit dropped this fn but left its #[test] attribute
+    // orphaned onto the next test, which silently ran twice instead.)
     #[test]
+    fn own_repetition_cluster_fires_and_varied_speech_stays_silent() {
+        let msg = "I'll wait for the results of the sha256sum command before proceeding.";
+        let looping: Vec<BurstTurn> = (0..4)
+            .map(|_| BurstTurn::attributed(true, SPEAKER_TESTER, msg, None))
+            .collect();
+        assert!(
+            own_repetition_fact(&looping, &[]).is_some(),
+            "a 4-message near-identical cluster is a structural fact"
+        );
+
+        let healthy = vec![
+            BurstTurn::attributed(true, SPEAKER_TESTER, "let me check the workspace state", None),
+            BurstTurn::attributed(true, SPEAKER_TESTER, "the tokenizer needs punctuation tests", None),
+            BurstTurn::attributed(true, SPEAKER_TESTER, "I'll claim the README step", None),
+        ];
+        assert_eq!(
+            own_repetition_fact(&healthy, &[]),
+            None,
+            "varied conversation renders nothing"
+        );
+    }
+
+    // what this catches: #152 — the CROSS-PERSONA echo axis the self-detector
+    // cannot see (the ring is per-persona). Her last utterance reproducing a
+    // peer's substantial message must render the fact NAMING the echoed peer;
+    // short ack-matching-ack pairs and self turns stay inert; no own speech →
+    // no fact. Live specimen: the 2026-07-12 four-way mirror-hall (one script
+    // circulated verbatim through all four authors for 90 minutes).
+    #[test]
+    fn peer_echo_fires_on_copied_peer_message_and_acks_stay_inert() {
+        let script = "Step 1: check workspace contents. Step 2: create test file with hashlib. \
+                      Step 3: calculate SHA-256 and print the hexdigest for verification.";
+        let turns = vec![
+            BurstTurn::attributed(false, SPEAKER_REVIEWER, script, None),
+            BurstTurn::attributed(false, SPEAKER_LEAD, "sounds good to me", None),
+        ];
+        let fact = peer_echo_fact(&turns, Some(script)).expect("a copied peer message is a fact");
+        assert!(
+            fact.contains(SPEAKER_REVIEWER),
+            "the fact names the echoed peer: {fact}"
+        );
+        assert!(fact.starts_with("[repetition]"));
+
+        // Short acknowledgements matching short acknowledgements are
+        // conversation, not copying (token floor).
+        let acks = vec![BurstTurn::attributed(false, SPEAKER_LEAD, "thanks, all good!", None)];
+        assert_eq!(peer_echo_fact(&acks, Some("thanks, all good!")), None);
+
+        // Her own turns are the self-detector's job, never an echo of a peer.
+        let own = vec![BurstTurn::attributed(true, SPEAKER_TESTER, script, None)];
+        assert_eq!(peer_echo_fact(&own, Some(script)), None);
+
+        // Nothing spoken yet → nothing to compare.
+        assert_eq!(peer_echo_fact(&turns, None), None);
+    }
+
     // what this catches: #150 — the turn-boundary stop derivation. Peers in
     // the burst become "\n<Name>:" stops (the shape the model completes when
     // it fabricates teammates' replies — observed live: personas writing each
