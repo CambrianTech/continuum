@@ -414,6 +414,18 @@ pub struct Model {
     /// EOS id in the GGUF at next bake; until then this is the bridge.
     #[serde(default)]
     pub stop_sequences: Vec<String>,
+    /// Whether the autonomic serving planner may pick this row to host the
+    /// PERSONAS. Benchmark opponents and campaign-roster rows carry real Ready
+    /// GGUFs (so the matrix can serve them on demand) but must NEVER be
+    /// conscripted into the citizens' serving plan — the planner picked
+    /// Hermes-4.3 as the persona model TWICE (2026-07-12) purely because it
+    /// was the largest Ready artifact on disk, silently re-homing every mind
+    /// onto the opponent's flagship and confounding a day of measurements.
+    /// `serving/pin` BYPASSES this flag: an explicit operator pin is consent,
+    /// the autonomic tick is not ([[first-neighborhood-and-model-scale-consent]]).
+    /// Defaults TRUE (a normal model is servable); opponent rows opt OUT.
+    #[serde(default = "default_true")]
+    pub persona_serving_eligible: bool,
     /// Total trained parameter count, as the artifact itself declares it
     /// (`general.parameter_count` in the GGUF header, or the provider
     /// `/v1/models` listing where one exposes it). `0` is the absent
@@ -426,6 +438,11 @@ pub struct Model {
     /// honest "unknown", not a guess.
     #[serde(default)]
     pub parameter_count: u64,
+}
+
+/// Serde default for `Model::persona_serving_eligible` — absent means servable.
+fn default_true() -> bool {
+    true
 }
 
 impl Model {

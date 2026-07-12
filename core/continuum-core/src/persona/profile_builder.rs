@@ -277,6 +277,7 @@ mod tests {
             multi_party_strategy: MultiPartyChatStrategy::ProperChatMlSingleParty,
             mmproj_local_path: None,
             parameter_count: 0,
+            persona_serving_eligible: true,
         };
         Arc::new(
             Registry::from_catalog(vec![model], vec![llamacpp_provider])

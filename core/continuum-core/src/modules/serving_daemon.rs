@@ -357,10 +357,25 @@ impl ServingDaemonModule {
     fn live_candidates(&self) -> Vec<ModelFootprint> {
         let suppressed = self.suppressed.borrow();
         let pinned = self.pinned.borrow();
-        candidates_from_snapshot(&self.catalog.snapshot())
+        let snapshot = self.catalog.snapshot();
+        // Benchmark/opponent rows carry Ready GGUFs but are NOT persona-servable:
+        // without this gate the autonomic tick picks "largest Ready artifact" and
+        // conscripted Hermes-4.3 as the citizens' model twice (#142). An explicit
+        // pin BYPASSES eligibility — pinning IS operator consent (how the matrix
+        // serves an opponent on purpose); the autonomic path never is.
+        let ineligible: HashSet<String> = snapshot
+            .models
+            .values()
+            .filter(|live| !live.model.persona_serving_eligible)
+            .map(|live| live.model.id.clone())
+            .collect();
+        candidates_from_snapshot(&snapshot)
             .into_iter()
             .filter(|c| !suppressed.contains(&c.model_id))
-            .filter(|c| pinned.as_ref().is_none_or(|p| p == &c.model_id))
+            .filter(|c| match pinned.as_ref() {
+                Some(p) => p == &c.model_id,
+                None => !ineligible.contains(&c.model_id),
+            })
             .collect()
     }
 
@@ -1186,6 +1201,7 @@ mod tests {
             multi_party_strategy: MultiPartyChatStrategy::ProperChatMlSingleParty,
             mmproj_local_path: None,
             parameter_count: 0,
+            persona_serving_eligible: true,
         }
     }
 
@@ -1340,6 +1356,64 @@ mod tests {
         assert!(
             daemon.live_candidates().iter().any(|f| f.model_id == id),
             "an un-suppressed model returns as a candidate"
+        );
+    }
+
+    // what this catches: #142 — the autonomic planner conscripting a benchmark
+    // OPPONENT as the citizens' model. A Ready GGUF whose catalog row opts out
+    // (`persona_serving_eligible: false`) must be invisible to the autonomic
+    // plan (the tick picked Hermes-4.3 twice, 2026-07-12, purely because it was
+    // the largest Ready artifact), while an explicit `serving/pin` — operator
+    // consent — still serves it (how the benchmark matrix brings one up).
+    #[tokio::test]
+    async fn ineligible_rows_never_join_the_autonomic_plan_but_pin_bypasses() {
+        use crate::model_registry::live::ModelStatus;
+        use std::io::Write;
+
+        let serves = Arc::new(AtomicUsize::new(0));
+        let daemon = daemon_with(Arc::new(FakeServer { serves, ok: true }));
+        let id = "opponent-probe";
+
+        let mut opponent = fake_model(id);
+        opponent.persona_serving_eligible = false;
+        let mut gguf = tempfile::Builder::new()
+            .suffix(".gguf")
+            .tempfile()
+            .expect("temp gguf");
+        gguf.write_all(&[0u8; 4096]).expect("write weights");
+        gguf.flush().expect("flush");
+        daemon.catalog.register(
+            opponent,
+            ModelStatus {
+                availability: Availability::NotDownloaded,
+                verified: None,
+            },
+        );
+        assert!(
+            daemon
+                .catalog
+                .attach_local_artifact(id, gguf.path().to_path_buf(), None),
+            "opponent GGUF lands on disk and flips Ready"
+        );
+
+        // Ready on disk, but ineligible → the autonomic path must never see it.
+        assert!(
+            !daemon.live_candidates().iter().any(|f| f.model_id == id),
+            "an ineligible Ready model is excluded from the autonomic plan"
+        );
+
+        // Explicit pin = operator consent → eligibility is bypassed.
+        daemon.pin_sender().send_replace(Some(id.to_string()));
+        assert!(
+            daemon.live_candidates().iter().any(|f| f.model_id == id),
+            "a pinned ineligible model serves — pin is consent"
+        );
+
+        // Unpin → back off the autonomic plan.
+        daemon.pin_sender().send_replace(None);
+        assert!(
+            !daemon.live_candidates().iter().any(|f| f.model_id == id),
+            "unpin returns the opponent to benchmark-only invisibility"
         );
     }
 

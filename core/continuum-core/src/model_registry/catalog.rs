@@ -489,6 +489,7 @@ pub fn models() -> Vec<Model> {
             chat_template: None,
             multi_party_strategy: MultiPartyChatStrategy::ProperChatMlSingleParty,
             stop_sequences: &["<|im_end|>", "<|eot_id|>"],
+            persona_serving_eligible: false, // opponent: benchmark-only, never the citizens' model
             ..ModelSpec::default()
         }),
         // ── The campaign roster (benchmarks/HERMES-CAMPAIGN.md) ──
@@ -515,6 +516,7 @@ pub fn models() -> Vec<Model> {
             chat_template: None,
             multi_party_strategy: MultiPartyChatStrategy::ProperChatMlSingleParty,
             stop_sequences: &["<|im_end|>"],
+            persona_serving_eligible: false, // opponent flagship: the planner conscripted this TWICE (2026-07-12)
             ..ModelSpec::default()
         }),
         model(ModelSpec {
@@ -535,6 +537,7 @@ pub fn models() -> Vec<Model> {
             chat_template: None,
             multi_party_strategy: MultiPartyChatStrategy::ProperChatMlSingleParty,
             stop_sequences: &["<|im_end|>"],
+            persona_serving_eligible: false, // benchmark reference row (aider 64GB-class ceiling)
             ..ModelSpec::default()
         }),
         model(ModelSpec {
@@ -555,6 +558,7 @@ pub fn models() -> Vec<Model> {
             chat_template: None,
             multi_party_strategy: MultiPartyChatStrategy::ProperChatMlSingleParty,
             stop_sequences: &["<|im_end|>"],
+            persona_serving_eligible: false, // campaign row; eligibility revisit gated on #126 consent ranges
             ..ModelSpec::default()
         }),
         model(ModelSpec {
@@ -574,6 +578,7 @@ pub fn models() -> Vec<Model> {
             chat_template: None,
             multi_party_strategy: MultiPartyChatStrategy::ProperChatMlSingleParty,
             stop_sequences: &["<|im_end|>"],
+            persona_serving_eligible: false, // benchmark roster row (no ToolUse — unfit for citizens anyway)
             ..ModelSpec::default()
         }),
         model(ModelSpec {
@@ -594,6 +599,7 @@ pub fn models() -> Vec<Model> {
             chat_template: None,
             multi_party_strategy: MultiPartyChatStrategy::ProperChatMlSingleParty,
             stop_sequences: &["<|im_end|>"],
+            persona_serving_eligible: false, // benchmark reference row (aider replicate-then-beat)
             ..ModelSpec::default()
         }),
         model(ModelSpec {
@@ -1035,6 +1041,10 @@ struct ModelSpec {
     chat_template: Option<&'static str>,
     multi_party_strategy: MultiPartyChatStrategy,
     stop_sequences: &'static [&'static str],
+    /// See [`Model::persona_serving_eligible`]. Default TRUE; benchmark
+    /// opponents / campaign-roster rows opt OUT so the autonomic planner can
+    /// never conscript them as the citizens' model.
+    persona_serving_eligible: bool,
 }
 
 impl Default for ModelSpec {
@@ -1057,6 +1067,7 @@ impl Default for ModelSpec {
             chat_template: None,
             multi_party_strategy: MultiPartyChatStrategy::NamePrefixedUserTurns,
             stop_sequences: &[],
+            persona_serving_eligible: true,
         }
     }
 }
@@ -1085,6 +1096,7 @@ fn model(spec: ModelSpec) -> Model {
         // ([`super::hydrate`]). The `ModelSpec` deliberately omits it so no
         // human types "4B" into a row — the sentinel `0` means "ask the GGUF".
         parameter_count: 0,
+        persona_serving_eligible: spec.persona_serving_eligible,
     }
 }
 

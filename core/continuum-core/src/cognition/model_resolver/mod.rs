@@ -290,6 +290,7 @@ mod tests {
             multi_party_strategy: MultiPartyChatStrategy::default(),
             stop_sequences: vec![],
             parameter_count: 0,
+            persona_serving_eligible: true,
         }
     }
 

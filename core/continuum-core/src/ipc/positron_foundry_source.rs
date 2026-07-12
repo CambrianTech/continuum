@@ -86,6 +86,7 @@ mod tests {
                 multi_party_strategy: Default::default(),
                 stop_sequences: Vec::new(),
                 parameter_count: params,
+                persona_serving_eligible: true,
             },
             status: ModelStatus {
                 availability: Availability::Ready,
