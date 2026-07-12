@@ -115,3 +115,28 @@ before/after genome training, and $/resolved-task vs cloud.
 - **unsloth/Devstral-Small-2507-GGUF × ours × humaneval-rs** on `macbook-m4-pro-64gb`: `cu benchmark/run {persona_id, name: humaneval-rs, limit: 20, base_model_id: unsloth/Devstral-Small-2507-GGUF, max_acts: 6, detach: true}` — ephemeral GPU lane
 - **continuum-ai/qwen2.5-coder-14b-instruct-GGUF × ours × humaneval-rs** on `macbook-m4-pro-64gb`: `cu benchmark/run {persona_id, name: humaneval-rs, limit: 20, base_model_id: continuum-ai/qwen2.5-coder-14b-instruct-GGUF, max_acts: 6, detach: true}` — ephemeral GPU lane; 67s wall for 20 tasks
 
+
+## § round-1 money table (humaneval-rs 20-task, OURS arm, 2026-07-12 early AM)
+
+## humaneval-rs
+
+| model | ours |
+|---|---|
+| NousResearch/Hermes-3-Llama-3.1-8B-GGUF | 9/20 (45%) |
+| NousResearch/Hermes-4.3-36B-GGUF | 16/20 (80%) |
+| continuum-ai/qwen2.5-coder-14b-instruct-GGUF | 18/20 (90%) |
+| continuum-ai/qwen3.5-4b-code-forged-GGUF | 1/20 (5%) |
+| unsloth/Devstral-Small-2507-GGUF | 19/20 (95%) |
+| unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF | 18/20 (90%) |
+
+### Replication
+
+- **NousResearch/Hermes-3-Llama-3.1-8B-GGUF × ours × humaneval-rs** on `macbook-m4-pro-64gb`: `cu benchmark/run {persona_id, name: humaneval-rs, limit: 20, base_model_id: NousResearch/Hermes-3-Llama-3.1-8B-GGUF, max_acts: 6, detach: true}` — first Hermes cell; 18.3 tok/s decode; ephemeral GPU lane; supersedes earlier degenerate 0/8
+- **unsloth/Devstral-Small-2507-GGUF × ours × humaneval-rs** on `macbook-m4-pro-64gb`: `cu benchmark/run {persona_id, name: humaneval-rs, limit: 20, base_model_id: unsloth/Devstral-Small-2507-GGUF, max_acts: 6, detach: true}` — ephemeral GPU lane
+- **continuum-ai/qwen2.5-coder-14b-instruct-GGUF × ours × humaneval-rs** on `macbook-m4-pro-64gb`: `cu benchmark/run {persona_id, name: humaneval-rs, limit: 20, base_model_id: continuum-ai/qwen2.5-coder-14b-instruct-GGUF, max_acts: 6, detach: true}` — ephemeral GPU lane; 67s wall for 20 tasks
+- **continuum-ai/qwen3.5-4b-code-forged-GGUF × ours × humaneval-rs** on `macbook-m4-pro-64gb`: `cu benchmark/run {persona_id, name: humaneval-rs, limit: 20, base_model_id: continuum-ai/qwen3.5-4b-code-forged-GGUF, max_acts: 6, detach: true}` — SERVING SUSPECT: 32 tok/task mean (half known-healthy rate); model requires thinking mode which lane may suppress — re-run pending, do not cite as clean score
+- **unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF × ours × humaneval-rs** on `macbook-m4-pro-64gb`: `cu benchmark/run {persona_id, name: humaneval-rs, limit: 20, base_model_id: unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF, max_acts: 6, detach: true}` — the LocalLLaMA community champion (MoE 3B active); ephemeral GPU lane
+- **NousResearch/Hermes-4.3-36B-GGUF × ours × humaneval-rs** on `macbook-m4-pro-64gb`: `cu benchmark/run {persona_id, name: humaneval-rs, limit: 20, base_model_id: NousResearch/Hermes-4.3-36B-GGUF, max_acts: 6, detach: true}` — Nous flagship-mid (seed_oss 36B dense); healthy output volume; 19min wall vs 14B 67s — the size/speed axis
+
+
+Wall-clock note: Coder-14B 67s, 30B-A3B 157s, Hermes-4.3-36B 1129s for the same 20 tasks — the cost axis. forged-4B row is SERVING SUSPECT (thinking-mode), re-run pending.
