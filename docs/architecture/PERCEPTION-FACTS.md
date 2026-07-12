@@ -88,3 +88,30 @@ RENDERED prompt, never assume the code renders).
 - The act→observe driver, decisions, and parser formats are untouched.
 - The [Acting] block / tool-menu PX (menu shows one working example per fence
   idiom) is a SEPARATE brick, queued after this lands.
+
+## Render layer: steps-taken ledger (Joel 2026-07-12)
+
+"They need very clearly laid out steps of what they've done — in our case
+it's more elegant with memory, but same idea. Look at how yours looks now."
+The reference model is the operator harness itself: Claude Code renders each
+tool call + result as a DISCRETE TYPED BLOCK, impossible to confuse with
+prose. The typed WmKind entries enable the same PX, memory-backed:
+
+```
+[steps taken this session]
+1. code/list() → ok: word_freq_analysis/ (empty)
+2. code/write(path="text_cleaner.py") → ok: 812 bytes
+(nothing else has executed)
+
+[notices]
+- your last message and Asha's are nearly identical — an echo
+```
+
+Receipts render as a numbered STEPS ledger with results (own section, always
+present — "(nothing has executed yet)" is the zero-case and REPLACES the
+prose [actions] fact); facts render under a separate [notices] head. One
+glance answers "what have I actually done": the ledger IS the [actions]
+ground truth, structurally — no prose fact to suppress, no marker to
+misparse. Same idea as the operator's transcript, more elegant because
+memory-backed: the ledger survives context rotation while a transcript
+scrolls away.
