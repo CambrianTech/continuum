@@ -637,12 +637,28 @@ impl SettleStep {
 /// 2026-07-12 — the [actions] zero-fact vanished from every prompt the moment
 /// any backstop fact rendered, and the confab backstop went blind after its
 /// own first firing). Receipts are numbered; placeholders are not.
+/// …and numbering alone is not enough: `record_action` numbers EVERY working-
+/// memory entry, so the proprioception facts themselves render as
+/// `[action #4] [unfulfilled] …` — the facts wore receipt numbering and
+/// suppressed the zero-fact all afternoon (glass-boxed 16:50 2026-07-12,
+/// second layer of the same onion). A real receipt's body is prose
+/// ("I ran code/shell(…) Result: …"); a fact's body opens with another
+/// bracket tag. Digit + non-bracket body = receipt.
 pub(crate) fn has_real_action_receipt(text: &str) -> bool {
     text.match_indices("[action #").any(|(i, _)| {
-        text[i + "[action #".len()..]
-            .chars()
-            .next()
-            .is_some_and(|c| c.is_ascii_digit())
+        let rest = &text[i + "[action #".len()..];
+        let mut chars = rest.chars();
+        if !chars.next().is_some_and(|c| c.is_ascii_digit()) {
+            return false;
+        }
+        // Body after "N] " must not open with a bracket tag (a fact), and
+        // must exist at all (a bare numbered line is not a receipt).
+        rest.split_once(']')
+            .map(|(_, body)| {
+                let body = body.trim_start();
+                !body.is_empty() && !body.starts_with('[')
+            })
+            .unwrap_or(false)
     })
 }
 

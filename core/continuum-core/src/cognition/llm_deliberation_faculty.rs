@@ -858,9 +858,16 @@ impl LlmDeliberationFaculty {
         // MENTION as a receipt — the [actions] zero-fact vanished from every
         // prompt the moment any backstop fact rendered (glass-boxed
         // 2026-07-12: the medicine suppressed the diagnosis).
+        // …and PRESENT-tense: recalled engrams surface receipts from EARLIER
+        // sessions ("[action #1] I ran code/shell…", July 10-11 lives), and a
+        // provenance-blind scan read history as the present — the zero-fact
+        // stayed suppressed all afternoon on a day with zero executions
+        // (glass-boxed 16:50 2026-07-12). [recall]-tagged items are memory,
+        // not receipts; only un-recalled broadcast + live turns ground "now".
         let has_action_receipts = ws
             .broadcast
             .iter()
+            .filter(|c| !c.content.trim_start().starts_with("[recall]"))
             .any(|c| super::act_observe::has_real_action_receipt(&c.content))
             || ws
                 .turns
