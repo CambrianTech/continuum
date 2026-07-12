@@ -745,9 +745,17 @@ pub async fn settle_step(
                 }
                 if fenced || staged {
                     body.working_memory.record_action(if fenced {
+                        // The name-diagnosis tail (2026-07-12): the room looped an
+                        // INVENTED tool name (`file_tree`) for an hour while this
+                        // fact told them only THAT nothing ran, never WHY — 56
+                        // firings with zero behavior change. "It didn't run" without
+                        // "the name may not exist; here's how to find real ones" is
+                        // a symptom without a diagnosis.
                         "[unfulfilled] I said I would run commands, but no tool ran — \
                          the fenced text was words only. Nothing exists in the \
-                         workspace until a tool call actually executes it."
+                         workspace until a tool call actually executes it. If I \
+                         named a tool, that name may not exist: `list_commands` \
+                         shows the tools that are real."
                     } else {
                         "[unfulfilled] I wrote a stage direction like [doing the task], \
                          but a stage direction is words only — no tool ran, no file \
