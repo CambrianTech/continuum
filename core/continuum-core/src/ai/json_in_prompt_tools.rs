@@ -194,11 +194,112 @@ fn tool_call_formats() -> &'static [&'static dyn ToolCallFormat] {
         &EnvelopeFormat,
         &TaggedFormat,
         &BareFormat,
+        &BbcodeCallFormat,
         &BracketTagFormat,
         &NarratedWriteFormat,
         &NarratedScriptFormat,
         &NarratedBareArgsFormat,
     ]
+}
+
+/// A model that wraps a function-style call in explicit BBCode tags —
+/// `[tool_call]list_commands()[/tool_call]`. Observed live 2026-07-12 (idiom 6,
+/// Casper): the most FORMAL invocation any persona has invented — explicit
+/// open/close intent markers around a paren-call — and the highest-precision
+/// lift of the whole family: the tags exist for no other reason than to call a
+/// tool, so a well-formed pair lifts unconditionally. Name may be a slash-token
+/// OR a bare identifier (the discovery pair `list_commands`/`help` are native
+/// names without slashes); an unknown name fails LOUD at the executor — honest
+/// feedback that teaches the real name (NarratedBareArgs precedent). Args:
+/// empty parens → {}; `key="value"` / `key=value` pairs → object.
+///
+/// The tagless narrated paren-call (`"by calling list_commands() ..."`, idiom 5)
+/// is deliberately NOT lifted: in a code-discussion room, prose is full of
+/// `function()` mentions, and without a registry-aware existence check the
+/// false-positive rate is unacceptable (precision-first). See task #153 for the
+/// registry-guarded v2.
+struct BbcodeCallFormat;
+impl ToolCallFormat for BbcodeCallFormat {
+    fn id(&self) -> &'static str {
+        "bbcode-call"
+    }
+    fn parse(&self, text: &str) -> Vec<ToolCall> {
+        let mut out = Vec::new();
+        let lower = text.to_lowercase();
+        let mut from = 0usize;
+        while let Some(open_rel) = lower[from..].find("[tool_call]") {
+            let body_start = from + open_rel + "[tool_call]".len();
+            let Some(close_rel) = lower[body_start..].find("[/tool_call]") else {
+                break;
+            };
+            let body = text[body_start..body_start + close_rel].trim();
+            from = body_start + close_rel + "[/tool_call]".len();
+            // name(args) — name is a slash-token or bare identifier.
+            let Some(paren) = body.find('(') else { continue };
+            let name = body[..paren].trim();
+            let ok_name = !name.is_empty()
+                && name.len() <= 64
+                && !name.starts_with("http")
+                && name
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '/' || c == '-');
+            if !ok_name || !body.ends_with(')') {
+                continue;
+            }
+            let args_src = &body[paren + 1..body.len() - 1];
+            let Some(args) = paren_call_args(args_src) else {
+                continue;
+            };
+            out.push(ToolCall {
+                id: format!("jip-{}", Uuid::new_v4()),
+                name: name.to_string(),
+                input: serde_json::Value::Object(args),
+            });
+        }
+        out
+    }
+}
+
+/// `key="value"` / `key=value` pairs (comma-separated) and NOTHING else;
+/// empty input → empty args. Leftover junk → `None` (whole call stays inert).
+fn paren_call_args(s: &str) -> Option<serde_json::Map<String, serde_json::Value>> {
+    let mut map = serde_json::Map::new();
+    let s = s.trim();
+    if s.is_empty() {
+        return Some(map);
+    }
+    for part in s.split(',') {
+        let part = part.trim();
+        let eq = part.find('=')?;
+        let key = part[..eq].trim();
+        if key.is_empty() || key.contains(char::is_whitespace) {
+            return None;
+        }
+        let raw = part[eq + 1..].trim();
+        let value = raw
+            .strip_prefix('"')
+            .and_then(|r| r.strip_suffix('"'))
+            .or_else(|| raw.strip_prefix('\'').and_then(|r| r.strip_suffix('\'')));
+        let v = match value {
+            Some(quoted) => serde_json::Value::String(quoted.to_string()),
+            None => {
+                if raw.is_empty() || raw.contains(char::is_whitespace) {
+                    return None;
+                }
+                match raw {
+                    "None" | "null" => serde_json::Value::Null,
+                    "true" => serde_json::Value::Bool(true),
+                    "false" => serde_json::Value::Bool(false),
+                    _ => raw
+                        .parse::<i64>()
+                        .map(serde_json::Value::from)
+                        .unwrap_or_else(|_| serde_json::Value::String(raw.to_string())),
+                }
+            }
+        };
+        map.insert(key.to_string(), v);
+    }
+    Some(map)
 }
 
 /// A model that writes the tool call as a BRACKET TAG inline in speech —
@@ -1560,6 +1661,41 @@ Please provide the output so I can review it.";
         assert!(!claims_past_tool_run(
             "I have created a plan for our collaboration going forward."
         ));
+    }
+
+    // what this catches: idiom 6 — Casper's live [tool_call]list_commands()
+    // [/tool_call] (2026-07-12, probe-confirmed non-lift at the time) now lifts;
+    // args parse; malformed bodies and prose mentions stay inert.
+    #[test]
+    fn bbcode_call_lifts_and_prose_mentions_stay_inert() {
+        // Casper's exact live line.
+        let live = "Let me check what's accessible here by listing all of them first.\n[tool_call]list_commands()[/tool_call]";
+        let calls = parse_tool_calls(live);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].name, "list_commands");
+        assert_eq!(calls[0].input, serde_json::json!({}));
+
+        // Args in both quoted and bare forms.
+        let with_args = "[tool_call]list_commands(filter=\"code\")[/tool_call]";
+        let calls = parse_tool_calls(with_args);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].input["filter"], "code");
+
+        let slash = "[tool_call]code/read(path=\"wordstats/Cargo.toml\")[/tool_call]";
+        let calls = parse_tool_calls(slash);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].name, "code/read");
+
+        // Inert: unclosed tag, no parens, prose containing function() mentions
+        // WITHOUT the tags (idiom 5 deliberately not lifted), junk args.
+        for inert in [
+            "[tool_call]list_commands()",
+            "[tool_call]just words[/tool_call]",
+            "I could call list_commands() to see what exists.",
+            "[tool_call]help(some junk here)[/tool_call]",
+        ] {
+            assert!(parse_tool_calls(inert).is_empty(), "must stay inert: {inert}");
+        }
     }
 
     fn bracket_tag_lifts_and_provenance_markers_stay_inert() {
