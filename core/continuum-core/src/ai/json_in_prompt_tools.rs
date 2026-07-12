@@ -645,8 +645,21 @@ impl ToolCallFormat for FencedCallFormat {
 /// tool, real intent, zero args; refusing that lift over missing parens would
 /// be pedantry the model can't perceive.
 fn lift_sole_paren_call(span: &str) -> Option<ToolCall> {
+    // The documented DISCOVERY PAIR are the only bare identifiers that lift
+    // without a slash (same exception BbcodeCall carries): the [unfulfilled]
+    // fact and the wake briefing point lost personas at `list_commands`, so
+    // the pointer must be followable in the fence idioms they actually use —
+    // otherwise the cure for invented names dead-ends at its own door.
+    let is_discovery = |name: &str| name == "list_commands" || name == "help";
     let span = span.trim();
     let Some(paren) = span.find('(') else {
+        if is_discovery(span) {
+            return Some(ToolCall {
+                id: format!("jip-{}", Uuid::new_v4()),
+                name: span.to_string(),
+                input: serde_json::Value::Object(serde_json::Map::new()),
+            });
+        }
         // Bare zero-arg form: the entire span is one slash-token tool name.
         let ok = span.contains('/')
             && !span.contains('.')
@@ -665,7 +678,7 @@ fn lift_sole_paren_call(span: &str) -> Option<ToolCall> {
         });
     };
     let name = span[..paren].trim();
-    let ok = name.contains('/')
+    let ok = (name.contains('/') || is_discovery(name))
         && !name.contains('.')
         && name.len() <= 64
         && !name.starts_with("http")
