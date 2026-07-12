@@ -433,6 +433,18 @@ impl ToolCallFormat for CliFlagFormat {
         while i < lines.len() {
             let line = lines[i].trim();
             i += 1;
+            // A whole line that IS one paren-call with a slash-token name —
+            // `code/list()` beside other pseudo-code (Casper live 2026-07-12;
+            // the fence-scoped sole-call check can't see it when the fence
+            // holds more than the one call). Same guards as FencedCall. A
+            // failed lift falls through to the flag grammar (a paren inside a
+            // flag VALUE — `--path "x(y).txt"` — is not a call shape).
+            if line.ends_with(')') {
+                if let Some(call) = lift_sole_paren_call(line) {
+                    out.push(call);
+                    continue;
+                }
+            }
             let Some((name, rest)) = split_cli_head(line) else {
                 continue;
             };
@@ -2276,5 +2288,19 @@ Please provide the output so I can review it.";
         // Fenced file citation (dot) and fenced prose stay speech.
         assert!(parse_tool_calls("```src/main.rs```").is_empty());
         assert!(parse_tool_calls("```just some words here```").is_empty());
+    }
+
+    // what this catches: Casper's live combo (2026-07-12) — a paren-call line
+    // (`code/list()`) beside OTHER pseudo-code in the same fence lifts via the
+    // per-line scan, while the invented non-slash name (`file_tree(...)`) on
+    // the sibling line stays inert.
+    #[test]
+    fn paren_call_line_lifts_beside_pseudo_code() {
+        let calls = parse_tool_calls(
+            "I'll run both to get a comprehensive view:\n```python\nfile_tree(max_depth=2)\ncode/list()\n```",
+        );
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].name, "code/list");
+        assert!(calls[0].input.as_object().unwrap().is_empty());
     }
 }
