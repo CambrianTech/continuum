@@ -1,0 +1,94 @@
+# Local Agentic Coding on Consumer Hardware: A Fair, Reproducible Comparison of Models and Harnesses
+
+**Status: DESIGN + PILOT. Results sections fill exclusively from the evidence ledger
+(`~/.continuum/benchmarks/ledger.jsonl` via `cu benchmark/matrix`) — no hand-authored
+numbers, same recipe→artifact doctrine as the forge alloy.**
+
+## Abstract (to be finalized from results)
+
+We compare open-weight language models (4B–36B) and open-source agentic harnesses
+(this system, aider, opencode, one-shot baseline) on software-engineering benchmarks,
+entirely on one consumer machine (Apple M-series, 64GB). We additionally measure the
+effect of (a) multi-agent review and (b) LoRA "genome" adaptation trained from the
+system's own usage, on the same weights. Every reported cell carries the exact command
+that reproduces it.
+
+## 1. Research questions
+
+- **RQ1 (models):** on identical harness + hardware, how do common open models rank,
+  and do smaller models beat larger fine-tunes (incl. Hermes-4.3-36B)?
+- **RQ2 (harnesses):** does an agentic loop with recovery/verification lift a FIXED
+  model over its one-shot self and over aider/opencode with the same weights?
+- **RQ3 (adaptation):** does a LoRA trained from the system's own successful acts lift
+  the same weights (before/after, no other change)?
+- **RQ4 (teaming):** does a reviewer persona lift a fixed model+harness?
+- **RQ5 (cost):** what do the wins cost — wall-clock and $/resolved-task on named
+  consumer hardware?
+
+## 2. Fairness protocol (binding)
+
+1. **Structural-first symmetric**: a 0% or degenerate cell in ANY arm (ours included)
+   is glass-boxed before it is reported — serving config, template mismatch, output
+   floor (mean tokens/task) — short of patching the competitor's repo. Degenerate
+   cells are flagged "serving suspect," re-run once, and never reported as a loss.
+2. **Champions, not strays**: competitor arms run the models their communities
+   recommend (documented per round with source links).
+3. **Replicate-then-compare**: before any cross-harness comparison ships, we reproduce
+   the competitor's own published number for that model+benchmark on our hardware,
+   within stated tolerance. Both rows appear.
+4. **No learning during exams**: models sit exams as fresh snapshots in isolated
+   lanes; no memory or gradient from exam content persists (proctored-exam protocol;
+   post-hoc amnesia flash where a living persona is examined).
+5. **Best-known config per model**: template from the GGUF itself, thinking mode per
+   the model card, per-model sampling where the card specifies it.
+6. **Everything ships**: honest zeros, suspect flags, and losses stay in the ledger
+   and the paper.
+
+## 3. Statistical plan
+
+- **Primary metric**: resolve/pass rate per (model × harness × benchmark) cell, with
+  **Wilson 95% intervals**. Pilot n=20 explicitly CANNOT separate 95% vs 80%
+  (intervals [76,99.9] vs [58,92] overlap) — pilots select candidates only.
+- **Definitive runs**: the FULL task set per benchmark (humaneval-rs: 164; polyglot:
+  225; SWE-lite slice: ≥25 instances), greedy decoding (temperature 0) so task count
+  is the sample size and runs are deterministic-reproducible; any stochastic arm gets
+  3 seeds with mean ± range.
+- **Paired comparison**: same task set for every arm → McNemar's test on paired
+  pass/fail for model-vs-model and harness-vs-harness claims; report discordant
+  counts, p-values, and effect sizes, not just rates.
+- **Multiple comparisons**: Holm-Bonferroni across the headline claims.
+- **Diversity**: ≥3 benchmark families (function-level, repo-edit/polyglot,
+  agentic/SWE) before any general claim; per-family results never pooled.
+
+## 4. Hardware & cost accounting
+
+Primary rig: MacBook (Apple M-series Pro, 64GB unified, named exactly in results).
+Secondary (planned): RTX 3090/5090-class. Per cell: wall-clock, generated tokens,
+tok/s, and $/resolved-task derived from measured watts × local energy price (and
+cloud-API list price for any cloud reference rows).
+
+## 5. Arms
+
+| arm | description |
+|---|---|
+| raw | one-shot against the model's /v1, no tools (oneshot runner) |
+| ours | this system's full act→observe loop, snapshot lane |
+| ours+team | + reviewer persona (RQ4) |
+| ours+genome | + LoRA from own usage, same weights baseline printed beside (RQ3) |
+| aider | aider CLI, its recommended config per model |
+| opencode | opencode, native-tool-call endpoint provided (fairness note) |
+
+## 6. Pilot results (2026-07-11/12, n=20 humaneval-rs, OURS arm only — candidates, NOT claims)
+
+Devstral-24B 19/20; Qwen2.5-Coder-14B 18/20 (67s); Qwen3-Coder-30B-A3B 18/20;
+Hermes-4.3-36B 16/20 (1129s); Hermes-3-8B 9/20; forged-4B flagged serving-suspect.
+Full table + replication commands: `cu benchmark/matrix`.
+
+## 7. Threats to validity (running list)
+
+- Single-machine, single-quantization (Q4_K_M) — quant sensitivity unmeasured.
+- humaneval family contamination risk in pretraining — mitigated by weighting
+  polyglot/SWE/mined-fresh tasks for headline claims.
+- Our harness co-evolved with Devstral (persona base) — home-field advantage named;
+  RQ2's fixed-model cross-harness design is the control.
+- Grader is rustc/pytest outcome-based — partial credit invisible.
