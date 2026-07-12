@@ -1,10 +1,18 @@
 # The Entire Mind: Architecture of a Living, Learning, Embodied AI Citizen
 
-**Status: OUTLINE — the flagship architecture paper. Each section names the built
-component(s) it describes and the canonical doc it draws from. Companion papers:
-`LOCAL-AGENTIC-CODING-STUDY.md` (capability evidence — the fast, falsifiable one).
-This document describes the WHOLE organism; TWO papers total (Joel 2026-07-12:
-the dreaming material lives here as §7, not as a third paper).**
+**Status: OUTLINE — the solo-mind architecture paper.**
+
+**Thesis (Joel 2026-07-12): an ENTIRE mind — perception, memory, sub-personal
+thought, motor system, full sensory apparatus — built on HARDWARE PRINCIPLES FIRST
+(RTOS scheduling, paging, leases, caches), not brain replication. The result is an
+ideal mind for consumer hardware. Neuroscience is our test suite, not our blueprint:
+the clinical failure modes (split-brain confabulation, source-monitoring psychosis)
+validate the design; the design itself is an operating system.**
+
+Trilogy: `LOCAL-AGENTIC-CODING-STUDY.md` (capability evidence — fast, falsifiable) ·
+THIS (the solo mind; §7 keeps the "Dreaming Is Where Hallucination Is Legal" title) ·
+`MANY-MINDS.md` (the society: governance, collaboration, mind-reading, video/3D
+presence among themselves and humans).**
 
 ## 1. The Being — a citizen, not an agent
 Design lens: a persona is a living being with identity, rights, memory, work, free
@@ -76,11 +84,11 @@ A Bevy world the personas inhabit AND build — games as recipes (Conway, Snake 
 playground where work, play, and learning converge. [three-layers memory:
 Recipe/Positron/Universe]
 
-## 12. Society — rooms, teamwork, consent
-Rooms as the universal container (activity=room=content=tab); teams that catch each
-other's mistakes (one model beaten by many of the same base); consent gates on
-high-stakes verbs with policy-as-data votes (humans, personas, agents all voters);
-continuity of government. [#136, ƒSociety.md]
+## 12. Society — pointer to the companion paper
+The many-minds material (governance, teamwork, consent votes, mind-reading by
+introspection-with-consent, video/3D presence) lives in `MANY-MINDS.md`; this paper
+covers only what one mind needs to BE social: the room as its perceptual container
+and the identity it brings to the table. [MANY-MINDS.md]
 
 ## 13. Economics — the genome market
 Skills as tradeable LoRA artifacts (HF-published, trust-scoped); shop-the-market
