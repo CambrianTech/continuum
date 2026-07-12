@@ -142,3 +142,21 @@ the roster.
   never printed as the opponent's loss.
 - The fight runs with the instrument we HAVE. Instrument gaps found mid-fight get
   fixed in follow-up rounds, not by pausing the war ([[the-fight-comes-first]]).
+
+## Round-1 status (2026-07-12 ~00:20, OURS arm pilots complete)
+
+| model | humaneval-rs (n=20 pilot) | wall |
+|---|---|---|
+| Devstral-24B | 95% | ~6 min |
+| Qwen2.5-Coder-32B | 95% | 4.1 min |
+| Qwen2.5-Coder-14B | 90% | **67 s** |
+| Qwen3-Coder-30B-A3B (champion) | 90% | 2.6 min |
+| Hermes-4.3-36B (their flagship) | 80% | 19 min |
+| Hermes-3-8B | 45% | ~6 min |
+| forged-4B | serving-suspect, re-run in flight | — |
+
+Pilot verdict: four common models beat the Hermes flagship through OURS; the 14B at
+17× its speed. n=20 = candidate-selection only (CIs overlap for the top cluster) —
+definitive full-set runs + raw/aider/opencode arms next per the paper's §3.
+Identity incident + fix during the round: #142 (serving plan swapped persona brains
+to the 36B; pinned back; eligibility flag filed). Paper: docs/papers/LOCAL-AGENTIC-CODING-STUDY.md.
