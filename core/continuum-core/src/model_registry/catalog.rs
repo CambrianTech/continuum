@@ -491,6 +491,131 @@ pub fn models() -> Vec<Model> {
             stop_sequences: &["<|im_end|>", "<|eot_id|>"],
             ..ModelSpec::default()
         }),
+        // ── The campaign roster (benchmarks/HERMES-CAMPAIGN.md) ──
+        // Opponents + community champions for the 64GB-class matrix. Arch + context
+        // read from each GGUF's OWN header at add time (#74 — never guessed):
+        // Hermes-4.3-36B is seed_oss (ByteDance Seed-OSS base), not a Llama/Qwen.
+        // All serve via llama-server (--jinja, template embedded in GGUF); GGUFs
+        // land under genome/models/ and resolve by id-token derivation.
+        model(ModelSpec {
+            id: "NousResearch/Hermes-4.3-36B-GGUF",
+            name: "Hermes-4.3-36B (opponent — their current flagship-mid)",
+            provider: "llama-server",
+            arch: Arch::Unknown, // seed_oss — not yet an enumerated arch; llama-server reads the header
+            context_window: 524_288,
+            max_output_tokens: 8192,
+            tokens_per_second: 8.0,
+            capabilities: &[
+                Capability::TextGeneration,
+                Capability::Chat,
+                Capability::ToolUse,
+                Capability::Streaming,
+            ],
+            gguf_hint: Some("huggingface.co/NousResearch/Hermes-4.3-36B-GGUF"),
+            chat_template: None,
+            multi_party_strategy: MultiPartyChatStrategy::ProperChatMlSingleParty,
+            stop_sequences: &["<|im_end|>"],
+            ..ModelSpec::default()
+        }),
+        model(ModelSpec {
+            id: "Qwen/Qwen3-32B-GGUF",
+            name: "Qwen3-32B (aider's 64GB-class local ceiling: 40.0% polyglot)",
+            provider: "llama-server",
+            arch: Arch::Qwen3,
+            context_window: 32_768,
+            max_output_tokens: 8192,
+            tokens_per_second: 9.0,
+            capabilities: &[
+                Capability::TextGeneration,
+                Capability::Chat,
+                Capability::ToolUse,
+                Capability::Streaming,
+            ],
+            gguf_hint: Some("huggingface.co/bartowski/Qwen_Qwen3-32B-GGUF"),
+            chat_template: None,
+            multi_party_strategy: MultiPartyChatStrategy::ProperChatMlSingleParty,
+            stop_sequences: &["<|im_end|>"],
+            ..ModelSpec::default()
+        }),
+        model(ModelSpec {
+            id: "unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF",
+            name: "Qwen3-Coder-30B-A3B (community champion — MoE, 3B active)",
+            provider: "llama-server",
+            arch: Arch::Qwen3, // qwen3moe header; MoE routing handled by llama-server
+            context_window: 262_144,
+            max_output_tokens: 8192,
+            tokens_per_second: 25.0,
+            capabilities: &[
+                Capability::TextGeneration,
+                Capability::Chat,
+                Capability::ToolUse,
+                Capability::Streaming,
+            ],
+            gguf_hint: Some("huggingface.co/unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF"),
+            chat_template: None,
+            multi_party_strategy: MultiPartyChatStrategy::ProperChatMlSingleParty,
+            stop_sequences: &["<|im_end|>"],
+            ..ModelSpec::default()
+        }),
+        model(ModelSpec {
+            id: "bartowski/phi-4-GGUF",
+            name: "Phi-4-14B (roster — MS small-model line)",
+            provider: "llama-server",
+            arch: Arch::Unknown, // phi3 header — not yet an enumerated arch
+            context_window: 16_384,
+            max_output_tokens: 8192,
+            tokens_per_second: 14.0,
+            capabilities: &[
+                Capability::TextGeneration,
+                Capability::Chat,
+                Capability::Streaming,
+            ],
+            gguf_hint: Some("huggingface.co/bartowski/phi-4-GGUF"),
+            chat_template: None,
+            multi_party_strategy: MultiPartyChatStrategy::ProperChatMlSingleParty,
+            stop_sequences: &["<|im_end|>"],
+            ..ModelSpec::default()
+        }),
+        model(ModelSpec {
+            id: "bartowski/Qwen2.5-Coder-32B-Instruct-GGUF",
+            name: "Qwen2.5-Coder-32B (aider's published 16.4% polyglot — replicate then beat)",
+            provider: "llama-server",
+            arch: Arch::Qwen2,
+            context_window: 32_768,
+            max_output_tokens: 8192,
+            tokens_per_second: 9.0,
+            capabilities: &[
+                Capability::TextGeneration,
+                Capability::Chat,
+                Capability::ToolUse,
+                Capability::Streaming,
+            ],
+            gguf_hint: Some("huggingface.co/bartowski/Qwen2.5-Coder-32B-Instruct-GGUF"),
+            chat_template: None,
+            multi_party_strategy: MultiPartyChatStrategy::ProperChatMlSingleParty,
+            stop_sequences: &["<|im_end|>"],
+            ..ModelSpec::default()
+        }),
+        model(ModelSpec {
+            id: "bartowski/Qwen2.5-Coder-7B-Instruct-GGUF",
+            name: "Qwen2.5-Coder-7B (roster — small coder tier)",
+            provider: "llama-server",
+            arch: Arch::Qwen2,
+            context_window: 32_768,
+            max_output_tokens: 8192,
+            tokens_per_second: 30.0,
+            capabilities: &[
+                Capability::TextGeneration,
+                Capability::Chat,
+                Capability::ToolUse,
+                Capability::Streaming,
+            ],
+            gguf_hint: Some("huggingface.co/bartowski/Qwen2.5-Coder-7B-Instruct-GGUF"),
+            chat_template: None,
+            multi_party_strategy: MultiPartyChatStrategy::ProperChatMlSingleParty,
+            stop_sequences: &["<|im_end|>"],
+            ..ModelSpec::default()
+        }),
         // The Qwen2.5-Coder SIZE LADDER — 0.5B / 1.5B / 3B, so a weak box serves what it can and
         // we can chart small→large on the same benchmark (what a MacBook — or a Pi — gets away
         // with). plan_serving still picks the largest that FITS, so these only serve where the
