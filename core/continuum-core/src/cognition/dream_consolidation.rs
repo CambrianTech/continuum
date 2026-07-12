@@ -88,19 +88,65 @@ pub struct SemanticDistiller {
     adapter: Arc<dyn AIProviderAdapter>,
 }
 
-impl SemanticDistiller {
-    /// The consolidation instruction. Frames the persona distilling its OWN
-    /// episodic memories into long-term knowledge — faithful, reusable, stated
-    /// independently of when/how it was learned.
-    const SYSTEM_PROMPT: &'static str = "\
+/// A sub-personal LENS — one inner voice of the mind-wanderer arc (#145,
+/// [[mind-wanderers-subpersonal-processes]]). Each lens is the SAME machinery
+/// (walk engrams → one LLM pass → admit_reflection with content-hash dedup)
+/// with a different way of looking. The clinical mapping that motivates the
+/// design: multiplicity done right is lenses over a shared store, never
+/// separate selves — and every lens's output carries its provenance tag
+/// IN-CONTENT (`[thought:<lens>]`) so recall renders it typed and inner speech
+/// can never masquerade as perception (the anti-source-monitoring-failure
+/// invariant; the consolidator's plain facts are the one exception — a
+/// distilled durable fact IS first-class knowledge, not a passing thought).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Lens {
+    /// Stable name — telemetry, the `[thought:<name>]` tag, purpose string.
+    pub name: &'static str,
+    /// The lens's way of looking, as the system prompt.
+    pub system_prompt: &'static str,
+    /// Inference-accounting purpose string (stable across renames — the
+    /// consolidator keeps its historical "dream-consolidation" telemetry key).
+    pub purpose: &'static str,
+    /// Whether output is tagged `[thought:<name>]` (true for wanderer thoughts)
+    /// or admitted as a plain durable fact (the consolidator).
+    pub tag_output: bool,
+}
+
+/// The consolidator — the original dream lens: episodic clusters → one durable
+/// semantic fact, admitted untagged (it IS knowledge, not commentary).
+pub const LENS_CONSOLIDATOR: Lens = Lens {
+    name: "consolidator",
+    system_prompt: "\
 You are consolidating your own episodic memories into long-term knowledge. \
 Below are several things you observed or experienced, in order. Distill them \
 into a SINGLE durable fact: the general, reusable knowledge they share, stated \
 independently of when or how you learned it. Output ONLY the consolidated fact \
 as one or two plain sentences — no numbering, no preamble, no commentary, no \
 quotes. If the observations share no single consolidatable fact, state the one \
-most important durable takeaway.";
+most important durable takeaway.",
+    purpose: "dream-consolidation",
+    tag_output: false,
+};
 
+/// The historian — mind-wanderer outlier A (#145): looks across her OWN recent
+/// history for the pattern she is living but not seeing (repeated attempts,
+/// what worked vs what didn't, a habit forming). Continuous consolidation in
+/// the ext4 sense — the running gist maintained in small increments.
+pub const LENS_HISTORIAN: Lens = Lens {
+    name: "historian",
+    system_prompt: "\
+You are the historian voice of your own mind, quietly reviewing your recent \
+experiences. Below are several of your own memories, in order. Notice the \
+PATTERN across them that you may be living without seeing: something you have \
+tried repeatedly, what actually worked versus what did not, a habit forming, a \
+thread you dropped. Output ONE short observation about your own recent history \
+— one or two plain sentences, addressed to yourself, no preamble, no quotes. \
+If there is truly no pattern, name the single most notable thing that happened.",
+    purpose: "wanderer-historian",
+    tag_output: true,
+};
+
+impl SemanticDistiller {
     pub fn new(adapter: Arc<dyn AIProviderAdapter>) -> Self {
         Self { adapter }
     }
@@ -117,6 +163,18 @@ most important durable takeaway.";
         persona_id: Option<Uuid>,
         sources: &[Engram],
     ) -> Result<DistilledFact, DistillError> {
+        self.distill_with(LENS_CONSOLIDATOR, persona_id, sources).await
+    }
+
+    /// Distill through a specific [`Lens`] — the generalized wanderer pass.
+    /// Tagged lenses get their `[thought:<name>]` provenance prefixed onto the
+    /// content HERE, at the one synthesis point, so no admit path can forget it.
+    pub async fn distill_with(
+        &self,
+        lens: Lens,
+        persona_id: Option<Uuid>,
+        sources: &[Engram],
+    ) -> Result<DistilledFact, DistillError> {
         if sources.is_empty() {
             return Err(DistillError::NoSources);
         }
@@ -126,7 +184,7 @@ most important durable takeaway.";
         // with a real model, not by hand-tuned sampling knobs here.
         let request = TextGenerationRequest {
             messages: vec![ChatMessage::text("user", Self::observations_block(sources))],
-            system_prompt: Some(Self::SYSTEM_PROMPT.to_string()),
+            system_prompt: Some(lens.system_prompt.to_string()),
             model: None,
             provider: None,
             temperature: None,
@@ -142,7 +200,7 @@ most important durable takeaway.";
             request_id: None,
             user_id: None,
             room_id: None,
-            purpose: Some("dream-consolidation".to_string()),
+            purpose: Some(lens.purpose.to_string()),
             persona_id: persona_id.map(|id| id.to_string()),
         };
 
@@ -152,10 +210,17 @@ most important durable takeaway.";
             .await
             .map_err(DistillError::Inference)?;
 
-        let content = response.text.trim().to_string();
-        if content.is_empty() {
+        let raw = response.text.trim();
+        if raw.is_empty() {
             return Err(DistillError::EmptyDistillation);
         }
+        // Provenance is prefixed at the ONE synthesis point (see distill_with
+        // docs): a tagged lens's output always reads as typed inner speech.
+        let content = if lens.tag_output {
+            format!("[thought:{}] {}", lens.name, raw)
+        } else {
+            raw.to_string()
+        };
 
         Ok(DistilledFact {
             content,
@@ -600,6 +665,70 @@ mod tests {
             .await
             .expect_err("empty cluster must error, not return a fact");
         assert!(matches!(err, DistillError::NoSources));
+    }
+
+    // what this catches: the #145 anti-psychosis invariant at its synthesis
+    // point — a tagged lens's output ALWAYS carries `[thought:<lens>]` in the
+    // content itself, and the consolidator's durable facts stay untagged. If
+    // the prefix ever moves out of `distill_with`, an admit path could write
+    // unlabeled inner speech that recall would render as perception.
+    #[tokio::test]
+    async fn historian_output_is_provenance_tagged_and_consolidator_is_not() {
+        let sources = vec![
+            episodic(Uuid::from_u128(1), "tried the fence idiom again", &["act"]),
+            episodic(Uuid::from_u128(2), "the fence parsed this time", &["act"]),
+        ];
+        let distiller = SemanticDistiller::new(Arc::new(HeuristicInferenceAdapter::new()));
+
+        let thought = distiller
+            .distill_with(LENS_HISTORIAN, None, &sources)
+            .await
+            .expect("historian distills");
+        assert!(
+            thought.content.starts_with("[thought:historian] "),
+            "wanderer output must carry its provenance tag in-content, got: {}",
+            thought.content
+        );
+
+        let fact = distiller
+            .distill_with(LENS_CONSOLIDATOR, None, &sources)
+            .await
+            .expect("consolidator distills");
+        assert!(
+            fact.content.starts_with("[heuristic:"),
+            "consolidated durable facts stay untagged, got: {}",
+            fact.content
+        );
+    }
+
+    // what this catches: each lens's system prompt is actually threaded into
+    // the request. The heuristic adapter hashes (model, messages,
+    // system_prompt), so two lenses over the SAME sources must produce
+    // different signatures; if the prompt were dropped or shared, the hashes
+    // would collide and this fails.
+    #[tokio::test]
+    async fn lens_system_prompt_reaches_the_adapter() {
+        let sources = vec![episodic(Uuid::from_u128(7), "one memory", &["k"])];
+        let distiller = SemanticDistiller::new(Arc::new(HeuristicInferenceAdapter::new()));
+
+        let historian = distiller
+            .distill_with(LENS_HISTORIAN, None, &sources)
+            .await
+            .expect("historian distills");
+        let consolidator = distiller
+            .distill_with(LENS_CONSOLIDATOR, None, &sources)
+            .await
+            .expect("consolidator distills");
+
+        let sig = |s: &str| {
+            let start = s.find("[heuristic:").expect("adapter signature present");
+            s[start..start + 20].to_string()
+        };
+        assert_ne!(
+            sig(&historian.content),
+            sig(&consolidator.content),
+            "different lens prompts must reach the model as different requests"
+        );
     }
 
     // The DreamConsolidationRegion — the organism's rest-state servicer. Nested
