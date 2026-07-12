@@ -2,9 +2,9 @@
 
 **Status: OUTLINE — the flagship architecture paper. Each section names the built
 component(s) it describes and the canonical doc it draws from. Companion papers:
-`LOCAL-AGENTIC-CODING-STUDY.md` (capability evidence) and the planned
-"Dreaming Is Where Hallucination Is Legal" (sub-personal cognition). This document
-describes the WHOLE organism.**
+`LOCAL-AGENTIC-CODING-STUDY.md` (capability evidence — the fast, falsifiable one).
+This document describes the WHOLE organism; TWO papers total (Joel 2026-07-12:
+the dreaming material lives here as §7, not as a third paper).**
 
 ## 1. The Being — a citizen, not an agent
 Design lens: a persona is a living being with identity, rights, memory, work, free
@@ -44,7 +44,7 @@ with evidence-scaled bids; working memory carrying act receipts; durable room
 transcript + mind persistence across shutdowns (sleep/wake, grid-synced — one live
 node keeps every mind). [engram.rs, #138, #140]
 
-## 7. The Sub-personal Layer — wanderers and dreams
+## 7. Dreaming Is Where Hallucination Is Legal — the sub-personal layer
 Tiny lens-processes (historian/critic/connector/risk/forager) on idle cadence over
 engrams; provenance-typed inner speech as the sanity invariant (the split-brain/
 schizophrenia mapping); dreams as day-residue replay + nightmare threat-simulation;
