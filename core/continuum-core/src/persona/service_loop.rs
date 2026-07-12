@@ -1365,6 +1365,49 @@ pub(crate) fn build_workspace_turns(
             }
         }
     }
+
+    // WAKE BRIEFING (#147): when a wake carries NO conversation at all — fresh
+    // spawn, post-restart, a quiet room — her first perception is ORIENTATION
+    // assembled from durable sources instead of a void. The personas spent a
+    // morning asking for exactly this in their own words ("what is this place,
+    // what are my tools, what's the work") and, void unfilled, filled it
+    // themselves: generic-assistant masks, imagined histories, false capability
+    // denials. An authorless opaque FACT block (same shape as [pattern]) —
+    // orientation, never instruction ([[no-hardcoded-heuristics-to-steer-cognition]]).
+    if turns.is_empty() {
+        let peers: Vec<&str> = deliveries
+            .iter()
+            .filter(|d| d.source_id == "room-roster")
+            .flat_map(|d| d.items.iter())
+            .filter_map(|i| i.metadata.get("display_name").and_then(|v| v.as_str()))
+            .filter(|n| *n != agent_name)
+            .take(8)
+            .collect();
+        let cards: Vec<&str> = deliveries
+            .iter()
+            .filter(|d| d.source_id == "active-work")
+            .flat_map(|d| d.items.iter())
+            .filter_map(|i| i.content.trim().lines().next())
+            .filter(|l| !l.is_empty())
+            .take(5)
+            .collect();
+        let mut b = format!(
+            "[wake] You are {agent_name}, awake on the continuum grid. Nothing has              been said in this room since you last looked — this quiet is real, not              a missing message."
+        );
+        if !peers.is_empty() {
+            b.push_str(&format!(" Present with you: {}.", peers.join(", ")));
+        }
+        if cards.is_empty() {
+            b.push_str(" No work cards are visible to you right now.");
+        } else {
+            b.push_str(&format!(" Standing work in this room: {}.", cards.join(" | ")));
+        }
+        b.push_str(
+            " Your tools are real and yours to use; `list_commands` shows everything              you can run and `help` explains any of them. The moment is yours —              work, wonder, create, or rest.",
+        );
+        turns.push(crate::cognition::workspace::BurstTurn::opaque(b));
+    }
+
     turns
 }
 
@@ -1686,6 +1729,39 @@ async fn next_event(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches: #147 — a wake with NO conversation must carry the
+    // orientation briefing, not a void (the void gets filled with imagined
+    // history / generic-assistant masks, observed all morning 2026-07-12).
+    // A wake WITH conversation must NOT carry it (orientation is for voids).
+    #[test]
+    fn empty_wake_carries_the_briefing_and_populated_wake_does_not() {
+        let turns = build_workspace_turns(&[], "peer-1", "Asha", None);
+        assert_eq!(turns.len(), 1);
+        assert!(
+            turns[0].content.starts_with("[wake] You are Asha"),
+            "got: {}",
+            turns[0].content
+        );
+        assert!(turns[0].content.contains("list_commands"));
+
+        let delivery = crate::persona::rag_budget::RagDelivery {
+            source_id: "airc".to_string(),
+            items: vec![crate::persona::rag_budget::RagItem {
+                content: "hello there".to_string(),
+                tokens: 0,
+                metadata: serde_json::json!({ "peer_id": "peer-2" }),
+            }],
+            tokens_used: 0,
+            continuation: None,
+            resolution_used: crate::persona::rag_budget::ResolutionPreference::Raw,
+        };
+        let turns = build_workspace_turns(&[delivery], "peer-1", "Asha", None);
+        assert!(
+            !turns.iter().any(|t| t.content.starts_with("[wake]")),
+            "populated wake must not carry the briefing"
+        );
+    }
     use crate::ai::HeuristicInferenceAdapter;
     use crate::modules::persona_instance_manager::PersonaInstanceInfo;
     use crate::persona::airc_citizen::StubAircCitizen;
