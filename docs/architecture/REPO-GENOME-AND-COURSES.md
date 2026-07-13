@@ -303,3 +303,31 @@ bots — the layer IS the product). No one repeats work at any scale: every
 correction ever made flows into layers/engrams that every future worker of
 any size inherits. The compounding is multiplicative across repos × models
 × workers — the "high numeric exponent."
+
+## 16. Lineage, impact, and the layer economy (Joel — mostly already built)
+
+- **Only smarter layers check in:** every layer lands with its benchmark
+  scores (the with/without arms, §11); merge is LIFT-GATED — the existing
+  lift>0 rule generalized to "beats the incumbent cell or doesn't merge."
+  Forking is first-class: fork a layer, train divergently, both lineages
+  persist with their own scores.
+- **Lineage = Merkle family tree (forge-alloy):** every layer's manifest
+  entry carries parent digests + the alloy attestation of its training run
+  (corpus hash, recipe, eval) — a perfectly maintained, verifiable family
+  tree from base model to every descendant. Already the forge-alloy core;
+  this just points it at layers.
+- **Impact metrics, journal-style:** adoption count, fork count,
+  descendant-lift (how much smarter your children are), recall-hit rates —
+  an impact factor per layer/author, computed from telemetry the grid
+  already emits. Reviewable, gameable-resistant because scores are
+  attested benchmark runs, not stars.
+- **The economy (LAST, on real artifacts):** with verified lineage + impact,
+  revenue sharing and the alt-coin ideas become bookkeeping on top of the
+  attestation chain — value flows to the family tree proportional to
+  measured impact. Not built until the market has real artifacts to price.
+
+**The order (canonical):** current cognition queue → institution slices 1-3
+(courses, quiz, first layer) → lift-gated check-ins (rule exists) →
+lineage attestation on every layer (forge-alloy pointed at manifests) →
+impact telemetry → economy. Each stage ships value alone; none blocks the
+previous.
