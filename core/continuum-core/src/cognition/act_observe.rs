@@ -397,16 +397,18 @@ pub async fn apply_act(
     // what happened, never what to do next.
     let tally = body.working_memory.action_verb_tally();
     let tally_total: usize = tally.iter().map(|(_, c)| c).sum();
-    if tally_total >= 3 {
+    // Recorded as its own FACT entry below (never folded into the receipt):
+    // the tally is truth ABOUT the acts, not an act — folding it in gave a
+    // Fact receipt-numbering (found in Asha's volatile.json, the exact type
+    // confusion WmKind exists to kill).
+    let tally_fact = (tally_total >= 3).then(|| {
         let dist = tally
             .iter()
             .map(|(n, c)| format!("{n} ×{c}"))
             .collect::<Vec<_>>()
             .join(", ");
-        observation = format!(
-            "[investigation] my acts this concern so far: {dist}.\n\n{observation}"
-        );
-    }
+        format!("[investigation] my acts this concern so far: {dist}.")
+    });
 
     // Admit the outcome as an Episodic engram through the ONE production admit
     // path (a self-observation message from the persona to itself). This is the
@@ -451,6 +453,9 @@ pub async fn apply_act(
     // work with what it just fetched) and derives the trail head itself. This is the fix
     // for live agents being starved to the head of their own tool results.
     body.working_memory.record_receipt(&observation);
+    if let Some(f) = &tally_fact {
+        body.working_memory.record_fact(f);
+    }
 
     crate::probe!(
         class = "persona.act.observed",
