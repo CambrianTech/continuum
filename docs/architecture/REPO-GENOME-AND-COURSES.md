@@ -245,3 +245,18 @@ tasks (SWE-style) — which is the paper's cleanest possible figure.
   integration is a subagent-shaped adapter: Task(persona) routes to the
   room, acceptance = receipts. Global adoption of repo layers makes
   "collaborative with brilliance" the default state of any codebase.
+
+## 13. Shared thoughts: engram exports in-tree (Joel)
+
+`.continuum/engrams/` — curated engram-ORM EXPORTS checked into the same
+cascade: not just the genome (weights) but the repo's shared MEMORY. Atlas's
+"code/list needs exact paths" lesson, glass-boxed gotchas, design decisions —
+exported as engram files, loaded into any visiting persona's recall on
+attach. The RAG-tier sibling of the layer: weights = intuition, engrams =
+recallable knowledge, courses = the path between them.
+
+**Cascade semantics (canonical):** home `~/.continuum` < repo root
+`.continuum/` < subdir `.continuum/` — same tree shape at every level,
+resolution is ADDITIVE (deeper levels extend and override, never replace
+wholesale). One mental model for scope, policies, courses, genome manifest,
+and engrams alike.
