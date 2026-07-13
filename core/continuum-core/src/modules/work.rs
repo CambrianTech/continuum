@@ -78,92 +78,35 @@ fn parse_priority(s: &str) -> Priority {
     }
 }
 
-fn parse_card_id(s: &str) -> Result<WorkCardId, CommandError> {
-    Uuid::parse_str(s)
-        .map(WorkCardId::from_uuid)
-        .map_err(|e| CommandError::Invalid(format!("invalid card_id '{s}': {e}")))
-}
-
-/// How a raw `card_id` string should be looked up: a clean full UUID, a leading
-/// short-id prefix to resolve against the board, or genuinely unusable.
-#[derive(Debug, PartialEq, Eq)]
-enum CardIdLookup {
-    Full(Uuid),
-    Prefix(String),
-    Invalid,
-}
-
-/// Decide how to look up a `card_id` string — the PURE half of [`resolve_card_id`]
-/// (board-free, so unit-testable). Handles the three live shapes:
-///  1. a clean UUID (dashed or 32-char simple) → [`CardIdLookup::Full`];
-///  2. a mistyped-length near-UUID → strip separators; a clean 32-hex run is a
-///     full id, otherwise take the LEADING 8 hex chars (the board's short-id
-///     width) as a prefix to resolve. A model reliably corrupts a UUID by
-///     adding/dropping ONE character mid-string (glass-boxed 2026-07-13: 28% of
-///     live work/claim calls — `d7cfe47e0-8e39-…` 9-char first group; a 33-hex
-///     variant), but the leading short id is intact, so leading-8 still resolves;
-///  3. under 4 hex digits (nothing to disambiguate) → [`CardIdLookup::Invalid`].
-/// Capping the needle at 8 avoids a corrupted middle character making a longer
-/// needle miss a card it should match.
-fn card_id_lookup(s: &str) -> CardIdLookup {
-    let s = s.trim();
-    if let Ok(id) = Uuid::parse_str(s) {
-        return CardIdLookup::Full(id);
-    }
-    let hex: String = s.chars().filter(|c| c.is_ascii_hexdigit()).collect();
-    if hex.len() == 32 {
-        if let Ok(id) = Uuid::parse_str(&hex) {
-            return CardIdLookup::Full(id);
-        }
-    }
-    if hex.len() < 4 {
-        return CardIdLookup::Invalid;
-    }
-    CardIdLookup::Prefix(hex.chars().take(8).collect::<String>().to_ascii_lowercase())
-}
-
 /// Resolve a card id THE WAY THE BOARD TEACHES IT. The board projection renders
 /// cards with 8-char short ids (`card 08ece9e8 [Open]`); the lifecycle verbs
 /// demanded the full 32-char UUID, so a persona quoting the id she was SHOWN
 /// was rejected — glass-boxed 2026-07-10 minutes after the verbs opened: Anwen
 /// AND Asha both executed real `work/claim({"card_id":"08ece9e8"})` calls and
 /// both bounced on "expected length 32". A handle a projection displays must
-/// be accepted by the verbs that consume it (positron consistency). Full UUIDs
-/// still parse directly; a hex prefix (≥4 chars) resolves against the live
-/// board — exactly one match wins, zero/many fail loud with what WAS found.
+/// be accepted by the verbs that consume it (positron consistency).
+///
+/// The prefix/near-miss decision + candidate resolution now live in the shared
+/// [`crate::id_resolve`] primitive (this was the proven outlier it was lifted
+/// from); here we supply the ONLY card-specific knowledge — the candidate set is
+/// the live board's card ids.
 async fn resolve_card_id(
     airc: &std::sync::Arc<airc_lib::Airc>,
     s: &str,
 ) -> Result<WorkCardId, CommandError> {
-    let needle = match card_id_lookup(s) {
-        CardIdLookup::Full(id) => return Ok(WorkCardId::from_uuid(id)),
-        CardIdLookup::Prefix(p) => p,
-        CardIdLookup::Invalid => return parse_card_id(s), // fail with the real parse error
-    };
+    // Fast path: a clean UUID needs no board read.
+    if let crate::id_resolve::IdMatch::Full(id) = crate::id_resolve::normalize(s) {
+        return Ok(WorkCardId::from_uuid(id));
+    }
     let board = airc
         .work_board_complete(airc_lib::WORK_BOARD_PROJECTION_PAGE_SIZE)
         .await
         .map_err(|e| CommandError::Internal(format!("board read for id resolution: {e}")))?
         .snapshot();
-    let matches: Vec<&airc_lib::WorkCard> = board
-        .cards
-        .iter()
-        .filter(|c| c.card_id.as_uuid().simple().to_string().starts_with(&needle))
-        .collect();
-    match matches.as_slice() {
-        [one] => Ok(one.card_id),
-        [] => Err(CommandError::Invalid(format!(
-            "no card on this room's board matches id prefix '{s}' — check the              [room-kanban] block for current card ids"
-        ))),
-        many => Err(CommandError::Invalid(format!(
-            "id prefix '{s}' is ambiguous ({} cards match: {}) — give more characters",
-            many.len(),
-            many.iter()
-                .map(|c| c.card_id.as_uuid().simple().to_string()[..12].to_string())
-                .collect::<Vec<_>>()
-                .join(", ")
-        ))),
-    }
+    let candidates: Vec<Uuid> = board.cards.iter().map(|c| c.card_id.as_uuid()).collect();
+    crate::id_resolve::resolve(s, &candidates, "card")
+        .map(WorkCardId::from_uuid)
+        .map_err(CommandError::Invalid)
 }
 
 fn parse_claim_id(s: &str) -> Result<ClaimId, CommandError> {
@@ -502,37 +445,26 @@ impl ServiceModule for WorkModule {
 mod tests {
     use super::*;
 
-    // what this catches: work/claim id resolution (#161) — mined 2026-07-13, 28% of
-    // live claims failed because the model corrupts a UUID by adding/dropping ONE
-    // char, and the clean parser rejected the near-miss outright. card_id_lookup must
-    // (a) accept clean UUIDs (dashed + simple) as Full, (b) rescue a mistyped-length
-    // near-UUID via its intact leading short-id prefix, (c) fail loud only when there
-    // is no usable prefix. This is the board-free half; board disambiguation is tested
-    // live. Prefix cap is 8 (the board's displayed short-id width).
+    // what this catches: work/claim id resolution (#161) still rescues the exact
+    // live corruptions after the prefix/near-miss logic moved to the shared
+    // crate::id_resolve primitive (#164). Regression pin for the CARD side: the two
+    // glass-boxed 2026-07-13 corruptions (9-char first group; a 33-hex variant)
+    // classify as a prefix on the intact leading-8 short id, and a bare 8-char short
+    // id (what the board shows) does too — so resolve_card_id will expand them
+    // against the live board. The pure primitive's full contract is tested in
+    // crate::id_resolve; this proves the card verb delegates to it correctly.
     #[test]
-    fn card_id_lookup_rescues_mistyped_uuids_via_leading_short_id() {
-        // (a) clean dashed UUID → Full
-        let clean = "d7cfe47e-8e39-41f5-bb2a-4e5d36e558e1";
-        assert!(matches!(card_id_lookup(clean), CardIdLookup::Full(_)));
-        // clean 32-char simple (no dashes) → Full
-        assert!(matches!(card_id_lookup("d7cfe47e8e3941f5bb2a4e5d36e558e1"), CardIdLookup::Full(_)));
-        // (b) the exact live corruptions: 9-char first group, and a 33-hex variant —
-        //     both rescued to the intact leading-8 short id.
+    fn card_ids_rescue_mistyped_forms_via_shared_id_resolve() {
+        use crate::id_resolve::{normalize, IdMatch};
+        assert!(matches!(normalize("d7cfe47e-8e39-41f5-bb2a-4e5d36e558e1"), IdMatch::Full(_)));
         assert_eq!(
-            card_id_lookup("d7cfe47e0-8e39-41f5-bb2a-4e5d36e558e1"),
-            CardIdLookup::Prefix("d7cfe47e".to_string())
+            normalize("d7cfe47e0-8e39-41f5-bb2a-4e5d36e558e1"),
+            IdMatch::Prefix("d7cfe47e".to_string())
         );
         assert_eq!(
-            card_id_lookup("d7cfe47e08e3941f5bb2a4e5d36e558e1"), // 33 hex chars
-            CardIdLookup::Prefix("d7cfe47e".to_string())
+            normalize("d7cfe47e08e3941f5bb2a4e5d36e558e1"), // 33 hex chars
+            IdMatch::Prefix("d7cfe47e".to_string())
         );
-        // a bare 8-char short id (what the board shows) → Prefix, unchanged
-        assert_eq!(
-            card_id_lookup("08ece9e8"),
-            CardIdLookup::Prefix("08ece9e8".to_string())
-        );
-        // (c) nothing usable → Invalid (fails loud downstream with the real parse error)
-        assert_eq!(card_id_lookup("xyz"), CardIdLookup::Invalid);
-        assert_eq!(card_id_lookup(""), CardIdLookup::Invalid);
+        assert_eq!(normalize("08ece9e8"), IdMatch::Prefix("08ece9e8".to_string()));
     }
 }

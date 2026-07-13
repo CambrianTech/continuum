@@ -42,6 +42,7 @@ pub mod genome;
 pub mod governor;
 pub mod gpu;
 pub mod http;
+pub mod id_resolve;
 pub mod identity;
 pub mod inference;
 pub mod inference_capability;
