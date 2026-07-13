@@ -258,16 +258,24 @@ fn working_context_block(context: &str) -> Option<String> {
         return None;
     }
     let mut s = String::with_capacity(context.len() + 256);
-    s.push_str(
-        "\n\n[What you are working with right now]\n\
-         The following is the context your mind assembled this moment — \
-         recalled memory, who is present, the room's nature, your read of \
-         the situation. Ground your contribution in it; you need not cite \
-         every line:\n",
-    );
+    s.push_str(WORKING_CONTEXT_HEADER);
     s.push_str(context);
     Some(s)
 }
+
+/// The wrapper the working-context block prepends to a NON-empty assembled
+/// context. `pub(super)` so the faculty's budget math can charge the ctx
+/// budget for it (est_tokens of this constant): the framing estimate is
+/// taken with an EMPTY context — where this wrapper is absent — so without
+/// the explicit charge the final system prompt exceeds the estimate by
+/// exactly this header whenever any context renders (a systematic ~50-token
+/// under-count, masked by rounding slop until the tool-menu example grew the
+/// prompt to the budget edge, 2026-07-13).
+pub(super) const WORKING_CONTEXT_HEADER: &str = "\n\n[What you are working with right now]\n\
+     The following is the context your mind assembled this moment — \
+     recalled memory, who is present, the room's nature, your read of \
+     the situation. Ground your contribution in it; you need not cite \
+     every line:\n";
 
 #[cfg(test)]
 mod tests {

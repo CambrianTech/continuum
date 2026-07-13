@@ -691,11 +691,19 @@ impl LlmDeliberationFaculty {
         let msg_budget = budget.saturating_sub(framing_tokens);
         let messages = self.messages_within(ws, msg_budget);
 
-        // Whatever remains after framing + conversation goes to enrichment context.
+        // Whatever remains after framing + conversation goes to enrichment
+        // context. The framing estimate above was taken with an EMPTY context,
+        // where `working_context_block`'s wrapper header is absent — so the
+        // moment any context renders, the system prompt grows by that header
+        // too. Charge the context budget for it up front, or the final prompt
+        // systematically exceeds the estimate by ~50 tokens (masked by
+        // rounding slop until the tool-menu example grew the prompt to the
+        // budget edge — glass-boxed 2026-07-13, llama-server 400 territory).
         let used_msg_tokens: usize = messages.iter().map(|m| est_tokens(&m.content_text())).sum();
         let ctx_budget = budget
             .saturating_sub(framing_tokens)
-            .saturating_sub(used_msg_tokens);
+            .saturating_sub(used_msg_tokens)
+            .saturating_sub(est_tokens(deliberation_prompt::WORKING_CONTEXT_HEADER));
         let context = self.render_assembled_context_within(ws, ctx_budget);
 
         DeliberationPromptView {
@@ -804,92 +812,29 @@ impl LlmDeliberationFaculty {
             .map(|(role, lines)| ChatMessage::text(role, lines.join("\n")))
             .collect();
 
-        // Her OWN-SPEECH repetition, rendered as a structural fact when the
-        // trailing run of her own turns is a measured loop (#134 — detection on
-        // the RAW turns, so byte-identical repeats the dup-drop hides from the
-        // render still count as evidence). Appended as the NEWEST user content so
-        // it always survives the newest-first budget fit and sits adjacent to the
-        // moment of reply. A fact, never an instruction.
+        // PERCEPTION FACTS (docs/architecture/PERCEPTION-FACTS.md slice 2b):
+        // own-repetition (#134), peer-echo (#152), [context] bounds (#152),
+        // and the steps-taken ledger (#151) render through ONE ordered
+        // registry — one seam to add a fact, a `perception.fact` probe per
+        // fact per tick, and `FactPolicy` toggles as A/B arms. Each fact's
+        // full history and doctrine lives on its impl in perception_facts.rs.
+        // Appended as the NEWEST user content so facts always survive the
+        // newest-first budget fit and sit adjacent to the moment of reply.
+        // Facts, never instructions ([[no-hardcoded-heuristics-to-steer-
+        // cognition]]).
         let spoken = super::deliberation_budget::recent_own_speech(
             crate::identity::PeerId::from_uuid(self.persona_id),
         );
-        if let Some(fact) = super::deliberation_budget::own_repetition_fact(&ws.turns, &spoken) {
-            messages.push(ChatMessage::text("user", fact));
-        }
-
-        // The PEER-ECHO sibling (#152): her last utterance reproducing a
-        // TEAMMATE's message is invisible to the self-detector (the ring is
-        // per-persona). Same geometry, cross-persona axis — the 4-way
-        // mirror-hall of 2026-07-12 ran 90 minutes because nobody PERCEIVED
-        // they were copying. A fact, never an instruction.
-        if let Some(fact) = super::deliberation_budget::peer_echo_fact(
-            &ws.turns,
-            spoken.last().map(String::as_str),
+        let fact_cx = super::perception_facts::FactContext {
+            turns: &ws.turns,
+            own_speech: &spoken,
+            working_memory: self.working_memory.as_ref(),
+        };
+        for fact in super::perception_facts::render_facts(
+            &fact_cx,
+            &super::perception_facts::FactPolicy::default(),
         ) {
             messages.push(ChatMessage::text("user", fact));
-        }
-
-        // The [context] BOUNDS fact (#152, the conversational-memory sibling
-        // of [actions]): perception states how much history is actually
-        // visible, so "as discussed earlier" claims about turns outside the
-        // window are checkable against her own senses instead of assumed.
-        // Design law: every void in perception must be perceptible AS a void.
-        let visible = ws.turns.len();
-        messages.push(ChatMessage::text(
-            "user",
-            format!(
-                "[context] you can currently see the last {visible} message{} of this conversation — anything earlier is not in view unless you recall it from memory",
-                if visible == 1 { "" } else { "s" }
-            ),
-        ));
-
-        // The RECEIPTS ground truth (#151, the organic successor to claim-
-        // pattern detection): whether any tool has actually executed is HER
-        // OWN checkable fact, not something to infer from her words. When no
-        // [action #n] receipt is visible anywhere in her present (workspace
-        // broadcast or her own turns), perception says so plainly — one
-        // standing fact that makes a fabricated "I ran it and here are the
-        // results" impossible to sustain against her own senses. When receipts
-        // DO exist they speak for themselves; this is only the zero-case made
-        // visible. A fact, never an instruction ([[no-hardcoded-heuristics-
-        // to-steer-cognition]]).
-        // Digit-aware: the proprioception teaching texts mention the literal
-        // placeholder "[action #n]", and a bare substring match read the
-        // MENTION as a receipt — the [actions] zero-fact vanished from every
-        // prompt the moment any backstop fact rendered (glass-boxed
-        // 2026-07-12: the medicine suppressed the diagnosis).
-        // …and PRESENT-tense: recalled engrams surface receipts from EARLIER
-        // sessions ("[action #1] I ran code/shell…", July 10-11 lives), and a
-        // provenance-blind scan read history as the present — the zero-fact
-        // stayed suppressed all afternoon on a day with zero executions
-        // (glass-boxed 16:50 2026-07-12). [recall]-tagged items are memory,
-        // not receipts; only un-recalled broadcast + live turns ground "now".
-        // THE STEPS-TAKEN LEDGER (PERCEPTION-FACTS.md; Joel's console model:
-        // "very clearly laid out steps of what they've done — look at how
-        // yours looks now"). Ground truth becomes a PLACE in perception, not
-        // a prose claim a parsing bug can suppress: the prior [actions] fact
-        // survived three suppression layers in one afternoon (placeholder
-        // mentions, facts wearing receipt numbers, recalled-history receipts)
-        // precisely because it was string-derived. The ledger renders from
-        // TYPED WmKind::Receipt entries — nothing to misparse — and the
-        // zero-case is the always-present section itself, keeping the
-        // shelter-hardened semantics (an honest void must be EXPLICITLY
-        // empty, or it becomes a confabulation shelter — Anwen parked
-        // fabricated receipts in the disclosed blind spot within minutes of
-        // the [context] fact going live). A fact, never an instruction.
-        if let Some(wm) = &self.working_memory {
-            let steps: Vec<String> = wm
-                .recent_entries()
-                .into_iter()
-                .filter(|e| matches!(e.kind, super::working_memory::WmKind::Receipt { .. }))
-                .map(|e| e.text)
-                .collect();
-            let ledger = if steps.is_empty() {
-                "[steps taken this session]\n(nothing has executed yet — anything described as already run, created, tested, committed, or merged does not exist, whether in the messages you can see or before them; running a tool is what makes it real)".to_string()
-            } else {
-                format!("[steps taken this session]\n{}", steps.join("\n"))
-            };
-            messages.push(ChatMessage::text("user", ledger));
         }
 
         // An empty conversation is a legitimate state (a quiet room on a
@@ -911,18 +856,29 @@ impl LlmDeliberationFaculty {
         // flat head-trim: the latest activity always survives (it is what the turn is
         // about), and for the opaque single-turn (eval/test/replay) path it reduces
         // EXACTLY to the previous `tail_to_tokens(world_state, budget)` behavior.
+        // Per-message role/template framing the model pays: chat templates
+        // wrap each message in role markers (`<|im_start|>role\n…<|im_end|>`,
+        // ~4-5 tokens). The original +2 was optimistic — at the budget edge
+        // the fitted thread measured over the window by a token (glass-boxed
+        // 2026-07-13); round UP like every other estimate here (under-counting
+        // risks the llama-server 400, over-counting costs a few tokens of
+        // context). One constant for the whole-message, straddling-trim, and
+        // giant-single-burst arms — the charge must not drift between them.
+        const PER_MESSAGE_TEMPLATE_TOKENS: usize = 5;
         let mut fitted: Vec<ChatMessage> = Vec::new();
         let mut remaining = budget_tokens;
         for msg in messages.iter().rev() {
             let body = msg.content_text();
-            // +2 tokens for the per-message role/template framing the model pays.
-            let cost = est_tokens(&body) + 2;
+            let cost = est_tokens(&body) + PER_MESSAGE_TEMPLATE_TOKENS;
             if cost <= remaining {
                 remaining -= cost;
                 fitted.push(msg.clone());
             } else {
                 // The straddling message: keep as much of its TAIL as still fits.
-                let trimmed = tail_to_tokens(&body, remaining.saturating_sub(2));
+                let trimmed = tail_to_tokens(
+                    &body,
+                    remaining.saturating_sub(PER_MESSAGE_TEMPLATE_TOKENS),
+                );
                 if !trimmed.is_empty() {
                     fitted.push(ChatMessage::text(msg.role.clone(), trimmed));
                 }
@@ -934,7 +890,10 @@ impl LlmDeliberationFaculty {
         // model — mirroring the old guarantee that the burst was never dropped whole.
         if fitted.is_empty() {
             if let Some(last) = messages.last() {
-                let body = tail_to_tokens(&last.content_text(), budget_tokens.saturating_sub(2));
+                let body = tail_to_tokens(
+                    &last.content_text(),
+                    budget_tokens.saturating_sub(PER_MESSAGE_TEMPLATE_TOKENS),
+                );
                 return vec![ChatMessage::text(last.role.clone(), body)];
             }
         }
