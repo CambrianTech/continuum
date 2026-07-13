@@ -260,3 +260,32 @@ recallable knowledge, courses = the path between them.
 resolution is ADDITIVE (deeper levels extend and override, never replace
 wholesale). One mental model for scope, policies, courses, genome manifest,
 and engrams alike.
+
+## 14. Selective export — engrams "only of what to know" (Joel)
+
+Export is OPT-IN per engram, never a dump. Four nomination channels, all
+riding tracked provenance (we already record where she was, what tools, on
+what, when):
+
+1. **Self-nomination** — her own cognition marks it shareable ("worth
+   teaching"): a lightweight share verb, or the salience detector's
+   teach-tag. Her memory, her call — CONSENT is per-engram (dignity rule).
+2. **Demand-proven** — recalled repeatedly, by MULTIPLE personas: cross-
+   persona recall frequency is measured utility, not guessed.
+3. **Correction-minted** — the [unfulfilled]→success transition moment IS
+   the lesson (tonight's tool-name corrections are the archetype); minted
+   automatically at the transition, still consent-gated before export.
+4. **Consolidation output** — the historian/dream distillates (already
+   provenance-typed [thought:*]).
+
+**Deny-first filters before anything lands in-tree:** secrets/PII scanning;
+INTERPERSONAL content excluded by default (engrams about teammates,
+feelings, private exchanges stay private — only workspace/technical
+knowledge exports); provenance must anchor inside the scope file's allowed
+paths; unproven exports carry a TTL and age out unless recall-hits confirm.
+
+**Review like code:** exports land as a PR into `.continuum/engrams/` with
+the nomination reason + provenance attached — a human or persona reviews the
+diff of the repo's shared mind the same way they review its code. Clutter
+dies in review; sensitive material dies in filters; consent dies nothing —
+it was never taken without asking.
