@@ -12,7 +12,9 @@
 //! Uses the `sysinfo` crate for cross-platform (macOS/Linux/Windows) monitoring.
 
 pub mod concurrency;
+pub mod disk_eviction;
 pub mod disk_pressure;
+pub mod disk_reporters;
 pub mod memory_pressure;
 pub mod monitor;
 
@@ -21,6 +23,10 @@ pub use concurrency::local_inference_capacity;
 pub use disk_pressure::{
     is_disk_gate_closed, DiskPathReport, DiskPressureLevel, DiskPressureMonitor,
     DiskPressureSnapshot, DiskReporter,
+};
+pub use disk_eviction::{CargoTargetPool, DEFAULT_CARGO_TARGET_BUDGET_BYTES};
+pub use disk_reporters::{
+    install_tracked_dirs, standard_tracked_dirs, tracked_dir, DiskUsageScanner, TrackedDir,
 };
 pub use memory_pressure::{
     is_memory_gate_closed, MemoryBudgetAllocation, MemoryBudgetSnapshot, MemoryBudgetSpec,

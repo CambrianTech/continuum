@@ -1064,6 +1064,26 @@ pub fn start_server(
             .register(disk_pressure_monitor.clone() as Arc<dyn crate::paging::pool::ResourcePool>);
         broker.register(pressure_monitor.clone() as Arc<dyn crate::paging::pool::ResourcePool>);
 
+        // Cargo-target eviction owner (task #155 wire 2). The 2026-07-13
+        // incident: the broker spent days emitting the designed zero-byte
+        // "disk hot AND nobody owns the eviction" alerts while the unswept
+        // cargo-target cache reached 363 GB. This pool owns that class:
+        // budget-capped, flock-guarded against live builds, derived
+        // artifacts only (safe on any user's machine — the next build
+        // recreates everything it deletes). Shares its TrackedDir with the
+        // disk reporter — one measurement per class.
+        if let Some(cargo_dir) = crate::system_resources::tracked_dir("cargo-target") {
+            broker.register(Arc::new(crate::system_resources::CargoTargetPool::new(
+                cargo_dir,
+                crate::system_resources::DEFAULT_CARGO_TARGET_BUDGET_BYTES,
+            )) as Arc<dyn crate::paging::pool::ResourcePool>);
+            log_info!(
+                "ipc",
+                "server",
+                "CargoTargetPool registered with PressureBroker (budget-capped, flock-guarded)"
+            );
+        }
+
         // Wire the resource authority's per-kind lease pools onto the broker so
         // cross-resource pressure relief reaches VRAM/RAM/disk leases: when a
         // kind goes over its scanned ceiling (a game grabs VRAM), the broker's

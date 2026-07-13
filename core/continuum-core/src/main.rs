@@ -285,8 +285,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // env-tunable thresholds; this is the right shape (task #88).
     // Future PR: register as a ResourcePool with PressureBroker so disk
     // pressure participates in cross-resource tier-relief.
-    let disk_pressure_monitor =
-        continuum_core::system_resources::DiskPressureMonitor::start(Vec::new());
+    //
+    // Reporters (task #155 wire 1): this monitor previously started with
+    // ZERO reporters and spent the 2026-07-13 incident logging
+    // `level=high [no reporters]` while cargo-target grew to 363 GB — it
+    // could see root-fs pressure but could not NAME the culprit. Every
+    // known cache class now reports through a TrackedDir fed by the
+    // DiskUsageScanner daemon (one slow walker; reporters read atomics
+    // within the 100 ms budget).
+    let tracked_dirs = continuum_core::system_resources::standard_tracked_dirs(
+        &dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/")),
+    );
+    // Process-wide registry: the IPC thread's broker block fetches the
+    // SAME TrackedDir instances to build eviction pools over (one
+    // measurement per cache class, shared by reporter + pool).
+    continuum_core::system_resources::install_tracked_dirs(tracked_dirs.clone());
+    let _disk_usage_scanner =
+        continuum_core::system_resources::DiskUsageScanner::start(tracked_dirs.clone());
+    let disk_pressure_monitor = continuum_core::system_resources::DiskPressureMonitor::start(
+        tracked_dirs
+            .into_iter()
+            .map(|d| d as std::sync::Arc<dyn continuum_core::system_resources::DiskReporter>)
+            .collect(),
+    );
 
     // Start IPC server in background thread FIRST (creates socket immediately).
     // The thread publishes `ipc::subscribe_ready()`'s watch once the Unix
