@@ -325,6 +325,25 @@ pub(super) fn peer_stop_sequences(turns: &[BurstTurn]) -> Vec<String> {
     out
 }
 
+/// Stop sequences on the substrate's OWN reserved proprioception markers (#158).
+/// The prompt renders a persona's real acts as system-authored receipts —
+/// `[action #n] I ran X(…) Result: …` — and its recalled memory as `[recall]`.
+/// A base model that sees these in its context IMITATES them: it emits fabricated
+/// `[action #n] I ran … Result: {…}` receipts (filling the Result with a stale
+/// value copied from context), loops the template to the length cap, and bleeds
+/// other personas' names into its own turn (glass-boxed 2026-07-13 — Anwen's turn
+/// narrating "because Casper is acting"). These markers are SYSTEM vocabulary the
+/// model must never author: it invokes tools via `name(…)` / `[code/… ]`, and
+/// recall via `recall(…)` — never by typing `[action` or `[recall]` (confirmed:
+/// `narrates_stage_direction` already refuses to lift them). So cutting generation
+/// the instant one appears drops the fabrication while KEEPING any real content
+/// the model produced before it — decoding hygiene, not cognition steering (the
+/// sibling of the peer-name stops #150). The leading `\n` scopes the stop to a
+/// line start, so a passing mention mid-sentence is untouched.
+pub(super) fn reserved_marker_stop_sequences() -> Vec<String> {
+    vec!["\n[action".to_string(), "\n[recall]".to_string()]
+}
+
 /// Case-insensitive match of `name` at byte `pos` of `line` (ASCII fold — persona
 /// display names are ASCII by genesis convention).
 fn matches_name_at(line: &str, pos: usize, name: &str) -> bool {
@@ -556,6 +575,20 @@ mod tests {
         let stops = peer_stop_sequences(&turns);
         assert_eq!(stops, vec!["\nAnwen:".to_string(), "\nAtlas:".to_string()]);
         assert!(!stops.iter().any(|s| s.contains("Casper")), "own name is never a stop");
+    }
+
+    // what this catches: #158 — the reserved-marker stops that cut receipt/recall
+    // mimicry. `\n[action` and `\n[recall]` are SYSTEM proprioception vocabulary
+    // the model must never author (it invokes via name(…) / recall(…)); a base
+    // model imitates them to fabricate stale-result receipts and loop to length.
+    // Line-anchored (leading \n) so a mid-sentence mention isn't a stop.
+    #[test]
+    fn reserved_marker_stops_cover_action_and_recall_line_anchored() {
+        let stops = reserved_marker_stop_sequences();
+        assert!(stops.contains(&"\n[action".to_string()), "cuts fabricated [action #n] receipts");
+        assert!(stops.contains(&"\n[recall]".to_string()), "cuts fabricated [recall] blocks");
+        // every marker is line-anchored — never fires on a passing mid-line mention
+        assert!(stops.iter().all(|s| s.starts_with('\n')), "line-anchored, not mid-sentence");
     }
 
     // what this catches: the #148 starvation regression — under small serving

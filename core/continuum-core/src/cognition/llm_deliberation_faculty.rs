@@ -1023,7 +1023,11 @@ impl Faculty for LlmDeliberationFaculty {
             tools,
             view.system.clone(),
             {
-                let stops = super::deliberation_budget::peer_stop_sequences(&ws.turns);
+                // Turn-boundary hygiene: peer-name stops (#150, don't speak AS
+                // teammates) + reserved-marker stops (#158, don't fabricate
+                // [action]/[recall] receipts). Combined into one stop list.
+                let mut stops = super::deliberation_budget::peer_stop_sequences(&ws.turns);
+                stops.extend(super::deliberation_budget::reserved_marker_stop_sequences());
                 (!stops.is_empty()).then_some(stops)
             },
         );
