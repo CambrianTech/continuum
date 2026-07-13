@@ -313,6 +313,16 @@ pub fn render_tool_menu(
         by_cat.entry(cat).or_default().push(verb.to_string());
     }
     let mut out = String::new();
+    // ONE form example at the header — the invocation SHAPE, not per-tool
+    // hints (those measured as 77% prompt boilerplate and moved to the
+    // error-manual seam). 2026-07-12 glass-box: all four personas knew the
+    // real NAMES within hours but kept fumbling the FORM (paren-call vs
+    // CLI-flag vs bare); one canonical example teaches the form for ~20
+    // tokens. PX, not steering: it shows how calls look, never which to make.
+    let _ = writeln!(
+        out,
+        "call form: code/read({{\"file_path\":\"src/main.rs\"}}) — exact args for any tool: commands/help(name)"
+    );
     for (cat, mut verbs) in by_cat {
         verbs.sort_unstable();
         if expanded.contains(cat) {
