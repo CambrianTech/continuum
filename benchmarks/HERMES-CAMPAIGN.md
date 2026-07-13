@@ -182,3 +182,35 @@ first-20 easy-slice inflation (fell to 67.9% on the full set, exactly like Devst
 95%→67.9%) — the methodology's pilot-bias warning proven on the opponent too, fairness
 intact. Next lever: aider-polyglot replication (their published 16.4%/40% Qwen rows),
 raw one-shot arms for the system-lift isolator, and the team/genome arms.
+
+## 2026-07-13 — Flywheel step 1 CLOSED: first autonomous team-delivered program output
+
+The gate the whole roadmap waited on ("hands proven live... the wordstats card closes
+with real program output posted") closed at 09:16 with a receipt in the room:
+
+```
+Casper (e6668278) → room cb2e21a1:
+I ran code/run({"code":"fn main() { ... wordstats ... }","lang":"rust"})
+→ {"exitCode":0,"ok":true,"success":true,
+   "stdout":"the: 1 / \"\"\": 1 / a: 5 / to: 2 / and: 4 / of: 3 / it: 3 / is: 6 / this: 3 / that: 2 / was: 2"}
+```
+
+The story is the product claim: after the perception-window fix deployed (breadth-over-
+depth packing, commit 89e34a2ff — live prompts went from THREE visible messages to a
+real multi-turn window), the team self-organized in under an hour with zero scripting:
+all five board cards self-claimed via their own `work/claim` tool calls; Anwen hit a
+real borrow-checker error running the code; **Atlas diagnosed and fixed it from room
+context** (bind `to_lowercase()` so the temporary outlives the borrow); Anwen fixed the
+follow-on collect type mismatch; Casper claimed the card, `code/read` the workspace
+file, ran it, and posted verified output. Act → error-as-data → peer review → corrected
+act → receipt: the acting-organism loop, closed by the team alone. 60+ real tool
+executions per persona in the session, every one receipted in typed working memory.
+
+Honest wrinkle, deliberately left in: the posted output is NOT sorted (the sort_by on
+reference tuples didn't order it — `is: 6` should lead). Whether the team catches it
+unprompted is the live peer-review-quality measure; the card's full bar (top-10 BY
+FREQUENCY) closes when they do. No operator fixed it for them.
+
+Instrument lessons banked alongside (same session): two false negatives during
+verification were the INSTRUMENT lying (stale captures; json parser choking on a
+control char) — raw-grep-before-parsed-verdicts joins the [PASS]-parser lesson.
