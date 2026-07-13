@@ -454,13 +454,22 @@ impl LlmDeliberationFaculty {
         calls: Vec<crate::ai::types::ToolCall>,
         resp: &TextGenerationResponse,
     ) -> Contribution {
+        // The model's OWN stated reasoning (a `<think>` block) when present — so the
+        // engram records WHY she acted. When ABSENT, leave it EMPTY, never fabricate
+        // a reason. The old default — "{name} is acting on the current situation" —
+        // was content-free AND the worst mimicry fuel (#158): it rendered into every
+        // receipt as "because {name} is acting…", the model imitated that template as
+        // speech, and because the phrasing is identical for everyone, personas
+        // cross-copied each other's names (Anwen's turn narrating "because Asha is
+        // acting" — the identity bleed). An empty intent renders a receipt with no
+        // "because" clause: nothing template-shaped to imitate.
         let intent = resp
             .reasoning
             .as_deref()
             .map(str::trim)
             .filter(|s| !s.is_empty())
             .map(str::to_string)
-            .unwrap_or_else(|| format!("{} is acting on the current situation", self.persona_name));
+            .unwrap_or_default();
         Contribution::verdict(
             Decision::Act { calls, intent },
             0.9,

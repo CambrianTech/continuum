@@ -195,7 +195,14 @@ fn render_act_for_recall(
         format!("ok — {}", truncate_chars(body.trim().lines().next().unwrap_or(""), 140))
     };
     let mark = if is_err { "⚠ " } else { "" };
-    format!("{mark}I ran {name}({args_summary}) because {intent} → {outcome}\n\n")
+    // Omit "because …" when there's no real stated reason — an empty intent must
+    // not render an imitable receipt template (#158).
+    let because = if intent.trim().is_empty() {
+        String::new()
+    } else {
+        format!(" because {}", intent.trim())
+    };
+    format!("{mark}I ran {name}({args_summary}){because} → {outcome}\n\n")
 }
 
 /// Execute ONE `Act` verdict: run its calls through the persona's hands, admit
@@ -370,11 +377,18 @@ pub async fn apply_act(
         };
         let is_err = result.map(|r| r.is_error == Some(true)).unwrap_or(false);
         let args = serde_json::to_string(&call.input).unwrap_or_else(|_| "{}".to_string());
+        // Omit the "because …" clause when there is no real stated reason — an
+        // empty intent must never render as an imitable receipt template (#158).
+        let because = if intent.trim().is_empty() {
+            String::new()
+        } else {
+            format!(" because {}", intent.trim())
+        };
         observation.push_str(&format!(
-            "I ran {}({}) because {}.\nResult:\n{}\n\n",
+            "I ran {}({}){}.\nResult:\n{}\n\n",
             call.name,
             args,
-            intent.trim(),
+            because,
             bound_recency_result(body_text),
         ));
         recall_observation.push_str(&render_act_for_recall(
@@ -1022,6 +1036,20 @@ mod tests {
         let err = render_act_for_recall("code/shell", &serde_json::json!({"cmd":"x"}), "acting", true, "error: no such file");
         assert!(err.starts_with("⚠"), "errors are highlighted");
         assert!(err.contains("FAILED") && err.contains("no such file"), "errors are shown, never hidden");
+    }
+
+    // what this catches: #158 — an EMPTY intent (no `<think>` reasoning) renders NO
+    // "because …" clause, so the receipt carries nothing template-shaped for a base
+    // model to imitate. The old fabricated default ("{name} is acting on the current
+    // situation") was the identity-bleed mimicry fuel. A real intent still renders.
+    #[test]
+    fn empty_intent_renders_no_because_clause() {
+        let args = serde_json::json!({"file_path": "a"});
+        let empty = render_act_for_recall("code/read", &args, "", false, "hi");
+        assert!(!empty.contains("because"), "no fabricated reason: {empty}");
+        assert!(empty.contains("I ran code/read"), "the act is still recorded");
+        let real = render_act_for_recall("code/read", &args, "checking the header", false, "hi");
+        assert!(real.contains("because checking the header"), "a real intent still shows");
     }
 
     // what this catches: the long-running set matches the REAL command names (the live bug
