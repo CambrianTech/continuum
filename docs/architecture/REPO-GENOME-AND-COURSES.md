@@ -30,10 +30,10 @@ branching policy is in their weights, their doctrine, AND their exam history.
     02-policies.course.toml         # compiled from policies/ (auto)
     NN-<custom>.course.toml         # hand/persona-authored
   genome/
-    manifest.json          # content-addressed index: layer → base-model
-                           # family → course → eval lift → OCI/HF ref
-    <family>/<layer>.gguf-lora      # small layers in-tree (git-lfs);
-                                    # big ones by manifest ref only
+    manifest.json          # content-addressed index: layer digest → base-
+                           # model family → course → eval lift → OCI/HF/airc
+                           # refs. REFS ONLY — layer bytes live in the
+                           # machine-wide OCI cache, never in-tree (§6)
 ```
 
 Everything is data in the repo: reviewable in PRs, versioned with the code
@@ -100,19 +100,30 @@ Quiz transcripts → `dataset/from-turns` (ShareGPT) → mlx LoRA train →
 PR into `genome/` (reviewed like code, receipts attached). The degree is a
 ledger row; the diploma is a content-addressed layer any teammate can page.
 
-## 6. Distribution (in order of preference)
+## 6. Distribution: OCI-first (Joel: "use the best one — probably Docker.
+They have it installed if they have Continuum. Smart.")
 
-1. **With the repo** — small layers in-tree via git-lfs; the clone IS the
-   install. The repo becomes its own model card.
-2. **OCI/Docker layers** — content-addressed, dedup'd, registries everywhere;
-   `genome/manifest.json` carries the ref (the GitHub-Docker-slices pattern;
-   literal docker registries as genome CDN if nothing better exists).
-3. **Over airc** — genome events peer-to-peer for grid-local sharing
-   (the layer market, trust-scoped).
-4. **HuggingFace** — the existing publish pipeline for public layers
-   (win-every-model-out-of-box track).
+**Layers are GLOBAL, not per-repo.** A LoRA layer is content-addressed and
+shared machine-wide (one local cache, like docker's layer store); the repo
+carries only `genome/manifest.json` — refs, never weights. Two repos that
+share a course share the layer bytes automatically.
 
-One manifest, four transports; the manifest hash is the identity everywhere.
+1. **OCI/Docker registries — PRIMARY.** Layers push/pull as OCI artifacts:
+   content-addressed, dedup'd by construction, resumable, authenticated, and
+   the registry infrastructure (Docker Hub, GHCR, self-hosted) already
+   exists everywhere Continuum runs — the DMR provider precedent is already
+   in the catalog. A LoRA *stack* maps 1:1 onto an OCI layer stack; clone
+   the repo → core pulls the manifest's refs into the shared cache →
+   veteran. The GitHub-Docker-slices pattern, made the transport.
+2. **Over airc** — peer-to-peer for grid-local/offline sharing and the
+   trust-scoped layer market (same manifest hashes; airc is the LAN/mesh
+   fast path, OCI the internet path).
+3. **HuggingFace** — the existing publish pipeline for public/discoverable
+   layers (win-every-model-out-of-box track); the manifest may carry both
+   an OCI ref and an HF ref for the same digest.
+
+One manifest, one digest identity, three transports. Nothing in-tree but
+the manifest (repos stay light; git-lfs unnecessary).
 
 ## 7. Sequencing (dogfood-first)
 
