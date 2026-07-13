@@ -675,7 +675,7 @@ pub async fn materialize_adapters(
         // framing. Grounding, not steering — names the dirs, never which holds
         // the answer. Swaps to the airc-leased root when #49 lands.
         let workspace_map_source: Arc<dyn crate::persona::rag_budget::RagSource> =
-            Arc::new(crate::persona::workspace_map_source::WorkspaceMapSource::from_cwd(
+            Arc::new(crate::persona::workspace_map_source::WorkspaceMapSource::for_peer_layer(
                 identity.peer_id.as_uuid(),
             ));
 

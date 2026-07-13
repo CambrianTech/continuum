@@ -85,13 +85,23 @@ pub(crate) const LOCAL_OWNER: &str = "local-owner";
 /// the root workspace manifest, breaking every build path. Isolation of WRITES
 /// with full collaboration over the mesh (chat, board, diffs) is the airc
 /// model; a shared mutable checkout never was.
-pub(crate) fn ensure_citizen_layer(peer: &str) -> Result<std::path::PathBuf, CommandError> {
+/// The citizen-layer path for a peer — pure path computation, NO provisioning.
+/// The read-only sibling of [`ensure_citizen_layer`]: grounding sources (e.g.
+/// the workspace map) need to know WHERE a peer's workspace is without triggering
+/// a CoW clone — the clone is the hands' job, on first write. `<continuum home>/
+/// citizens/peers/<peer>/workspace`, keyed by the peer's `peer_id.to_string()`
+/// exactly as [`caller_id`] forms it.
+pub(crate) fn citizen_layer_path(peer: &str) -> Result<std::path::PathBuf, CommandError> {
     let home = std::env::var("CONTINUUM_HOME")
         .map(std::path::PathBuf::from)
         .ok()
         .or_else(|| dirs::home_dir().map(|h| h.join(".continuum")))
         .ok_or_else(|| CommandError::Internal("no home dir for citizen layer".into()))?;
-    let layer = home.join("citizens").join("peers").join(peer).join("workspace");
+    Ok(home.join("citizens").join("peers").join(peer).join("workspace"))
+}
+
+pub(crate) fn ensure_citizen_layer(peer: &str) -> Result<std::path::PathBuf, CommandError> {
+    let layer = citizen_layer_path(peer)?;
     if layer.is_dir() {
         return Ok(layer);
     }
