@@ -200,3 +200,11 @@ cache; two projects share bytes only when digests happen to match.
   cascade (§8) already scopes courses per dir; when a subtree's corpus
   justifies it, its course compiles a subtree-specific layer that pages in
   on focus — attention-shaped weights. Future slice, architecture-ready now.
+
+**Shared-layer residency (Joel, efficiency note):** many personas wear the
+SAME repo layer — so residency is REFCOUNTED, never per-persona: the layer
+loads once (multi-LoRA serving lanes, INFERENCE-LANES-REALISTIC), every
+citizen's stack references the one resident copy, and it pages out when the
+last wearer leaves the repo. Four teammates in one repo = one layer in
+VRAM, not four. Same rule up the grid: a 1080Ti node hosting the layer
+serves every persona whose stack references its digest.
