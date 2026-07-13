@@ -25,7 +25,7 @@
 
 use uuid::Uuid;
 
-use super::workspace::{Burst, Decision, TurnFraming, TurnMetrics, WorkspaceCycle};
+use super::workspace::{Burst, Decision, Situation, TurnFraming, TurnMetrics, WorkspaceCycle};
 use crate::ai::types::ToolCall;
 use crate::persona::types::{InboxMessage, SenderType};
 
@@ -569,8 +569,20 @@ pub async fn drive_to_settle(
         // eval room has no metronome, the grader re-perceives by calling step again.
         // `may_act = acts < max_acts` gates ACTING (not speaking): past the budget
         // she may still settle into a Speak, but a fresh Act is returned un-driven.
+        //
+        // The tick's SITUATION is the real signal that makes context lean when she's
+        // heads-down: the first tick is a fresh ask (`FreshContext`, fuller
+        // grounding); every tick AFTER an act has landed re-perceives a tool result
+        // (`PostAction`), so the focuser drops the standing re-grounding and the
+        // result + working memory own the window. Derived from `acts`, never from the
+        // burst text.
+        let situation = if acts == 0 {
+            Situation::FreshContext
+        } else {
+            Situation::PostAction
+        };
         let (step, step_metrics) =
-            settle_step(cycle, burst.clone(), room_id, acts < max_acts, framing).await;
+            settle_step(cycle, burst.clone(), room_id, acts < max_acts, framing, situation).await;
         if let Some(m) = step_metrics {
             metrics.accumulate(m);
         }
@@ -764,8 +776,9 @@ pub async fn settle_step(
     room_id: Uuid,
     may_act: bool,
     framing: TurnFraming,
+    situation: Situation,
 ) -> (SettleStep, Option<TurnMetrics>) {
-    let ws = cycle.run_framed(burst, room_id, framing).await;
+    let ws = cycle.run_situated(burst, room_id, framing, situation).await;
     // The cost of THIS tick's deliberation generation — latency + tokens of the
     // model call behind the verdict. Carried out alongside the step so the caller
     // (the eval driver, or the live heartbeat) can accumulate per-turn speed and
@@ -1497,7 +1510,8 @@ mod tests {
         let cycle = WorkspaceCycle::new(vec![Arc::new(AlwaysAct)], Arc::new(SalienceArbiter), 8)
             .with_acting(body(exec.clone(), adm.clone()));
 
-        let (deferred, _) = settle_step(&cycle, "go", Uuid::new_v4(), false, TurnFraming::ambient()).await;
+        let (deferred, _) =
+            settle_step(&cycle, "go", Uuid::new_v4(), false, TurnFraming::ambient(), Situation::FreshContext).await;
         assert!(
             matches!(deferred, SettleStep::WouldAct { .. }),
             "may_act=false defers the act"
@@ -1507,7 +1521,8 @@ mod tests {
             "a deferred act NEVER touches the executor"
         );
 
-        let (ran, _) = settle_step(&cycle, "go", Uuid::new_v4(), true, TurnFraming::ambient()).await;
+        let (ran, _) =
+            settle_step(&cycle, "go", Uuid::new_v4(), true, TurnFraming::ambient(), Situation::FreshContext).await;
         assert!(matches!(ran, SettleStep::Acted { .. }), "may_act=true runs it");
         assert!(
             exec.seen_context.lock().unwrap().is_some(),
@@ -1919,6 +1934,7 @@ mod tests {
             Uuid::new_v4(),
             true,
             TurnFraming::ambient(),
+            Situation::FreshContext,
         )
         .await;
         assert!(matches!(step, SettleStep::Spoke(_)));
@@ -1941,6 +1957,7 @@ mod tests {
             Uuid::new_v4(),
             true,
             TurnFraming::ambient(),
+            Situation::FreshContext,
         )
         .await;
         assert!(matches!(step2, SettleStep::Spoke(_)));
@@ -1985,6 +2002,7 @@ mod tests {
             Uuid::new_v4(),
             true,
             TurnFraming::ambient(),
+            Situation::FreshContext,
         )
         .await;
         assert!(matches!(step, SettleStep::Spoke(_)));
@@ -2013,6 +2031,7 @@ mod tests {
             Uuid::new_v4(),
             true,
             TurnFraming::ambient(),
+            Situation::FreshContext,
         )
         .await;
         assert!(matches!(step2, SettleStep::Spoke(_)));

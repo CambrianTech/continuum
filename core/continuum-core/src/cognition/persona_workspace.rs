@@ -23,7 +23,7 @@ use super::llm_deliberation_faculty::LlmDeliberationFaculty;
 use super::rag_source_faculty::{RagSourceFaculty, SaliencePolicy};
 use super::recall_faculty::RecallFaculty;
 use super::working_memory::{WorkingMemory, WorkingMemoryFaculty, DEFAULT_WORKING_MEMORY_CAPACITY};
-use super::workspace::{ActingBody, Faculty, SalienceArbiter, WorkspaceCycle};
+use super::workspace::{ActingBody, Faculty, SituationFocusArbiter, WorkspaceCycle};
 use crate::ai::adapter::AIProviderAdapter;
 use crate::persona::admission_state::AdmissionState;
 use crate::persona::rag_budget::RagSource;
@@ -436,7 +436,12 @@ pub fn build_workspace_cycle(cfg: PersonaBrainConfig) -> WorkspaceCycle {
 
     let cycle = WorkspaceCycle::new(
         faculties,
-        Arc::new(SalienceArbiter),
+        // Situation-aware focuser: on every act→observe re-perception (`PostAction`)
+        // it drops the standing SOCIAL re-grounding so the tool result + working
+        // memory + recall own the window — the persona goes lean and code-first while
+        // heads-down, and fuller-grounded on a fresh ask. This is the wire behind
+        // "straightforward for whatever their current state requires."
+        Arc::new(SituationFocusArbiter::new()),
         cfg.capacity.unwrap_or(DEFAULT_WORKSPACE_CAPACITY),
     )
     .with_genome(genome)

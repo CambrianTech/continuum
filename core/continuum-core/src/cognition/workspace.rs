@@ -863,6 +863,72 @@ impl Arbiter for SalienceArbiter {
     }
 }
 
+/// Situation-aware focuser (outlier B to [`SalienceArbiter`]'s outlier A) — the
+/// first policy that actually READS `ctx.situation` instead of ignoring it, and
+/// the wire that makes [`Situation::PostAction`]'s documented promise real:
+/// *"the persona doesn't need the standing grounding re-dumped — it needs the
+/// result + the affordances for 'what next' — so a focuser can drop re-grounding
+/// and tighten the context."*
+///
+/// This is the mechanism behind "straightforward for whatever their current state
+/// requires": when a persona is heads-down driving an act→observe loop (write →
+/// compile → run → re-perceive the result), every re-perception tick is
+/// `PostAction`. On those ticks the standing SOCIAL framing — room roster,
+/// operating doctrine, workspace map — was already perceived on the fresh tick and
+/// only crowds the window; the code, the tool result, and working memory are what
+/// the "what next" decision turns on. So on `PostAction` we drop the
+/// [`Contribution::stable`] standing-framing contributions BEFORE the salience
+/// top-k, leaving the volatile task context (recall, working memory, the just-
+/// landed action result) to fill the bounded workspace. `FreshContext` is
+/// untouched — a fresh ask still gets the fuller grounding (the safe default,
+/// "when in doubt, ground more, never less").
+///
+/// Still INPUT-side only ([[no-hardcoded-heuristics-to-steer-cognition]]): it
+/// curates which context the model attends to, never the output. And it uses the
+/// existing, maintained `stable` semantic — not a brittle faculty-name list — so a
+/// new standing-grounding source inherits the right behavior for free the moment
+/// it marks itself stable.
+pub struct SituationFocusArbiter {
+    inner: SalienceArbiter,
+}
+
+impl SituationFocusArbiter {
+    pub const fn new() -> Self {
+        Self {
+            inner: SalienceArbiter,
+        }
+    }
+}
+
+impl Default for SituationFocusArbiter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Arbiter for SituationFocusArbiter {
+    fn focus(
+        &self,
+        candidates: Vec<Contribution>,
+        capacity: usize,
+        ctx: &FocusContext<'_>,
+    ) -> Vec<Contribution> {
+        let candidates = match ctx.situation {
+            // Re-perceiving a tool result: drop the standing SOCIAL re-grounding so
+            // the result + affordances + working memory own the window. The salience
+            // top-k below then packs the lean, code-first context.
+            Situation::PostAction => candidates
+                .into_iter()
+                .filter(|c| !c.stable)
+                .collect::<Vec<_>>(),
+            // Fresh ask: fuller grounding, ground more never less. Identical to the
+            // bootstrap floor.
+            Situation::FreshContext => candidates,
+        };
+        self.inner.focus(candidates, capacity, ctx)
+    }
+}
+
 /// A full record of one workspace tick — the **mechanic's view of the mind.**
 /// Captures every faculty bid *including the ones that LOST attention*, what won,
 /// and the decision. This is why working on cognition is debuggable and fun:
@@ -1291,7 +1357,28 @@ impl WorkspaceCycle {
         room_id: Uuid,
         framing: TurnFraming,
     ) -> Workspace {
-        self.run_in_room_inner(burst, room_id, framing).await
+        // Fresh-context default: a bare framed tick is a fresh ask (fuller
+        // grounding). The act→observe driver calls [`run_situated`] with
+        // `PostAction` on re-perception ticks.
+        self.run_in_room_inner(burst, room_id, framing, Situation::FreshContext)
+            .await
+    }
+
+    /// Same as [`run_framed`](Self::run_framed) but with the tick's [`Situation`]
+    /// threaded explicitly — the seam the act→observe loop uses to tell the focuser
+    /// "this tick re-perceives a tool result" (`PostAction`) vs "fresh ask"
+    /// (`FreshContext`). The situation is a TYPED signal carried from the loop,
+    /// never inferred from the burst text ([[no-hardcoded-heuristics-to-steer-
+    /// cognition]]).
+    pub async fn run_situated(
+        &self,
+        burst: impl Into<Burst>,
+        room_id: Uuid,
+        framing: TurnFraming,
+        situation: Situation,
+    ) -> Workspace {
+        self.run_in_room_inner(burst, room_id, framing, situation)
+            .await
     }
 
     /// Same as [`run`](Self::run) but scoped to a room/context (the contextId the
@@ -1302,7 +1389,7 @@ impl WorkspaceCycle {
         // Ambient default: silence stays first-class, message-driven. A turn put TO
         // the persona, or her own heartbeat, uses [`run_framed`](Self::run_framed)
         // with the appropriate [`TurnFraming`].
-        self.run_in_room_inner(burst, room_id, TurnFraming::ambient())
+        self.run_in_room_inner(burst, room_id, TurnFraming::ambient(), Situation::FreshContext)
             .await
     }
 
@@ -1316,6 +1403,7 @@ impl WorkspaceCycle {
         burst: impl Into<Burst>,
         room_id: Uuid,
         framing: TurnFraming,
+        situation: Situation,
     ) -> Workspace {
         // Bump the service tick: this workspace IS cycle N, and every finding
         // collected against it is stamped N (the cbar `frameIndex`). 1-based so
@@ -1380,14 +1468,15 @@ impl WorkspaceCycle {
         // Route the salient subset into the bounded workspace — the arbiter is the
         // attention/FOCUS layer over information flow, not a gate. The winners are
         // the assembled context the deliberation faculty reasons over. The focuser
-        // is handed the situation so a situation-aware impl can streamline context
-        // FOR the ask (the "really good hints" seam); the bootstrap ignores it.
-        // TODO(focus): thread the real `Situation` from the act→observe loop
-        // (PostAction after a tool run) in the FocusArbiter slice — never inferred
-        // by reading the burst text. FreshContext is the safe default until then.
+        // is handed the REAL situation the tick is in — threaded from the act→observe
+        // loop (`PostAction` on every re-perception of a tool result, `FreshContext`
+        // on a fresh ask), NEVER inferred by reading the burst text back. A
+        // situation-aware arbiter ([`SituationFocusArbiter`]) uses it to streamline
+        // context FOR the ask (drop standing re-grounding post-action); the bootstrap
+        // [`SalienceArbiter`] ignores it.
         let focus_ctx = FocusContext {
             world_state: &ws.world_state,
-            situation: Situation::FreshContext,
+            situation,
         };
         let focused = self
             .arbiter
@@ -1401,6 +1490,11 @@ impl WorkspaceCycle {
         crate::probe!(
             class = "workspace.attention.focus",
             capacity = self.capacity,
+            // The situation that drove this focus — the stat that makes context
+            // control learnable: a focuser policy (this bootstrap, or a later
+            // learned one) is a function of situation → dropped grounding, and the
+            // bids-vs-focused delta below is the reward signal for it.
+            situation = ?situation,
             bids = context_bids.len(),
             focused = focused.len(),
             kept = %focused
@@ -2145,6 +2239,69 @@ mod tests {
             calls.load(std::sync::atomic::Ordering::SeqCst),
             1,
             "deliberation faculty fired exactly once, in its phase"
+        );
+    }
+
+    // what this catches: the situation-aware focuser must make Situation::PostAction
+    // REAL — on a re-perception tick it drops the standing SOCIAL re-grounding
+    // (stable contributions: roster/doctrine/workspace-map) so the tool result +
+    // working memory own the window, while FreshContext keeps the fuller grounding.
+    // Regression guard for the "cognition soup crowds out the code" failure: if a
+    // future edit makes PostAction stop dropping stable grounding, a heads-down
+    // coding turn goes back to re-dumping social framing on every act→observe tick.
+    #[test]
+    fn situation_focuser_drops_stable_grounding_only_post_action() {
+        let arbiter = SituationFocusArbiter::new();
+        // A realistic mixed tick: high-salience standing grounding (stable) plus the
+        // volatile task context (the just-landed tool result + a recalled fact).
+        let roster =
+            Contribution::context(FacultyId::Custom("roster".into()), "room roster", 0.9, "grounding")
+                .session_stable();
+        let doctrine = Contribution::context(
+            FacultyId::Custom("doctrine".into()),
+            "operating doctrine",
+            0.85,
+            "grounding",
+        )
+        .session_stable();
+        let result =
+            Contribution::context(FacultyId::WorldModel, "[action #1] code/read → fn main()...", 0.6, "result");
+        let recall = Contribution::context(FacultyId::Recall, "recalled: the ticket asks for X", 0.5, "recall");
+        let candidates = vec![roster, doctrine, result.clone(), recall.clone()];
+
+        // Fresh ask: fuller grounding — everything within capacity survives, exactly
+        // like the blind salience floor.
+        let fresh = arbiter.focus(
+            candidates.clone(),
+            10,
+            &FocusContext {
+                world_state: "ask",
+                situation: Situation::FreshContext,
+            },
+        );
+        assert_eq!(fresh.len(), 4, "FreshContext keeps the fuller grounding");
+
+        // Post-action re-perception: the two stable grounding contributions are
+        // dropped BEFORE the top-k, leaving only the volatile task context — even
+        // though the stable ones had the HIGHEST salience (the whole point: they were
+        // already perceived; re-dumping them just crowds the result out).
+        let post = arbiter.focus(
+            candidates,
+            10,
+            &FocusContext {
+                world_state: "result",
+                situation: Situation::PostAction,
+            },
+        );
+        assert_eq!(post.len(), 2, "PostAction drops the stable standing grounding");
+        assert!(
+            post.iter().all(|c| !c.stable),
+            "no stable grounding survives a re-perception tick: {:?}",
+            post.iter().map(|c| c.content.as_str()).collect::<Vec<_>>()
+        );
+        assert!(
+            post.iter().any(|c| c.content.contains("[action #1]")),
+            "the tool result MUST survive — it's what 'what next' turns on"
         );
     }
 }
