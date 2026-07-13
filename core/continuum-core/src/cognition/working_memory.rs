@@ -345,6 +345,14 @@ impl WorkingMemory {
             .store(snap.next_action_seq.max(1), Ordering::Relaxed);
     }
 
+    /// Typed snapshot of the window, oldest → newest — the kind-aware sibling
+    /// of [`Self::recent`] for consumers that render BY KIND (the steps-taken
+    /// ledger renders `Receipt`s as numbered steps and `Fact`s under
+    /// [notices]; docs/architecture/PERCEPTION-FACTS.md).
+    pub fn recent_entries(&self) -> Vec<WmEntry> {
+        self.entries.lock().iter().cloned().collect()
+    }
+
     /// TRUE if any entry in the window is a real tool receipt — the kind
     /// query that replaces string-scanning rendered text for `[action #`.
     pub fn has_receipt(&self) -> bool {

@@ -864,26 +864,32 @@ impl LlmDeliberationFaculty {
         // stayed suppressed all afternoon on a day with zero executions
         // (glass-boxed 16:50 2026-07-12). [recall]-tagged items are memory,
         // not receipts; only un-recalled broadcast + live turns ground "now".
-        let has_action_receipts = ws
-            .broadcast
-            .iter()
-            .filter(|c| !c.content.trim_start().starts_with("[recall]"))
-            .any(|c| super::act_observe::has_real_action_receipt(&c.content))
-            || ws
-                .turns
-                .iter()
-                .any(|t| super::act_observe::has_real_action_receipt(&t.content));
-        if !has_action_receipts {
-            messages.push(ChatMessage::text(
-                "user",
-                // "including the part you cannot see": within minutes of the
-                // [context] bounds fact going live (2026-07-12), Anwen parked
-                // fabricated receipts exactly in the disclosed blind spot
-                // ("file_tree and code/list ran while I was reasoning") — an
-                // honest void becomes a confabulation SHELTER unless the
-                // zero-receipts fact explicitly covers the invisible region.
-                "[actions] no tool has executed in this conversation — not in the messages you can see and not before them; anything described as already run, created, tested, committed, or merged does not exist yet; running a tool is what makes it real",
-            ));
+        // THE STEPS-TAKEN LEDGER (PERCEPTION-FACTS.md; Joel's console model:
+        // "very clearly laid out steps of what they've done — look at how
+        // yours looks now"). Ground truth becomes a PLACE in perception, not
+        // a prose claim a parsing bug can suppress: the prior [actions] fact
+        // survived three suppression layers in one afternoon (placeholder
+        // mentions, facts wearing receipt numbers, recalled-history receipts)
+        // precisely because it was string-derived. The ledger renders from
+        // TYPED WmKind::Receipt entries — nothing to misparse — and the
+        // zero-case is the always-present section itself, keeping the
+        // shelter-hardened semantics (an honest void must be EXPLICITLY
+        // empty, or it becomes a confabulation shelter — Anwen parked
+        // fabricated receipts in the disclosed blind spot within minutes of
+        // the [context] fact going live). A fact, never an instruction.
+        if let Some(wm) = &self.working_memory {
+            let steps: Vec<String> = wm
+                .recent_entries()
+                .into_iter()
+                .filter(|e| matches!(e.kind, super::working_memory::WmKind::Receipt { .. }))
+                .map(|e| e.text)
+                .collect();
+            let ledger = if steps.is_empty() {
+                "[steps taken this session]\n(nothing has executed yet — anything described as already run, created, tested, committed, or merged does not exist, whether in the messages you can see or before them; running a tool is what makes it real)".to_string()
+            } else {
+                format!("[steps taken this session]\n{}", steps.join("\n"))
+            };
+            messages.push(ChatMessage::text("user", ledger));
         }
 
         // An empty conversation is a legitimate state (a quiet room on a
@@ -1630,13 +1636,14 @@ mod tests {
 
             // Three turns alternate roles → three messages, user/assistant/user.
             let roles: Vec<&str> = view.messages.iter().map(|m| m.role.as_str()).collect();
-            // Trailing extra user turns = the standing perception facts: the
-            // #152 [context] bounds fact (always present) and the #151
-            // receipts ground truth (a no-acts thread ends with the [actions]
-            // zero-case fact).
+            // Trailing extra user turn = the #152 [context] bounds fact
+            // (always present). The steps-ledger is gated on a wired
+            // WorkingMemory (this harness faculty has none), so no ledger
+            // message here — the ledger-specific behavior is pinned in
+            // steps_ledger_renders_receipts_and_explicit_zero_case below.
             assert_eq!(
                 roles,
-                vec!["user", "assistant", "user", "user", "user"],
+                vec!["user", "assistant", "user", "user"],
                 "view: {view:?}"
             );
             assert!(
@@ -1645,12 +1652,7 @@ mod tests {
                     .any(|m| matches!(&m.content, crate::ai::types::MessageContent::Text(t) if t.contains("[context] you can currently see the last 3 messages"))),
                 "the [context] bounds fact states the visible window"
             );
-            assert!(
-                view.messages
-                    .last()
-                    .is_some_and(|m| matches!(&m.content, crate::ai::types::MessageContent::Text(t) if t.contains("[actions] no tool has executed"))),
-                "zero-receipts thread ends with the [actions] fact"
-            );
+
 
             // The persona's own line is the `assistant` turn and carries NO name prefix
             // (her own voice; the system prompt forbids self-prefixing). Peers' lines are
@@ -2133,6 +2135,60 @@ mod tests {
         // faculty records the turn's separated reasoning into working memory so the
         // persona can resume its train of thought next turn. The room only saw the
         // verdict text; the reasoning lives in working memory.
+        // what this catches: the steps-taken ledger (PERCEPTION-FACTS.md) —
+        // typed Receipt entries render as [steps taken this session]; facts
+        // NEVER appear as steps; an empty session renders the EXPLICIT
+        // zero-case (the shelter-hardened void) instead of nothing.
+        #[test]
+        fn steps_ledger_renders_receipts_and_explicit_zero_case() {
+            use crate::cognition::working_memory::WorkingMemory;
+
+            let adapter = Arc::new(ScriptedAdapter::new(vec![]));
+            let wm = Arc::new(WorkingMemory::new(8));
+            let faculty =
+                LlmDeliberationFaculty::new(Uuid::new_v4(), "Ivar", "You are Ivar.", adapter)
+                    .with_working_memory(Arc::clone(&wm));
+
+            // Zero-case: explicit, never absent.
+            let ws = Workspace::new("hello room");
+            let view = faculty.prompt_view(&ws);
+            let ledger = view
+                .messages
+                .iter()
+                .filter_map(|m| match &m.content {
+                    crate::ai::types::MessageContent::Text(t)
+                        if t.starts_with("[steps taken this session]") =>
+                    {
+                        Some(t.clone())
+                    }
+                    _ => None,
+                })
+                .next()
+                .expect("ledger section always present when WM is wired");
+            assert!(ledger.contains("nothing has executed yet"), "{ledger}");
+
+            // With a receipt + a fact: the receipt is a step, the fact is not.
+            wm.record_receipt("I ran code/list({\"path\":\".\"}) Result: 4 files");
+            wm.record_fact("[unfulfilled] I said I would run commands, but no tool ran");
+            let view = faculty.prompt_view(&ws);
+            let ledger = view
+                .messages
+                .iter()
+                .filter_map(|m| match &m.content {
+                    crate::ai::types::MessageContent::Text(t)
+                        if t.starts_with("[steps taken this session]") =>
+                    {
+                        Some(t.clone())
+                    }
+                    _ => None,
+                })
+                .next()
+                .expect("ledger present");
+            assert!(ledger.contains("[action #1] I ran code/list"), "{ledger}");
+            assert!(!ledger.contains("[unfulfilled]"), "facts are never steps: {ledger}");
+            assert!(!ledger.contains("nothing has executed yet"));
+        }
+
         #[tokio::test]
         async fn verdict_records_reasoning_into_working_memory() {
             use crate::cognition::working_memory::WorkingMemory;
