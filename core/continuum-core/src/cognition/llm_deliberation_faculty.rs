@@ -1118,7 +1118,14 @@ impl Faculty for LlmDeliberationFaculty {
                     return Some(self.act_verdict(calls, &resp));
                 }
             }
-            if let Some(call) = crate::ai::json_in_prompt_tools::parse_tool_call(&resp.text) {
+            if let Some(mut call) = crate::ai::json_in_prompt_tools::parse_tool_call(&resp.text) {
+                // Same wire-dialect mapping as the native path above (#159): a model
+                // that narrates `write_file(…)` / `list_files(…)` — its trained
+                // OpenHands vocabulary — must resolve to `code/write` / `code/list`,
+                // not silently no-op as an unknown name. The text-lift path skipped
+                // this, so narrated snake_case verbs died while the SAME name in a
+                // native tool_call worked. One mapping, both paths.
+                call.name = crate::cognition::tool_dialect::from_wire_name(&call.name).to_string();
                 return Some(self.act_verdict(vec![call], &resp));
             }
         }

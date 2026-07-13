@@ -341,7 +341,21 @@ pub(super) fn peer_stop_sequences(turns: &[BurstTurn]) -> Vec<String> {
 /// sibling of the peer-name stops #150). The leading `\n` scopes the stop to a
 /// line start, so a passing mention mid-sentence is untouched.
 pub(super) fn reserved_marker_stop_sequences() -> Vec<String> {
-    vec!["\n[action".to_string(), "\n[recall]".to_string()]
+    // `\n[action` / `\n[recall]` — the bracketed receipt/recall markers.
+    // `\nI ran ` — the receipt's first-person OPENER. The system renders every
+    // executed act as `I ran <tool>(…) Result: …`; a base model reproduces that
+    // line as SPEECH (measured 2026-07-13: ~44% of live turns, unchanged by the
+    // source-fix alone because the model copies receipts already in its context).
+    // The persona never needs to narrate "I ran X" — its acts are emitted as tool
+    // calls and the SYSTEM writes the receipt — so cutting the line the instant it
+    // opens stops the mimicry regardless of what stale memory holds. Rare cost: a
+    // legitimate "I ran the tests" sentence ends early and is re-spoken next turn —
+    // cheap next to a self-perpetuating receipt loop.
+    vec![
+        "\n[action".to_string(),
+        "\n[recall]".to_string(),
+        "\nI ran ".to_string(),
+    ]
 }
 
 /// Case-insensitive match of `name` at byte `pos` of `line` (ASCII fold — persona
@@ -587,6 +601,7 @@ mod tests {
         let stops = reserved_marker_stop_sequences();
         assert!(stops.contains(&"\n[action".to_string()), "cuts fabricated [action #n] receipts");
         assert!(stops.contains(&"\n[recall]".to_string()), "cuts fabricated [recall] blocks");
+        assert!(stops.contains(&"\nI ran ".to_string()), "cuts the unbracketed 'I ran …' receipt opener");
         // every marker is line-anchored — never fires on a passing mid-line mention
         assert!(stops.iter().all(|s| s.starts_with('\n')), "line-anchored, not mid-sentence");
     }
