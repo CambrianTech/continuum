@@ -134,18 +134,18 @@ exclude = ["wordstats", "work-wordstats", "conway_game_of_life", "work-08ece9e8"
 # `peer_identity_index_converges_across_scopes_via_coordinator_store`. The
 # general scope-home scoped_state (tool.mode/wall/coordination) is unchanged.
 # Additive — no ABI change. Re-validate persona attach on bump.
-airc-core = { git = "https://github.com/CambrianTech/airc", rev = "70c6d55" }
-airc-protocol = { git = "https://github.com/CambrianTech/airc", rev = "70c6d55" }
-airc-ipc = { git = "https://github.com/CambrianTech/airc", rev = "70c6d55" }
-airc-lib = { git = "https://github.com/CambrianTech/airc", rev = "70c6d55" }
-airc-wire = { git = "https://github.com/CambrianTech/airc", rev = "70c6d55" }
+airc-core = { git = "https://github.com/CambrianTech/airc", rev = "f41d786" }
+airc-protocol = { git = "https://github.com/CambrianTech/airc", rev = "f41d786" }
+airc-ipc = { git = "https://github.com/CambrianTech/airc", rev = "f41d786" }
+airc-lib = { git = "https://github.com/CambrianTech/airc", rev = "f41d786" }
+airc-wire = { git = "https://github.com/CambrianTech/airc", rev = "f41d786" }
 # airc-work: the work-board domain (cards/lanes/PRs). `Airc::work_board`
 # returns a `WorkBoardProjection` whose types (`WorkCard`, `LaneRecord`,
 # `CardState`, …) the positron kanban projector maps → `KanbanViewState`
 # at the seam. Only continuum-core (the projector) depends on it; the
 # neutral `continuum-positron` contract crate MIRRORS these enums and
 # must NOT depend on airc-work.
-airc-work = { git = "https://github.com/CambrianTech/airc", rev = "70c6d55" }
+airc-work = { git = "https://github.com/CambrianTech/airc", rev = "f41d786" }
 
 # Candle ML framework — patched via [patch.crates-io] below.
 # Fixes: Metal buffer pool leak (#2271), RoPE NEOX convention (#3410)
