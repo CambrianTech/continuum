@@ -30,6 +30,35 @@ pub fn estimate_prompt_tokens(content: &str) -> u32 {
     ((content.chars().count() / 4) as u32).saturating_add(1)
 }
 
+/// Keep the HEAD of `content` up to ~`budget_tokens` (same chars/4 unit as
+/// [`estimate_prompt_tokens`]), cutting on a char boundary and preferring the
+/// last newline inside the kept slice so the cut lands between lines, not
+/// mid-word. Sibling of `deliberation_budget::tail_to_tokens` — head-keep is
+/// the right shape for a chat MESSAGE (the opening carries the point; the
+/// tail is elaboration), where tail-keep is right for a transcript window
+/// (the latest lines carry the present). Used by the breadth-over-depth
+/// packer (#128): long turns render as heads with an explicit trim marker so
+/// a small budget holds MANY turns instead of two verbatim essays.
+pub fn head_to_tokens(content: &str, budget_tokens: u32) -> String {
+    let budget_chars = (budget_tokens as usize).saturating_mul(4);
+    if content.chars().count() <= budget_chars {
+        return content.to_string();
+    }
+    let end = content
+        .char_indices()
+        .nth(budget_chars)
+        .map(|(i, _)| i)
+        .unwrap_or(content.len());
+    let slice = &content[..end];
+    match slice.rfind('\n') {
+        // Only prefer the newline cut when it keeps a useful fraction — a
+        // message whose only newline sits three chars in must not collapse
+        // to three characters.
+        Some(nl) if nl >= budget_chars / 2 => slice[..nl].to_string(),
+        _ => slice.to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
