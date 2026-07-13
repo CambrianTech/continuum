@@ -138,10 +138,35 @@ impl PerceptionFact for StepsLedger {
             .filter(|e| matches!(e.kind, WmKind::Receipt { .. }))
             .map(|e| e.text)
             .collect();
+        // Receipts are RARE entries in a chatty capacity-bounded ring, so
+        // they age out while the session's act counter keeps counting.
+        // Three states, each honest (glass-boxed 2026-07-13: Asha's window
+        // held 3 silence Facts and zero Receipts minutes after real
+        // searches ran — the old zero-case would have DENIED her own acts,
+        // the inverse of the confabulation shelter):
+        //   receipts visible  → list them (+ how many aged out, if any)
+        //   none, count == 0  → the explicit nothing-has-executed void
+        //   none, count  > 0  → acts happened; details aged out — say so
+        let taken = wm.actions_taken();
         Some(if steps.is_empty() {
-            "[steps taken this session]\n(nothing has executed yet — anything described as already run, created, tested, committed, or merged does not exist, whether in the messages you can see or before them; running a tool is what makes it real)".to_string()
+            if taken == 0 {
+                "[steps taken this session]\n(nothing has executed yet — anything described as already run, created, tested, committed, or merged does not exist, whether in the messages you can see or before them; running a tool is what makes it real)".to_string()
+            } else {
+                format!(
+                    "[steps taken this session]\n({taken} step{} executed earlier this session — the details have aged out of working memory; recall can retrieve them. Nothing NEW has executed since.)",
+                    if taken == 1 { "" } else { "s" }
+                )
+            }
         } else {
-            format!("[steps taken this session]\n{}", steps.join("\n"))
+            let aged = taken.saturating_sub(steps.len() as u64);
+            let mut ledger = format!("[steps taken this session]\n{}", steps.join("\n"));
+            if aged > 0 {
+                ledger.push_str(&format!(
+                    "\n(+{aged} earlier step{} aged out of working memory)",
+                    if aged == 1 { "" } else { "s" }
+                ));
+            }
+            ledger
         })
     }
 }
@@ -237,12 +262,16 @@ mod tests {
         assert_eq!(render_facts(&cx, &FactPolicy::default()).len(), 1);
     }
 
-    // what this catches: the steps ledger's zero-case rendering through the
-    // registry — the explicit-empty semantics (confabulation-shelter
-    // hardening) must survive the extraction.
+    // what this catches: the steps ledger's THREE honest states. Zero acts →
+    // the explicit nothing-has-executed void (confabulation-shelter
+    // hardening). Receipts visible → listed. Receipts AGED OUT of the
+    // chatty capacity-bounded ring while the session act counter says acts
+    // happened → the ledger must say "details aged out", never deny her own
+    // real history (glass-boxed 2026-07-13: Asha's window held 3 silence
+    // Facts and zero Receipts minutes after real searches ran).
     #[test]
-    fn steps_ledger_zero_case_is_explicit_through_registry() {
-        let wm = Arc::new(WorkingMemory::new(8));
+    fn steps_ledger_is_honest_in_all_three_states() {
+        let wm = Arc::new(WorkingMemory::new(2));
         let turns: Vec<BurstTurn> = Vec::new();
         let own: Vec<String> = Vec::new();
         let cx = FactContext {
@@ -250,20 +279,32 @@ mod tests {
             own_speech: &own,
             working_memory: Some(&wm),
         };
-        let facts = render_facts(&cx, &FactPolicy::default());
-        let ledger = facts
-            .iter()
-            .find(|f| f.starts_with("[steps taken this session]"))
-            .expect("ledger renders even with zero receipts");
-        assert!(ledger.contains("nothing has executed yet"));
+        let ledger = |facts: &[String]| {
+            facts
+                .iter()
+                .find(|f| f.starts_with("[steps taken this session]"))
+                .expect("ledger always renders when WM exists")
+                .clone()
+        };
 
+        // State 1: no acts ever → explicit void.
+        let l = ledger(&render_facts(&cx, &FactPolicy::default()));
+        assert!(l.contains("nothing has executed yet"));
+
+        // State 2: a receipt in the window → listed, no void text.
         wm.record_receipt("I ran code/shell(ls) Result: ok");
-        let facts = render_facts(&cx, &FactPolicy::default());
-        let ledger = facts
-            .iter()
-            .find(|f| f.starts_with("[steps taken this session]"))
-            .expect("ledger renders with receipts");
-        assert!(ledger.contains("code/shell(ls)"));
-        assert!(!ledger.contains("nothing has executed yet"));
+        let l = ledger(&render_facts(&cx, &FactPolicy::default()));
+        assert!(l.contains("code/shell(ls)"));
+        assert!(!l.contains("nothing has executed yet"));
+
+        // State 3: chatty facts flood the tiny ring until the receipt ages
+        // out — the counter still knows one act happened. The ledger must
+        // NOT claim nothing executed.
+        wm.record_fact("chose silence — said nothing to the room");
+        wm.record_fact("chose silence — said nothing to the room (again)");
+        let l = ledger(&render_facts(&cx, &FactPolicy::default()));
+        assert!(!l.contains("nothing has executed yet"), "denied her real act: {l}");
+        assert!(l.contains("aged out of working memory"), "must explain the void: {l}");
+        assert!(l.contains("1 step executed earlier"));
     }
 }

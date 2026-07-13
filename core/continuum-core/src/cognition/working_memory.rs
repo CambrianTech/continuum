@@ -353,6 +353,17 @@ impl WorkingMemory {
         self.entries.lock().iter().cloned().collect()
     }
 
+    /// How many acts have executed this session (survives reboots via the
+    /// volatile snapshot's `next_action_seq`). The steps-taken ledger uses
+    /// this to keep its zero-case HONEST: receipts are rare entries in a
+    /// chatty capacity-bounded ring, so they age out — "no receipts in the
+    /// window" must never be rendered as "nothing has executed" when this
+    /// counter says otherwise (glass-boxed 2026-07-13: Asha's window held
+    /// 3 silence Facts and zero Receipts minutes after real searches ran).
+    pub fn actions_taken(&self) -> u64 {
+        self.next_action_seq.load(Ordering::Relaxed).saturating_sub(1)
+    }
+
     /// TRUE if any entry in the window is a real tool receipt — the kind
     /// query that replaces string-scanning rendered text for `[action #`.
     pub fn has_receipt(&self) -> bool {
