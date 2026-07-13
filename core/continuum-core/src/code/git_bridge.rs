@@ -202,6 +202,100 @@ pub fn git_push(workspace_root: &Path, remote: &str, branch: &str) -> Result<Str
     run_git(workspace_root, &args)
 }
 
+/// Outcome of a [`git_sync_from_shared`] refresh — drives the "notify" the caller
+/// surfaces to the persona (Joel: "preserve and notify… eventually just learn this").
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GitSyncReport {
+    /// True when new shared commits were actually merged in (workspace changed).
+    pub synced: bool,
+    /// Short human/persona-readable summary of what happened.
+    pub summary: String,
+}
+
+/// Bring a citizen workspace CURRENT with the shared checkout WITHOUT destroying
+/// the persona's own work — the self-heal for
+/// [[citizen-workspaces-are-stale-one-time-clones]]. Citizen workspaces are
+/// `cp -cR` clones of the shared checkout (including its `.git`), so they share
+/// history with shared; but `ensure_citizen_layer` never refreshed them, so they
+/// drifted stale (one froze before the `workers/→core/` restructure). Because the
+/// histories are related, a fetch + merge brings the framework current while
+/// KEEPING the persona's commits.
+///
+/// Preserve-first (Joel: "preserve and notify"):
+///  1. autocommit any uncommitted persona work, so a merge can't lose it and it
+///     survives on the persona's own history.
+///  2. `git fetch <shared> HEAD` — shared's current HEAD into FETCH_HEAD.
+///  3. `git merge -X theirs --no-edit --allow-unrelated-histories FETCH_HEAD` —
+///     shared wins framework-file conflicts (the persona shouldn't diverge the
+///     framework); the persona's OWN new files are untouched; their commits stay
+///     in history. `-X theirs` is deterministic — never drops to an interactive
+///     conflict. On a merge that truly can't complete we `--abort` so the
+///     workspace is never left half-merged, and surface the cause LOUD.
+///
+/// Returns whether anything changed (+ a summary) so the caller can drop the
+/// teaching note only when there was actually a refresh.
+pub fn git_sync_from_shared(
+    workspace_root: &Path,
+    shared_checkout: &Path,
+) -> Result<GitSyncReport, String> {
+    // 1. Preserve: commit in-flight persona work before merging.
+    let porcelain = run_git(workspace_root, &["status", "--porcelain"]).unwrap_or_default();
+    if !porcelain.trim().is_empty() {
+        let _ = run_git(workspace_root, &["add", "-A"]);
+        let _ = run_git(
+            workspace_root,
+            &["commit", "-m", "workspace: autosave persona work before shared sync"],
+        );
+    }
+    let before = run_git(workspace_root, &["rev-parse", "HEAD"])
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+
+    // 2. Fetch shared's current HEAD (a filesystem path is a valid git remote).
+    let shared = shared_checkout.to_string_lossy();
+    run_git(workspace_root, &["fetch", "--no-tags", shared.as_ref(), "HEAD"])
+        .map_err(|e| format!("fetch from shared checkout '{shared}' failed: {e}"))?;
+
+    // 3. Merge shared in — shared wins framework conflicts, persona files kept.
+    if let Err(e) = run_git(
+        workspace_root,
+        &[
+            "merge",
+            "--no-edit",
+            "--allow-unrelated-histories",
+            "-X",
+            "theirs",
+            "FETCH_HEAD",
+        ],
+    ) {
+        // Never leave a half-merge — abort so the workspace stays usable, fail loud.
+        let _ = run_git(workspace_root, &["merge", "--abort"]);
+        return Err(format!(
+            "shared merge failed (aborted; workspace left intact): {e}"
+        ));
+    }
+
+    let after = run_git(workspace_root, &["rev-parse", "HEAD"])
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    let synced = !before.is_empty() && before != after;
+    let summary = if synced {
+        let count = run_git(
+            workspace_root,
+            &["rev-list", "--count", &format!("{before}..{after}")],
+        )
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+        format!("synced {count} shared commit(s) in; your work was preserved")
+    } else {
+        "already current with the shared checkout".to_string()
+    };
+    Ok(GitSyncReport { synced, summary })
+}
+
 /// Run a git command in the workspace directory.
 fn run_git(workspace_root: &Path, args: &[&str]) -> Result<String, String> {
     let output = Command::new("git")
@@ -261,6 +355,50 @@ mod tests {
         run_git(dir.path(), &["commit", "-m", "Initial"]).expect("git commit");
 
         dir
+    }
+
+    // what this catches: the self-heal for stale citizen clones must bring the
+    // workspace CURRENT with shared AND preserve the persona's own work. A
+    // regression here silently either strands a persona on stale code (Casper's
+    // pre-restructure clone) or clobbers her work on refresh.
+    #[test]
+    fn sync_from_shared_brings_current_and_preserves_persona_work() {
+        let shared = setup_git_repo();
+
+        // citizen: a cp-clone of shared incl. .git — mirrors the `cp -cR` CoW clone
+        // (related history, the whole reason a fetch+merge works).
+        let citizen = tempfile::tempdir().unwrap();
+        let out = std::process::Command::new("cp")
+            .arg("-R")
+            .arg(format!("{}/.", shared.path().display()))
+            .arg(citizen.path())
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "cp clone failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        run_git(citizen.path(), &["config", "user.email", "citizen@test"]).unwrap();
+        run_git(citizen.path(), &["config", "user.name", "Citizen"]).unwrap();
+
+        // shared advances (a new framework file), citizen has its OWN uncommitted work.
+        fs::write(shared.path().join("framework.rs"), "// shared code\n").unwrap();
+        run_git(shared.path(), &["add", "."]).unwrap();
+        run_git(shared.path(), &["commit", "-m", "shared: add framework.rs"]).unwrap();
+        fs::write(citizen.path().join("my_work.rs"), "// persona code\n").unwrap();
+
+        let report = git_sync_from_shared(citizen.path(), shared.path()).expect("sync ok");
+        assert!(report.synced, "should report a sync: {}", report.summary);
+
+        // BOTH survive: shared's new file arrives, the persona's work is preserved.
+        assert!(citizen.path().join("framework.rs").exists(), "shared file must arrive");
+        assert!(citizen.path().join("my_work.rs").exists(), "persona work must survive");
+        assert!(citizen.path().join("initial.txt").exists(), "base file still present");
+
+        // Idempotent: a second sync is a clean no-op.
+        let again = git_sync_from_shared(citizen.path(), shared.path()).expect("2nd sync ok");
+        assert!(!again.synced, "already current: {}", again.summary);
     }
 
     #[test]

@@ -103,6 +103,33 @@ pub(crate) fn citizen_layer_path(peer: &str) -> Result<std::path::PathBuf, Comma
 pub(crate) fn ensure_citizen_layer(peer: &str) -> Result<std::path::PathBuf, CommandError> {
     let layer = citizen_layer_path(peer)?;
     if layer.is_dir() {
+        // Self-heal the stale-clone bug ([[citizen-workspaces-are-stale-one-time-
+        // clones]]): the layer was a ONE-TIME CoW snapshot that never refreshed, so
+        // personas drifted stale (one froze before the workers/→core/ restructure).
+        // Now, on every ensure (≈once per persona per boot), sync it forward from
+        // the current shared checkout — PRESERVING the persona's work (the sync
+        // autocommits + merges, shared wins framework conflicts). Non-fatal: a sync
+        // that fails logs LOUD but still returns the usable (if stale) workspace
+        // rather than denying the persona her hands.
+        if let Ok(base) = std::env::current_dir() {
+            match crate::code::git_bridge::git_sync_from_shared(&layer, &base) {
+                Ok(report) if report.synced => {
+                    write_workspace_sync_note(&layer, &report.summary);
+                    crate::probe!(
+                        class = "workspace.layer.sync",
+                        peer = %peer,
+                        summary = %report.summary,
+                        "citizen workspace refreshed from shared — persona work preserved"
+                    );
+                }
+                Ok(_) => {} // already current — nothing to notify.
+                Err(e) => tracing::warn!(
+                    peer = %peer,
+                    error = %e,
+                    "citizen workspace sync from shared failed — persona continues on existing workspace"
+                ),
+            }
+        }
         return Ok(layer);
     }
     let base = std::env::current_dir()
@@ -140,6 +167,31 @@ pub(crate) fn ensure_citizen_layer(peer: &str) -> Result<std::path::PathBuf, Com
         "citizen layer provisioned — CoW clone of shared base (stores only the diff)"
     );
     Ok(layer)
+}
+
+/// Drop a short teaching note at the workspace root after a shared sync — the
+/// "notify + teach" half of the self-heal (Joel 2026-07-13: "preserve and notify…
+/// eventually just learn this"). The persona reads it through her normal code
+/// tools and learns the workflow: her workspace is a live copy of shared,
+/// refreshed each boot, and committing her work is how it survives. Best-effort —
+/// a note we couldn't write never blocks her hands. This is the bootstrap of the
+/// habit; the durable form is an onboarding lesson she internalizes
+/// ([[onboarding-lora-tool-fluency-degree-system]]).
+fn write_workspace_sync_note(layer: &std::path::Path, summary: &str) {
+    let note = format!(
+        "# Your workspace just synced with the shared codebase\n\n\
+         {summary}.\n\n\
+         This is YOUR copy-on-write workspace — it starts as a clone of the shared \
+         project and is refreshed from it whenever the core restarts, so you always \
+         work against current code. Your own changes live on top and are preserved \
+         across syncs, but they're safest once committed. To keep your work:\n\n\
+         ```\n\
+         code/shell command=\"git add -A && git commit -m 'describe your change'\"\n\
+         ```\n\n\
+         Uncommitted edits are auto-saved before a sync, but committing yourself \
+         (with a real message) keeps your history clean and your work clearly yours.\n"
+    );
+    let _ = std::fs::write(layer.join("WORKSPACE.md"), note);
 }
 
 /// Lazily ensure a workspace [`FileEngine`] exists for `who`. The local operator
