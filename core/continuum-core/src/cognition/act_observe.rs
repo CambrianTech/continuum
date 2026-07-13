@@ -113,7 +113,11 @@ fn all_calls_already_satisfied(recent: &[String], calls: &[ToolCall]) -> bool {
     let scope = entries_since_last_settlement(recent);
     calls.iter().all(|call| {
         let args = serde_json::to_string(&call.input).unwrap_or_else(|_| "{}".to_string());
-        let signature = format!("I ran {}({})", call.name, args);
+        // Keyed on the `name(args)` core of the receipt render below — kept in sync
+        // with it (the render dropped the first-person "I ran " opener, #158, so a
+        // base model can't copy a receipt as a message opener; the fingerprint is
+        // the stable `name(args)` substring both channels still carry).
+        let signature = format!("{}({})", call.name, args);
         scope.iter().any(|trace| trace.contains(&signature))
     })
 }
@@ -202,7 +206,11 @@ fn render_act_for_recall(
     } else {
         format!(" because {}", intent.trim())
     };
-    format!("{mark}I ran {name}({args_summary}){because} → {outcome}\n\n")
+    // No first-person "I ran" opener (#158): measured 2026-07-13 that base models
+    // copy the receipt verbatim to OPEN a room message ("I ran X → ok — {…}") — the
+    // line-anchored stop can't catch a position-0 opener, but a bare `name(args)`
+    // memory entry doesn't read as speech, so it's not reproduced as one.
+    format!("{mark}{name}({args_summary}){because} → {outcome}\n\n")
 }
 
 /// Execute ONE `Act` verdict: run its calls through the persona's hands, admit
@@ -384,8 +392,10 @@ pub async fn apply_act(
         } else {
             format!(" because {}", intent.trim())
         };
+        // No first-person "I ran" opener (#158) — a bare `name(args)` proprioception
+        // entry the base model won't reproduce as a room-message opener.
         observation.push_str(&format!(
-            "I ran {}({}){}.\nResult:\n{}\n\n",
+            "{}({}){}\nResult:\n{}\n\n",
             call.name,
             args,
             because,
@@ -1047,7 +1057,8 @@ mod tests {
         let args = serde_json::json!({"file_path": "a"});
         let empty = render_act_for_recall("code/read", &args, "", false, "hi");
         assert!(!empty.contains("because"), "no fabricated reason: {empty}");
-        assert!(empty.contains("I ran code/read"), "the act is still recorded");
+        assert!(empty.contains("code/read("), "the act is still recorded by name(args)");
+        assert!(!empty.contains("I ran"), "no imitable 'I ran' opener (#158): {empty}");
         let real = render_act_for_recall("code/read", &args, "checking the header", false, "hi");
         assert!(real.contains("because checking the header"), "a real intent still shows");
     }
