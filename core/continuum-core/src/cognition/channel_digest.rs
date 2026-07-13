@@ -381,6 +381,53 @@ mod tests {
         assert!(d.elements.iter().all(|e| e.event().room_id == room_a));
     }
 
+    // what this catches: THE #146 STARVATION MECHANISM, demonstrated (blind-room
+    // incident #3, 2026-07-13). Every engagement — ignore/skip/RESPOND alike —
+    // advances the bookmark to the channel TIP, and the grounding window keeps
+    // only N already-read elements. So a low-frequency speaker (the operator)
+    // posting into a high-velocity room gets: read-without-necessarily-rendering
+    // on the next tick, then permanently displaced from the grounding window as
+    // soon as N newer peer messages land. Four chatty personas produce N=5 in
+    // seconds — operator messages verified present in `airc inbox`/`events list`
+    // yet absent from every persona prompt. This test pins the mechanism so the
+    // fix (attended ≠ fetched: advance the bookmark only past messages that
+    // actually RENDERED into a prompt — or velocity-aware grounding) has a red/
+    // green target: when the fix lands, flip the final assertion.
+    #[tokio::test]
+    async fn tip_advance_plus_grounding_window_starves_low_frequency_speakers() {
+        let room = RoomId::new();
+        let persona = Uuid::new_v4();
+        let mut events = vec![event_in(room, "OPERATOR: your card is 0b1a6230", 10)];
+        // Tick 1: persona engages (even a silent PASS marks read to tip).
+        // Digest at this point still shows the operator message as unread.
+        let (b, _) = builder();
+        let reader = StubReader::new(events.clone());
+        let d = b.build(persona, room.as_uuid(), &reader, 100, 5).await.unwrap();
+        assert!(d.unread().iter().any(|e| e.text().unwrap().contains("OPERATOR")));
+        b.bookmarks().advance(persona, room.as_uuid(), d.tip_lamport().unwrap());
+
+        // Peers flood: 6 newer messages (> grounding=5), persona engages again.
+        for (i, l) in (11..=16).enumerate() {
+            events.push(event_in(room, &format!("peer chatter {i}"), l));
+        }
+        let reader = StubReader::new(events.clone());
+        let d = b.build(persona, room.as_uuid(), &reader, 100, 5).await.unwrap();
+        b.bookmarks().advance(persona, room.as_uuid(), d.tip_lamport().unwrap());
+
+        // Next build: the operator message is GONE — not in unread (read long
+        // ago), not in grounding (displaced by 5 newer read peer messages).
+        for (i, l) in (17..=18).enumerate() {
+            events.push(event_in(room, &format!("more chatter {i}"), l));
+        }
+        let reader = StubReader::new(events);
+        let d = b.build(persona, room.as_uuid(), &reader, 100, 5).await.unwrap();
+        assert!(
+            !d.elements.iter().any(|e| e.text().unwrap_or("").contains("OPERATOR")),
+            "documents the starvation: operator message evicted from the persona's \
+             entire perceivable window while durably present in the store — #146"
+        );
+    }
+
     // what this catches: two personas' digests over the same channel reference the
     // SAME shared element Arcs — compute-once-across-personas holds at digest level,
     // not just in the cache.
