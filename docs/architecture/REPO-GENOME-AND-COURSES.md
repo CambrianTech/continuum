@@ -183,3 +183,20 @@ manifest — a project's genome belongs to the project. The machine-wide
 store is ONLY dedup'd blob storage (docker's model precisely: images are
 namespaced, blobs are shared). No cross-project semantics ever ride the
 cache; two projects share bytes only when digests happen to match.
+
+## 10. Composition + the per-dir bet (Joel)
+
+- **Layers COMPOSE — attach is a stack push.** PEFT/adapter stacking already
+  merges multiple LoRA layers, so a persona entering a repo just "slaps on"
+  the repo layer atop her existing stack (base + identity genome + skill
+  layers + repo layer). Leaving pops it. No merges, no conflicts — the same
+  paging discipline as everything else in the genome.
+- **Contribution compounds:** cloners get the learning AND the courses, so
+  they (and their personas) mint NEW layers back — matrix cells fill in
+  from the community, PR'd like code. Common-sense access: repo access =
+  layer access (same trust boundary as the `.claude`/`.codex` dir pattern —
+  if you can read the code, you can wear its intuition).
+- **Per-directory layers ("bet we go there"):** the nested `.continuum/`
+  cascade (§8) already scopes courses per dir; when a subtree's corpus
+  justifies it, its course compiles a subtree-specific layer that pages in
+  on focus — attention-shaped weights. Future slice, architecture-ready now.
