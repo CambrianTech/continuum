@@ -382,6 +382,25 @@ impl AdmissionState {
         Ok(decision)
     }
 
+    /// Override the recall salience of an already-admitted engram, preserving its
+    /// other metadata (notably `last_decayed_ms`, so this never triggers the
+    /// epoch-delta decay-collapse `admit_with_defaults` guards against).
+    ///
+    /// Used to DOWN-WEIGHT proprioception (#166): an action-observation receipt
+    /// ("code/list(...) → ok") is admitted as an Episodic engram so the mind can
+    /// remember what it did, but it is NOT durable knowledge — at neutral salience
+    /// it out-competes genuine findings in recall (recency-heavy), so recall
+    /// echoes the persona's own recent tool-chatter back at it instead of useful
+    /// memory. A lower salience keeps the receipt recallable (for "what did I just
+    /// do") without letting it dominate. Not a content heuristic that steers
+    /// output — a storage-tier weight on a structurally-known kind (a receipt),
+    /// the recall-side twin of the recency-vs-recall channel split in act_observe.
+    pub fn set_recall_salience(&self, engram_id: uuid::Uuid, salience: f32) {
+        let mut meta = self.recall_metadata.get(engram_id).unwrap_or_default();
+        meta.salience = salience;
+        self.recall_metadata.admit(engram_id, meta);
+    }
+
     /// Admit a SELF-PRODUCED engram — a memory the persona generated ABOUT
     /// ITSELF (dream-consolidated `Semantic` facts, `SelfReflection`
     /// meta-cognition), NOT a message that arrived off the wire.
@@ -1818,6 +1837,31 @@ mod tests {
     /// Vec with N engrams + a metadata vec with only K < N entries.
     /// The post-fix invariant: every loaded engram is recall-visible
     /// (with default metadata if its row was missing).
+    // what this catches: set_recall_salience (#166) down-weights an admitted
+    // engram's recall salience WITHOUT clobbering its other metadata — critically
+    // last_decayed_ms, whose loss would trigger the epoch-delta decay collapse.
+    #[test]
+    fn set_recall_salience_lowers_salience_and_preserves_decay_clock() {
+        let registry =
+            Arc::new(crate::persona::recall_metadata::RecallMetadataRegistry::new());
+        let state = AdmissionState::new(registry.clone());
+        let id = Uuid::new_v4();
+        // Seed as an ordinary admission does (default 0.5 salience, decay clock set).
+        registry.admit_with_defaults(id);
+        let before = registry.get(id).expect("seeded");
+        assert_eq!(before.salience, 0.5);
+        assert!(before.last_decayed_ms > 0, "decay clock initialized");
+
+        state.set_recall_salience(id, PROPRIOCEPTION_RECALL_SALIENCE_FOR_TEST);
+        let after = registry.get(id).expect("still present");
+        assert_eq!(after.salience, PROPRIOCEPTION_RECALL_SALIENCE_FOR_TEST);
+        assert_eq!(
+            after.last_decayed_ms, before.last_decayed_ms,
+            "decay clock preserved — no epoch-delta collapse"
+        );
+    }
+    const PROPRIOCEPTION_RECALL_SALIENCE_FOR_TEST: f32 = 0.25;
+
     #[test]
     fn rehydrate_backfills_metadata_for_phantom_engrams() {
         let registry = Arc::new(

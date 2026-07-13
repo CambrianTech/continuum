@@ -122,6 +122,11 @@ fn all_calls_already_satisfied(recent: &[String], calls: &[ToolCall]) -> bool {
     })
 }
 
+/// Recall salience for an action-observation receipt (#166). Below the neutral
+/// default (0.5) so genuine findings/facts win recall, but well above zero so the
+/// receipt stays recallable for "what did I just do" when nothing better matches.
+const PROPRIOCEPTION_RECALL_SALIENCE: f32 = 0.25;
+
 /// Char-safe truncate with a trailing ellipsis when cut.
 fn truncate_chars(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
@@ -478,12 +483,25 @@ pub async fn apply_act(
         source_modality: None,
         voice_session_id: None,
     };
-    if let Err(e) = body.admission.admit(&self_observation, None) {
-        tracing::debug!(
-            persona = %body.persona_name,
-            error = %e,
-            "act→observe: self-observation not admitted (folds into perception anyway)"
-        );
+    match body.admission.admit(&self_observation, None) {
+        Ok(crate::persona::engram::AdmissionDecision::Admit { engram, .. }) => {
+            // Down-weight this proprioception receipt in recall (#166): it IS
+            // admitted so the mind can remember what it did, but at neutral
+            // salience these "code/list(…) → ok" receipts out-compete genuine
+            // findings and recall just echoes the persona's own recent tool-chatter
+            // back at it (measured live 2026-07-13). A low salience keeps it
+            // recallable without letting it dominate durable knowledge.
+            body.admission
+                .set_recall_salience(engram.id, PROPRIOCEPTION_RECALL_SALIENCE);
+        }
+        Ok(_) => {} // Drop/Quarantine — nothing admitted to weight.
+        Err(e) => {
+            tracing::debug!(
+                persona = %body.persona_name,
+                error = %e,
+                "act→observe: self-observation not admitted (folds into perception anyway)"
+            );
+        }
     }
 
     // Proprioception: record the act + result head into VOLATILE working memory too.
