@@ -208,3 +208,19 @@ citizen's stack references the one resident copy, and it pages out when the
 last wearer leaves the repo. Four teammates in one repo = one layer in
 VRAM, not four. Same rule up the grid: a 1080Ti node hosting the layer
 serves every persona whose stack references its digest.
+
+## 11. Proving it: with/without benchmark arms (Joel: "let's build this")
+
+Defaults: everything roots at PROJECT ROOT like `.gitignore` (nested dirs
+are the exception, not the requirement). Grid distribution comes later —
+prove single-machine first.
+
+**The honest benchmark design:** run every board WITH and WITHOUT the repo
+layer — two labeled rows, same model, same harness. It isn't cheating; it's
+the system's learned skill, presented transparently (the same claim as any
+fine-tune, with the training corpus auditable in-repo). INTEGRITY LINE:
+course corpora MUST exclude benchmark items (same rule as no-learning-
+during-exams — [[benchmarks-are-proctored-exams]]); the layer teaches the
+REPO, and the with/without delta measures exactly what repo-fluency is
+worth. Expected shape: modest on generic tasks, dramatic on repo-native
+tasks (SWE-style) — which is the paper's cleanest possible figure.
