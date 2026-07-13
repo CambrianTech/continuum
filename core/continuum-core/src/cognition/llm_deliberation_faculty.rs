@@ -363,13 +363,16 @@ impl LlmDeliberationFaculty {
     /// `context_window` that sizes the prompt. ONE source of truth — [`prompt_view`]
     /// subtracts exactly this to bound the prompt, and [`build_request`] passes
     /// exactly this as `max_tokens`, so `prompt + completion` provably never reaches
-    /// `n_ctx`. The `/4` split gives the reply up to a quarter of the window;
-    /// `clamp(256, 2048)` keeps a tiny window usable and a huge one from starving
-    /// the prompt. This is NOT an arbitrary flat cap (the kind that truncated
-    /// qwen3.5 mid-`<think>`): it scales with the real served window and hands the
-    /// reply every token the prompt budget set aside for it.
+    /// `n_ctx`. The `/4` split gives the reply up to a quarter of the real served
+    /// window, floored at 256 so a tiny window is still usable. NO fixed ceiling:
+    /// the old `.clamp(…, 2048)` capped every reply at ~2048 tokens even on a large
+    /// window, which physically prevents writing a file bigger than ~150 lines in
+    /// one turn — a direct app-scale blocker (Joel 2026-07-13: stop choking context
+    /// to stupid small sizes). max_tokens is a CEILING the model stops under when
+    /// done, so a generous quarter-window allowance never wastes anything; it just
+    /// lets the reply be as long as the task genuinely needs.
     fn completion_budget_for(context_window: u32) -> u32 {
-        (context_window / 4).clamp(256, 2048)
+        (context_window / 4).max(256)
     }
 
     /// Build a generation request for the message thread. Centralized so the
@@ -1570,7 +1573,7 @@ mod tests {
                 "recalled",
             ));
             let view = faculty.prompt_view(&ws);
-            let reserve = (window / 4).clamp(256, 2048) as usize;
+            let reserve = (window / 4).max(256) as usize;
             let prompt = est_tokens(&view.system) + est_tokens(&view.user_text());
             assert!(
                 prompt + faculty.describe_tool_tokens() + reserve <= window as usize,
@@ -1795,7 +1798,7 @@ mod tests {
             // collapsed bookmarks — which is the floor case for this fit guard.
             let collapsed = faculty.compose_system("", &BTreeSet::new(), false, false, None);
             let framing = est_tokens(&collapsed);
-            let reserve = (window / 4).clamp(256, 2048) as usize;
+            let reserve = (window / 4).max(256) as usize;
             assert!(
                 framing + reserve < window as usize,
                 "framing+menu ({framing}) + reserve ({reserve}) must leave burst room in {window}"

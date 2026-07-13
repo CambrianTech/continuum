@@ -145,14 +145,19 @@ fn truncate_chars(s: &str, max: usize) -> String {
 /// garble. Generous (the mind still needs enough of the result to act), but
 /// finite. A result already within budget is untouched.
 fn bound_recency_result(body: &str) -> String {
-    /// ~generous head: enough to see the leading entries/matches of a big result
-    /// without flooding the recency window (chars, not tokens — the raw body unit).
-    const RECENCY_RESULT_MAX: usize = 1600;
+    // Hold the WHOLE fetched result up to the ONE result bound the module already
+    // defines (`RESULT_FOLD_MAX_CHARS`, ~16k chars ≈ a real ~400-line source file) —
+    // NOT a second, tiny, hand-picked cap. The earlier 1600-char clamp chopped a
+    // read file to ~25 lines, starving exactly the app-scale work that needs the
+    // file resident (Joel 2026-07-13: "you always choke context down to stupid
+    // small sizes"). This is a FLOOD guard for a pathological result (a 5000-entry
+    // glob), not the context budget: the real fit is the downstream window-sized
+    // prompt packing, which knows the served window. One bound, reused.
     let trimmed = body.trim();
-    if trimmed.chars().count() <= RECENCY_RESULT_MAX {
+    if trimmed.chars().count() <= RESULT_FOLD_MAX_CHARS {
         return trimmed.to_string();
     }
-    let head: String = trimmed.chars().take(RECENCY_RESULT_MAX).collect();
+    let head: String = trimmed.chars().take(RESULT_FOLD_MAX_CHARS).collect();
     format!(
         "{head}\n… (result truncated — it was too large to hold whole; narrow it with \
          a more specific query/path, or read a single file)"
@@ -1326,13 +1331,20 @@ mod tests {
     // persona then loops on). A small result passes through untouched.
     #[test]
     fn recency_result_is_bounded_cleanly_not_flooded() {
-        // small result — untouched
-        let small = "{\"ok\":true,\"lines\":3}";
-        assert_eq!(bound_recency_result(small), small);
-        // huge result — cut to a bounded head + a teaching marker (NOT the whole blob)
+        // a normal fetched result — e.g. a ~400-line source file — passes WHOLE now
+        // (the old 1600-char clamp chopped it to ~25 lines; #app-context un-choke).
+        let real_file = "fn line() {}\n".repeat(500); // ~6k chars, a real file
+        assert_eq!(bound_recency_result(&real_file), real_file.trim(), "a real file stays whole");
+        // only a PATHOLOGICAL result (a 50k-char runaway glob) is flood-bounded — to
+        // the ONE result bound (RESULT_FOLD_MAX_CHARS ~16k), not a tiny hand cap.
         let huge = "x".repeat(50_000);
         let bounded = bound_recency_result(&huge);
-        assert!(bounded.chars().count() < 2_000, "flood contained: {} chars", bounded.chars().count());
+        assert!(
+            bounded.chars().count() < RESULT_FOLD_MAX_CHARS + 200,
+            "flood bounded to the fold max: {} chars",
+            bounded.chars().count()
+        );
+        assert!(bounded.chars().count() > 8_000, "but still generous — not re-choked small");
         assert!(bounded.contains("truncated"), "cut is announced, not silent");
         assert!(bounded.contains("narrow"), "teaches how to get a usable result");
         // char-boundary safe on multibyte content (never panics mid-codepoint)

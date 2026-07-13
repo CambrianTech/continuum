@@ -58,11 +58,17 @@ use uuid::Uuid;
 use super::workspace::{Contribution, Faculty, FacultyId, Workspace};
 use crate::persona::rag_budget::{RagContext, RagSource, ResolutionPreference};
 
-/// Token budget a bridged grounding source gets per tick. Generous for the small
-/// grounding payloads (a roster, a doctrine body); the source truncates itself to
-/// fit (doctrine) or stops at its atomic unit (roster) — the budget contract is
-/// the source's, honored unchanged.
-const DEFAULT_GROUNDING_BUDGET: u32 = 512;
+/// Token budget a bridged grounding source gets per tick. This is a per-source
+/// CEILING the source fills up to, then self-truncates — the window-sized prompt
+/// packer downstream is the real bound, and standing framing carries a high
+/// salience floor so it is never the first thing dropped. So the ceiling should be
+/// GENEROUS: let the workspace map show its full layout, the work board show every
+/// card, the wall show the whole plan — "be more verbose as the budget allows"
+/// (Joel 2026-07-13). The old 512 forced the ENTIRE board + map + roster + doctrine
+/// + wall to each squeeze into ~380 words regardless of a 18k or 128k window — a
+/// self-inflicted choke that starved the persona of the very grounding a big model
+/// could hold. 4096 lets each breathe; the packer still keeps the total ≤ window.
+const DEFAULT_GROUNDING_BUDGET: u32 = 4096;
 
 /// Salience floor for **standing framing** (roster, doctrine) — always-present
 /// structural context, like the system prompt. High enough that the top-k arbiter
