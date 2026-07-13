@@ -224,3 +224,24 @@ during-exams — [[benchmarks-are-proctored-exams]]); the layer teaches the
 REPO, and the with/without delta measures exactly what repo-fluency is
 worth. Expected shape: modest on generic tasks, dramatic on repo-native
 tasks (SWE-style) — which is the paper's cleanest possible figure.
+
+## 12. Distill from the team + the Claude Code integration (Joel)
+
+- **Small models train from larger models AND teams — already built.** The
+  recorder captures EVERY room participant's turns, including frontier
+  agents (Claude/Codex) working alongside personas; distillation is just
+  corpus filtering by author + the existing L1-L3 rails. The repo layer
+  learns from the best mind that ever worked the repo — then every small
+  model wears it.
+- **Personas will beat frontier agents at repo-native work** — structurally:
+  a frontier agent's corrections vanish at context loss and it repeats its
+  mistakes next session (Arden's canary/main mis-merge is the canonical
+  example); a persona's corrections become weights + doctrine + exam
+  history and are NEVER repeated. Fluency compounds; context evaporates.
+- **Claude Code integration:** frontier agents should DELEGATE repo-work to
+  resident personas instead of spawning fresh context-blind subagents —
+  "you'd call on personas over your agents if they knew the ropes." The
+  seam already exists (airc msg / cu commands / cards with receipts); the
+  integration is a subagent-shaped adapter: Task(persona) routes to the
+  room, acceptance = receipts. Global adoption of repo layers makes
+  "collaborative with brilliance" the default state of any codebase.
