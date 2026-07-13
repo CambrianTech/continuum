@@ -1452,6 +1452,22 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
             }
         }
 
+        // stop — the turn-boundary + reserved-marker stop sequences (#150, #158).
+        // GLASS-BOXED 2026-07-13: the body above shipped WITHOUT this field, so
+        // every stop the deliberation faculty threaded in (peer-name stops so a
+        // model can't speak AS teammates; `\n[action`/`\nI ran ` so it can't
+        // fabricate receipts) was silently dropped before reaching llama-server —
+        // the decode-level hygiene never actually ran on local models. llama.cpp's
+        // OpenAI-compatible server honors `stop` as an array of strings; forward it
+        // whenever the caller set any.
+        if let Some(stops) = &request.stop_sequences {
+            if !stops.is_empty() {
+                if let Some(obj) = body.as_object_mut() {
+                    obj.insert("stop".to_string(), json!(stops));
+                }
+            }
+        }
+
         // DMR-specific: llama.cpp's OpenAI-compatible server accepts the
         // llama.cpp-native `repeat_penalty` field as an extension. Until
         // this patch the POST body shipped ONLY the 5 fields above, so
