@@ -289,3 +289,17 @@ the nomination reason + provenance attached — a human or persona reviews the
 diff of the repo's shared mind the same way they review its code. Clutter
 dies in review; sensitive material dies in filters; consent dies nothing —
 it was never taken without asking.
+
+## 15. Micro-experts: dumb models of any size offer utility (Joel)
+
+The economics invert at the small end too: a task-specific layer on a tiny
+base makes a "trivially small" expert — the PR-MERGE-MASTER example: a
+CPU-only model running IN CI, wearing the repo's policy + structure layers,
+gating merges (branch policy, style, receipts present) with zero GPU and
+zero persona overhead. The repo's genome thus serves THREE deployment
+classes from one artifact set: resident personas (full minds), visiting
+frontier agents (page-in fluency), and headless micro-experts (CI/hooks/
+bots — the layer IS the product). No one repeats work at any scale: every
+correction ever made flows into layers/engrams that every future worker of
+any size inherits. The compounding is multiplicative across repos × models
+× workers — the "high numeric exponent."
