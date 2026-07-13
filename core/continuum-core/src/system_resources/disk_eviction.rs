@@ -242,4 +242,71 @@ mod tests {
         tracked.record_freed(10_000);
         assert_eq!(tracked.bytes(), 0);
     }
+
+    // what this catches: THE CHAIN, not the components. The 2026-07-13
+    // incident happened with every unit green — the monitor ran with no
+    // reporters and the broker ran with no eviction owner, so 460 GB
+    // accumulated while every individual piece "worked." This test runs
+    // the real PressureBroker against a real over-budget CargoTargetPool
+    // on a real temp tree and asserts bytes actually leave the disk when
+    // relieve() fires. If any link (pressure math, tier thresholds,
+    // broker act_above, pool registration shape, eviction ladder)
+    // regresses, this fails — the health component Joel called critical
+    // is guarded end-to-end, not piecewise.
+    #[test]
+    fn broker_relieve_actually_deletes_from_an_over_budget_pool() {
+        use crate::paging::{BrokerConfig, PressureBroker};
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let tracked = seeded_target(tmp.path());
+        // Budget below measured usage → pool pressure > 1.0 → Critical.
+        let budget = tracked.bytes() / 2;
+        let pool = Arc::new(CargoTargetPool::new(tracked.clone(), budget));
+
+        let broker = PressureBroker::new(BrokerConfig::default());
+        broker.register(pool as Arc<dyn ResourcePool>);
+
+        let disk_before = dir_size_bytes(tmp.path());
+        let report = broker.relieve();
+
+        assert!(report.triggered, "over-budget pool must trigger relief");
+        assert!(report.bytes_freed > 0, "relief must free real bytes");
+        assert!(
+            dir_size_bytes(tmp.path()) < disk_before,
+            "bytes must actually leave the disk, not just the accounting"
+        );
+        assert!(
+            tmp.path().join("release/keep.bin").exists(),
+            "release survives even broker-driven eviction"
+        );
+    }
+
+    // what this catches: an ownerless cache class — the exact shape of
+    // the incident. Every class in standard_tracked_dirs must have a
+    // DECIDED eviction story: either an owner pool exists, or the class
+    // is explicitly listed here as deferred with the task that owns it.
+    // Adding a sixth cache class without deciding makes this fail at
+    // compile-adjacent cost instead of at a user's full disk.
+    #[test]
+    fn every_cache_class_has_a_decided_eviction_story() {
+        let owned = ["cargo-target"];
+        let deferred = [
+            ("genome-models", "#155: reference-aware LRU — never blind-delete a model being served"),
+            ("hf-hub", "#155: hub LRU keyed on last-access — downloads are re-fetchable"),
+            ("citizens", "#155/#49: workspace CoW fix removes the bulk; stores are persona MEMORY, never auto-evicted"),
+            ("forge", "#155: export trimmer — intermediates only, published artifacts stay"),
+        ];
+        use super::super::disk_pressure::DiskReporter as _;
+        for dir in super::super::disk_reporters::standard_tracked_dirs(Path::new("/h")) {
+            let name = dir.report().name;
+            let decided = owned.contains(&name.as_str())
+                || deferred.iter().any(|(n, _)| *n == name);
+            assert!(
+                decided,
+                "cache class '{name}' has NO eviction decision — register an owner pool or \
+                 add it to the deferred list above with the task that owns it (task #155; \
+                 the 2026-07-13 incident was exactly an ownerless class filling the disk)"
+            );
+        }
+    }
 }
