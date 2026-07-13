@@ -228,6 +228,8 @@ pub fn build_workspace_cycle(cfg: PersonaBrainConfig) -> WorkspaceCycle {
     // executing an `Act` verdict is the organism's job, not the deliberator's.
     let persona_id = cfg.persona_id;
     let persona_name_for_body = cfg.persona_name.to_string();
+    // (Memento-fix persistence helpers live at the bottom of this file:
+    // volatile_path / save_volatile / load_volatile + PersistedVolatile.)
     let admission_for_body = Arc::clone(&cfg.admission);
     let tool_executor = cfg.tool_executor; // partial move out of cfg (other fields still used)
 
@@ -251,6 +253,29 @@ pub fn build_workspace_cycle(cfg: PersonaBrainConfig) -> WorkspaceCycle {
     // turns record nothing). Built HERE (before recall) so recall can share it in and
     // suppress an engram the recency channel already carries — see below.
     let working_memory = Arc::new(WorkingMemory::new(DEFAULT_WORKING_MEMORY_CAPACITY));
+    // MEMENTO FIX (#138 slice 2, Joel: "they wake up blank like Memento — an
+    // engineering failure; the flywheel falls apart"): on LIVE spawns, restore
+    // the volatile tier persisted by the previous life so she wakes MID-WORK —
+    // her recent thoughts, receipts, and own-speech ring intact across a deploy
+    // reboot. Eval forks/harnesses (defer_recall=false) stay pristine: an exam
+    // must never inherit a prior life's scratchpad.
+    if cfg.defer_recall {
+        if let Some(persisted) = load_volatile(cfg.persona_id) {
+            let n = persisted.wm.entries.len();
+            working_memory.restore(persisted.wm);
+            let peer = crate::identity::PeerId::from_uuid(cfg.persona_id);
+            for utterance in &persisted.own_speech {
+                super::deliberation_budget::record_own_speech(peer, utterance);
+            }
+            crate::probe!(
+                class = "persona.volatile.restored",
+                persona = %cfg.persona_name,
+                entries = n,
+                ring = persisted.own_speech.len(),
+                "volatile tier restored — waking mid-work, not blank"
+            );
+        }
+    }
     // Async-dispatch listener (LIVE personas only): fold completions of THIS persona's
     // background dispatches back into working memory by handle, so a compile/train/sentinel
     // it sent away streams its result into the mind when it lands ([[persona-async-dispatch-channel]]).
@@ -264,6 +289,22 @@ pub fn build_workspace_cycle(cfg: PersonaBrainConfig) -> WorkspaceCycle {
             .and_then(|exec| exec.message_bus())
         {
             super::dispatch_listener::spawn(bus, Arc::clone(&working_memory));
+        }
+        // MEMENTO FIX write-through: persist the volatile tier every 15s so a
+        // reboot (graceful or SIGKILL) loses at most one interval of thought.
+        // Atomic tmp+rename; spawn_blocking-free because the payload is tiny
+        // (≤ a few KB) and the interval is coarse — cadence-ladder compliant.
+        {
+            let wm = Arc::clone(&working_memory);
+            let persona_id = cfg.persona_id;
+            tokio::spawn(async move {
+                let mut tick = tokio::time::interval(std::time::Duration::from_secs(15));
+                tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                loop {
+                    tick.tick().await;
+                    save_volatile(persona_id, &wm);
+                }
+            });
         }
     }
     let recall = RecallFaculty::new(cfg.persona_id, cfg.admission)
@@ -686,6 +727,71 @@ pub fn global() -> Arc<PersonaWorkspaceRegistry> {
     GLOBAL
         .get_or_init(|| Arc::new(PersonaWorkspaceRegistry::new()))
         .clone()
+}
+
+// ── MEMENTO FIX (#138): volatile-tier persistence across deploy reboots ──
+// "They wake up blank like Memento — an engineering failure; the flywheel
+// falls apart" (Joel 2026-07-12; nine reboots that day = nine blank wakes).
+// The persisted file is the SAME serialization grid-sync will ship — one
+// format, one seam ([[persona-mind-persists-across-shutdowns]]).
+
+/// On-disk shape: the working-memory snapshot plus the own-speech ring (the
+/// ring is process-global in `deliberation_budget`, so it dies with the
+/// process unless carried here — the repetition detectors were re-blinded by
+/// every reboot until this).
+#[derive(serde::Serialize, serde::Deserialize)]
+struct PersistedVolatile {
+    wm: super::working_memory::VolatileSnapshot,
+    own_speech: Vec<String>,
+}
+
+fn volatile_path(persona_id: Uuid) -> std::path::PathBuf {
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+    std::path::PathBuf::from(home)
+        .join(".continuum/personas")
+        .join(persona_id.to_string())
+        .join("volatile.json")
+}
+
+/// Persist the volatile tier — atomic tmp+rename so a crash mid-write never
+/// leaves a torn file (a torn mind-file failing to parse = silent blank wake,
+/// the exact failure this exists to kill). Errors log loud and drop: losing
+/// one interval of scratchpad is acceptable; blocking a tick is not.
+fn save_volatile(persona_id: Uuid, wm: &super::working_memory::WorkingMemory) {
+    let persisted = PersistedVolatile {
+        wm: wm.snapshot(),
+        own_speech: super::deliberation_budget::recent_own_speech(
+            crate::identity::PeerId::from_uuid(persona_id),
+        ),
+    };
+    let path = volatile_path(persona_id);
+    let write = || -> std::io::Result<()> {
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        let tmp = path.with_extension("json.tmp");
+        std::fs::write(&tmp, serde_json::to_vec(&persisted)?)?;
+        std::fs::rename(&tmp, &path)?;
+        Ok(())
+    };
+    if let Err(e) = write() {
+        tracing::warn!(persona_id = %persona_id, error = %e, "volatile-tier save failed — one interval of scratchpad at risk");
+    }
+}
+
+/// Load the previous life's volatile tier, if any. Unreadable/corrupt files
+/// return None LOUDLY (a mind-file that fails to parse must never be silently
+/// ignored twice — the warn is the operator's cue to look).
+fn load_volatile(persona_id: Uuid) -> Option<PersistedVolatile> {
+    let path = volatile_path(persona_id);
+    let bytes = std::fs::read(&path).ok()?;
+    match serde_json::from_slice(&bytes) {
+        Ok(p) => Some(p),
+        Err(e) => {
+            tracing::warn!(persona_id = %persona_id, error = %e, path = %path.display(), "volatile-tier file unreadable — waking blank this once");
+            None
+        }
+    }
 }
 
 #[cfg(test)]
