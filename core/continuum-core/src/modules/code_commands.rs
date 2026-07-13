@@ -43,7 +43,8 @@ use ts_rs::TS;
 use super::code::CodeState;
 use crate::code::shell_types::{ShellExecuteResponse, ShellExecutionStatus};
 use crate::code::types::{
-    ExistsResult, GlobResult, ListResult, ReadResult, SearchMatch, SearchResult, TreeResult,
+    DirEntry, ExistsResult, FsEntryKind, GlobResult, ListResult, ReadResult, SearchMatch,
+    SearchResult, TreeResult,
     WriteResult,
 };
 use crate::code::{search, tree, EditMode, FileEngine, PathSecurity, ShellSession};
@@ -463,9 +464,51 @@ impl ActionCommand for CodeList {
 
     async fn run(&self, ctx: &Ctx, p: CodeListParams) -> Result<ListResult, CommandError> {
         let engine = engine!(self, ctx);
+        let requested = p.path.as_deref().unwrap_or(".");
+        // Ergonomic recovery: models trained on SWE-agent scaffolds reflexively
+        // reach for `list_files("**/*.rs")` — a recursive GLOB where code/list
+        // wants a single directory. list_dir rightly fails that (it's a flat
+        // lister), but a bare NotFound teaches nothing and the model retries the
+        // same glob (mined: 38% of live code/list calls, every failure a glob).
+        // Meet the idiom: when the path IS a glob, resolve it via code/glob and
+        // project the matches back as a listing — honest (they asked to "list"
+        // these files, they get them), and it widens the surface without a new
+        // verb. [[px-persona-experience-tools-as-good-ux]]
+        if looks_like_file_glob(requested) {
+            let glob = engine
+                .glob_match(requested, None)
+                .map_err(|e| CommandError::Internal(e.to_string()))?;
+            return Ok(list_result_from_glob(requested, glob));
+        }
         engine
-            .list_dir(p.path.as_deref().unwrap_or("."), p.include_hidden.unwrap_or(false))
+            .list_dir(requested, p.include_hidden.unwrap_or(false))
             .map_err(|e| CommandError::Internal(e.to_string()))
+    }
+}
+
+/// Project a [`GlobResult`] into a [`ListResult`] so a glob passed to `code/list`
+/// returns a listing of the matching files (the reflexive `list_files("**/*.rs")`
+/// idiom). Each match is a File entry — `code/glob` yields files only — with size
+/// left `None` (a glob can match thousands; per-entry stat would defeat the
+/// bounded cost `code/list` promises). `directory_path` records the glob so the
+/// persona sees WHY the listing is cross-directory.
+fn list_result_from_glob(pattern: &str, glob: GlobResult) -> ListResult {
+    let entries: Vec<DirEntry> = glob
+        .matches
+        .iter()
+        .map(|path| DirEntry {
+            name: path.rsplit('/').next().unwrap_or(path).to_string(),
+            path: path.clone(),
+            kind: FsEntryKind::File,
+            size_bytes: None,
+        })
+        .collect();
+    ListResult {
+        success: glob.success,
+        directory_path: format!("glob:{pattern}"),
+        total_count: entries.len() as u32,
+        entries,
+        error: glob.error,
     }
 }
 
@@ -1287,6 +1330,37 @@ mod tests {
             "file_path": "a.py", "edit_mode": "append"
         }))).unwrap_err();
         assert!(format!("{err}").contains("content"), "names the missing field: {err}");
+    }
+
+    // what this catches: the code/list glob-recovery (#160). A model that reflexively
+    // passes a recursive glob (`**/*.rs`) to code/list must get the MATCHING FILES back
+    // as a listing, not a bare NotFound it retries forever (mined: 38% of live calls).
+    // Guards both halves: the glob DETECTION that triggers the reroute, and the
+    // GlobResult→ListResult projection (each match a File entry, name = basename,
+    // directory_path records the glob so the persona sees why it's cross-directory).
+    #[test]
+    fn code_list_recovers_a_glob_into_a_listing() {
+        // detection: the reflexive recursive patterns route; a plain dir does not.
+        assert!(looks_like_file_glob("**/*.rs"));
+        assert!(looks_like_file_glob("src/**/*.toml"));
+        assert!(!looks_like_file_glob("src"));
+        assert!(!looks_like_file_glob("."));
+
+        let glob = GlobResult {
+            success: true,
+            pattern: "**/*.rs".to_string(),
+            matches: vec!["core/main.rs".to_string(), "lib.rs".to_string()],
+            total_matches: 2,
+            truncated: false,
+            error: None,
+        };
+        let listing = list_result_from_glob("**/*.rs", glob);
+        assert!(listing.success);
+        assert_eq!(listing.total_count, 2);
+        assert_eq!(listing.directory_path, "glob:**/*.rs", "records the glob provenance");
+        assert_eq!(listing.entries[0].name, "main.rs", "name is the basename");
+        assert_eq!(listing.entries[0].path, "core/main.rs", "path stays workspace-relative");
+        assert!(matches!(listing.entries[0].kind, FsEntryKind::File));
     }
 
     // what this catches: a placeholder file_path (the 14B echoed `<path_to_blueprints.py>` instead
