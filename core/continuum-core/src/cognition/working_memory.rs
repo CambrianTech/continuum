@@ -178,6 +178,21 @@ pub struct VolatileSnapshot {
     pub last_action: Option<(u64, String)>,
     pub action_fps: Vec<String>,
     pub next_action_seq: u64,
+    /// Wall-clock when this snapshot was written — lets restore render the
+    /// interruption GAP ("~N minutes ago") as a perceivable fact instead of
+    /// an invisible discontinuity. `0` on snapshots from before this field
+    /// (serde default): restore then omits the gap, never guesses it.
+    #[serde(default)]
+    pub saved_at_ms: u64,
+    /// LABELS (never handles) of dispatched commands still `Running` at
+    /// save time. Their processes die with the old core, so the handles are
+    /// deliberately NOT restored (that would fabricate in-flight work) —
+    /// but the persona must KNOW what was cut off so she can repeat it in
+    /// one motion (Joel 2026-07-13: an interruption should be like closing
+    /// a laptop — reopen, see what didn't finish, redo it easily). Restore
+    /// renders these into a `[resumed]` fact marked safe-to-repeat.
+    #[serde(default)]
+    pub interrupted_dispatches: Vec<String>,
 }
 
 /// One typed working-memory entry: kind + the FINAL rendered line (rendered
@@ -317,12 +332,31 @@ impl WorkingMemory {
             last_action: self.last_action.lock().clone(),
             action_fps: self.action_fps.lock().iter().cloned().collect(),
             next_action_seq: self.next_action_seq.load(Ordering::Relaxed),
+            saved_at_ms: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as u64)
+                .unwrap_or(0),
+            interrupted_dispatches: self
+                .dispatched
+                .lock()
+                .values()
+                .filter(|d| d.status == DispatchStatus::Running)
+                .map(|d| d.label.clone())
+                .collect(),
         }
     }
 
     /// Restore a snapshot into this (fresh) working memory at spawn — she wakes
     /// mid-thought instead of blank. Capacity re-clamps on the way in so a
     /// snapshot from a larger-capacity life never overflows this one.
+    ///
+    /// The laptop-lid contract (Joel 2026-07-13): the interruption itself
+    /// becomes a PERCEIVABLE fact — how long the lid was closed, and exactly
+    /// which dispatched commands were cut off mid-flight (their processes
+    /// died with the old core; the work did NOT complete and is safe to
+    /// repeat). Without this, a killed dispatch is indistinguishable from a
+    /// finished one, and she either re-does completed work or trusts work
+    /// that never happened.
     pub fn restore(&self, snap: VolatileSnapshot) {
         {
             let mut e = self.entries.lock();
@@ -343,6 +377,43 @@ impl WorkingMemory {
         }
         self.next_action_seq
             .store(snap.next_action_seq.max(1), Ordering::Relaxed);
+
+        // Render the interruption as a fact AFTER the entries land, so it is
+        // the NEWEST thing in her window when she wakes. A fact, never an
+        // instruction — she decides whether the cut-off work still matters.
+        let gap = (snap.saved_at_ms > 0)
+            .then(|| {
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| (d.as_millis() as u64).saturating_sub(snap.saved_at_ms))
+                    .ok()
+            })
+            .flatten()
+            .map(|ms| {
+                let mins = ms / 60_000;
+                if mins == 0 {
+                    "under a minute".to_string()
+                } else {
+                    format!("~{mins} min")
+                }
+            });
+        let fact = match (&gap, snap.interrupted_dispatches.is_empty()) {
+            (Some(g), false) => format!(
+                "[resumed] your session was interrupted {g} ago and your memory restored. Cut off mid-flight and NOT completed: {} — safe to repeat if still wanted",
+                snap.interrupted_dispatches.join("; ")
+            ),
+            (Some(g), true) => format!(
+                "[resumed] your session was interrupted {g} ago and your memory restored; nothing was in flight"
+            ),
+            (None, false) => format!(
+                "[resumed] your session was interrupted and your memory restored. Cut off mid-flight and NOT completed: {} — safe to repeat if still wanted",
+                snap.interrupted_dispatches.join("; ")
+            ),
+            (None, true) => {
+                "[resumed] your session was interrupted and your memory restored; nothing was in flight".to_string()
+            }
+        };
+        self.record_fact(&fact);
     }
 
     /// Typed snapshot of the window, oldest → newest — the kind-aware sibling
@@ -629,22 +700,39 @@ mod tests {
     // round-trips through the JSON snapshot losslessly: typed entries (kinds
     // intact), the full last result, fingerprints, and the receipt counter
     // (so post-restore receipts keep ascending numbers instead of colliding
-    // with restored ones). A blank restore stays blank.
+    // with restored ones) — PLUS the laptop-lid contract (Joel 2026-07-13):
+    // the interruption itself lands as the NEWEST fact, naming the gap and
+    // any dispatched commands cut off mid-flight as safe to repeat.
     #[test]
-    fn volatile_snapshot_round_trips_the_whole_tier() {
+    fn volatile_snapshot_round_trips_and_renders_the_interruption() {
         let wm = WorkingMemory::new(8);
         wm.record("thinking about the tokenizer");
         wm.record_receipt("I ran code/list({\"path\":\".\"}) Result: 4 files");
         wm.record_fact("[unfulfilled] I said I would run commands, but no tool ran");
         wm.record_settlement("shared the plan");
         wm.note_action_fingerprint("code/list|{\"path\":\".\"}");
+        // A dispatched compile still Running at snapshot time — the process
+        // dies with the old core; only its LABEL must survive.
+        let handle = Uuid::new_v4();
+        wm.record_dispatch_event(handle, "cargo build (dispatched)", "compiling…", DispatchStatus::Running);
         let snap = wm.snapshot();
+        assert_eq!(snap.interrupted_dispatches, vec!["cargo build (dispatched)"]);
+        assert!(snap.saved_at_ms > 0);
         let json = serde_json::to_string(&snap).expect("serializes");
         let back: VolatileSnapshot = serde_json::from_str(&json).expect("deserializes");
 
         let fresh = WorkingMemory::new(8);
         fresh.restore(back);
-        assert_eq!(fresh.recent(), wm.recent(), "rendered window identical");
+        // Everything restored, and the [resumed] fact appended as NEWEST.
+        let restored = fresh.recent();
+        let (window, resumed) = restored.split_at(restored.len() - 1);
+        assert_eq!(window, wm.recent().as_slice(), "window identical before the marker");
+        assert!(resumed[0].contains("[resumed]"), "interruption is perceivable: {resumed:?}");
+        assert!(
+            resumed[0].contains("cargo build (dispatched)")
+                && resumed[0].contains("safe to repeat"),
+            "cut-off work named + marked repeatable: {resumed:?}"
+        );
         assert!(fresh.has_receipt(), "receipt kind survives the trip");
         assert_eq!(
             fresh.last_action_full(),
@@ -652,13 +740,29 @@ mod tests {
             "full latest result survives"
         );
         // The counter resumes PAST the restored receipts — the next act gets a
-        // fresh number, never a collision with a restored one.
+        // fresh number, never a collision with a restored one. (#3, not #2:
+        // the dispatched compile consumed a seq too — dispatches are acts.)
         fresh.record_receipt("I ran code/tree({}) Result: ok");
         let last = fresh.recent();
         assert!(
-            last.last().unwrap().starts_with("[action #2]"),
+            last.last().unwrap().starts_with("[action #3]"),
             "counter resumed: {last:?}"
         );
+
+        // And the quiet path: nothing in flight → the fact says so plainly.
+        let quiet = WorkingMemory::new(8);
+        quiet.restore(VolatileSnapshot {
+            entries: Vec::new(),
+            last_action: None,
+            action_fps: Vec::new(),
+            next_action_seq: 1,
+            saved_at_ms: 0, // pre-field snapshot: no gap guessed
+            interrupted_dispatches: Vec::new(),
+        });
+        let q = quiet.recent();
+        assert_eq!(q.len(), 1);
+        assert!(q[0].contains("nothing was in flight"), "{q:?}");
+        assert!(!q[0].contains("ago"), "no fabricated gap on legacy snapshots: {q:?}");
     }
 
     #[test]
