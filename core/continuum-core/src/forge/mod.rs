@@ -18,6 +18,7 @@ pub mod lora_convert;
 pub mod mlx_job;
 pub mod mlx_train;
 pub mod protocol;
+pub mod publish_tags;
 pub mod recipe;
 
 pub use artifact::{ForgeArtifact, HardwareProfile};
