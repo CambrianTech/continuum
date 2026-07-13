@@ -149,3 +149,37 @@ widget-lane courses; the root carries org defaults. Resolution is the
 familiar cascade every developer already knows, applied to agent scope,
 curriculum, and policy — no new mental model, and a monorepo teaches each of
 its territories separately.
+
+## 9. The model matrix — staying clean across "crazy flexibility" (Joel)
+
+LoRA layers do NOT work with anything: a layer binds to one base-model
+family/checkpoint (architecture, dims, tokenizer). Organization principle:
+
+**Courses are source; layers are compiled binaries — one per target.**
+
+- The repo always ships the COURSES (portable, model-agnostic — the source
+  of truth). The manifest is a MATRIX: `course × base-model-family →
+  layer digest`. Popular targets ship pre-built; a missing cell is not an
+  error — it's a **train-on-demand**: the course re-runs against the new
+  base and the matrix gains a cell (the course IS the build recipe).
+- This is exactly OCI's solved problem: a multi-arch image index maps
+  `platform → layers`; our manifest maps `base-model → layers`. Same
+  mental model, same tooling shape — pull resolves your "architecture"
+  (your served base model) to the right blobs automatically.
+
+```json
+// genome/manifest.json (sketch)
+{ "courses": {
+    "tool-fluency-core": {
+      "unsloth/Devstral-Small-2507": {"digest": "sha256:…", "lift": 5.1},
+      "Qwen2.5-Coder-7B":            {"digest": "sha256:…", "lift": 3.8}
+      // any other base → train-on-demand from the course
+} } }
+```
+
+**Scope correction (Joel): layers are PROJECT-scoped, not global.** The
+layer's identity, ownership, review, and versioning live in the project's
+manifest — a project's genome belongs to the project. The machine-wide
+store is ONLY dedup'd blob storage (docker's model precisely: images are
+namespaced, blobs are shared). No cross-project semantics ever ride the
+cache; two projects share bytes only when digests happen to match.
