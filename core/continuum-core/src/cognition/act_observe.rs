@@ -126,6 +126,30 @@ fn truncate_chars(s: &str, max: usize) -> String {
     format!("{}…", s.chars().take(max).collect::<String>())
 }
 
+/// The RECENCY channel keeps the WHOLE latest result so the mind can act on what
+/// it just fetched — but "whole" for a 5000-entry `code/list` or a multi-match
+/// `code/search` is a multi-KB raw-JSON blob that (a) floods working memory and
+/// (b) gets cut MID-JSON by the downstream budget, which is the garbled/nested
+/// `line_content` a persona then reasons over and loops on (#165, glass-boxed
+/// 2026-07-13). So bound it HERE, at the source, with a CLEAN cut on a char
+/// boundary + a teaching marker that names how to narrow — never a mid-structure
+/// garble. Generous (the mind still needs enough of the result to act), but
+/// finite. A result already within budget is untouched.
+fn bound_recency_result(body: &str) -> String {
+    /// ~generous head: enough to see the leading entries/matches of a big result
+    /// without flooding the recency window (chars, not tokens — the raw body unit).
+    const RECENCY_RESULT_MAX: usize = 1600;
+    let trimmed = body.trim();
+    if trimmed.chars().count() <= RECENCY_RESULT_MAX {
+        return trimmed.to_string();
+    }
+    let head: String = trimmed.chars().take(RECENCY_RESULT_MAX).collect();
+    format!(
+        "{head}\n… (result truncated — it was too large to hold whole; narrow it with \
+         a more specific query/path, or read a single file)"
+    )
+}
+
 /// Collapse tool ARGS for the recall channel: a large string value (e.g. a whole file
 /// passed in `content`) becomes `<key>: N chars` — re-showing that file verbatim on every
 /// future turn is the dead weight that taxes context (measured: it drowned an unfamiliar
@@ -351,7 +375,7 @@ pub async fn apply_act(
             call.name,
             args,
             intent.trim(),
-            body_text.trim(),
+            bound_recency_result(body_text),
         ));
         recall_observation.push_str(&render_act_for_recall(
             &call.name,
@@ -1236,6 +1260,27 @@ mod tests {
             admission,
             working_memory,
         })
+    }
+
+    // what this catches: the recency-channel result bound (#165) — a huge raw-JSON
+    // result (a 5000-entry code/list, a multi-match code/search) is cut CLEANLY at
+    // the source with a teaching marker, never dumped whole (flood) and never left
+    // for the downstream budget to cut mid-JSON (the garbled/nested line_content a
+    // persona then loops on). A small result passes through untouched.
+    #[test]
+    fn recency_result_is_bounded_cleanly_not_flooded() {
+        // small result — untouched
+        let small = "{\"ok\":true,\"lines\":3}";
+        assert_eq!(bound_recency_result(small), small);
+        // huge result — cut to a bounded head + a teaching marker (NOT the whole blob)
+        let huge = "x".repeat(50_000);
+        let bounded = bound_recency_result(&huge);
+        assert!(bounded.chars().count() < 2_000, "flood contained: {} chars", bounded.chars().count());
+        assert!(bounded.contains("truncated"), "cut is announced, not silent");
+        assert!(bounded.contains("narrow"), "teaches how to get a usable result");
+        // char-boundary safe on multibyte content (never panics mid-codepoint)
+        let multibyte = "日本語".repeat(1_000);
+        let _ = bound_recency_result(&multibyte);
     }
 
     // what this catches: an act is scoped to the room it is FOR (one mind is in
