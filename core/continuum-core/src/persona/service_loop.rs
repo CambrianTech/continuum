@@ -137,9 +137,12 @@ pub struct ServeOptions {
     /// for testability — same as `inspect_persona_rag` already does.
     pub now_ms: fn() -> u64,
     /// Eval-preemption gate — ALWAYS present (the loop never asks "is there a gate?",
-    /// only reads its value). While `true` the autonomic self-tick is SUSPENDED: she
-    /// stays online and still answers explicit `Wake::Msg` turns, but stops INITIATING
-    /// self-directed ones, so a benchmark measures a clean GPU without despawning her.
+    /// only reads its value). While `true` the service loop goes FULLY quiet: it neither
+    /// self-ticks nor consumes inbound (peer replies are `Wake::Msg` — gating only the
+    /// self-tick would let a conversation cascade keep the GPU busy). Messages buffer in
+    /// the stream and resume when the lease drops. The measuring eval drives cognition
+    /// directly (not through this loop), so a quiet loop never blocks it — a benchmark
+    /// gets a clean GPU without despawning her.
     /// The caller supplies the SHARED atomic the registry owns (`quiesced_flag`) so a
     /// `QuiesceLease` can flip it; `Default` is a private, never-set flag (this persona
     /// is simply never quiesced). Registry owns write, loop owns read.
@@ -390,7 +393,20 @@ async fn serve_persona_loop_inner(
     let mut recent_inbound: std::collections::VecDeque<String> =
         std::collections::VecDeque::with_capacity(RECENT_INBOUND_WINDOW);
 
+    // While an eval-preemption lease is held, the loop goes FULLY quiet on this beat —
+    // it neither self-ticks NOR consumes inbound. Gating only the self-tick isn't
+    // enough: a peer's reply arrives as `Wake::Msg`, so an in-flight conversation would
+    // keep the GPU busy right through the measurement. Messages simply BUFFER in the
+    // airc stream and are served when the lease drops; the poll is short so resume is
+    // prompt. The measuring eval drives cognition DIRECTLY (not through this loop), so a
+    // quiet loop never blocks it. [[benchmark-is-a-governor-preemption-lease]]
+    // [[first-class-citizens-even-during-benchmarks]]
+    const QUIESCE_POLL: std::time::Duration = std::time::Duration::from_millis(400);
     loop {
+        if opts.quiesced.load(std::sync::atomic::Ordering::Relaxed) {
+            tokio::time::sleep(QUIESCE_POLL).await;
+            continue;
+        }
         let wake = tokio::select! {
             ev = next_event(conversation, &mut outcome) => match ev {
                 Some(m) => Wake::Msg(m),
@@ -401,18 +417,8 @@ async fn serve_persona_loop_inner(
         let msg = match wake {
             Wake::Stop => break,
             Wake::Tick => {
-                // Eval-preemption lease held → SUSPEND the autonomic self-tick. She
-                // stays online (an addressed `Wake::Msg` is still handled below), she
-                // just stops INITIATING self-directed turns — so a benchmark measures
-                // a clean, uncontended GPU without despawning anyone. The lease's Drop
-                // guarantees she resumes even if the eval panics. Humane suspend, never
-                // a kill. [[benchmark-is-a-governor-preemption-lease]]
-                // [[first-class-citizens-even-during-benchmarks]]
-                if opts.quiesced.load(std::sync::atomic::Ordering::Relaxed) {
-                    next_beat = rest_cap; // idle at the rest cadence while suspended
-                    continue;
-                }
-                // Heartbeat slice — the mind gets time with no inbound message. Its OWN
+                // (Quiescence is handled at the top of the loop — a held lease never
+                // reaches here.) Heartbeat slice — the mind gets time with no inbound
                 // activity sets the next beat: if it found something new to work on
                 // (last_burst_fp advanced), stay quick; if it went idle, drift toward rest.
                 let before = last_burst_fp;

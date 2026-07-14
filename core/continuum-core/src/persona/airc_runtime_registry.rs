@@ -114,6 +114,14 @@ pub struct QuiesceLease {
     flags: Vec<Arc<AtomicBool>>,
 }
 
+impl QuiesceLease {
+    /// How many personas this lease suspended — the observable that tells a caller
+    /// (and the log) whether the fleet was actually quiesced or the roster was empty.
+    pub fn count(&self) -> usize {
+        self.flags.len()
+    }
+}
+
 impl Drop for QuiesceLease {
     fn drop(&mut self) {
         for f in &self.flags {

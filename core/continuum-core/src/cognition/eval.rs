@@ -785,8 +785,23 @@ impl CognitionEval {
         // including early-return and panic (Drop rides the unwind). Held for the whole
         // body. `None` (no live fleet — tools/tests) → nothing to quiesce; measure as-is.
         // [[benchmark-is-a-governor-preemption-lease]] [[first-class-citizens-even-during-benchmarks]]
-        let _fleet_lease =
-            crate::persona::PersonaAircRuntimeRegistry::try_global().map(|r| r.quiesce_all());
+        let _fleet_lease = match crate::persona::PersonaAircRuntimeRegistry::try_global() {
+            Some(r) => {
+                let lease = r.quiesce_all();
+                tracing::info!(
+                    personas = lease.count(),
+                    "eval-preemption lease: fleet quiesced for the measurement"
+                );
+                Some(lease)
+            }
+            None => {
+                tracing::warn!(
+                    "eval-preemption: no global roster published — fleet NOT quiesced; \
+                     measurement may be GPU-contended"
+                );
+                None
+            }
+        };
 
         let persona_uuid = Uuid::parse_str(&p.persona_id).map_err(|_| {
             CommandError::Invalid(format!("persona_id '{}' is not a valid UUID", p.persona_id))
