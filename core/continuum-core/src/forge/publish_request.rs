@@ -38,6 +38,11 @@ pub enum PublishError {
     MissingGene { detail: String },
     /// A required card field is empty (base model / trait).
     MissingField { field: &'static str },
+    /// The upload transport (HF, grid peer, …) failed AFTER validation passed —
+    /// network, auth, or a non-2xx from the destination. Distinct from the
+    /// validation refusals: this was a good, gated request that couldn't be
+    /// delivered (a caller may retry / try another publisher), not a bad request.
+    Transport { transport: String, detail: String },
 }
 
 impl std::fmt::Display for PublishError {
@@ -56,6 +61,9 @@ impl std::fmt::Display for PublishError {
             }
             Self::MissingField { field } => {
                 write!(f, "publish refused: required field '{field}' is empty")
+            }
+            Self::Transport { transport, detail } => {
+                write!(f, "publish via {transport} failed: {detail}")
             }
         }
     }
