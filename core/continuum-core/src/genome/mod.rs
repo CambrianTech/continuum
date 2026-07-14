@@ -61,6 +61,7 @@
 
 pub mod blob;
 pub mod bus;
+pub mod candidate_source_store;
 pub mod eviction;
 pub mod fine_tuning;
 pub mod local_manager;
