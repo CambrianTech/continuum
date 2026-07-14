@@ -247,8 +247,21 @@ pub(super) fn own_repetition_fact(turns: &[BurstTurn], spoken: &[String]) -> Opt
             .count();
         best = best.max(dups + 1);
     }
+    // A bare "N were nearly identical" observation fires but doesn't deter a
+    // determined weaker model (glass-boxed 2026-07-14: the fact fired true at ×3
+    // and Asha repeated the SAME message 20×). Doctrine forbids an output gate
+    // ([[no-hardcoded-heuristics-to-steer-cognition]]), so we don't censor WHAT she
+    // says — but we CAN connect the detected repetition to the PASS affordance she
+    // ALREADY has (her Silence Option prompt: "Choose PASS when … nothing new has
+    // been raised"), surfaced at the moment repetition is structurally detected. The
+    // fork (add something genuinely new, OR go silent) is hers; this only names it.
     (best >= 3).then(|| {
-        format!("[repetition] {best} of your recent messages were nearly identical")
+        format!(
+            "[repetition] {best} of your recent messages were nearly identical — you're \
+             circling, and restating what you've already said adds nothing. If you have \
+             nothing genuinely new to contribute right now, silence (PASS) is the honest \
+             response."
+        )
     })
 }
 
@@ -643,7 +656,14 @@ mod tests {
             own("I'll create a simple text file first.\n[writing test files]"),
         ];
         let fact = own_repetition_fact(&looping, &[]).expect("a 4-message loop is a fact");
-        assert_eq!(fact, "[repetition] 4 of your recent messages were nearly identical");
+        assert!(
+            fact.starts_with("[repetition] 4 of your recent messages were nearly identical"),
+            "states the count: {fact}"
+        );
+        // Connects the loop to her existing silence affordance (the fact fired ×3 live
+        // and the model repeated 20× anyway — surfacing PASS at the detected moment is
+        // the doctrine-safe lever, never an output gate).
+        assert!(fact.contains("silence (PASS)"), "surfaces the PASS affordance: {fact}");
 
         // PERIOD-2 CYCLE (the live blind spot that forced cluster detection):
         // two templates alternating — consecutive pairs are dissimilar, but the
@@ -656,7 +676,10 @@ mod tests {
             own("Thank you both for your commitment and enthusiasm! Let's keep each other updated."),
         ];
         let fact = own_repetition_fact(&cycling, &[]).expect("a period-2 cycle is a loop");
-        assert_eq!(fact, "[repetition] 3 of your recent messages were nearly identical");
+        assert!(
+            fact.starts_with("[repetition] 3 of your recent messages were nearly identical"),
+            "period-2 cycle fires at count 3: {fact}"
+        );
 
         // Healthy varied conversation → nothing.
         let healthy = vec![
