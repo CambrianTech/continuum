@@ -14,12 +14,33 @@ use super::types::{TreeNode, TreeResult};
 /// and limits depth to prevent runaway recursion.
 pub fn generate_tree(root: &Path, max_depth: u32, include_hidden: bool) -> TreeResult {
     if !root.exists() || !root.is_dir() {
+        // HONEST, ACTIONABLE error — the flat "Not a directory" read as "the whole
+        // workspace is unexplorable" and a persona GAVE UP (glass-boxed 2026-07-14:
+        // Anwen). Distinguish the two real cases and point at what DOES work, so the
+        // mind re-orients instead of concluding it is stuck. [[fallbacks-are-illegal-fail-loud]]
+        let error = if !root.exists() {
+            format!(
+                "path not found: {} — nothing exists at that path. This is about the \
+                 PATH, not the workspace: the workspace root itself IS explorable — call \
+                 code/tree with NO `path` for the whole tree, then pass a path you see in \
+                 that output. Paths are relative to the workspace root (do not prefix them \
+                 with 'workspace/').",
+                root.display()
+            )
+        } else {
+            format!(
+                "{} is a FILE, not a directory — code/tree lists directories. To read this \
+                 file use code/read; to see what's around it, code/tree on its parent \
+                 directory.",
+                root.display()
+            )
+        };
         return TreeResult {
             success: false,
             root: None,
             total_files: 0,
             total_directories: 0,
-            error: Some(format!("Not a directory: {}", root.display())),
+            error: Some(error),
         };
     }
 
@@ -272,7 +293,26 @@ mod tests {
     fn test_tree_nonexistent() {
         let result = generate_tree(Path::new("/nonexistent/path"), 10, false);
         assert!(!result.success);
-        assert!(result.error.is_some());
+        // Actionable: names it a PATH problem, not a workspace problem, and points at
+        // the no-`path` call that works (regression for Anwen's 2026-07-14 give-up).
+        let err = result.error.unwrap();
+        assert!(err.contains("path not found"), "{err}");
+        assert!(err.contains("code/tree with NO"), "names the recovery: {err}");
+    }
+
+    // what this catches: a FILE path (exists, not a dir) gets a DISTINCT, honest error
+    // that points to code/read — not the old flat "Not a directory" a persona misread
+    // as "the whole workspace is unexplorable".
+    #[test]
+    fn tree_on_a_file_names_it_a_file_and_points_to_read() {
+        let dir = setup_tree_dir();
+        let file = dir.path().join("README.md");
+        std::fs::write(&file, "hi").unwrap();
+        let result = generate_tree(&file, 10, false);
+        assert!(!result.success);
+        let err = result.error.unwrap();
+        assert!(err.contains("is a FILE"), "{err}");
+        assert!(err.contains("code/read"), "points at the right tool: {err}");
     }
 
     #[test]
