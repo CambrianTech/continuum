@@ -771,6 +771,13 @@ impl AdmissionState {
         if limit == 0 {
             return Vec::new();
         }
+        // How long a wanderer INNER-SPEECH thought (EngramKind::SelfReflection — the
+        // historian/dreamer lenses, #145) stays eligible for AMBIENT recall. A passing
+        // thought is "current inner speech" only briefly; past this it has PASSED, and
+        // resurfacing it as though it were current fact is a bug, not a memory. 15 min:
+        // long enough that a fresh musing can still bubble up the same activity, short
+        // enough that a stale self-assessment cannot masquerade as the present.
+        const INNER_SPEECH_RECALL_TTL_MS: u64 = 15 * 60 * 1000;
         let engrams = self.engrams.lock().unwrap();
         // Enumerate in insertion order: `idx` is a monotonic recency rank
         // (higher == more recently admitted), used as the tiebreaker below.
@@ -790,6 +797,22 @@ impl AdmissionState {
                 // structural form of the earlier salience down-weight, which alone
                 // couldn't stop them surfacing when knowledge was sparse.
                 if matches!(e.origin, EngramOrigin::Tool(_)) {
+                    return None;
+                }
+                // Wanderer inner-speech (EngramKind::SelfReflection) is a PASSING
+                // thought, not durable knowledge. A FRESH one may bubble up as ambient
+                // inner speech (the arc's intent, dream_consolidation §wanderer); a STALE
+                // one must NOT resurface as current fact. Glass-boxed 2026-07-14: Atlas
+                // recalled a 25m-old "[thought:historian] you keep failing to claim" AS
+                // present truth minutes after his claim SUCCEEDED, and rationalized the
+                // contradiction into a loop — the "feedback vs rag" incoherence. Bound
+                // its ambient-recall lifetime here; introspection still queries ALL of
+                // them explicitly by `thought:<lens>` recall-key (`recall_by_keyword`, a
+                // separate path). Dream-DISTILLED insight is EngramKind::Semantic
+                // (durable) — untouched. Sibling of the Tool-receipt gate above (#166).
+                if e.kind == crate::persona::engram::EngramKind::SelfReflection
+                    && now_ms.saturating_sub(e.admitted_at_ms) > INNER_SPEECH_RECALL_TTL_MS
+                {
                     return None;
                 }
                 self.recall_metadata.apply_decay(e.id, now_ms);
@@ -1383,6 +1406,46 @@ mod tests {
             !ids.contains(&receipt_id),
             "a Tool-origin receipt is NEVER in the semantic recall pool"
         );
+    }
+
+    // what this catches: wanderer INNER-SPEECH recall is recency-bounded (#145 / the
+    // 2026-07-14 "feedback vs rag" incoherence — Atlas recalled a stale historian
+    // thought "you keep failing to claim" as present truth after his claim succeeded).
+    // A FRESH SelfReflection-kind thought still bubbles up; a STALE one drops; a
+    // dream-DISTILLED Semantic reflection is durable and ALWAYS stays.
+    #[test]
+    fn recall_recency_bounds_wanderer_inner_speech_but_keeps_distilled() {
+        let state = AdmissionState::new(Arc::new(
+            crate::persona::recall_metadata::RecallMetadataRegistry::new(),
+        ));
+        let now = 100 * 60 * 1000; // 100 min in
+        let inner = |content: &str, admitted_at_ms: u64| Engram {
+            id: Uuid::new_v4(),
+            context_id: None,
+            kind: EngramKind::SelfReflection, // wanderer inner speech
+            content: content.to_string(),
+            origin: EngramOrigin::SelfReflection { parent_engram_id: Uuid::new_v4() },
+            recall_keys: vec!["thought:historian".to_string()],
+            admitted_at_ms,
+            trust_state_at_admission: TrustState::SelfTrust,
+            admission_trace_id: None,
+        };
+        let fresh = inner("[thought:historian] a passing thought, moments old", now - 5 * 60 * 1000);
+        let stale = inner("[thought:historian] you keep failing to claim", now - 40 * 60 * 1000);
+        // A dream-distilled DURABLE insight (Semantic kind, SelfReflection origin).
+        let distilled = semantic_reflection("the codebase grades via rustc exit code", Uuid::new_v4());
+        let (fresh_id, stale_id, distilled_id) = (fresh.id, stale.id, distilled.id);
+        for e in [fresh, stale, distilled] {
+            state.admit_reflection(e).expect("admits");
+        }
+        let ids: Vec<Uuid> = state
+            .recall_candidates(now, 10)
+            .into_iter()
+            .map(|(e, _)| e.id)
+            .collect();
+        assert!(ids.contains(&fresh_id), "fresh inner speech still bubbles up");
+        assert!(!ids.contains(&stale_id), "a stale wanderer thought does NOT resurface as current fact");
+        assert!(ids.contains(&distilled_id), "dream-distilled Semantic insight is durable — always recallable");
     }
 
     fn semantic_reflection(content: &str, parent: Uuid) -> Engram {

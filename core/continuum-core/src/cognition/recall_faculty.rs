@@ -605,11 +605,20 @@ impl Faculty for RecallFaculty {
         // Structural attribution only: origin variant + speaker identity + age —
         // never content inspection ([[no-hardcoded-heuristics-to-steer-cognition]]).
         let now_ms = (self.clock)();
-        let content = scored
+        let lines = scored
             .iter()
             .map(|(_, engram, _, _)| render_memory_line(engram, self.persona_id, now_ms))
             .collect::<Vec<_>>()
             .join("\n");
+        // Label the section AS memory, inline, so a transcript-trained model reads the
+        // lines below as RECOLLECTION — "I remember/recall that …" — not as statements
+        // about the present. Glass-boxed 2026-07-14 (Joel, "in prose/rag form engrams
+        // are more like 'I remember/recall that:'"): Atlas recalled a stale "you keep
+        // failing to claim" and a 42m-old "already claimed by another peer" AS current
+        // truth, contradicting his fresh successful claim, and looped. The provenance
+        // prefix per line already marks WHO/WHEN; this frames the whole block so the
+        // pastness is unmissable. Not a directive about what to do — just what this IS.
+        let content = format!("{RECALL_MEMORY_FRAME}\n{lines}");
         let reasoning = format!(
             "recalled {} memor{} ({}) — salience-uplifted, loop closed",
             scored.len(),
@@ -629,6 +638,14 @@ impl Faculty for RecallFaculty {
         ))
     }
 }
+
+/// Inline label for the recall section: frames the lines below AS memory, so a
+/// transcript-trained model reads them as "I remember/recall that …" rather than as
+/// statements about the present moment (Joel, 2026-07-14). Non-directive — it says
+/// what the block IS, not what to do; each line still carries its own who/when prefix.
+const RECALL_MEMORY_FRAME: &str =
+    "(These are my own MEMORIES — things I recall from earlier, tagged with who they \
+     came from and how long ago. They describe the PAST, not necessarily the present.)";
 
 /// Structural provenance for a rendered memory line: WHO the memory came from
 /// (relative to `persona_id`) and HOW LONG AGO it was admitted — read from
@@ -1221,8 +1238,14 @@ mod tests {
         async fn contribute(&self, ws: &Workspace) -> Option<Contribution> {
             match ws.broadcast.iter().find(|c| c.faculty == FacultyId::Recall) {
                 Some(mem) => {
-                    // Reference the most relevant recalled line.
-                    let first_line = mem.content.lines().next().unwrap_or("").to_string();
+                    // Reference the most relevant recalled MEMORY line (each starts with
+                    // "- "), skipping the section's memory-frame header.
+                    let first_line = mem
+                        .content
+                        .lines()
+                        .find(|l| l.trim_start().starts_with("- "))
+                        .unwrap_or("")
+                        .to_string();
                     Some(Contribution::verdict(
                         Decision::Speak {
                             text: format!("Picking up the thread — I recall: {first_line}"),
@@ -1527,7 +1550,8 @@ mod tests {
             .await
             .expect("relevant memories should surface");
         assert_eq!(
-            c.content.lines().count(),
+            // Count MEMORY lines (each starts with "- "), not the section frame header.
+            c.content.lines().filter(|l| l.trim_start().starts_with("- ")).count(),
             3,
             "a 4096-token window caps recall at 3 memories; got:\n{}",
             c.content
