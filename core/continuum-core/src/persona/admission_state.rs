@@ -1339,6 +1339,52 @@ mod tests {
         );
     }
 
+    // what this catches: a Tool-origin engram — a persona's own "I ran X → result"
+    // receipt (proprioception) — must be EXCLUDED from the semantic recall pool so
+    // it can never drown durable knowledge (#166). Note it's admitted NEWER than the
+    // knowledge, so if the exclusion regressed, recency would surface it first. This
+    // is the coverage that was missing when act_observe mis-admitted receipts as
+    // non-Tool persona messages and the gate never bit.
+    #[test]
+    fn recall_candidates_excludes_tool_origin_receipts() {
+        let state = AdmissionState::new(Arc::new(
+            crate::persona::recall_metadata::RecallMetadataRegistry::new(),
+        ));
+        let knowledge = admit_n_distinct(&state, &["the ticket asks for a wordstats CLI here"]);
+        let receipt = crate::persona::engram::Engram {
+            id: Uuid::new_v4(),
+            context_id: None,
+            kind: crate::persona::engram::EngramKind::Episodic,
+            content: "code/list(path=src) → ok".to_string(),
+            origin: crate::persona::engram::EngramOrigin::Tool(
+                crate::persona::engram::ToolInvocationRef {
+                    invocation_id: Uuid::new_v4(),
+                    tool_name: "code/list".to_string(),
+                    invoked_at_ms: 1000,
+                    input_hash: "sha256:in".to_string(),
+                    output_hash: "sha256:out".to_string(),
+                },
+            ),
+            recall_keys: Vec::new(),
+            admitted_at_ms: 2000,
+            trust_state_at_admission: crate::persona::engram::TrustState::SelfTrust,
+            admission_trace_id: None,
+        };
+        let receipt_id = receipt.id;
+        state.admit_reflection(receipt).expect("receipt admits");
+
+        let ids: Vec<Uuid> = state
+            .recall_candidates(10_000, 10)
+            .into_iter()
+            .map(|(e, _)| e.id)
+            .collect();
+        assert!(ids.contains(&knowledge[0]), "durable knowledge stays recallable");
+        assert!(
+            !ids.contains(&receipt_id),
+            "a Tool-origin receipt is NEVER in the semantic recall pool"
+        );
+    }
+
     fn semantic_reflection(content: &str, parent: Uuid) -> Engram {
         Engram {
             context_id: None,

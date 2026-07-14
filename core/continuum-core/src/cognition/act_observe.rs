@@ -27,7 +27,6 @@ use uuid::Uuid;
 
 use super::workspace::{Burst, Decision, Situation, TurnFraming, TurnMetrics, WorkspaceCycle};
 use crate::ai::types::ToolCall;
-use crate::persona::types::{InboxMessage, SenderType};
 
 /// Max chars of a single tool result folded into the next perception / engram.
 /// A bound on what we re-inject, NOT a clamp on the model's own generation: the
@@ -474,32 +473,50 @@ pub async fn apply_act(
     // same way it surfaces anything else the persona knows. Best-effort — an
     // admission hiccup must never wedge the act→observe loop.
     let now_ms = now_ms();
-    let self_observation = InboxMessage {
+    // Admit the outcome as a TOOL-ORIGIN Episodic engram via the self-produced path.
+    // The origin is load-bearing (#166): a tool receipt is PROPRIOCEPTION, and
+    // `recall_candidates` now gates `EngramOrigin::Tool` OUT of the SEMANTIC recall
+    // pool — so tagging it Tool HERE is what actually keeps "code/list(…) → ok"
+    // chatter from drowning genuine knowledge in recall. The prior path admitted it
+    // as a plain `SenderType::Persona` message → NON-Tool origin → it slipped the
+    // gate (verified live 2026-07-13). The recency/working-memory channel (below)
+    // still keeps the FULL trace so she sees her own hands. SelfTrust: her own act,
+    // no external envelope to verify ([[act-results-need-a-recency-channel-not-
+    // semantic-recall]]).
+    let tool_name = fg_calls
+        .first()
+        .map(|c| c.name.clone())
+        .unwrap_or_else(|| "action".to_string());
+    let obs_hash = crate::persona::inbox_admission::content_hash_sha256(&recall_observation);
+    let self_observation = crate::persona::engram::Engram {
         id: Uuid::new_v4(),
-        room_id,
-        sender_id: body.persona_id,
-        sender_name: body.persona_name.clone(),
-        sender_type: SenderType::Persona,
-        // The RECALL channel gets the COLLAPSED reference (expand-on-demand via the handle);
-        // recency (working memory, below) keeps the FULL trace.
+        context_id: Some(room_id),
+        kind: crate::persona::engram::EngramKind::Episodic,
         content: recall_observation,
-        timestamp: now_ms,
-        priority: 1.0,
-        source_modality: None,
-        voice_session_id: None,
+        origin: crate::persona::engram::EngramOrigin::Tool(
+            crate::persona::engram::ToolInvocationRef {
+                invocation_id: Uuid::new_v4(),
+                tool_name,
+                invoked_at_ms: now_ms,
+                input_hash: obs_hash.clone(),
+                output_hash: obs_hash,
+            },
+        ),
+        recall_keys: Vec::new(),
+        admitted_at_ms: now_ms,
+        trust_state_at_admission: crate::persona::engram::TrustState::SelfTrust,
+        admission_trace_id: None,
     };
-    match body.admission.admit(&self_observation, None) {
+    match body.admission.admit_reflection(self_observation) {
         Ok(crate::persona::engram::AdmissionDecision::Admit { engram, .. }) => {
-            // Down-weight this proprioception receipt in recall (#166): it IS
-            // admitted so the mind can remember what it did, but at neutral
-            // salience these "code/list(…) → ok" receipts out-compete genuine
-            // findings and recall just echoes the persona's own recent tool-chatter
-            // back at it (measured live 2026-07-13). A low salience keeps it
-            // recallable without letting it dominate durable knowledge.
+            // Belt-and-braces with the recall gate: even excluded from semantic
+            // recall, keep the receipt's stored salience low so any OTHER surface
+            // (recency ranking, dashboards) treats it as proprioception, not
+            // durable knowledge.
             body.admission
                 .set_recall_salience(engram.id, PROPRIOCEPTION_RECALL_SALIENCE);
         }
-        Ok(_) => {} // Drop/Quarantine — nothing admitted to weight.
+        Ok(_) => {} // Drop (dedup) — nothing admitted to weight.
         Err(e) => {
             tracing::debug!(
                 persona = %body.persona_name,
