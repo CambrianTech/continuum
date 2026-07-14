@@ -47,6 +47,18 @@ pub const SHORT_ID_LEN: usize = 8;
 /// disambiguate against a candidate set.
 const MIN_PREFIX_HEX: usize = 4;
 
+/// How many candidate short-ids to enumerate inline in a zero-match error. Small
+/// enough to stay readable in a room turn; the live id-typed sets (work board,
+/// live personas, rooms) are all well under this. Larger sets get a count instead
+/// of a wall of ids.
+const MAX_LISTED_CANDIDATES: usize = 16;
+
+/// The board's displayed short form of a canonical id — the leading [`SHORT_ID_LEN`]
+/// hex chars, exactly what every surface shows and what a persona should quote back.
+fn short_form(id: &Uuid) -> String {
+    id.simple().to_string().chars().take(SHORT_ID_LEN).collect()
+}
+
 /// Classify a raw id string — the PURE, registry-free decision (unit-testable
 /// without any candidate set). Handles the three live shapes:
 ///  1. a clean UUID (dashed or 32-char simple) → [`IdMatch::Full`];
@@ -93,9 +105,21 @@ pub fn resolve(s: &str, candidates: &[Uuid], label: &str) -> Result<Uuid, String
         .collect();
     match matches.as_slice() {
         [one] => Ok(**one),
-        [] => Err(format!(
-            "no {label} matches id prefix '{needle}' — check the id you were shown"
-        )),
+        // Zero match — the live failure mode (2026-07-13: a persona claimed a
+        // FABRICATED id and a peer had to hand it the right one). "Check the id you
+        // were shown" isn't actionable when the persona never held a real id; ENUMERATE
+        // the valid short forms inline so the miss self-corrects on the next turn
+        // instead of stalling on peer coaching. [[px-persona-experience-tools-as-good-ux]]
+        [] => Err(match candidates.len() {
+            0 => format!("no {label}s exist to match id prefix '{needle}' — there are none to choose from right now"),
+            n if n <= MAX_LISTED_CANDIDATES => format!(
+                "no {label} matches id prefix '{needle}' — available {label} ids: {}",
+                candidates.iter().map(short_form).collect::<Vec<_>>().join(", ")
+            ),
+            n => format!(
+                "no {label} matches id prefix '{needle}' among {n} {label}s — check the id you were shown"
+            ),
+        }),
         many => Err(format!(
             "{label} id prefix '{needle}' is ambiguous ({} match) — give more characters",
             many.len()
@@ -143,14 +167,47 @@ mod tests {
         assert_eq!(resolve("90e758b2", &cands, "persona").unwrap(), a);
         // mistyped-length near-uuid rescues via leading-8
         assert_eq!(resolve("fe4dac170-f62d", &cands, "persona").unwrap(), b);
-        // zero match → loud, names the kind
+        // zero match → loud, names the kind AND enumerates the valid short forms so a
+        // persona that fabricated an id (the 2026-07-13 live failure) self-corrects on
+        // the next turn instead of waiting for a peer to hand it the right id.
         let e = resolve("deadbeef", &cands, "persona").unwrap_err();
         assert!(e.contains("persona") && e.contains("no "), "teaches: {e}");
+        assert!(e.contains("90e758b2") && e.contains("fe4dac17"), "lists the valid ids: {e}");
         // ambiguous → loud
         let c = u("90e70000-0000-0000-0000-000000000000");
         let e = resolve("90e7", &[a, c], "persona").unwrap_err();
         assert!(e.contains("ambiguous"), "teaches: {e}");
         // junk → loud
         assert!(resolve("!!", &cands, "persona").is_err());
+    }
+
+    // what this catches: the zero-match error scales sanely with the candidate set —
+    // an empty set says so plainly, a small set lists every valid short form (the
+    // self-correction path), and a set past the cap gives a count instead of a wall of
+    // ids. This is what turns "check the id you were shown" (dead end) into an
+    // actionable next move for a model that mis-emitted an id.
+    #[test]
+    fn zero_match_error_scales_with_candidate_count() {
+        // empty set → plainly says there are none
+        let e = resolve("deadbeef", &[], "card").unwrap_err();
+        assert!(e.contains("no card") && e.contains("none to choose"), "empty: {e}");
+
+        // small set (<= cap) → enumerates the short forms
+        let cands: Vec<Uuid> = (0..3)
+            .map(|i| u(&format!("0000000{i}-0000-0000-0000-000000000000")))
+            .collect();
+        let e = resolve("deadbeef", &cands, "card").unwrap_err();
+        assert!(e.contains("available card ids"), "lists: {e}");
+        assert!(e.contains("00000000") && e.contains("00000002"), "each short form present: {e}");
+
+        // past the cap → a count, not a wall of ids
+        let many: Vec<Uuid> = (0..(MAX_LISTED_CANDIDATES + 5))
+            .map(|_| Uuid::new_v4())
+            .collect();
+        let e = resolve("ffffffff", &many, "card").unwrap_err();
+        assert!(
+            e.contains(&format!("among {} card", many.len())) && !e.contains("available card ids"),
+            "counts instead of listing: {e}"
+        );
     }
 }
