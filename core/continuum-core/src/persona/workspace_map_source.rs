@@ -117,10 +117,27 @@ impl WorkspaceLayoutReader for CwdWorkspaceLayoutReader {
 /// truthful: it states the real root, the real directories, and the path
 /// semantics of the tools — it never names which directory holds the answer.
 fn render_layout(layout: &WorkspaceLayout) -> String {
+    let count = layout.top_level_dirs.len();
     let dirs = if layout.top_level_dirs.is_empty() {
         "(none)".to_string()
     } else {
         layout.top_level_dirs.join(", ")
+    };
+    // When the workspace HAS directories, explicitly refute the stale "workspace is
+    // empty" confabulation (glass-boxed 2026-07-14: a persona kept RECALLING a past
+    // "the workspace is empty" note and acting on it over this live ground truth,
+    // never re-checking). The map is the authority on workspace state; a memory that
+    // contradicts it is stale by definition. Silent when genuinely empty (never claim
+    // non-empty falsely). [[empty-workspace-is-a-confabulation-not-infra]]
+    let not_empty = if count > 0 {
+        format!(
+            "\nThis workspace is NOT empty: it has {count} top-level directories (above) \
+             and many files. If a memory or earlier note says the workspace is empty, that \
+             note is STALE — trust THIS live layout, and re-run code/list before concluding \
+             anything is missing."
+        )
+    } else {
+        String::new()
     };
     format!(
         "This workspace is a real checkout rooted at: {root}\n\
@@ -129,7 +146,7 @@ fn render_layout(layout: &WorkspaceLayout) -> String {
          depth — e.g. `**/*.rs` finds files anywhere, regardless of which \
          directory holds them. Do NOT assume source lives under one particular \
          top-level directory (such as `src/`); check this layout, or drill in \
-         with code/list and code/tree.",
+         with code/list and code/tree.{not_empty}",
         root = layout.root.display(),
         dirs = dirs,
     )
@@ -376,6 +393,10 @@ mod tests {
         // The generic path-semantics rule that lets her avoid assuming `src/`.
         assert!(content.contains("**/"));
         assert_eq!(delivery.items[0].metadata["top_level_dirs"][1], "core");
+        // Explicitly refutes the recalled "workspace is empty" confabulation with a
+        // concrete count, so live ground truth beats a stale memory.
+        assert!(content.contains("NOT empty"), "refutes the empty-belief: {content}");
+        assert!(content.contains("4 top-level directories"), "states the count: {content}");
     }
 
     // what this catches: we do NOT steer — the block never tells her which
