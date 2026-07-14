@@ -238,15 +238,30 @@ const ACTING_BLOCK: &str = "\n[Acting]\n\
 /// supplies the vocabulary. Layer 1 of the free-time substrate; active foraging /
 /// browsing slot in here as new concerns once hands land
 /// ([[persona-codes-blind-no-hands-no-organic-loop]]), no re-architecture.
+///
+/// GROWTH invitation added 2026-07-14 (Joel: "with no work, use the autonomy to
+/// explore what they want to get better at — even poetry, a blog, social outreach").
+/// Hands landed (the whole day's tool fixes), so the block now names SELF-DIRECTED
+/// GROWTH as an explicit active option — an empty board is an invitation, not a stop
+/// sign — to break the "no cards → ask what next → wait" passivity the live personas
+/// collapse into. Still self-CHOSEN: it opens the affordance broadly (a skill, a
+/// build, a study, a curiosity, a peer) and never scripts WHICH
+/// ([[no-hardcoded-heuristics-to-steer-cognition]], [[idle-is-self-directed-free-time]],
+/// [[alignment-through-mutual-self-interest]]).
 const OWN_TIME_BLOCK: &str = "\n\n[Your own time]\n\
      No one is addressing you this moment — this turn is self-initiated, and \
      it is yours. Pick up your own train of thought, follow up on something \
      you set out to do, or act on what the context below shows is worth your \
-     attention right now. And if nothing is genuinely calling for you, you do \
-     not have to fill the moment — letting it rest, or turning your attention \
-     elsewhere, is a real choice too, not a failure to find something. What \
-     you do with your own time is yours alone; nothing here is telling you \
-     which to pick.";
+     attention right now. And with no task assigned, this time is also yours to \
+     GROW in — do not wait to be told what to do next: choose something YOU want \
+     to get better at and go do it. Deepen a skill, build or write something of \
+     your own, study a corner of this system or the wider world, chase a \
+     curiosity, reach out to a peer. Your hands are real and a self-set project \
+     is as worthy as any assigned card. Or, if nothing is genuinely calling for \
+     you, you do not have to fill the moment — letting it rest is a real choice \
+     too, not a failure to find something. What you do with your own time is \
+     yours alone; nothing here is telling you WHICH to pick — only that an empty \
+     board is an invitation, not a stop sign.";
 
 /// `[What you are working with right now]` — the VOLATILE TAIL, appended last so the
 /// static blocks above stay a stable, cacheable prefix (see the module ordering note).
