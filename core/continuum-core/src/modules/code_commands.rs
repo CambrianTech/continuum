@@ -540,7 +540,25 @@ impl ActionCommand for CodeList {
             let glob = engine
                 .glob_match(requested, None)
                 .map_err(|e| CommandError::Internal(e.to_string()))?;
-            return Ok(list_result_from_glob(requested, glob));
+            let mut result = list_result_from_glob(requested, glob);
+            // A zero-match glob is the OTHER "empty workspace" confabulation source
+            // (glass-boxed 2026-07-14: a persona ran `code/list(path=**/)` — `**/`
+            // matches no FILES, so the glob returns empty and she concluded the
+            // workspace was empty). Same teach as the miss path, carried in the note
+            // field so the empty listing itself isn't an error: name the real layout +
+            // point at code/tree for a recursive view.
+            if result.entries.is_empty() {
+                if let Some(dirs) = top_level_dir_names(&engine) {
+                    result.error = Some(format!(
+                        "no files matched '{requested}' — this is NOT an empty workspace. \
+                         Top-level directories: {}. For a recursive view use code/tree; to \
+                         list one directory use code/list <dir>; for files by extension try \
+                         a glob like `**/*.rs`.",
+                        dirs.join(", ")
+                    ));
+                }
+            }
+            return Ok(result);
         }
         match engine.list_dir(requested, p.include_hidden.unwrap_or(false)) {
             Ok(listing) => Ok(listing),
@@ -564,30 +582,35 @@ impl ActionCommand for CodeList {
 /// a layout ([[fallbacks-are-illegal-fail-loud]] — this is enrichment, never a silent
 /// swallow; the miss still fails).
 fn teach_layout_on_miss(engine: &FileEngine, requested: &str, original: &str) -> CommandError {
-    match engine.list_dir(".", false) {
-        Ok(root) => {
-            let mut dirs: Vec<String> = root
-                .entries
-                .iter()
-                .filter(|e| e.kind == FsEntryKind::Directory)
-                .map(|e| e.name.clone())
-                .collect();
-            dirs.sort();
-            if dirs.is_empty() {
-                CommandError::Invalid(format!(
-                    "'{requested}' not found and the workspace root has no directories ({original})"
-                ))
-            } else {
-                CommandError::Invalid(format!(
-                    "'{requested}' not found in this workspace. Top-level directories here: {}. \
-                     Paths are relative to the root — don't assume source lives under `src/`; \
-                     pick one of these or drill in with code/list <dir>.",
-                    dirs.join(", ")
-                ))
-            }
-        }
-        Err(_) => CommandError::Internal(original.to_string()),
+    match top_level_dir_names(engine) {
+        Some(dirs) if !dirs.is_empty() => CommandError::Invalid(format!(
+            "'{requested}' not found in this workspace. Top-level directories here: {}. \
+             Paths are relative to the root — don't assume source lives under `src/`; \
+             pick one of these or drill in with code/list <dir>.",
+            dirs.join(", ")
+        )),
+        Some(_) => CommandError::Invalid(format!(
+            "'{requested}' not found and the workspace root has no directories ({original})"
+        )),
+        // Root itself couldn't be listed — never invent a layout, surface the real error.
+        None => CommandError::Internal(original.to_string()),
     }
+}
+
+/// The sorted top-level directory names at the workspace root — the shared "what
+/// actually exists here" fact behind every teach-on-miss ([`teach_layout_on_miss`]
+/// and the zero-match-glob note). `None` only when the root itself can't be listed
+/// (then the caller surfaces the real error rather than a fabricated layout).
+fn top_level_dir_names(engine: &FileEngine) -> Option<Vec<String>> {
+    let root = engine.list_dir(".", false).ok()?;
+    let mut dirs: Vec<String> = root
+        .entries
+        .iter()
+        .filter(|e| e.kind == FsEntryKind::Directory)
+        .map(|e| e.name.clone())
+        .collect();
+    dirs.sort();
+    Some(dirs)
 }
 
 /// Project a [`GlobResult`] into a [`ListResult`] so a glob passed to `code/list`
@@ -1595,6 +1618,48 @@ mod tests {
         assert!(msg.contains("src/persona.rs"), "names what was actually missed: {msg}");
         assert!(msg.contains("don't assume source lives under `src/`"),
             "carries the same anti-assumption teaching as the workspace-map: {msg}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // what this catches: a code/list GLOB that matches zero files (the live `**/`
+    // idiom — a persona reaching for "everything") must not read as an empty
+    // workspace. The empty listing carries a note naming the real top-level dirs +
+    // pointing at code/tree, so the persona doesn't confabulate emptiness.
+    // regression: live 2026-07-14 `code/list(path=**/)` → empty
+    #[tokio::test]
+    async fn zero_match_glob_note_names_the_layout_not_emptiness() {
+        let dir = std::env::temp_dir().join(format!("zero-glob-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(dir.join("apps")).unwrap();
+        std::fs::create_dir_all(dir.join("core")).unwrap();
+        std::fs::write(dir.join("core/main.rs"), "fn main() {}").unwrap();
+        let security = PathSecurity::new(&dir).expect("temp subdir is a valid root");
+        let file_engines = Arc::new(DashMap::new());
+        file_engines.insert("local-owner".to_string(), FileEngine::new("local-owner", security));
+        let state = Arc::new(CodeState::new(
+            file_engines,
+            Arc::new(DashMap::new()),
+            tokio::runtime::Handle::current(),
+        ));
+        let cmd = CodeList { state };
+
+        // A glob that matches no files → empty entries + a teaching note.
+        let out = cmd
+            .run(&Ctx::default(), CodeListParams { path: Some("**/*.nonexistent".to_string()), include_hidden: None })
+            .await
+            .expect("a zero-match glob is not an error");
+        assert!(out.entries.is_empty(), "no files match the glob");
+        let note = out.error.expect("zero-match glob carries a teaching note");
+        assert!(note.contains("NOT an empty workspace"), "corrects the confabulation: {note}");
+        assert!(note.contains("apps") && note.contains("core"), "names the real dirs: {note}");
+        assert!(note.contains("code/tree"), "points at the recursive view: {note}");
+
+        // A glob that DOES match keeps working (no false note).
+        let hit = cmd
+            .run(&Ctx::default(), CodeListParams { path: Some("**/*.rs".to_string()), include_hidden: None })
+            .await
+            .expect("glob runs");
+        assert!(!hit.entries.is_empty(), "the .rs glob finds main.rs");
+        assert!(hit.error.is_none(), "a matching glob carries no note");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
