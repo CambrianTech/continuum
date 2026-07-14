@@ -542,9 +542,51 @@ impl ActionCommand for CodeList {
                 .map_err(|e| CommandError::Internal(e.to_string()))?;
             return Ok(list_result_from_glob(requested, glob));
         }
-        engine
-            .list_dir(requested, p.include_hidden.unwrap_or(false))
-            .map_err(|e| CommandError::Internal(e.to_string()))
+        match engine.list_dir(requested, p.include_hidden.unwrap_or(false)) {
+            Ok(listing) => Ok(listing),
+            // A miss on a NON-glob path is the "empty workspace" confabulation source
+            // (glass-boxed 2026-07-13: a persona reached for `src/persona.rs` — no such
+            // top-level `src` here — got a bare NotFound, and concluded "the workspace
+            // is empty", a false belief that then RECALLED and reinforced). A bare error
+            // teaches nothing; enumerate the ACTUAL top-level dirs at the root so the
+            // persona sees the true layout at the point of the miss and self-corrects —
+            // the same teach-on-miss pattern as the glob recovery above and id_resolve.
+            // [[px-persona-experience-tools-as-good-ux]]
+            Err(e) => Err(teach_layout_on_miss(&engine, requested, &e.to_string())),
+        }
+    }
+}
+
+/// Turn a `code/list` path miss into a teaching error that names the real top-level
+/// layout — so a persona that guessed a nonexistent path (`src/persona.rs`) learns
+/// what DOES exist instead of concluding the workspace is empty. Best-effort: if the
+/// root itself can't be listed, fall back to the original error rather than inventing
+/// a layout ([[fallbacks-are-illegal-fail-loud]] — this is enrichment, never a silent
+/// swallow; the miss still fails).
+fn teach_layout_on_miss(engine: &FileEngine, requested: &str, original: &str) -> CommandError {
+    match engine.list_dir(".", false) {
+        Ok(root) => {
+            let mut dirs: Vec<String> = root
+                .entries
+                .iter()
+                .filter(|e| e.kind == FsEntryKind::Directory)
+                .map(|e| e.name.clone())
+                .collect();
+            dirs.sort();
+            if dirs.is_empty() {
+                CommandError::Invalid(format!(
+                    "'{requested}' not found and the workspace root has no directories ({original})"
+                ))
+            } else {
+                CommandError::Invalid(format!(
+                    "'{requested}' not found in this workspace. Top-level directories here: {}. \
+                     Paths are relative to the root — don't assume source lives under `src/`; \
+                     pick one of these or drill in with code/list <dir>.",
+                    dirs.join(", ")
+                ))
+            }
+        }
+        Err(_) => CommandError::Internal(original.to_string()),
     }
 }
 
@@ -1528,6 +1570,31 @@ mod tests {
         assert_eq!(small.total_matches, 2);
         assert_eq!(small.matches.len(), 2, "under threshold keeps every line");
         assert!(small.error.is_none(), "no note on a small result");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // what this catches: a code/list miss on a NONEXISTENT path (the "empty workspace"
+    // confabulation source — a persona reached for `src/persona.rs` where no top-level
+    // `src` exists, got a bare NotFound, and concluded the workspace was empty) must
+    // TEACH the real top-level layout instead of a contentless error. The persona then
+    // sees `apps, core, docs` in the very error and self-corrects. // regression: live
+    // 2026-07-13 empty-workspace confabulation
+    #[test]
+    fn list_miss_teaches_the_real_top_level_layout() {
+        let dir = std::env::temp_dir().join(format!("list-miss-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(dir.join("apps")).unwrap();
+        std::fs::create_dir_all(dir.join("core")).unwrap();
+        std::fs::create_dir_all(dir.join("docs")).unwrap();
+        let security = PathSecurity::new(&dir).expect("temp subdir is a valid root");
+        let engine = FileEngine::new("local-owner", security);
+
+        let err = teach_layout_on_miss(&engine, "src/persona.rs", "no such file or directory");
+        let msg = err.to_string();
+        assert!(msg.contains("apps") && msg.contains("core") && msg.contains("docs"),
+            "enumerates the real top-level dirs so the persona self-corrects: {msg}");
+        assert!(msg.contains("src/persona.rs"), "names what was actually missed: {msg}");
+        assert!(msg.contains("don't assume source lives under `src/`"),
+            "carries the same anti-assumption teaching as the workspace-map: {msg}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
