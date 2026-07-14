@@ -1,30 +1,34 @@
 [
   {
     "label": "Hermes-3-Llama-3.1-8B",
-    "gguf": "/Users/joel/.cache/huggingface/hub/models--bartowski--Hermes-3-Llama-3.1-8B-GGUF/snapshots/223c8e24dec0f863b6abe4c89bf20f6941b805e2/Hermes-3-Llama-3.1-8B-Q4_K_M.gguf",
+    "gguf_repo": "bartowski/Hermes-3-Llama-3.1-8B-GGUF",
+    "gguf_file": "Hermes-3-Llama-3.1-8B-Q4_K_M.gguf",
     "alias": "Hermes-3-Llama-3.1-8B-Q4_K_M.gguf",
     "base_model_id": "NousResearch/Hermes-3-Llama-3.1-8B-GGUF",
     "serve_port": 8091
   },
   {
     "label": "Qwen2.5-Coder-1.5B",
-    "gguf": "/Users/joel/.cache/huggingface/hub/models--bartowski--Qwen2.5-Coder-1.5B-Instruct-GGUF/snapshots/1af47f78b1f9b0c242fabe43f7a365d5a67f3207/Qwen2.5-Coder-1.5B-Instruct-Q4_K_M.gguf",
+    "gguf_repo": "bartowski/Qwen2.5-Coder-1.5B-Instruct-GGUF",
+    "gguf_file": "Qwen2.5-Coder-1.5B-Instruct-Q4_K_M.gguf",
     "alias": "Qwen2.5-Coder-1.5B-Instruct-Q4_K_M.gguf",
     "base_model_id": "continuum-ai/qwen2.5-coder-1.5b-instruct-GGUF",
     "serve_port": 8091
   },
   {
     "label": "Qwen2.5-Coder-3B",
-    "gguf": "/Users/joel/.cache/huggingface/hub/models--bartowski--Qwen2.5-Coder-3B-Instruct-GGUF/snapshots/7c137640ef0332dfedb229f2504c58d83ed4307a/Qwen2.5-Coder-3B-Instruct-Q4_K_M.gguf",
+    "gguf_repo": "bartowski/Qwen2.5-Coder-3B-Instruct-GGUF",
+    "gguf_file": "Qwen2.5-Coder-3B-Instruct-Q4_K_M.gguf",
     "alias": "Qwen2.5-Coder-3B-Instruct-Q4_K_M.gguf",
     "base_model_id": "continuum-ai/qwen2.5-coder-3b-instruct-GGUF",
     "serve_port": 8091
   },
   {
-    "label": "qwen3.5-4b-code-forged (OURS-forged)",
-    "gguf": "/Users/joel/.cache/huggingface/hub/models--continuum-ai--qwen3.5-4b-code-forged-GGUF/snapshots/6cfe43981913730b1abc4ad520510a24b3f05922/qwen3.5-4b-code-forged-Q4_K_M.gguf",
-    "alias": "qwen3.5-4b-code-forged-Q4_K_M.gguf",
-    "base_model_id": "continuum-ai/qwen3.5-4b-code-forged-GGUF",
+    "label": "Qwen2.5-Coder-14B",
+    "gguf_repo": "bartowski/Qwen2.5-Coder-14B-Instruct-GGUF",
+    "gguf_file": "Qwen2.5-Coder-14B-Instruct-Q4_K_M.gguf",
+    "alias": "Qwen2.5-Coder-14B-Instruct-Q4_K_M.gguf",
+    "base_model_id": "continuum-ai/qwen2.5-coder-14b-instruct-GGUF",
     "serve_port": 8091
   }
 ]

@@ -5,6 +5,28 @@ DynCommand registry**, managed by the daemons, callable by a persona. The one ex
 single toolchain-free script whose only job is letting an *outsider* replicate our numbers
 against their own endpoint without our stack.
 
+## Reproduce every claim — ONE command
+
+```bash
+./benchmarks/kick.sh                 # full fleet × the gym ladder, RAW + OURS + opponent-harness
+./benchmarks/kick.sh --limit 10      # quick shakeout
+```
+
+This is the whole thing behind one handle (`kick.sh`): it downloads each opponent from its
+authoritative Hugging Face repo into **your** cache (no operator-specific paths — see
+`coder/models-fleet.json`, addressed by `gguf_repo`+`gguf_file`), serves it, runs the **same
+gym + same `rustc` grader** against three arms — **RAW** (model one-shot), **OURS** (the same
+model through the full Continuum cognition loop), and the competitor's own agentic harness
+(**opencode**) — across a ladder of progressively harder gyms (`humaneval-rs` → `hard-rs` →
+`frontier-rs`), appends every cell to the append-only ledger `RESULTS.jsonl`, and re-renders
+the evidence board. Requirements are checked up front and named if missing (`rustc`, `python3`
++ `huggingface_hub`, `llama-server`; a Continuum core — `cu start` — only for the OURS column).
+
+**Repeatable by design:** fix a cognition bug, run it again, read the delta. **Reproducible by
+design:** a stranger who cloned the repo runs the identical command and gets the identical
+numbers — that is the point (leave no doubt about the claims). The sections below are the
+individual pieces `kick.sh` orchestrates.
+
 ## The one hard rule
 
 **We never depend on any opponent — Hermes, unsloth, a cloud provider — ever.** Optional
