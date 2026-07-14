@@ -778,6 +778,20 @@ impl AdmissionState {
             .iter()
             .enumerate()
             .filter_map(|(idx, e)| {
+                // Tool receipts — the persona's own "I ran X → result" — are
+                // PROPRIOCEPTION, not durable knowledge. The recency/working-memory
+                // channel carries them so she sees her own hands
+                // ([[act-results-need-a-recency-channel-not-semantic-recall]]); they
+                // must NOT compete in the SEMANTIC recall pool, where they were
+                // drowning real memories (#166, seen live: recall surfaced "I ran
+                // commands/list because Anwen is acting" as its top hits). Gate them
+                // out here → recall returns knowledge (conversation, distilled
+                // self-reflection), never the persona's own tool chatter. This is the
+                // structural form of the earlier salience down-weight, which alone
+                // couldn't stop them surfacing when knowledge was sparse.
+                if matches!(e.origin, EngramOrigin::Tool(_)) {
+                    return None;
+                }
                 self.recall_metadata.apply_decay(e.id, now_ms);
                 self.recall_metadata
                     .get(e.id)
