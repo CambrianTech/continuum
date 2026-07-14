@@ -21,9 +21,9 @@ Usage:
 Emits a JSON result and prints a one-line scoreboard row. Compare against OURS, produced by
 `run_ours.sh` (which runs the SAME gym through the Continuum system). Same tasks, same grader.
 """
-import argparse, json, os, re, subprocess, sys, tempfile, time, urllib.request, urllib.error
+import argparse, http.client, json, os, re, subprocess, sys, tempfile, time, urllib.request, urllib.error
 
-def chat(endpoint, model, prompt, api_key, max_tokens, timeout):
+def chat(endpoint, model, prompt, api_key, max_tokens, timeout, retries=3):
     body = json.dumps({
         "model": model,
         "messages": [{"role": "user", "content": prompt}],
@@ -34,14 +34,38 @@ def chat(endpoint, model, prompt, api_key, max_tokens, timeout):
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
     req = urllib.request.Request(endpoint.rstrip("/") + "/chat/completions", data=body, headers=headers)
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        d = json.load(r)
-    return d["choices"][0]["message"]["content"] or ""
+    # Retry TRANSIENT serving hiccups (a shared local llama-server under load drops
+    # connections — RemoteDisconnected — or momentarily 503s while a slot frees). One
+    # such blip must not fail an otherwise-answerable task, or (worse) abort the whole
+    # arm. The measurement stays honest: same greedy prompt, we just give the endpoint
+    # a couple more chances to answer it. A HARD failure after retries still raises.
+    transient = (http.client.RemoteDisconnected, ConnectionError, TimeoutError,
+                 urllib.error.URLError)
+    last = None
+    for attempt in range(retries):
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                d = json.load(r)
+            return d["choices"][0]["message"]["content"] or ""
+        except transient as e:
+            last = e
+            if attempt < retries - 1:
+                time.sleep(2.0 * (attempt + 1))  # linear backoff: 2s, 4s
+    raise last
 
 def extract_code(text):
-    """The model's answer → compilable Rust. Prefer a fenced ```rust block; else the whole text."""
-    m = re.search(r"```(?:rust)?\s*\n(.*?)```", text, re.S)
-    return (m.group(1) if m else text).strip()
+    """The model's answer → compilable Rust. Concatenate ALL ```rust fences (a model
+    commonly splits imports and logic across fences; grading only the first drops real
+    code and fails on E0432/E0425 — the same fairness fix applied to the SYSTEM grader,
+    so both arms are measured identically). Falls back to the first fence, then the
+    whole text, for models that fence inconsistently."""
+    blocks = re.findall(r"```([^\n]*)\n(.*?)```", text, re.S)
+    if blocks:
+        rust = [b.strip() for lang, b in blocks if lang.strip().lower() in ("rust", "rs")]
+        if rust:
+            return "\n\n".join(rust)
+        return blocks[0][1].strip()  # no rust-tagged fence → first block (any tag)
+    return text.strip()
 
 def grade(answer_code, test_body, workdir):
     """Mirror the Continuum grader: answer + `fn main() { <test> }` → rustc → run. Pass = exit 0."""
@@ -84,7 +108,11 @@ def main():
     for i, t in enumerate(tasks):
         try:
             answer = chat(args.endpoint, args.model, t["prompt"], args.api_key, args.max_tokens, args.timeout)
-        except (urllib.error.URLError, TimeoutError, KeyError) as e:
+        except (urllib.error.URLError, http.client.HTTPException, ConnectionError,
+                TimeoutError, KeyError) as e:
+            # A hard endpoint failure on ONE task (after chat()'s own retries) is an
+            # infra error for THAT task — score it over attempted tasks, never let it
+            # abort the whole arm (the 2026-07-14 RemoteDisconnected that killed a run).
             infra_err += 1
             results.append({"id": t["id"], "ok": False, "grade": f"endpoint error: {e}"})
             print(f"  {t['id'][:30]:30} ENDPOINT-ERR", file=sys.stderr)
