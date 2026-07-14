@@ -754,30 +754,12 @@ impl ActionCommand for CodeTree {
 
     async fn run(&self, ctx: &Ctx, p: CodeTreeParams) -> Result<TreeResult, CommandError> {
         let engine = engine!(self, ctx);
-        // Resolve the target across searchable roots (workspace + any read roots).
-        // Tolerate a redundant leading "workspace/": a persona commonly copies a path
-        // it saw rendered WITH that segment, but code/tree already resolves relative to
-        // the workspace root, so the prefix DOUBLES and misses (glass-boxed 2026-07-14:
-        // Anwen passed "workspace/work-08ece9e8", got "Not a directory", and concluded
-        // the whole workspace was unexplorable). Try the path as-given first, then with
-        // the redundant prefix stripped; fall back to the as-given join for an HONEST
-        // per-case error. [[px-persona-experience-tools-as-good-ux]]
-        let target = match &p.path {
-            None => engine.workspace_root(),
-            Some(rel) => {
-                let rel = rel.trim_start_matches('/');
-                let mut candidates = vec![rel.to_string()];
-                if let Some(stripped) = rel.strip_prefix("workspace/") {
-                    candidates.push(stripped.to_string());
-                }
-                engine
-                    .searchable_roots()
-                    .into_iter()
-                    .flat_map(|r| candidates.iter().map(move |c| r.join(c)))
-                    .find(|c| c.is_dir())
-                    .unwrap_or_else(|| engine.workspace_root().join(rel))
-            }
-        };
+        // ONE resolver for every directory-oriented command (FileEngine::resolve_dir):
+        // idiom-forgiveness (redundant "workspace/" prefix, leading '/') and honest,
+        // actionable errors live there, not hand-rolled here. No path → the whole tree.
+        let target = engine
+            .resolve_dir(p.path.as_deref().unwrap_or("."))
+            .map_err(|e| CommandError::Invalid(e.to_string()))?;
         Ok(tree::generate_tree(
             &target,
             p.max_depth.unwrap_or(10),

@@ -7,7 +7,7 @@
 //! The underlying ChangeGraph and PathSecurity handle concurrency.
 
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use uuid::Uuid;
 
@@ -485,32 +485,91 @@ impl FileEngine {
     /// but wrong for introspection where the whole point is to
     /// answer "does this exist?". Hence this separate validator:
     /// string-level traversal check + join, no existence requirement.
-    fn validate_introspect_path(&self, relative: &str) -> Result<PathBuf, FileEngineError> {
-        // Reject absolute paths — workspace-relative only.
+    /// The ONE traversal-guarded join primitive: join `relative` under `root`,
+    /// rejecting an absolute path or any `..` segment (the string-level escape
+    /// vectors once existence isn't required). Every workspace-path resolver that
+    /// does NOT require the target to already exist ([`validate_introspect_path`],
+    /// [`resolve_dir`]) goes through here, so the sandbox boundary lives in ONE
+    /// place instead of being hand-rolled per call site (a manual `root.join(rel)`
+    /// in a command handler silently skips this check — the bypass this consolidates
+    /// away). Symlink-escape on EXISTING paths is caught by PathSecurity's
+    /// canonicalize check ([`validate_read`]); this is the floor for maybe-missing
+    /// paths.
+    fn secure_join(&self, root: &Path, relative: &str) -> Result<PathBuf, FileEngineError> {
+        let blocked = || {
+            FileEngineError::Security(PathSecurityError::TraversalBlocked {
+                path: relative.to_string(),
+                workspace: root.display().to_string(),
+            })
+        };
         if relative.starts_with('/') || relative.starts_with('\\') {
-            return Err(FileEngineError::Security(
-                PathSecurityError::TraversalBlocked {
-                    path: relative.to_string(),
-                    workspace: self.security.workspace_root().display().to_string(),
-                },
-            ));
+            return Err(blocked());
         }
-        // Reject `..` segments — the only string-level traversal
-        // vector once absolute prefixes are gone. (PathSecurity's
-        // canonicalize-based check would also catch symlink escapes,
-        // but those require existence; for introspection we accept
-        // string-level safety as the floor.)
-        for segment in relative.split(['/', '\\']) {
-            if segment == ".." {
-                return Err(FileEngineError::Security(
-                    PathSecurityError::TraversalBlocked {
-                        path: relative.to_string(),
-                        workspace: self.security.workspace_root().display().to_string(),
-                    },
-                ));
+        if relative.split(['/', '\\']).any(|seg| seg == "..") {
+            return Err(blocked());
+        }
+        Ok(root.join(relative))
+    }
+
+    /// Resolve a workspace-relative path for INTROSPECTION queries (`exists`,
+    /// `list_dir`, `glob_match`) where the path is allowed to NOT exist yet.
+    /// Thin wrapper over [`secure_join`] against the workspace root.
+    fn validate_introspect_path(&self, relative: &str) -> Result<PathBuf, FileEngineError> {
+        self.secure_join(self.security.workspace_root(), relative)
+    }
+
+    /// Resolve a persona-supplied path to an existing DIRECTORY within the sandbox —
+    /// the ONE resolver every directory-oriented command (`code/tree`, `code/list`,
+    /// the `code/search`/`code/glob` root) shares. Path-idiom forgiveness and honest
+    /// errors thus live in ONE place instead of drifting per handler (they used to:
+    /// only `code/tree` tolerated the prefix; `code/list` and `code/search` hand-rolled
+    /// `searchable_roots().join(rel)`, which ALSO skipped the sandbox check).
+    ///
+    /// Forgives the idioms a persona reaches for from what it sees rendered: a leading
+    /// `/`, and a redundant leading `workspace/` segment (the root already IS the
+    /// workspace, so that prefix doubles and misses — glass-boxed 2026-07-14). Tries
+    /// each searchable root (workspace + read-only roots). HONEST, actionable errors:
+    /// a FILE says "use code/read", a miss says "the workspace root itself IS
+    /// explorable" — so a mind re-orients instead of concluding it is stuck.
+    pub fn resolve_dir(&self, relative: &str) -> Result<PathBuf, FileEngineError> {
+        let rel = relative.trim().trim_start_matches('/');
+        if rel.is_empty() || rel == "." {
+            return Ok(self.security.workspace_root().to_path_buf());
+        }
+        let mut candidates = vec![rel];
+        if let Some(stripped) = rel.strip_prefix("workspace/") {
+            candidates.push(stripped);
+        }
+        let mut file_hit: Option<PathBuf> = None;
+        for root in self.searchable_roots() {
+            for cand in &candidates {
+                // `..`/absolute are rejected here; a rejected candidate is skipped, not
+                // fatal, so a later candidate/root can still resolve. A genuinely
+                // malicious `..` resolves to no directory and surfaces the miss error.
+                if let Ok(abs) = self.secure_join(&root, cand) {
+                    if abs.is_dir() {
+                        return Ok(abs);
+                    }
+                    if abs.is_file() {
+                        file_hit.get_or_insert(abs);
+                    }
+                }
             }
         }
-        Ok(self.security.workspace_root().join(relative))
+        if let Some(f) = file_hit {
+            return Err(FileEngineError::NotFound(format!(
+                "{} is a FILE, not a directory — use code/read to read it, or run this on \
+                 its parent directory.",
+                f.display()
+            )));
+        }
+        Err(FileEngineError::NotFound(format!(
+            "path not found: {relative} — nothing exists at that path. This is about the \
+             PATH, not the workspace: the workspace root itself IS explorable — call this \
+             command with NO path (or \".\") for the whole tree, then use a path you see \
+             in that output. Paths are relative to the workspace root; do not prefix them \
+             with 'workspace/'."
+        )))
     }
 
     /// Check whether a path exists, and if so what kind of entry it is.
@@ -585,21 +644,9 @@ impl FileEngine {
         relative_path: &str,
         include_hidden: bool,
     ) -> Result<ListResult, FileEngineError> {
-        let abs_path = self.validate_introspect_path(relative_path)?;
-
-        let meta = fs::symlink_metadata(&abs_path).map_err(|e| {
-            if e.kind() == std::io::ErrorKind::NotFound {
-                FileEngineError::NotFound(relative_path.to_string())
-            } else {
-                FileEngineError::Io(e)
-            }
-        })?;
-        if !meta.is_dir() {
-            return Err(FileEngineError::EditFailed(format!(
-                "code/list: not a directory: {}",
-                relative_path
-            )));
-        }
+        // ONE resolver (resolve_dir): idiom-forgiveness + the not-found / is-a-FILE
+        // honest errors live there, shared with code/tree — not re-checked here.
+        let abs_path = self.resolve_dir(relative_path)?;
 
         let workspace_root = self.security.workspace_root();
         let mut entries: Vec<DirEntry> = Vec::new();
@@ -1491,6 +1538,41 @@ mod tests {
             .list_dir("src/nonexistent", false)
             .expect_err("missing directory must fail loud");
         assert!(err.to_string().contains("not found"));
+    }
+
+    // what this catches: resolve_dir is the ONE directory resolver — idiom-forgiveness
+    // + honest errors + sandbox boundary in one place (2026-07-14 consolidation, and
+    // the fix for Anwen's "workspace/ prefix → workspace is not a directory → give up").
+    #[test]
+    fn resolve_dir_is_the_one_forgiving_honest_secure_resolver() {
+        let (_dir, engine) = setup_engine_with_tree(); // has src/ (dir), src/main.ts (file)
+
+        // plain dir resolves
+        assert!(engine.resolve_dir("src").unwrap().is_dir());
+        // "." / empty → workspace root
+        assert_eq!(engine.resolve_dir(".").unwrap(), engine.workspace_root());
+        assert_eq!(engine.resolve_dir("").unwrap(), engine.workspace_root());
+        // FORGIVENESS: a redundant leading "workspace/" is stripped (the root already
+        // IS the workspace) — this is the exact live give-up shape.
+        assert_eq!(
+            engine.resolve_dir("workspace/src").unwrap(),
+            engine.resolve_dir("src").unwrap()
+        );
+        // a leading slash is tolerated
+        assert_eq!(
+            engine.resolve_dir("/src").unwrap(),
+            engine.resolve_dir("src").unwrap()
+        );
+        // HONEST: a FILE says so and points to code/read
+        let file_err = engine.resolve_dir("src/main.ts").unwrap_err().to_string();
+        assert!(file_err.contains("is a FILE"), "{file_err}");
+        assert!(file_err.contains("code/read"), "{file_err}");
+        // HONEST: a miss re-orients instead of reading as terminal
+        let miss = engine.resolve_dir("does/not/exist").unwrap_err().to_string();
+        assert!(miss.contains("path not found"), "{miss}");
+        assert!(miss.contains("workspace root itself IS explorable"), "{miss}");
+        // SECURE: `..` traversal is blocked (the bypass the old handler joins skipped)
+        assert!(engine.resolve_dir("../../etc").is_err());
     }
 
     #[test]
