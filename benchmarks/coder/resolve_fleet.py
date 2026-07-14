@@ -24,8 +24,20 @@ import argparse, json, os, sys
 
 
 def resolve_one(row):
-    """Return row with a concrete local `gguf`, or None if unresolvable."""
+    """Return a benchmarkable row, or None if unresolvable.
+
+    A row is benchmarkable if it can be REACHED, which is EITHER:
+      - an already-serving endpoint (`raw_endpoint`) — nothing to download/serve; OR
+      - a servable GGUF (local path, or an HF `gguf_repo`+`gguf_file` to fetch).
+    """
     label = row.get("label", "?")
+    # (0) already served (e.g. the live core's own lane): no GGUF needed. The sweep
+    # reuses the endpoint for RAW and stands up its OWN ephemeral lane for OURS via
+    # base_model_id — dropping it would silently exclude our flagship from the board.
+    if row.get("raw_endpoint") and not (row.get("gguf") or row.get("gguf_repo")):
+        print(f"  [served]   {label}: {row['raw_endpoint']} (already up — no local serve)",
+              file=sys.stderr)
+        return dict(row)
     # (1) an existing absolute path wins — offline / same-machine fast path.
     gguf = row.get("gguf")
     if gguf and os.path.exists(gguf):
