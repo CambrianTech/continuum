@@ -777,6 +777,17 @@ impl CognitionEval {
     /// spawned detached for fire-and-poll (#86). One code path, two launch modes: the test
     /// and prod paths stay identical [[validate-via-pure-rust-not-npm-jtag]].
     async fn run_eval(p: CognitionEvalParams) -> Result<CognitionEvalResult, CommandError> {
+        // Eval-preemption lease: suspend the WHOLE live fleet's autonomic self-tick
+        // for the duration of this measurement, so it runs on an uncontended GPU. The
+        // personas stay online and still answer THIS eval's directed cognition turns —
+        // they just stop wandering, so their self-directed generation can't fight the
+        // measurement for the single GPU. The lease RESTORES every persona on drop,
+        // including early-return and panic (Drop rides the unwind). Held for the whole
+        // body. `None` (no live fleet — tools/tests) → nothing to quiesce; measure as-is.
+        // [[benchmark-is-a-governor-preemption-lease]] [[first-class-citizens-even-during-benchmarks]]
+        let _fleet_lease =
+            crate::persona::PersonaAircRuntimeRegistry::try_global().map(|r| r.quiesce_all());
+
         let persona_uuid = Uuid::parse_str(&p.persona_id).map_err(|_| {
             CommandError::Invalid(format!("persona_id '{}' is not a valid UUID", p.persona_id))
         })?;

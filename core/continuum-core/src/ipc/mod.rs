@@ -1550,6 +1550,10 @@ pub fn start_server(
         let continuum_root = crate::modules::persona_instance_manager::resolve_continuum_root();
         let daemon_socket_for_rag_inspect = daemon_socket.clone();
         let registry = crate::persona::PersonaAircRuntimeRegistry::new();
+        // Publish the live roster process-globally so host-independent callers — the
+        // detached cognition/eval body — can acquire an eval-preemption lease over
+        // the fleet without a threaded handle. First writer wins (this boot path).
+        crate::persona::PersonaAircRuntimeRegistry::set_global(registry.clone());
         // Native airc kanban tools — personas claim/create/release cards on the
         // shared board as THEIR OWN airc key, delegating to airc's work API. Shares
         // the SAME registry (cheap Clone over an inner Arc) so a work command can

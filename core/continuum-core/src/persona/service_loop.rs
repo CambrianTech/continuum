@@ -136,6 +136,15 @@ pub struct ServeOptions {
     /// "Now" supplied as a function so the loop stays pure-of-clock
     /// for testability — same as `inspect_persona_rag` already does.
     pub now_ms: fn() -> u64,
+    /// Eval-preemption gate — ALWAYS present (the loop never asks "is there a gate?",
+    /// only reads its value). While `true` the autonomic self-tick is SUSPENDED: she
+    /// stays online and still answers explicit `Wake::Msg` turns, but stops INITIATING
+    /// self-directed ones, so a benchmark measures a clean GPU without despawning her.
+    /// The caller supplies the SHARED atomic the registry owns (`quiesced_flag`) so a
+    /// `QuiesceLease` can flip it; `Default` is a private, never-set flag (this persona
+    /// is simply never quiesced). Registry owns write, loop owns read.
+    /// [[benchmark-is-a-governor-preemption-lease]]
+    pub quiesced: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl Default for ServeOptions {
@@ -150,6 +159,10 @@ impl Default for ServeOptions {
                     .map(|d| d.as_millis() as u64)
                     .unwrap_or(0)
             },
+            // A private, never-set flag: a persona built with default options is
+            // simply never quiesced (no lease can reach this atomic). Production
+            // overrides it with the registry's shared flag.
+            quiesced: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
     }
 }
@@ -388,6 +401,17 @@ async fn serve_persona_loop_inner(
         let msg = match wake {
             Wake::Stop => break,
             Wake::Tick => {
+                // Eval-preemption lease held → SUSPEND the autonomic self-tick. She
+                // stays online (an addressed `Wake::Msg` is still handled below), she
+                // just stops INITIATING self-directed turns — so a benchmark measures
+                // a clean, uncontended GPU without despawning anyone. The lease's Drop
+                // guarantees she resumes even if the eval panics. Humane suspend, never
+                // a kill. [[benchmark-is-a-governor-preemption-lease]]
+                // [[first-class-citizens-even-during-benchmarks]]
+                if opts.quiesced.load(std::sync::atomic::Ordering::Relaxed) {
+                    next_beat = rest_cap; // idle at the rest cadence while suspended
+                    continue;
+                }
                 // Heartbeat slice — the mind gets time with no inbound message. Its OWN
                 // activity sets the next beat: if it found something new to work on
                 // (last_burst_fp advanced), stay quick; if it went idle, drift toward rest.
@@ -2401,6 +2425,7 @@ mod tests {
             page_recent_limit: 10,
             rag_fetch_limit: 10,
             now_ms: fixed_now,
+            ..Default::default()
         };
 
         let outcome = serve_persona_loop(&hosted, &mut conversation, reader, opts)
@@ -2491,6 +2516,7 @@ mod tests {
             page_recent_limit: 10,
             rag_fetch_limit: 10,
             now_ms: fixed_now,
+            ..Default::default()
         };
 
         let outcome = serve_persona_loop(&hosted, &mut conversation, reader, opts)
@@ -2805,6 +2831,7 @@ mod tests {
                 page_recent_limit: 10,
                 rag_fetch_limit: 10,
                 now_ms: fixed_now,
+                ..Default::default()
             },
         )
         .await
@@ -2844,6 +2871,7 @@ mod tests {
                 page_recent_limit: 10,
                 rag_fetch_limit: 10,
                 now_ms: fixed_now,
+                ..Default::default()
             },
         )
         .await
@@ -2895,6 +2923,7 @@ mod tests {
                 page_recent_limit: 10,
                 rag_fetch_limit: 10,
                 now_ms: fixed_now,
+                ..Default::default()
             },
         )
         .await
@@ -2942,6 +2971,7 @@ mod tests {
                 page_recent_limit: 10,
                 rag_fetch_limit: 10,
                 now_ms: fixed_now,
+                ..Default::default()
             },
         )
         .await

@@ -54,7 +54,7 @@
 //! `sendAs(persona_id, text)` wrapper here.
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use dashmap::DashMap;
 use tokio::sync::Mutex;
@@ -122,10 +122,32 @@ impl Drop for QuiesceLease {
     }
 }
 
+/// Process-global handle to the live roster. Set once at boot by the supervisor
+/// that owns the real registry; read by host-independent callers that must reach
+/// the fleet without a threaded handle — notably `cognition/eval`'s DETACHED body,
+/// which (by design) reaches cognition through globals and holds neither `self` nor
+/// `ctx`. Same shape as `model_registry::try_global` and the focus registry.
+static GLOBAL: OnceLock<PersonaAircRuntimeRegistry> = OnceLock::new();
+
 impl PersonaAircRuntimeRegistry {
     /// Empty roster — nobody's online yet.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Publish THIS registry as the process-global live roster. First writer wins
+    /// (set once at boot); later calls are ignored, so a test that stands up its own
+    /// supervisor can't clobber the live one. Cheap — the registry is `Arc`-backed,
+    /// so the global holds a shared view, not a copy.
+    pub fn set_global(reg: PersonaAircRuntimeRegistry) {
+        let _ = GLOBAL.set(reg);
+    }
+
+    /// The process-global live roster, if boot published one. `None` in unit tests /
+    /// tools that never stood up a supervisor — callers degrade gracefully (an eval
+    /// with no live fleet has nothing to quiesce).
+    pub fn try_global() -> Option<PersonaAircRuntimeRegistry> {
+        GLOBAL.get().cloned()
     }
 
     /// Add a persona to the roster. Idempotent: if the persona is
