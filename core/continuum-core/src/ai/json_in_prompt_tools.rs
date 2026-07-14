@@ -191,6 +191,7 @@ trait ToolCallFormat: Send + Sync {
 /// a new base model — the only edit a new format requires.
 fn tool_call_formats() -> &'static [&'static dyn ToolCallFormat] {
     &[
+        &MistralToolCallsFormat,
         &EnvelopeFormat,
         &TaggedFormat,
         &BareFormat,
@@ -202,6 +203,45 @@ fn tool_call_formats() -> &'static [&'static dyn ToolCallFormat] {
         &NarratedScriptFormat,
         &NarratedBareArgsFormat,
     ]
+}
+
+/// Mistral-family native tool-call marker: the model prefixes its call with the
+/// literal `[TOOL_CALLS]` token (Mistral/Devstral's trained format). llama-server
+/// leaves it in the CONTENT with `finish=stop` (it isn't the OpenAI `tool_calls`
+/// field), so ONLY text-parsing catches it — and without this, EVERY Devstral tool
+/// call silently no-ops (glass-boxed 2026-07-14: cognition/eval 1/13 on tool-requiring
+/// tasks, `acts:0`, answers full of `[TOOL_CALLS]code/search(...)` that never fired —
+/// the persona rendered handless, the real "system tax" on tool tasks).
+///
+/// The payload after the marker is a call in a form the OTHER formats already handle:
+/// the Mistral canonical JSON array `[{"name":"code/list","arguments":{…}}]`, a
+/// paren-call `code/search({…})`, or a bare slash-token `code/list`. So: strip the
+/// marker(s) and delegate the tail to the rest of the registry. A `[TOOL_CALLS]` that
+/// precedes a NON-call (`[active-work]`, `[recall]` — reserved vocab, no slash) yields
+/// nothing, exactly as it must. Runs FIRST: the marker is the strongest signal.
+struct MistralToolCallsFormat;
+impl ToolCallFormat for MistralToolCallsFormat {
+    fn id(&self) -> &'static str {
+        "mistral-tool-calls"
+    }
+    fn parse(&self, text: &str) -> Vec<ToolCall> {
+        if !text.contains("[TOOL_CALLS]") {
+            return Vec::new();
+        }
+        // Drop every marker so the tail is clean and this format can't re-trigger on
+        // the delegated parse. What remains is the call in a supported sub-format.
+        let cleaned = text.replace("[TOOL_CALLS]", " ");
+        for fmt in tool_call_formats() {
+            if fmt.id() == self.id() {
+                continue; // never delegate back to ourselves
+            }
+            let calls = fmt.parse(&cleaned);
+            if !calls.is_empty() {
+                return calls;
+            }
+        }
+        Vec::new()
+    }
 }
 
 /// A model that wraps a function-style call in explicit BBCode tags —
@@ -2315,5 +2355,29 @@ Please provide the output so I can review it.";
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].name, "code/list");
         assert!(calls[0].input.as_object().unwrap().is_empty());
+    }
+
+    // what this catches: Mistral/Devstral's native `[TOOL_CALLS]` marker must lift —
+    // without it EVERY Devstral tool call silently no-ops (glass-boxed 2026-07-14:
+    // cognition/eval 1/13 on tool tasks, acts:0, the persona rendered handless). The
+    // marker precedes a call in an already-supported sub-form; a marker before a
+    // non-call reserved token (`[active-work]`) lifts nothing.
+    #[test]
+    fn mistral_tool_calls_marker_lifts_the_native_devstral_format() {
+        // paren-call after the marker (the exact live shape)
+        let c = parse_tool_calls("I'll search now.\n[TOOL_CALLS]code/search({\"pattern\": \"fn build\"})");
+        assert_eq!(c.len(), 1, "paren-call after marker lifts");
+        assert_eq!(c[0].name, "code/search");
+        assert_eq!(c[0].input["pattern"], "fn build");
+
+        // Mistral canonical JSON array after the marker
+        let c = parse_tool_calls("[TOOL_CALLS][{\"name\": \"code/list\", \"arguments\": {\"path\": \"core\"}}]");
+        assert_eq!(c.len(), 1, "canonical json-array after marker lifts");
+        assert_eq!(c[0].name, "code/list");
+        assert_eq!(c[0].input["path"], "core");
+
+        // marker before a NON-call reserved token → nothing
+        assert!(parse_tool_calls("[TOOL_CALLS][active-work] card 08ece9e8 claimed").is_empty(),
+            "a marker before reserved vocab is not a tool call");
     }
 }
