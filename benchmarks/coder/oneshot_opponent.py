@@ -21,7 +21,7 @@ Usage:
 Emits a JSON result and prints a one-line scoreboard row. Compare against OURS, produced by
 `run_ours.sh` (which runs the SAME gym through the Continuum system). Same tasks, same grader.
 """
-import argparse, http.client, json, os, re, subprocess, sys, tempfile, time, urllib.request, urllib.error
+import argparse, http.client, json, os, re, socket, subprocess, sys, tempfile, time, urllib.request, urllib.error
 
 def chat(endpoint, model, prompt, api_key, max_tokens, timeout, retries=3):
     body = json.dumps({
@@ -39,8 +39,11 @@ def chat(endpoint, model, prompt, api_key, max_tokens, timeout, retries=3):
     # such blip must not fail an otherwise-answerable task, or (worse) abort the whole
     # arm. The measurement stays honest: same greedy prompt, we just give the endpoint
     # a couple more chances to answer it. A HARD failure after retries still raises.
+    # NOTE socket.timeout: on Python 3.9 it is NOT a subclass of TimeoutError (that
+    # alias arrived in 3.10), and urlopen's read timeout raises it raw — so it must be
+    # named explicitly or a slow hard task aborts the whole arm.
     transient = (http.client.RemoteDisconnected, ConnectionError, TimeoutError,
-                 urllib.error.URLError)
+                 socket.timeout, urllib.error.URLError)
     last = None
     for attempt in range(retries):
         try:
@@ -109,7 +112,7 @@ def main():
         try:
             answer = chat(args.endpoint, args.model, t["prompt"], args.api_key, args.max_tokens, args.timeout)
         except (urllib.error.URLError, http.client.HTTPException, ConnectionError,
-                TimeoutError, KeyError) as e:
+                TimeoutError, socket.timeout, KeyError) as e:
             # A hard endpoint failure on ONE task (after chat()'s own retries) is an
             # infra error for THAT task — score it over attempted tasks, never let it
             # abort the whole arm (the 2026-07-14 RemoteDisconnected that killed a run).
