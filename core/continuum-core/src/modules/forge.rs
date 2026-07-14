@@ -187,6 +187,17 @@ impl ServiceModule for ForgeModule {
                     .map_err(|e| format!("forge/decide: invalid params: {e}"))?;
                 Ok(CommandResult::Json(decide_assemble_or_train(&parsed)))
             }
+            "forge/publish" => {
+                // Publish a validated, lift-gated layer to the shared market. ACL
+                // reserves this Owner-only (network publish is a consent-gated
+                // action — the autonomous loop adopts LOCALLY, a human promotes to
+                // the public market). Validation + the lift gate are enforced INSIDE
+                // PublishRequest::build (#99 slice 2a); the destination is a
+                // swappable Publisher adapter (HF today, grid tomorrow).
+                let parsed: ForgePublishParams = serde_json::from_value(params)
+                    .map_err(|e| format!("forge/publish: invalid params: {e}"))?;
+                run_publish(parsed).await
+            }
             other => Err(format!("Unknown forge command: {other}")),
         }
     }
@@ -759,6 +770,81 @@ async fn run_export_gguf_lora(
         "message": result.message,
         "details": result.details,
         "registered": { "alias": adapter.alias, "path": adapter.path, "base_model_id": adapter.base_model_id },
+    })))
+}
+
+/// Params for `forge/publish` (#99 L4). Camel-case on the wire. Validation +
+/// the lift gate live in `PublishRequest::build`, so this struct is just the raw
+/// facts a completed forge run knows about the layer.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ForgePublishParams {
+    /// Target repo (`namespace/name`), e.g. `continuum-ai/devstral-code-asha`.
+    repo_id: String,
+    /// Local gguf-lora gene file to upload.
+    gene_path: String,
+    base_model: String,
+    trait_kind: String,
+    #[serde(default)]
+    persona_name: Option<String>,
+    #[serde(default)]
+    project_type: Option<String>,
+    #[serde(default)]
+    score: Option<i64>,
+    #[serde(default)]
+    epochs: Option<i64>,
+    #[serde(default)]
+    rank: Option<i64>,
+    /// Held-out lift as a fraction (0.051 = +5.1pts). Gate is `> 0`.
+    lift: f64,
+    /// Which publisher adapter to use. Default `"huggingface"`.
+    #[serde(default)]
+    target: Option<String>,
+}
+
+/// Validate + gate the layer, select a Publisher adapter by target, upload, and
+/// return the receipt. Owner-gated at the ACL (network publish is consent-gated);
+/// everything malformed/unmeasured/regressing is refused inside
+/// `PublishRequest::build` before any transport is touched.
+async fn run_publish(p: ForgePublishParams) -> Result<CommandResult, String> {
+    use crate::forge::publish_request::{PublishInputs, PublishRequest};
+    use crate::forge::publisher::Publisher;
+
+    let inputs = PublishInputs {
+        repo_id: p.repo_id,
+        gene_path: std::path::PathBuf::from(p.gene_path),
+        base_model: p.base_model,
+        trait_kind: p.trait_kind,
+        persona_name: p.persona_name,
+        project_type: p.project_type,
+        score: p.score,
+        epochs: p.epochs,
+        rank: p.rank,
+        lift: p.lift,
+    };
+    let req =
+        PublishRequest::build(&inputs, |path| path.exists()).map_err(|e| format!("forge/publish: {e}"))?;
+
+    let target = p.target.as_deref().unwrap_or("huggingface");
+    let publisher: Box<dyn Publisher> = match target {
+        "huggingface" | "hf" => Box::new(crate::forge::hf_publisher::HfPublisher::new()),
+        other => {
+            return Err(format!(
+                "forge/publish: unknown target '{other}' — 'huggingface' is the only publisher \
+                 built; a grid publisher (outlier B) satisfies the same trait when wired"
+            ))
+        }
+    };
+
+    let receipt = publisher
+        .publish(&req)
+        .await
+        .map_err(|e| format!("forge/publish: {e}"))?;
+    Ok(CommandResult::Json(serde_json::json!({
+        "transport": receipt.transport,
+        "location": receipt.location,
+        "liftPct": req.lift_pct,
+        "tags": req.tags,
     })))
 }
 

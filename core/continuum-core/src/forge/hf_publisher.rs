@@ -107,30 +107,47 @@ impl Publisher for HfPublisher {
     }
 
     async fn publish(&self, req: &PublishRequest) -> Result<PublicationReceipt, PublishError> {
+        // Stage into a unique temp dir; clean it up on EVERY path (success or
+        // failure) so a failed publish never leaks a staging dir.
+        let staging = std::env::temp_dir().join(format!("continuum-publish-{}", uuid::Uuid::new_v4()));
+        let result = self.publish_from_staging(req, &staging).await;
+        let _ = tokio::fs::remove_dir_all(&staging).await;
+        result
+    }
+}
+
+impl HfPublisher {
+    /// The staged upload, split out so [`publish`](Publisher::publish) can always
+    /// clean up the staging dir afterwards. Stages the gguf-lora + rendered card
+    /// into `staging`, uploads the folder via the `hf` CLI, returns the receipt.
+    async fn publish_from_staging(
+        &self,
+        req: &PublishRequest,
+        staging: &std::path::Path,
+    ) -> Result<PublicationReceipt, PublishError> {
         let transport = self.name().to_string();
         let fail = |detail: String| PublishError::Transport {
             transport: transport.clone(),
             detail,
         };
 
-        // Stage: a temp dir holding the gguf-lora + the rendered model card. The
-        // whole dir uploads in one shot (the gene + its card land together).
-        let staging = tempfile::tempdir()
+        tokio::fs::create_dir_all(staging)
+            .await
             .map_err(|e| fail(format!("could not create staging dir: {e}")))?;
         let gguf_name = req
             .gene_path
             .file_name()
             .ok_or_else(|| fail("gene path has no file name".to_string()))?;
-        tokio::fs::copy(&req.gene_path, staging.path().join(gguf_name))
+        tokio::fs::copy(&req.gene_path, staging.join(gguf_name))
             .await
             .map_err(|e| fail(format!("could not stage gene {}: {e}", req.gene_path.display())))?;
-        tokio::fs::write(staging.path().join("README.md"), render_model_card(req))
+        tokio::fs::write(staging.join("README.md"), render_model_card(req))
             .await
             .map_err(|e| fail(format!("could not write model card: {e}")))?;
 
         // Upload via the `hf` CLI (owns auth + large-file transfer). Loud on any
         // non-success — a failed publish is never a silent no-op.
-        let args = upload_args(req.repo_id.as_str(), &staging.path().to_string_lossy());
+        let args = upload_args(req.repo_id.as_str(), &staging.to_string_lossy());
         let output = tokio::process::Command::new("hf")
             .args(&args)
             .output()
