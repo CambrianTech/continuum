@@ -125,6 +125,20 @@ pub struct PublishRequest {
     /// Held-out lift (%) that cleared the gate — recorded on the card as the
     /// quality provenance.
     pub lift_pct: f64,
+    // --- Card metadata (denormalized so the transport can render the model card
+    //     without re-fetching anything; all validated already). ---
+    /// Base model the layer was forged against.
+    pub base_model: String,
+    /// Trait/role the layer specializes (the card's "role").
+    pub trait_kind: String,
+    /// Persona the layer trains for, if any.
+    pub persona_name: Option<String>,
+    /// Training score (0–100), if measured.
+    pub score: Option<i64>,
+    /// Training epochs, if known.
+    pub epochs: Option<i64>,
+    /// LoRA rank, if known.
+    pub rank: Option<i64>,
 }
 
 /// Inputs to [`PublishRequest::build`] — the raw facts a completed forge run knows
@@ -199,6 +213,12 @@ impl PublishRequest {
             gene_path: inputs.gene_path.clone(),
             tags,
             lift_pct: inputs.lift * 100.0,
+            base_model: inputs.base_model.clone(),
+            trait_kind: inputs.trait_kind.clone(),
+            persona_name: inputs.persona_name.clone(),
+            score: inputs.score,
+            epochs: inputs.epochs,
+            rank: inputs.rank,
         })
     }
 }

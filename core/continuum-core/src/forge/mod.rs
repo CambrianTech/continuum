@@ -14,6 +14,7 @@ pub mod custodian_client;
 pub mod endpoint;
 pub mod gene_handle;
 pub mod grid_custodian;
+pub mod hf_publisher;
 pub mod lora_convert;
 pub mod mlx_job;
 pub mod mlx_train;
