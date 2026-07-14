@@ -142,6 +142,17 @@ pub struct WorkingMemory {
     /// window. Explicit repeat-perception (a true fact about her own hands, never a directive)
     /// lets a looping mind SEE its redundancy and move on organically.
     action_fps: Mutex<VecDeque<String>>,
+    /// DURABLE per-session repeat COUNT per fingerprint — independent of the tiny
+    /// `capacity`-bounded `action_fps` window above. The default capacity is 3, so a
+    /// windowed count STRUCTURALLY caps at 3: the moment any other act interleaves,
+    /// the identical call is evicted before it can be counted again, and a deepening
+    /// loop reads "3 times" forever. Glass-boxed 2026-07-14: Atlas re-issued ONE
+    /// identical `code/tree{max_depth:1}` 38× while the loop-warning stayed pinned at
+    /// "3 times", conveying none of the spiral. This map accumulates over the whole
+    /// spawn so loop-awareness ESCALATES honestly (3 → 10 → 38). Distinct fingerprints
+    /// per session are naturally modest (a persona issues dozens of distinct calls,
+    /// not millions), so it is left unbounded within the per-spawn lifetime.
+    action_fp_counts: Mutex<HashMap<String, usize>>,
 }
 
 /// The PROVENANCE of one working-memory entry — the type that makes receipts,
@@ -212,6 +223,7 @@ impl WorkingMemory {
             dispatched: Mutex::new(HashMap::new()),
             next_action_seq: AtomicU64::new(1),
             action_fps: Mutex::new(VecDeque::new()),
+            action_fp_counts: Mutex::new(HashMap::new()),
         }
     }
 
@@ -220,15 +232,26 @@ impl WorkingMemory {
     /// `≥ 2` means the mind is re-issuing an identical call — proprioception the act→observe
     /// step renders EXPLICITLY so a looping mind perceives its own redundancy and moves on.
     /// Reports a TRUE fact about her hands; it never dictates what to do instead (that would
-    /// be steering — [[no-hardcoded-heuristics-to-steer-cognition]]). Bounded by `capacity`,
-    /// same rolling window as the recency trail.
+    /// be steering — [[no-hardcoded-heuristics-to-steer-cognition]]). The returned count is
+    /// DURABLE across the spawn (see `action_fp_counts`) so a loop that recurs amid other
+    /// acts escalates honestly instead of pinning at the tiny recency-window size.
     pub fn note_action_fingerprint(&self, fingerprint: &str) -> usize {
-        let mut fps = self.action_fps.lock();
-        fps.push_back(fingerprint.to_string());
-        while fps.len() > self.capacity {
-            fps.pop_front();
+        // Windowed push feeds `action_verb_tally` (the RECENT investigation shape) — that
+        // one WANTS the rolling `capacity` window, so leave it bounded here.
+        {
+            let mut fps = self.action_fps.lock();
+            fps.push_back(fingerprint.to_string());
+            while fps.len() > self.capacity {
+                fps.pop_front();
+            }
         }
-        fps.iter().filter(|f| f.as_str() == fingerprint).count()
+        // The repeat COUNT is durable across the spawn — NOT clipped to the tiny recency
+        // window — so an identical call interleaved with other acts still climbs 3→38
+        // rather than resetting every time it falls out of the `capacity`-deep window.
+        let mut counts = self.action_fp_counts.lock();
+        let c = counts.entry(fingerprint.to_string()).or_insert(0);
+        *c += 1;
+        *c
     }
 
     /// Tally of recent actions BY TOOL NAME (the part of the fingerprint before
@@ -775,6 +798,36 @@ mod tests {
         assert_eq!(wm.note_action_fingerprint("code/read|{\"file\":\"a\"}"), 1);
         // back to the original — still counted across the window
         assert_eq!(wm.note_action_fingerprint("code/search|{\"pattern\":\"x\"}"), 4);
+    }
+
+    // what this catches: the loop-awareness COUNT must survive the tiny recency window
+    // (regression for the 2026-07-14 Atlas ×38 pinned-at-3 spiral). The live default
+    // capacity is 3, so the windowed `action_fps` alone caps the count at 3 the instant
+    // other acts interleave — a deepening loop then reads "3 times" forever and conveys
+    // none of the spiral. The DURABLE per-session count must keep climbing to 38.
+    #[test]
+    fn action_fingerprint_count_escalates_past_the_tiny_recency_window() {
+        let wm = WorkingMemory::new(DEFAULT_WORKING_MEMORY_CAPACITY); // = 3, the live default
+        let tree = "code/tree|{\"max_depth\":1}";
+        let mut last = 0;
+        for _ in 0..38 {
+            last = wm.note_action_fingerprint(tree);
+            // three OTHER distinct calls per cycle — more than capacity(3), so a
+            // window-only count would evict `tree` before it recurs and never exceed 1.
+            wm.note_action_fingerprint("code/read|{\"f\":\"a\"}");
+            wm.note_action_fingerprint("code/list|{\"p\":\".\"}");
+            wm.note_action_fingerprint("code/search|{\"q\":\"x\"}");
+        }
+        assert_eq!(
+            last, 38,
+            "durable count must reflect all 38 identical issues, not cap at the window size"
+        );
+        // The recent-window tally (action_verb_tally) stays CORRECTLY windowed — it's
+        // the recent-shape channel, not the durable-repeat channel.
+        assert!(
+            wm.action_verb_tally().len() <= DEFAULT_WORKING_MEMORY_CAPACITY,
+            "verb tally stays bounded to the recency window"
+        );
     }
 
     // what this catches: THE starvation fix — a large tool result comes back to the mind
