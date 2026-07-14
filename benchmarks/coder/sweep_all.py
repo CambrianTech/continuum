@@ -159,6 +159,16 @@ def point_harnesses(port, alias):
 def run_model(row, args):
     label = row["label"]
     served_here = None
+    # The model NAME the RAW arm + harnesses address. Two legal shapes:
+    #   - a locally-served row names it with `alias` (what `serve --alias` publishes); OR
+    #   - a reuse-an-already-served-endpoint row (our flagship on :58057) names it with
+    #     `raw_model` and has NO alias (nothing is served here to name).
+    # Resolve once, fail loud if neither — never hard-index one shape and KeyError the other.
+    model_name = row.get("alias") or row.get("raw_model")
+    if not model_name:
+        raise RuntimeError(
+            f"{label}: fleet row has neither `alias` (local serve) nor `raw_model` "
+            f"(reused endpoint) — cannot name the model for RAW/harness arms")
     # The model's REAL trained context (GGUF metadata) — the single source of truth for how
     # much context it supports. We serve at min(real, cap) — never a hardcoded-down number.
     real_ctx = gguf_n_ctx_train(row["gguf"]) if row.get("gguf") else None
@@ -173,24 +183,24 @@ def run_model(row, args):
         print(f"[sweep] {label}: Hermes SKIPPED — model is {real_ctx or '?'}-ctx, below Hermes's "
               f"{HERMES_MIN_CTX} floor (honest N/A, not a 0)", file=sys.stderr)
     # 1. ensure an endpoint for RAW + opencode
-    if row.get("raw_endpoint") and endpoint_up(row["raw_endpoint"], row.get("alias")):
+    if row.get("raw_endpoint") and endpoint_up(row["raw_endpoint"], model_name):
         endpoint = row["raw_endpoint"]
         port = int(endpoint.rsplit(":", 1)[1].split("/")[0])
         print(f"[sweep] {label}: reusing already-served {endpoint}", file=sys.stderr)
     else:
         port = row["serve_port"]
-        print(f"[sweep] {label}: serving {row['alias']} on :{port} at ctx={serve_ctx} "
+        print(f"[sweep] {label}: serving {model_name} on :{port} at ctx={serve_ctx} "
               f"(real n_ctx_train={real_ctx}) …", file=sys.stderr)
-        served_here = serve(row["gguf"], row["alias"], port, serve_ctx)
+        served_here = serve(row["gguf"], model_name, port, serve_ctx)
         endpoint = f"http://127.0.0.1:{port}/v1"
     try:
-        point_harnesses(port, row["alias"])
+        point_harnesses(port, model_name)
         # 2. one-row config for matrix.py: RAW(endpoint) + OURS(ephemeral) + opencode [+ hermes]
         cfg = [{
             "label": label,
             "base_model_id": row.get("base_model_id"),
             "raw_endpoint": endpoint,
-            "raw_model": row["alias"],
+            "raw_model": model_name,
             "opponents": opponents,
             "opencode_model": "local/qwen14b",  # opencode's fixed shim name; baseURL is what varies
         }]

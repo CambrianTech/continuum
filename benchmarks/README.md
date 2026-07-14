@@ -27,6 +27,34 @@ design:** a stranger who cloned the repo runs the identical command and gets the
 numbers — that is the point (leave no doubt about the claims). The sections below are the
 individual pieces `kick.sh` orchestrates.
 
+## Measure on a quiet GPU — provenance, not hope
+
+A benchmark number is only reproducible if the GPU was doing **nothing else** when it
+was taken. Share the GPU with a game, another model, a training run — or, on our box,
+the live persona-serving lane while the citizens are awake and generating — and the
+number still prints, just wrong, and *nothing downstream says so*. That silent
+contamination is real: it once produced a `None/7` flagship cell because the sweep
+time-shared the awake persona lane on `:58057`.
+
+So the machine refuses to pretend. `coder/preflight_gpu.py` (run automatically by
+`kick.sh`) queries a live core's `gpu/stats` and prints a one-line verdict —
+**CLEAN** / **CONTENDED** / **UNKNOWN** — and *blocks the run* on CONTENDED unless you
+accept it explicitly:
+
+```bash
+# on a Continuum box, quiet the citizens first (a humane, auto-waking nap):
+cu cognition/set-sleep-mode --persona-id <UUID> --mode sleeping --duration-minutes 90 \
+    --reason "clean benchmark — auto-waking"
+./benchmarks/kick.sh --gyms hard-rs --limit 8         # preflight now reports CLEAN
+
+# on any box, if you must measure a contended GPU, the number is stamped CONTENDED:
+./benchmarks/kick.sh --allow-contended
+```
+
+UNKNOWN (no core, opponent-only arms) proceeds — the opponent arms serve their own
+scratch lanes, so there's nothing on our side to contend for. The rule is simple:
+**a clean claim requires a clean measurement, and the machine says which one it made.**
+
 ## The one hard rule
 
 **We never depend on any opponent — Hermes, unsloth, a cloud provider — ever.** Optional
