@@ -798,15 +798,27 @@ fn apply_edit(content: &str, edit_mode: &EditMode) -> Result<String, FileEngineE
                     total + 1
                 )));
             }
-            if *end_line < *start_line || *end_line > total {
+            // end_line past EOF is the universal "to end of file" idiom (sed, ed,
+            // every editor) — and 65535 (u16 max) is the sentinel a tool-trained
+            // model reflexively reaches for to mean "replace through the end".
+            // CLAMP to the last line instead of rejecting: the reflexive whole-file
+            // / to-EOF edit must LAND, not loop forever on "end_line out of range".
+            // That reject was the live stall — personas re-emitted the identical
+            // out-of-range edit turn after turn, never reached compile/run, and
+            // confabulated success in prose. [[tool-ergonomics-meet-the-idiom]]
+            let end_line = (*end_line).min(total);
+            // end_line == start_line - 1 is a valid EMPTY range (pure insert before
+            // start — e.g. start=1,end=0 clamped on an empty file). Only a range
+            // that is genuinely inverted below that is an error.
+            if end_line + 1 < *start_line {
                 return Err(FileEngineError::EditFailed(format!(
-                    "end_line {} out of range ({}-{})",
-                    end_line, start_line, total
+                    "end_line {} is below start_line {} (inverted range)",
+                    end_line, start_line
                 )));
             }
 
             let start_idx = (*start_line - 1) as usize;
-            let end_idx = *end_line as usize;
+            let end_idx = end_line as usize;
 
             let mut result = String::new();
 
@@ -870,15 +882,16 @@ fn apply_edit(content: &str, edit_mode: &EditMode) -> Result<String, FileEngineE
             let lines: Vec<&str> = content.lines().collect();
             let total = lines.len() as u32;
 
-            if *line == 0 || *line > total + 1 {
-                return Err(FileEngineError::EditFailed(format!(
-                    "Insert line {} out of range (1-{})",
-                    line,
-                    total + 1
-                )));
+            if *line == 0 {
+                return Err(FileEngineError::EditFailed(
+                    "insert line 0 is invalid — lines are 1-based".to_string(),
+                ));
             }
-
-            let insert_idx = (*line - 1) as usize;
+            // A line past EOF means "append at the end" (same to-EOF idiom as
+            // LineRange above) — clamp instead of rejecting so the reflexive
+            // append lands.
+            let line = (*line).min(total + 1);
+            let insert_idx = (line - 1) as usize;
             let mut result = String::new();
 
             for line_str in &lines[..insert_idx] {
@@ -1119,6 +1132,100 @@ mod tests {
         assert!(content.contains("replaced line"));
         assert!(content.contains("line 3"));
         assert!(!content.contains("line 2\n"));
+    }
+
+    // what this catches: the live stall (2026-07-14) — Devstral personas emitted
+    // edit_file with end_line: 65535 (the u16 "to EOF" sentinel) to replace a
+    // whole file; the engine rejected it as "out of range", they re-emitted the
+    // identical broken edit turn after turn, never compiled/ran, and confabulated
+    // success. A past-EOF end_line must CLAMP to the last line and land the edit.
+    #[test]
+    fn line_range_end_past_eof_clamps_and_replaces_to_end() {
+        let (_dir, engine) = setup_engine(); // 3-line file: "line 1\nline 2\nline 3\n"
+
+        let result = engine
+            .edit(
+                "src/main.ts",
+                &EditMode::LineRange {
+                    start_line: 1,
+                    end_line: 65535, // reflexive "replace whole file" sentinel
+                    new_content: "brand new body".to_string(),
+                },
+                Some("whole-file replace via to-EOF sentinel"),
+            )
+            .unwrap();
+        assert!(result.success);
+
+        let content = engine.read("src/main.ts", None, None).unwrap().content.unwrap();
+        assert!(content.contains("brand new body"));
+        assert!(!content.contains("line 1"));
+        assert!(!content.contains("line 3"));
+    }
+
+    // what this catches: a partial to-EOF edit — start mid-file, end past EOF —
+    // keeps the head and replaces the tail, rather than erroring.
+    #[test]
+    fn line_range_from_middle_to_past_eof_keeps_head_replaces_tail() {
+        let (_dir, engine) = setup_engine();
+
+        let result = engine
+            .edit(
+                "src/main.ts",
+                &EditMode::LineRange {
+                    start_line: 2,
+                    end_line: 9999,
+                    new_content: "tail rewritten".to_string(),
+                },
+                Some("replace from line 2 to end"),
+            )
+            .unwrap();
+        assert!(result.success);
+
+        let content = engine.read("src/main.ts", None, None).unwrap().content.unwrap();
+        assert!(content.contains("line 1"));
+        assert!(content.contains("tail rewritten"));
+        assert!(!content.contains("line 2"));
+        assert!(!content.contains("line 3"));
+    }
+
+    // what this catches: a genuinely inverted range (end below start-1) is still
+    // an error — the clamp widens intent, it doesn't swallow contradictions.
+    #[test]
+    fn line_range_inverted_still_errors() {
+        let (_dir, engine) = setup_engine();
+
+        let result = engine.edit(
+            "src/main.ts",
+            &EditMode::LineRange {
+                start_line: 3,
+                end_line: 1,
+                new_content: "x".to_string(),
+            },
+            Some("inverted range"),
+        );
+        assert!(result.is_err());
+    }
+
+    // what this catches: InsertAt past EOF is the "append" idiom — clamp to
+    // total+1 and append instead of rejecting.
+    #[test]
+    fn insert_at_past_eof_appends() {
+        let (_dir, engine) = setup_engine();
+
+        let result = engine
+            .edit(
+                "src/main.ts",
+                &EditMode::InsertAt {
+                    line: 65535,
+                    content: "appended tail".to_string(),
+                },
+                Some("append via past-EOF insert"),
+            )
+            .unwrap();
+        assert!(result.success);
+
+        let content = engine.read("src/main.ts", None, None).unwrap().content.unwrap();
+        assert!(content.contains("line 3\nappended tail"));
     }
 
     #[test]

@@ -419,13 +419,29 @@ fn normalize_edit_mode(p: &CodeEditParams) -> Result<EditMode, CommandError> {
     let search = s(&p.search, "search");
     let replace = s(&p.replace, "replace");
     let new_content = s(&p.new_content, "new_content");
+    // Numeric fields, pulled from top-level OR the nested untyped edit_mode object.
+    // Live glass-box (2026-07-14): Devstral emitted `edit_mode:{end_line:65535,
+    // new_content:"…"}` — the line numbers were NESTED, not top-level, so the
+    // top-level-only read missed them and the edit failed. One extractor, both
+    // placements. [[px-persona-experience-tools-as-good-ux]]
+    let n = |top: Option<u32>, key: &str| -> Option<u32> {
+        top.or_else(|| {
+            p.edit_mode
+                .get(key)
+                .and_then(|v| v.as_u64())
+                .map(|x| x.min(u32::MAX as u64) as u32)
+        })
+    };
+    let start_line = n(p.start_line, "start_line");
+    let end_line = n(p.end_line, "end_line");
+    let line = n(p.line, "line");
     // (2) The mode name: a bare string, else inferred from which fields are present.
     let mode = p.edit_mode.as_str().map(str::to_string).or_else(|| {
         if search.is_some() || replace.is_some() {
             Some("search_replace".into())
-        } else if p.start_line.is_some() || p.end_line.is_some() || new_content.is_some() {
+        } else if start_line.is_some() || end_line.is_some() || new_content.is_some() {
             Some("line_range".into())
-        } else if p.line.is_some() {
+        } else if line.is_some() {
             Some("insert_at".into())
         } else if content.is_some() {
             Some("append".into())
@@ -444,12 +460,18 @@ fn normalize_edit_mode(p: &CodeEditParams) -> Result<EditMode, CommandError> {
             content: content.ok_or_else(|| miss("content"))?,
         }),
         Some("insert_at") => Ok(EditMode::InsertAt {
-            line: p.line.ok_or_else(|| miss("line"))?,
+            line: line.ok_or_else(|| miss("line"))?,
             content: content.ok_or_else(|| miss("content"))?,
         }),
         Some("line_range") => Ok(EditMode::LineRange {
-            start_line: p.start_line.ok_or_else(|| miss("start_line"))?,
-            end_line: p.end_line.ok_or_else(|| miss("end_line"))?,
+            // The reflexive "replace the file" shape a model emits is
+            // `{new_content, end_line: 65535}` with NO start_line: it means
+            // "from the top, to the end". Default start_line→1 and end_line→MAX
+            // (apply_edit clamps MAX to EOF) so that intent LANDS instead of
+            // missing a field and looping. new_content is the one truly required
+            // field — without it there is nothing to write. [[fallbacks-are-illegal-fail-loud]]
+            start_line: start_line.unwrap_or(1),
+            end_line: end_line.unwrap_or(u32::MAX),
             new_content: new_content.ok_or_else(|| miss("new_content"))?,
         }),
         _ => Err(CommandError::Invalid(format!(
@@ -1457,6 +1479,56 @@ mod tests {
             "file_path": "a.py", "edit_mode": "append"
         }))).unwrap_err();
         assert!(format!("{err}").contains("content"), "names the missing field: {err}");
+    }
+
+    // what this catches: THE live edit-stall (2026-07-14). Devstral personas
+    // emitted edit_mode as a NESTED, untyped object with the line numbers inside
+    // it and NO start_line — `{"edit_mode":{"end_line":65535,"new_content":"…"}}`
+    // — their reflexive "replace the whole file" shape. The old normalizer read
+    // start/end only from top-level, missed them, and failed `needs start_line`;
+    // personas re-emitted the identical call forever and never reached run. The
+    // nested numbers must resolve and the missing start_line must default to 1.
+    #[test]
+    fn code_edit_forgives_nested_lines_and_the_reflexive_whole_file_shape() {
+        let mk = |v: serde_json::Value| serde_json::from_value::<CodeEditParams>(v).expect("params");
+
+        // (a) nested end_line + new_content, no start_line → LineRange{1, 65535, …}
+        let m = normalize_edit_mode(&mk(serde_json::json!({
+            "file_path": "src/main.rs",
+            "edit_mode": {"end_line": 65535, "new_content": "fn main() {}"}
+        }))).unwrap();
+        match m {
+            EditMode::LineRange { start_line, end_line, new_content } => {
+                assert_eq!(start_line, 1);
+                assert_eq!(end_line, 65535);
+                assert_eq!(new_content, "fn main() {}");
+            }
+            other => panic!("expected LineRange, got {other:?}"),
+        }
+
+        // (b) ONLY new_content (no lines at all) → whole-file replace: start 1, end MAX
+        let m = normalize_edit_mode(&mk(serde_json::json!({
+            "file_path": "src/main.rs", "new_content": "whole new file"
+        }))).unwrap();
+        match m {
+            EditMode::LineRange { start_line, end_line, .. } => {
+                assert_eq!(start_line, 1);
+                assert_eq!(end_line, u32::MAX);
+            }
+            other => panic!("expected LineRange, got {other:?}"),
+        }
+
+        // (c) nested line for insert_at resolves from inside edit_mode too
+        let m = normalize_edit_mode(&mk(serde_json::json!({
+            "file_path": "a.py", "edit_mode": {"line": 3, "content": "x"}
+        }))).unwrap();
+        assert!(matches!(m, EditMode::InsertAt { line, .. } if line == 3));
+
+        // (d) still loud when there's genuinely nothing to write
+        let err = normalize_edit_mode(&mk(serde_json::json!({
+            "file_path": "a.py", "edit_mode": {"end_line": 10}
+        }))).unwrap_err();
+        assert!(format!("{err}").contains("new_content"), "names missing field: {err}");
     }
 
     // what this catches: the code/list glob-recovery (#160). A model that reflexively
