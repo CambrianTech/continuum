@@ -1174,7 +1174,7 @@ const SELF_TICK_MS: u64 = 15_000;
 /// than stampeding it. Raised with the engaged beat so an idle fleet leaves the GPU
 /// almost entirely free for live conversation + video. A message or fresh work snaps the
 /// beat back to `SELF_TICK_MS`. See the loop in `serve_persona_loop`.
-const SELF_TICK_REST_CAP_MS: u64 = 90_000;
+const SELF_TICK_REST_CAP_MS: u64 = 240_000;
 
 /// Live turns carry NO act budget — she works until SHE settles (Speak/Pass).
 /// The first cut capped directed turns at 8 acts "as a safety valve"; Joel's
