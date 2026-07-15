@@ -1043,7 +1043,21 @@ impl Faculty for LlmDeliberationFaculty {
                 (!stops.is_empty()).then_some(stops)
             },
         );
-        let resp = match binding.adapter.generate_text(request).await {
+        // #169 STREAMING: when THIS turn carries a token sink (a live Speak the caller
+        // wants progressive), generate through `generate_stream` so each decoded chunk
+        // is forwarded to the caller (→ persona.turn.delta → room/TTS/avatar). The
+        // adapter returns the SAME full `TextGenerationResponse` either way
+        // (`generate_text` IS `generate_stream` + accumulate), so everything below —
+        // capture, working-memory, decision parse, act/speak — is byte-identical; only
+        // DELIVERY timing changes. `None` (every non-streaming caller, every test) takes
+        // the unchanged accumulate path. The sink carries BOTH Reasoning and Token
+        // chunks; the consumer forwards only Token to output (think-deep/speak-answer).
+        let gen_result = if let Some(sink) = ws.token_sink.as_ref() {
+            binding.adapter.generate_stream(request, sink.clone()).await
+        } else {
+            binding.adapter.generate_text(request).await
+        };
+        let resp = match gen_result {
             Ok(r) => r,
             // Inference FAILED (timeout, 5xx, the serving lane refusing a model it
             // isn't hosting). A failed model is NOT a chosen silence — returning a

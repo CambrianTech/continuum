@@ -619,6 +619,20 @@ pub struct Workspace {
     /// The persona's NOW at burst assembly (see [`Burst::now_ms`]) — rendered as a
     /// [now …] line in the system prompt so time is a fact she can perceive (#125).
     pub now_ms: Option<u64>,
+    /// Per-turn OUTPUT sink for STREAMING the deliberation's answer token-by-token
+    /// (#169). `None` (the default) = the accumulate path — every current caller and
+    /// test is byte-identical. When `Some`, the deliberation faculty generates through
+    /// `generate_stream` instead of `generate_text` (the adapter returns the SAME full
+    /// response either way — `generate_text` is literally `generate_stream` +
+    /// accumulate), and forwards each [`GenerationChunk::Token`] here as it decodes so
+    /// the caller can emit a progressive `persona.turn.delta` to the room / TTS /
+    /// avatar. `GenerationChunk::Reasoning` is NOT forwarded — the model thinks
+    /// deeply, only the ANSWER streams out ([[thinking-is-primary-never-suppress]]).
+    /// Rides the Workspace because the cycle is room-agnostic (one persona, many
+    /// rooms) so the output target is a per-TURN fact, not a per-cycle one. Cloneable
+    /// (the sender is cheap/refcounted) so a cloned Workspace streams to the same
+    /// channel; skipped by every capture/replay reader (it is live I/O, not state).
+    pub token_sink: Option<tokio::sync::mpsc::UnboundedSender<crate::ai::adapter::GenerationChunk>>,
 }
 
 impl Workspace {
@@ -643,7 +657,20 @@ impl Workspace {
             directed_at_self: false,
             self_initiated: false,
             now_ms: burst_now,
+            token_sink: None,
         }
+    }
+
+    /// Attach a per-turn token sink for STREAMING the answer (#169). Builder form,
+    /// mirroring [`directed`](Self::directed)/[`self_initiated`](Self::self_initiated).
+    /// `None` stays the default everywhere; the live caller sets `Some` only for a
+    /// turn it wants to stream to the room/TTS/avatar. See [`token_sink`](Self::token_sink).
+    pub fn with_token_sink(
+        mut self,
+        sink: Option<tokio::sync::mpsc::UnboundedSender<crate::ai::adapter::GenerationChunk>>,
+    ) -> Self {
+        self.token_sink = sink;
+        self
     }
 
     /// Mark whether this turn is directed AT the persona (builder form). See
