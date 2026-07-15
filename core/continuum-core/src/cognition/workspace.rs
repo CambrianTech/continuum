@@ -1078,6 +1078,18 @@ pub struct WorkspaceCycle {
     /// Starts at 0 so the first live cycle is `CycleId(1)` and `CycleId(0)`
     /// stays the UNSTAMPED sentinel.
     cycle_counter: std::sync::atomic::AtomicU64,
+    /// #169 per-turn STREAMING sink — the output channel for the CURRENT turn's
+    /// answer tokens, or `None` when this turn is not streamed (the default; every
+    /// non-live caller and test). Interior-mutable (like `cycle_counter`) because
+    /// `run_in_room_inner` takes `&self`: the live caller (service_loop) sets it
+    /// `Some` just before a streamed turn and clears it after, and
+    /// `run_in_room_inner` reads it into the per-turn [`Workspace::token_sink`]. A
+    /// std `Mutex` — set/read is a cheap clone of a refcounted `Sender`, never held
+    /// across an await. Safe: a persona's live turns are sequential, and eval runs
+    /// on a SEPARATE forked cycle, so no cross-turn contention.
+    token_sink: std::sync::Mutex<
+        Option<tokio::sync::mpsc::UnboundedSender<crate::ai::adapter::GenerationChunk>>,
+    >,
 }
 
 /// RAII guard for a memory-isolated measurement window over a cycle's
@@ -1181,6 +1193,7 @@ impl WorkspaceCycle {
             decoding: relaxed_decoding(),
             model_binding: None,
             cycle_counter: std::sync::atomic::AtomicU64::new(0),
+            token_sink: std::sync::Mutex::new(None),
         }
     }
 
@@ -1224,6 +1237,25 @@ impl WorkspaceCycle {
         if let Some(handle) = &self.model_binding {
             handle.store(Arc::new(binding));
         }
+    }
+
+    /// #169: set the per-turn STREAMING sink for the NEXT turn(s). The live caller
+    /// (service_loop) sets `Some(tx)` just before a streamed turn and `None` after,
+    /// so `run_in_room_inner` reads it into that turn's [`Workspace::token_sink`].
+    /// `&self` (interior-mutable, like [`rebind_model`](Self::rebind_model)) — the
+    /// living mind is shared, not owned per tick.
+    pub fn set_token_sink(
+        &self,
+        sink: Option<tokio::sync::mpsc::UnboundedSender<crate::ai::adapter::GenerationChunk>>,
+    ) {
+        *self.token_sink.lock().unwrap() = sink;
+    }
+
+    /// The per-turn streaming sink to hand this tick's Workspace, or `None`.
+    fn current_token_sink(
+        &self,
+    ) -> Option<tokio::sync::mpsc::UnboundedSender<crate::ai::adapter::GenerationChunk>> {
+        self.token_sink.lock().unwrap().clone()
     }
 
     /// The inference adapter this mind CURRENTLY deliberates through — read from
@@ -1448,7 +1480,10 @@ impl WorkspaceCycle {
         let mut ws = Workspace::in_room(burst, room_id)
             .with_cycle(cycle)
             .directed(framing.directed)
-            .self_initiated(framing.self_initiated);
+            .self_initiated(framing.self_initiated)
+            // #169: hand this turn the live streaming sink if the caller set one
+            // (service_loop, just before a streamed Speak); `None` otherwise.
+            .with_token_sink(self.current_token_sink());
 
         // --- Phase 1: perception. Context faculties react to the raw world-state. ---
         let perception: Vec<&Arc<dyn Faculty>> = self

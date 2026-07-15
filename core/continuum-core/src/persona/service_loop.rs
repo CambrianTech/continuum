@@ -878,6 +878,34 @@ async fn serve_persona_loop_inner(
                 // the same heartbeat safety valve as the directed path (see the
                 // directed comment above), and an over-budget turn degrades to the
                 // metronome tail exactly as before.
+                // #169 STREAMING: hand this turn a token sink so the deliberation
+                // faculty forwards each decoded chunk here AS it generates (instead
+                // of only the accumulated final text). A background task drains it.
+                // Slice 1 proves the rail by stamping time-to-first-token on the probe
+                // stream — the perceived-latency floor for video/voice/avatar; slice 2
+                // forwards Token chunks to the room/TTS/avatar as `persona.turn.delta`.
+                // Cleared right after the turn, so a non-streamed path is byte-identical.
+                let (tok_tx, mut tok_rx) =
+                    tokio::sync::mpsc::unbounded_channel::<crate::ai::adapter::GenerationChunk>();
+                cycle.set_token_sink(Some(tok_tx));
+                let stream_started = std::time::Instant::now();
+                let stream_persona = ctx.identity.agent_name.clone();
+                let forwarder = tokio::spawn(async move {
+                    let mut first = true;
+                    while let Some(chunk) = tok_rx.recv().await {
+                        if let crate::ai::adapter::GenerationChunk::Token(t) = chunk {
+                            if !t.is_empty() && first {
+                                first = false;
+                                crate::probe!(
+                                    class = "persona.turn.first_token",
+                                    persona = %stream_persona,
+                                    ms = stream_started.elapsed().as_millis() as u64,
+                                    "first answer token decoded — streaming latency floor"
+                                );
+                            }
+                        }
+                    }
+                });
                 let (step, turn_metrics) = {
                     let outcome = crate::cognition::act_observe::drive_to_settle(
                         &cycle,
@@ -889,6 +917,11 @@ async fn serve_persona_loop_inner(
                     .await;
                     crate::cognition::act_observe::SettleStep::from_settled(outcome)
                 };
+                // Turn done: drop the cycle's sink so the forwarder's channel closes,
+                // then join it (all `tok_tx` clones are gone once the turn's Workspaces
+                // dropped inside `drive_to_settle`).
+                cycle.set_token_sink(None);
+                let _ = forwarder.await;
                 phase_timings.respond_ms = respond_started.elapsed().as_millis() as u64;
                 // Live speed/latency on the probe stream — the model's own measured
                 // generation cost for THIS turn (decode tok/s + latency), the same
