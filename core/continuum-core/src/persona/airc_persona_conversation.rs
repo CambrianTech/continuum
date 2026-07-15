@@ -124,6 +124,15 @@ impl PersonaConversation for AircPersonaConversation {
             .subscribe()
             .await
             .map_err(|e| format!("subscribe failed: {e}"))?;
+        // #146 diagnostic: confirm the CHAT subscribe stream actually opened for
+        // this persona. Post-reboot the personas were room-deaf (0 perceptual
+        // decodes) while the core-positron raw-attach path received fine — this
+        // pins whether prime() even ran per persona.
+        tracing::info!(
+            persona = %self.own_peer_id,
+            probe_class = "persona.inbound.subscribe_opened",
+            "persona chat subscribe stream opened (#146)"
+        );
         self.stream = Some(stream);
         Ok(())
     }
@@ -203,6 +212,24 @@ impl PersonaConversation for AircPersonaConversation {
                     return Err(format!("live stream lag: {lag}"));
                 }
                 Some(Ok(event)) => {
+                    // #146 diagnostic: EVERY raw event this persona's subscribe
+                    // stream yields, before any filter. If this probe never fires
+                    // under a room burst, the stream is empty → airc-lib delivery
+                    // gap. If it fires but perceptual/self drops it, the gap is
+                    // continuum-side (decode/self-filter). One line per event,
+                    // greppable by probe_class, cheap enough for a live stream.
+                    let body_kind = match event.body.as_ref() {
+                        None => "none",
+                        Some(b) if b.as_text().is_some() => "text",
+                        Some(_) => "json",
+                    };
+                    tracing::info!(
+                        persona = %self.own_peer_id,
+                        from_peer = %event.peer_id,
+                        body_kind,
+                        probe_class = "persona.inbound.raw_event",
+                        "persona subscribe stream yielded a raw event (#146)"
+                    );
                     // Recover a perceptual room turn. Two on-wire shapes
                     // reach a persona's subscribe stream and both are
                     // messages it must hear: a peer's plain-text `say()`
@@ -213,6 +240,13 @@ impl PersonaConversation for AircPersonaConversation {
                     // `None` means the event is not a room turn (presence,
                     // event-bridge, media-control, binary) — skip it.
                     let Some(message) = perceptual_from_event(&event) else {
+                        tracing::info!(
+                            persona = %self.own_peer_id,
+                            from_peer = %event.peer_id,
+                            body_kind,
+                            probe_class = "persona.inbound.filtered_non_turn",
+                            "raw event was not a perceptual room turn — skipped (#146)"
+                        );
                         continue;
                     };
                     // Skip our own turn, matched on the RESOLVED sender so a
