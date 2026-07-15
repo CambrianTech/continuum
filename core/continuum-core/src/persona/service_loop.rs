@@ -1122,19 +1122,27 @@ async fn serve_persona_loop_inner(
     Ok(outcome)
 }
 
-/// Never-stop heartbeat period. The deliberation concern gets a slice this often
-/// even with NO inbound message, so a persona pursues its OWN open intentions
-/// instead of going idle the instant it speaks. This is MECHANISM (the scheduler
-/// handing out time), not a judgment — a learned, per-state cadence is a later
-/// slice ([[organic-substrate-continuous-concern-scheduler]] kill-list). Kept
-/// conservative so a full LLM deliberation can't fire faster than the world
-/// meaningfully changes; the burst-fingerprint gate keeps idle ticks free.
-const SELF_TICK_MS: u64 = 3_000;
-/// Restful ceiling for the intrinsic heartbeat. An idle persona's beat backs off toward
-/// this (it is NOT a fixed metronome), so a quiet citizen rests instead of hammering the
-/// shared model, and many idle minds spread across time rather than stampeding it. A message
-/// or fresh work snaps the beat back to `SELF_TICK_MS`. See the loop in `serve_persona_loop`.
-const SELF_TICK_REST_CAP_MS: u64 = 20_000;
+/// Engaged heartbeat period — how often a persona pursuing its OWN intentions
+/// (no inbound message) gets another self-directed slice. This is the SELF-CHATTER
+/// pace, NOT message responsiveness: a real message wakes the loop instantly through
+/// `next_event` in the `select!`, regardless of this beat. So this trades ONLY
+/// background self-direction against the shared GPU — and it MUST leave headroom for
+/// a real conversation to feel like magic. Glass-boxed 2026-07-14: at 3_000ms, four
+/// idle personas each re-fired a full ~20s LLM turn every 3s → ~90% GPU duty cycle
+/// EACH → a user's message crawled at 0.3 tok/s (67s for one line) while quiescing the
+/// fleet jumped it to 2.3 tok/s (8×). Background thinking must be LOW duty cycle so the
+/// active speaker owns the GPU; a friend who answers in a beat is alive, one who makes
+/// you wait 67s is a lab demo. (The deeper solo-speed lever — LoRA overhead + `--parallel`
+/// splitting one 24B — is a separate serving-config fix.)
+/// [[multimodal-live-mode-is-a-latency-obsession-cbar-doctrine]]
+const SELF_TICK_MS: u64 = 15_000;
+/// Restful ceiling for the intrinsic heartbeat. A truly idle persona's beat backs off
+/// toward this (exponential, NOT a fixed metronome), so a quiet citizen rests deeply
+/// instead of hammering the shared model, and many idle minds spread across time rather
+/// than stampeding it. Raised with the engaged beat so an idle fleet leaves the GPU
+/// almost entirely free for live conversation + video. A message or fresh work snaps the
+/// beat back to `SELF_TICK_MS`. See the loop in `serve_persona_loop`.
+const SELF_TICK_REST_CAP_MS: u64 = 90_000;
 
 /// Live turns carry NO act budget — she works until SHE settles (Speak/Pass).
 /// The first cut capped directed turns at 8 acts "as a safety valve"; Joel's
