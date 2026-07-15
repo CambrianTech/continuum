@@ -33,4 +33,11 @@ expression?: Emotion,
  * Glass box (#172): render an upper-body POSE/gesture — `none | wave | think |
  * nod | shrug | point | open_hands`. Fires alongside the expression (arms vs face).
  */
-pose?: Gesture, };
+pose?: Gesture, 
+/**
+ * Glass box (#172): render the MOUTH at an openness weight `0.0` (closed) …
+ * `1.0` (wide) — the viseme / lip-sync dev knob. This is the SAME signal the
+ * streaming-TTS→avatar path drives, so it makes lip-sync developable by eye.
+ * Combine with `expression`/`pose`.
+ */
+mouth?: number, };

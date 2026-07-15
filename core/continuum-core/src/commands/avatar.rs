@@ -42,6 +42,13 @@ pub struct AvatarSnapshotParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub pose: Option<Gesture>,
+    /// Glass box (#172): render the MOUTH at an openness weight `0.0` (closed) …
+    /// `1.0` (wide) — the viseme / lip-sync dev knob. This is the SAME signal the
+    /// streaming-TTS→avatar path drives, so it makes lip-sync developable by eye.
+    /// Combine with `expression`/`pose`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional, type = "number")]
+    pub mouth: Option<f32>,
 }
 
 /// Result of `avatar/snapshot`.
@@ -75,6 +82,7 @@ crate::action_command! {
         let height = p.height.unwrap_or(480);
         let expression = p.expression;
         let pose = p.pose;
+        let mouth = p.mouth;
 
         let avatar_dir = dirs::home_dir()
             .ok_or_else(|| {
@@ -96,6 +104,10 @@ crate::action_command! {
             stem.push('-');
             stem.push_str(&format!("{g:?}").to_lowercase());
         }
+        if let Some(m) = mouth {
+            stem.push('-');
+            stem.push_str(&format!("mouth{}", (m.clamp(0.0, 1.0) * 100.0) as u32));
+        }
 
         let png_path = avatar_dir.join(format!("{stem}.png"));
         if png_path.exists() && !p.force {
@@ -109,7 +121,7 @@ crate::action_command! {
         let stem_for_task = stem.clone();
         let relative_path = tokio::task::spawn_blocking(move || {
             crate::modules::avatar::AvatarModule::capture_snapshot(
-                &identity, width, height, &avatar_dir, expression, pose, &stem_for_task,
+                &identity, width, height, &avatar_dir, expression, pose, mouth, &stem_for_task,
             )
         })
         .await

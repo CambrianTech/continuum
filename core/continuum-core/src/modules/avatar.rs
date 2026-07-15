@@ -42,6 +42,8 @@ impl AvatarModule {
         // neutral face; `out_stem` is the state-suffixed output filename (no `.png`).
         expression: Option<crate::live::video::bevy_renderer::Emotion>,
         pose: Option<crate::live::video::bevy_renderer::Gesture>,
+        // Mouth openness weight 0.0..1.0 (viseme/lip-sync glass box). None → resting.
+        mouth: Option<f32>,
         out_stem: &str,
     ) -> Result<String, String> {
         // Select avatar model for this identity
@@ -99,7 +101,8 @@ impl AvatarModule {
         // loaded avatar. Issued AFTER warmup because SetEmotion/SetGesture target a
         // spawned entity — before load it would be dropped (mirrors avatar_emote.rs).
         // No-op for a neutral snapshot (both None).
-        if expression.is_some() || pose.is_some() {
+        let has_state = expression.is_some() || pose.is_some() || mouth.is_some();
+        if has_state {
             let system = crate::live::video::bevy_renderer::get_or_init();
             if let Some(e) = expression {
                 system.set_emotion_by_identity(identity, e, 1.0, 300);
@@ -107,13 +110,14 @@ impl AvatarModule {
             if let Some(g) = pose {
                 system.set_gesture_by_identity(identity, g, 1500);
             }
+            if let Some(m) = mouth {
+                system.set_mouth_weight_by_identity(identity, m.clamp(0.0, 1.0));
+            }
         }
 
         // Phase 3 — capture the latest frame after a settle window (longer when a
         // ~300ms morph transition was applied, so the expression is fully on).
-        let settle = std::time::Duration::from_millis(
-            if expression.is_some() || pose.is_some() { 1200 } else { 200 },
-        );
+        let settle = std::time::Duration::from_millis(if has_state { 1200 } else { 200 });
         let settle_start = std::time::Instant::now();
         let mut best_frame = None;
         while start.elapsed() < max_wait {
@@ -324,7 +328,7 @@ impl ServiceModule for AvatarModule {
         let dir = avatar_dir.clone();
         // Auto-refresh renders the NEUTRAL profile under `<identity>.png` (no state).
         let result = tokio::task::spawn_blocking(move || {
-            Self::capture_snapshot(&id, 480, 480, &dir, None, None, &id)
+            Self::capture_snapshot(&id, 480, 480, &dir, None, None, None, &id)
         })
         .await;
 
