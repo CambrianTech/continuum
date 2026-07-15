@@ -68,6 +68,38 @@ pub fn shared_model_saturated() -> bool {
     inflight_model_calls() >= crate::cognition::serving_plan::MAX_LANES as usize
 }
 
+// ── Ambient-turn admission permit (#171) ───────────────────────────────────────
+//
+// The inflight GAUGE above catches STAGGERED load, but not the acute fan-out: a room
+// burst wakes N peers simultaneously and they all read the gauge as 0 (none has
+// generated yet) and stampede. A PERMIT fixes the timing: an ambient (non-directed)
+// turn must ACQUIRE one of a small fixed number of ambient slots or it yields — held
+// across the turn, so concurrency is bounded regardless of when everyone woke.
+// Directed turns bypass this entirely (they were addressed; they run now). A yielded
+// ambient turn defers to a later beat with free capacity — the durable transcript is
+// unchanged, so nothing is lost. [[conversational-latency-is-a-misdirection-budget]]
+
+/// How many ambient turns may run at once. 1 = strongly prioritize directed work:
+/// under a burst, the addressed persona plus at most one ambient contribution run;
+/// the rest yield. Under light/staggered load ambient turns are naturally serial, so
+/// this never throttles a quiet room.
+const AMBIENT_TURN_CONCURRENCY: usize = 1;
+
+static AMBIENT_TURN_PERMITS: std::sync::OnceLock<std::sync::Arc<tokio::sync::Semaphore>> =
+    std::sync::OnceLock::new();
+
+fn ambient_permits() -> &'static std::sync::Arc<tokio::sync::Semaphore> {
+    AMBIENT_TURN_PERMITS
+        .get_or_init(|| std::sync::Arc::new(tokio::sync::Semaphore::new(AMBIENT_TURN_CONCURRENCY)))
+}
+
+/// Try to claim an ambient-turn slot. `Some(permit)` → run the ambient turn (hold the
+/// permit for the turn's lifetime; it releases on drop). `None` → all ambient slots
+/// are busy; the caller yields this ambient turn. Non-blocking (never waits).
+pub fn try_hold_ambient_turn() -> Option<tokio::sync::OwnedSemaphorePermit> {
+    ambient_permits().clone().try_acquire_owned().ok()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, TS, PartialEq)]
 #[serde(rename_all = "camelCase")]
 #[ts(
@@ -306,5 +338,40 @@ mod tests {
 
         drop(guards);
         assert_eq!(inflight_model_calls(), 0, "all guards released → baseline");
+    }
+
+    // what this catches (#171 fan-out): the ambient-turn permit bounds how many
+    // NON-directed turns deliberate at once, no matter how the room burst wakes them.
+    // The first cut gated on the in-flight gauge and did NOT fire live: a simultaneous
+    // burst wakes every peer, they all read inflight=0 (none had generated yet) and
+    // stampede past the check together. A permit has no such window — the slot is
+    // claimed at the decision point and held for the turn, so the (N-1) peers that woke
+    // in the same instant find it taken and yield. This is the only test that touches
+    // the process-global ambient semaphore, so it starts with all slots free.
+    #[test]
+    fn ambient_permit_bounds_concurrency_and_releases_on_drop() {
+        // A simultaneous-wake burst: several ambient turns try to claim a slot at once.
+        // Exactly AMBIENT_TURN_CONCURRENCY win; the rest get None and must yield.
+        let mut held: Vec<tokio::sync::OwnedSemaphorePermit> = Vec::new();
+        for _ in 0..AMBIENT_TURN_CONCURRENCY {
+            held.push(try_hold_ambient_turn().expect("a free slot is grantable"));
+        }
+        // The next simultaneous ambient waker finds every slot taken → yields.
+        assert!(
+            try_hold_ambient_turn().is_none(),
+            "over-capacity ambient turn must yield (the stampede the gauge let through)"
+        );
+
+        // The addressed persona never calls this — directed work is unthrottled. Model
+        // that by simply NOT touching the permit here; the held slots stay full and the
+        // assertion above already proved a concurrent ambient turn can't sneak a slot.
+
+        // A held ambient turn finishes → its permit drops → capacity frees for the next
+        // beat, so a yielded room re-perceives and contributes when there's headroom.
+        held.pop();
+        let reclaimed =
+            try_hold_ambient_turn().expect("dropping a finished turn frees its slot for the next");
+        drop(reclaimed);
+        drop(held); // release the rest → back to all-free for any later test
     }
 }

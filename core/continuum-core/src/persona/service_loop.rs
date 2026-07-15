@@ -897,14 +897,31 @@ async fn serve_persona_loop_inner(
                 // can't re-trigger. [[idle-is-self-directed-free-time]]
                 // [[never-thrash-sticky-hysteresis-on-every-lane]]
                 // [[conversational-latency-is-a-misdirection-budget]]
-                if !directed && crate::cognition::resource_admission::shared_model_saturated() {
-                    tracing::debug!(
-                        persona = %ctx.identity.agent_name,
-                        "ambient turn yielded under lane saturation — deferring to free capacity"
-                    );
-                    outcome.turns_skipped += 1;
-                    continue;
-                }
+                // #171: an ambient (non-directed) turn must claim one of a small number
+                // of ambient slots or YIELD — a PERMIT, not a gauge. The gauge-based
+                // first cut didn't fire: a simultaneous room-burst wakes N peers who all
+                // read inflight=0 (none had generated yet) and stampede. The permit is
+                // held across the whole turn, so ambient concurrency is bounded no matter
+                // when everyone woke. Directed turns bypass entirely — she was named, she
+                // answers now. A yielded ambient turn defers to a later beat with free
+                // capacity (a self-tick re-perceives the room); high_water is pre-advanced
+                // so it can't re-trigger, and the durable transcript loses nothing.
+                let _ambient_permit = if directed {
+                    None
+                } else {
+                    match crate::cognition::resource_admission::try_hold_ambient_turn() {
+                        Some(permit) => Some(permit),
+                        None => {
+                            tracing::info!(
+                                persona = %ctx.identity.agent_name,
+                                "ambient turn yielded — ambient slots busy; the addressed \
+                                 question is served first (#171)"
+                            );
+                            outcome.turns_skipped += 1;
+                            continue;
+                        }
+                    }
+                };
                 // Directed vs ambient part ways HERE — the fix for the live/eval
                 // convergence divergence the ACTING-ORGANISM comments flagged (eval
                 // SPOKE 36/38; the live path single-stepped a DIRECT question, `Acted`
