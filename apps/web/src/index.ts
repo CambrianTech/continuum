@@ -93,6 +93,12 @@ async function main(): Promise<void> {
     latest = chatStateFromEnvelope(envelope);
     widget.state = latest;
   });
+  // #170 live typing: grow a transient bubble per persona as its turn streams in.
+  // Ephemeral — the durable message still arrives via the CHAT_KIND sink above, which
+  // supersedes the bubble. The widget filters to its current room + retires on `done`.
+  state.onStreamDelta((delta) => {
+    widget.applyStreamDelta(delta);
+  });
   state.onClose((reason) => {
     // Never silently freeze: a dropped state feed is a stale-UI signal.
     console.error(`chat state feed closed: ${reason}`);

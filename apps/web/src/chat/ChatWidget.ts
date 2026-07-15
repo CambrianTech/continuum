@@ -18,7 +18,8 @@
 
 import { LitElement, html, css, nothing, type PropertyValues, type TemplateResult } from 'lit';
 import type { ChatState } from '@continuum/chat-view';
-import { chatViewModel } from '@continuum/chat-view';
+import { chatViewModel, type MessageRowVM } from '@continuum/chat-view';
+import type { StreamDelta } from '@continuum/sdk-typescript';
 import { renderChat } from './renderChat';
 import '../render/CosmosBackdrop'; // registers <cosmos-backdrop> for the cosmos universe
 
@@ -33,6 +34,7 @@ export class ChatWidget extends LitElement {
     _draft: { state: true },
     _sending: { state: true },
     _sendError: { state: true },
+    _typing: { state: true },
   };
 
   /** The current chat snapshot; assignment triggers a re-render. `undefined`
@@ -45,6 +47,26 @@ export class ChatWidget extends LitElement {
   private _draft = '';
   private _sending = false;
   private _sendError = '';
+  /** #170 live typing: senderId → accumulated in-progress turn text. Ephemeral —
+   *  the durable message (via `state`) supersedes it; reassigned (not mutated) so
+   *  Lit re-renders. */
+  private _typing = new Map<string, string>();
+
+  /**
+   * Apply one live token from a persona's in-progress turn (#170). Grows a transient
+   * "typing" bubble keyed by sender; `done` retires it. Deltas for other rooms are
+   * ignored. Never touches `state` — the authoritative message still arrives there.
+   */
+  applyStreamDelta(delta: StreamDelta): void {
+    if (!this.state || delta.roomId !== this.state.room_id) return;
+    const next = new Map(this._typing);
+    if (delta.done) {
+      next.delete(delta.senderId);
+    } else {
+      next.set(delta.senderId, (next.get(delta.senderId) ?? '') + delta.token);
+    }
+    this._typing = next;
+  }
 
   override connectedCallback(): void {
     super.connectedCallback();
@@ -996,6 +1018,35 @@ export class ChatWidget extends LitElement {
           },
         })),
       };
+    }
+    // #170 live typing: overlay a transient bubble per persona mid-turn, growing
+    // token-by-token, so she visibly types instead of freezing. Resolve each
+    // sender's name/kind from the roster (or a prior message) — skip if unknown, to
+    // never fabricate an identity. Drop a bubble whose sender just landed the last
+    // durable row, so the authoritative message supersedes cleanly.
+    if (this._typing.size > 0) {
+      const lastSender = vm.messages.at(-1)?.senderId;
+      const typingRows: MessageRowVM[] = [];
+      for (const [senderId, text] of this._typing) {
+        if (senderId === lastSender) continue;
+        const member = vm.members.find((m) => m.id === senderId);
+        const prior = vm.messages.find((m) => m.senderId === senderId);
+        const senderName = member?.name ?? prior?.senderName;
+        const kind = member?.kind ?? prior?.kind;
+        if (senderName === undefined || kind === undefined) continue;
+        typingRows.push({
+          id: `typing:${senderId}`,
+          senderId,
+          senderName,
+          kind,
+          content: `${text}▋`,
+          time: '',
+          runtime: member?.runtime ?? prior?.runtime ?? '',
+        });
+      }
+      if (typingRows.length > 0) {
+        vm = { ...vm, messages: [...vm.messages, ...typingRows] };
+      }
     }
     // Error boundary: a render throw (e.g. the Content registry hitting an
     // unregistered room purpose) must be VISIBLE here, not swallowed into a Lit

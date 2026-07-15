@@ -33,7 +33,13 @@ export { buildCommandUri, buildEventTopic, stampContext } from './transport';
 export { WebSocketTransport } from './WebSocketTransport';
 export type { WebSocketLike, WebSocketCtor } from './WebSocketTransport';
 export { StateConnection } from './StateConnection';
-export type { StateSink, StateSubscription, StateConnectOptions } from './StateConnection';
+export type {
+  StateSink,
+  StateSubscription,
+  StateConnectOptions,
+  StreamDelta,
+  StreamDeltaSink,
+} from './StateConnection';
 export type {
   StateLayer,
   KindRevision,
