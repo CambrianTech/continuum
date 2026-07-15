@@ -12,8 +12,61 @@ use crate::cognition::throughput_lease::{
     ThroughputLease, ThroughputLeaseError, ThroughputLeaseRegistry, ThroughputLeaseRevocationPolicy,
 };
 use serde::{Deserialize, Serialize};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, MutexGuard};
 use ts_rs::TS;
+
+// ── Soft saturation signal (the read-only companion to the hard gate) ──────────
+//
+// Deliberative model calls currently outstanding against the shared serving target.
+// A lock-free process-global gauge: the resource it measures — ONE shared
+// llama-server with `serving_plan::MAX_LANES` decode slots serving the whole fleet
+// via continuous batching — IS process-global, so the gauge granularity matches the
+// resource exactly (no per-caller Arc threading buys any fidelity).
+//
+// This is a SOFT signal, not an allocator: it admits and denies NOTHING. The hard
+// admission decision is `ResourceAdmissionGate` (above); this gauge exists because
+// the live inference path is not yet lease-wired AND a background self-tick — the
+// lowest-priority work in the system — needs a zero-cost read of "is every decode
+// slot busy right now" to decide whether adding an idle deliberation would only
+// deepen the queue that live conversation is already waiting behind. Glass-boxed
+// 2026-07-15: one inbound message woke six minds, each ran a full ~54s deliberation,
+// and the two lanes serialized them into a 250s tail (#139).
+// [[conversational-latency-is-a-misdirection-budget]] [[idle-is-self-directed-free-time]]
+static INFLIGHT_MODEL_CALLS: AtomicUsize = AtomicUsize::new(0);
+
+/// RAII marker: increments the shared in-flight gauge on entry and decrements on
+/// EVERY exit path (Ok, Err, panic-unwind). The deliberation faculty wraps its single
+/// generate call in this so the gauge reflects exactly the model-call window
+/// (lane-queue + prefill + decode) and nothing downstream.
+#[derive(Debug)]
+pub struct InflightModelCall(());
+
+impl InflightModelCall {
+    pub fn enter() -> Self {
+        INFLIGHT_MODEL_CALLS.fetch_add(1, Ordering::AcqRel);
+        Self(())
+    }
+}
+
+impl Drop for InflightModelCall {
+    fn drop(&mut self) {
+        INFLIGHT_MODEL_CALLS.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+/// Deliberative model calls outstanding against the shared serving target right now.
+pub fn inflight_model_calls() -> usize {
+    INFLIGHT_MODEL_CALLS.load(Ordering::Acquire)
+}
+
+/// True when every shared decode slot is busy, so one more call would QUEUE behind
+/// the fleet. Threshold is the serving concurrency (`serving_plan::MAX_LANES`) — the
+/// same constant the planner sizes lanes by, NOT a new magic number. A self-tick
+/// yields on this; message/directed turns are never gated on it (a human/peer waits).
+pub fn shared_model_saturated() -> bool {
+    inflight_model_calls() >= crate::cognition::serving_plan::MAX_LANES as usize
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -215,5 +268,43 @@ fn format_lease_error(err: ThroughputLeaseError) -> String {
         ThroughputLeaseError::ExpiredLease { lease_id } => {
             format!("expired lease_id={lease_id}")
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // what this catches (#139 idle admission): the in-flight gauge counts each
+    // model-call entry, releases on drop, and reads SATURATED exactly at the serving
+    // concurrency (serving_plan::MAX_LANES) — the signal a self-tick yields on so an
+    // idle deliberation never deepens the queue live conversation waits behind. This
+    // is the only test that touches the process-global gauge, so it starts at zero.
+    #[test]
+    fn inflight_gauge_counts_releases_and_saturates_at_serving_concurrency() {
+        let max = crate::cognition::serving_plan::MAX_LANES as usize;
+        assert_eq!(inflight_model_calls(), 0, "gauge starts clean");
+        assert!(!shared_model_saturated(), "idle model is not saturated");
+
+        let mut guards: Vec<InflightModelCall> = Vec::new();
+        for expected in 1..=max {
+            guards.push(InflightModelCall::enter());
+            assert_eq!(inflight_model_calls(), expected);
+        }
+        // Every decode slot busy → one more call would queue behind the fleet.
+        assert!(
+            shared_model_saturated(),
+            "MAX_LANES outstanding must read saturated"
+        );
+
+        guards.pop(); // free a slot
+        assert_eq!(inflight_model_calls(), max - 1);
+        assert!(
+            !shared_model_saturated(),
+            "freeing a slot clears saturation — an idle self-tick may run again"
+        );
+
+        drop(guards);
+        assert_eq!(inflight_model_calls(), 0, "all guards released → baseline");
     }
 }

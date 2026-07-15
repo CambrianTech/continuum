@@ -432,6 +432,24 @@ async fn serve_persona_loop_inner(
                 // reaches here.) Heartbeat slice — the mind gets time with no inbound
                 // activity sets the next beat: if it found something new to work on
                 // (last_burst_fp advanced), stay quick; if it went idle, drift toward rest.
+                //
+                // ── Idle admission under lane pressure (#139) ──────────────────────
+                // A self-tick is the lowest-priority work in the system: the mind
+                // musing over an unchanged world on its own free time. When every shared
+                // decode slot is already busy (glass-boxed 2026-07-15: one inbound
+                // message woke six minds, each ran a full ~54s deliberation, and the two
+                // lanes serialized them into a 250s tail), spending one on an idle
+                // deliberation only deepens the queue that LIVE conversation is waiting
+                // behind. So under saturation this beat YIELDS and drifts toward rest —
+                // the mind keeps its free time for when a lane is actually free. Message
+                // turns are never gated here (the Wake::Msg arm below); a human or peer
+                // is waiting, they always get served immediately.
+                // [[idle-is-self-directed-free-time]]
+                // [[conversational-latency-is-a-misdirection-budget]]
+                if crate::cognition::resource_admission::shared_model_saturated() {
+                    next_beat = (next_beat + next_beat / 2).min(rest_cap);
+                    continue;
+                }
                 let before = last_burst_fp;
                 run_self_cycle(ctx, conversation, &opts, &mut last_burst_fp).await;
                 next_beat = if last_burst_fp != before {

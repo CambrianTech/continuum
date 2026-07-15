@@ -1058,10 +1058,19 @@ impl Faculty for LlmDeliberationFaculty {
         // is large, it's the model/lane (queue+prefill); if small, the time is in
         // cognition-prep BEFORE generation (recall/embeddings/context assembly).
         let gen_start = std::time::Instant::now();
-        let gen_result = if let Some(sink) = ws.token_sink.as_ref() {
-            binding.adapter.generate_stream(request, sink.clone()).await
-        } else {
-            binding.adapter.generate_text(request).await
+        // #139 idle admission: mark this call live in the shared in-flight gauge for
+        // the model-call window ONLY (queue+prefill+decode), so a background self-tick
+        // can read live lane saturation and yield rather than deepen the queue live
+        // conversation waits behind. Scoped to a block so the RAII marker drops the
+        // instant generation returns — downstream capture/parse/act don't hold a slot.
+        // [[conversational-latency-is-a-misdirection-budget]]
+        let gen_result = {
+            let _inflight = crate::cognition::resource_admission::InflightModelCall::enter();
+            if let Some(sink) = ws.token_sink.as_ref() {
+                binding.adapter.generate_stream(request, sink.clone()).await
+            } else {
+                binding.adapter.generate_text(request).await
+            }
         };
         let gen_await_ms = gen_start.elapsed().as_millis() as u64;
         let resp = match gen_result {
