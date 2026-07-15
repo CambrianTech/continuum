@@ -896,11 +896,13 @@ async fn serve_persona_loop_inner(
                         if let crate::ai::adapter::GenerationChunk::Token(t) = chunk {
                             if !t.is_empty() && first {
                                 first = false;
-                                crate::probe!(
-                                    class = "persona.turn.first_token",
+                                // tracing (lands in the server log) so the rail is
+                                // observable without a configured probe sink; #169
+                                // slice 2 replaces this with the room/TTS/avatar delta.
+                                tracing::info!(
                                     persona = %stream_persona,
-                                    ms = stream_started.elapsed().as_millis() as u64,
-                                    "first answer token decoded — streaming latency floor"
+                                    first_token_ms = stream_started.elapsed().as_millis() as u64,
+                                    "persona.turn.first_token — streaming rail live (latency floor)"
                                 );
                             }
                         }
