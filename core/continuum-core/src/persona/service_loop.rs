@@ -118,6 +118,17 @@ pub trait PersonaConversation: Send + Sync {
 
     /// Reply with text to the persona's default room.
     async fn say(&self, text: &str) -> Result<(), String>;
+
+    /// #170: the airc citizen behind this conversation, for OFF-THREAD streaming
+    /// (`publish_stream_chunk`) from a spawned drain task. Returns an OWNED `Arc`
+    /// so the forwarder can hold it `'static`. `None` for scripted / stub
+    /// conversations — they don't stream to a live room; the airc conversation
+    /// returns its runtime handle.
+    fn stream_citizen(
+        &self,
+    ) -> Option<std::sync::Arc<dyn crate::persona::airc_citizen::AircCitizen>> {
+        None
+    }
 }
 
 /// Behavioral knobs for the service loop. Keep small — substrate-
@@ -890,22 +901,48 @@ async fn serve_persona_loop_inner(
                 cycle.set_token_sink(Some(tok_tx));
                 let stream_started = std::time::Instant::now();
                 let stream_persona = ctx.identity.agent_name.clone();
+                // #170: publish each answer token as an EPHEMERAL airc stream chunk
+                // (airc-lib publish_stream_chunk) so subscribers — positron, TTS,
+                // avatar visemes — render progressively; the settled utterance is
+                // still `say`d once below (durable). `None` for non-airc conversations
+                // (tests) → this stays just the first_token probe.
+                let stream_citizen = conversation.stream_citizen();
+                let stream_id = uuid::Uuid::new_v4().to_string();
                 let forwarder = tokio::spawn(async move {
                     let mut first = true;
+                    let mut seq: u64 = 0;
                     while let Some(chunk) = tok_rx.recv().await {
                         if let crate::ai::adapter::GenerationChunk::Token(t) = chunk {
-                            if !t.is_empty() && first {
+                            if t.is_empty() {
+                                continue;
+                            }
+                            if first {
                                 first = false;
-                                // tracing (lands in the server log) so the rail is
-                                // observable without a configured probe sink; #169
-                                // slice 2 replaces this with the room/TTS/avatar delta.
                                 tracing::info!(
                                     persona = %stream_persona,
                                     first_token_ms = stream_started.elapsed().as_millis() as u64,
                                     "persona.turn.first_token — streaming rail live (latency floor)"
                                 );
                             }
+                            if let Some(c) = &stream_citizen {
+                                let _ = c
+                                    .publish_stream_chunk(&airc_lib::StreamChunk::text_token(
+                                        stream_id.clone(),
+                                        seq,
+                                        t,
+                                    ))
+                                    .await;
+                                seq += 1;
+                            }
                         }
+                    }
+                    if let Some(c) = &stream_citizen {
+                        let _ = c
+                            .publish_stream_chunk(&airc_lib::StreamChunk::text_end(
+                                stream_id.clone(),
+                                seq,
+                            ))
+                            .await;
                     }
                 });
                 let (step, turn_metrics) = {
@@ -1769,11 +1806,20 @@ async fn run_self_cycle(
     cycle.set_token_sink(Some(tok_tx));
     let stream_started = std::time::Instant::now();
     let stream_persona = ctx.identity.agent_name.clone();
+    // #170: publish each answer token as an ephemeral airc stream chunk (visible
+    // progressive render for positron/TTS/avatar); the settled utterance is still
+    // `say`d once. Mirrors the message path.
+    let stream_citizen = conversation.stream_citizen();
+    let stream_id = uuid::Uuid::new_v4().to_string();
     let forwarder = tokio::spawn(async move {
         let mut first = true;
+        let mut seq: u64 = 0;
         while let Some(chunk) = tok_rx.recv().await {
             if let crate::ai::adapter::GenerationChunk::Token(t) = chunk {
-                if !t.is_empty() && first {
+                if t.is_empty() {
+                    continue;
+                }
+                if first {
                     first = false;
                     tracing::info!(
                         persona = %stream_persona,
@@ -1781,7 +1827,22 @@ async fn run_self_cycle(
                         "persona.turn.first_token — streaming rail live (self-tick, latency floor)"
                     );
                 }
+                if let Some(c) = &stream_citizen {
+                    let _ = c
+                        .publish_stream_chunk(&airc_lib::StreamChunk::text_token(
+                            stream_id.clone(),
+                            seq,
+                            t,
+                        ))
+                        .await;
+                    seq += 1;
+                }
             }
+        }
+        if let Some(c) = &stream_citizen {
+            let _ = c
+                .publish_stream_chunk(&airc_lib::StreamChunk::text_end(stream_id.clone(), seq))
+                .await;
         }
     });
     let (step, _turn_metrics) = {

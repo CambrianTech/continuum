@@ -234,6 +234,14 @@ impl PersonaConversation for AircPersonaConversation {
             .map(|_event_id| ())
             .map_err(|e| format!("say failed: {e}"))
     }
+
+    /// #170: the airc citizen behind this conversation streams — hand the
+    /// forwarder our runtime handle so it can publish ephemeral token chunks.
+    fn stream_citizen(
+        &self,
+    ) -> Option<std::sync::Arc<dyn crate::persona::airc_citizen::AircCitizen>> {
+        Some(self.runtime.clone())
+    }
 }
 
 /// Project a live airc [`TranscriptEvent`] onto the substrate's

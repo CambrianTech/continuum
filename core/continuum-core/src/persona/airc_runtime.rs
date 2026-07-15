@@ -782,6 +782,14 @@ impl crate::persona::airc_citizen::AircCitizen for PersonaAircRuntime {
     async fn say(&self, text: &str) -> Result<EventId, AircError> {
         self.airc.say(text).await
     }
+
+    /// #170: delegate to airc-lib's ephemeral stream-chunk publish.
+    async fn publish_stream_chunk(
+        &self,
+        chunk: &airc_lib::StreamChunk,
+    ) -> Result<(), AircError> {
+        self.airc.publish_stream_chunk(chunk).await.map(|_| ())
+    }
 }
 
 impl Drop for PersonaAircRuntime {
