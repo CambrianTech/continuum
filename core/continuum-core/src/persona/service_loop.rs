@@ -1759,6 +1759,31 @@ async fn run_self_cycle(
     // then yanked the turn — glass-boxed the same day: Casper's read_file on his
     // own claimed card executed cleanly and the chain died next tick under chat
     // pressure. She keeps her hands until SHE settles (Speak/Pass); no act cap.
+    // #169 STREAMING on the SELF-TICK path too (mirrors the message path ~882):
+    // hand this turn a token sink so the deliberation faculty forwards each decoded
+    // chunk as it generates. Slice 1 stamps time-to-first-token; slice 2 forwards
+    // Token chunks to the room/TTS/avatar. Cleared after the turn (byte-identical
+    // when unused).
+    let (tok_tx, mut tok_rx) =
+        tokio::sync::mpsc::unbounded_channel::<crate::ai::adapter::GenerationChunk>();
+    cycle.set_token_sink(Some(tok_tx));
+    let stream_started = std::time::Instant::now();
+    let stream_persona = ctx.identity.agent_name.clone();
+    let forwarder = tokio::spawn(async move {
+        let mut first = true;
+        while let Some(chunk) = tok_rx.recv().await {
+            if let crate::ai::adapter::GenerationChunk::Token(t) = chunk {
+                if !t.is_empty() && first {
+                    first = false;
+                    tracing::info!(
+                        persona = %stream_persona,
+                        first_token_ms = stream_started.elapsed().as_millis() as u64,
+                        "persona.turn.first_token — streaming rail live (self-tick, latency floor)"
+                    );
+                }
+            }
+        }
+    });
     let (step, _turn_metrics) = {
         let outcome = crate::cognition::act_observe::drive_to_settle(
             &cycle,
@@ -1770,6 +1795,8 @@ async fn run_self_cycle(
         .await;
         crate::cognition::act_observe::SettleStep::from_settled(outcome)
     };
+    cycle.set_token_sink(None);
+    let _ = forwarder.await;
     match step {
         crate::cognition::act_observe::SettleStep::Spoke(text) => {
             // Never broadcast a raw tool-call envelope to the room (same guard the
