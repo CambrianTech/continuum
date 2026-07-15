@@ -1109,9 +1109,37 @@ impl LlamaServerControl for LlamaServerProcess {
         for adapter in &target.adapters {
             cmd.arg("--lora").arg(&adapter.path);
         }
+        // Capture the server's stderr to a per-port log file (#175). llama.cpp prints
+        // its load banner AND — critically — the underlying ggml/Metal fault behind a
+        // `{"code":500,"message":"Compute error"}` HTTP reply to stderr. The prior
+        // `Stdio::null()` threw that root cause away, so a compute-error storm was
+        // undiagnosable from outside the process (glass-boxed 2026-07-15: every request
+        // 500'd in ~7ms and the WHY went to /dev/null). Fail-soft: if the log can't be
+        // opened, fall back to null and say so — an unreadable log must never block
+        // serving (same posture as the pidfile below).
+        // [[never-blind-feedback-driven-iteration]] [[self-test-via-command-feedback-surface-never-blind]]
+        let stderr_stdio = dirs::home_dir()
+            .map(|h| h.join(".continuum").join("logs"))
+            .and_then(|dir| {
+                std::fs::create_dir_all(&dir).ok()?;
+                std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(dir.join(format!("llama-server-{}.log", port)))
+                    .ok()
+            })
+            .map(Stdio::from)
+            .unwrap_or_else(|| {
+                tracing::warn!(
+                    probe_class = "serving.llama.stderr_unlogged",
+                    port = port,
+                    "could not open llama-server stderr log — falling back to null (#175)"
+                );
+                Stdio::null()
+            });
         let child = cmd
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
+            .stderr(stderr_stdio)
             .spawn()
             .map_err(|e| LlamaServerError::Spawn(format!("{}: {e}", self.bin)))?;
 
