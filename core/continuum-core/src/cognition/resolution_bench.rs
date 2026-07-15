@@ -230,14 +230,36 @@ impl ResolutionBench {
             let ladder = ComputeDepthLadder::new(0.0, steps);
 
             let t0 = std::time::Instant::now();
-            let resolved = resolve(Will::bootstrap(), &drafter, &verifier, &ladder)
-                .await
-                .map_err(|e| {
-                    CommandError::Internal(format!(
+            // Bound the whole per-task escalation. A single draft against a slow or
+            // wedged lane (a mid-run serving re-home, a degenerate long generation)
+            // must never hang forever — while the fleet quiesce lease is held, a hung
+            // draft would pin every citizen silent (glass-boxed 2026-07-15: a hard-task
+            // draft hung ~20min, suppressing 4 personas). On timeout we fail LOUD and
+            // return, dropping the lease (Drop) so the fleet is restored immediately.
+            // [[fallbacks-are-illegal-fail-loud]] [[first-class-citizens-even-during-benchmarks]]
+            const PER_TASK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(240);
+            let resolved = match tokio::time::timeout(
+                PER_TASK_TIMEOUT,
+                resolve(Will::bootstrap(), &drafter, &verifier, &ladder),
+            )
+            .await
+            {
+                Ok(Ok(r)) => r,
+                Ok(Err(e)) => {
+                    return Err(CommandError::Internal(format!(
                         "resolution-bench escalator failed for '{}': {e}",
                         task.id
-                    ))
-                })?;
+                    )))
+                }
+                Err(_) => {
+                    return Err(CommandError::Internal(format!(
+                        "resolution-bench '{}' exceeded {}s — the draft lane is too slow or wedged; \
+                         releasing the fleet quiesce lease",
+                        task.id,
+                        PER_TASK_TIMEOUT.as_secs()
+                    )))
+                }
+            };
             let latency_ms = t0.elapsed().as_millis() as u64;
 
             let outcome = match resolved {
