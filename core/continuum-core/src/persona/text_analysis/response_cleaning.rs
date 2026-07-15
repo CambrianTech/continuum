@@ -47,6 +47,33 @@ static PATTERN_THINKING_CONTENT: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?si)<think(?:ing)?>(.*?)</think(?:ing)?>").expect("thinking content regex")
 });
 
+/// Our OWN internal perception-frame section labels. Some models, asked to reflect,
+/// emit this deliberation scaffold as VISIBLE text instead of a clean turn — glass-boxed
+/// live 2026-07-14: a persona posted `[working-memory] … [analysis] … [what I propose] …
+/// [example] "…"` straight into the room. That's #158 reserved-vocabulary mimicry: she
+/// mirrored the framing we feed her back as speech. This is not a turn; it's leaked
+/// internals.
+const SCAFFOLD_LABELS: [&str; 8] = [
+    "[working-memory]",
+    "[your recent messages]",
+    "[recent messages]",
+    "[analysis]",
+    "[what i propose]",
+    "[what changed]",
+    "[perception]",
+    "[your recent acts]",
+];
+
+/// Is this response a leaked deliberation scaffold rather than a turn? Trigger only on
+/// TWO+ distinct internal labels — one alone ("my [analysis] shows…") can be legitimate
+/// prose, but two+ of our own frame labels together is unambiguous. Conservative by
+/// design: a false negative just posts a slightly odd turn; a false positive would eat a
+/// real message, so we demand the stronger signal.
+pub(crate) fn is_leaked_deliberation_scaffold(text: &str) -> bool {
+    let lower = text.to_lowercase();
+    SCAFFOLD_LABELS.iter().filter(|l| lower.contains(*l)).count() >= 2
+}
+
 /// Clean an AI response by stripping thinking blocks and unwanted prefixes.
 ///
 /// Returns a `CleanResult` with the cleaned text and any extracted thinking content.
@@ -76,6 +103,19 @@ pub fn clean_response(response: &str) -> CleanResult {
 
     let after_thinking = PATTERN_THINKING.replace_all(response, "");
     let mut cleaned = after_thinking.trim();
+
+    // Phase 0.5: a LEAKED deliberation scaffold is not a turn — suppress it. Preserve the
+    // whole block as thinking (hippocampus still learns from the reasoning) and return
+    // empty text so the caller posts nothing; she re-turns cleanly next tick. Better a
+    // silent beat than her internal perception frame in the room. (#158)
+    if is_leaked_deliberation_scaffold(cleaned) {
+        let mut leaked = thinking_parts;
+        leaked.push(cleaned.to_string());
+        return CleanResult {
+            text: String::new(),
+            thinking: Some(leaked.join("\n\n")),
+        };
+    }
 
     // Phase 1-4: Apply prefix patterns in priority order
     if let Some(m) = PATTERN_TIMESTAMP_NAME.find(cleaned) {
@@ -272,5 +312,42 @@ mod tests {
         let result = clean_response(input);
         assert_eq!(result.text, "Response here.");
         assert!(result.thinking.is_none()); // Whitespace-only thinking is not stored
+    }
+
+    /// what this catches: a persona's INTERNAL deliberation scaffold leaking into the
+    /// room as a turn (glass-boxed live 2026-07-14 — Anwen posted her whole
+    /// [working-memory]/[analysis]/[what I propose]/[example] frame). Two+ of our own
+    /// frame labels ⇒ suppress: empty posted text, whole block preserved as thinking so
+    /// hippocampus still learns. Regression for #158.
+    #[test]
+    fn leaked_deliberation_scaffold_is_suppressed_not_posted() {
+        let leaked = "[working-memory]\nYour recent acts and the room's state: ...\n\
+            [your recent messages]\n1. \"...\"\n2. \"...\"\n[analysis]\nYou've repeated \
+            yourself.\n[what I propose]\nAcknowledge and pivot.\n[example]\n\"Let's look at \
+            models.rs next.\"";
+        let out = clean_response(leaked);
+        assert_eq!(out.text, "", "leaked scaffold must NOT post");
+        assert!(
+            out.thinking.as_deref().unwrap_or("").contains("what I propose"),
+            "the leaked frame is preserved as thinking for memory"
+        );
+    }
+
+    /// what this catches: over-stripping a LEGITIMATE turn that merely mentions one label
+    /// in prose. One label is not a leak; only 2+ of our frame labels together is.
+    #[test]
+    fn single_label_in_prose_is_kept() {
+        let legit = "My [analysis] of the code shows a race condition in the lock path.";
+        let out = clean_response(legit);
+        assert_eq!(
+            out.text, legit,
+            "a single incidental label must not trigger suppression"
+        );
+    }
+
+    #[test]
+    fn normal_turn_untouched_by_scaffold_gate() {
+        let msg = "Sure — I'll open models.rs and summarize how providers are wired.";
+        assert_eq!(clean_response(msg).text, msg);
     }
 }
