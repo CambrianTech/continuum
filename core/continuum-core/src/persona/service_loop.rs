@@ -896,55 +896,15 @@ async fn serve_persona_loop_inner(
                 // stream — the perceived-latency floor for video/voice/avatar; slice 2
                 // forwards Token chunks to the room/TTS/avatar as `persona.turn.delta`.
                 // Cleared right after the turn, so a non-streamed path is byte-identical.
-                let (tok_tx, mut tok_rx) =
+                let (tok_tx, tok_rx) =
                     tokio::sync::mpsc::unbounded_channel::<crate::ai::adapter::GenerationChunk>();
                 cycle.set_token_sink(Some(tok_tx));
-                let stream_started = std::time::Instant::now();
-                let stream_persona = ctx.identity.agent_name.clone();
-                // #170: publish each answer token as an EPHEMERAL airc stream chunk
-                // (airc-lib publish_stream_chunk) so subscribers — positron, TTS,
-                // avatar visemes — render progressively; the settled utterance is
-                // still `say`d once below (durable). `None` for non-airc conversations
-                // (tests) → this stays just the first_token probe.
-                let stream_citizen = conversation.stream_citizen();
-                let stream_id = uuid::Uuid::new_v4().to_string();
-                let forwarder = tokio::spawn(async move {
-                    let mut first = true;
-                    let mut seq: u64 = 0;
-                    while let Some(chunk) = tok_rx.recv().await {
-                        if let crate::ai::adapter::GenerationChunk::Token(t) = chunk {
-                            if t.is_empty() {
-                                continue;
-                            }
-                            if first {
-                                first = false;
-                                tracing::info!(
-                                    persona = %stream_persona,
-                                    first_token_ms = stream_started.elapsed().as_millis() as u64,
-                                    "persona.turn.first_token — streaming rail live (latency floor)"
-                                );
-                            }
-                            if let Some(c) = &stream_citizen {
-                                let _ = c
-                                    .publish_stream_chunk(&airc_lib::StreamChunk::text_token(
-                                        stream_id.clone(),
-                                        seq,
-                                        t,
-                                    ))
-                                    .await;
-                                seq += 1;
-                            }
-                        }
-                    }
-                    if let Some(c) = &stream_citizen {
-                        let _ = c
-                            .publish_stream_chunk(&airc_lib::StreamChunk::text_end(
-                                stream_id.clone(),
-                                seq,
-                            ))
-                            .await;
-                    }
-                });
+                // #169/#170: drain + publish this turn's streamed answer, coalesced.
+                let forwarder = spawn_token_forwarder(
+                    tok_rx,
+                    conversation.stream_citizen(),
+                    ctx.identity.agent_name.clone(),
+                );
                 let (step, turn_metrics) = {
                     let outcome = crate::cognition::act_observe::drive_to_settle(
                         &cycle,
@@ -1642,6 +1602,80 @@ fn burst_fingerprint(
 /// follows through on its OWN open intention (it said "I'll search" → next tick its
 /// own post is in the burst → it acts) WITHOUT anyone parsing its words: the mind,
 /// always getting time, judges its own state. `Pass` = woke, nothing to do, sleep.
+/// #169/#170: drain a turn's streaming token channel off-thread and publish the
+/// answer to the room as ephemeral airc stream chunks (progressive render for
+/// positron/TTS/avatar). ONE place for both the message and self-tick turn paths.
+///
+/// COALESCED (#170): tokens are batched and flushed at most every `FLUSH_EVERY`
+/// (~50ms) as ONE chunk, not one-per-token — a room of N personas at per-token
+/// rate is a wire storm (the airc Monitor hit "output rate too high"), and
+/// sub-50ms token granularity is imperceptible to a viewer anyway. The buffered
+/// remainder + a `text_end` marker flush when the turn closes. Also stamps
+/// `persona.turn.first_token` (the streaming latency floor) on the first token.
+/// `citizen` is `None` for non-airc conversations (tests) → then this is just the
+/// first-token probe, no publishing.
+fn spawn_token_forwarder(
+    mut rx: tokio::sync::mpsc::UnboundedReceiver<crate::ai::adapter::GenerationChunk>,
+    citizen: Option<std::sync::Arc<dyn crate::persona::airc_citizen::AircCitizen>>,
+    persona: String,
+) -> tokio::task::JoinHandle<()> {
+    const FLUSH_EVERY: std::time::Duration = std::time::Duration::from_millis(50);
+    tokio::spawn(async move {
+        let started = std::time::Instant::now();
+        let stream_id = uuid::Uuid::new_v4().to_string();
+        let mut first = true;
+        let mut seq: u64 = 0;
+        let mut buf = String::new();
+        let mut last_flush = std::time::Instant::now();
+        while let Some(chunk) = rx.recv().await {
+            if let crate::ai::adapter::GenerationChunk::Token(t) = chunk {
+                if t.is_empty() {
+                    continue;
+                }
+                if first {
+                    first = false;
+                    tracing::info!(
+                        persona = %persona,
+                        first_token_ms = started.elapsed().as_millis() as u64,
+                        "persona.turn.first_token — streaming rail live (latency floor)"
+                    );
+                }
+                buf.push_str(&t);
+                if last_flush.elapsed() >= FLUSH_EVERY {
+                    if let Some(c) = &citizen {
+                        let _ = c
+                            .publish_stream_chunk(&airc_lib::StreamChunk::text_token(
+                                stream_id.clone(),
+                                seq,
+                                std::mem::take(&mut buf),
+                            ))
+                            .await;
+                        seq += 1;
+                    } else {
+                        buf.clear();
+                    }
+                    last_flush = std::time::Instant::now();
+                }
+            }
+        }
+        if let Some(c) = &citizen {
+            if !buf.is_empty() {
+                let _ = c
+                    .publish_stream_chunk(&airc_lib::StreamChunk::text_token(
+                        stream_id.clone(),
+                        seq,
+                        buf,
+                    ))
+                    .await;
+                seq += 1;
+            }
+            let _ = c
+                .publish_stream_chunk(&airc_lib::StreamChunk::text_end(stream_id, seq))
+                .await;
+        }
+    })
+}
+
 async fn run_self_cycle(
     ctx: &HostedPersona,
     conversation: &dyn PersonaConversation,
@@ -1801,50 +1835,12 @@ async fn run_self_cycle(
     // chunk as it generates. Slice 1 stamps time-to-first-token; slice 2 forwards
     // Token chunks to the room/TTS/avatar. Cleared after the turn (byte-identical
     // when unused).
-    let (tok_tx, mut tok_rx) =
+    let (tok_tx, tok_rx) =
         tokio::sync::mpsc::unbounded_channel::<crate::ai::adapter::GenerationChunk>();
     cycle.set_token_sink(Some(tok_tx));
-    let stream_started = std::time::Instant::now();
-    let stream_persona = ctx.identity.agent_name.clone();
-    // #170: publish each answer token as an ephemeral airc stream chunk (visible
-    // progressive render for positron/TTS/avatar); the settled utterance is still
-    // `say`d once. Mirrors the message path.
-    let stream_citizen = conversation.stream_citizen();
-    let stream_id = uuid::Uuid::new_v4().to_string();
-    let forwarder = tokio::spawn(async move {
-        let mut first = true;
-        let mut seq: u64 = 0;
-        while let Some(chunk) = tok_rx.recv().await {
-            if let crate::ai::adapter::GenerationChunk::Token(t) = chunk {
-                if t.is_empty() {
-                    continue;
-                }
-                if first {
-                    first = false;
-                    tracing::info!(
-                        persona = %stream_persona,
-                        first_token_ms = stream_started.elapsed().as_millis() as u64,
-                        "persona.turn.first_token — streaming rail live (self-tick, latency floor)"
-                    );
-                }
-                if let Some(c) = &stream_citizen {
-                    let _ = c
-                        .publish_stream_chunk(&airc_lib::StreamChunk::text_token(
-                            stream_id.clone(),
-                            seq,
-                            t,
-                        ))
-                        .await;
-                    seq += 1;
-                }
-            }
-        }
-        if let Some(c) = &stream_citizen {
-            let _ = c
-                .publish_stream_chunk(&airc_lib::StreamChunk::text_end(stream_id.clone(), seq))
-                .await;
-        }
-    });
+    // #169/#170: drain + publish this self-tick turn's streamed answer, coalesced.
+    let forwarder =
+        spawn_token_forwarder(tok_rx, conversation.stream_citizen(), ctx.identity.agent_name.clone());
     let (step, _turn_metrics) = {
         let outcome = crate::cognition::act_observe::drive_to_settle(
             &cycle,
