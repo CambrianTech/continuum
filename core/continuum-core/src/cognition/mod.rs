@@ -65,6 +65,7 @@ pub mod recall_faculty;
 pub mod recall_ranker;
 pub mod tool_dialect;
 pub mod resolution;
+pub mod resolution_bench;
 pub mod resolution_compute;
 pub mod resource_admission;
 pub mod response_orchestrator;
