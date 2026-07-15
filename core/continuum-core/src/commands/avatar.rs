@@ -5,6 +5,7 @@
 //! auto-refresh); this command orchestrates the on-disk cache check and runs the
 //! blocking capture off the async thread.
 
+use crate::live::video::bevy_renderer::{Emotion, Gesture};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
@@ -30,6 +31,17 @@ pub struct AvatarSnapshotParams {
     /// Re-render even if a snapshot already exists on disk.
     #[serde(default)]
     pub force: bool,
+    /// Glass box (#172): render a facial EXPRESSION instead of the idle neutral face
+    /// — `neutral | happy | sad | angry | surprised | relaxed`. Cached under a
+    /// state-suffixed filename so each expression is independently inspectable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub expression: Option<Emotion>,
+    /// Glass box (#172): render an upper-body POSE/gesture — `none | wave | think |
+    /// nod | shrug | point | open_hands`. Fires alongside the expression (arms vs face).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub pose: Option<Gesture>,
 }
 
 /// Result of `avatar/snapshot`.
@@ -61,6 +73,8 @@ crate::action_command! {
         let identity = p.identity;
         let width = p.width.unwrap_or(480);
         let height = p.height.unwrap_or(480);
+        let expression = p.expression;
+        let pose = p.pose;
 
         let avatar_dir = dirs::home_dir()
             .ok_or_else(|| {
@@ -71,18 +85,31 @@ crate::action_command! {
             .join(".continuum")
             .join("avatars");
 
-        let png_path = avatar_dir.join(format!("{identity}.png"));
+        // State-suffixed filename so an expression/pose caches independently of the
+        // neutral profile (and each other): `<identity>[-<expr>][-<pose>].png`.
+        let mut stem = identity.clone();
+        if let Some(e) = expression {
+            stem.push('-');
+            stem.push_str(&format!("{e:?}").to_lowercase());
+        }
+        if let Some(g) = pose {
+            stem.push('-');
+            stem.push_str(&format!("{g:?}").to_lowercase());
+        }
+
+        let png_path = avatar_dir.join(format!("{stem}.png"));
         if png_path.exists() && !p.force {
             return Ok(AvatarSnapshotResult {
-                path: format!("/avatars/{identity}.png"),
+                path: format!("/avatars/{stem}.png"),
                 cached: true,
             });
         }
 
         // Bevy slot allocation + frame capture is blocking — off the async thread.
+        let stem_for_task = stem.clone();
         let relative_path = tokio::task::spawn_blocking(move || {
             crate::modules::avatar::AvatarModule::capture_snapshot(
-                &identity, width, height, &avatar_dir,
+                &identity, width, height, &avatar_dir, expression, pose, &stem_for_task,
             )
         })
         .await

@@ -39,7 +39,12 @@ pub struct SpeechAnimationClip {
 
 /// Emotional expression state for avatar facial animation.
 /// Maps to VRM expression blend shape presets. Neutral = no expression active.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Default,
+    serde::Serialize, serde::Deserialize, ts_rs::TS, schemars::JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+#[ts(export, export_to = "../../../protocol/typescript/avatar/Emotion.ts")]
 pub enum Emotion {
     #[default]
     Neutral,
@@ -53,7 +58,12 @@ pub enum Emotion {
 /// Body gesture for avatar upper-body animation.
 /// Driven by speech content analysis — gestures fire alongside emotions
 /// since they animate different body parts (arms vs face).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Default,
+    serde::Serialize, serde::Deserialize, ts_rs::TS, schemars::JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+#[ts(export, export_to = "../../../protocol/typescript/avatar/Gesture.ts")]
 pub enum Gesture {
     #[default]
     None,
