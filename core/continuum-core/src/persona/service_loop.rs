@@ -877,6 +877,34 @@ async fn serve_persona_loop_inner(
                 // store (#89); this is the addressing half, unblocked today.
                 let directed = ctx.identity.persona_identity().mentions(&msg.text);
                 let framing = crate::cognition::workspace::TurnFraming::message(directed);
+
+                // ── Ambient-yield under lane saturation (#171 / #139) ───────────────
+                // The fan-out killer: a room burst wakes N peers, and each spends a full
+                // ~54s deliberation on the shared 2 lanes just to decide "not for me" —
+                // so the ONE directed question everyone's waiting on sits behind minutes
+                // of ambient chatter (glass-boxed: first-token up to 28 min). Ambient
+                // participation is the DEFAULT and stays that way — but it is the
+                // LOWEST-priority room work. So when every shared decode slot is busy,
+                // a NON-directed turn YIELDS: she participates ambiently when there's
+                // capacity (a later beat, lanes free — a self-tick re-perceives the room
+                // incl. this line), never at the cost of the addressed question. A
+                // DIRECTED turn (she was named) NEVER yields — she answers now.
+                //
+                // This is resource PRIORITY, the same admission doctrine as the idle
+                // self-tick, NOT a `will_respond` gate: the substrate never decides her
+                // output; it only declines to spend a saturated lane on unaddressed
+                // chatter. `high_water` is already advanced above, so a yielded message
+                // can't re-trigger. [[idle-is-self-directed-free-time]]
+                // [[never-thrash-sticky-hysteresis-on-every-lane]]
+                // [[conversational-latency-is-a-misdirection-budget]]
+                if !directed && crate::cognition::resource_admission::shared_model_saturated() {
+                    tracing::debug!(
+                        persona = %ctx.identity.agent_name,
+                        "ambient turn yielded under lane saturation — deferring to free capacity"
+                    );
+                    outcome.turns_skipped += 1;
+                    continue;
+                }
                 // Directed vs ambient part ways HERE — the fix for the live/eval
                 // convergence divergence the ACTING-ORGANISM comments flagged (eval
                 // SPOKE 36/38; the live path single-stepped a DIRECT question, `Acted`
