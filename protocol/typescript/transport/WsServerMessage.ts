@@ -11,4 +11,4 @@ import type { AircCommandResponse } from "./AircCommandResponse";
  * is a `serde_json::Value` (only `PartialEq`). `PartialEq` is what the tests
  * and any dedup need; `Eq` was never load-bearing here.
  */
-export type WsServerMessage = { "type": "response", id: number, response: AircCommandResponse, } | { "type": "state" } & StateEnvelope;
+export type WsServerMessage = { "type": "response", id: number, response: AircCommandResponse, } | { "type": "state" } & StateEnvelope | { "type": "stream_delta", room_id: string, sender_id: string, stream_id: string, seq: number, token: string, done: boolean, };
