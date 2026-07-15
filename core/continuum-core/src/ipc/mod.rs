@@ -116,6 +116,7 @@ pub mod positron_source;
 pub mod positron_wall_source;
 pub mod protocol;
 pub mod room_purpose;
+pub mod stream_rail;
 pub mod vitals_emitter;
 pub mod ws;
 

@@ -232,6 +232,40 @@ async fn handle_ws_connection(
         }
     });
 
+    // #170: live token rail. Subscribe this connection to the ephemeral persona-turn
+    // token stream and push each token as a `StreamDelta` frame, alongside (never
+    // replacing) the durable positron `State` path above — so a persona visibly types
+    // in the browser. Loops on a process-static broadcast that never closes, so it is
+    // ABORTED at teardown (below), not drained.
+    let stream_tx = tx.clone();
+    let stream_task = tokio::spawn(async move {
+        let mut rail = crate::ipc::stream_rail::subscribe();
+        loop {
+            match rail.recv().await {
+                Ok(d) => {
+                    let frame = WsServerMessage::stream_delta(
+                        d.room_id, d.sender_id, d.stream_id, d.seq, d.token, d.done,
+                    );
+                    match serde_json::to_string(&frame) {
+                        Ok(json) => {
+                            if stream_tx.send(Message::Text(json.into())).await.is_err() {
+                                break;
+                            }
+                        }
+                        Err(e) => {
+                            crate::log_error!("ipc", "ws", "failed to serialize stream delta: {}", e)
+                        }
+                    }
+                }
+                // This client lagged past the buffer — it skipped some tokens. Cosmetic
+                // (the durable say() row is authoritative); keep streaming the rest.
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                // The static rail sender never drops; treat a Closed as end-of-task.
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+            }
+        }
+    });
+
     while let Some(frame) = ws_source.next().await {
         match frame {
             Ok(Message::Text(text)) => {
@@ -312,6 +346,11 @@ async fn handle_ws_connection(
     // drains and exits. Then await all three tasks so no forwarder or
     // channel outlives the connection.
     drop(session_in_tx);
+    // #170: the stream task loops on the process-static rail (never closes) and holds
+    // a `tx` clone — abort + await it FIRST so that clone drops, else the sender task
+    // never sees all senders gone and teardown hangs.
+    stream_task.abort();
+    let _ = stream_task.await;
     drop(tx);
     let _ = session_task.await;
     let _ = drain_task.await;

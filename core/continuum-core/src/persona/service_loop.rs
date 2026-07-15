@@ -922,6 +922,9 @@ async fn serve_persona_loop_inner(
                     tok_rx,
                     conversation.stream_citizen(),
                     ctx.identity.agent_name.clone(),
+                    // #170: a room turn — tee tokens to the browser rail so she types live.
+                    Some(ctx.identity.default_room.to_string()),
+                    Some(ctx.identity.peer_id.to_string()),
                 );
                 let (step, turn_metrics) = {
                     let outcome = crate::cognition::act_observe::drive_to_settle(
@@ -1636,6 +1639,12 @@ fn spawn_token_forwarder(
     mut rx: tokio::sync::mpsc::UnboundedReceiver<crate::ai::adapter::GenerationChunk>,
     citizen: Option<std::sync::Arc<dyn crate::persona::airc_citizen::AircCitizen>>,
     persona: String,
+    // #170: room + sender for the local WS token rail. Some on a room turn (tee to the
+    // browser so a persona visibly types); None on an idle self-tick (nothing to show
+    // — an idle mind isn't addressing anyone). Correlate the client typing bubble by
+    // (room_id, sender_id) — the per-turn `stream_id` is NOT the final message id.
+    room_id: Option<String>,
+    sender_id: Option<String>,
 ) -> tokio::task::JoinHandle<()> {
     // 250ms: a typing indicator does NOT need per-token frames (the durable `say`
     // is the authoritative text) — batching to ~4 frames/sec keeps the render smooth
@@ -1649,6 +1658,20 @@ fn spawn_token_forwarder(
         let mut seq: u64 = 0;
         let mut buf = String::new();
         let mut last_flush = std::time::Instant::now();
+        // Tee one flushed chunk onto the local WS rail (#170) — no-op unless this is a
+        // room turn (room+sender Some) AND a browser is subscribed.
+        let tee = |seq: u64, token: String, done: bool| {
+            if let (Some(room), Some(sender)) = (&room_id, &sender_id) {
+                crate::ipc::stream_rail::publish(crate::ipc::stream_rail::StreamDelta {
+                    room_id: room.clone(),
+                    sender_id: sender.clone(),
+                    stream_id: stream_id.clone(),
+                    seq,
+                    token,
+                    done,
+                });
+            }
+        };
         while let Some(chunk) = rx.recv().await {
             if let crate::ai::adapter::GenerationChunk::Token(t) = chunk {
                 if t.is_empty() {
@@ -1663,38 +1686,45 @@ fn spawn_token_forwarder(
                     );
                 }
                 buf.push_str(&t);
-                if last_flush.elapsed() >= FLUSH_EVERY {
+                if last_flush.elapsed() >= FLUSH_EVERY && !buf.is_empty() {
+                    let flushed = std::mem::take(&mut buf);
                     if let Some(c) = &citizen {
                         let _ = c
                             .publish_stream_chunk(&airc_lib::StreamChunk::text_token(
                                 stream_id.clone(),
                                 seq,
-                                std::mem::take(&mut buf),
+                                flushed.clone(),
                             ))
                             .await;
-                        seq += 1;
-                    } else {
-                        buf.clear();
                     }
+                    tee(seq, flushed, false);
+                    seq += 1;
                     last_flush = std::time::Instant::now();
                 }
             }
         }
-        if let Some(c) = &citizen {
-            if !buf.is_empty() {
+        if !buf.is_empty() {
+            let flushed = std::mem::take(&mut buf);
+            if let Some(c) = &citizen {
                 let _ = c
                     .publish_stream_chunk(&airc_lib::StreamChunk::text_token(
                         stream_id.clone(),
                         seq,
-                        buf,
+                        flushed.clone(),
                     ))
                     .await;
-                seq += 1;
             }
+            tee(seq, flushed, false);
+            seq += 1;
+        }
+        if let Some(c) = &citizen {
             let _ = c
-                .publish_stream_chunk(&airc_lib::StreamChunk::text_end(stream_id, seq))
+                .publish_stream_chunk(&airc_lib::StreamChunk::text_end(stream_id.clone(), seq))
                 .await;
         }
+        // Final marker to the browser rail — retire the typing bubble even if the
+        // durable row is slow to arrive.
+        tee(seq, String::new(), true);
     })
 }
 
@@ -1865,7 +1895,9 @@ async fn run_self_cycle(
     // was most of the flood that killed subscribers). `None` citizen → first_token
     // probe still fires (observability), but no chunks publish. The durable utterance
     // still `say`s once. Only message-driven turns (real conversation) stream live.
-    let forwarder = spawn_token_forwarder(tok_rx, None, ctx.identity.agent_name.clone());
+    // Idle self-tick: no citizen AND no rail tee (room/sender None) — an idle mind
+    // musing isn't addressing anyone, so nothing streams to the browser (#170).
+    let forwarder = spawn_token_forwarder(tok_rx, None, ctx.identity.agent_name.clone(), None, None);
     let (step, _turn_metrics) = {
         let outcome = crate::cognition::act_observe::drive_to_settle(
             &cycle,
