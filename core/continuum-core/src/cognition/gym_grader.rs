@@ -281,9 +281,76 @@ fn trunc_stderr(stderr: &[u8]) -> String {
     String::from_utf8_lossy(stderr).trim().chars().take(180).collect()
 }
 
+/// [`Verifier`](crate::cognition::resolution::Verifier) over the real code grader
+/// ([`test_grade`]) — **outlier A** of the will-driven resolution spine
+/// ([`crate::cognition::resolution`]). The draft is the persona's spoken answer;
+/// verification compiles + runs it against the task's test harness. The compiler +
+/// tests ARE the necessity detector (WILL-DRIVEN-RESOLUTION.md §2): a PASS ships, a
+/// FAIL carries the real compiler/panic output as the escalation reason so a climb
+/// re-drafts INFORMED by why the cheaper resolution fell short.
+///
+/// This is what makes "a pass with the higher model for code" fall out of the
+/// escalation loop automatically AND guarantees the benchmark cannot regress —
+/// failure is what summons the smarts. Rust-only today (the grader's constraint;
+/// any other `lang` fails loud, never a silent pass).
+pub struct CodeVerifier {
+    lang: String,
+    test: String,
+}
+
+impl CodeVerifier {
+    /// Verify a draft against a task's test harness. `test` is the assertion body the
+    /// grader wraps in `fn main()` — the same contract [`test_grade`] takes.
+    pub fn new(lang: impl Into<String>, test: impl Into<String>) -> Self {
+        Self {
+            lang: lang.into(),
+            test: test.into(),
+        }
+    }
+}
+
+impl crate::cognition::resolution::Verifier for CodeVerifier {
+    type Draft = String;
+    async fn verify(&self, draft: &String) -> crate::cognition::resolution::Verdict {
+        let (passed, detail) = test_grade(draft, &self.lang, &self.test).await;
+        if passed {
+            crate::cognition::resolution::Verdict::pass(detail)
+        } else {
+            crate::cognition::resolution::Verdict::fail(detail)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches (#168): CodeVerifier bridges the REAL rustc grader to the
+    // resolution spine's Verdict — a correct draft verifies PASS, a wrong draft
+    // verifies FAIL with the real compiler/assert output as the escalation reason.
+    // This is outlier A of the will-driven resolution loop proven on real ground:
+    // the objective verifier that lets "failure summons the smarts" hold.
+    #[tokio::test]
+    async fn code_verifier_passes_correct_draft_fails_wrong_one() {
+        use crate::cognition::resolution::Verifier;
+        let v = CodeVerifier::new("rust", "assert_eq!(add(2, 3), 5);");
+
+        let good = "```rust\nfn add(a: i32, b: i32) -> i32 { a + b }\n```".to_string();
+        let good_verdict = v.verify(&good).await;
+        assert!(
+            good_verdict.passed,
+            "correct code must PASS, got: {}",
+            good_verdict.detail
+        );
+
+        let bad = "```rust\nfn add(a: i32, b: i32) -> i32 { a - b }\n```".to_string();
+        let bad_verdict = v.verify(&bad).await;
+        assert!(!bad_verdict.passed, "wrong code must FAIL to trigger escalation");
+        assert!(
+            !bad_verdict.detail.is_empty(),
+            "a failure must carry a reason to escalate on"
+        );
+    }
 
     // what this catches: the first fenced block is extracted and the ```lang tag
     // line is stripped, so a model that wraps its answer in ```rust … ``` is
