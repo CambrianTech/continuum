@@ -1032,6 +1032,18 @@ impl LlamaServerControl for LlamaServerProcess {
             // present it we reuse (correct, fast) — no fallback, no behavior change.
             .arg("--cache-reuse")
             .arg("256")
+            // PREFILL THROUGHPUT (#139). Live personas are prefill-bound: a real turn
+            // re-prefills ~4k tokens of fresh RAG context at ~109 tok/s → 30–110s turns
+            // (decode is tiny and fast; the mind is NOT slow, the re-read is). The
+            // physical micro-batch (`--ubatch-size`, llama.cpp default 512) is how many
+            // prompt tokens Metal processes per compute pass — bigger batch = more
+            // parallel prefill = higher tok/s, traded against a larger per-slot compute
+            // buffer. 1024 doubles prefill parallelism; the compute-buffer growth is the
+            // same axis that OOMs (kIOGPUCommandBufferCallbackErrorOutOfMemory) so it is
+            // sized WITH the 2-lane headroom, not blindly. Measured knob: watch prefill
+            // tok/s in the captures and back off if the lane 500s "Compute error".
+            .arg("--ubatch-size")
+            .arg("1024")
             // Overflow must FAIL, never silently amputate. With context shift on
             // (the llama.cpp default), a prompt larger than the slot's window has
             // its MIDDLE evicted and generation proceeds on the mutilated prompt —
