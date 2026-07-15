@@ -9,6 +9,22 @@ use crate::live::video::bevy_renderer::{Emotion, Gesture};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
+/// The persona's PINNED avatar VRM path (#174), if she is live and her face has been
+/// resolved into her durable seed. Reading the durable pin keeps the snapshot STABLE
+/// regardless of whether the in-memory gender roster is warm — the anti-thrash fix
+/// ([[never-thrash-sticky-hysteresis-on-every-lane]]). `None` (not a UUID, not live,
+/// unpinned, or the VRM file is missing) → the render falls back to the deterministic
+/// selection inside `capture_snapshot`.
+async fn pinned_vrm_for(identity: &str) -> Option<std::path::PathBuf> {
+    let uuid = uuid::Uuid::parse_str(identity).ok()?;
+    let runtime = crate::persona::PersonaAircRuntimeRegistry::try_global()?.get(uuid)?;
+    let seed_path = runtime.home().parent()?.join("seed.json");
+    let seed = crate::persona::seed::read_seed(&seed_path).await.ok()?;
+    let vrm = seed.avatar_vrm()?;
+    let path = crate::live::avatar::catalog::avatar_model_path(vrm);
+    path.exists().then_some(path)
+}
+
 /// Params for `avatar/snapshot`.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[ts(
@@ -117,11 +133,17 @@ crate::action_command! {
             });
         }
 
+        // #174: resolve her DURABLE pinned VRM here (async seed read), so the render
+        // uses her true, stable face regardless of whether the in-memory gender roster
+        // is warm. Resolved BEFORE spawn_blocking (which is sync). None → fall back.
+        let pinned = pinned_vrm_for(&identity).await;
+
         // Bevy slot allocation + frame capture is blocking — off the async thread.
         let stem_for_task = stem.clone();
         let relative_path = tokio::task::spawn_blocking(move || {
             crate::modules::avatar::AvatarModule::capture_snapshot(
-                &identity, width, height, &avatar_dir, expression, pose, mouth, &stem_for_task,
+                &identity, width, height, &avatar_dir, pinned, expression, pose, mouth,
+                &stem_for_task,
             )
         })
         .await

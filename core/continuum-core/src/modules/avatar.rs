@@ -38,6 +38,11 @@ impl AvatarModule {
         width: u32,
         height: u32,
         avatar_dir: &std::path::Path,
+        // #174: the persona's PINNED VRM path (durable, sticky). `Some` → render THIS
+        // model directly, bypassing the roster-dependent selection that thrashes to a
+        // default when the in-memory gender roster is cold. `None` → deterministic
+        // selection (correct when warm).
+        pinned_vrm: Option<std::path::PathBuf>,
         // Glass box (#172): optional expression/pose to render instead of the idle
         // neutral face; `out_stem` is the state-suffixed output filename (no `.png`).
         expression: Option<crate::live::video::bevy_renderer::Emotion>,
@@ -46,9 +51,11 @@ impl AvatarModule {
         mouth: Option<f32>,
         out_stem: &str,
     ) -> Result<String, String> {
-        // Select avatar model for this identity
-        let model = select_avatar_by_identity(identity);
-        let vrm_path = avatar_model_path(model.filename);
+        // Pinned VRM wins (sticky, #174); else fall back to the deterministic selection.
+        let vrm_path = match pinned_vrm {
+            Some(p) => p,
+            None => avatar_model_path(select_avatar_by_identity(identity).filename),
+        };
 
         if !vrm_path.exists() {
             return Err(format!("VRM model not found: {}", vrm_path.display()));
@@ -328,7 +335,7 @@ impl ServiceModule for AvatarModule {
         let dir = avatar_dir.clone();
         // Auto-refresh renders the NEUTRAL profile under `<identity>.png` (no state).
         let result = tokio::task::spawn_blocking(move || {
-            Self::capture_snapshot(&id, 480, 480, &dir, None, None, None, &id)
+            Self::capture_snapshot(&id, 480, 480, &dir, None, None, None, None, &id)
         })
         .await;
 

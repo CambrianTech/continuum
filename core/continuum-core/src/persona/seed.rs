@@ -69,6 +69,16 @@ pub enum PersonaSeedFile {
         /// precision). Doesn't change on resume; only on initial
         /// mint.
         created_at_ms: u64,
+        /// The persona's PINNED avatar VRM filename (a stable catalog key). Resolved
+        /// ONCE at first spawn — when the roster is warm so gender is correct — and
+        /// then NEVER re-derived. This is the sticky binding that stops the
+        /// wrong-avatar-when-roster-cold thrash (#174,
+        /// [[never-thrash-sticky-hysteresis-on-every-lane]]): her face becomes part
+        /// of her durable self and travels across restarts + the grid. `None` on a
+        /// pre-#174 seed (old JSON rows deserialize via serde default) until the next
+        /// spawn pins it. Rehydrate the VRM path via `avatar_model_path(vrm)`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        avatar_vrm: Option<String>,
     },
 }
 
@@ -88,6 +98,22 @@ impl PersonaSeedFile {
     pub fn created_at_ms(&self) -> u64 {
         match self {
             Self::V1 { created_at_ms, .. } => *created_at_ms,
+        }
+    }
+
+    /// The pinned avatar VRM filename, if this persona's face has been resolved yet.
+    pub fn avatar_vrm(&self) -> Option<&str> {
+        match self {
+            Self::V1 { avatar_vrm, .. } => avatar_vrm.as_deref(),
+        }
+    }
+
+    /// Pin the avatar VRM (sticky, resolve-once). Callers MUST only set this when it
+    /// is currently `None` — a live pin is never overwritten, so the face never
+    /// thrashes once chosen.
+    pub fn set_avatar_vrm(&mut self, vrm: String) {
+        match self {
+            Self::V1 { avatar_vrm, .. } => *avatar_vrm = Some(vrm),
         }
     }
 }
@@ -271,16 +297,20 @@ pub async fn ensure_seed(
     agent_name: &str,
     fallback_created_at_ms: u64,
 ) -> Result<(), PersonaSeedError> {
-    let created_at_ms = match read_seed(seed_path).await {
-        Ok(existing) => existing.created_at_ms(),
+    // Carry forward BOTH the birth time and the pinned avatar (#174): ensure_seed
+    // rewrites the seed every spawn, so it must preserve a resolved avatar_vrm or the
+    // sticky pin would be wiped each boot — the exact thrash we're killing.
+    let (created_at_ms, avatar_vrm) = match read_seed(seed_path).await {
+        Ok(existing) => (existing.created_at_ms(), existing.avatar_vrm().map(String::from)),
         // Missing or corrupt → treat fallback as the birth time. (A corrupt seed is
         // being healed; we can't trust its timestamp, so the live boot stands in.)
-        Err(_) => fallback_created_at_ms,
+        Err(_) => (fallback_created_at_ms, None),
     };
     let seed = PersonaSeedFile::V1 {
         persona_id,
         agent_name: agent_name.to_string(),
         created_at_ms,
+        avatar_vrm,
     };
     write_seed_atomic(seed_path, &seed).await
 }
@@ -295,6 +325,7 @@ mod tests {
             persona_id: Uuid::parse_str("9d17560c-dbb4-4f9e-86f0-4ceac5d2aff7").unwrap(),
             agent_name: "Pax".to_string(),
             created_at_ms: 1_717_200_000_000,
+            avatar_vrm: None,
         }
     }
 
@@ -307,6 +338,35 @@ mod tests {
         let read = read_seed(&path).await.unwrap();
         assert_eq!(read, seed);
         assert_eq!(read.agent_name(), "Pax");
+    }
+
+    // what this catches (#174): the STICKY invariant — ensure_seed rewrites the seed
+    // on every spawn, so it must PRESERVE a pinned avatar_vrm. If it clobbered it to
+    // None, the face would re-derive (and thrash) on the next cold boot. This is the
+    // exact regression the fix hinges on.
+    #[tokio::test]
+    async fn ensure_seed_preserves_a_pinned_avatar_across_respawn() {
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join("seed.json");
+        let pid = Uuid::parse_str("9d17560c-dbb4-4f9e-86f0-4ceac5d2aff7").unwrap();
+
+        // First spawn pins her face.
+        let mut seed = PersonaSeedFile::V1 {
+            persona_id: pid,
+            agent_name: "Pax".to_string(),
+            created_at_ms: 1_717_200_000_000,
+            avatar_vrm: None,
+        };
+        assert!(seed.avatar_vrm().is_none());
+        seed.set_avatar_vrm("asha.vrm".to_string());
+        write_seed_atomic(&path, &seed).await.unwrap();
+
+        // A later spawn calls ensure_seed (a full rewrite) — the pin must survive.
+        ensure_seed(&path, pid, "Pax", 9_999_999_999_999).await.unwrap();
+        let after = read_seed(&path).await.unwrap();
+        assert_eq!(after.avatar_vrm(), Some("asha.vrm"), "pin clobbered by ensure_seed");
+        // And the original birth time is preserved (ensure_seed doesn't reset it).
+        assert_eq!(after.created_at_ms(), 1_717_200_000_000);
     }
 
     #[tokio::test]
