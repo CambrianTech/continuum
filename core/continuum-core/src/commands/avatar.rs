@@ -9,20 +9,50 @@ use crate::live::video::bevy_renderer::{Emotion, Gesture};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-/// The persona's PINNED avatar VRM path (#174), if she is live and her face has been
-/// resolved into her durable seed. Reading the durable pin keeps the snapshot STABLE
-/// regardless of whether the in-memory gender roster is warm — the anti-thrash fix
-/// ([[never-thrash-sticky-hysteresis-on-every-lane]]). `None` (not a UUID, not live,
-/// unpinned, or the VRM file is missing) → the render falls back to the deterministic
-/// selection inside `capture_snapshot`.
+/// The persona's PINNED avatar VRM path (#174) — her true, durable face. Reading the
+/// pin keeps the snapshot STABLE regardless of whether the in-memory gender roster is
+/// warm ([[never-thrash-sticky-hysteresis-on-every-lane]]). Two sources, live-first:
+/// the running runtime's home (fast), else a scan of the durable seeds by persona_id
+/// (covers the cold window right after a reboot, before she has spawned). `None` (not
+/// a UUID, unpinned, or the VRM file is missing) → the render falls back to the
+/// deterministic selection inside `capture_snapshot`.
 async fn pinned_vrm_for(identity: &str) -> Option<std::path::PathBuf> {
     let uuid = uuid::Uuid::parse_str(identity).ok()?;
+    let vrm = match pin_from_live_runtime(uuid).await {
+        Some(v) => v,
+        None => pin_from_seed_scan(uuid).await?,
+    };
+    let path = crate::live::avatar::catalog::avatar_model_path(&vrm);
+    path.exists().then_some(path)
+}
+
+/// Read the pin off the persona's LIVE runtime (fast path, the common case).
+async fn pin_from_live_runtime(uuid: uuid::Uuid) -> Option<String> {
     let runtime = crate::persona::PersonaAircRuntimeRegistry::try_global()?.get(uuid)?;
     let seed_path = runtime.home().parent()?.join("seed.json");
     let seed = crate::persona::seed::read_seed(&seed_path).await.ok()?;
-    let vrm = seed.avatar_vrm()?;
-    let path = crate::live::avatar::catalog::avatar_model_path(vrm);
-    path.exists().then_some(path)
+    seed.avatar_vrm().map(str::to_string)
+}
+
+/// Cold-window fallback (#174): the persona isn't live yet (just-rebooted, pre-spawn),
+/// so scan the durable persona seeds and match by persona_id. The pin survives on
+/// disk, so a cold render is still correct — no re-derivation, no thrash.
+async fn pin_from_seed_scan(uuid: uuid::Uuid) -> Option<String> {
+    let root = dirs::home_dir()?.join(".continuum");
+    let dir = crate::context::citizen_path::citizens_kind_dir(
+        &root,
+        crate::identity::IdentityKind::Persona,
+    );
+    let mut entries = tokio::fs::read_dir(&dir).await.ok()?;
+    while let Ok(Some(entry)) = entries.next_entry().await {
+        let seed_path = entry.path().join("seed.json");
+        if let Ok(seed) = crate::persona::seed::read_seed(&seed_path).await {
+            if seed.persona_id() == uuid {
+                return seed.avatar_vrm().map(str::to_string);
+            }
+        }
+    }
+    None
 }
 
 /// Params for `avatar/snapshot`.
