@@ -1052,11 +1052,18 @@ impl Faculty for LlmDeliberationFaculty {
         // DELIVERY timing changes. `None` (every non-streaming caller, every test) takes
         // the unchanged accumulate path. The sink carries BOTH Reasoning and Token
         // chunks; the consumer forwards only Token to output (think-deep/speak-answer).
+        // #139 latency split: time the generate call (lane-queue + prefill + decode).
+        // Compared against the forwarder's `first_token_ms` (spawn→first token, the
+        // WHOLE turn), this localizes the minutes-to-first-token: if `gen_await_ms`
+        // is large, it's the model/lane (queue+prefill); if small, the time is in
+        // cognition-prep BEFORE generation (recall/embeddings/context assembly).
+        let gen_start = std::time::Instant::now();
         let gen_result = if let Some(sink) = ws.token_sink.as_ref() {
             binding.adapter.generate_stream(request, sink.clone()).await
         } else {
             binding.adapter.generate_text(request).await
         };
+        let gen_await_ms = gen_start.elapsed().as_millis() as u64;
         let resp = match gen_result {
             Ok(r) => r,
             // Inference FAILED (timeout, 5xx, the serving lane refusing a model it
@@ -1076,6 +1083,16 @@ impl Faculty for LlmDeliberationFaculty {
                 return Some(Contribution::deliberation_fault(e.to_string()));
             }
         };
+        // #139 latency split: the model call's wall time. Compare to the forwarder's
+        // `persona.turn.first_token` (whole-turn spawn→first token): first_token −
+        // gen_await ≈ cognition-prep (recall/embeddings/context assembly BEFORE the
+        // model); gen_await itself is lane-queue + prefill + decode. This is how we
+        // find where the minutes actually go before optimizing anything.
+        tracing::info!(
+            persona = %self.persona_name,
+            gen_await_ms = gen_await_ms,
+            "delib.generate — model-call wall time (lane-queue + prefill + decode)"
+        );
 
         // Verbatim glass box: the EXACT request thread + the raw response. Iteration
         // is always 0 now (single shot); the act→observe driver re-enters this
