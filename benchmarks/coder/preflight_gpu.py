@@ -32,6 +32,29 @@ Exit codes:
 import argparse, json, subprocess, sys
 
 
+def measurement_in_flight():
+    """Structural contention check: is ANOTHER benchmark/eval already using the GPU?
+
+    `gpu/stats` pressure is momentary — it reads ~0 between an eval's per-task
+    generations, so a pressure-only gate blesses a box that's mid-measurement. A
+    running `cognition/eval` / `benchmark/run` (or another `kick.sh`) is an
+    unambiguous, non-momentary signal that the GPU is spoken for. Returns the
+    offending process line, or None.
+    """
+    try:
+        out = subprocess.run(["pgrep", "-af", "cognition/eval|benchmark/run|coder/matrix|sweep_all"],
+                             capture_output=True, text=True, timeout=5)
+    except Exception:
+        return None
+    for line in out.stdout.splitlines():
+        # ignore our own pgrep / this preflight
+        if "pgrep" in line or "preflight_gpu" in line:
+            continue
+        if line.strip():
+            return line.strip()
+    return None
+
+
 def gpu_slack(cu):
     """Return (pressure, used_mb, total_mb) from the live core, or None if no core."""
     try:
@@ -67,6 +90,19 @@ def main():
     ap.add_argument("--allow-contended", action="store_true",
                     help="warn on contention but do not block (exit 0)")
     args = ap.parse_args()
+
+    # Structural check FIRST — a running measurement is unambiguous, where pressure
+    # is momentary (reads ~0 between an eval's per-task generations). This is the
+    # fix for the pressure-only gate blessing a box that's mid-eval.
+    busy = measurement_in_flight()
+    if busy:
+        print("gpu-provenance: CONTENDED — another measurement already owns the GPU:",
+              file=sys.stderr)
+        print(f"    {busy}", file=sys.stderr)
+        print("  wait for it to finish (or kill it) before starting a new run; two "
+              "measurements time-sharing one GPU corrupt BOTH.\n"
+              "  Pass --allow-contended to override.", file=sys.stderr)
+        return 0 if args.allow_contended else 3
 
     slack = gpu_slack(args.cu)
     if slack is None:

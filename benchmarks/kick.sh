@@ -37,12 +37,14 @@ CU="${CU:-$HOME/.continuum/cache/cargo-target/debug/cu}"
 GYMS=("humaneval-rs" "hard-rs" "frontier-rs")
 LIMIT=40
 MODELS="$CODER/models-fleet.json"
+ALLOW_CONTENDED=0   # by default, refuse to measure on a GPU that's already busy
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --limit)  LIMIT="$2"; shift 2 ;;
     --gyms)   IFS=' ' read -r -a GYMS <<< "$2"; shift 2 ;;
     --models) MODELS="$2"; shift 2 ;;
+    --allow-contended) ALLOW_CONTENDED=1; shift ;;
     -h|--help) sed -n '2,30p' "$0"; exit 0 ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
@@ -64,6 +66,19 @@ else
   OURS_OK=0
 fi
 echo "  rustc: $(rustc --version)"
+
+# GPU-provenance gate: a benchmark cell is only reproducible if the GPU was quiet
+# when it was measured. The OURS arm auto-quiesces the live personas (eval-preemption
+# lease), but the RAW/opponent scratch lanes still share the one GPU, so a busy box
+# corrupts them silently. Refuse a contended run unless the operator accepts it.
+GATE_FLAG=""; [ "$ALLOW_CONTENDED" = 1 ] && GATE_FLAG="--allow-contended"
+if [ -f "$CODER/preflight_gpu.py" ]; then
+  if ! python3 "$CODER/preflight_gpu.py" --cu "$CU" $GATE_FLAG; then
+    die "GPU is CONTENDED — numbers taken now are not clean. Quiet the box (the OURS
+       eval auto-quiesces personas; stop any other GPU job), then re-run — or pass
+       --allow-contended to measure anyway and stamp the cells CONTENDED."
+  fi
+fi
 echo "  gyms:  ${GYMS[*]}   limit: $LIMIT/gym   fleet: $MODELS"
 
 say "resolve fleet (portable — downloads any missing opponent to your HF cache)"
