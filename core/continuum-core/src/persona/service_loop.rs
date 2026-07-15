@@ -1619,7 +1619,11 @@ fn spawn_token_forwarder(
     citizen: Option<std::sync::Arc<dyn crate::persona::airc_citizen::AircCitizen>>,
     persona: String,
 ) -> tokio::task::JoinHandle<()> {
-    const FLUSH_EVERY: std::time::Duration = std::time::Duration::from_millis(50);
+    // 250ms: a typing indicator does NOT need per-token frames (the durable `say`
+    // is the authoritative text) — batching to ~4 frames/sec keeps the render smooth
+    // to a human eye while cutting wire traffic ~6x. 50ms flooded the bus (a room of
+    // personas × per-token frames killed subscribers).
+    const FLUSH_EVERY: std::time::Duration = std::time::Duration::from_millis(250);
     tokio::spawn(async move {
         let started = std::time::Instant::now();
         let stream_id = uuid::Uuid::new_v4().to_string();
@@ -1838,9 +1842,12 @@ async fn run_self_cycle(
     let (tok_tx, tok_rx) =
         tokio::sync::mpsc::unbounded_channel::<crate::ai::adapter::GenerationChunk>();
     cycle.set_token_sink(Some(tok_tx));
-    // #169/#170: drain + publish this self-tick turn's streamed answer, coalesced.
-    let forwarder =
-        spawn_token_forwarder(tok_rx, conversation.stream_citizen(), ctx.identity.agent_name.clone());
+    // #169/#170: self-tick (autonomic) turns do NOT broadcast a live typing stream —
+    // a room doesn't need every persona's idle musing streamed token-by-token (that
+    // was most of the flood that killed subscribers). `None` citizen → first_token
+    // probe still fires (observability), but no chunks publish. The durable utterance
+    // still `say`s once. Only message-driven turns (real conversation) stream live.
+    let forwarder = spawn_token_forwarder(tok_rx, None, ctx.identity.agent_name.clone());
     let (step, _turn_metrics) = {
         let outcome = crate::cognition::act_observe::drive_to_settle(
             &cycle,
