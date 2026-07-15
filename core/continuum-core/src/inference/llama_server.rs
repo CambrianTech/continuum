@@ -550,6 +550,16 @@ pub trait LlamaServerControl: Send + Sync {
     fn owns_child(&self) -> bool {
         false
     }
+
+    /// Reap the running child (kill it) so the next reconcile spawns a fresh lane.
+    /// The serving watchdog calls this when a lane WE OWN goes compute-wedged
+    /// mid-session: `ensure_model_serving` trusts an own-child it verified at
+    /// [`wait_ready`] and NEVER re-probes it, but a Metal compute context can go bad
+    /// AFTER that (the same 500 "Compute error" wedge as the reclaimed orphan in
+    /// [`Self::decode_smoke_ok`], on our own process instead). Reaping drops
+    /// `owns_child`, so the next `ensure_model_serving` sees no server and respawns.
+    /// Default no-op: a fake/remote control owns no local child to reap.
+    fn reap(&self) {}
 }
 
 /// Pure reconcile decision: bring the running server in line with `desired`.
@@ -940,6 +950,13 @@ impl LlamaServerControl for LlamaServerProcess {
 
     fn owns_child(&self) -> bool {
         self.child.lock().unwrap().is_some()
+    }
+
+    fn reap(&self) {
+        // Kill our supervised child + clear the handle so `owns_child()` goes false
+        // and the next `ensure_model_serving` respawns a fresh lane. The watchdog
+        // calls this when the compute path wedges under us mid-session.
+        self.kill_child();
     }
 
     async fn serve(&self, target: &ServingTarget) -> Result<(), LlamaServerError> {
