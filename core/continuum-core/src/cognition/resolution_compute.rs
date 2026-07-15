@@ -127,6 +127,119 @@ impl ResolutionLadder for ComputeDepthLadder {
     }
 }
 
+// ── The live backend: draft on the resident model at a compute budget ──────────
+
+use crate::ai::adapter::AIProviderAdapter;
+use crate::ai::types::{ChatMessage, TextGenerationRequest};
+use std::sync::Arc;
+
+/// Build the generation request for one compute-depth draft. Pure (no adapter, no
+/// I/O) so the resolution→request mapping is unit-testable in isolation. The ONE
+/// load-bearing field is `max_tokens = budget.max_tokens` — the compute-depth knob;
+/// everything else mirrors what the deliberation faculty sends. On a re-draft the
+/// verifier's failing reason is threaded into the user turn so the higher-budget
+/// attempt is INFORMED by why the cheaper one fell short (not a blind retry).
+fn draft_request(
+    model: Option<String>,
+    system_prompt: Option<String>,
+    task_prompt: &str,
+    temperature: f32,
+    persona_id: Option<String>,
+    budget: ComputeBudget,
+    feedback: Option<&str>,
+) -> TextGenerationRequest {
+    let user = match feedback {
+        Some(f) if !f.trim().is_empty() => format!(
+            "{task_prompt}\n\nYour previous attempt did NOT pass the tests:\n{f}\n\n\
+             Fix it and reply with the corrected solution."
+        ),
+        _ => task_prompt.to_string(),
+    };
+    TextGenerationRequest {
+        messages: vec![ChatMessage::text("user", user)],
+        system_prompt,
+        model,
+        provider: None,
+        // Greedy for a reproducible verifier signal — same reasoning as the eval
+        // window in the faculty; the caller may raise it for exploratory sampling.
+        temperature: Some(temperature),
+        // THE compute-depth knob: the escalator's resolution → this token ceiling.
+        max_tokens: Some(budget.max_tokens),
+        top_p: None,
+        top_k: None,
+        repeat_penalty: None,
+        stop_sequences: None,
+        tools: None,
+        tool_choice: None,
+        response_format: None,
+        active_adapters: None,
+        request_id: None,
+        user_id: None,
+        room_id: None,
+        purpose: Some("resolution-draft".to_string()),
+        persona_id,
+    }
+}
+
+/// [`DraftBackend`] over a live inference adapter — the wiring that makes compute-depth
+/// escalation real on the resident model. It re-poses the same coding task at each
+/// budget (overriding `max_tokens` with the compute-depth budget), so the escalator's
+/// climb spends progressively more thinking room on the SAME weights until the code
+/// verifier passes. The adapter/model come from the caller (the faculty's binding, a
+/// dedicated eval lane, or later a grid route) — this backend does not choose a model,
+/// it spends a budget on the one it was handed.
+pub struct FacultyDraftBackend {
+    adapter: Arc<dyn AIProviderAdapter>,
+    model: Option<String>,
+    task_prompt: String,
+    system_prompt: Option<String>,
+    temperature: f32,
+    persona_id: Option<String>,
+}
+
+impl FacultyDraftBackend {
+    /// `model = None` → the adapter's own resident model (the single-resident local
+    /// gateway). `system_prompt` frames the coder (e.g. "reply with a ```rust fenced
+    /// solution"). `persona_id` attributes the inference for per-persona resource
+    /// accounting (None for a benchmark / eval-lane run).
+    pub fn new(
+        adapter: Arc<dyn AIProviderAdapter>,
+        model: Option<String>,
+        task_prompt: impl Into<String>,
+        system_prompt: Option<String>,
+        temperature: f32,
+        persona_id: Option<String>,
+    ) -> Self {
+        Self {
+            adapter,
+            model,
+            task_prompt: task_prompt.into(),
+            system_prompt,
+            temperature,
+            persona_id,
+        }
+    }
+}
+
+impl DraftBackend for FacultyDraftBackend {
+    async fn generate(
+        &self,
+        budget: ComputeBudget,
+        feedback: Option<&str>,
+    ) -> Result<String, String> {
+        let request = draft_request(
+            self.model.clone(),
+            self.system_prompt.clone(),
+            &self.task_prompt,
+            self.temperature,
+            self.persona_id.clone(),
+            budget,
+            feedback,
+        );
+        self.adapter.generate_text(request).await.map(|r| r.text)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -184,6 +297,57 @@ mod tests {
         // Out-of-range clamps, never underflows below the floor.
         assert_eq!(d.budget_for(-1.0).max_tokens, 200);
         assert_eq!(d.budget_for(9.0).max_tokens, 1000);
+    }
+
+    // what this catches (#168 slice 2 live wiring): the compute-depth budget lands on
+    // the request as max_tokens — the one load-bearing field — and a re-draft threads
+    // the verifier's failing reason into the user turn so the higher-budget attempt is
+    // INFORMED, not a blind retry. This is the pure seam the live FacultyDraftBackend
+    // sends to the resident model.
+    #[test]
+    fn draft_request_sets_budget_as_max_tokens_and_threads_feedback() {
+        use crate::ai::types::MessageContent;
+
+        let budget = ComputeBudget { max_tokens: 512 };
+        let fresh = draft_request(
+            Some("resident".into()),
+            Some("You are a Rust coder.".into()),
+            "Write add(a,b).",
+            0.0,
+            None,
+            budget,
+            None,
+        );
+        assert_eq!(fresh.max_tokens, Some(512), "budget becomes max_tokens");
+        assert_eq!(fresh.model.as_deref(), Some("resident"));
+        match &fresh.messages[0].content {
+            MessageContent::Text(t) => {
+                assert!(t.contains("Write add(a,b)."));
+                assert!(!t.contains("previous attempt"), "fresh draft carries no feedback");
+            }
+            other => panic!("expected text message, got {other:?}"),
+        }
+
+        let escalated = draft_request(
+            None,
+            None,
+            "Write add(a,b).",
+            0.0,
+            None,
+            ComputeBudget { max_tokens: 2048 },
+            Some("assertion `left == right` failed"),
+        );
+        assert_eq!(escalated.max_tokens, Some(2048), "escalated budget");
+        match &escalated.messages[0].content {
+            MessageContent::Text(t) => {
+                assert!(t.contains("Write add(a,b)."), "still poses the task");
+                assert!(
+                    t.contains("assertion `left == right` failed"),
+                    "threads the verifier's failing reason into the re-draft"
+                );
+            }
+            other => panic!("expected text message, got {other:?}"),
+        }
     }
 
     // what this catches (#168 slice 2, the whole point): the escalator drafting on the
