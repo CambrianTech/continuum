@@ -36,10 +36,22 @@
 //! and `model_resolver`.
 
 /// Hard ceiling on continuous-batching lanes for a single base model on one
-/// node. Joel's number for the M5 Pro: "you can run 2 lanes of a gguf 4b
-/// model or even 4 on here." Past this, KV-cache contention and per-token
-/// batch cost stop paying off before the grid should share the load.
-pub const MAX_LANES: u32 = 4;
+/// node. Joel's original number was "2 lanes of a gguf 4b model or even 4 on
+/// here" — but that 4 was calibrated for a ~4B model. Applied to a 24B base
+/// (Devstral-Small) + paged LoRAs it OOMs: the plan grows each lane's window to
+/// fill the budget as RESIDENT KV, but llama.cpp's Metal PREFILL COMPUTE BUFFER
+/// (a transient ~batch-sized per-slot allocation NOT in the KV arithmetic)
+/// stacks once per concurrent prefill — four of them during the wake-briefing
+/// burst blew past the UMA pool (`kIOGPUCommandBufferCallbackErrorOutOfMemory`,
+/// every turn 500ing "Compute error"). Glass-boxed 2026-07-14. Two lanes halve
+/// that concurrent compute-buffer peak AND double each mind's window (the
+/// planner's own fn-doc: "2 slots would have doubled every mind's window with
+/// zero lost concurrency"). Continuous batching still serves the whole fleet
+/// through 2 slots; with background self-direction now low-duty-cycle
+/// (SELF_TICK_MS raised), concurrent decode demand rarely exceeds 2 anyway.
+/// The deeper fix — a lane-scaled compute-buffer HEADROOM term in the fit math
+/// so the ceiling derives from model size instead of a constant — is #139/#56.
+pub const MAX_LANES: u32 = 2;
 
 /// Bare-minimum served window for a model to be runnable at ALL — a hardware
 /// reality floor, NOT a serving target or a cheapening cap. The served window is
