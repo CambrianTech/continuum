@@ -59,13 +59,6 @@ const SERVING_BUDGET_FRACTION: f64 = 0.80;
 /// reacts faster than the cadence under sudden pressure.
 const TICK: Duration = Duration::from_secs(5);
 
-/// Consecutive failed decode smoke-probes on a lane WE OWN before the watchdog
-/// reaps it (#175). A wedged compute path 500s EVERY request instantly, so a run
-/// of failures on an idle lane is a real wedge, never a transient. 3 × the tick =
-/// ~15s of confirmed wedge before a restart — responsive without thrashing on a
-/// single blip. [[never-thrash-sticky-hysteresis-on-every-lane]]
-const WATCHDOG_WEDGE_STREAK: u32 = 3;
-
 /// Bus topic the live [`ServingSnapshot`] is emitted on whenever it changes.
 /// Subscribers (embedding, supervisor, inference_session, ai_provider) declare
 /// this in their `event_subscriptions` and cache the latest in `handle_event`
@@ -172,12 +165,6 @@ pub struct ServingDaemonModule {
     /// asked for divides every mind's window for nothing (the 4-slots-for-2-
     /// personas starvation, 2026-07-10). Default 1 — window-first.
     lane_demand: Arc<std::sync::atomic::AtomicU32>,
-    /// Consecutive failed decode smoke-probes on the lane we own (#175 watchdog).
-    /// Reset to 0 on any success (or when nothing is serving / lanes are busy);
-    /// at [`WATCHDOG_WEDGE_STREAK`] the watchdog reaps the wedged lane so the next
-    /// reconcile respawns it. An atomic so `tick()` mutates through `&self`, like
-    /// `reconciling` / `lane_demand`.
-    smoke_fail_streak: Arc<std::sync::atomic::AtomicU32>,
     /// The operator/persona's explicit FORCE-serve pin — the "hard pin" the
     /// `serving/load` doc names as the future verb, the mechanism behind
     /// promote/demote (`serving/pin` ↔ `serving/unpin`). `None` = autonomic
@@ -244,68 +231,7 @@ impl ServingDaemonModule {
             suppressed,
             pinned,
             lane_demand: Arc::new(std::sync::atomic::AtomicU32::new(1)),
-            smoke_fail_streak: Arc::new(std::sync::atomic::AtomicU32::new(0)),
         }
-    }
-
-    /// #175 watchdog: verify the COMPUTE path of a lane we own, and reap it if it
-    /// has wedged mid-session. `ensure_model_serving` trusts an own-child it
-    /// decode-verified at `wait_ready` and never re-probes it — but a Metal compute
-    /// context can go bad AFTER that, after which EVERY request 500s "Compute error"
-    /// instantly (glass-boxed 2026-07-15: thousands of failed turns, ~7ms each,
-    /// until a manual reboot). This closes that gap: a cheap 1-token smoke on an
-    /// idle owned lane; `WATCHDOG_WEDGE_STREAK` consecutive failures → reap, so the
-    /// reconcile right after respawns a fresh lane.
-    ///
-    /// Anti-thrash by construction ([[never-thrash-sticky-hysteresis-on-every-lane]]):
-    /// - Only smokes a lane we OWN and only when NOT saturated. A WEDGED lane 500s
-    ///   instantly (calls fail in ~ms → LOW inflight → not saturated), while a BUSY
-    ///   lane has calls taking tens of seconds (→ HIGH inflight → saturated). So the
-    ///   saturation gate cleanly separates "wedged" from "legitimately busy" and we
-    ///   never misread a slow-but-working lane as broken.
-    /// - Requires a STREAK, not a single failure, so one blip never triggers a reap.
-    async fn watchdog_reap_if_wedged(&self) {
-        use std::sync::atomic::Ordering;
-        // Nothing serving yet, or a relaunch already in flight → not our moment.
-        // Don't touch the streak (a spawning lane isn't a wedged one).
-        if !self.serving_tx.borrow().ready || self.reconciling.load(Ordering::Acquire) {
-            return;
-        }
-        // Only our own child can be silently-trusted-then-wedged; an orphan is
-        // already smoke-probed by `ensure_model_serving` before adoption.
-        if !self.server.owns_child() {
-            self.smoke_fail_streak.store(0, Ordering::Relaxed);
-            return;
-        }
-        // Busy lanes are WORKING lanes — can't (and needn't) disambiguate a wedge
-        // from real load here, so leave the streak untouched and try next tick.
-        if crate::cognition::resource_admission::shared_model_saturated() {
-            return;
-        }
-
-        if self.server.decode_smoke_ok().await {
-            self.smoke_fail_streak.store(0, Ordering::Relaxed);
-            return;
-        }
-
-        let streak = self.smoke_fail_streak.fetch_add(1, Ordering::AcqRel) + 1;
-        if streak < WATCHDOG_WEDGE_STREAK {
-            crate::probe!(
-                class = "serving.watchdog.smoke_fail",
-                streak = streak,
-                threshold = WATCHDOG_WEDGE_STREAK,
-                "owned lane failed a decode smoke-probe while idle — watching (#175)",
-            );
-            return;
-        }
-        crate::probe!(
-            class = "serving.watchdog.reap",
-            streak = streak,
-            "owned lane wedged (compute path 500s while idle) — reaping so the next \
-             reconcile respawns a fresh lane (#175)",
-        );
-        self.server.reap();
-        self.smoke_fail_streak.store(0, Ordering::Relaxed);
     }
 
     /// Set the lane DEMAND (how many minds need a concurrent lane — the
@@ -1042,11 +968,6 @@ impl ServiceModule for ServingDaemonModule {
     }
 
     async fn tick(&self) -> Result<(), String> {
-        // #175: verify the compute path of a lane we own and reap it if it wedged
-        // mid-session — BEFORE reconciling, so a reap on this tick is respawned by
-        // the reconcile below instead of waiting a whole tick. No-op unless a lane
-        // we own has failed the smoke-probe WATCHDOG_WEDGE_STREAK times while idle.
-        self.watchdog_reap_if_wedged().await;
         // Re-decide the plan (fast), then bring the running server in line with
         // it. The reconcile is fast-to-decide and spawns the slow relaunch off
         // the tick, so the tick never blocks on model load.
@@ -1254,129 +1175,6 @@ mod tests {
             // path is exercised; a healthy fake decodes.
             true
         }
-    }
-
-    /// A fake that models an OWNED lane whose compute path has WEDGED (#175): it
-    /// reports owning a child and reports the served model, but every decode
-    /// smoke-probe fails. Counts `reap()` calls so the watchdog test can assert the
-    /// streak→reap behavior without a live process.
-    struct WedgeServer {
-        reaps: Arc<AtomicUsize>,
-    }
-
-    #[async_trait]
-    impl LlamaServerControl for WedgeServer {
-        async fn active_model(&self) -> Result<Option<String>, LlamaServerError> {
-            Ok(Some("wedged-model".to_string()))
-        }
-        async fn active_adapters(&self) -> Result<Vec<String>, LlamaServerError> {
-            Ok(Vec::new())
-        }
-        async fn serve(&self, _target: &ServingTarget) -> Result<(), LlamaServerError> {
-            Ok(())
-        }
-        async fn served_context_window(&self) -> Result<u32, LlamaServerError> {
-            Ok(11008)
-        }
-        async fn decode_smoke_ok(&self) -> bool {
-            false // the wedge: every generation 500s
-        }
-        fn owns_child(&self) -> bool {
-            true // we spawned it — the exact lane ensure_model_serving trusts forever
-        }
-        fn reap(&self) {
-            self.reaps.fetch_add(1, Ordering::SeqCst);
-        }
-    }
-
-    // what this catches (#175 watchdog): an OWNED serving lane whose compute path
-    // wedges mid-session (every decode 500s "Compute error") is trusted forever by
-    // ensure_model_serving and would 500 thousands of turns until a manual reboot.
-    // The watchdog decode-smokes an idle owned lane and, after WATCHDOG_WEDGE_STREAK
-    // consecutive failures, reaps it so the next reconcile respawns. Anti-thrash: it
-    // reaps ONCE at the threshold, not on every failing tick, and a single success
-    // resets the streak. (shared_model_saturated() is false here — nothing holds an
-    // InflightModelCall — so the saturation gate lets the smoke run, as it would on
-    // a truly idle-but-wedged lane.)
-    #[tokio::test]
-    async fn watchdog_reaps_a_wedged_owned_lane_after_the_streak() {
-        let reaps = Arc::new(AtomicUsize::new(0));
-        let server = Arc::new(WedgeServer {
-            reaps: reaps.clone(),
-        });
-        let daemon = daemon_with(server);
-        // Publish a READY snapshot so the watchdog believes a lane is serving.
-        daemon
-            .serving_tx
-            .send_replace(ServingSnapshot {
-                ready: true,
-                active_model: Some("wedged-model".to_string()),
-                ..ServingSnapshot::empty()
-            });
-
-        // The first (STREAK-1) idle smoke failures only accumulate — no reap yet.
-        for _ in 0..(WATCHDOG_WEDGE_STREAK - 1) {
-            daemon.watchdog_reap_if_wedged().await;
-            assert_eq!(reaps.load(Ordering::SeqCst), 0, "no reap before the streak");
-        }
-        // The WATCHDOG_WEDGE_STREAK-th consecutive failure reaps exactly once.
-        daemon.watchdog_reap_if_wedged().await;
-        assert_eq!(reaps.load(Ordering::SeqCst), 1, "reap fires at the streak");
-
-        // Streak reset after reap: it does not reap again on the very next tick.
-        daemon.watchdog_reap_if_wedged().await;
-        assert_eq!(
-            reaps.load(Ordering::SeqCst),
-            1,
-            "streak resets after a reap — no thrash of back-to-back restarts"
-        );
-    }
-
-    // what this catches: a single success MUST clear the streak, so a lane that
-    // blips once then recovers is never reaped (the anti-thrash guarantee). Reuses
-    // FakeServer, which owns no child by default → override via a healthy-owned fake.
-    #[tokio::test]
-    async fn watchdog_never_reaps_a_healthy_owned_lane() {
-        struct HealthyOwned {
-            reaps: Arc<AtomicUsize>,
-        }
-        #[async_trait]
-        impl LlamaServerControl for HealthyOwned {
-            async fn active_model(&self) -> Result<Option<String>, LlamaServerError> {
-                Ok(Some("m".into()))
-            }
-            async fn active_adapters(&self) -> Result<Vec<String>, LlamaServerError> {
-                Ok(Vec::new())
-            }
-            async fn serve(&self, _t: &ServingTarget) -> Result<(), LlamaServerError> {
-                Ok(())
-            }
-            async fn served_context_window(&self) -> Result<u32, LlamaServerError> {
-                Ok(11008)
-            }
-            async fn decode_smoke_ok(&self) -> bool {
-                true
-            }
-            fn owns_child(&self) -> bool {
-                true
-            }
-            fn reap(&self) {
-                self.reaps.fetch_add(1, Ordering::SeqCst);
-            }
-        }
-        let reaps = Arc::new(AtomicUsize::new(0));
-        let daemon = daemon_with(Arc::new(HealthyOwned {
-            reaps: reaps.clone(),
-        }));
-        daemon.serving_tx.send_replace(ServingSnapshot {
-            ready: true,
-            active_model: Some("m".into()),
-            ..ServingSnapshot::empty()
-        });
-        for _ in 0..(WATCHDOG_WEDGE_STREAK * 3) {
-            daemon.watchdog_reap_if_wedged().await;
-        }
-        assert_eq!(reaps.load(Ordering::SeqCst), 0, "a healthy lane is never reaped");
     }
 
     /// A minimal [`Model`] for reconcile-wiring tests — only `id` is load-bearing
