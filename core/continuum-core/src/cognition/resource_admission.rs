@@ -100,6 +100,106 @@ pub fn try_hold_ambient_turn() -> Option<tokio::sync::OwnedSemaphorePermit> {
     ambient_permits().clone().try_acquire_owned().ok()
 }
 
+// ── Serving-lane reservation for directed turns (#139) ──────────────────────────
+//
+// The ambient PERMIT above bounds how many ambient TURNS run at once (1). But a single
+// ambient `drive_to_settle` makes many model calls over minutes, and an idle self-tick
+// is not ambient-permit-gated at all — so together they can occupy BOTH physical decode
+// lanes (`llama --parallel MAX_LANES`), and an addressed (directed) question then queues
+// INSIDE the serving process behind them. Glass-boxed 2026-07-15: a directed turn sat
+// 8+ minutes behind one 197s idle self-tick + one 213s ambient turn on the two lanes;
+// its latency was lane-QUEUE, not decode (a free-lane turn is ~30-60s).
+//
+// Neither the gauge nor the turn-level permit can fix this — the reservation must live
+// at the LANE the model call actually consumes. So every model call acquires a lane
+// here, priced by priority:
+//   - directed → acquires from the FULL pool (MAX_LANES). Waits only if MAX_LANES other
+//                directed calls already hold every lane (all lanes serving live work).
+//   - non-directed (ambient + idle self-tick) → additionally bounded to (MAX_LANES-1),
+//                so at least ONE lane is always reserved for a directed call.
+// No deadlock: directed never touches the non-directed cap, and non-directed holds at
+// most MAX_LANES-1 physical lanes, so a directed acquire always finds a free lane unless
+// every lane already serves directed. On a single-lane machine there is nothing to
+// reserve, so the non-directed budget floors at 1 (no starvation, no false guarantee).
+// [[conversational-latency-is-a-misdirection-budget]] [[never-thrash-sticky-hysteresis-on-every-lane]]
+
+/// Physical decode lanes on the shared serving target — the same ceiling the planner
+/// sizes by and the saturation gauge reads. Floored at 1.
+fn serving_lane_count() -> usize {
+    (crate::cognition::serving_plan::MAX_LANES as usize).max(1)
+}
+
+/// Lanes a non-directed (ambient / idle) model call may occupy: all lanes minus one
+/// reserved for directed work, floored at 1 so a single-lane machine — where there is
+/// nothing to reserve — still lets idle work run rather than starving it forever.
+fn nondirected_lane_budget() -> usize {
+    serving_lane_count().saturating_sub(1).max(1)
+}
+
+static SERVING_LANES: std::sync::OnceLock<std::sync::Arc<tokio::sync::Semaphore>> =
+    std::sync::OnceLock::new();
+static NONDIRECTED_LANES: std::sync::OnceLock<std::sync::Arc<tokio::sync::Semaphore>> =
+    std::sync::OnceLock::new();
+
+fn serving_lanes() -> &'static std::sync::Arc<tokio::sync::Semaphore> {
+    SERVING_LANES
+        .get_or_init(|| std::sync::Arc::new(tokio::sync::Semaphore::new(serving_lane_count())))
+}
+
+fn nondirected_lanes() -> &'static std::sync::Arc<tokio::sync::Semaphore> {
+    NONDIRECTED_LANES
+        .get_or_init(|| std::sync::Arc::new(tokio::sync::Semaphore::new(nondirected_lane_budget())))
+}
+
+/// RAII permit for one serving-lane model call. Holds a physical-lane permit, the
+/// (optional) non-directed sub-cap permit, and the in-flight gauge marker — ALL released
+/// on drop. Acquire it around the single generate call so the reservation window matches
+/// exactly the lane-consuming window (queue + prefill + decode) and nothing downstream.
+#[derive(Debug)]
+pub struct ServingLanePermit {
+    _lane: tokio::sync::OwnedSemaphorePermit,
+    _nondirected: Option<tokio::sync::OwnedSemaphorePermit>,
+    _inflight: InflightModelCall,
+}
+
+/// Acquire a serving lane for a model call, priced by priority (#139). `directed`
+/// callers take from the full lane pool; non-directed callers first claim the
+/// (MAX_LANES-1) non-directed budget, guaranteeing a directed caller always finds a free
+/// physical lane. Awaits only under genuine contention; the returned permit releases
+/// every lane on drop.
+pub async fn acquire_serving_lane(directed: bool) -> ServingLanePermit {
+    // Non-directed reserves within the (MAX_LANES-1) budget FIRST, so the physical-lane
+    // acquire below can never let non-directed work starve a directed caller.
+    let nondirected = if directed {
+        None
+    } else {
+        let sem = nondirected_lanes().clone();
+        let permit = match sem.clone().try_acquire_owned() {
+            Ok(p) => p,
+            Err(_) => {
+                tracing::info!(
+                    probe_class = "serving.lane.nondirected_waiting",
+                    "non-directed model call waiting — a lane is reserved for directed turns (#139)"
+                );
+                sem.acquire_owned()
+                    .await
+                    .expect("non-directed-lane semaphore is never closed")
+            }
+        };
+        Some(permit)
+    };
+    let lane = serving_lanes()
+        .clone()
+        .acquire_owned()
+        .await
+        .expect("serving-lane semaphore is never closed");
+    ServingLanePermit {
+        _lane: lane,
+        _nondirected: nondirected,
+        _inflight: InflightModelCall::enter(),
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, TS, PartialEq)]
 #[serde(rename_all = "camelCase")]
 #[ts(
@@ -373,5 +473,52 @@ mod tests {
             try_hold_ambient_turn().expect("dropping a finished turn frees its slot for the next");
         drop(reclaimed);
         drop(held); // release the rest → back to all-free for any later test
+    }
+
+    // what this catches (#139 lane starvation): a directed (addressed) turn must never
+    // queue behind non-directed model calls. Non-directed callers are capped at
+    // (MAX_LANES-1) lanes, so a directed caller always finds a reserved lane — this is
+    // the fix for the glass-boxed 8-minute directed-turn wait behind an idle self-tick
+    // + one long ambient turn on the two decode lanes. This is the only test that
+    // touches the process-global serving-lane semaphores, so it starts all-free.
+    #[tokio::test]
+    async fn directed_turn_always_finds_a_reserved_lane() {
+        use std::time::Duration;
+        let budget = nondirected_lane_budget();
+
+        // Fill the ENTIRE non-directed budget (all lanes idle/ambient work may hold).
+        let mut nondirected = Vec::new();
+        for _ in 0..budget {
+            nondirected.push(acquire_serving_lane(false).await);
+        }
+
+        // On a machine with a lane to reserve (MAX_LANES >= 2), a directed call still
+        // acquires immediately — it is not blocked by the saturated non-directed budget.
+        if serving_lane_count() > 1 {
+            let directed = tokio::time::timeout(
+                Duration::from_millis(250),
+                acquire_serving_lane(true),
+            )
+            .await;
+            assert!(
+                directed.is_ok(),
+                "a directed turn must get a reserved lane, never queue behind non-directed work"
+            );
+
+            // And a FURTHER non-directed call must now WAIT (its budget is full) — it
+            // times out rather than stealing the lane the directed turn is using.
+            let extra_nondirected = tokio::time::timeout(
+                Duration::from_millis(150),
+                acquire_serving_lane(false),
+            )
+            .await;
+            assert!(
+                extra_nondirected.is_err(),
+                "non-directed work over its (MAX_LANES-1) budget must wait, not preempt"
+            );
+            drop(directed);
+        }
+
+        drop(nondirected); // release → all lanes free for any later test
     }
 }
