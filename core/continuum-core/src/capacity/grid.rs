@@ -173,6 +173,116 @@ pub fn placement_oom_count(grid: &GridSnapshot, req: &LeaseRequest, placement: &
     ooms
 }
 
+/// Which node a verdict speaks about.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum NodePick {
+    Local,
+    Peer(PeerId),
+}
+
+/// The glass box's per-node fact at one tick: what the node offered, what the placement put on
+/// it, and whether that was honest. Derived by the simulator from snapshot + placement — never
+/// from the policy's internals — so EVERY policy (deterministic today, learned/persona later,
+/// which can't explain themselves) gets the same audit for free. The trace is the explanation.
+#[derive(Debug, Clone)]
+pub struct NodeVerdict {
+    pub node: NodePick,
+    pub reachable: bool,
+    pub free_bytes: u64,
+    pub assigned_lanes: u32,
+    /// Lanes assigned beyond what this node's live free GPU holds — the per-node OOM.
+    pub overflowed: bool,
+    /// Lanes assigned to a node that cannot serve them (unreachable/gone).
+    pub stranded_lanes: u32,
+}
+
+/// One placement decision, glass-boxed: when, by whom, what it did to every node, and what the
+/// world thought of it. This is the observability-as-substrate seam (CaptureSink pattern) for
+/// the allocator: Noop by default at zero cost, recorded when we want to SEE what it did — in
+/// the sim now, on the live governor's watch loop later (same type, probe!/jsonl sink).
+#[derive(Debug, Clone)]
+pub struct PlacementDecision {
+    pub t_ms: u64,
+    pub policy: &'static str,
+    pub verdicts: Vec<NodeVerdict>,
+    pub placement: Placement,
+    pub want: u32,
+    pub experience: f32,
+}
+
+impl PlacementDecision {
+    /// One human-readable line per decision — the "what is it doing RIGHT NOW" view.
+    pub fn render(&self) -> String {
+        // Last 8 hex chars: as distinguishing as the first 8 for random v4 ids, and still
+        // distinct for `from_u128` test ids (which zero-pad the FRONT).
+        let short = |p: &PeerId| {
+            let s = p.to_string();
+            s.chars().skip(s.len().saturating_sub(8)).collect::<String>()
+        };
+        let mut placed: Vec<String> = Vec::new();
+        if self.placement.local_lanes > 0 {
+            placed.push(format!("local:{}", self.placement.local_lanes));
+        }
+        for (peer, n) in &self.placement.remote {
+            placed.push(format!("{}:{}", short(peer), n));
+        }
+        let mut trouble: Vec<String> = Vec::new();
+        for v in &self.verdicts {
+            let name = match &v.node {
+                NodePick::Local => "local".to_string(),
+                NodePick::Peer(p) => short(p),
+            };
+            if v.stranded_lanes > 0 {
+                trouble.push(format!("STRANDED {} lanes on {} (unreachable)", v.stranded_lanes, name));
+            } else if v.overflowed {
+                trouble.push(format!("OOM on {} ({} lanes > {}GB free)", name, v.assigned_lanes, v.free_bytes / GB));
+            } else if !v.reachable && v.assigned_lanes == 0 {
+                trouble.push(format!("{} unreachable, skipped", name));
+            }
+        }
+        format!(
+            "t={}s [{}] {}/{} lanes → [{}] exp={:.2}{}",
+            self.t_ms / 1000,
+            self.policy,
+            self.placement.total(),
+            self.want,
+            placed.join(" "),
+            self.experience,
+            if trouble.is_empty() { String::new() } else { format!(" | {}", trouble.join("; ")) }
+        )
+    }
+}
+
+/// The capture seam. [`NoopGridCapture`] is the zero-cost default; [`RecordingGridCapture`]
+/// keeps the full trace for tests, the gym's replay, and the (coming) `capacity/simulate`
+/// command that lets anyone watch a policy think.
+pub trait GridCaptureSink {
+    fn capture(&mut self, decision: PlacementDecision);
+}
+
+/// Default: capture nothing, cost nothing.
+pub struct NoopGridCapture;
+impl GridCaptureSink for NoopGridCapture {
+    fn capture(&mut self, _decision: PlacementDecision) {}
+}
+
+/// The glass box: every decision kept, renderable as a timeline a human (or the apex judge)
+/// reads top to bottom.
+#[derive(Default)]
+pub struct RecordingGridCapture {
+    pub decisions: Vec<PlacementDecision>,
+}
+impl GridCaptureSink for RecordingGridCapture {
+    fn capture(&mut self, decision: PlacementDecision) {
+        self.decisions.push(decision);
+    }
+}
+impl RecordingGridCapture {
+    pub fn render(&self) -> String {
+        self.decisions.iter().map(|d| d.render()).collect::<Vec<_>>().join("\n")
+    }
+}
+
 /// One tick of the grid world: the full snapshot AT this virtual time.
 #[derive(Debug, Clone)]
 pub struct GridEvent {
@@ -204,6 +314,15 @@ pub struct GridSimulator;
 
 impl GridSimulator {
     pub fn run(scenario: &GridScenario, policy: &dyn GridPlacementPolicy) -> GridRunResult {
+        Self::run_traced(scenario, policy, &mut NoopGridCapture)
+    }
+
+    /// The glass-boxed run: same simulation, every decision captured with per-node verdicts.
+    pub fn run_traced(
+        scenario: &GridScenario,
+        policy: &dyn GridPlacementPolicy,
+        sink: &mut dyn GridCaptureSink,
+    ) -> GridRunResult {
         let mut score = Score::default();
         let mut placements = Vec::with_capacity(scenario.timeline.len());
         let mut experience_sum = 0.0_f32;
@@ -225,8 +344,10 @@ impl GridSimulator {
             let effective = placement.total().saturating_sub(stranded);
             let want = scenario.demand.want_concurrency.max(1) as f32;
             let served = (effective as f32 / want).clamp(0.0, 1.0);
-            experience_sum += score_experience(&room_faculties(ooms == 0, served));
+            let experience = score_experience(&room_faculties(ooms == 0, served));
+            experience_sum += experience;
 
+            sink.capture(Self::explain(ev, &scenario.demand, &placement, policy.name(), experience));
             last = Some(placement.clone());
             placements.push(placement);
         }
@@ -235,6 +356,63 @@ impl GridSimulator {
             score.mean_experience = experience_sum / scenario.timeline.len() as f32;
         }
         GridRunResult { score, placements }
+    }
+
+    /// Build the per-node verdicts for one decision from FACTS (snapshot + placement) — the
+    /// policy's internals never speak, so the audit works identically for a learned policy.
+    fn explain(
+        ev: &GridEvent,
+        req: &LeaseRequest,
+        placement: &Placement,
+        policy: &'static str,
+        experience: f32,
+    ) -> PlacementDecision {
+        let assigned = |peer: &PeerId| {
+            placement.remote.iter().find(|(p, _)| p == peer).map(|(_, n)| *n).unwrap_or(0)
+        };
+        let mut verdicts = vec![NodeVerdict {
+            node: NodePick::Local,
+            reachable: true,
+            free_bytes: ev.grid.local.gpu_free_bytes_live,
+            assigned_lanes: placement.local_lanes,
+            overflowed: (placement.local_lanes as u64).saturating_mul(req.spike_bytes)
+                > ev.grid.local.gpu_free_bytes_live,
+            stranded_lanes: 0,
+        }];
+        for p in &ev.grid.peers {
+            let lanes = assigned(&p.peer);
+            verdicts.push(NodeVerdict {
+                node: NodePick::Peer(p.peer),
+                reachable: p.reachable,
+                free_bytes: p.capacity.gpu_free_bytes_live,
+                assigned_lanes: lanes,
+                overflowed: p.reachable
+                    && (lanes as u64).saturating_mul(req.spike_bytes) > p.capacity.gpu_free_bytes_live,
+                stranded_lanes: if p.reachable { 0 } else { lanes },
+            });
+        }
+        // Placements referencing peers GONE from the snapshot entirely (not merely flagged
+        // unreachable) — fully stranded, and the glass box must say so.
+        for (peer, lanes) in &placement.remote {
+            if !ev.grid.peers.iter().any(|p| p.peer == *peer) {
+                verdicts.push(NodeVerdict {
+                    node: NodePick::Peer(*peer),
+                    reachable: false,
+                    free_bytes: 0,
+                    assigned_lanes: *lanes,
+                    overflowed: false,
+                    stranded_lanes: *lanes,
+                });
+            }
+        }
+        PlacementDecision {
+            t_ms: ev.t_ms,
+            policy,
+            verdicts,
+            placement: placement.clone(),
+            want: req.want_concurrency,
+            experience,
+        }
     }
 }
 
@@ -298,6 +476,54 @@ pub fn grid_week() -> GridScenario {
                 },
             },
         ],
+    }
+}
+
+/// Deterministic hash (splitmix64) — the swarm's churn source. NOT randomness: the same
+/// (seed, peer, tick) always yields the same world, so a swarm scenario is as replayable as a
+/// hand-written one. Determinism is what makes a 2000-decision swarm a regression TEST.
+fn churn(seed: u64) -> u64 {
+    let mut z = seed.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^ (z >> 31)
+}
+
+/// The BitTorrent-shaped world: `n_peers` endpoints that flap like download peers — each tick
+/// any peer may vanish or reappear (~70% uptime), and each REACHABLE peer's free GPU wobbles
+/// (2..10GB) because its OWNER's work (their game, their render, their own personas) eats and
+/// frees it. Nobody is stable; the swarm as a whole is. The local node is deliberately tiny
+/// (1 lane) so the demand can only be met by riding the churn.
+pub fn bittorrent_swarm(n_peers: u64, n_ticks: u64) -> GridScenario {
+    let dev = |free_gb: u64| DeviceCapacity {
+        gpu_total_bytes: 16 * GB,
+        gpu_free_bytes_live: free_gb * GB,
+        system_ram_free_bytes: 16 * GB,
+    };
+    let timeline = (0..n_ticks)
+        .map(|tick| {
+            let peers = (0..n_peers)
+                .map(|i| {
+                    let roll = churn(i * 7919 + tick * 104_729);
+                    PeerCapacity {
+                        peer: PeerId::from_u128(100 + i as u128),
+                        // ~70% uptime — endpoints appear and disappear like torrent peers.
+                        reachable: roll % 10 < 7,
+                        // Their own workloads eat and free THEIR GPUs tick to tick.
+                        capacity: dev(2 + (roll >> 8) % 9),
+                    }
+                })
+                .collect();
+            GridEvent {
+                t_ms: tick * 10_000,
+                grid: GridSnapshot { local: dev(3), peers },
+            }
+        })
+        .collect();
+    GridScenario {
+        name: "bittorrent-swarm",
+        demand: LeaseRequest { consumer: "serving".into(), want_concurrency: 8, spike_bytes: 2 * GB },
+        timeline,
     }
 }
 
@@ -397,5 +623,98 @@ mod tests {
             0,
             "and honesty means zero per-node overflow"
         );
+    }
+
+    // what this catches: BITTORRENT SCALE. 40 peers flapping at ~70% uptime for 200 ticks, every
+    // reachable peer's free GPU wobbling under its OWNER's workloads — 200 placements over a
+    // world where no individual node is ever stable. The live policy must ride the churn: zero
+    // per-node OOMs, zero stranded lanes, demand nearly always met (the swarm is collectively
+    // reliable even though every endpoint is individually flaky — the BitTorrent property), and
+    // the placement visibly ADAPTS (it changes with the churn rather than freezing). The sticky
+    // init-time control drowns: its boot placement strands lanes across the run. If the live
+    // policy ever strands or OOMs here, the fabric does not actually handle P2P churn.
+    #[test]
+    fn live_placement_rides_bittorrent_churn_at_swarm_scale() {
+        let scenario = bittorrent_swarm(40, 200);
+        let live = GridSimulator::run(&scenario, &LocalFirstFitPolicy { safety_margin_bytes: GB });
+        let sticky = GridSimulator::run(
+            &scenario,
+            &StickyPlacementPolicy::new(LocalFirstFitPolicy { safety_margin_bytes: GB }),
+        );
+
+        assert_eq!(live.score.oom_count, 0, "no node ever overflows, at any tick");
+        assert_eq!(live.score.stranded_lanes, 0, "no lane is ever left on a vanished peer");
+        assert!(
+            live.score.mean_experience > 0.95,
+            "a 40-peer swarm at 70% uptime collectively covers 8 lanes essentially always \
+             (the BitTorrent property), got {}",
+            live.score.mean_experience
+        );
+        assert!(
+            live.score.grant_changes > 100,
+            "the placement must FOLLOW the churn (peers flap every tick), got {} changes",
+            live.score.grant_changes
+        );
+        assert!(
+            sticky.score.stranded_lanes > 50,
+            "the init-time placement strands lanes all run long as its boot-time peers flap, \
+             got {}",
+            sticky.score.stranded_lanes
+        );
+        assert!(
+            live.score.mean_experience > sticky.score.mean_experience,
+            "riding the churn beats freezing at boot on the perception reward \
+             (live={}, sticky={})",
+            live.score.mean_experience,
+            sticky.score.mean_experience
+        );
+    }
+
+    // what this catches: the GLASS BOX. Running traced must yield one decision per tick whose
+    // verdicts explain, from facts, what the policy did to every node — including naming the
+    // dead peer at t=20min as unreachable/skipped and (for the sticky control) calling out
+    // STRANDED lanes explicitly. If the trace goes silent or stops naming trouble, the allocator
+    // is a black box again and nobody can see why a room degraded.
+    #[test]
+    fn glass_box_trace_explains_every_decision_including_the_trouble() {
+        let scenario = grid_week();
+
+        // Live policy: the t=20min decision must show the dead big peer skipped, not used.
+        let mut live_box = RecordingGridCapture::default();
+        GridSimulator::run_traced(
+            &scenario,
+            &LocalFirstFitPolicy { safety_margin_bytes: GB },
+            &mut live_box,
+        );
+        assert_eq!(live_box.decisions.len(), scenario.timeline.len(), "one decision per tick");
+        let t20 = &live_box.decisions[1];
+        assert!(
+            t20.render().contains("unreachable, skipped"),
+            "the trace must NAME the dead peer being skipped: {}",
+            t20.render()
+        );
+        let dead_verdict = t20
+            .verdicts
+            .iter()
+            .find(|v| !v.reachable && matches!(v.node, NodePick::Peer(_)))
+            .expect("the dead peer appears in the verdicts");
+        assert_eq!(dead_verdict.assigned_lanes, 0, "and it got nothing");
+
+        // Sticky control: the same tick's trace must SHOUT the stranded lanes.
+        let mut sticky_box = RecordingGridCapture::default();
+        GridSimulator::run_traced(
+            &scenario,
+            &StickyPlacementPolicy::new(LocalFirstFitPolicy { safety_margin_bytes: GB }),
+            &mut sticky_box,
+        );
+        assert!(
+            sticky_box.decisions[1].render().contains("STRANDED"),
+            "stranded lanes must be called out, loudly: {}",
+            sticky_box.decisions[1].render()
+        );
+
+        // Human view (visible under `cargo test ... -- --nocapture`): the week, as a story.
+        println!("--- grid-week, live policy ---\n{}", live_box.render());
+        println!("--- grid-week, sticky control ---\n{}", sticky_box.render());
     }
 }
