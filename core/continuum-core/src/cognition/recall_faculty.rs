@@ -345,6 +345,34 @@ fn strip_action_stamp(entry: &str) -> &str {
         .trim()
 }
 
+/// #166 near-duplicate collapse: are two surfaced memories "the same thing restated"?
+/// After collapsing whitespace + lowercasing, they are if one is a prefix of the other
+/// OR they share an identical head of [`NEAR_DUP_HEAD_CHARS`]. This is what keeps three
+/// near-identical own turns ("I ran `code/tree` to explore the workspace…" with
+/// different tails) from taking every recall slot with one restated thought. Deliberately
+/// conservative — genuinely distinct memories almost never share a 48-char identical head
+/// — so a distinct memory is never collapsed. Char-boundary safe (operates on chars,
+/// not bytes).
+const NEAR_DUP_HEAD_CHARS: usize = 48;
+
+fn recall_near_duplicate(a: &str, b: &str) -> bool {
+    fn norm(s: &str) -> String {
+        s.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase()
+    }
+    let (na, nb) = (norm(a), norm(b));
+    if na.is_empty() || nb.is_empty() {
+        return false;
+    }
+    if na.starts_with(&nb) || nb.starts_with(&na) {
+        return true;
+    }
+    let head = |s: &str| s.chars().take(NEAR_DUP_HEAD_CHARS).collect::<String>();
+    let (ha, hb) = (head(&na), head(&nb));
+    ha.chars().count() >= NEAR_DUP_HEAD_CHARS
+        && hb.chars().count() >= NEAR_DUP_HEAD_CHARS
+        && ha == hb
+}
+
 /// Minimum stripped-body length for a working-memory entry to gate recall dedup. A
 /// trivially-short trace (e.g. an empty or one-token action) is too generic to safely
 /// prefix-match a distinct engram, so it never suppresses recall — only a substantive
@@ -491,6 +519,19 @@ impl Faculty for RecallFaculty {
             }
             if !passes_gate {
                 continue; // does not stand out from the pool — junk in the prompt
+            }
+            // #166: skip a memory that merely RESTATES one already surfaced this tick.
+            // The persona's own near-identical recent turns (e.g. three "I ran
+            // `code/tree` to explore the workspace…" with different tails) otherwise
+            // take every recall slot with one restated thought, drowning distinct
+            // knowledge — and recall-hit uplift then entrenches the restatement. Keep
+            // the highest-blend copy (we scan best-first) and `continue` scanning for a
+            // genuinely different memory, mirroring the `passes_gate` skip above.
+            if surfaced
+                .iter()
+                .any(|(_, e, _, _)| recall_near_duplicate(&e.content, &engram.content))
+            {
+                continue;
             }
             let est = estimate_recall_tokens(&engram.content);
             // Always admit the first qualifying memory (don't starve recall on a
@@ -719,6 +760,28 @@ fn humanize_age(delta_ms: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches (#166): the persona's own near-identical recent turns must
+    // collapse to ONE recall slot, not take three — three "I ran `code/tree` to
+    // explore the workspace…" with different tails otherwise drown distinct knowledge,
+    // and recall-hit uplift then entrenches the restatement. Distinct memories, and
+    // ones that merely share a short lead, are NEVER collapsed.
+    #[test]
+    fn near_identical_own_turns_collapse_but_distinct_memories_survive() {
+        let a = "I ran `code/tree` to explore the workspace structure, and I see a Rust project";
+        let b = "I ran `code/tree`  to explore the workspace structure, and I found several dirs"; // same 48-char head, different tail + whitespace
+        let c = "The deploy pipeline went green after the 4pm fix to the auth handler";
+        // Same restated thought → near-duplicate.
+        assert!(recall_near_duplicate(a, b));
+        // Prefix relationship → near-duplicate.
+        assert!(recall_near_duplicate("I ran code/tree to explore", "I ran code/tree to explore the whole tree"));
+        // Genuinely different memory → NOT collapsed.
+        assert!(!recall_near_duplicate(a, c));
+        // Short shared lead only (< head window, no prefix) → NOT collapsed.
+        assert!(!recall_near_duplicate("the cat sat on the mat", "the cat ran up the wall today"));
+        // Empty never collapses.
+        assert!(!recall_near_duplicate("", a));
+    }
 
     // what this catches: bracket-tagged perception annotations ([pattern], [room …])
     // are never the recall query — the query is the newest MESSAGE. Regression for
