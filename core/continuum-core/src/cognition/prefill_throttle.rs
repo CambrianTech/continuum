@@ -27,6 +27,14 @@ use crate::capacity::{AllocationPolicy, DeviceCapacity, FitPolicy, LeaseRequest}
 /// compute-buffer headroom) is process-global, same granularity argument as the lane gate.
 static THROTTLE: OnceLock<PrefillThrottle> = OnceLock::new();
 
+/// Consecutive reconciles a GROW must persist before it applies (≈15s at the serving
+/// daemon's 5s cadence). Shrink is exempt — the safety direction is always instant.
+/// Asymmetric hysteresis, observed necessary live 2026-07-16 within minutes of first boot:
+/// `available(Vram)` rides the fit boundary tick to tick (UMA free wobbles with caches/KV)
+/// and the grant flapped 1↔2 every 5s. Fail-safe fast, recover deliberate.
+/// [[never-thrash-sticky-hysteresis-on-every-lane]]
+const GROW_STICKINESS_TICKS: usize = 3;
+
 pub struct PrefillThrottle {
     sem: Arc<tokio::sync::Semaphore>,
     /// Permits conceptually installed (a Semaphore only exposes AVAILABLE). Shrink debt is
@@ -37,6 +45,8 @@ pub struct PrefillThrottle {
     spike_bytes: AtomicU64,
     /// The served lane count — the demand ceiling the fit is clamped to.
     want_lanes: AtomicUsize,
+    /// Consecutive reconciles that wanted a grow — gate for [`GROW_STICKINESS_TICKS`].
+    grow_streak: AtomicUsize,
     /// Serializes reconcile's read-modify-write on (installed, semaphore).
     reconcile_lock: Mutex<()>,
 }
@@ -51,6 +61,7 @@ fn throttle() -> &'static PrefillThrottle {
             installed: AtomicUsize::new(lanes),
             spike_bytes: AtomicU64::new(0),
             want_lanes: AtomicUsize::new(lanes),
+            grow_streak: AtomicUsize::new(0),
             reconcile_lock: Mutex::new(()),
         }
     })
@@ -96,19 +107,31 @@ pub fn reconcile(gpu_free_bytes_live: u64) -> usize {
 }
 
 impl PrefillThrottle {
-    /// Apply a target permit count: grow instantly, shrink what's collectable now and leave
-    /// the rest as debt for the next reconcile (in-flight prefills finish, permits return,
-    /// the retry collects them). Never blocks, never revokes running work.
+    /// Apply a target permit count, asymmetrically: SHRINK is instant (collect what's idle
+    /// now, leave the rest as debt later reconciles drain as in-flight prefills finish);
+    /// GROW only lands after [`GROW_STICKINESS_TICKS`] consecutive reconciles wanted it —
+    /// sustained headroom, not one optimistic reading. Never blocks, never revokes running
+    /// work, never thrashes on a boundary-riding live number.
     fn apply(&self, target: usize) -> usize {
         let target = target.max(1); // a resident model may always run ONE prefill (residency decision)
         let _g = self.reconcile_lock.lock().expect("prefill reconcile lock never poisoned");
         let installed = self.installed.load(Ordering::Acquire);
         if target > installed {
-            self.sem.add_permits(target - installed);
-            self.installed.store(target, Ordering::Release);
-        } else if target < installed {
-            let forgotten = self.sem.forget_permits(installed - target);
-            self.installed.store(installed - forgotten, Ordering::Release);
+            // The recovery direction: deliberate. One tick of headroom is often UMA cache
+            // wobble; demand the signal persist before paying the flap.
+            let streak = self.grow_streak.fetch_add(1, Ordering::AcqRel) + 1;
+            if streak >= GROW_STICKINESS_TICKS {
+                self.sem.add_permits(target - installed);
+                self.installed.store(target, Ordering::Release);
+                self.grow_streak.store(0, Ordering::Release);
+            }
+        } else {
+            self.grow_streak.store(0, Ordering::Release);
+            if target < installed {
+                // The safety direction: instant, always.
+                let forgotten = self.sem.forget_permits(installed - target);
+                self.installed.store(installed - forgotten, Ordering::Release);
+            }
         }
         let now = self.installed.load(Ordering::Acquire);
         // Glass box: the valve speaks ONLY when it moves — a steady grant is silence, a
@@ -155,21 +178,43 @@ mod tests {
     /// order doesn't matter.
     static TEST_SERIAL: Mutex<()> = Mutex::new(());
 
-    // what this catches: THE LIVE SAFETY VALVE — the exact 2026-07-16 OOM shape, gated. Plan
-    // serves 4 lanes with ~2GB spikes; calm free (13GB) admits all 4 concurrent prefills; a
-    // game eats the GPU (free → 7GB) and the NEXT reconcile shrinks admission to (7−2)/2 = 2
-    // — instantly, no plan re-publish, no server respawn; the game closes (free → 13GB) and
-    // admission REGROWS to 4. This is capacity::FitPolicy — the rule the sim proves — running
-    // at the prod admission seam. If this test loses the shrink, the compute-buffer OOM is
-    // back on the table.
+    /// Force a known state regardless of sibling-test order: instant-shrink to the floor
+    /// (works because shrink has no hysteresis), then grow to `n` by sustaining headroom.
+    fn grow_to(n: usize, free: u64) -> usize {
+        assert_eq!(reconcile(0), 1, "floor reset is instant");
+        let mut last = 1;
+        for _ in 0..GROW_STICKINESS_TICKS {
+            last = reconcile(free);
+        }
+        assert_eq!(last, n, "sustained headroom grows to the fit");
+        last
+    }
+
+    // what this catches: THE LIVE SAFETY VALVE — the exact 2026-07-16 OOM shape, gated, WITH
+    // the asymmetry the first live boot proved necessary. Plan serves 4 lanes, ~2GB spikes.
+    // A game eating the GPU (free → 7GB) shrinks admission to (7−2)/2 = 2 on the VERY NEXT
+    // reconcile — the safety direction is instant, no plan re-publish, no server respawn.
+    // The game closing regrows to 4 only after GROW_STICKINESS_TICKS consecutive reconciles
+    // — one optimistic reading is UMA wobble, not recovery (observed live: the grant flapped
+    // 1↔2 every 5s tick riding the fit boundary). If shrink loses its immediacy the OOM is
+    // back; if grow loses its stickiness the thrash is back.
     #[tokio::test]
-    async fn admission_shrinks_under_external_pressure_and_regrows() {
+    async fn shrink_is_instant_grow_requires_sustained_headroom() {
         let _serial = TEST_SERIAL.lock().unwrap_or_else(|p| p.into_inner());
         publish_serving(2 * GB, 4);
+        grow_to(4, 13 * GB);
 
-        assert_eq!(reconcile(13 * GB), 4, "calm: (13−2)/2 = 5 fits → clamped to the 4 demanded");
-        assert_eq!(reconcile(7 * GB), 2, "game opens: (7−2)/2 = 2 concurrent prefills fit");
-        assert_eq!(reconcile(13 * GB), 4, "game closes: regrown to full demand — grow is first-class");
+        // Game opens: shrink lands on the FIRST reconcile that sees the pressure.
+        assert_eq!(reconcile(7 * GB), 2, "shrink is instant: (7−2)/2 = 2");
+
+        // Game closes: one good reading does NOT regrow (boundary-riding wobble)…
+        assert_eq!(reconcile(13 * GB), 2, "one optimistic tick is not recovery");
+        assert_eq!(reconcile(13 * GB), 2, "nor two");
+        // …and a dip in between resets the streak — the signal must be SUSTAINED.
+        assert_eq!(reconcile(7 * GB), 2, "a relapse resets the grow streak");
+        assert_eq!(reconcile(13 * GB), 2);
+        assert_eq!(reconcile(13 * GB), 2);
+        assert_eq!(reconcile(13 * GB), 4, "three consecutive good ticks → regrown to demand");
 
         // The applied grant is enforced, not advisory: under pressure only 2 slots grant.
         assert_eq!(reconcile(7 * GB), 2);
@@ -180,7 +225,6 @@ mod tests {
             "a third concurrent prefill must wait while pressure holds"
         );
         drop((a, b));
-        assert_eq!(reconcile(13 * GB), 4, "restore for sibling tests");
     }
 
     // what this catches: shrink DEBT self-healing. Permits held by in-flight prefills can't
@@ -192,7 +236,7 @@ mod tests {
     async fn shrink_debt_drains_as_inflight_prefills_finish() {
         let _serial = TEST_SERIAL.lock().unwrap_or_else(|p| p.into_inner());
         publish_serving(2 * GB, 4);
-        assert_eq!(reconcile(13 * GB), 4);
+        grow_to(4, 13 * GB);
 
         // 3 prefills in flight; heavy pressure wants target 1.
         let a = acquire_prefill_slot().await;
@@ -210,7 +254,5 @@ mod tests {
         // may always run one prefill — going below is a residency decision, not admission).
         drop(c);
         assert_eq!(reconcile(0), 1, "never below one");
-
-        assert_eq!(reconcile(13 * GB), 4, "restore for sibling tests");
     }
 }
