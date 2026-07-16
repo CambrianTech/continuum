@@ -73,6 +73,38 @@ const WORKING_MEMORY_SALIENCE: f32 = 0.5;
 /// ("I'll read it again") because the data never came back. [[act-results-need-a-recency-channel-not-semantic-recall]]
 pub const WM_ACTION_HEAD_CHARS: usize = 800;
 
+/// Upper bound on the FULL most-recent-action block. The full result rides in the
+/// prompt as the volatile tail (placed AFTER the byte-stable trail so the KV prefix
+/// caches) — but it re-prefills EVERY turn it's present, and it persists as "most
+/// recent action" until the next act replaces it. So a persona that runs one big
+/// `code/tree` (measured 16k chars ≈ 4k tokens — HALF the whole prompt) then has
+/// several conversational turns pays ~33s of pure re-prefill (@122 tok/s on this Mac)
+/// for that raw dump on EVERY one of those turns. This cap keeps genuine reads whole
+/// (a ~300-line source file fits) while clipping pathological dumps to a usable head
+/// plus an actionable "re-fetch narrower" marker — the mind already extracted what it
+/// needed the turn it acted, and can re-run the tool with a path/range to see more.
+/// The block is the single biggest volatile chunk of the 14k persona prompt (#139);
+/// bounding it is the OOM-safe latency lever (no lane/window change). Sits well above
+/// `WM_ACTION_HEAD_CHARS` so the trail head is never the thing that gets clipped.
+/// [[persona-turn-latency-is-slot-clobbered-reprefill]] [[act-results-need-a-recency-channel-not-semantic-recall]]
+pub const WM_ACTION_FULL_MAX_CHARS: usize = 12_000;
+
+/// Clip a full action-result body to [`WM_ACTION_FULL_MAX_CHARS`] for prompt inclusion.
+/// Returns the body unchanged when it fits; otherwise a `char`-boundary-safe head plus
+/// a marker naming exactly how many chars were dropped and how to see them (re-run the
+/// tool with a narrower scope). One place so the render site and its test agree.
+pub fn clip_action_full(full: &str) -> std::borrow::Cow<'_, str> {
+    if full.chars().count() <= WM_ACTION_FULL_MAX_CHARS {
+        return std::borrow::Cow::Borrowed(full);
+    }
+    let head: String = full.chars().take(WM_ACTION_FULL_MAX_CHARS).collect();
+    let dropped = full.chars().count() - WM_ACTION_FULL_MAX_CHARS;
+    std::borrow::Cow::Owned(format!(
+        "{head}\n[… +{dropped} chars truncated — re-run the tool with a narrower scope \
+         (a path or line range) to see the rest]"
+    ))
+}
+
 /// Max distinct dispatched (background) handles tracked at once. A persona with more than
 /// this many sentinels/compiles/debuggers in flight is unusual; past the cap the
 /// oldest-updated finished handle is evicted first (a still-running one is never dropped).
@@ -650,7 +682,10 @@ impl Faculty for WorkingMemoryFaculty {
         // Only when it carries more than the trail head already does.
         if let Some((seq, full)) = self.memory.last_action_full() {
             if full.chars().count() > WM_ACTION_HEAD_CHARS {
-                sections.push(format!("Full result of your most recent action (#{seq}):\n{full}"));
+                let clipped = clip_action_full(&full);
+                sections.push(format!(
+                    "Full result of your most recent action (#{seq}):\n{clipped}"
+                ));
             }
         }
         // Background commands the mind sent away — sentinels, compiles, debuggers —
@@ -872,6 +907,62 @@ mod tests {
         wm.record_receipt("small follow-up");
         let (seq2, _) = wm.last_action_full().unwrap();
         assert_eq!(seq2, 2, "latest-full tracks the most recent act");
+    }
+
+    // what this catches: #139 latency — a PATHOLOGICAL tool result (a huge code/tree
+    // dump ≈ 4k tokens, HALF the whole prompt) is clipped in the full-result block so it
+    // stops re-prefilling verbatim every turn it rides along as "most recent action",
+    // while a GENUINE read (a ~130-line file, the design's stated legit case) still comes
+    // through WHOLE. The clip is re-fetchable, never silent: it names the dropped size and
+    // how to see the rest. Bounding this volatile tail is the OOM-safe prefill lever.
+    #[tokio::test]
+    async fn oversized_action_result_is_clipped_but_genuine_reads_survive_whole() {
+        // A genuine read at the design's stated legit size (5k chars ≈ 130-line file) is
+        // BELOW the cap → unchanged, matches the sibling test's guarantee.
+        let genuine = "y".repeat(5_000);
+        assert_eq!(
+            clip_action_full(&genuine),
+            genuine,
+            "a genuine file read stays whole — never clipped"
+        );
+
+        // A pathological dump ABOVE the cap → clipped to the head + a re-fetch marker.
+        let dump = "z".repeat(WM_ACTION_FULL_MAX_CHARS + 4_000);
+        let clipped = clip_action_full(&dump);
+        assert!(
+            clipped.chars().count() < dump.chars().count(),
+            "the pathological dump is shorter than the raw body"
+        );
+        assert!(
+            clipped.chars().count() <= WM_ACTION_FULL_MAX_CHARS + 120,
+            "clipped to ~the cap plus the short marker, not the full 16k"
+        );
+        assert!(
+            clipped.contains("+4000 chars truncated"),
+            "the marker names exactly how much was dropped"
+        );
+        assert!(
+            clipped.contains("narrower scope"),
+            "the marker tells the mind how to see the rest — never a silent starve"
+        );
+
+        // End-to-end through the faculty: the oversized block renders clipped.
+        let wm = Arc::new(WorkingMemory::new(8));
+        wm.record_receipt(&dump);
+        let rendered = WorkingMemoryFaculty::new(wm.clone())
+            .contribute(&Workspace::new("a fresh burst"))
+            .await
+            .expect("bids")
+            .content
+            .clone();
+        assert!(
+            rendered.contains("Full result of your most recent action (#1):"),
+            "the block still surfaces"
+        );
+        assert!(
+            rendered.contains("chars truncated"),
+            "and it's the CLIPPED body, not the raw 16k dump"
+        );
     }
 
     // what this catches: the ASYNC feedback channel — a dispatched (background) command
