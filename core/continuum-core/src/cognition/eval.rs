@@ -785,19 +785,25 @@ impl CognitionEval {
         // including early-return and panic (Drop rides the unwind). Held for the whole
         // body. `None` (no live fleet — tools/tests) → nothing to quiesce; measure as-is.
         // [[benchmark-is-a-governor-preemption-lease]] [[first-class-citizens-even-during-benchmarks]]
+        // Observable via `probe!`, NOT `tracing::info!`: the eval runs across the
+        // concurrent tokio fleet where tracing lines don't survive to a readable sink
+        // ([[jtag-probes-are-rtos-debugger]]). Whether the fleet actually quiesced is
+        // load-bearing for trusting a benchmark number (contended → depressed score), so
+        // it MUST be verifiable — this probe is how we confirm the clean lane fired.
         let _fleet_lease = match crate::persona::PersonaAircRuntimeRegistry::try_global() {
             Some(r) => {
                 let lease = r.quiesce_all();
-                tracing::info!(
+                crate::probe!(
+                    class = "eval.quiesce",
                     personas = lease.count(),
                     "eval-preemption lease: fleet quiesced for the measurement"
                 );
                 Some(lease)
             }
             None => {
-                tracing::warn!(
-                    "eval-preemption: no global roster published — fleet NOT quiesced; \
-                     measurement may be GPU-contended"
+                crate::probe!(
+                    class = "eval.quiesce.absent",
+                    "eval-preemption: no global roster published — fleet NOT quiesced; measurement may be GPU-contended"
                 );
                 None
             }
