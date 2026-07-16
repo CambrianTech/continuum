@@ -55,7 +55,20 @@
 /// compute buffer now RESERVED in the fit math, giving each persona its own warm
 /// slot is memory-safe. This ceiling stays only to bound pathological demand (a
 /// runaway roster) and llama.cpp `--parallel` practicality; real fit is the fit math.
-pub const MAX_LANES: u32 = 6;
+///
+/// ⚠️ 2026-07-16 REVERTED 6 → 2 (OOM regression). Raising to 6 with the
+/// `compute_buffer_per_lane` reserve passed a SMALL-prompt 4-way burst but was false
+/// confidence: 4 lanes at a large served window (15104) + ~10k-token prompts blew the
+/// Metal pool again (`kIOGPU…OutOfMemory`, 35 errors / 120 log lines). The reserve's bug
+/// is that the transient prefill compute buffer is NOT a weights-fraction constant — it
+/// scales with the WINDOW (prefill attention graph ≈ O(ubatch × n_ctx)), so a
+/// window-independent reserve under-provisions exactly as the window grows, and 4
+/// concurrent large-window prefills overflow. The real slot-per-persona win needs a
+/// WINDOW-SCALED compute term (reserve ∝ n_ctx) validated with LARGE prompts + real GPU
+/// contention, not a small-prompt burst. Until then, 2 is the floor of safety; the
+/// compute_buffer_per_lane reserve stays (harmless at 2 lanes, correct direction).
+/// [[verify-real-device-numbers-not-a-clamp-premise]]
+pub const MAX_LANES: u32 = 2;
 
 /// Bare-minimum served window for a model to be runnable at ALL — a hardware
 /// reality floor, NOT a serving target or a cheapening cap. The served window is
@@ -553,33 +566,29 @@ mod tests {
         assert!(lean.lanes > fat.lanes, "lean {} should beat fat {}", lean.lanes, fat.lanes);
     }
 
-    // what this catches: #139 — the compute-buffer headroom term makes N-lane serving
-    // fit BOTH resident KV and the N concurrent prefill compute buffers, so a roomy
-    // host follows persona DEMAND (each persona its own warm slot) instead of the old
-    // flat MAX_LANES=2 clamp — WITHOUT the 2026-07-14 compute-buffer OOM. On the real
-    // box (24B ≈ 13.6GB weights, ~26GB usable serving slice) 4 personas each get a slot,
-    // and the window still exceeds a live persona prompt.
+    // what this catches: the plan CAPS lane count at the MAX_LANES safety ceiling AND
+    // reserves the concurrent compute buffers, so resident KV + those buffers fit the
+    // budget (no OOM by construction). MAX_LANES was raised to 6 on 2026-07-16 to give
+    // each persona a warm slot, then REVERTED to 2 same-day after it re-OOM'd at large
+    // windows — the transient prefill compute buffer scales with n_ctx, not weights, so a
+    // window-independent reserve under-provisions and 4 concurrent large-window prefills
+    // overflow. Whatever the ceiling, the fit invariant below must hold.
     #[test]
-    fn demand_drives_lanes_with_compute_buffer_reserved_and_still_fits() {
+    fn lane_count_respects_the_safety_ceiling_and_reserves_compute_buffers() {
         // 24B-class: 13.6GB weights, kv_per_token ~156KB/token (measured), ~26GB usable.
         let m = fp("devstral-24b", 13, 156_000, 131_072, 9);
         let host = HostBudget { usable_bytes: 26 * GB, perf_cores: 10 };
 
-        // 4 personas demand 4 lanes — and the compute-buffer-aware fit GRANTS them
-        // (old MAX_LANES=2 would have clamped to 2, forcing the clobber).
+        // 4 personas demand 4 lanes, but the MAX_LANES safety ceiling caps it.
         let plan = plan_serving(host, std::slice::from_ref(&m), 4).unwrap();
-        assert_eq!(plan.lanes, 4, "4 personas each get their own warm slot: {}", plan.rationale);
-
-        // The per-slot window still comfortably exceeds a live persona prompt (~10k
-        // tokens post-clip) — the point is a warm slot per persona, not a starved one.
-        assert!(
-            plan.served_context_window >= 12_000,
-            "each of the 4 slots keeps a usable window, got {}",
-            plan.served_context_window
+        assert_eq!(
+            plan.lanes, MAX_LANES,
+            "demand is capped to the MAX_LANES safety ceiling: {}",
+            plan.rationale
         );
 
-        // And the plan FITS: weights + 4×KV@window + 4×compute buffer ≤ budget. This is
-        // the invariant the old KV-only math violated (it left no room for the buffers).
+        // The plan FITS: weights + lanes×KV@window + lanes×compute buffer ≤ budget — the
+        // invariant the KV-only math violated (it left no room for the buffers).
         let kv = m.kv_at(plan.served_context_window) * plan.lanes as u64;
         let compute = m.compute_buffer_per_lane() * plan.lanes as u64;
         assert!(
