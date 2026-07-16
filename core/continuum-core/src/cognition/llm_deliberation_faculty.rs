@@ -375,6 +375,21 @@ impl LlmDeliberationFaculty {
         (context_window / 4).max(256)
     }
 
+    /// The window this turn may actually size its prompt + reply to: the persona's
+    /// provisioned window, but NEVER above the LIVE served per-slot window (#175). A
+    /// lane relaunch can shrink the served slot below the spawn-time pin; budgeting to
+    /// the stale-larger pin overflows the slot → poisoned-slot "Compute error". Pure so
+    /// the invariant is unit-tested without a live gateway. A not-ready / zero-window
+    /// snapshot (mid-relaunch) yields the provisioned window unchanged — the next ready
+    /// tick re-clamps.
+    fn clamp_window_to_served(provisioned: u32, served_ready: bool, served_window: u32) -> u32 {
+        if served_ready && served_window > 0 {
+            provisioned.min(served_window)
+        } else {
+            provisioned
+        }
+    }
+
     /// Build a generation request for the message thread. Centralized so the
     /// first prompt and any future re-prompt share one shape. Takes the model
     /// binding as an already-loaded snapshot (`contribute` loads it ONCE per turn)
@@ -986,7 +1001,44 @@ impl Faculty for LlmDeliberationFaculty {
         // never tear them apart. `load_full` (owned `Arc`) is held across the
         // `.await` below; a swap that happens after this load takes effect on the
         // NEXT turn. See [`ModelBinding`].
-        let binding = self.binding.load_full();
+        let loaded = self.binding.load_full();
+        // #175: never size this turn's {prompt + reply reserve} above the LIVE served
+        // per-slot window. A lane relaunch can shrink the slot BELOW this persona's
+        // spawn-time pin (the daemon re-computes `-c` against live memory and the
+        // per-slot window drifts), and a prompt over the slot overflows `llama_decode`
+        // → 500 "Compute error" that POISONS the slot for EVERY later request (the
+        // wedge storm this whole task chased). Both the prompt budget (`prompt_view`)
+        // and the completion reserve (`build_request`) derive from THIS one
+        // `binding.context_window`, so clamping here keeps them in agreement AND makes
+        // overflow impossible by construction — the fix for the ROOT, not a restart of
+        // the symptom. A 0/not-ready snapshot (mid-relaunch) leaves the provisioned
+        // window; the next ready tick re-clamps. Model + adapter stay the same atomic
+        // triple. [[fallbacks-are-illegal-fail-loud]] [[never-thrash-sticky-hysteresis-on-every-lane]]
+        let binding = {
+            let live = crate::inference::llama_server::current_serving();
+            let effective = Self::clamp_window_to_served(
+                loaded.context_window,
+                live.ready,
+                live.served_context_window,
+            );
+            if effective == loaded.context_window {
+                loaded
+            } else {
+                tracing::info!(
+                    persona = %self.persona_name,
+                    provisioned = loaded.context_window,
+                    served = effective,
+                    probe_class = "delib.window.clamp",
+                    "clamped this turn's prompt budget to the live served slot — lane \
+                     relaunched smaller than the spawn-time pin (#175)"
+                );
+                std::sync::Arc::new(ModelBinding {
+                    adapter: std::sync::Arc::clone(&loaded.adapter),
+                    model: loaded.model.clone(),
+                    context_window: effective,
+                })
+            }
+        };
         let view = self.prompt_view_within(ws, binding.context_window);
         // Introspection seam: emit EXACTLY what the model sees this tick. The RAG
         // is the load-bearing input — never opaque. Enable the `cognition` log
@@ -1225,6 +1277,37 @@ mod tests {
     // framing — never on the generated text.
     mod prompt_shaping {
         use super::*;
+
+        // what this catches (#175 root fix): a persona's prompt+reply must NEVER be
+        // budgeted above the LIVE served per-slot window. A lane relaunch can shrink
+        // the slot below the spawn-time pin; budgeting to the stale-larger pin
+        // overflows llama_decode → poisoned-slot "Compute error" storm. The clamp is
+        // the invariant: min-to-served when a real window is known, provisioned
+        // otherwise (a mid-relaunch 0/not-ready snapshot must never clamp to 0).
+        #[test]
+        fn prompt_window_is_clamped_to_the_live_served_slot() {
+            // Lane relaunched SMALLER than the pin → clamp DOWN to the served slot.
+            assert_eq!(
+                LlmDeliberationFaculty::clamp_window_to_served(53_760, true, 49_664),
+                49_664,
+                "a stale-larger pin must be clamped to the real slot, never overflow it"
+            );
+            // Pin already fits the slot → unchanged (never grow past what's served).
+            assert_eq!(
+                LlmDeliberationFaculty::clamp_window_to_served(40_000, true, 49_664),
+                40_000
+            );
+            // Mid-relaunch: not-ready or zero window → keep the provisioned window,
+            // NEVER clamp to 0 (0 would zero the whole budget and mute the persona).
+            assert_eq!(
+                LlmDeliberationFaculty::clamp_window_to_served(49_664, false, 0),
+                49_664
+            );
+            assert_eq!(
+                LlmDeliberationFaculty::clamp_window_to_served(49_664, true, 0),
+                49_664
+            );
+        }
 
         // what this catches: a persona's VERBATIM-duplicate turns are DROPPED
         // after the first in her thread projection — replaying `assistant: X`
