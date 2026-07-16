@@ -1378,7 +1378,13 @@ pub fn start_server(
     // ("No module registered for this command prefix") — a discoverability lie.
     // The slot is filled by `install_executor_on_all` after all registration,
     // so ordering here is irrelevant.
-    runtime.register(Arc::new(crate::modules::chat::ChatModule::new()));
+    let chat_module = Arc::new(crate::modules::chat::ChatModule::new());
+    // #140: the durable-transcript writer — persists every `chat:posted`
+    // projection (persona say + human chat/send, the one seam both cross)
+    // into the chat store. A bus-receiver task, not an event_subscription
+    // (publish_async_only never dispatches module subscriptions).
+    crate::modules::chat::spawn_persist_listener(runtime.bus_arc(), chat_module.clone());
+    runtime.register(chat_module);
 
     // Phase 4a: LoggerModule (absorbs standalone logger worker)
     // Provides log/write, log/ping via main socket

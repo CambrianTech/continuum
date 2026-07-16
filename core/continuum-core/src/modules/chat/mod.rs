@@ -404,12 +404,116 @@ impl ChatModule {
             }),
         }
     }
+
+    /// Persist one `chat:posted` projection into the durable chat store (#140).
+    ///
+    /// The projection is the ONE seam every room line crosses — a persona's
+    /// `say()` and a human/web `chat/send` alike — so persisting here makes the
+    /// transcript durable for BOTH speakers with one writer. Idempotent by id:
+    /// a human line was already stored by `send()` under the same `messageId`
+    /// (the envelope carries it through the projection), so the second write
+    /// reports `success=false` (unique id) and is skipped with a probe — an
+    /// EXPECTED duplicate, never an error. A persona line's id is airc's
+    /// `event_id` (stable across replay), so restarts can't double-store either.
+    pub async fn persist_posted(&self, payload: Value) -> Result<(), String> {
+        let executor = self.executor();
+        let field = |k: &str| -> Result<String, String> {
+            payload
+                .get(k)
+                .and_then(Value::as_str)
+                .map(String::from)
+                .ok_or_else(|| format!("chat:posted payload missing `{k}`: {payload}"))
+        };
+        let message_id = field("messageId")?;
+        let room_id = field("roomId")?;
+        let sender_id = field("senderId")?;
+        let content = field("content")?;
+        let occurred_at_ms = payload
+            .get("timestamp")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| format!("chat:posted payload missing `timestamp`: {payload}"))?;
+        let iso = now_iso(occurred_at_ms);
+
+        // Same ChatMessageEntity shape `send()` writes — one entity, two writers
+        // converging on one row id. `metadata.source: "user"` for both: personas
+        // are citizens (users), not system lines; WHO spoke is `senderId`.
+        let entity_data = json!({
+            "id": message_id,
+            "roomId": room_id,
+            "senderId": sender_id,
+            "timestamp": iso,
+            "content": { "text": content },
+            "replyToId": null,
+            "metadata": { "source": "user" },
+            "status": "sent",
+        });
+        let create_params = json!({
+            "dbPath": CHAT_DATA_HANDLE,
+            "collection": CHAT_MESSAGES_COLLECTION,
+            "id": message_id,
+            "data": entity_data,
+        });
+        let result = executor
+            .execute_json("data/create", create_params)
+            .await
+            .map_err(|e| format!("chat:posted persist: data/create failed: {e}"))?;
+        if result.get("success").and_then(Value::as_bool) != Some(true) {
+            // Almost always the send()-already-stored duplicate (same id). Keep it
+            // visible-but-calm: one probe line, never a hard error — a projector
+            // that errors on every human message would drown real faults.
+            let detail = result
+                .get("error")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("success=false");
+            crate::probe!(
+                class = "chat.persist.skipped",
+                message_id = message_id.as_str(),
+                detail = detail,
+                "chat:posted row not written (duplicate id or store refusal)"
+            );
+        }
+        Ok(())
+    }
 }
 
 impl Default for ChatModule {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Spawn the durable-transcript writer (#140): a bus-receiver task (same shape as
+/// `cognition::dispatch_listener::spawn`) that persists every `chat:posted` projection —
+/// the ONE seam a persona's `say()` and a human/web `chat/send` both cross — into the
+/// chat store via [`ChatModule::persist_posted`]. This is a receiver task rather than a
+/// module `event_subscription` because `chat:posted` is published with
+/// `publish_async_only`, which feeds only the broadcast channel; module subscriptions
+/// are dispatched exclusively by the synchronous `publish(..., registry)` path.
+/// Idempotent per process: spawn once at boot, next to the module's registration.
+pub fn spawn_persist_listener(
+    bus: Arc<crate::runtime::message_bus::MessageBus>,
+    module: Arc<ChatModule>,
+) {
+    let mut rx = bus.receiver();
+    tokio::spawn(async move {
+        loop {
+            let event = match rx.recv().await {
+                Ok(e) => e,
+                // Lagged (slow consumer) — keep going; a persisted line missed under lag
+                // is recoverable on the next send, and the store is not the wire.
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+            };
+            if event.name != crate::ipc::positron_source::CHAT_POSTED {
+                continue;
+            }
+            if let Err(error) = module.persist_posted(event.payload).await {
+                // Loud but non-fatal: one malformed payload must not kill the
+                // transcript writer for the rest of the process lifetime.
+                tracing::warn!(error, "chat:posted persist failed (#140)");
+            }
+        }
+    });
 }
 
 // ── time helpers ─────────────────────────────────────────────────────
@@ -452,10 +556,15 @@ impl ServiceModule for ChatModule {
             // legacy path that TS commands still use today and will
             // keep working through this module while consumers migrate.
             command_prefixes: &["chat/", "collaboration/chat/"],
-            // Chat doesn't subscribe to events directly. Substrate
-            // events (chat publish/receive) live on the airc module's
-            // subscriptions; the chat module reaches the substrate by
-            // calling airc commands, not by listening on its own.
+            // Chat doesn't use module event_subscriptions. The durable-
+            // transcript writer (#140) rides `spawn_persist_listener` (a bus
+            // receiver task, same shape as cognition::dispatch_listener)
+            // because `chat:posted` is published via `publish_async_only`,
+            // which feeds ONLY the broadcast channel — module subscriptions
+            // are dispatched exclusively by the synchronous `publish(...,
+            // registry)` path, so a subscription here would be dead wiring
+            // (verified against message_bus.rs before wiring; the
+            // "deferred tier" its docs mention is not built).
             event_subscriptions: &[],
             needs_dedicated_thread: false,
             max_concurrency: 0,
@@ -680,6 +789,118 @@ mod tests {
     }
 
     // ── config + dispatch ────────────────────────────────────────────
+
+    // what this catches: #140/#177 — the durable-transcript writer. A projected
+    // chat:posted line (a persona's spoken reply — the shape that was an
+    // airc+positron-only ghost, invisible to chat/poll, LIGHTHOUSE diagnosis
+    // 2026-07-16) must land in the chat store as a ChatMessageEntity row under the
+    // projection's messageId, with the logical sender and ISO timestamp. If this
+    // write disappears, persona speech stops surviving the process again.
+    #[tokio::test]
+    async fn chat_posted_event_persists_a_persona_line_into_the_store() {
+        let seen: Arc<Mutex<Vec<Value>>> = Arc::new(Mutex::new(Vec::new()));
+        let seen_in = seen.clone();
+        let data = StubDataModule::new(move |command, params| {
+            assert_eq!(command, "data/create", "persist path must write, not query");
+            seen_in.lock().unwrap().push(params);
+            Ok(json!({ "success": true }))
+        });
+        let chat = chat_with_stubs(vec![Arc::new(data)]);
+
+        let message_id = Uuid::new_v4();
+        let sender = Uuid::new_v4();
+        let room = Uuid::new_v4();
+        chat.persist_posted(json!({
+            "messageId": message_id,
+            "roomId": room,
+            "senderId": sender,
+            "content": "I see the word LIGHTHOUSE in the room.",
+            "timestamp": 1_784_227_923_000u64,
+        }))
+        .await
+        .expect("persist path succeeds");
+
+        let calls = seen.lock().unwrap();
+        assert_eq!(calls.len(), 1, "exactly one durable write per projected line");
+        let p = &calls[0];
+        assert_eq!(p["collection"], CHAT_MESSAGES_COLLECTION);
+        assert_eq!(p["id"], message_id.to_string());
+        assert_eq!(p["data"]["senderId"], sender.to_string(), "logical speaker attributed");
+        assert_eq!(p["data"]["content"]["text"], "I see the word LIGHTHOUSE in the room.");
+        assert!(
+            p["data"]["timestamp"].as_str().unwrap_or("").starts_with("2026-"),
+            "airc occurred_at_ms rendered as the ISO timestamp the entity carries: {}",
+            p["data"]["timestamp"]
+        );
+    }
+
+    // what this catches: idempotence of the two-writer convergence. A HUMAN line is
+    // stored by send() first and then arrives again via its own projection under the
+    // SAME messageId — the store refuses the duplicate (success=false) and the
+    // projector must treat that as the expected no-op, never an error (an erroring
+    // projector would fire on every human message and drown real faults).
+    #[tokio::test]
+    async fn duplicate_projection_of_a_sent_message_is_a_calm_no_op() {
+        let data = StubDataModule::new(move |command, _params| {
+            assert_eq!(command, "data/create");
+            Ok(json!({ "success": false, "error": "unique constraint: id exists" }))
+        });
+        let chat = chat_with_stubs(vec![Arc::new(data)]);
+        chat.persist_posted(json!({
+            "messageId": Uuid::new_v4(),
+            "roomId": Uuid::new_v4(),
+            "senderId": Uuid::new_v4(),
+            "content": "already stored by send()",
+            "timestamp": 1_784_227_923_000u64,
+        }))
+        .await
+        .expect("a duplicate row is an EXPECTED no-op, not an error");
+    }
+
+    // what this catches: THE WIRING, not just the logic (the dead-subscription trap this
+    // slice nearly shipped). `chat:posted` is published via `publish_async_only`, which
+    // NEVER dispatches module event_subscriptions — so the durable-transcript writer must
+    // be a live bus-receiver task. This publishes through the exact same call the
+    // projector uses and asserts the row write actually happens. If someone "simplifies"
+    // the listener back into event_subscriptions, this goes red instead of persona speech
+    // silently going ghost again.
+    #[tokio::test]
+    async fn persist_listener_receives_async_published_chat_posted() {
+        use std::time::Duration;
+        let seen: Arc<Mutex<Vec<Value>>> = Arc::new(Mutex::new(Vec::new()));
+        let seen_in = seen.clone();
+        let data = StubDataModule::new(move |command, params| {
+            assert_eq!(command, "data/create");
+            seen_in.lock().unwrap().push(params);
+            Ok(json!({ "success": true }))
+        });
+        let chat = Arc::new(chat_with_stubs(vec![Arc::new(data)]));
+        let bus = Arc::new(crate::runtime::message_bus::MessageBus::new());
+        spawn_persist_listener(bus.clone(), chat); // receiver created before publish
+
+        bus.publish_async_only(
+            crate::ipc::positron_source::CHAT_POSTED,
+            json!({
+                "messageId": Uuid::new_v4(),
+                "roomId": Uuid::new_v4(),
+                "senderId": Uuid::new_v4(),
+                "content": "spoken by a persona",
+                "timestamp": 1_784_227_923_000u64,
+            }),
+        );
+
+        for _ in 0..100 {
+            if !seen.lock().unwrap().is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(
+            seen.lock().unwrap().len(),
+            1,
+            "the listener must persist the async-published room line"
+        );
+    }
 
     #[test]
     fn config_advertises_both_command_prefixes() {

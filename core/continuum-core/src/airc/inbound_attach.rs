@@ -211,16 +211,31 @@ pub async fn publish_transcript_event(
 /// Identity-free like its sibling: `senderId` is the envelope's logical
 /// sender (recovered by [`chat_transcript_message`], falling back to the
 /// relaying transport peer), name/kind resolved downstream from the
-/// roster. `messageId`/`roomId`/`timestamp` are airc's transcript facts
-/// (`event_id`/`room_id`/`occurred_at_ms`) — IDENTICAL to the plain-text
-/// projection, so both wire shapes yield the same `chat:posted` identity.
+/// roster. `roomId`/`timestamp` are airc's transcript facts.
+///
+/// `messageId` prefers the envelope's inline `messageId` — the id
+/// `chat/send` already persisted the row under — falling back to airc's
+/// `event_id` when absent. Both are stable across replay + peers; using
+/// the inline id means the projection, the durable chat store, and the
+/// original `chat/send` all agree on ONE identity per human message, so
+/// the store-side projector (#140) dedups instead of double-writing.
 fn chat_posted_from_envelope(
     envelope: &AircRealtimeEnvelope,
     event: &airc_core::TranscriptEvent,
 ) -> Option<(&'static str, serde_json::Value)> {
     let (sender_id, content) = chat_transcript_message(envelope, event.peer_id.as_uuid())?;
+    let message_id = match &envelope.payload {
+        crate::airc::realtime::AircRealtimePayload::ExistingSchema { payload } => payload
+            .inline
+            .as_ref()
+            .and_then(|i| i.get("messageId"))
+            .and_then(serde_json::Value::as_str)
+            .and_then(|s| uuid::Uuid::parse_str(s).ok()),
+        _ => None,
+    }
+    .unwrap_or_else(|| event.event_id.as_uuid());
     let payload = serde_json::json!({
-        "messageId": event.event_id.as_uuid(),
+        "messageId": message_id,
         "roomId": event.room_id.as_uuid(),
         "senderId": sender_id,
         "content": content,
@@ -428,11 +443,14 @@ mod tests {
             .unwrap();
         assert_eq!(delivered.name, "chat:posted");
         assert_eq!(delivered.payload["content"], "is anyone there?");
-        // messageId/roomId/timestamp are airc transcript facts — identical
-        // to the plain-text projection (event_id/room_id/occurred_at_ms).
+        // messageId prefers the envelope's inline `messageId` — the id
+        // chat/send persisted the row under — so the projection, the durable
+        // store, and the sender agree on ONE identity per human message and
+        // the store-side projector (#140) dedups instead of double-writing.
+        // (event_id remains the fallback for envelopes without an inline id.)
         assert_eq!(
             delivered.payload["messageId"],
-            Uuid::from_u128(1).to_string()
+            Uuid::from_u128(0x3).to_string()
         );
         assert_eq!(delivered.payload["roomId"], Uuid::from_u128(2).to_string());
         assert_eq!(delivered.payload["timestamp"], 100);
