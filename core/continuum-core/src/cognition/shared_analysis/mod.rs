@@ -58,14 +58,6 @@ const CACHE_MAX_ENTRIES: usize = 200;
 /// the conversation state. Same TTL pattern as the embedding cache used.
 const CACHE_TTL_MS: u64 = 5 * 60 * 1000;
 
-/// Default model for shared analysis. The base local model — no LoRA,
-/// no specialty bias. Today there's no runtime LoRA composition in
-/// the inference path (genome paging is page-only), so "base model" =
-/// the default DMR model the personas already use. When runtime LoRA
-/// composition lands, this call explicitly opts out via no
-/// `active_adapters` field on the request.
-const DEFAULT_ANALYSIS_MODEL: &str = "continuum-ai/qwen3.5-4b-code-forged-GGUF";
-const DEFAULT_ANALYSIS_PROVIDER: &str = "local";
 
 /// Run or retrieve the cached SharedAnalysis for a chat message.
 ///
@@ -243,6 +235,20 @@ async fn run_analysis(
     let start = SystemTime::now();
     let prompt_text = build_prompt(input);
 
+    // Model binding — the SINGLE source of truth (#76, Joel 2026-07-16 smell hunt):
+    // the caller's `model_override` wins ([[intent-driven-api-not-hot-patches]]);
+    // otherwise resolve the DISCOVERED served model from the serving daemon's
+    // published ServingSnapshot — NEVER a hardcoded id that may not exist on this
+    // misfit host. Mirrors `generate_response.rs` (the proven un-hardcoding); fails
+    // loud if nothing is served ([[fallbacks-are-illegal-fail-loud]]). This also
+    // fixes a live bug: the old hardcoded `qwen3.5-4b` + `provider:"local"` were
+    // rejected downstream whenever the resident model was anything else (the
+    // `single_resident_model` guard), silently failing analysis.
+    let model =
+        crate::cognition::inference_session::resolve_model(input.model_override.clone())
+            .await
+            .map_err(|e| AnalysisError::from_inference(e.to_string()))?;
+
     let request = TextGenerationRequest {
         messages: vec![
             ChatMessage {
@@ -257,20 +263,13 @@ async fn run_analysis(
             },
         ],
         system_prompt: None,
-        // Caller's model_override wins per
-        // [[intent-driven-api-not-hot-patches]] + Joel 2026-06-03
-        // "It's up to the model" — the analyzer doesn't know which
-        // base model is loaded on this substrate; the caller does.
-        // Fallback to DEFAULT_ANALYSIS_MODEL only when the caller
-        // didn't supply one (e.g. multi-persona room with the
-        // canonical shared base loaded).
-        model: Some(
-            input
-                .model_override
-                .clone()
-                .unwrap_or_else(|| DEFAULT_ANALYSIS_MODEL.to_string()),
-        ),
-        provider: Some(DEFAULT_ANALYSIS_PROVIDER.to_string()),
+        // Resolved above from the single source (caller override → served snapshot).
+        model: Some(model),
+        // The llama-server gateway is the sole local inference path (the in-process
+        // "local" adapter is gated off). One source of truth for the gateway id,
+        // same as generate_response — NOT the stale hardcoded "local" that would
+        // hard-fail select() the moment anything actually routed through it.
+        provider: Some(crate::inference::llama_server::PROVIDER_ID.to_string()),
         temperature: Some(ANALYSIS_TEMPERATURE),
         // Model owns its length (None → adapter forwards no ceiling). This call
         // is the canonical proof of why: a flat cap (was 500, bumped to 2500)
