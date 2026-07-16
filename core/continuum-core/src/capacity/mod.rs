@@ -25,6 +25,7 @@
 pub mod consumer;
 pub mod gossip;
 pub mod grid;
+pub mod lease;
 pub mod score;
 pub mod sim;
 
