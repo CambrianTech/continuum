@@ -233,6 +233,31 @@ fn served_ctx_by_root() -> &'static dashmap::DashMap<String, u32> {
     CTX.get_or_init(dashmap::DashMap::new)
 }
 
+/// #175 overflow backstop: does this request body's PROMPT ALONE meet/exceed the served
+/// per-slot window? Returns `Some(estimated_prompt_tokens)` when it does — the
+/// unambiguous overflow that (with context-shift off) 500s AND poisons the slot for
+/// every later request, so the caller must refuse to send rather than take the shared
+/// lane down. `served_window == 0` (window unknown, e.g. mid-relaunch) → `None` (never
+/// block on an unknown budget). Estimate is chars/4 — the same conservative heuristic as
+/// the `serving.ctx_overshoot` alarm; we only trip on prompt-alone-overflows so a
+/// legitimately-budgeted request (which always leaves reply headroom) is never blocked.
+fn prompt_alone_overflows_served(body: &serde_json::Value, served_window: u32) -> Option<usize> {
+    if served_window == 0 {
+        return None;
+    }
+    let prompt_tokens = body
+        .get("messages")
+        .and_then(|m| m.as_array())
+        .map(|msgs| {
+            msgs.iter()
+                .filter_map(|m| m.get("content").and_then(|c| c.as_str()))
+                .map(|c| c.len() / 4)
+                .sum::<usize>()
+        })
+        .unwrap_or(0);
+    (prompt_tokens >= served_window as usize).then_some(prompt_tokens)
+}
+
 impl SlotAffinity {
     /// Stable slot for `persona` — same persona always maps to the same slot
     /// within a boot; new personas take the next slot round-robin.
@@ -1759,6 +1784,34 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
                     snap.ready
                 ));
             }
+            // #175 universal overflow backstop: REFUSE (never send) a prompt that alone
+            // exceeds the served per-slot window. With context-shift OFF the server 500s
+            // "Compute error" on overflow AND the fault POISONS the slot, so every LATER
+            // request 500s too — one oversized prompt from ANY caller (a persona turn, a
+            // dream distillation, an eval) takes the whole shared lane down until a
+            // restart (the wedge storm this task chased). The persona deliberation path
+            // already fits its prompt to the live window; this is the chokepoint backstop
+            // for the ~10 OTHER callers that build their own prompts (dream_consolidation,
+            // check_redundancy, validate_response, …), which the persona-scoped overshoot
+            // WARN below never covered. A refused request fails LOUD naming the caller and
+            // never reaches llama_decode, so the slot stays healthy. Threshold is PROMPT
+            // ALONE ≥ window (unambiguous — no room for even the prompt, let alone a
+            // reply), so a legitimately-budgeted request is never blocked. chars/4 is the
+            // same conservative estimate the overshoot alarm uses.
+            // [[fallbacks-are-illegal-fail-loud]] [[llama-compute-error-wedge-is-per-slot-context-overflow]]
+            if let Some(prompt_tokens) =
+                prompt_alone_overflows_served(&body, snap.served_context_window)
+            {
+                return Err(format!(
+                    "{}: refusing to generate — prompt ~{} tokens ≥ the served per-slot \
+                     window of {} (caller: {}). Sending it would 500 and POISON the shared \
+                     slot for every later request; fit the prompt to the served window (#175).",
+                    self.config.name,
+                    prompt_tokens,
+                    snap.served_context_window,
+                    request.persona_id.as_deref().unwrap_or("non-persona"),
+                ));
+            }
         }
 
         let send_start = Instant::now();
@@ -2256,6 +2309,32 @@ fn parse_embedding_usage(body: &Value) -> UsageMetrics {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches (#175 universal backstop): the local-gateway adapter must
+    // REFUSE any request whose prompt ALONE meets/exceeds the served per-slot window —
+    // sending it 500s and POISONS the shared slot for every later request. Fires for
+    // ANY caller (a dream distillation, an eval — none carry a persona_id), only on the
+    // unambiguous prompt-alone overflow (a budgeted request that leaves reply headroom
+    // is never blocked), and NEVER when the window is unknown (0) so a mid-relaunch
+    // snapshot can't wrongly block cognition.
+    #[test]
+    fn refuses_only_when_prompt_alone_overflows_the_served_slot() {
+        let body = |chars: usize| {
+            serde_json::json!({ "messages": [{ "role": "user", "content": "x".repeat(chars) }] })
+        };
+        // ~12000 tokens (48000 chars / 4) vs a 8000-token slot → refuse, report the est.
+        assert_eq!(
+            prompt_alone_overflows_served(&body(48_000), 8_000),
+            Some(12_000),
+            "prompt alone over the window must be refused"
+        );
+        // ~4000 tokens vs an 8000 slot → fits (room for the prompt + a reply) → allow.
+        assert_eq!(prompt_alone_overflows_served(&body(16_000), 8_000), None);
+        // Window unknown (mid-relaunch) → never block, whatever the prompt size.
+        assert_eq!(prompt_alone_overflows_served(&body(48_000), 0), None);
+        // No messages array → nothing to overflow.
+        assert_eq!(prompt_alone_overflows_served(&serde_json::json!({}), 8_000), None);
+    }
 
     // what this catches: a well-formed <think>…</think> (unsloth/llama.cpp today) is
     // SEPARATED — reasoning captured, the answer after </think> is the clean text.
