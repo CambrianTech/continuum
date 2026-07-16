@@ -169,7 +169,10 @@ impl AircRagSource {
             metadata: serde_json::json!({
                 "event_id": ev.event_id.as_uuid().to_string(),
                 "room_id": ev.room_id.as_uuid().to_string(),
-                "peer_id": ev.peer_id.as_uuid().to_string(),
+                // The LOGICAL author: a chat/send line is attributed to the human/web
+                // identity that wrote it (envelope senderId), not the core's relay
+                // peer — so the rendered room reads "Joel: …", never "core: …" (#177).
+                "peer_id": element.sender_id().to_string(),
                 "occurred_at_ms": ev.occurred_at_ms,
                 "lamport": ev.lamport,
                 "unread": unread,
