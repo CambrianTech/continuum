@@ -22,6 +22,7 @@
 //! timeline played on a virtual clock. Same allocator, swapped world — so a sim scenario
 //! IS a real regression test.
 
+pub mod score;
 pub mod sim;
 
 /// A LIVE reading of one device's usable compute, external consumers already subtracted.
