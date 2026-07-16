@@ -1565,6 +1565,10 @@ pub fn start_server(
         // detached cognition/eval body — can acquire an eval-preemption lease over
         // the fleet without a threaded handle. First writer wins (this boot path).
         crate::persona::PersonaAircRuntimeRegistry::set_global(registry.clone());
+        // Publish THE bus process-globally too (same first-writer-wins shape) so
+        // host-independent bodies — the detached eval's `eval:progress` scoreboard —
+        // can emit events widgets/observers subscribe to (#123/#141).
+        crate::runtime::MessageBus::set_global(runtime.bus_arc());
         // Native airc kanban tools — personas claim/create/release cards on the
         // shared board as THEIR OWN airc key, delegating to airc's work API. Shares
         // the SAME registry (cheap Clone over an inner Arc) so a work command can

@@ -1318,10 +1318,15 @@ pub struct CognitionEvalStatus;
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
 pub struct CognitionEvalStatusParams {
-    /// The examinee persona (whose ledger holds the row).
-    pub persona_id: String,
-    /// The handle returned by the detached run.
-    pub run_id: String,
+    /// The examinee persona (whose ledger holds the row). Optional: omit (with
+    /// run_id) to poll just the LIVE progress of whatever pass is running now.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub persona_id: Option<String>,
+    /// The handle returned by the detached run. Optional: omit for live progress only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub run_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, TS, Default)]
@@ -1330,6 +1335,10 @@ pub struct CognitionEvalStatusResult {
     pub complete: bool,
     /// The full ledger row when complete (score/total/passRate/lift/...), else null.
     pub row: Option<serde_json::Value>,
+    /// LIVE progress of the currently-grading pass (done/total/pass/current task) —
+    /// the mid-run scoreboard (#123/#141). `null` when nothing has graded yet this
+    /// process; check `updated_at_ms` for staleness on long-dead passes.
+    pub progress: Option<EvalPassProgress>,
 }
 
 #[async_trait]
@@ -1349,23 +1358,29 @@ impl ActionCommand for CognitionEvalStatus {
         _ctx: &Ctx,
         p: CognitionEvalStatusParams,
     ) -> Result<CognitionEvalStatusResult, CommandError> {
+        // The live scoreboard rides on EVERY poll — with or without a run_id.
+        let progress = subscribe_eval_progress().borrow().clone();
+        let (Some(persona_id), Some(run_id)) = (p.persona_id, p.run_id) else {
+            // No run handle → live progress only (the "how's it going" poll).
+            return Ok(CognitionEvalStatusResult { complete: false, row: None, progress });
+        };
         let home = std::env::var("HOME")
             .map_err(|_| CommandError::Internal("HOME unset — no progress ledger".into()))?;
         let path = std::path::PathBuf::from(home)
             .join(".continuum/progress")
-            .join(format!("{}.jsonl", p.persona_id));
+            .join(format!("{persona_id}.jsonl"));
         let Ok(text) = std::fs::read_to_string(&path) else {
             // No ledger yet = no completed runs for this persona = pending.
-            return Ok(CognitionEvalStatusResult { complete: false, row: None });
+            return Ok(CognitionEvalStatusResult { complete: false, row: None, progress });
         };
         for line in text.lines().rev() {
             if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
-                if v.get("runId").and_then(|r| r.as_str()) == Some(p.run_id.as_str()) {
-                    return Ok(CognitionEvalStatusResult { complete: true, row: Some(v) });
+                if v.get("runId").and_then(|r| r.as_str()) == Some(run_id.as_str()) {
+                    return Ok(CognitionEvalStatusResult { complete: true, row: Some(v), progress });
                 }
             }
         }
-        Ok(CognitionEvalStatusResult { complete: false, row: None })
+        Ok(CognitionEvalStatusResult { complete: false, row: None, progress })
     }
 }
 
@@ -1455,6 +1470,87 @@ async fn run_dod(cmd: &str) -> (bool, String) {
         }
         Err(e) => (false, format!("DoD `{cmd}` could not run: {e}")),
     }
+}
+
+// ── Live eval progress (#123/#141, Joel: "widgets and others like yourself should
+// subscribe to these events, current totals, by command, and also display the
+// process — things like this take forever so you really need to provide feedback").
+//
+// ONE source of truth (each graded task), THREE surfaces:
+//  1. watch snapshot — the substrate-canonical live surface; `cognition/eval-status`
+//     with no run_id returns it (poll, works for agents/scripts today);
+//  2. `eval:progress` bus event — widgets / positron (#141) / persona observers
+//     subscribe (published via the global bus, same set_global precedent as the
+//     persona registry);
+//  3. `eval.task` probe — the greppable log pulse.
+//
+// ONE progress row is correct by construction: the eval-preemption lease serializes
+// evals on the GPU, so at most one pass is grading at any instant.
+
+#[derive(Debug, Clone, Serialize, TS, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../../protocol/typescript/cognition/EvalPassProgress.ts")]
+pub struct EvalPassProgress {
+    /// Tasks graded so far in the CURRENT pass.
+    #[ts(type = "number")]
+    pub done: u32,
+    /// Tasks in the current pass.
+    #[ts(type = "number")]
+    pub total: u32,
+    /// Passes so far — `pass / done` is the running rate.
+    #[ts(type = "number")]
+    pub pass: u32,
+    /// The task just graded.
+    pub current_task: String,
+    /// Whether it passed.
+    pub last_ok: bool,
+    /// Receiver-clock ms — staleness signal for readers (a row older than a task's
+    /// typical latency means the pass ended or died; the ledger row is the truth).
+    #[ts(type = "number")]
+    pub updated_at_ms: u64,
+}
+
+static EVAL_PROGRESS: std::sync::OnceLock<tokio::sync::watch::Sender<Option<EvalPassProgress>>> =
+    std::sync::OnceLock::new();
+
+fn eval_progress_tx() -> &'static tokio::sync::watch::Sender<Option<EvalPassProgress>> {
+    EVAL_PROGRESS.get_or_init(|| tokio::sync::watch::channel(None).0)
+}
+
+/// Subscribe to live eval progress — the watch every reader shares.
+pub fn subscribe_eval_progress() -> tokio::sync::watch::Receiver<Option<EvalPassProgress>> {
+    eval_progress_tx().subscribe()
+}
+
+/// Report one graded task on all three surfaces. Called by BOTH pass loops (solo +
+/// team) — one reporter, no drift.
+fn report_task_graded(task_id: &str, ok: bool, acts: u32, latency_ms: u64, pass: u32, done: usize, total: usize) {
+    let snap = EvalPassProgress {
+        done: done as u32,
+        total: total as u32,
+        pass,
+        current_task: task_id.to_string(),
+        last_ok: ok,
+        updated_at_ms: crate::persona::trace::now_ms(),
+    };
+    let _ = eval_progress_tx().send_replace(Some(snap.clone()));
+    if let Some(bus) = crate::runtime::MessageBus::global() {
+        if let Ok(v) = serde_json::to_value(&snap) {
+            bus.publish_async_only("eval:progress", v);
+        }
+    }
+    crate::probe!(
+        class = "eval.task",
+        task = task_id,
+        ok = ok,
+        acts = acts,
+        done = done,
+        total = total,
+        pass = pass,
+        running_rate = format!("{:.3}", pass as f64 / done.max(1) as f64).as_str(),
+        latency_ms = latency_ms,
+        "task graded",
+    );
 }
 
 async fn run_pass(
@@ -1624,6 +1720,7 @@ async fn run_pass(
             prefill_ms: m.prefill_ms,
             decode_ms: m.decode_ms,
         });
+        report_task_graded(&t.id, ok, total_acts, m.latency_ms, pass, results.len(), tasks.len());
     }
     (pass, results)
 }
@@ -1753,6 +1850,7 @@ async fn run_pass_team(
             prefill_ms: m.prefill_ms,
             decode_ms: m.decode_ms,
         });
+        report_task_graded(&t.id, ok, acts, m.latency_ms, pass, results.len(), tasks.len());
     }
     (pass, results)
 }
@@ -1763,6 +1861,26 @@ crate::register_stateless_command!(CognitionEval);
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches: the mid-run scoreboard's poll surface (#123/#141). One
+    // report_task_graded call must land on the watch every reader shares — done/total/
+    // pass/current task — so cognition/eval-status (no run_id) and widget bridges see
+    // live totals instead of a multi-hour void. If the watch write is dropped, long
+    // runs go dark again (the exact gap Joel called out mid-run 2026-07-16).
+    #[test]
+    fn report_task_graded_lands_on_the_progress_watch() {
+        report_task_graded("HumanEval/7", true, 2, 45_000, 6, 7, 164);
+        let snap = subscribe_eval_progress()
+            .borrow()
+            .clone()
+            .expect("a graded task must publish progress");
+        assert_eq!(snap.done, 7);
+        assert_eq!(snap.total, 164);
+        assert_eq!(snap.pass, 6);
+        assert_eq!(snap.current_task, "HumanEval/7");
+        assert!(snap.last_ok);
+        assert!(snap.updated_at_ms > 0);
+    }
 
     fn task_result(latency_ms: u64, output_tokens: u32, tps: f64) -> EvalTaskResult {
         EvalTaskResult {

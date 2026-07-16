@@ -96,6 +96,8 @@ impl Default for MessageBus {
     }
 }
 
+static GLOBAL_BUS: std::sync::OnceLock<std::sync::Arc<MessageBus>> = std::sync::OnceLock::new();
+
 impl MessageBus {
     /// Minimum interval between events with the same prefix.
     /// Events arriving faster than this are dropped (coalesced).
@@ -162,6 +164,20 @@ impl MessageBus {
             event: event.clone(),
             at: now,
         });
+    }
+
+    /// Publish THE runtime bus process-globally (first writer wins — the boot path).
+    /// Same precedent as `PersonaAircRuntimeRegistry::set_global`: host-independent
+    /// bodies (the detached cognition/eval emitting `eval:progress`) publish without
+    /// a threaded handle. Read with [`MessageBus::global`].
+    pub fn set_global(bus: std::sync::Arc<MessageBus>) {
+        let _ = GLOBAL_BUS.set(bus);
+    }
+
+    /// The process-global runtime bus, if boot has published it (None in bare unit
+    /// tests — callers treat that as "no subscribers", never an error).
+    pub fn global() -> Option<std::sync::Arc<MessageBus>> {
+        GLOBAL_BUS.get().cloned()
     }
 
     /// Subscribe to events matching a glob pattern.
