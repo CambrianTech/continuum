@@ -329,12 +329,50 @@ in CI before it ever touched Metal.
 Add a device, a consumer, a metric, a scenario, or swap the policy — all via the trait, no
 rewrite. That's the "more ML sophistication later" guarantee, structural not aspirational.
 
-### The scorer IS the objective IS the RL reward
-Perception + quality, never raw ops: perceived first-token **P99** (conversational feel),
-avatar **dropped-frames / viseme jitter** (embodiment believability), **coding pass-rate
-under the live time budget** (the team — while a video call slows the deep-lane budget),
-degradation gracefulness, thrash count, fairness across personas, **OOM = hard fail (−∞)**.
-Each is a `Metric`; the reward is their weighted (later: learned) combination.
+### The scorer: a TREE — compositional, gated, context-weighted, non-linear, cognitive at the apex
+The objective is NOT a flat weighted sum. It's a tree whose *structure* encodes honest
+truths about what actually ruins an experience — so the score refuses to call a broken whole
+"good" just because the parts were:
+
+- **Compositional.** Component `Metric`s (see / speak / listen / render / code-quality /
+  latency) → per-experience `Score`s (live-room, code-gen, solo) → one overall `Score`. Each
+  level is a function of the level below; small scores feed big ones, and bigger algorithms
+  read the smaller results.
+- **Gated (weakest-link), not additive, for critical faculties.** Pull a persona's ability to
+  *see / speak / listen / render* in a live room and the room score is GATED near-zero — a
+  **holistic failure** — *even if every independent component was excellent*. A mute avatar
+  in a conversation is not "0.9 minus a bit"; it's broken. `product` / `min` semantics for the
+  requirements an experience cannot survive without.
+- **Context-weighted (the weights ARE the mode).** Live-room weights responsiveness heavily
+  and tolerates deep-lane slowness; **code/project generation weights QUALITY + sophistication
+  heavily** (real websites, apps, documentary video — the best we can produce) and barely
+  penalizes latency. Same metrics, different weights per situation. Asymmetric: a deep coder
+  taking **2× longer** during a live session is a minor ding; a **laggy live interaction is
+  severe**. It is far worse to lag the conversation than to slow the thinking.
+- **Non-linear / robust penalties (RANSAC-robust cost).** Bad choices — non-working software,
+  a laggy live room — fall off a cliff, not a gentle slope. Failure is heavily penalized so no
+  amount of component polish rescues a broken whole. **OOM = hard fail (−∞).**
+- **Cognitive at the apex — a SOTA judge, glass-boxed, distilled (THE differentiator).** The
+  overall-experience rank is the home for the best cognition we can lease (a SOTA model, or a
+  strong local one). It reads the component scores + the ACTUAL artifacts — the rendered site,
+  the conversation clip, the avatar video — and renders an honest gestalt verdict. Three things
+  make it a differentiator, not just a scorer:
+  1. **Judgment beats formulas on the whole.** Competitors optimize a metric; we ask a real
+     mind "did this actually feel good / is this app actually good?" — taste, coherence,
+     believability, the uncanny-valley miss a formula can't capture.
+  2. **Glass box (observability-as-substrate).** The verdict + its REASONING is captured via a
+     `CaptureSink` — replayable, inspectable: *"code compiled and passed, but the site's UX is
+     confused and the avatar's lip-sync drifted → 0.4."* An auditable rationale, not a
+     black-box number. (`OBSERVABILITY-AS-SUBSTRATE.md`.)
+  3. **Distilled to a local judge (built-to-teach).** Every captured (artifacts → verdict +
+     reasoning) pair is training data. A cheap LOCAL apex scorer learns to approximate the SOTA
+     judge; over time the SOTA is leased only for the hard/novel gestalts and the local one
+     handles the routine — the same "SOTA teaches, local wins" loop as the genome, and
+     [[intelligence-is-a-resolution-field-shared-across-the-mesh]]: spend the high-res mind at
+     the ONE joint that needs it.
+
+  The score the optimizer consumes stays a scalar; underneath it is honest, transparent,
+  trainable cognition. Formula-scored components → a cognitively-scored, glass-boxed whole.
 
 ### Training gym + the calibration loop (why it isn't a toy)
 The simulator is an RL environment: `env.step(action) → (state, reward)`. A growing scenario
@@ -349,3 +387,39 @@ fidelity rises with every real run:
 The policy gets smarter without risking a real machine; the sim gets truer with every real
 turn. Start with the deterministic policy + the §7 scenarios red-first, grow the library and
 the metric set, and plug the learned policy once the gym has enough calibrated scenarios.
+
+## 10. The negotiation economy — airc leases with richer metrics (P2P endgame)
+
+The airc layer is already a **negotiation system** (rooms, agreements, per-peer trust). When
+the grid goes true P2P, capacity allocation and airc negotiation converge into ONE mechanism:
+a placement is an *agreement between peers*, and lease/hire of anything — GPU lanes, command
+execution, storage, a persona's attention — is the same system with **different metrics**
+([[grid-agreements-swappable-policy-deterministic-rails]]).
+
+The RANSAC contract makes this free: price, trust, and reputation are just MORE SCALARS
+folding into the same `Score` the optimizer already fits. The negotiator (deterministic →
+learned → persona, #103) changes; the rails never do.
+
+**The node "resume" is already being recorded.** No new bookkeeping is needed — the glass-box
+trace IS the track record:
+
+| Resume line | Derived from (already captured) |
+|---|---|
+| Reliability ("honors leases") | `stranded_lanes` attributed per peer — did it vanish mid-lease? |
+| Quality delivered ("what it's like to run here") | `mean_experience` of placements it served |
+| Stability ("doesn't churn") | its reachability history + capacity wobble in the snapshots |
+| Honesty ("offers what it has") | offered `PeerCapacity` vs. per-node OOMs on its grants |
+
+A peer's rating/review/resume is a **projection of its `PlacementDecision` history** — signed,
+replayable, auditable, exactly like a persona's action receipts. Fake resumes fail against
+lived traces (the receipts-grounded-honesty principle, applied to machines). Price then enters
+as a per-peer term on the lease request; trust gates WHO may be offered a placement at all
+(the airc trust bridge, #38); and the market's search problem ("find me the cheapest
+trustworthy node that can hold a 24B with 4 lanes") is the same shop-the-market shape as the
+genome exchange ([[search-then-ab-dont-start-from-zero]]) — one economy, compute and skills as
+two goods on it.
+
+Sequencing: nothing here blocks the current build order (§8). The seam requirement is only
+that `LeaseRequest`/`Score` stay growable (they are: plain structs, add fields) and that
+placements keep tracing per-peer facts (they do: `NodeVerdict`). The economy is a policy +
+metric upgrade on rails that are already live.
