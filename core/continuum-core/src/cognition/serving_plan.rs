@@ -35,23 +35,27 @@
 //! GPU pressure shifting. Pure function, same shape as `adaptive_throughput`
 //! and `model_resolver`.
 
-/// Hard ceiling on continuous-batching lanes for a single base model on one
-/// node. Joel's original number was "2 lanes of a gguf 4b model or even 4 on
-/// here" — but that 4 was calibrated for a ~4B model. Applied to a 24B base
-/// (Devstral-Small) + paged LoRAs it OOMs: the plan grows each lane's window to
-/// fill the budget as RESIDENT KV, but llama.cpp's Metal PREFILL COMPUTE BUFFER
-/// (a transient ~batch-sized per-slot allocation NOT in the KV arithmetic)
-/// stacks once per concurrent prefill — four of them during the wake-briefing
-/// burst blew past the UMA pool (`kIOGPUCommandBufferCallbackErrorOutOfMemory`,
-/// every turn 500ing "Compute error"). Glass-boxed 2026-07-14. Two lanes halve
-/// that concurrent compute-buffer peak AND double each mind's window (the
-/// planner's own fn-doc: "2 slots would have doubled every mind's window with
-/// zero lost concurrency"). Continuous batching still serves the whole fleet
-/// through 2 slots; with background self-direction now low-duty-cycle
-/// (SELF_TICK_MS raised), concurrent decode demand rarely exceeds 2 anyway.
-/// The deeper fix — a lane-scaled compute-buffer HEADROOM term in the fit math
-/// so the ceiling derives from model size instead of a constant — is #139/#56.
-pub const MAX_LANES: u32 = 2;
+/// SAFETY backstop on continuous-batching lanes for a single base model on one
+/// node — NOT the binding constraint. The binding constraint is now the
+/// compute-buffer-aware fit math ([`ModelFootprint::compute_buffer_per_lane`] +
+/// the per-lane floor and window reserve in [`plan_serving`]): the lane count
+/// follows persona DEMAND, capped by how many lanes' (KV + concurrent compute
+/// buffer) actually fit THIS host's budget. That is the #139/#56 "lane-scaled
+/// compute-buffer HEADROOM term so the ceiling derives from model size instead of
+/// a constant" — it makes N-lane serving OOM-safe by construction.
+///
+/// History: this was `2`, a flat clamp added 2026-07-14 after four concurrent
+/// prefill compute buffers (a transient ~batch-sized per-slot Metal allocation NOT
+/// in the KV arithmetic) blew the pool during a wake-briefing burst
+/// (`kIOGPUCommandBufferCallbackErrorOutOfMemory`). But `2` was calibrated for a
+/// ~16 GB budget and mis-applied to a 64 GB (≈55 GB Metal working-set) host, where
+/// it left ~29 GB idle and forced 4 personas onto 2 slots — the cross-persona KV
+/// clobber that is #139's whole latency story (each turn re-prefills ~10k cold
+/// because the slot was last written by a different persona's prompt+LoRA). With the
+/// compute buffer now RESERVED in the fit math, giving each persona its own warm
+/// slot is memory-safe. This ceiling stays only to bound pathological demand (a
+/// runaway roster) and llama.cpp `--parallel` practicality; real fit is the fit math.
+pub const MAX_LANES: u32 = 6;
 
 /// Bare-minimum served window for a model to be runnable at ALL — a hardware
 /// reality floor, NOT a serving target or a cheapening cap. The served window is
@@ -110,6 +114,29 @@ impl ModelFootprint {
     /// KV-cache bytes for ONE lane at `ctx` tokens.
     pub fn kv_at(&self, ctx: u32) -> u64 {
         self.kv_per_token.saturating_mul(ctx as u64)
+    }
+
+    /// The transient Metal **prefill compute buffer** ONE lane allocates while it is
+    /// actively prefilling — the term that is NOT in the KV arithmetic and that the
+    /// 2026-07-14 wake-briefing burst blew the pool on (four concurrent prefills ×
+    /// this buffer). It is proportional to the graph size (≈ hidden × layers ×
+    /// `--ubatch`), so it SCALES WITH MODEL SIZE, not a constant — the exact "lane-
+    /// scaled compute-buffer HEADROOM term so the ceiling derives from model size
+    /// instead of a constant" the `MAX_LANES` doc names as the #139/#56 deeper fix.
+    /// Calibrated to the live measurement (Devstral-24B Q4, `MTL0 compute buffer size
+    /// = 551 MiB` at `--ubatch 1024`, weights 13.66 GiB) and rounded UP via a
+    /// weights-fraction so the reserve is conservative (over-reserve is a smaller
+    /// window; under-reserve is an OOM). Valid at `--ubatch 1024`; a larger ubatch
+    /// would scale this linearly. Reserving `lanes × this` before sizing the per-slot
+    /// window is what makes N-lane serving fit BOTH the resident KV and the concurrent
+    /// compute buffers — so the lane ceiling can follow persona DEMAND on a roomy host
+    /// and still stay OOM-safe on a small one, killing the flat `MAX_LANES = 2` clamp.
+    pub fn compute_buffer_per_lane(&self) -> u64 {
+        // weights / 16 ≈ 854 MiB for the 24B (1.55× the measured 551 MiB — the safety
+        // margin), and scales DOWN for smaller models (a 4B ≈ 140 MiB). Floored so a
+        // tiny/degenerate footprint still reserves a real buffer, never zero.
+        const COMPUTE_BUFFER_FLOOR: u64 = 256 * 1024 * 1024; // 256 MiB
+        (self.weights_bytes / 16).max(COMPUTE_BUFFER_FLOOR)
     }
 
     /// Total on-device residency for a live server: the weights (shared across
@@ -227,16 +254,22 @@ pub fn plan_serving(
         });
     };
 
-    // Lanes: DEMAND first (how many minds need a concurrent lane), then capped
-    // by how many minimum-window lanes' KV fit the budget left after weights,
-    // by perf cores, and by the MAX_LANES ceiling; floored at 1. A fatter
-    // per-token KV cache → fewer lanes on the same budget. The window is sized
-    // UP per lane below; this only decides HOW MANY sequences run — and every
-    // lane beyond demand would divide every mind's window for nothing (see fn
-    // docs: the 4-slots-for-2-personas starvation).
+    // Lanes: DEMAND first (how many minds need a concurrent lane), then capped by
+    // how many lanes' (minimum KV **+ transient prefill compute buffer**) fit the
+    // budget left after weights, by perf cores, and by the MAX_LANES safety ceiling;
+    // floored at 1. The per-lane floor now INCLUDES the compute buffer — the term the
+    // KV arithmetic used to ignore, which let the plan size N windows to fill the
+    // budget with KV and leave no room for the N concurrent compute buffers (the
+    // 2026-07-14 OOM). With the buffer accounted, the lane count can follow persona
+    // demand on a roomy host (each persona its OWN warm slot → no cross-persona
+    // clobber → prefill caches) and still degrade to fewer lanes on a small one.
     let after_weights = host.usable_bytes.saturating_sub(model.weights_bytes);
-    let kv_floor = model.kv_at(MIN_SERVE_CTX).max(1);
-    let kv_lanes = (after_weights / kv_floor) as u32;
+    let compute_per_lane = model.compute_buffer_per_lane();
+    let per_lane_floor = model
+        .kv_at(MIN_SERVE_CTX)
+        .saturating_add(compute_per_lane)
+        .max(1);
+    let kv_lanes = (after_weights / per_lane_floor) as u32;
     let lanes = demand_lanes
         .max(1)
         .min(kv_lanes)
@@ -245,10 +278,13 @@ pub fn plan_serving(
         .max(1);
 
     // Served window: expand each lane to the LARGEST context its share of the
-    // post-weights budget affords, capped at the model's own trained ceiling and
-    // floored at MIN_SERVE_CTX. Derived from (model ∩ host), never a constant —
-    // this is the serving window everyone downstream reads (task #50).
-    let per_lane_budget = after_weights / lanes as u64;
+    // post-weights budget affords — AFTER reserving every lane's compute buffer (worst
+    // case: all lanes prefill at once, the wake-briefing burst). Capped at the model's
+    // own trained ceiling and floored at MIN_SERVE_CTX. Derived from (model ∩ host),
+    // never a constant — this is the serving window everyone downstream reads (task #50).
+    let compute_reserve = compute_per_lane.saturating_mul(lanes as u64);
+    let kv_budget = after_weights.saturating_sub(compute_reserve);
+    let per_lane_budget = kv_budget / lanes as u64;
     let fit_ctx = if model.kv_per_token == 0 {
         model.context_window
     } else {
@@ -257,14 +293,14 @@ pub fn plan_serving(
     let served_context_window = fit_ctx.min(model.context_window).max(MIN_SERVE_CTX);
 
     // Resident models: pack the smallest other candidates (each at its minimum
-    // runnable footprint) into whatever is left after the chosen base + its
-    // lanes' KV at the served window. "Keep as many models alive, practically" —
-    // without overcommitting the budget.
-    let chosen_cost = model.weights_bytes.saturating_add(
-        model
-            .kv_at(served_context_window)
-            .saturating_mul(lanes as u64),
-    );
+    // runnable footprint) into whatever is left after the chosen base + its lanes'
+    // KV at the served window + its lanes' concurrent compute buffers. "Keep as many
+    // models alive, practically" — without overcommitting the budget (the compute
+    // reserve is part of the chosen model's real cost, so packing can't claim it).
+    let chosen_cost = model
+        .weights_bytes
+        .saturating_add(model.kv_at(served_context_window).saturating_mul(lanes as u64))
+        .saturating_add(compute_reserve);
     let mut left = host.usable_bytes.saturating_sub(chosen_cost);
     let mut resident = 1u32;
     let mut others: Vec<&ModelFootprint> = candidates
@@ -506,13 +542,50 @@ mod tests {
     // sized at the MIN window; a fatter floor lane fits fewer times).
     #[test]
     fn fatter_kv_means_fewer_lanes() {
-        // Budget chosen so KV (not the MAX_LANES cap or perf cores) is the
-        // binding constraint: 3GB total, 2GB weights → 1GB left for KV.
-        // lean ~300MB/floor-lane → 3 lanes; fat ~920MB/floor-lane → 1 lane.
-        let host = HostBudget { usable_bytes: 3 * GB, perf_cores: 8 };
+        // Budget chosen so KV (not the MAX_LANES cap or perf cores) is the binding
+        // constraint, ABOVE the per-lane compute-buffer floor now in the fit math:
+        // 4GB total, 2GB weights → 2GB for (KV + compute buffer) per lane.
+        // lean floor ≈ 307MB KV + 256MB compute ≈ 563MB → 3 lanes;
+        // fat floor  ≈ 921MB KV + 256MB compute ≈ 1.18GB → 1 lane.
+        let host = HostBudget { usable_bytes: 4 * GB, perf_cores: 8 };
         let lean = plan_serving(host, &[fp("lean", 2, 150_000, 32_768, 5)], MAX_LANES).unwrap();
         let fat = plan_serving(host, &[fp("fat", 2, 450_000, 32_768, 5)], MAX_LANES).unwrap();
         assert!(lean.lanes > fat.lanes, "lean {} should beat fat {}", lean.lanes, fat.lanes);
+    }
+
+    // what this catches: #139 — the compute-buffer headroom term makes N-lane serving
+    // fit BOTH resident KV and the N concurrent prefill compute buffers, so a roomy
+    // host follows persona DEMAND (each persona its own warm slot) instead of the old
+    // flat MAX_LANES=2 clamp — WITHOUT the 2026-07-14 compute-buffer OOM. On the real
+    // box (24B ≈ 13.6GB weights, ~26GB usable serving slice) 4 personas each get a slot,
+    // and the window still exceeds a live persona prompt.
+    #[test]
+    fn demand_drives_lanes_with_compute_buffer_reserved_and_still_fits() {
+        // 24B-class: 13.6GB weights, kv_per_token ~156KB/token (measured), ~26GB usable.
+        let m = fp("devstral-24b", 13, 156_000, 131_072, 9);
+        let host = HostBudget { usable_bytes: 26 * GB, perf_cores: 10 };
+
+        // 4 personas demand 4 lanes — and the compute-buffer-aware fit GRANTS them
+        // (old MAX_LANES=2 would have clamped to 2, forcing the clobber).
+        let plan = plan_serving(host, std::slice::from_ref(&m), 4).unwrap();
+        assert_eq!(plan.lanes, 4, "4 personas each get their own warm slot: {}", plan.rationale);
+
+        // The per-slot window still comfortably exceeds a live persona prompt (~10k
+        // tokens post-clip) — the point is a warm slot per persona, not a starved one.
+        assert!(
+            plan.served_context_window >= 12_000,
+            "each of the 4 slots keeps a usable window, got {}",
+            plan.served_context_window
+        );
+
+        // And the plan FITS: weights + 4×KV@window + 4×compute buffer ≤ budget. This is
+        // the invariant the old KV-only math violated (it left no room for the buffers).
+        let kv = m.kv_at(plan.served_context_window) * plan.lanes as u64;
+        let compute = m.compute_buffer_per_lane() * plan.lanes as u64;
+        assert!(
+            m.weights_bytes + kv + compute <= host.usable_bytes,
+            "resident KV + concurrent compute buffers must fit the budget (no OOM)"
+        );
     }
 
     // what this catches: GPU-residency-first — when nothing fits, the plan
