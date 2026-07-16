@@ -551,6 +551,13 @@ impl ServingDaemonModule {
             }
         }
 
+        // #175 sticky window: we're past the no-relaunch guard, so a relaunch WILL
+        // happen (a genome page-in / model change). Don't let the startup LoRA-load
+        // cascade ratchet the per-slot window DOWN on a same-lane relaunch and strand
+        // the personas pinned to the earlier, larger slot — keep the incumbent window
+        // when lanes are unchanged (memory-safe; a lane change legitimately resizes KV).
+        let served_ctx = sticky_served_window(served_ctx, lanes, &self.serving_tx.borrow());
+
         // Resolve the full Model struct ONCE, here, and carry it on the target —
         // no re-fetch downstream ([[pass-the-model-struct-no-param-hell]]). If
         // the registry can't produce the model the plan named, fail loud (empty
@@ -874,6 +881,26 @@ pub fn detect_tier(gpu_name: &str) -> (HwCapabilityTier, HwTierCategory, &'stati
 
 /// Map a reconcile [`EnsureOutcome`] (+ the real per-slot window read from
 /// `/props`) to the published [`ServingSnapshot`]. Pure (no IO) so the mapping
+/// #175 sticky per-slot window on relaunch. The startup LoRA-load cascade relaunches
+/// the living lane once per persona (each genome-set change is a relaunch), and each
+/// relaunch recomputes `-c` against now-lower free memory, ratcheting the per-slot
+/// window DOWN — which strands the personas pinned to the earlier, larger slot (they
+/// then overflow it → the poisoned-slot "Compute error"). Keep the incumbent window
+/// when we relaunch at the SAME lane count: its KV is already resident and a same-lane
+/// genome reload adds only a tiny LoRA delta, so preserving it is memory-safe. A
+/// LANE-count change legitimately resizes per-slot KV (2 slots need half the window
+/// each) — keeping the old window across a lane INCREASE would multiply resident KV
+/// and risk OOM, so only stick when `live.lanes == plan_lanes`. A LARGER plan window
+/// (memory freed) is never held down here — the "starved lane" grow check above owns
+/// growing. Pure so the invariant is unit-tested without a live gateway.
+fn sticky_served_window(plan_window: u32, plan_lanes: u32, live: &ServingSnapshot) -> u32 {
+    if live.ready && live.lanes == plan_lanes && live.served_context_window > plan_window {
+        live.served_context_window
+    } else {
+        plan_window
+    }
+}
+
 /// is unit-tested directly. A live/spawned model is `ready` with the served base
 /// url AND the real served window; a degraded reconcile — OR a ready server whose
 /// window we could not read (`served_context_window == 0`) — publishes "nothing
@@ -1477,6 +1504,26 @@ mod tests {
         assert_eq!(degraded.active_model, None, "degraded → nothing live");
         assert!(!degraded.ready);
         assert!(degraded.adapters.is_empty(), "degraded → no genome claimed");
+    }
+
+    // what this catches (#175 sticky window): the LoRA-load relaunch cascade must not
+    // ratchet the per-slot window down and strand earlier-pinned personas. A same-lane
+    // genome relaunch KEEPS the larger incumbent window; a lane-count change lets the
+    // plan window through (resizing KV is legitimate; keeping the old window across a
+    // lane increase would OOM); a larger plan window is never held down (the
+    // starved-grow check owns growing); nothing-serving-yet → the plan window stands.
+    #[test]
+    fn sticky_window_holds_the_incumbent_only_on_a_same_lane_relaunch() {
+        let live = |ready: bool, window: u32, lanes: u32| ServingSnapshot {
+            ready,
+            served_context_window: window,
+            lanes,
+            ..ServingSnapshot::empty()
+        };
+        assert_eq!(sticky_served_window(31_744, 2, &live(true, 49_664, 2)), 49_664);
+        assert_eq!(sticky_served_window(31_744, 2, &live(true, 49_664, 1)), 31_744);
+        assert_eq!(sticky_served_window(60_000, 2, &live(true, 49_664, 2)), 60_000);
+        assert_eq!(sticky_served_window(31_744, 2, &live(false, 0, 0)), 31_744);
     }
 
     // what this catches: a published plan drives a reconcile that brings the
