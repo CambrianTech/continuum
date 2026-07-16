@@ -97,8 +97,17 @@ fn ordered_blocks<'a>(p: &'a SystemPromptParts<'a>) -> impl Iterator<Item = Cow<
         } else {
             SILENCE_AFFORDANCE_BLOCK
         })),
-        // Her NOW — a one-line clock (minute granularity; prompt prefix stays
-        // KV-cache-friendly). Eval passes its pinned epoch; tests pass None.
+        // Assembled context — the standing grounding (roster/doctrine/workspace-map)
+        // FIRST (stable-sorted inside the block by render_assembled_context_within), then
+        // the volatile tail (recall, working memory). Placed BEFORE [now] so its stable
+        // prefix lands in the cacheable KV region adjacent to the static system prompt.
+        working_context_block(p.context).map(Cow::Owned),
+        // Her NOW — a one-line clock (minute granularity), LAST, nearest the generation
+        // point: freshest temporal grounding at the write point, and — being
+        // minute-volatile — kept OUT in front of nothing, so it can NEVER break the
+        // cacheable prefix. (Was position-6, ahead of the context block, which pinned the
+        // KV-cache boundary at ~2k tokens and re-prefilled the whole stable grounding
+        // every turn — #139 context-split.) Eval passes its pinned epoch; tests pass None.
         p.now_ms
             .and_then(|ms| chrono::DateTime::from_timestamp_millis(ms as i64))
             .map(|dt| {
@@ -107,8 +116,6 @@ fn ordered_blocks<'a>(p: &'a SystemPromptParts<'a>) -> impl Iterator<Item = Cow<
                     dt.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M %A")
                 ))
             }),
-        // Volatile context — only when the mind assembled some; always LAST.
-        working_context_block(p.context).map(Cow::Owned),
     ]
     .into_iter()
     .flatten()
@@ -341,6 +348,35 @@ mod tests {
         // A SELF-INITIATED turn carries the own-time framing.
         let own = compose(&SystemPromptParts { self_initiated: true, ..base });
         assert!(own.contains("[Your own time]"), "self-initiated ⇒ own-time block: {own}");
+    }
+
+    // what this catches: #139 context-split — the minute-volatile [now] clock must render
+    // AFTER the assembled context block, not before it. When [now] led the context, it
+    // pinned the KV-cache prefix boundary right there (~2k tokens) and the whole stable
+    // standing grounding (roster/doctrine/workspace-map, which lives in the context block
+    // and is stable-sorted first) re-prefilled every single turn. Placing [now] last keeps
+    // it out of the cacheable prefix so the stable grounding caches across turns. A
+    // regression that moved [now] back ahead of the context would silently ~halve the
+    // cross-turn prefix reuse — invisible except as latency — so pin the order here.
+    #[test]
+    fn now_clock_renders_after_the_context_block_to_preserve_the_cache_prefix() {
+        let expanded = BTreeSet::new();
+        let s = compose(&SystemPromptParts {
+            system_prompt: "IDENTITY",
+            persona_name: "Asha",
+            tools: &[],
+            expanded: &expanded,
+            context: "CTX",
+            directed: false,
+            self_initiated: false,
+            now_ms: Some(1_700_000_000_000),
+        });
+        let ctx = s.find("[What you are working with right now]").expect("ctx block present");
+        let now = s.find("[now ").expect("now clock present when now_ms is set");
+        assert!(
+            ctx < now,
+            "the volatile [now] clock must trail the context block (stable prefix stays cacheable): {s}"
+        );
     }
 
     // what this catches: the anti-refusal coherence anchor. Live glass-box showed
