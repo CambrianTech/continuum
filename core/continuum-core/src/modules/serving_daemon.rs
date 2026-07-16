@@ -678,6 +678,15 @@ impl ServingDaemonModule {
                 // plan.lanes`), not the `MAX_LANES` ceiling — exact once the plan can serve
                 // fewer lanes than the ceiling (#139 compute-buffer fit). ONE source of truth.
                 crate::cognition::resource_admission::set_served_lane_count(plan.lanes as usize);
+                // And the prefill throttle's demand facts (#56): the served model's per-spike
+                // transient compute buffer + the lane count. Published HERE, next to the lane
+                // count, so both gates read the one plan — no second path.
+                let spike = candidates
+                    .iter()
+                    .find(|c| c.model_id == plan.base_model_id)
+                    .map(|f| f.compute_buffer_per_lane())
+                    .unwrap_or(0);
+                crate::cognition::prefill_throttle::publish_serving(spike, plan.lanes as usize);
                 // send_replace keeps the latest even with no live receivers yet.
                 let _ = self.plan_tx.send_replace(Some(plan));
             }
@@ -1005,6 +1014,16 @@ impl ServiceModule for ServingDaemonModule {
         // the tick, so the tick never blocks on model load.
         self.recompute();
         let _ = self.reconcile_to_plan();
+        // The cheap knob on the reaction ladder (#56): re-derive the concurrent-prefill
+        // grant from the board's LIVE VRAM availability (lock-free watch read, already net
+        // of external pressure + grants). Flexes both directions every tick — the instant
+        // valve for the 2026-07-16 compute-buffer OOM; re-planning above stays the slow,
+        // hysteresis-guarded knob. Ungoverned VRAM (no monitor) → no live number → the
+        // throttle holds at the lane count rather than guessing.
+        if let Some(available) = governed_vram_ceiling(&self.resource_daemon) {
+            // Probes on CHANGE only, inside the throttle — a steady grant is silence.
+            let _granted = crate::cognition::prefill_throttle::reconcile(available);
+        }
         Ok(())
     }
 

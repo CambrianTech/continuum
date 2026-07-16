@@ -184,6 +184,13 @@ fn grow_semaphore_to(sem: &tokio::sync::Semaphore, installed: &AtomicUsize, targ
 static SERVING_LANES_INSTALLED: AtomicUsize = AtomicUsize::new(0);
 static NONDIRECTED_LANES_INSTALLED: AtomicUsize = AtomicUsize::new(0);
 
+/// The lane count a sibling gate should boot with before any plan publishes — the same
+/// live-count-else-ceiling read the lane semaphores lazy-init from. Used by the prefill
+/// throttle (#56) so both gates start from the ONE number.
+pub fn boot_lane_count() -> usize {
+    serving_lane_count()
+}
+
 /// Lanes a non-directed (ambient / idle) model call may occupy: all lanes minus one
 /// reserved for directed work, floored at 1 so a single-lane machine — where there is
 /// nothing to reserve — still lets idle work run rather than starving it forever.

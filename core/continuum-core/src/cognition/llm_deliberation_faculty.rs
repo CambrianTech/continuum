@@ -1123,6 +1123,11 @@ impl Faculty for LlmDeliberationFaculty {
                 ws.directed_at_self,
             )
             .await;
+            // #56 prefill throttle: under live external GPU pressure (a game, the browser)
+            // fewer than the served lane count may PREFILL concurrently — the instant valve
+            // for the 2026-07-16 compute-buffer OOM. Same fit rule the capacity sim proves;
+            // no pressure → target == lanes → this never waits. Released with the block.
+            let _prefill = crate::cognition::prefill_throttle::acquire_prefill_slot().await;
             if let Some(sink) = ws.token_sink.as_ref() {
                 binding.adapter.generate_stream(request, sink.clone()).await
             } else {
