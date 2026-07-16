@@ -239,15 +239,19 @@ impl PersonaConversation for AircPersonaConversation {
                     // schema). `perceptual_from_event` decodes both; a
                     // `None` means the event is not a room turn (presence,
                     // event-bridge, media-control, binary) — skip it.
-                    let Some(message) = perceptual_from_event(&event) else {
-                        tracing::info!(
-                            persona = %self.own_peer_id,
-                            from_peer = %event.peer_id,
-                            body_kind,
-                            probe_class = "persona.inbound.filtered_non_turn",
-                            "raw event was not a perceptual room turn — skipped (#146)"
-                        );
-                        continue;
+                    let message = match perceptual_from_event(&event) {
+                        Ok(message) => message,
+                        Err(reason) => {
+                            tracing::info!(
+                                persona = %self.own_peer_id,
+                                from_peer = %event.peer_id,
+                                body_kind,
+                                reason,
+                                probe_class = "persona.inbound.filtered_non_turn",
+                                "raw event was not a perceptual room turn — skipped (#146/#177)"
+                            );
+                            continue;
+                        }
                     };
                     // Skip our own turn, matched on the RESOLVED sender so a
                     // self-authored chat_transcript is caught too — not just
@@ -297,16 +301,19 @@ impl PersonaConversation for AircPersonaConversation {
 ///    that relayed the publish.
 ///
 /// Everything else — presence, event-bridge, media-control, binary — is
-/// not a room turn and yields `None` (the caller skips it). This is the
-/// receive half of the send/receive asymmetry noted in task #8
-/// (converge broadcast == RAG context): the sender keeps the rich
-/// `chat_transcript` envelope for the web/replay/durable consumers; the
-/// persona learns to read it rather than forcing a lossy plain-text
-/// downgrade on the send side.
-fn perceptual_from_event(event: &TranscriptEvent) -> Option<IncomingMessage> {
+/// not a room turn and yields a NAMED skip reason (the caller logs it —
+/// never a bare drop; task #177 was diagnosed blind because the old
+/// `Option` collapsed "no body-hint header", "envelope decode ERROR", and
+/// "legit non-chat schema" into one silent `None`). This is the receive
+/// half of the send/receive asymmetry noted in task #8 (converge
+/// broadcast == RAG context): the sender keeps the rich `chat_transcript`
+/// envelope for the web/replay/durable consumers; the persona learns to
+/// read it rather than forcing a lossy plain-text downgrade on the send
+/// side.
+fn perceptual_from_event(event: &TranscriptEvent) -> Result<IncomingMessage, &'static str> {
     // Path 1 — a peer's plain-text say().
     if let Some(text) = event.body.as_ref().and_then(|b| b.as_text()) {
-        return Some(IncomingMessage {
+        return Ok(IncomingMessage {
             lamport: event.lamport,
             peer_id: event.peer_id.as_uuid(),
             text: text.to_string(),
@@ -320,13 +327,20 @@ fn perceptual_from_event(event: &TranscriptEvent) -> Option<IncomingMessage> {
     // receive-side symmetry of Path 1. A prior fix taught only this
     // perception path to read the envelope; the positron read surface had
     // the identical blindness until it too routed through this decoder.
-    let envelope = envelope_from_event(event).ok().flatten()?;
-    let (peer_id, text) = chat_transcript_message(&envelope, event.peer_id.as_uuid())?;
-    Some(IncomingMessage {
-        lamport: event.lamport,
-        peer_id,
-        text,
-    })
+    match envelope_from_event(event) {
+        Err(_) => Err("envelope_decode_error"), // hint header present, serde decode FAILED — wire drift
+        Ok(None) => Err("no_continuum_body_hint"), // not a continuum envelope (or the header got lost)
+        Ok(Some(envelope)) => {
+            match chat_transcript_message(&envelope, event.peer_id.as_uuid()) {
+                Some((peer_id, text)) => Ok(IncomingMessage {
+                    lamport: event.lamport,
+                    peer_id,
+                    text,
+                }),
+                None => Err("non_chat_schema"), // presence / event-bridge / media-control — legit skip
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -473,7 +487,12 @@ mod tests {
                     }
                 }),
             );
-            assert!(perceptual_from_event(&ev).is_none());
+            assert_eq!(
+                perceptual_from_event(&ev),
+                Err("non_chat_schema"),
+                "an event-bridge envelope is a LEGIT skip — and the reason must say so, \
+                 distinguishable from a decode error or a lost body-hint header (#177)"
+            );
         }
     }
 }
