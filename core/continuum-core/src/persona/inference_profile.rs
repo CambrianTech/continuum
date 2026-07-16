@@ -77,8 +77,18 @@ pub struct SamplingProfile {
     pub top_k: u32,
     /// Nucleus sampling threshold. Typical 0.9–0.95.
     pub top_p: f32,
-    /// Repeat penalty. 1.0 = off; typical 1.05–1.15 for chat.
+    /// Repeat penalty. 1.0 = off; typical 1.05–1.15 for chat. Windowed
+    /// over the last `repeat_last_n` tokens.
     pub repeat_penalty: f32,
+    /// Window (trailing tokens) `repeat_penalty` scans. Widened past
+    /// llama.cpp's default 64 so a loop whose span exceeds 64 tokens is
+    /// still caught (#181). 0 = disabled.
+    #[ts(type = "number")]
+    pub repeat_last_n: u32,
+    /// Unwindowed repetition guard — penalizes a token by its whole-
+    /// sequence frequency, catching gap-separated loops the windowed
+    /// penalty misses (#181). 0.0 = off. llama.cpp-family gateways only.
+    pub frequency_penalty: f32,
     /// Maximum tokens to generate per response. Derived from role's
     /// `max_response_chars` divided by approximate chars-per-token
     /// (typically 4 for English).
@@ -94,6 +104,10 @@ impl SamplingProfile {
             top_k: 40,
             top_p: 0.95,
             repeat_penalty: 1.1,
+            // Anti-loop resilience floor (#181) — same defaults layer as
+            // repeat_penalty, overridable per-model when #76 lands.
+            repeat_last_n: 320,
+            frequency_penalty: 0.3,
             max_new_tokens: 512,
         }
     }

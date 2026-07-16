@@ -439,6 +439,8 @@ impl LlmDeliberationFaculty {
             // temperature) onto the Model row so it's a per-model default the faculty
             // passes through, not an adapter magic number.
             repeat_penalty: None,
+            frequency_penalty: None,
+            repeat_last_n: None,
             // #150: peer-name turn-boundary stops when the caller derived them
             // from the burst (`peer_stop_sequences`) — generation ends where
             // her turn ends, never continuing the transcript as a teammate.

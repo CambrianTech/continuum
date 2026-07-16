@@ -23,6 +23,24 @@ topP: number,
 topK: number, 
 /**
  * Repeat penalty. >1.0 penalizes repeated tokens. Llama.cpp
- * default 1.1.
+ * default 1.1. Windowed — only scans the last `repeat_last_n`
+ * tokens.
  */
-repeatPenalty: number, };
+repeatPenalty: number, 
+/**
+ * How many trailing tokens `repeat_penalty` scans. Llama.cpp
+ * default is 64, but a repetition loop whose repeat span (a code
+ * block + a paragraph + the block again) is wider than 64 slips
+ * through that window entirely (#181). Widen it here so the mild
+ * windowed penalty actually covers a full loop span. 0 = disabled.
+ */
+repeatLastN: number, 
+/**
+ * Unwindowed repetition guard: penalizes a token by how often it
+ * has appeared across the ENTIRE generation, regardless of gap —
+ * so a block re-emitted many times is penalized even when the
+ * windowed `repeat_penalty` misses it (#181). 0.0 = disabled.
+ * Honored by llama.cpp-family gateways; ignored by the in-process
+ * Candle backend and cloud OpenAI-compat providers.
+ */
+frequencyPenalty: number, };

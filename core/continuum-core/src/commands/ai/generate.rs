@@ -113,6 +113,12 @@ fn parse_request(params: &Value) -> Result<TextGenerationRequest, String> {
         repeat_penalty: p
             .f32_opt("repeat_penalty")
             .or_else(|| p.f32_opt("repeatPenalty")),
+        frequency_penalty: p
+            .f32_opt("frequency_penalty")
+            .or_else(|| p.f32_opt("frequencyPenalty")),
+        repeat_last_n: p
+            .u64_opt_alias("repeat_last_n", "repeatLastN")
+            .map(|n| n as u32),
         stop_sequences: p
             .json_opt("stop_sequences")
             .or_else(|| p.json_opt("stopSequences")),

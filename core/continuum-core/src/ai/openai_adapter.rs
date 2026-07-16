@@ -258,6 +258,43 @@ fn prompt_alone_overflows_served(body: &serde_json::Value, served_window: u32) -
     (prompt_tokens >= served_window as usize).then_some(prompt_tokens)
 }
 
+/// Apply the llama.cpp-native sampling knobs to a request body. Pure (no `self`,
+/// no I/O) so the wire contract is unit-testable and lives in ONE place —
+/// gated by `llamacpp_sampling_extensions` at the call site.
+///
+/// `repeat_penalty` is always set (defaulting to llama.cpp's 1.1 when the request
+/// omits it) because the local gateway otherwise runs with penalty=1.0/disabled and
+/// produces runaway repetition. `repeat_last_n` and `frequency_penalty` are the #181
+/// anti-loop pair, forwarded ONLY when the request carries them: the sampling layer
+/// (SamplingParams/SamplingProfile → TextGenerationRequest) owns the values, this
+/// adapter never invents model characteristics — they stay per-model tunable (#76).
+///
+/// #181 root cause (glass-boxed 2026-07-16, Devstral-24B): `repeat_penalty` alone did
+/// NOT stop a reasoning-channel repetition loop — the model re-emitted the same wrong
+/// code block ~5×, burning 14k reasoning tokens to the `length` cap and committing an
+/// empty answer. llama.cpp's `repeat_penalty` scans only the last `repeat_last_n`
+/// tokens (gateway default 64), but the loop's repeat span (code + paragraph + code ≈
+/// 150 tok) is WIDER than 64, so the window never sees the recurrence. The pair closes
+/// it: `repeat_last_n` widens that window; `frequency_penalty` is the UNWINDOWED guard
+/// (scaled by whole-sequence token frequency) that catches gap-separated loops the
+/// window still misses. Cloud OpenAI-compat providers reject these fields — hence the
+/// capability gate at the call site.
+fn apply_llamacpp_sampling_knobs(
+    obj: &mut serde_json::Map<String, serde_json::Value>,
+    request: &TextGenerationRequest,
+) {
+    obj.insert(
+        "repeat_penalty".to_string(),
+        json!(request.repeat_penalty.unwrap_or(1.1)),
+    );
+    if let Some(rln) = request.repeat_last_n {
+        obj.insert("repeat_last_n".to_string(), json!(rln));
+    }
+    if let Some(fp) = request.frequency_penalty {
+        obj.insert("frequency_penalty".to_string(), json!(fp));
+    }
+}
+
 impl SlotAffinity {
     /// Stable slot for `persona` — same persona always maps to the same slot
     /// within a boot; new personas take the next slot round-robin.
@@ -1514,9 +1551,8 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
         // is omitted. llama-server inherits the same protection DMR had: the
         // forged 4B loops its `<think>` block to the token budget without it.
         if self.config.llamacpp_sampling_extensions {
-            let rp = request.repeat_penalty.unwrap_or(1.1);
             if let Some(obj) = body.as_object_mut() {
-                obj.insert("repeat_penalty".to_string(), json!(rp));
+                apply_llamacpp_sampling_knobs(obj, &request);
                 // KV-cache prefix reuse — the llama.cpp-server `cache_prompt`
                 // extension. Without it the server re-prefills the ENTIRE prompt
                 // from scratch every call. Our system prompt is a long, mostly
@@ -2309,6 +2345,63 @@ fn parse_embedding_usage(body: &Value) -> UsageMetrics {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches (#181): the anti-loop knobs reach the llama.cpp wire body.
+    // The reasoning-channel repetition loop (Devstral-24B looped an identical wrong
+    // code block to the length cap, empty answer) is only stopped if `repeat_last_n`
+    // (widened window) AND `frequency_penalty` (unwindowed guard) actually make it
+    // onto the POST body — a silent drop here was the exact shape of the earlier
+    // `stop`-sequence and `repeat_penalty` regressions (RULE 1: the field the
+    // faculty threaded in never reached the server). `repeat_penalty` is always
+    // present (defaulting when omitted); the anti-loop pair only when the request
+    // carries them, so the sampling layer stays the single owner of the values.
+    #[test]
+    fn sampling_knobs_carry_the_antiloop_pair_onto_the_wire_body() {
+        let mut obj = serde_json::Map::new();
+        let req = TextGenerationRequest {
+            repeat_penalty: Some(1.1),
+            repeat_last_n: Some(320),
+            frequency_penalty: Some(0.3),
+            ..Default::default()
+        };
+        apply_llamacpp_sampling_knobs(&mut obj, &req);
+        // f32→JSON→f64 widening is not bit-exact (1.1f32 ≈ 1.10000002), so compare
+        // the penalties with tolerance; repeat_last_n is an integer and must be exact.
+        let approx = |k: &str| obj.get(k).and_then(|v| v.as_f64()).unwrap();
+        assert!((approx("repeat_penalty") - 1.1).abs() < 1e-4);
+        assert_eq!(
+            obj.get("repeat_last_n").and_then(|v| v.as_u64()),
+            Some(320),
+            "the widened window must reach llama-server or the loop slips through the 64-token default"
+        );
+        assert!(
+            (approx("frequency_penalty") - 0.3).abs() < 1e-4,
+            "the unwindowed guard must reach the wire — it catches gap-separated loops repeat_last_n misses"
+        );
+    }
+
+    // what this catches: the adapter NEVER invents the anti-loop values. When the
+    // request omits them (an external/cloud caller that didn't set sampling), the
+    // fields are absent from the body so the gateway keeps its own default — the
+    // sampling layer, not this adapter, is the single source of the knob values (#76).
+    // repeat_penalty still defaults, matching the pre-existing DMR runaway fix.
+    #[test]
+    fn sampling_knobs_omit_antiloop_when_request_does_not_carry_them() {
+        let mut obj = serde_json::Map::new();
+        apply_llamacpp_sampling_knobs(&mut obj, &TextGenerationRequest::default());
+        assert!(
+            (obj.get("repeat_penalty").and_then(|v| v.as_f64()).unwrap() - 1.1).abs() < 1e-4,
+            "repeat_penalty always set — a local gateway at 1.0 runs away (pre-#181 DMR fix)"
+        );
+        assert!(
+            !obj.contains_key("repeat_last_n"),
+            "no request value → omit, do not hardcode a window in the adapter"
+        );
+        assert!(
+            !obj.contains_key("frequency_penalty"),
+            "no request value → omit, do not hardcode a penalty in the adapter"
+        );
+    }
 
     // what this catches (#175 universal backstop): the local-gateway adapter must
     // REFUSE any request whose prompt ALONE meets/exceeds the served per-slot window —

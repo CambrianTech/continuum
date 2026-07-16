@@ -122,8 +122,23 @@ pub struct SamplingParams {
     #[ts(type = "number")]
     pub top_k: u32,
     /// Repeat penalty. >1.0 penalizes repeated tokens. Llama.cpp
-    /// default 1.1.
+    /// default 1.1. Windowed — only scans the last `repeat_last_n`
+    /// tokens.
     pub repeat_penalty: f32,
+    /// How many trailing tokens `repeat_penalty` scans. Llama.cpp
+    /// default is 64, but a repetition loop whose repeat span (a code
+    /// block + a paragraph + the block again) is wider than 64 slips
+    /// through that window entirely (#181). Widen it here so the mild
+    /// windowed penalty actually covers a full loop span. 0 = disabled.
+    #[ts(type = "number")]
+    pub repeat_last_n: u32,
+    /// Unwindowed repetition guard: penalizes a token by how often it
+    /// has appeared across the ENTIRE generation, regardless of gap —
+    /// so a block re-emitted many times is penalized even when the
+    /// windowed `repeat_penalty` misses it (#181). 0.0 = disabled.
+    /// Honored by llama.cpp-family gateways; ignored by the in-process
+    /// Candle backend and cloud OpenAI-compat providers.
+    pub frequency_penalty: f32,
 }
 
 impl Default for SamplingParams {
@@ -133,6 +148,12 @@ impl Default for SamplingParams {
             top_p: 0.95,
             top_k: 40,
             repeat_penalty: 1.1,
+            // Anti-loop resilience floor (#181): a widened window + a
+            // gentle unwindowed penalty. Conservative substrate defaults
+            // — the same layer `repeat_penalty: 1.1` lives in, overridable
+            // per-model when #76 (per-model sampling on the Model row) lands.
+            repeat_last_n: 320,
+            frequency_penalty: 0.3,
         }
     }
 }
