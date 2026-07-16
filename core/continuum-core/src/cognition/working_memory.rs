@@ -185,6 +185,17 @@ pub struct WorkingMemory {
     /// per session are naturally modest (a persona issues dozens of distinct calls,
     /// not millions), so it is left unbounded within the per-spawn lifetime.
     action_fp_counts: Mutex<HashMap<String, usize>>,
+    /// The lowest action `seq` whose FULL result is still "active" — i.e. the mind is
+    /// still inside the act→observe loop that produced it and hasn't yet spoken. The
+    /// full raw result exists to answer "what next" the moment the hands fetch it; once
+    /// the persona SETTLES (record_settlement), that result has served its purpose and
+    /// only bloats every subsequent conversational turn's prompt (a 2k-token code/tree
+    /// dump riding along for turns after the mind already used it — the #139/#165
+    /// stale-result-replay waste). On settlement this advances PAST the current
+    /// last_action, so [`active_action_full`](Self::active_action_full) then abstains and
+    /// the block drops to the trail head (still in `entries`, still in episodic memory,
+    /// still re-fetchable). 0 = nothing settled yet → the current result is active.
+    active_from_seq: AtomicU64,
 }
 
 /// The PROVENANCE of one working-memory entry — the type that makes receipts,
@@ -256,6 +267,7 @@ impl WorkingMemory {
             next_action_seq: AtomicU64::new(1),
             action_fps: Mutex::new(VecDeque::new()),
             action_fp_counts: Mutex::new(HashMap::new()),
+            active_from_seq: AtomicU64::new(0),
         }
     }
 
@@ -506,6 +518,20 @@ impl WorkingMemory {
         self.last_action.lock().clone()
     }
 
+    /// The full most-recent-act result ONLY while it is still ACTIVE — the mind is
+    /// inside the act→observe loop that produced it and hasn't spoken yet. Returns `None`
+    /// once the persona has SETTLED past it (the raw result did its "what next" job; the
+    /// trail head, episodic memory, and re-fetch remain). This is what the perception
+    /// faculty surfaces so a 2k-token `code/tree` dump stops re-prefilling on every
+    /// conversational turn AFTER the mind already used it (#139 prefill / #165 stale
+    /// replay). `last_action_full` stays the ungated accessor for callers that want the
+    /// raw slot regardless of settlement (snapshotting, tests).
+    pub fn active_action_full(&self) -> Option<(u64, String)> {
+        let action = self.last_action.lock().clone()?;
+        let active_from = self.active_from_seq.load(Ordering::Relaxed);
+        (action.0 >= active_from).then_some(action)
+    }
+
     /// Fold a streamed event from a DISPATCHED (background) command into the mind's
     /// recency, keyed by its handle. The async twin of `record_action`: a sentinel /
     /// compile / debugger the persona sent away emits events CONTINUOUSLY — `Running`
@@ -589,6 +615,16 @@ impl WorkingMemory {
         });
         while e.len() > self.capacity {
             e.pop_front();
+        }
+        drop(e);
+        // Settling closes over the current act→observe loop: the most recent action's
+        // FULL result has done its "what next" job. Advance the active boundary PAST it
+        // so the full block stops riding along subsequent conversational turns (#139/#165
+        // stale-result-replay). A later act re-activates by minting a higher seq. Nothing
+        // acted yet (last_action None) → nothing to close. `fetch_max` so it never regresses.
+        if let Some((seq, _)) = self.last_action.lock().as_ref() {
+            let next_active = seq.saturating_add(1);
+            self.active_from_seq.fetch_max(next_active, Ordering::Relaxed);
         }
     }
 
@@ -680,7 +716,7 @@ impl Faculty for WorkingMemoryFaculty {
         // regardless). Lets the mind USE what its hands fetched — count the file, read the
         // screenshot description, scan the log — instead of looping on the truncated head.
         // Only when it carries more than the trail head already does.
-        if let Some((seq, full)) = self.memory.last_action_full() {
+        if let Some((seq, full)) = self.memory.active_action_full() {
             if full.chars().count() > WM_ACTION_HEAD_CHARS {
                 let clipped = clip_action_full(&full);
                 sections.push(format!(
@@ -962,6 +998,63 @@ mod tests {
         assert!(
             rendered.contains("chars truncated"),
             "and it's the CLIPPED body, not the raw 16k dump"
+        );
+    }
+
+    // what this catches: #139/#165 — the FULL action result rides in the prompt only while
+    // the mind is inside the act→observe loop (active). Once the persona SETTLES (speaks),
+    // the raw result has done its "what next" job and drops out of the prompt so a 2k-token
+    // code/tree dump stops re-prefilling on every subsequent conversational turn. The trail
+    // HEAD survives (proprioception), and a NEW act re-activates the full channel.
+    #[tokio::test]
+    async fn full_result_drops_out_after_the_persona_settles_but_a_new_act_reactivates() {
+        let wm = Arc::new(WorkingMemory::new(8));
+        let dump = format!("code/tree result\n{}", "n".repeat(3_000)); // > WM_ACTION_HEAD_CHARS
+        wm.record_receipt(&dump);
+
+        let render = |wm: Arc<WorkingMemory>| async move {
+            WorkingMemoryFaculty::new(wm)
+                .contribute(&Workspace::new("tick"))
+                .await
+                .expect("bids")
+                .content
+                .clone()
+        };
+
+        // Active (acted, not yet spoken): the full result is present.
+        let r1 = render(wm.clone()).await;
+        assert!(
+            r1.contains("Full result of your most recent action"),
+            "while active, the mind sees the whole result it just fetched"
+        );
+
+        // The persona SETTLES → the full result drops out; the trail head remains.
+        wm.record_settlement("the workspace has a wordstats crate");
+        assert!(
+            wm.active_action_full().is_none(),
+            "a settled result is no longer active"
+        );
+        let r2 = render(wm.clone()).await;
+        assert!(
+            !r2.contains("Full result of your most recent action"),
+            "after settling, the 2k-token dump stops riding along the prompt (#139/#165)"
+        );
+        assert!(
+            r2.contains("[action #1]"),
+            "but the proprioceptive trail head survives — the mind still knows it acted"
+        );
+
+        // A NEW act re-activates the full channel (higher seq beats the settled boundary).
+        let dump2 = format!("code/read result\n{}", "m".repeat(3_000));
+        wm.record_receipt(&dump2);
+        assert!(
+            wm.active_action_full().map(|(s, _)| s) == Some(2),
+            "the fresh act is active again"
+        );
+        let r3 = render(wm.clone()).await;
+        assert!(
+            r3.contains("Full result of your most recent action (#2):"),
+            "the new act's result is surfaced whole for its own what-next decision"
         );
     }
 
