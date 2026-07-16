@@ -39,6 +39,7 @@ pub mod events;
 pub mod ffi;
 pub mod forge;
 pub mod genome;
+pub mod capacity;
 pub mod governor;
 pub mod gpu;
 pub mod http;
