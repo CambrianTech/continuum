@@ -25,4 +25,10 @@ lastOk: boolean,
  * Receiver-clock ms — staleness signal for readers (a row older than a task's
  * typical latency means the pass ended or died; the ledger row is the truth).
  */
-updatedAtMs: number, };
+updatedAtMs: number, 
+/**
+ * Live VRAM available (GB) at grade time — the resource-efficiency axis next to
+ * accuracy and latency, sampled from the ONE per-machine authority. `null` when
+ * VRAM is ungoverned (bare tests) — absence is honest, never a fabricated 0.
+ */
+vramFreeGb?: number, };

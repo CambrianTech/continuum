@@ -166,7 +166,25 @@ pub struct ResourceDaemon {
     last_drift_bytes: Mutex<[u64; 3]>,
 }
 
+static GLOBAL_RESOURCE_DAEMON: std::sync::OnceLock<std::sync::Arc<ResourceDaemon>> =
+    std::sync::OnceLock::new();
+
 impl ResourceDaemon {
+    /// Publish THE per-machine resource authority process-globally (first writer wins —
+    /// the boot path). Doctrine-aligned: there is exactly ONE authority per machine
+    /// (#56), so a global read handle is the honest shape, same precedent as
+    /// `MessageBus::set_global` / `PersonaAircRuntimeRegistry::set_global`. Lets
+    /// host-independent bodies (the detached eval sampling per-task VRAM for the
+    /// efficiency axis) read the live board without a threaded handle.
+    pub fn set_global(daemon: std::sync::Arc<ResourceDaemon>) {
+        let _ = GLOBAL_RESOURCE_DAEMON.set(daemon);
+    }
+
+    /// The process-global authority, if boot published it (None in bare unit tests).
+    pub fn global() -> Option<std::sync::Arc<ResourceDaemon>> {
+        GLOBAL_RESOURCE_DAEMON.get().cloned()
+    }
+
     /// Start the daemon on its own tokio task. Returns the handle subsystems use
     /// to lease, subscribe to the board, and (via `register_with_broker`) wire
     /// cross-resource relief.

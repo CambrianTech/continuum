@@ -1569,6 +1569,7 @@ pub fn start_server(
         // host-independent bodies — the detached eval's `eval:progress` scoreboard —
         // can emit events widgets/observers subscribe to (#123/#141).
         crate::runtime::MessageBus::set_global(runtime.bus_arc());
+        crate::resources::ResourceDaemon::set_global(resource_daemon.clone());
         // Native airc kanban tools — personas claim/create/release cards on the
         // shared board as THEIR OWN airc key, delegating to airc's work API. Shares
         // the SAME registry (cheap Clone over an inner Arc) so a work command can

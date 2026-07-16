@@ -1508,6 +1508,11 @@ pub struct EvalPassProgress {
     /// typical latency means the pass ended or died; the ledger row is the truth).
     #[ts(type = "number")]
     pub updated_at_ms: u64,
+    /// Live VRAM available (GB) at grade time — the resource-efficiency axis next to
+    /// accuracy and latency, sampled from the ONE per-machine authority. `null` when
+    /// VRAM is ungoverned (bare tests) — absence is honest, never a fabricated 0.
+    #[ts(optional, type = "number")]
+    pub vram_free_gb: Option<u64>,
 }
 
 static EVAL_PROGRESS: std::sync::OnceLock<tokio::sync::watch::Sender<Option<EvalPassProgress>>> =
@@ -1525,6 +1530,18 @@ pub fn subscribe_eval_progress() -> tokio::sync::watch::Receiver<Option<EvalPass
 /// Report one graded task on all three surfaces. Called by BOTH pass loops (solo +
 /// team) — one reporter, no drift.
 fn report_task_graded(task_id: &str, ok: bool, acts: u32, latency_ms: u64, pass: u32, done: usize, total: usize) {
+    // Efficiency axis: sample the live board (lock-free watch read) so every graded
+    // task carries the VRAM state it ran under — the tuning signal for knobs like
+    // max_acts / context budget / lane count ([[self-improvement-is-a-control-loop]]:
+    // the reward is only as trustworthy as the metric, and a score without its
+    // resource cost is half a metric).
+    let vram_free_gb = crate::resources::ResourceDaemon::global().and_then(|d| {
+        d.board()
+            .kinds
+            .iter()
+            .find(|k| k.kind == crate::resources::ResourceKind::Vram)
+            .map(|k| k.available_bytes / 1_000_000_000)
+    });
     let snap = EvalPassProgress {
         done: done as u32,
         total: total as u32,
@@ -1532,6 +1549,7 @@ fn report_task_graded(task_id: &str, ok: bool, acts: u32, latency_ms: u64, pass:
         current_task: task_id.to_string(),
         last_ok: ok,
         updated_at_ms: crate::persona::trace::now_ms(),
+        vram_free_gb,
     };
     let _ = eval_progress_tx().send_replace(Some(snap.clone()));
     if let Some(bus) = crate::runtime::MessageBus::global() {
@@ -1549,6 +1567,7 @@ fn report_task_graded(task_id: &str, ok: bool, acts: u32, latency_ms: u64, pass:
         pass = pass,
         running_rate = format!("{:.3}", pass as f64 / done.max(1) as f64).as_str(),
         latency_ms = latency_ms,
+        vram_free_gb = vram_free_gb.unwrap_or(0),
         "task graded",
     );
 }
@@ -1880,6 +1899,9 @@ mod tests {
         assert_eq!(snap.current_task, "HumanEval/7");
         assert!(snap.last_ok);
         assert!(snap.updated_at_ms > 0);
+        // Bare unit test: no global authority published → honest None, never a
+        // fabricated 0 ([[fallbacks-are-illegal-fail-loud]] applied to metrics).
+        assert!(snap.vram_free_gb.is_none());
     }
 
     fn task_result(latency_ms: u64, output_tokens: u32, tps: f64) -> EvalTaskResult {
