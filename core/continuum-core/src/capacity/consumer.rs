@@ -65,6 +65,50 @@ impl QualityModel for LiveRoomServing {
     }
 }
 
+/// Deep code / project generation — the OUTLIER-B consumer that proves the interface, chosen to
+/// be maximally different from [`LiveRoomServing`] (CLAUDE.md outlier-validation discipline).
+///
+/// A coder in the background has NONE of a room's senses on the critical path: nobody is waiting
+/// on a live avatar, so speak/listen/render aren't faculties here at all. The honest truths
+/// invert:
+/// - **Latency barely matters.** "Far less of an issue for a deep coder to take 2× as long." It's
+///   a *quality* faculty with tiny weight — a starved grant that halves throughput is a minor
+///   ding, not a degraded experience. Taking longer to think well is fine.
+/// - **Correctness IS the experience — gating.** Broken code is a holistic failure no polish
+///   rescues, exactly as a mute avatar is in a room. But correctness is a property of the model +
+///   the work, not the concurrency grant, so the grant doesn't threaten it here — the crash mode
+///   is different (an OOM kills the *job*, not the senses). This is the asymmetry that proves the
+///   scorer's gate composes for a totally different faculty set without being forced.
+///
+/// The grant→experience mapping: a starve dips the (tiny-weight) latency faculty; an OOM kills the
+/// job so `working_code` (the critical gate) collapses. Same two mechanisms as the room, wired to
+/// a different, inverted faculty set — the interface holds at both extremes.
+pub struct CodeGenBatch;
+
+impl QualityModel for CodeGenBatch {
+    fn faculties(&self, cap: &DeviceCapacity, req: &LeaseRequest, grant: &Grant) -> Vec<FacultyScore> {
+        // An OOM kills the job — no code comes out. Otherwise the code is produced; whether it's
+        // *correct* is the model's business, assumed good here (correctness is graded elsewhere by
+        // the coder gym, not by the allocator). The gate the allocator can move is job-survival.
+        let job_survives = if grant_would_oom(cap, req, grant) { 0.0 } else { 1.0 };
+
+        let want = req.want_concurrency.max(1) as f32;
+        let throughput = (grant.concurrency as f32 / want).clamp(0.0, 1.0);
+
+        vec![
+            // The job must produce working code — gating. A crash zeroes it; nothing else can.
+            FacultyScore::critical("working_code", job_survives),
+            // Solution quality dominates the graded experience: "best of the best."
+            FacultyScore::quality("quality", 1.0, 10.0),
+            // Throughput/latency is real but nearly weightless here — a slow deep coder is fine.
+            FacultyScore::quality("latency", throughput, 1.0),
+        ]
+    }
+    fn name(&self) -> &'static str {
+        "code-gen-batch"
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::score::score_experience;
@@ -110,5 +154,29 @@ mod tests {
             "shrinking must be VASTLY better than crashing (shrunk={shrunk}, crashed={crashed}) \
              — this is the reward that teaches the policy to shed load instead of OOMing"
         );
+    }
+
+    // what this catches: the OUTLIER-B proof — the QualityModel + scorer interface fits a
+    // MAXIMALLY DIFFERENT consumer (code-gen: no senses, correctness-gated, latency near-weightless)
+    // WITHOUT forcing. The same 50%-throughput starve that noticeably dings a live room barely
+    // touches a code-gen job — because the two consumers weight latency oppositely. If the
+    // interface only fit the room shape (e.g. if latency weight were baked into the scorer instead
+    // of chosen per-consumer), this asymmetry couldn't exist and the abstraction would be a leak.
+    #[test]
+    fn code_gen_shrugs_off_the_same_starve_that_dings_a_room() {
+        let half = Grant { concurrency: 2 }; // half of demand=4 → 50% throughput for both
+        let room = score_experience(&LiveRoomServing.faculties(&cap(13), &demand(), &half));
+        let code = score_experience(&CodeGenBatch.faculties(&cap(13), &demand(), &half));
+
+        assert!(
+            code > room,
+            "the same throughput starve must hurt a live room MORE than a deep-coder job \
+             (room={room}, code={code}) — latency is heavy in a room, near-weightless in code-gen"
+        );
+        assert!(code > 0.9, "a slow-but-working code-gen job is still an excellent outcome, got {code}");
+
+        // And the gate still composes for the inverted faculty set: an OOM kills the job.
+        let crashed = score_experience(&CodeGenBatch.faculties(&cap(7), &demand(), &Grant { concurrency: 4 }));
+        assert!(crashed < 0.05, "an OOM kills the code-gen job (working_code gate), got {crashed}");
     }
 }
