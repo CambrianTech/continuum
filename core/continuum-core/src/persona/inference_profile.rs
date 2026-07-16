@@ -95,21 +95,41 @@ pub struct SamplingProfile {
     pub max_new_tokens: u32,
 }
 
+/// Response-length fallback (tokens) when the role doesn't specify a budget.
+/// A ROLE concern, not a model fact — so it lives here, not on `ModelSampling`.
+pub const DEFAULT_MAX_NEW_TOKENS: u32 = 512;
+
 impl SamplingProfile {
-    /// Conservative chat defaults — closely mirror `SamplingConfig::chat()`
-    /// in the backend, suitable when the role doesn't specify otherwise.
-    pub fn chat_defaults() -> Self {
+    /// Project a persona sampling profile from the model's row-level decode
+    /// defaults (#76) plus the role's response budget. This is the ONE seam
+    /// that combines the two sources: model-level knobs (temperature, top-k/p,
+    /// the #181 anti-loop pair) come from [`ModelSampling`] on the `Model` row;
+    /// `max_new_tokens` is the role's length budget. Blessed/tuned models carry
+    /// their own `ModelSampling`; unblessed rows carry the floor.
+    pub fn from_model(
+        m: &crate::model_registry::types::ModelSampling,
+        max_new_tokens: u32,
+    ) -> Self {
         Self {
-            temperature: 0.6,
-            top_k: 40,
-            top_p: 0.95,
-            repeat_penalty: 1.1,
-            // Anti-loop resilience floor (#181) — same defaults layer as
-            // repeat_penalty, overridable per-model when #76 lands.
-            repeat_last_n: 320,
-            frequency_penalty: 0.3,
-            max_new_tokens: 512,
+            temperature: m.temperature,
+            top_k: m.top_k,
+            top_p: m.top_p,
+            repeat_penalty: m.repeat_penalty,
+            repeat_last_n: m.repeat_last_n,
+            frequency_penalty: m.frequency_penalty,
+            max_new_tokens,
         }
+    }
+
+    /// Conservative chat defaults — the substrate floor. Projects from
+    /// [`ModelSampling::default`] so the floor numbers (incl. the #181 anti-loop
+    /// pair) live in exactly ONE place and can never drift from the Model row's
+    /// default. Suitable when there is no model row (tests, scripted adapters).
+    pub fn chat_defaults() -> Self {
+        Self::from_model(
+            &crate::model_registry::types::ModelSampling::default(),
+            DEFAULT_MAX_NEW_TOKENS,
+        )
     }
 }
 

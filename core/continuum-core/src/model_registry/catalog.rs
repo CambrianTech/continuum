@@ -6,8 +6,8 @@
 
 use super::registry::{Registry, RegistryError};
 use super::types::{
-    Arch, AuthKind, Capability, Model, MultiPartyChatStrategy, Provider, ProviderCapabilities,
-    ProviderKind, ToolProtocol,
+    Arch, AuthKind, Capability, Model, ModelSampling, MultiPartyChatStrategy, Provider,
+    ProviderCapabilities, ProviderKind, ToolProtocol,
 };
 use std::collections::BTreeSet;
 use std::path::PathBuf;
@@ -464,6 +464,17 @@ pub fn models() -> Vec<Model> {
             chat_template: None,
             multi_party_strategy: MultiPartyChatStrategy::ProperChatMlSingleParty,
             stop_sequences: &["</s>"],
+            // #181 REFERENCE ROW (#76): Devstral-Small is the model that exhibited
+            // the reasoning-channel repetition loop (identical wrong code block ~5×,
+            // 14k tokens to the length cap, empty answer). Its sampling is pinned
+            // EXPLICITLY to the substrate anti-loop floor so this row is the
+            // documented ESCALATION POINT: if the floor proves insufficient once
+            // measured live post-reboot, the fix is bumping THESE numbers
+            // (repeat_last_n → wider, frequency_penalty → stronger) here — a
+            // one-line per-model tune, not a re-plumb. Values == floor today, so
+            // the reboot cleanly measures the floor as planned
+            // ([[anti-loop-sampling-windowed-vs-unwindowed]]).
+            sampling: ModelSampling::default(),
             ..ModelSpec::default()
         }),
         // Hermes-3-Llama-3.1-8B — the OPPONENT, made first-class. A general (non-coder) model we
@@ -1041,6 +1052,10 @@ struct ModelSpec {
     chat_template: Option<&'static str>,
     multi_party_strategy: MultiPartyChatStrategy,
     stop_sequences: &'static [&'static str],
+    /// Per-model decode defaults (#76). Defaults to the substrate floor
+    /// ([`ModelSampling::default`], incl. the #181 anti-loop pair) via
+    /// `..Default::default()`, so only a model we've measured/tuned overrides it.
+    sampling: ModelSampling,
     /// See [`Model::persona_serving_eligible`]. Default TRUE; benchmark
     /// opponents / campaign-roster rows opt OUT so the autonomic planner can
     /// never conscript them as the citizens' model.
@@ -1067,6 +1082,7 @@ impl Default for ModelSpec {
             chat_template: None,
             multi_party_strategy: MultiPartyChatStrategy::NamePrefixedUserTurns,
             stop_sequences: &[],
+            sampling: ModelSampling::default(),
             persona_serving_eligible: true,
         }
     }
@@ -1091,6 +1107,7 @@ fn model(spec: ModelSpec) -> Model {
         chat_template: spec.chat_template.map(str::to_string),
         multi_party_strategy: spec.multi_party_strategy,
         stop_sequences: spec.stop_sequences.iter().map(|s| s.to_string()).collect(),
+        sampling: spec.sampling,
         // Not a hand-authored fact: the size comes from the artifact's own
         // `general.parameter_count` header, hydrated once at registry load
         // ([`super::hydrate`]). The `ModelSpec` deliberately omits it so no

@@ -1412,6 +1412,7 @@ mod tests {
             multi_party_strategy: MultiPartyChatStrategy::default(),
             stop_sequences: vec![],
             parameter_count: 0,
+            sampling: crate::model_registry::types::ModelSampling::default(),
             persona_serving_eligible: true,
         }
     }
