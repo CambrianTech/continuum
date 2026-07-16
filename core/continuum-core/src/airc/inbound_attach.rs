@@ -189,6 +189,29 @@ pub async fn publish_transcript_event(
     //    `perceptual_from_event`. Anything else is not ours here → skip.
     if let Some(bus_event) = bus_event_from_envelope(&envelope) {
         bus.publish_async_only(&bus_event.name, bus_event.payload);
+    } else if let Some(offer) = capacity_offer_from_envelope(&envelope) {
+        // Grid capacity gossip (#56 step 4): fold the heard offer into the
+        // process-global ledger, keyed on the WIRE's peer id (airc's authenticated
+        // transport identity — the payload declares no identity to spoof). Our own
+        // echoed offer lands here too: that IS the one-node-grid loopback proof.
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        let is_new = crate::capacity::gossip::global_ledger().hear(
+            event.peer_id.as_uuid(),
+            offer,
+            now_ms,
+        );
+        if is_new {
+            crate::probe!(
+                class = "grid.capacity.heard",
+                from_peer = %event.peer_id.as_uuid(),
+                free_gb = (offer.gpu_free_bytes_live / 1_000_000_000),
+                heard_peers = crate::capacity::gossip::global_ledger().heard_count(),
+                "first capacity offer heard from a grid peer",
+            );
+        }
     } else if let Some((name, payload)) = chat_posted_from_envelope(&envelope, event) {
         crate::probe!(
             class = "airc.chat.projected",
@@ -242,6 +265,23 @@ fn chat_posted_from_envelope(
         "timestamp": event.occurred_at_ms,
     });
     Some((CHAT_POSTED, payload))
+}
+
+/// Decode a `grid_capacity` envelope's inline payload into a [`CapacityOffer`].
+/// Returns `None` for any other envelope — a non-offer fabricates nothing. A
+/// present-but-malformed inline is also `None` (logged upstream as a decode
+/// skip by the schema match being the honest gate here).
+fn capacity_offer_from_envelope(
+    envelope: &AircRealtimeEnvelope,
+) -> Option<crate::capacity::gossip::CapacityOffer> {
+    let crate::airc::realtime::AircRealtimePayload::ExistingSchema { payload } = &envelope.payload
+    else {
+        return None;
+    };
+    if payload.schema != crate::airc::realtime::AircRealtimeSchema::GridCapacity {
+        return None;
+    }
+    serde_json::from_value(payload.inline.clone()?).ok()
 }
 
 /// Project a plain airc chat message into the THIN `chat:posted` bus

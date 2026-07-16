@@ -1550,6 +1550,14 @@ pub fn start_server(
     > = None;
 
     if let Some((daemon_socket, default_room)) = persona_bootstrap_deps {
+        // Grid capacity gossip (#56 step 4): this node offers its live capacity to
+        // the grid on the module tick and hears every peer's offers (its own echo
+        // included — the loopback proof) via inbound_attach → gossip::global_ledger.
+        // Rides the DISCOVERED default room, same dep the citizens attach to.
+        runtime.register(Arc::new(crate::modules::grid_capacity::GridCapacityModule::new(
+            resource_daemon.clone(),
+            default_room,
+        )));
         let continuum_root = crate::modules::persona_instance_manager::resolve_continuum_root();
         let daemon_socket_for_rag_inspect = daemon_socket.clone();
         let registry = crate::persona::PersonaAircRuntimeRegistry::new();
