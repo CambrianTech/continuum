@@ -489,13 +489,18 @@ impl Default for ChatModule {
 /// module `event_subscription` because `chat:posted` is published with
 /// `publish_async_only`, which feeds only the broadcast channel; module subscriptions
 /// are dispatched exclusively by the synchronous `publish(..., registry)` path.
-/// Idempotent per process: spawn once at boot, next to the module's registration.
+///
+/// Spawned from `ChatModule::initialize` on the ModuleContext's runtime HANDLE —
+/// registration runs on a non-tokio thread, and a bare `tokio::spawn` there panics the
+/// boot ("no reactor running", observed live 2026-07-16). Idempotent per process:
+/// initialize runs once per module.
 pub fn spawn_persist_listener(
+    handle: &tokio::runtime::Handle,
     bus: Arc<crate::runtime::message_bus::MessageBus>,
     module: Arc<ChatModule>,
 ) {
     let mut rx = bus.receiver();
-    tokio::spawn(async move {
+    handle.spawn(async move {
         loop {
             let event = match rx.recv().await {
                 Ok(e) => e,
@@ -574,8 +579,19 @@ impl ServiceModule for ChatModule {
 
     async fn initialize(
         &self,
-        _ctx: &crate::runtime::ModuleContext,
+        ctx: &crate::runtime::ModuleContext,
     ) -> Result<(), String> {
+        // #140: the durable-transcript writer — persists every `chat:posted`
+        // projection (persona say + human chat/send, the one seam both cross).
+        // Spawned here (inside the runtime) rather than at registration, which
+        // runs on a non-tokio thread. `from_slot` shares this module's
+        // late-bound executor, filled by install_executor_on_all before any
+        // event can arrive from a live room.
+        spawn_persist_listener(
+            &ctx.runtime,
+            ctx.bus.clone(),
+            Arc::new(ChatModule::from_slot(self.executor_slot.clone())),
+        );
         Ok(())
     }
 
@@ -876,7 +892,8 @@ mod tests {
         });
         let chat = Arc::new(chat_with_stubs(vec![Arc::new(data)]));
         let bus = Arc::new(crate::runtime::message_bus::MessageBus::new());
-        spawn_persist_listener(bus.clone(), chat); // receiver created before publish
+        // receiver created before publish; the tokio::test runtime is the handle
+        spawn_persist_listener(&tokio::runtime::Handle::current(), bus.clone(), chat);
 
         bus.publish_async_only(
             crate::ipc::positron_source::CHAT_POSTED,
