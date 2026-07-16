@@ -12,6 +12,8 @@
 //! capacity returns. Everything else (peers, network partition, multi-metric scoring, the
 //! learned policy) grows on this exact shape.
 
+use super::consumer::QualityModel;
+use super::score::score_experience;
 use super::{grant_would_oom, AllocationPolicy, DeviceCapacity, Grant, LeaseRequest, Score};
 
 const GB: u64 = 1024 * 1024 * 1024;
@@ -46,13 +48,18 @@ pub struct RunResult {
 }
 
 /// Plays a scenario through a policy on a virtual clock. Deterministic: same scenario +
-/// same policy → same result, always. No real time, no I/O, no randomness.
+/// same policy + same quality model → same result, always. No real time, no I/O, no randomness.
 pub struct Simulator;
 
 impl Simulator {
-    pub fn run(scenario: &Scenario, policy: &dyn AllocationPolicy) -> RunResult {
+    pub fn run(
+        scenario: &Scenario,
+        policy: &dyn AllocationPolicy,
+        quality: &dyn QualityModel,
+    ) -> RunResult {
         let mut score = Score::default();
         let mut grants = Vec::with_capacity(scenario.timeline.len());
+        let mut experience_sum = 0.0_f32;
         let mut last: Option<Grant> = None;
         for ev in &scenario.timeline {
             // The governor's grant is DERIVED from the live capacity at this instant — the
@@ -65,8 +72,16 @@ impl Simulator {
             if last != Some(grant) {
                 score.grant_changes += 1;
             }
+            // The lived experience under THIS grant: the consumer's quality model maps the grant
+            // to faculty scores, the gate composes them. A crash (OOM) zeroes the critical
+            // faculties → the perceived-quality reward collapses, which is why shed-load beats
+            // hold-and-crash on the number a learned policy climbs.
+            experience_sum += score_experience(&quality.faculties(&ev.capacity, &scenario.demand, &grant));
             last = Some(grant);
             grants.push(grant);
+        }
+        if !scenario.timeline.is_empty() {
+            score.mean_experience = experience_sum / scenario.timeline.len() as f32;
         }
         RunResult { score, grants }
     }
@@ -101,6 +116,7 @@ pub fn opera_eats_gpu_mid_session() -> Scenario {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::capacity::consumer::LiveRoomServing;
     use crate::capacity::{FitPolicy, StaticConcurrencyPolicy};
 
     // what this catches: THE 2026-07-16 OOM, reproduced deterministically without hardware.
@@ -113,6 +129,7 @@ mod tests {
         let result = Simulator::run(
             &opera_eats_gpu_mid_session(),
             &StaticConcurrencyPolicy { fixed: 4 },
+            &LiveRoomServing,
         );
         assert!(
             result.score.oom_count > 0,
@@ -131,6 +148,7 @@ mod tests {
         let result = Simulator::run(
             &opera_eats_gpu_mid_session(),
             &FitPolicy { safety_margin_bytes: GB },
+            &LiveRoomServing,
         );
         assert_eq!(
             result.score.oom_count, 0,
@@ -143,5 +161,30 @@ mod tests {
         assert_eq!(c[0], 4, "calm: grants the full demand");
         assert!(c[1] < c[0], "game opens: shrinks below full ({} !< {})", c[1], c[0]);
         assert_eq!(c[2], 4, "game closes: REGROWS to full — capacity growth is first-class");
+    }
+
+    // what this catches: THE PERCEPTION REWARD — the number a learned policy actually climbs.
+    // Both policies run the same incident; the fit policy sheds one lane during the game while
+    // the static policy holds and crashes. On oom_count they already differ; here we prove they
+    // differ on MEAN EXPERIENCE, which is the reward the gym maximizes. If experience scoring
+    // ever stopped punishing the crash (e.g. the critical gate went additive), these would
+    // converge and a learned policy would have no signal telling it not to OOM the room.
+    #[test]
+    fn fit_beats_static_on_perceived_experience_not_just_oom_count() {
+        let scenario = opera_eats_gpu_mid_session();
+        let fit = Simulator::run(&scenario, &FitPolicy { safety_margin_bytes: GB }, &LiveRoomServing);
+        let stat = Simulator::run(&scenario, &StaticConcurrencyPolicy { fixed: 4 }, &LiveRoomServing);
+        assert!(
+            fit.score.mean_experience > stat.score.mean_experience,
+            "shedding a lane to stay alive must score HIGHER perceived experience than holding \
+             and crashing (fit={}, static={})",
+            fit.score.mean_experience,
+            stat.score.mean_experience
+        );
+        assert!(
+            fit.score.mean_experience > 0.85,
+            "the fit policy keeps the room a good experience throughout, got {}",
+            fit.score.mean_experience
+        );
     }
 }

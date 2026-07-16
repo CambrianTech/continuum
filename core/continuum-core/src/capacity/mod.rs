@@ -22,6 +22,7 @@
 //! timeline played on a virtual clock. Same allocator, swapped world — so a sim scenario
 //! IS a real regression test.
 
+pub mod consumer;
 pub mod score;
 pub mod sim;
 
@@ -62,10 +63,11 @@ pub struct Grant {
 }
 
 /// The RANSAC-style objective: many considerations collapsed to scalars an optimizer fits.
-/// One field now (`oom_count`, a hard-fail); the design's full metric set (perceived P99,
-/// avatar dropped-frames, coding pass-rate-under-budget, thrash, fairness) lands here as
-/// more scalars without changing the [`AllocationPolicy`] interface.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+/// `oom_count` is the hard-fail; `mean_experience` is the perception reward the gym maximizes
+/// (see [`consumer::QualityModel`]); the design's remaining metrics (avatar dropped-frames,
+/// coding pass-rate-under-budget, fairness) land here as more scalars without changing the
+/// [`AllocationPolicy`] interface.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct Score {
     /// Times a granted concurrency exceeded what live free GPU could hold. Hard-fail: any
     /// OOM makes a policy unacceptable regardless of every other metric.
@@ -73,6 +75,11 @@ pub struct Score {
     /// Times the grant changed — the thrash signal (cheap knob may flex; expensive ones
     /// need hysteresis). Zero considerations optimize on it yet; the slot exists.
     pub grant_changes: u32,
+    /// Mean per-tick experience score (0..1) from the consumer's [`consumer::QualityModel`] —
+    /// the perceived-quality reward. THIS is what a learned policy climbs: a policy that sheds
+    /// load to stay responsive beats one that holds and crashes, because a crash zeroes the
+    /// experience via the critical-faculty gate. Higher is better.
+    pub mean_experience: f32,
 }
 
 /// The optimizer seam. Deterministic bootstrap now; a learned net or a persona-in-charge
