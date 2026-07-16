@@ -123,11 +123,66 @@ pub fn try_hold_ambient_turn() -> Option<tokio::sync::OwnedSemaphorePermit> {
 // reserve, so the non-directed budget floors at 1 (no starvation, no false guarantee).
 // [[conversational-latency-is-a-misdirection-budget]] [[never-thrash-sticky-hysteresis-on-every-lane]]
 
-/// Physical decode lanes on the shared serving target — the same ceiling the planner
-/// sizes by and the saturation gauge reads. Floored at 1.
+/// The LIVE `--parallel` slot count of the running serving target, published by the
+/// serving daemon on every reconcile (`set_served_lane_count`). 0 until serving is up.
+/// This is the ground truth for how many physical decode lanes exist RIGHT NOW —
+/// distinct from `serving_plan::MAX_LANES`, which is only the safety ceiling. Before the
+/// compute-buffer fit term (#139), lanes were always == MAX_LANES so the constant was
+/// exact; now the plan serves DEMAND (e.g. 4 lanes on this box while MAX_LANES = 6), so
+/// sizing the admission semaphores by the constant would over-admit by the difference
+/// and weaken the directed-turn reservation. Sizing by THIS keeps the reservation exact.
+static SERVED_LANE_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+/// Serializes the rare live semaphore reconcile in [`set_served_lane_count`] so two
+/// concurrent re-plans can't double-count a grow.
+static LANE_RESIZE_LOCK: Mutex<()> = Mutex::new(());
+
+/// Physical decode lanes on the shared serving target — the LIVE served count when
+/// serving has come up, else the planner's `MAX_LANES` ceiling as the boot-time fallback.
+/// Floored at 1. Read live by the saturation gauge; captured at lazy-init by the lane
+/// semaphores (serving is always up before the first persona model call, so the init
+/// captures the real count, not the ceiling).
 fn serving_lane_count() -> usize {
-    (crate::cognition::serving_plan::MAX_LANES as usize).max(1)
+    match SERVED_LANE_COUNT.load(Ordering::Acquire) {
+        0 => (crate::cognition::serving_plan::MAX_LANES as usize).max(1),
+        n => n,
+    }
 }
+
+/// Publish the running serving target's live lane count (the plan's `--parallel`). The
+/// serving daemon calls this on every reconcile. Sizes the admission semaphores exactly:
+/// the lazy-init captures it at boot, and a LATER increase (roster grows, more personas
+/// demand lanes) GROWS the live semaphores via `add_permits` — instant and safe. A
+/// DECREASE is not forced onto live semaphores (evicting held permits would block); it
+/// takes effect on the next process start. Over-admitting by a lane until then only means
+/// a call queues at llama, never an OOM — the fit math already guards residency.
+pub fn set_served_lane_count(lanes: usize) {
+    let lanes = lanes.max(1);
+    SERVED_LANE_COUNT.store(lanes, Ordering::Release);
+    let _guard = LANE_RESIZE_LOCK.lock().expect("lane-resize lock never poisoned");
+    if let Some(sem) = SERVING_LANES.get() {
+        grow_semaphore_to(sem, &SERVING_LANES_INSTALLED, lanes);
+    }
+    if let Some(sem) = NONDIRECTED_LANES.get() {
+        grow_semaphore_to(sem, &NONDIRECTED_LANES_INSTALLED, lanes.saturating_sub(1).max(1));
+    }
+}
+
+/// Grow a live semaphore to `target` total permits (no-op if already ≥). Never shrinks —
+/// see [`set_served_lane_count`]. `installed` tracks the total permits ever added so the
+/// delta is computed correctly (a Semaphore only exposes AVAILABLE, not total).
+fn grow_semaphore_to(sem: &tokio::sync::Semaphore, installed: &AtomicUsize, target: usize) {
+    let cur = installed.load(Ordering::Acquire);
+    if target > cur {
+        sem.add_permits(target - cur);
+        installed.store(target, Ordering::Release);
+    }
+}
+
+/// Total permits installed into each lane semaphore — the grow-delta bookkeeping for
+/// [`grow_semaphore_to`], set at lazy-init and bumped on each live grow.
+static SERVING_LANES_INSTALLED: AtomicUsize = AtomicUsize::new(0);
+static NONDIRECTED_LANES_INSTALLED: AtomicUsize = AtomicUsize::new(0);
 
 /// Lanes a non-directed (ambient / idle) model call may occupy: all lanes minus one
 /// reserved for directed work, floored at 1 so a single-lane machine — where there is
@@ -142,13 +197,19 @@ static NONDIRECTED_LANES: std::sync::OnceLock<std::sync::Arc<tokio::sync::Semaph
     std::sync::OnceLock::new();
 
 fn serving_lanes() -> &'static std::sync::Arc<tokio::sync::Semaphore> {
-    SERVING_LANES
-        .get_or_init(|| std::sync::Arc::new(tokio::sync::Semaphore::new(serving_lane_count())))
+    SERVING_LANES.get_or_init(|| {
+        let n = serving_lane_count();
+        SERVING_LANES_INSTALLED.store(n, Ordering::Release);
+        std::sync::Arc::new(tokio::sync::Semaphore::new(n))
+    })
 }
 
 fn nondirected_lanes() -> &'static std::sync::Arc<tokio::sync::Semaphore> {
-    NONDIRECTED_LANES
-        .get_or_init(|| std::sync::Arc::new(tokio::sync::Semaphore::new(nondirected_lane_budget())))
+    NONDIRECTED_LANES.get_or_init(|| {
+        let n = nondirected_lane_budget();
+        NONDIRECTED_LANES_INSTALLED.store(n, Ordering::Release);
+        std::sync::Arc::new(tokio::sync::Semaphore::new(n))
+    })
 }
 
 /// RAII permit for one serving-lane model call. Holds a physical-lane permit, the
@@ -520,5 +581,49 @@ mod tests {
         }
 
         drop(nondirected); // release → all lanes free for any later test
+    }
+
+    // what this catches: the grow-delta bookkeeping behind live lane resizing (#139
+    // follow-up). A Semaphore only exposes AVAILABLE permits, so growing to a target
+    // must track the TOTAL ever installed and add only the difference — and a repeat
+    // to the same/smaller target must be a no-op, never a double-add. Uses a LOCAL
+    // semaphore so it never touches the process-global lane statics other tests share.
+    #[test]
+    fn grow_semaphore_to_adds_only_the_delta_and_never_shrinks() {
+        let sem = tokio::sync::Semaphore::new(2);
+        let installed = AtomicUsize::new(2);
+
+        // Grow 2 → 4: adds exactly 2.
+        grow_semaphore_to(&sem, &installed, 4);
+        assert_eq!(sem.available_permits(), 4);
+        assert_eq!(installed.load(Ordering::Acquire), 4);
+
+        // Re-assert the same target: no-op (the double-count bug this guards).
+        grow_semaphore_to(&sem, &installed, 4);
+        assert_eq!(sem.available_permits(), 4, "same target must not add again");
+
+        // A SMALLER target never shrinks a live semaphore (evicting held permits would
+        // block; over-admit is safe — the fit math guards residency).
+        grow_semaphore_to(&sem, &installed, 3);
+        assert_eq!(sem.available_permits(), 4, "never shrinks live");
+        assert_eq!(installed.load(Ordering::Acquire), 4);
+    }
+
+    // what this catches: serving_lane_count reads the LIVE published count when serving is
+    // up, and only falls back to the MAX_LANES ceiling when nothing has published yet —
+    // the exact fix so the admission reservation sizes by what's SERVED (e.g. 4), not the
+    // ceiling (6). Serialized against the global atomic via the resize lock's discipline;
+    // restores 0 so it can't leak into sibling tests.
+    #[test]
+    fn serving_lane_count_prefers_the_live_published_count_over_the_ceiling() {
+        let restore = SERVED_LANE_COUNT.swap(0, Ordering::AcqRel);
+        assert_eq!(
+            serving_lane_count(),
+            (crate::cognition::serving_plan::MAX_LANES as usize).max(1),
+            "unset → MAX_LANES ceiling fallback"
+        );
+        SERVED_LANE_COUNT.store(4, Ordering::Release);
+        assert_eq!(serving_lane_count(), 4, "published live count wins over the ceiling");
+        SERVED_LANE_COUNT.store(restore, Ordering::Release);
     }
 }

@@ -673,6 +673,11 @@ impl ServingDaemonModule {
                     candidates = candidates.len(),
                     "serving plan recomputed",
                 );
+                // Publish the LIVE lane count to the admission gate so its directed-turn
+                // reservation semaphores size by what's actually served (`--parallel
+                // plan.lanes`), not the `MAX_LANES` ceiling — exact once the plan can serve
+                // fewer lanes than the ceiling (#139 compute-buffer fit). ONE source of truth.
+                crate::cognition::resource_admission::set_served_lane_count(plan.lanes as usize);
                 // send_replace keeps the latest even with no live receivers yet.
                 let _ = self.plan_tx.send_replace(Some(plan));
             }
