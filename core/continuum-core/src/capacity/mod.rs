@@ -23,6 +23,7 @@
 //! IS a real regression test.
 
 pub mod consumer;
+pub mod grid;
 pub mod score;
 pub mod sim;
 
@@ -80,6 +81,10 @@ pub struct Score {
     /// load to stay responsive beats one that holds and crashes, because a crash zeroes the
     /// experience via the critical-faculty gate. Higher is better.
     pub mean_experience: f32,
+    /// Grid only: lanes a placement put on peers that cannot serve them (unreachable / gone).
+    /// Stranded demand is silently-dropped personas — a policy that keeps "granting" through a
+    /// dead peer looks generous on paper and serves nobody. Hard-fail like OOM.
+    pub stranded_lanes: u32,
 }
 
 /// The optimizer seam. Deterministic bootstrap now; a learned net or a persona-in-charge
@@ -119,12 +124,7 @@ pub struct FitPolicy {
 
 impl AllocationPolicy for FitPolicy {
     fn grant(&self, cap: &DeviceCapacity, req: &LeaseRequest) -> Grant {
-        let usable = cap.gpu_free_bytes_live.saturating_sub(self.safety_margin_bytes);
-        let fits = if req.spike_bytes == 0 {
-            req.want_concurrency
-        } else {
-            (usable / req.spike_bytes) as u32
-        };
+        let fits = lanes_that_fit(cap.gpu_free_bytes_live, self.safety_margin_bytes, req.spike_bytes);
         // Never below 1: a loaded model must be able to run at least one prefill (else the
         // model shouldn't have been resident — that's a residency decision, not a
         // concurrency one). Never above what the mind actually demands.
@@ -134,6 +134,21 @@ impl AllocationPolicy for FitPolicy {
     }
     fn name(&self) -> &'static str {
         "fit"
+    }
+}
+
+/// THE fit rule, in one place (compression principle): how many concurrent spikes of
+/// `spike_bytes` fit `free_bytes` after `margin_bytes` of headroom. [`FitPolicy`] uses it for
+/// one device; the grid placement ([`grid`]) applies the SAME rule per node — the sum of all
+/// misfit parts is a sum of per-node fits, never an aggregate that hides a node's overflow.
+/// `spike_bytes == 0` means the consumer draws no transient GPU (a CPU lane) — unbounded here,
+/// bounded by demand at the caller.
+pub fn lanes_that_fit(free_bytes: u64, margin_bytes: u64, spike_bytes: u64) -> u32 {
+    let usable = free_bytes.saturating_sub(margin_bytes);
+    if spike_bytes == 0 {
+        u32::MAX
+    } else {
+        (usable / spike_bytes).min(u32::MAX as u64) as u32
     }
 }
 

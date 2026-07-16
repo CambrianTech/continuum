@@ -39,30 +39,39 @@ pub struct LiveRoomServing;
 impl QualityModel for LiveRoomServing {
     fn faculties(&self, cap: &DeviceCapacity, req: &LeaseRequest, grant: &Grant) -> Vec<FacultyScore> {
         // A crashed lane serves nobody — the critical faculties die together.
-        let alive = if grant_would_oom(cap, req, grant) { 0.0 } else { 1.0 };
+        let alive = !grant_would_oom(cap, req, grant);
 
         // Served fraction: how much of the room's demand this grant can run concurrently. The
         // surplus queues, so responsiveness tracks it. (When the lane is dead this is moot — the
         // critical gate has already zeroed the experience.)
         let want = req.want_concurrency.max(1) as f32;
         let served = (grant.concurrency as f32 / want).clamp(0.0, 1.0);
-
-        vec![
-            // The senses that make a persona a live citizen — gating. Present only if the lane
-            // is alive; a crash takes all three at once.
-            FacultyScore::critical("speak", alive),
-            FacultyScore::critical("listen", alive),
-            FacultyScore::critical("render", alive),
-            // Responsiveness — heavily weighted quality in a room ("far worse to lag the
-            // conversation than to slow the thinking"). Degrades with starvation, not a gate.
-            FacultyScore::quality("latency", served, 8.0),
-            // The model's thinking quality is unaffected by concurrency — the same brain runs.
-            FacultyScore::quality("cognition", 1.0, 3.0),
-        ]
+        room_faculties(alive, served)
     }
     fn name(&self) -> &'static str {
         "live-room-serving"
     }
+}
+
+/// The live-room experience SHAPE, in one place (compression principle): what senses gate the
+/// room and how responsiveness weighs against thinking quality. [`LiveRoomServing`] maps a
+/// single-device grant onto it; the grid simulator ([`super::grid`]) maps a multi-node placement
+/// onto the SAME shape — per-node aliveness and grid-wide served fraction differ, the honest
+/// truths about a room do not.
+pub fn room_faculties(alive: bool, served_fraction: f32) -> Vec<FacultyScore> {
+    let alive = if alive { 1.0 } else { 0.0 };
+    vec![
+        // The senses that make a persona a live citizen — gating. Present only if the lane
+        // is alive; a crash takes all three at once.
+        FacultyScore::critical("speak", alive),
+        FacultyScore::critical("listen", alive),
+        FacultyScore::critical("render", alive),
+        // Responsiveness — heavily weighted quality in a room ("far worse to lag the
+        // conversation than to slow the thinking"). Degrades with starvation, not a gate.
+        FacultyScore::quality("latency", served_fraction, 8.0),
+        // The model's thinking quality is unaffected by concurrency — the same brain runs.
+        FacultyScore::quality("cognition", 1.0, 3.0),
+    ]
 }
 
 /// Deep code / project generation — the OUTLIER-B consumer that proves the interface, chosen to
