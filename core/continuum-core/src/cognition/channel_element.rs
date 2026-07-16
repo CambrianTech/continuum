@@ -84,24 +84,15 @@ impl ChannelElement {
     /// identity), which `sender_id()` exposes so digests attribute the words to the
     /// speaker, not to the core's relay peer.
     fn new(event: TranscriptEvent, embedder: Arc<dyn EmbeddingProvider>) -> Self {
-        let (text, logical_sender) = match event.body.as_ref().and_then(|b| b.as_text()) {
-            Some(t) => (Some(t.to_string()), None),
-            None => match crate::airc::realtime_wire::envelope_from_event(&event) {
-                Ok(Some(envelope)) => {
-                    match crate::airc::realtime_wire::chat_transcript_message(
-                        &envelope,
-                        event.peer_id.as_uuid(),
-                    ) {
-                        Some((sender, text)) => (Some(text), Some(sender)),
-                        None => (None, None), // continuum envelope, but not a chat line
-                    }
-                }
-                // Not a continuum envelope (presence/binary/other) or decode error —
-                // no text, exactly as before. Decode-error visibility lives on the
-                // perception path (perceptual_from_event names its reasons).
-                _ => (None, None),
-            },
-        };
+        // The ONE room-turn decoder (realtime_wire::room_turn_from_event) recovers
+        // text + logical sender for BOTH wire shapes. A non-turn (presence,
+        // event-bridge, decode error) is simply a text-less element here; the
+        // skip-reason visibility lives on the perception path.
+        let (text, logical_sender) =
+            match crate::airc::realtime_wire::room_turn_from_event(&event) {
+                Ok((sender, text)) => (Some(text), Some(sender)),
+                Err(_) => (None, None),
+            };
         Self {
             event,
             text,

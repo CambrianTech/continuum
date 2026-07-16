@@ -166,8 +166,18 @@ impl MessageBus {
 
     /// Subscribe to events matching a glob pattern.
     ///
-    /// synchronous=true: handle_event() called inline during publish (real-time tier)
-    /// synchronous=false: event queued for async delivery (deferred tier)
+    /// synchronous=true: handle_event() called inline during `publish(..., registry)`.
+    ///
+    /// REALITY CHECK (#140 post-mortem, 2026-07-16): there is NO deferred tier.
+    /// synchronous=false subscriptions are stored but never delivered — and
+    /// `publish(..., registry)` (the only dispatching publisher) has no production
+    /// callers today; live events flow through `publish_async_only`, which feeds
+    /// ONLY the broadcast channel. A module that needs async bus events must run a
+    /// bus-receiver task (`bus.receiver()` + `tokio::spawn` from `initialize`) —
+    /// see `cognition::dispatch_listener::spawn` and
+    /// `modules::chat::spawn_persist_listener` for the canonical shape. This doc
+    /// used to promise "queued for async delivery (deferred tier)", which nearly
+    /// shipped a silently-dead transcript writer.
     pub fn subscribe(&self, pattern: &str, module_name: &'static str, synchronous: bool) {
         let sub = Subscription {
             pattern: pattern.to_string(),

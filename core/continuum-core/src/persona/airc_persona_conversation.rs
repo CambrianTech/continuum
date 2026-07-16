@@ -42,7 +42,6 @@
 //! persona at boot, before any of them have necessarily attached to
 //! their rooms yet.
 
-use crate::airc::realtime_wire::{chat_transcript_message, envelope_from_event};
 use crate::persona::airc_citizen::AircCitizen;
 use crate::persona::service_loop::{IncomingMessage, PersonaConversation};
 use airc_core::TranscriptEvent;
@@ -311,36 +310,16 @@ impl PersonaConversation for AircPersonaConversation {
 /// read it rather than forcing a lossy plain-text downgrade on the send
 /// side.
 fn perceptual_from_event(event: &TranscriptEvent) -> Result<IncomingMessage, &'static str> {
-    // Path 1 — a peer's plain-text say().
-    if let Some(text) = event.body.as_ref().and_then(|b| b.as_text()) {
-        return Ok(IncomingMessage {
-            lamport: event.lamport,
-            peer_id: event.peer_id.as_uuid(),
-            text: text.to_string(),
-        });
-    }
-
-    // Path 2 — a structured chat_transcript envelope (chat/send). The
-    // envelope decode + logical-sender/text recovery is the ONE
-    // `chat_transcript_message` decoder in `realtime_wire` — shared with
-    // the positron projection path (`chat_posted_from_envelope`), the
-    // receive-side symmetry of Path 1. A prior fix taught only this
-    // perception path to read the envelope; the positron read surface had
-    // the identical blindness until it too routed through this decoder.
-    match envelope_from_event(event) {
-        Err(_) => Err("envelope_decode_error"), // hint header present, serde decode FAILED — wire drift
-        Ok(None) => Err("no_continuum_body_hint"), // not a continuum envelope (or the header got lost)
-        Ok(Some(envelope)) => {
-            match chat_transcript_message(&envelope, event.peer_id.as_uuid()) {
-                Some((peer_id, text)) => Ok(IncomingMessage {
-                    lamport: event.lamport,
-                    peer_id,
-                    text,
-                }),
-                None => Err("non_chat_schema"), // presence / event-bridge / media-control — legit skip
-            }
-        }
-    }
+    // Both on-wire room-turn shapes (say() text + chat_transcript envelope) and
+    // all three named skip reasons live in the ONE decoder `room_turn_from_event`
+    // (realtime_wire) — shared with the digest element and the positron
+    // projection. This wrapper only adds the transcript's lamport.
+    let (peer_id, text) = crate::airc::realtime_wire::room_turn_from_event(event)?;
+    Ok(IncomingMessage {
+        lamport: event.lamport,
+        peer_id,
+        text,
+    })
 }
 
 #[cfg(test)]
