@@ -86,14 +86,18 @@ const EVAL_EPOCH_MS: u64 = 1_700_000_000_000;
 /// the two-phase device-aware sizing rides with #56's `ResourceGovernor`.
 fn plan_eval_lane_ctx(base: &crate::model_registry::Model) -> u32 {
     use crate::cognition::serving_plan::{plan_serving, MIN_SERVE_CTX};
-    use crate::modules::serving_daemon::{footprint_for, host_budget_from, perf_cores};
+    use crate::modules::serving_daemon::{footprint_for, host_budget_from, perf_cores, HostBudgetInputs};
 
     let plan = match (crate::gpu::monitor::detect(), footprint_for(base)) {
         (Some(mon), Some(footprint)) => {
             // Live free VRAM (net of the resident living lane) against physical VRAM,
             // scaled by the serving headroom fraction — the coexistence-safe budget.
             // One measurement stream, no batching → demand_lanes = 1.
-            let budget = host_budget_from(mon.free_bytes(), mon.total_bytes(), perf_cores());
+            let budget = host_budget_from(&HostBudgetInputs {
+                available_bytes: mon.free_bytes(),
+                total_vram_bytes: mon.total_bytes(),
+                perf_cores: perf_cores(),
+            });
             plan_serving(budget, std::slice::from_ref(&footprint), 1)
         }
         // CPU-only host or unsizable base: the model's own trained window, floored —
@@ -102,6 +106,21 @@ fn plan_eval_lane_ctx(base: &crate::model_registry::Model) -> u32 {
     };
     plan.map(|p| p.served_context_window)
         .unwrap_or_else(|| base.context_window.max(MIN_SERVE_CTX))
+}
+
+/// A stood-up ephemeral measurement lane plus everything the eval loop needs to fork
+/// a cognition copy onto it. Named fields, NOT a positional 4-tuple, so a new piece of
+/// lane state threads as ONE field instead of a fifth positional slot every caller
+/// must re-destructure in the right order ([[structs-by-reference-not-massive-param-lists]]).
+struct EvalLane {
+    /// The throwaway server; kills its process on drop (#59).
+    lane: crate::inference::llama_server::EphemeralServingLane,
+    /// Adapter pinned to THIS lane (never the global serving root).
+    adapter: std::sync::Arc<dyn crate::ai::adapter::AIProviderAdapter>,
+    /// The lane's REAL served `/props` window — what the fork's cognition budgets against.
+    served_ctx: u32,
+    /// Where + why the lane landed (GPU/CPU), surfaced on the eval result.
+    placement: PlacementEvidence,
 }
 
 /// Base port the ephemeral eval lane scans up from for a free one. Deliberately
@@ -239,12 +258,7 @@ fn decide_eval_lane_placement(
 async fn spawn_gene_eval_lane(
     gene: &EvalGene,
 ) -> Result<
-    (
-        crate::inference::llama_server::EphemeralServingLane,
-        std::sync::Arc<dyn crate::ai::adapter::AIProviderAdapter>,
-        u32,
-        PlacementEvidence,
-    ),
+    EvalLane,
     CommandError,
 > {
     use crate::ai::adapter::AIProviderAdapter; // brings `initialize` into scope
@@ -366,12 +380,12 @@ async fn spawn_gene_eval_lane(
         ))
     })?;
 
-    Ok((
+    Ok(EvalLane {
         lane,
-        std::sync::Arc::new(adapter),
+        adapter: std::sync::Arc::new(adapter),
         served_ctx,
-        placement_evidence,
-    ))
+        placement: placement_evidence,
+    })
 }
 
 /// Stand up an ephemeral measurement lane for a BARE base model (no gene, no LoRA) — the
@@ -384,15 +398,7 @@ async fn spawn_gene_eval_lane(
 /// the id isn't in the registry or the lane won't come up.
 async fn spawn_base_eval_lane(
     base_id: &str,
-) -> Result<
-    (
-        crate::inference::llama_server::EphemeralServingLane,
-        std::sync::Arc<dyn crate::ai::adapter::AIProviderAdapter>,
-        u32,
-        PlacementEvidence,
-    ),
-    CommandError,
-> {
+) -> Result<EvalLane, CommandError> {
     use crate::ai::adapter::AIProviderAdapter;
     use crate::inference::llama_server::{EphemeralServingLane, ServingTarget, PROVIDER_ID};
 
@@ -434,7 +440,12 @@ async fn spawn_base_eval_lane(
             "eval lane for base '{base_id}' is up but its /props served window is unreadable ({e})"
         ))
     })?;
-    Ok((lane, std::sync::Arc::new(adapter), served_ctx, placement_evidence))
+    Ok(EvalLane {
+        lane,
+        adapter: std::sync::Arc::new(adapter),
+        served_ctx,
+        placement: placement_evidence,
+    })
 }
 
 /// One eval task. Both the JSONL rows and inline `tasks` deserialize into this;
@@ -921,8 +932,13 @@ impl CognitionEval {
         let cycle = match (&p.gene, p.base_model_id.as_deref()) {
             // A gene names its own forged base → ephemeral lane + the gene as `--lora`.
             (Some(gene), _) => {
-                let (lane, adapter, served_ctx, evidence) = spawn_gene_eval_lane(gene).await?;
-                placement_evidence = Some(evidence);
+                let EvalLane {
+                    lane,
+                    adapter,
+                    served_ctx,
+                    placement,
+                } = spawn_gene_eval_lane(gene).await?;
+                placement_evidence = Some(placement);
                 let cycle = crate::cognition::persona_workspace::global()
                     .fork_eval_cycle_with_adapter(&persona_uuid, adapter, served_ctx, needs_tools)
                     .ok_or_else(|| CommandError::NotFound(format!(
@@ -935,8 +951,13 @@ impl CognitionEval {
             // same-model control: measure the full loop on a chosen model in its own
             // throwaway server, living persona untouched (#59).
             (None, Some(base_id)) => {
-                let (lane, adapter, served_ctx, evidence) = spawn_base_eval_lane(base_id).await?;
-                placement_evidence = Some(evidence);
+                let EvalLane {
+                    lane,
+                    adapter,
+                    served_ctx,
+                    placement,
+                } = spawn_base_eval_lane(base_id).await?;
+                placement_evidence = Some(placement);
                 let cycle = crate::cognition::persona_workspace::global()
                     .fork_eval_cycle_with_adapter(&persona_uuid, adapter, served_ctx, needs_tools)
                     .ok_or_else(|| CommandError::NotFound(format!(

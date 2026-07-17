@@ -704,16 +704,34 @@ impl ServingDaemonModule {
     }
 }
 
-/// Serving budget from LIVE free memory, capped at physical VRAM, minus
-/// headroom. Pure for tests. `available_bytes` is the monitor's current free
-/// memory (already net of everything else running); we never plan above what's
-/// free, nor above what the device physically has.
-pub fn host_budget_from(available_bytes: u64, total_vram_bytes: u64, perf_cores: u32) -> HostBudget {
-    let live = available_bytes.min(total_vram_bytes);
+/// The live host readings a serving budget is derived from. A NAMED struct, not
+/// three positional args, so the two byte counts (`available_bytes` and
+/// `total_vram_bytes` are both `u64`) can never be silently transposed at a call
+/// site — the compiler cannot catch `host_budget_from(total, available, ..)` on
+/// positionals, but `HostBudgetInputs { available_bytes, total_vram_bytes, .. }`
+/// names each ([[structs-by-reference-not-massive-param-lists]]). A new input
+/// (e.g. a device-tier hint) becomes ONE added field with a default, not a fourth
+/// positional every caller must thread.
+#[derive(Debug, Clone, Copy)]
+pub struct HostBudgetInputs {
+    /// Monitor's current free memory (already net of everything else running);
+    /// we never plan above what's free.
+    pub available_bytes: u64,
+    /// Physical VRAM ceiling — we never plan above what the device has.
+    pub total_vram_bytes: u64,
+    /// Performance-core proxy for the lane cap (floored at 1 inside).
+    pub perf_cores: u32,
+}
+
+/// Serving budget from LIVE free memory, capped at physical VRAM, minus headroom.
+/// Pure for tests. Takes [`HostBudgetInputs`] by reference so the byte-count fields
+/// are named at every call site (never transposable).
+pub fn host_budget_from(inputs: &HostBudgetInputs) -> HostBudget {
+    let live = inputs.available_bytes.min(inputs.total_vram_bytes);
     let usable = (live as f64 * SERVING_BUDGET_FRACTION) as u64;
     HostBudget {
         usable_bytes: usable,
-        perf_cores: perf_cores.max(1),
+        perf_cores: inputs.perf_cores.max(1),
     }
 }
 
@@ -728,7 +746,11 @@ pub fn live_host_budget(
 ) -> HostBudget {
     let available = system.snapshot().memory.available_bytes;
     let vram_ceiling = governed_vram_ceiling(resource_daemon).unwrap_or(0);
-    host_budget_from(available, vram_ceiling, perf_cores())
+    host_budget_from(&HostBudgetInputs {
+        available_bytes: available,
+        total_vram_bytes: vram_ceiling,
+        perf_cores: perf_cores(),
+    })
 }
 
 /// The governed VRAM ceiling RIGHT NOW: the resource authority's `available(Vram)`
@@ -1076,20 +1098,41 @@ mod tests {
     #[test]
     fn host_budget_tracks_live_free_memory() {
         // 40GB free on a 53GB device → budget from the 40, with headroom.
-        let b = host_budget_from(40 * GB, 53 * GB, 6);
+        let b = host_budget_from(&HostBudgetInputs {
+            available_bytes: 40 * GB,
+            total_vram_bytes: 53 * GB,
+            perf_cores: 6,
+        });
         assert!(b.usable_bytes < 40 * GB, "must reserve headroom");
         assert!(b.usable_bytes >= 30 * GB, "but most of free is ours: {}", b.usable_bytes);
 
         // Organic: less free memory → smaller budget (a game grabbed memory).
-        let busy = host_budget_from(6 * GB, 53 * GB, 6);
+        let busy = host_budget_from(&HostBudgetInputs {
+            available_bytes: 6 * GB,
+            total_vram_bytes: 53 * GB,
+            perf_cores: 6,
+        });
         assert!(busy.usable_bytes < b.usable_bytes, "less free → smaller budget");
 
         // Never plan above physical VRAM even if the OS reports more free RAM
         // (unified memory: free RAM can exceed the VRAM serving ceiling).
-        let capped = host_budget_from(100 * GB, 53 * GB, 6);
+        let capped = host_budget_from(&HostBudgetInputs {
+            available_bytes: 100 * GB,
+            total_vram_bytes: 53 * GB,
+            perf_cores: 6,
+        });
         assert!(capped.usable_bytes <= 53 * GB, "capped at physical VRAM");
 
-        assert_eq!(host_budget_from(8 * GB, 8 * GB, 0).perf_cores, 1, "cores floored at 1");
+        assert_eq!(
+            host_budget_from(&HostBudgetInputs {
+                available_bytes: 8 * GB,
+                total_vram_bytes: 8 * GB,
+                perf_cores: 0,
+            })
+            .perf_cores,
+            1,
+            "cores floored at 1"
+        );
     }
 
     // what this catches: footprint estimate is honest about weights (passed
