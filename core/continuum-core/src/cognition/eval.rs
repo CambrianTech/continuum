@@ -1672,14 +1672,43 @@ async fn run_pass(
         // decline in her own words; she just isn't handed the silent hatch. The live
         // path computes directedness from real addressing (TODO #9); pinning it here
         // is the eval's exam-is-directed control. See `Workspace::directed_at_self`.
-        let settled = crate::cognition::act_observe::drive_to_settle(
-            cycle,
-            burst,
-            room,
-            max_acts,
-            crate::cognition::workspace::TurnFraming::directed(),
+        // Per-task wedge watchdog (#123 hang): `drive_to_settle` awaits the persona's
+        // real cognition, which POSTs to the serving gateway. If the gateway wedges
+        // mid-generation (connection open, zero tokens) that await NEVER returns and the
+        // WHOLE eval hangs on this one task — observed live 2026-07-17: humaneval-rs
+        // stalled at task 6/20, no progress for >20 min, holding the fleet-quiesce lease
+        // the entire time. A hung task MUST degrade to a graded infra-fail (identical to
+        // an inference_error) and let the run proceed — never block the measurement. The
+        // deadline is a generous backstop vs real per-task latency (16–50s observed on
+        // humaneval; minutes across act cycles on the harder tiers), so slow-but-valid
+        // work is never cut; it fires only on a true wedge. Not a latency policy.
+        const PER_TASK_DEADLINE: std::time::Duration = std::time::Duration::from_secs(600);
+        let settled = match tokio::time::timeout(
+            PER_TASK_DEADLINE,
+            crate::cognition::act_observe::drive_to_settle(
+                cycle,
+                burst,
+                room,
+                max_acts,
+                crate::cognition::workspace::TurnFraming::directed(),
+            ),
         )
-        .await;
+        .await
+        {
+            Ok(s) => s,
+            Err(_) => {
+                tracing::warn!(
+                    probe_class = "eval.task.timeout",
+                    deadline_s = PER_TASK_DEADLINE.as_secs(),
+                    "eval task exceeded the per-task deadline — grading infra-fail and \
+                     advancing, NOT hanging the run (serving wedged mid-generation)"
+                );
+                crate::cognition::act_observe::SettleOutcome::infra_failure(format!(
+                    "per-task deadline exceeded ({}s) — serving wedged mid-generation",
+                    PER_TASK_DEADLINE.as_secs()
+                ))
+            }
+        };
         let answer = settled.spoken.clone().unwrap_or_default();
         let (ok, grade) = if let Some(cause) = &settled.inference_error {
             // The model call FAILED (timeout, 5xx, a serving lane refusing a model it

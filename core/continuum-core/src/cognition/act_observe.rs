@@ -70,6 +70,25 @@ pub struct SettleOutcome {
     pub inference_error: Option<String>,
 }
 
+impl SettleOutcome {
+    /// An infra-failure outcome: no verdict was reached because the deliberation
+    /// call failed OR was aborted by a watchdog (e.g. a per-task deadline in the
+    /// eval loop). The grader keys on `inference_error.is_some()` to score this a
+    /// NAMED infrastructure failure — never a wrong answer — so a serving wedge
+    /// never masquerades as a capability miss ([[self-improvement-is-a-control-loop]]).
+    /// Zeroed metrics/acts because none accrued meaningfully. `TurnMetrics: Default`.
+    pub fn infra_failure(cause: impl Into<String>) -> Self {
+        Self {
+            decision: Decision::Pass,
+            spoken: None,
+            acts: 0,
+            world_state: String::new(),
+            metrics: TurnMetrics::default(),
+            inference_error: Some(cause.into()),
+        }
+    }
+}
+
 /// The tail of the working-memory buffer SINCE the persona last settled (produced an
 /// utterance). Everything before the most recent [`WM_SETTLEMENT_PREFIX`] boundary
 /// belongs to a concern she already ANSWERED — an identical tool call over there is
