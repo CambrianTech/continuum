@@ -154,6 +154,15 @@ pub struct Meta {
     pub idle: bool,
 }
 
+/// Clean benchmark name for the feed. `benchmark/run` stamps the note as
+/// `benchmark/run <name>[ on <model>]`; prefer that, else the explicit `evalSet`.
+fn benchmark_name(note: Option<&str>, eval_set: Option<&str>) -> Option<String> {
+    note.and_then(|n| n.strip_prefix("benchmark/run "))
+        .map(|rest| rest.split(" on ").next().unwrap_or(rest).trim().to_string())
+        .filter(|s| !s.is_empty())
+        .or_else(|| eval_set.map(str::to_string))
+}
+
 #[derive(Default)]
 pub struct CognitionObserve;
 
@@ -203,11 +212,17 @@ impl BenchmarkObserveResult {
                     }
                 }
                 if feed.len() < feed_limit {
+                    let note = v.get("note").and_then(|x| x.as_str());
                     feed.push(FeedEvent {
                         run_id: row_run.map(str::to_string),
-                        benchmark: v.get("evalSet").and_then(|x| x.as_str()).map(str::to_string),
+                        // The clean benchmark NAME for the feed. `benchmark/run` records
+                        // `evalSet="inline"` (it passes tasks inline) but stamps the name into
+                        // the note as `benchmark/run <name>[ on <model>]`; parse it so the feed
+                        // reads `hard-rs`, not `inline`. Fall back to `evalSet` for a raw
+                        // `cognition/eval` run that used a named set directly.
+                        benchmark: benchmark_name(note, v.get("evalSet").and_then(|x| x.as_str())),
                         pass_rate: v.get("passRate").and_then(|x| x.as_f64()),
-                        note: v.get("note").and_then(|x| x.as_str()).map(str::to_string),
+                        note: note.map(str::to_string),
                         captured_at_ms: v.get("capturedAtMs").and_then(|x| x.as_u64()),
                     });
                 }
@@ -322,6 +337,21 @@ mod tests {
         assert_eq!(out.feed[0].benchmark.as_deref(), Some("hard-rs"));
         assert_eq!(out.feed[1].run_id.as_deref(), Some("old"));
         assert!(!out.meta.idle);
+    }
+
+    // what this catches: the feed's benchmark name reads clean — parsed from the
+    // `benchmark/run <name>` note (the ledger's evalSet is the unhelpful "inline"),
+    // with an ` on <model>` suffix stripped, and a raw eval run falling back to evalSet.
+    #[test]
+    fn benchmark_name_reads_clean_from_the_run_note() {
+        assert_eq!(benchmark_name(Some("benchmark/run hard-rs"), Some("inline")).as_deref(), Some("hard-rs"));
+        assert_eq!(
+            benchmark_name(Some("benchmark/run humaneval-rs on qwen2.5"), Some("inline")).as_deref(),
+            Some("humaneval-rs")
+        );
+        // Raw cognition/eval with a named set and no benchmark note → fall back to evalSet.
+        assert_eq!(benchmark_name(Some("baseline"), Some("coder-eval")).as_deref(), Some("coder-eval"));
+        assert_eq!(benchmark_name(None, None), None);
     }
 
     // what this catches: nothing running + no run row = honest idle, not a fabricated
