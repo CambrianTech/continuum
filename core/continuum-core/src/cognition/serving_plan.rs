@@ -73,7 +73,18 @@
 /// only bounds a pathological roster and llama.cpp `--parallel` practicality. Kept modest
 /// (4, not the 6 that OOM'd) pending a LARGE-prompt 4-lane live-GPU burst — the doc's
 /// acceptance gate. [[verify-real-device-numbers-not-a-clamp-premise]] [[capacity-fabric-live-never-block-sim-as-gym]]
-pub const MAX_LANES: u32 = 4;
+pub const MAX_LANES: u32 = 2;
+// ⚠️ 2026-07-17 REVERTED 4 → 2. Raising to 4 (warm slot per persona) was OOM-SAFE
+// (the window-scaled fit shrank -c to fit) but STARVED CONTEXT: splitting the budget 4
+// ways dropped the per-slot window to ~6k, and a live persona's assembled prompt is ~9k
+// (identity + tools + workspace-map + recall + memory), so every persona got
+// budget-truncated to fit — the "120k clamped to 3k → all models suck" regression, plus
+// a 145s decode loop on the starved/confused context. Warmth is worthless if the mind
+// can't see. The 4-lane premise was wrong: personas are NOT all concurrently active, so
+// lanes should follow real concurrent DEMAND (usually 1–2), not the resident count —
+// 2 lanes at ~19.8k each beats 4 warm lanes at 6k. Cross-turn clobber (the reason for the
+// raise) is the lesser evil vs a starved window; solve it with idle-warmth/duty-cycling,
+// NOT by cutting everyone's context. [[no-hardcoded-context-numbers-derive-from-the-live-window]]
 
 /// Bare-minimum served window for a model to be runnable at ALL — a hardware
 /// reality floor, NOT a serving target or a cheapening cap. The served window is
@@ -532,11 +543,12 @@ mod tests {
     fn served_window_footprint_fits_effective_budget_including_window_scaled_compute() {
         let host = HostBudget { usable_bytes: 48 * GB, perf_cores: 10 };
         let devstral = fp("devstral-24b", 14, 112 * 1024, 131_072, 3); // ~112 KiB/token KV
-        // Demand = 4 personas. On a roomy 64GB-class host each gets its OWN warm slot
-        // (the cross-turn-clobber fix), and the window shrinks to pay for all four.
+        // Demand = 4 personas, but MAX_LANES caps it (reverted to 2 after 4 lanes starved
+        // the window to ~6k < a ~9k persona prompt). The window is derived to fit whatever
+        // lane count is served — the invariant below holds at any cap.
         let plan = plan_serving(host, std::slice::from_ref(&devstral), 4).unwrap();
         assert!(plan.fits_on_gpu, "{}", plan.rationale);
-        assert_eq!(plan.lanes, 4, "roomy host + 4-persona demand → 4 warm slots");
+        assert_eq!(plan.lanes, MAX_LANES, "demand above the cap clamps to MAX_LANES");
         let c = plan.served_context_window as u64;
         let lanes = plan.lanes as u64;
         let compute_floor = devstral.compute_buffer_per_lane();
