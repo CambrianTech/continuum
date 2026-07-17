@@ -667,6 +667,14 @@ impl AdmissionState {
             crate::persona::recall_metadata::RecallMetadataRegistry::new(),
         ));
         fork.restore(&cp);
+        // Carry owner identity across the fork, or the eval measurement copy would
+        // recall the persona's OWN chatter that the live self now gates (#166): the
+        // fork is a fresh AdmissionState (owner_id=None) and `restore` copies only
+        // engrams — so without this the BENCHMARK (which runs on the fork) wouldn't
+        // reflect the recall fix, and the number would lie about the living mind.
+        if let Some(owner) = self.owner_id_snapshot() {
+            fork.set_owner_id(owner);
+        }
         fork
     }
 
@@ -1710,6 +1718,35 @@ mod tests {
         assert!(
             queried.iter().any(|c| c.contains("because Asha is acting")),
             "own chat remains keyword-queryable (gated from AMBIENT recall only)"
+        );
+    }
+
+    // what this catches: the eval fork inherits owner-id, so the BENCHMARK (which
+    // runs on `fork_detached`, not the live self) reflects the #166 recall fix.
+    // Without the propagation, live turns would be clean but measured numbers
+    // would still be polluted by the persona's own chatter — a lying benchmark.
+    #[test]
+    fn fork_detached_inherits_owner_id_so_the_benchmark_gets_the_recall_fix() {
+        let owner = Uuid::new_v4();
+        let state = AdmissionState::new(Arc::new(
+            crate::persona::recall_metadata::RecallMetadataRegistry::new(),
+        ));
+        state.set_owner_id(owner);
+        state
+            .admit_reflection(chat_engram(
+                "I ran commands/list because I am acting",
+                owner,
+            ))
+            .expect("admits");
+        let fork = state.fork_detached();
+        let ambient: Vec<String> = fork
+            .recall_candidates(2_000, 10)
+            .into_iter()
+            .map(|(e, _)| e.content)
+            .collect();
+        assert!(
+            !ambient.iter().any(|c| c.contains("because I am acting")),
+            "fork inherits owner-id → own chatter is gated on the measurement copy too"
         );
     }
 
