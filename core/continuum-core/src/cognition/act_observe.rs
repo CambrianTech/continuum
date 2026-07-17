@@ -140,6 +140,38 @@ fn all_calls_already_satisfied(recent: &[String], calls: &[ToolCall]) -> bool {
     })
 }
 
+/// The two zero-arg ORIENTATION commands: they only RE-LIST the tool surface the
+/// mind already carries — they never read or change the workspace. Matched on the
+/// canonical (slash) name after the wire-dialect map has run (`help`→`commands/help`,
+/// `list_commands`→`commands/list`), normalizing the underscore form defensively.
+fn is_orientation_call(name: &str) -> bool {
+    matches!(name.replace('_', "/").as_str(), "commands/help" | "commands/list")
+}
+
+/// True when this batch is ALL orientation AND the current concern already holds a
+/// discovery receipt — a redundant re-list that returns byte-identical perception.
+/// Sibling of [`all_calls_already_satisfied`], keyed on the SAME `name(` receipt
+/// render and the SAME per-concern scope ([`entries_since_last_settlement`]), so
+/// detection and recording can never drift.
+///
+/// Why a dedicated demotion and not the exact-repeat guard: `commands/help(code/write)`
+/// and `commands/help(code/run)` are DIFFERENT args, so the exact-repeat guard lets
+/// them all through — yet each returns a surface the mind already has. Under the
+/// `[Acting]` pressure a base model reaches for these as the cheapest schema-valid
+/// "action" and files its real intent into prose (glass-boxed 2026-07-16: 1855/3288
+/// live tool calls were this filler, e.g. nine straight `commands/help` turns on a
+/// one-line `add(a,b)` while the answer sat ready). The FIRST orientation per concern
+/// is honest; a REPEAT once any discovery receipt is in the concern is spin.
+fn is_redundant_orientation(recent: &[String], calls: &[ToolCall]) -> bool {
+    if calls.is_empty() || !calls.iter().all(|c| is_orientation_call(&c.name)) {
+        return false;
+    }
+    let scope = entries_since_last_settlement(recent);
+    scope
+        .iter()
+        .any(|trace| trace.contains("commands/list(") || trace.contains("commands/help("))
+}
+
 /// Recall salience for an action-observation receipt (#166). Below the neutral
 /// default (0.5) so genuine findings/facts win recall, but well above zero so the
 /// receipt stays recallable for "what did I just do" when nothing better matches.
@@ -310,6 +342,40 @@ pub async fn apply_act(
             room_id = %room_id,
             calls = calls.len(),
             "identical act already satisfied this turn — recorded already-satisfied proprioception, skipped re-execution"
+        );
+        return Some(nudge);
+    }
+
+    // Redundant-orientation demotion (Joel-approved "demote discovery at the seam",
+    // 2026-07-16). `commands/help`/`commands/list` only RE-LIST the tool surface the
+    // mind already carries; they never touch the workspace. The FIRST orientation per
+    // concern is honest — once a discovery receipt is already in the concern, another
+    // is the act-pressure filler the glass box exposed (1855/3288 live tool calls were
+    // this; nine straight `commands/help` turns while the answer sat ready in prose).
+    // Demote it exactly as the repeat guard above does: do NOT execute (no catalog
+    // re-dump, no room receipt), record the redundancy as proprioception, and let the
+    // mind re-perceive with the fact present. A CLASS distinction (orientation is not
+    // settlement), never a steer toward a specific next act — the nudge offers BOTH a
+    // real action and an answer, privileging neither ([[no-hardcoded-heuristics-to-steer-cognition]]).
+    if is_redundant_orientation(&recent, calls) {
+        let names = calls
+            .iter()
+            .map(|c| c.name.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let nudge = format!(
+            "I already listed my tools this concern — the catalog is in my working \
+             memory above, and running {names} again returns the same list and changes \
+             nothing. My next move must be something DIFFERENT: an action that actually \
+             reads or changes the workspace, or an answer built from what I already have."
+        );
+        body.working_memory.record_fact(&nudge);
+        crate::probe!(
+            class = "persona.act.redundant_orientation",
+            persona = %body.persona_name,
+            room_id = %room_id,
+            calls = calls.len(),
+            "orientation call with a discovery receipt already in the concern — recorded redundant-orientation proprioception, skipped re-execution"
         );
         return Some(nudge);
     }
@@ -1801,6 +1867,104 @@ mod tests {
             exec.results.lock().unwrap().len(),
             1,
             "the identical call NEVER reached the hand a second time (queue undrained)"
+        );
+    }
+
+    // what this catches: the redundant-orientation predicate — the FIRST discovery
+    // per concern is honest (no receipt yet → false), a SECOND once a `commands/list`
+    // or `commands/help` receipt is in the concern is spin (→ true), a MIXED batch
+    // carrying any real workspace action is NOT demoted (the real call must run), and
+    // an empty batch is never redundant. Guards the "demote discovery at the seam"
+    // fix (Joel 2026-07-16) against demoting a genuine first orientation or a real act.
+    #[test]
+    fn redundant_orientation_fires_only_on_a_repeat_all_discovery_batch() {
+        let list = |args: serde_json::Value| ToolCall {
+            id: "c".into(),
+            name: "commands/list".into(),
+            input: args,
+        };
+        let help = ToolCall {
+            id: "c".into(),
+            name: "commands/help".into(),
+            input: serde_json::json!({ "name": "code/write" }),
+        };
+        // First orientation, nothing yet in the concern → honest, not redundant.
+        assert!(!is_redundant_orientation(&[], &[list(serde_json::json!({}))]));
+        // A discovery receipt is already in the concern → a second orientation is spin.
+        let recent = vec!["commands/list({}) → ok".to_string()];
+        assert!(is_redundant_orientation(&recent, &[help.clone()]));
+        assert!(is_redundant_orientation(
+            &recent,
+            &[list(serde_json::json!({ "filter": "code" }))]
+        ));
+        // A settlement boundary AFTER the receipt closes the concern → fresh start,
+        // orientation is honest again (scope is only the post-[settled] tail).
+        let recent_settled = vec![
+            "commands/list({}) → ok".to_string(),
+            crate::cognition::working_memory::WM_SETTLEMENT_PREFIX.to_string(),
+        ];
+        assert!(!is_redundant_orientation(&recent_settled, &[help.clone()]));
+        // A MIXED batch with a real workspace action is never demoted — the real call
+        // must reach the hand.
+        assert!(!is_redundant_orientation(&recent, &[help.clone(), tool_call()]));
+        // Empty batch is never redundant.
+        assert!(!is_redundant_orientation(&recent, &[]));
+    }
+
+    // what this catches: the seam-level demotion — a first `commands/list` runs and
+    // lands its receipt; a SECOND orientation call (`commands/help`) this concern is
+    // demoted WITHOUT reaching the hand, recording redundant-orientation proprioception
+    // instead. This is the fix for the glass-boxed act-pressure filler (1855/3288 live
+    // tool calls were `help`/`list_commands`, nine straight `commands/help` turns while
+    // the answer sat ready). Mirrors `identical_already_satisfied_act_does_not_re_execute`
+    // but for the DIFFERENT-args orientation case the exact-repeat guard misses.
+    #[tokio::test]
+    async fn redundant_orientation_is_demoted_and_never_reaches_the_hand() {
+        // Two queued results: only the FIRST orientation may pop. If the second
+        // reached the hand, the queue would drain one more — the length assert catches it.
+        let exec = Arc::new(ScriptedExecutor::new([
+            "{\"commands\":[]}",
+            "SECOND-MUST-NOT-POP",
+        ]));
+        let adm = admission();
+        let wm = Arc::new(WorkingMemory::new(4));
+        let cycle = WorkspaceCycle::new(Vec::new(), Arc::new(SalienceArbiter), 8)
+            .with_acting(body_with_wm(exec.clone(), adm.clone(), Arc::clone(&wm)));
+        let room = Uuid::new_v4();
+
+        let list = ToolCall {
+            id: "c1".into(),
+            name: "commands/list".into(),
+            input: serde_json::json!({}),
+        };
+        let help = ToolCall {
+            id: "c2".into(),
+            name: "commands/help".into(),
+            input: serde_json::json!({ "name": "code/write" }),
+        };
+
+        // First orientation genuinely runs; its receipt lands in working memory.
+        apply_act(&cycle, &[list], "orient", room)
+            .await
+            .expect("first orientation runs");
+        assert_eq!(
+            exec.results.lock().unwrap().len(),
+            1,
+            "first orientation popped exactly one result off the hand"
+        );
+
+        // Second, DIFFERENT-args orientation this concern → demoted, no re-run.
+        let second = apply_act(&cycle, &[help], "orient again", room)
+            .await
+            .expect("demotion still returns Some — it counts as an act, honestly");
+        assert!(
+            second.contains("already listed my tools"),
+            "records redundant-orientation proprioception, not another catalog: {second}"
+        );
+        assert_eq!(
+            exec.results.lock().unwrap().len(),
+            1,
+            "the redundant orientation NEVER reached the hand (queue undrained)"
         );
     }
 
