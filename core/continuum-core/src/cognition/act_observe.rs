@@ -140,12 +140,19 @@ fn all_calls_already_satisfied(recent: &[String], calls: &[ToolCall]) -> bool {
     })
 }
 
-/// The two zero-arg ORIENTATION commands: they only RE-LIST the tool surface the
-/// mind already carries — they never read or change the workspace. Matched on the
-/// canonical (slash) name after the wire-dialect map has run (`help`→`commands/help`,
-/// `list_commands`→`commands/list`), normalizing the underscore form defensively.
+/// ORIENTATION commands — they SURVEY what the mind already carries and never read a
+/// specific file or change the workspace. Two axes:
+///   - tool-surface: `commands/help`/`commands/list` (the tool menu is already inline);
+///   - workspace: `code/tree` (the `[workspace-map]` is already grounded in the prompt).
+/// Matched on the canonical (slash) name after the wire-dialect map has run
+/// (`help`→`commands/help`, `list_commands`→`commands/list`, `file_tree`→`code/tree`),
+/// normalizing the underscore form defensively. NOT `code/list`: a one-dir listing to
+/// get exact filenames before an edit is a legitimate narrowing step, not a survey.
 fn is_orientation_call(name: &str) -> bool {
-    matches!(name.replace('_', "/").as_str(), "commands/help" | "commands/list")
+    matches!(
+        name.replace('_', "/").as_str(),
+        "commands/help" | "commands/list" | "code/tree"
+    )
 }
 
 /// True when this batch is ALL orientation AND the current concern already holds a
@@ -161,15 +168,24 @@ fn is_orientation_call(name: &str) -> bool {
 /// "action" and files its real intent into prose (glass-boxed 2026-07-16: 1855/3288
 /// live tool calls were this filler, e.g. nine straight `commands/help` turns on a
 /// one-line `add(a,b)` while the answer sat ready). The FIRST orientation per concern
-/// is honest; a REPEAT once any discovery receipt is in the concern is spin.
+/// is honest; a REPEAT once any survey receipt is in the concern is spin.
+///
+/// The `code/tree` case (glass-boxed 2026-07-16, benchmark): after the tool-surface
+/// demote crushed the `help`/`list_commands` filler 99%, the SAME act-pressure
+/// disposition displaced to `code/tree` — 156 of 169 tool calls, arg-JITTERED
+/// (`apps/cli` vs `apps/cli/`, `max_depth` 1 vs 2) to evade the exact-repeat guard,
+/// re-surveying a tree the mind already fetched AND already has in `[workspace-map]`.
+/// Demoting by CLASS + prior-receipt (ignoring args entirely) is immune to that jitter.
 fn is_redundant_orientation(recent: &[String], calls: &[ToolCall]) -> bool {
     if calls.is_empty() || !calls.iter().all(|c| is_orientation_call(&c.name)) {
         return false;
     }
     let scope = entries_since_last_settlement(recent);
-    scope
-        .iter()
-        .any(|trace| trace.contains("commands/list(") || trace.contains("commands/help("))
+    scope.iter().any(|trace| {
+        trace.contains("commands/list(")
+            || trace.contains("commands/help(")
+            || trace.contains("code/tree(")
+    })
 }
 
 /// Recall salience for an action-observation receipt (#166). Below the neutral
@@ -364,10 +380,10 @@ pub async fn apply_act(
             .collect::<Vec<_>>()
             .join(", ");
         let nudge = format!(
-            "I already listed my tools this concern — the catalog is in my working \
-             memory above, and running {names} again returns the same list and changes \
-             nothing. My next move must be something DIFFERENT: an action that actually \
-             reads or changes the workspace, or an answer built from what I already have."
+            "I already surveyed this concern — my tool menu and the workspace map are \
+             in my working memory above, and running {names} again returns the same \
+             survey and changes nothing. My next move must be something DIFFERENT: read \
+             a SPECIFIC file, make an edit, run something, or answer from what I have."
         );
         body.working_memory.record_fact(&nudge);
         crate::probe!(
@@ -1909,6 +1925,28 @@ mod tests {
         assert!(!is_redundant_orientation(&recent, &[help.clone(), tool_call()]));
         // Empty batch is never redundant.
         assert!(!is_redundant_orientation(&recent, &[]));
+
+        // WORKSPACE orientation (`code/tree`) — the displaced-spin case (benchmark
+        // 2026-07-16: 156 arg-jittered tree surveys). First tree per concern is honest;
+        // a REPEAT after a tree receipt is spin, regardless of the arg jitter that
+        // evades the exact-repeat guard.
+        let tree = |p: &str| ToolCall {
+            id: "t".into(),
+            name: "code/tree".into(),
+            input: serde_json::json!({ "path": p, "max_depth": 2 }),
+        };
+        assert!(!is_redundant_orientation(&[], &[tree("apps/cli")]), "first survey is honest");
+        let after_tree = vec!["code/tree(path=apps/cli, max_depth=2) → ok".to_string()];
+        // Jittered repeat (trailing slash, different depth) → still demoted (args ignored).
+        assert!(is_redundant_orientation(&after_tree, &[tree("apps/cli/")]));
+        assert!(is_redundant_orientation(
+            &after_tree,
+            &[ToolCall { id: "t".into(), name: "code/tree".into(), input: serde_json::json!({}) }]
+        ));
+        // `code/list` is NOT orientation — a specific-dir listing to get filenames before
+        // an edit is a legitimate narrowing step, so it always runs.
+        let clist = ToolCall { id: "l".into(), name: "code/list".into(), input: serde_json::json!({ "path": "src" }) };
+        assert!(!is_redundant_orientation(&after_tree, &[clist]));
     }
 
     // what this catches: the seam-level demotion — a first `commands/list` runs and
@@ -1958,7 +1996,7 @@ mod tests {
             .await
             .expect("demotion still returns Some — it counts as an act, honestly");
         assert!(
-            second.contains("already listed my tools"),
+            second.contains("already surveyed"),
             "records redundant-orientation proprioception, not another catalog: {second}"
         );
         assert_eq!(
