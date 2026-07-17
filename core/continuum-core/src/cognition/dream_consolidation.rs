@@ -534,13 +534,24 @@ async fn dream_pass(
     // 500 "Compute error" → poisoned lane. tokens → chars (~4/token) minus a reserve
     // for the lens system prompt + the distilled-fact reply. Unknown/not-ready window
     // (mid-relaunch) → the conservative default. [[budget-at-assembly-never-clamp-the-prompt]]
+    // Observation budget DERIVED from the live served window — never a hardcoded cap
+    // (a magic constant that crushes a real context window is the "120k clamped to 3k →
+    // all models suck" anti-pattern, Joel 2026-07-17 [[no-hardcoded-context-numbers-derive-from-the-live-window]]).
+    // The prompt (system + observations) must leave room for the reply so
+    // prompt+reply ≤ n_ctx (no-context-shift). Reserve the SAME completion fraction the
+    // deliberation path uses — `completion_budget_for` = window/4 — for the distilled
+    // reply, and give the rest (×4 chars/token) to observations. When the window is
+    // unknown (mid-relaunch) fall back to the substrate floor MIN_SERVE_CTX (an established
+    // constant, not an invented one), which the next ready tick supersedes.
     let obs_budget_chars = {
         let live = crate::inference::llama_server::current_serving();
-        if live.ready && live.served_context_window > 0 {
-            (live.served_context_window.saturating_sub(1_024) as usize).saturating_mul(4)
+        let window = if live.ready && live.served_context_window > 0 {
+            live.served_context_window
         } else {
-            DEFAULT_MAX_OBSERVATION_CHARS
-        }
+            crate::cognition::serving_plan::MIN_SERVE_CTX
+        };
+        let completion_reserve = window / 4;
+        (window.saturating_sub(completion_reserve) as usize).saturating_mul(4)
     };
     let distiller = SemanticDistiller::new(reflector.adapter.clone())
         .with_model(reflector.model.clone())
