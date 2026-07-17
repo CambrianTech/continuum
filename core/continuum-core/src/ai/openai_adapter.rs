@@ -188,12 +188,12 @@ pub struct OpenAICompatibleAdapter {
     concurrency: std::sync::Arc<tokio::sync::Semaphore>,
 }
 
-/// Persona→slot pinning state for llama.cpp-family backends. `Unknown` until
-/// the first persona-attributed request probes `GET /props`; `Unsupported`
-/// when the endpoint has no props surface or a single slot (pinning is
-/// meaningless); `Table` assigns each persona a stable slot round-robin.
-/// More personas than slots wrap around (documented degradation: two minds
-/// sharing a slot still beats similarity-churn across all of them).
+/// Persona→slot lease state for llama.cpp-family backends. `Unknown` until the
+/// first persona-attributed request probes `GET /props`; `Unsupported` when the
+/// endpoint has no props surface or a single slot (leasing is meaningless);
+/// `Table` LEASES each active persona a warm slot (see the `Table` doc for the
+/// activity-driven LRU policy). More personas than slots means the least-active
+/// yield their warm slot to whoever is speaking now — co-active minds never share.
 ///
 /// State is PROCESS-GLOBAL, keyed by the server root ([`slot_tables`]) — one
 /// table per SERVER, never per adapter instance. The first cut stored this on
@@ -207,10 +207,29 @@ pub struct OpenAICompatibleAdapter {
 #[derive(Debug)]
 enum SlotAffinity {
     Unsupported,
+    /// Hot-slot LEASE (2026-07-16, Joel-approved "alive" lever). The scarce
+    /// resource is warm KV: a slot holds a persona's prefilled prefix+LoRA, and a
+    /// warm reuse prefills only the new tail (~0.48s vs ~40s cold, measured). With
+    /// more personas than slots the OLD scheme pinned each persona to a slot by
+    /// first-touch order and never moved it, so two permanently-assigned slot-mates
+    /// clobbered each other EVERY time both were active — even while a third slot
+    /// sat idle (glass-boxed 2026-07-16: 4 personas / 2 slots → `cachedTokens≈4`,
+    /// 40–75s prefill every turn). The lease makes assignment ACTIVITY-driven: a
+    /// persona reuses the slot it already holds (warm), else takes a free slot, else
+    /// EVICTS the least-recently-active holder. So the N most-active personas keep
+    /// warm slots and co-active minds never share one; an idle persona yields its
+    /// slot and pays one cold prefill when it next speaks. This is the slot half of
+    /// [[resource-authority-is-a-system-concern]] — the lease a future
+    /// `ResourceGovernor` (#56) will own; the table is already the per-server slot
+    /// authority, so the policy lives here until then.
     Table {
         n_slots: u32,
-        map: std::collections::HashMap<String, u32>,
-        next: u32,
+        /// One entry per slot (index == slot id): the persona currently holding it
+        /// and the activity `tick` at which it last leased. `None` == free slot.
+        holders: Vec<Option<(String, u64)>>,
+        /// Monotonic activity clock — bumped on every lease so "least-recently-active"
+        /// is a total order, independent of wall-clock (which the substrate forbids).
+        tick: u64,
     },
 }
 
@@ -296,19 +315,46 @@ fn apply_llamacpp_sampling_knobs(
 }
 
 impl SlotAffinity {
-    /// Stable slot for `persona` — same persona always maps to the same slot
-    /// within a boot; new personas take the next slot round-robin.
-    fn assign(&mut self, persona: &str) -> Option<u32> {
-        let SlotAffinity::Table { n_slots, map, next } = self else {
+    /// Lease a warm slot for `persona` (see [`SlotAffinity`] doc). Reuse the slot it
+    /// already holds → take a free slot → evict the least-recently-active holder.
+    /// Every lease refreshes the holder's activity `tick`, so a persona that keeps
+    /// speaking keeps its slot; one that goes quiet is the first evicted.
+    fn lease(&mut self, persona: &str) -> Option<u32> {
+        let SlotAffinity::Table {
+            n_slots,
+            holders,
+            tick,
+        } = self
+        else {
             return None;
         };
-        if let Some(slot) = map.get(persona) {
-            return Some(*slot);
+        // Grow lazily to n_slots (constructed empty so the count is single-sourced here).
+        if holders.len() != *n_slots as usize {
+            holders.resize(*n_slots as usize, None);
         }
-        let slot = *next % *n_slots;
-        *next += 1;
-        map.insert(persona.to_string(), slot);
-        Some(slot)
+        *tick += 1;
+        let now = *tick;
+        // 1. Already holds a slot → WARM reuse (the whole point). Refresh its recency.
+        if let Some(slot) = holders
+            .iter()
+            .position(|h| h.as_ref().is_some_and(|(p, _)| p == persona))
+        {
+            holders[slot] = Some((persona.to_string(), now));
+            return Some(slot as u32);
+        }
+        // 2. A free slot → take it.
+        if let Some(slot) = holders.iter().position(|h| h.is_none()) {
+            holders[slot] = Some((persona.to_string(), now));
+            return Some(slot as u32);
+        }
+        // 3. All held → evict the least-recently-active holder (min tick).
+        let slot = holders
+            .iter()
+            .enumerate()
+            .min_by_key(|(_, h)| h.as_ref().map(|(_, t)| *t).unwrap_or(0))
+            .map(|(i, _)| i)?;
+        holders[slot] = Some((persona.to_string(), now));
+        Some(slot as u32)
     }
 }
 
@@ -541,7 +587,7 @@ impl OpenAICompatibleAdapter {
         if let Some(mut state) = slot_tables().get_mut(&root) {
             return match &mut *state {
                 SlotAffinity::Unsupported => None,
-                s @ SlotAffinity::Table { .. } => s.assign(persona),
+                s @ SlotAffinity::Table { .. } => s.lease(persona),
             };
         }
         // Probe /props once. Lock is NOT held across the await.
@@ -588,11 +634,11 @@ impl OpenAICompatibleAdapter {
             );
             SlotAffinity::Table {
                 n_slots,
-                map: std::collections::HashMap::new(),
-                next: 0,
+                holders: Vec::new(),
+                tick: 0,
             }
         });
-        state.assign(persona)
+        state.lease(persona)
     }
 
     pub(crate) async fn probe_lora_catalog(&self) -> Result<(), String> {
@@ -2483,34 +2529,37 @@ mod tests {
     // under thinking — the 1000+ silently-dead self-ticks of 2026-07-10/11), while a
     // thread already ending with user/system stays untouched. Regression for
     // close_trailing_assistant.
-    // what this catches: the slot-affinity contract (measured 2026-07-11: 30%
-    // cache hit / 2.5 tok/s median from prefix-similarity churn across four
-    // personas). Same persona → same slot every time within a boot; distinct
-    // personas → distinct slots until the table wraps; non-Table states never
-    // pin. // regression for the token/sec directive
+    // what this catches: the hot-slot LEASE contract (2026-07-16 "alive" fix).
+    // A persona reuses the slot it holds (WARM — the 0.48s-vs-40s win); distinct
+    // personas take distinct free slots; once full, a NEW persona evicts the
+    // LEAST-recently-active holder, not a fixed round-robin victim — so the active
+    // set keeps its warm slots and co-active minds never share one. This is the
+    // regression guard on the old first-touch pin that let two permanent slot-mates
+    // clobber each other every turn (cachedTokens≈4). Non-Table states never pin.
     #[test]
-    fn slot_affinity_pins_personas_stably_and_wraps() {
+    fn hot_slot_lease_reuses_warm_and_evicts_least_recently_active() {
         let mut table = SlotAffinity::Table {
-            n_slots: 4,
-            map: std::collections::HashMap::new(),
-            next: 0,
+            n_slots: 2,
+            holders: Vec::new(),
+            tick: 0,
         };
-        let a = table.assign("persona-a").unwrap();
-        let b = table.assign("persona-b").unwrap();
-        let c = table.assign("persona-c").unwrap();
-        let d = table.assign("persona-d").unwrap();
-        // Stable: repeat lookups return the same slot.
-        assert_eq!(table.assign("persona-a").unwrap(), a);
-        assert_eq!(table.assign("persona-c").unwrap(), c);
-        // Distinct until full: four personas occupy four distinct slots.
-        let mut slots = vec![a, b, c, d];
-        slots.sort_unstable();
-        assert_eq!(slots, vec![0, 1, 2, 3], "four personas fill four slots");
-        // Fifth persona wraps rather than erroring — shared slot beats churn.
-        let e = table.assign("persona-e").unwrap();
-        assert!(e < 4, "wrap stays in range");
+        // Two personas fill the two slots, distinctly.
+        let a = table.lease("persona-a").unwrap();
+        let b = table.lease("persona-b").unwrap();
+        assert_ne!(a, b, "two personas take two distinct slots");
+        // WARM reuse: a persona that already holds a slot gets the SAME slot back
+        // (the whole point — its prefilled KV stays put).
+        assert_eq!(table.lease("persona-a").unwrap(), a, "warm reuse, same slot");
+        // Now a='a' is the most-recently-active, b='b' the least. A THIRD persona
+        // must evict the LRU holder (b), not a.
+        let c = table.lease("persona-c").unwrap();
+        assert_eq!(c, b, "new persona evicts the least-recently-active holder (b)");
+        assert_eq!(table.lease("persona-a").unwrap(), a, "a kept its warm slot");
+        // b was evicted → coming back, b takes the now-LRU slot (a is fresher).
+        let b2 = table.lease("persona-b").unwrap();
+        assert_eq!(b2, c, "returning b lands on the least-recently-active slot");
         // Non-table states never pin.
-        assert_eq!(SlotAffinity::Unsupported.assign("persona-a"), None);
+        assert_eq!(SlotAffinity::Unsupported.lease("persona-a"), None);
     }
 
     #[test]
