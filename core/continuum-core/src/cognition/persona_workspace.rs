@@ -459,6 +459,11 @@ pub fn build_workspace_cycle(cfg: PersonaBrainConfig) -> WorkspaceCycle {
     // to execute a `Decision::Act`, admit the result into `admission_for_body` (the
     // unified hippocampus), and re-perceive. Room-agnostic: one persona is in many
     // rooms at once, so `room_id` flows per-act, never baked in here.
+    // Bind the hippocampus to its owner so recall can gate the persona's OWN
+    // authored chat out of ambient semantic recall (#166) — her broadcasts are
+    // proprioception, not external knowledge. Set once here, at the live spawn,
+    // where both the id and the admission store are in hand.
+    admission_for_body.set_owner_id(persona_id);
     let cycle = match tool_executor {
         Some(executor) => cycle.with_acting(Arc::new(ActingBody {
             persona_id,

@@ -166,6 +166,18 @@ pub struct AdmissionState {
     /// per-token), so the cost is nil. See
     /// [[eval-mutates-persona-lift-needs-isolation]].
     persistence: RwLock<Arc<dyn crate::persona::admission_persistence::AdmissionPersistenceSink>>,
+    /// The persona this store BELONGS to (its own user id). Set once at spawn via
+    /// [`set_owner_id`](Self::set_owner_id); `None` for bare/test states. Used to
+    /// recognize the persona's OWN authored chat engrams (`Chat` origin whose
+    /// `sender_id == owner_id`) so they can be gated out of AMBIENT semantic
+    /// recall (#166): a persona's own broadcasts are proprioception-like — she
+    /// said them, she knows she said them — not external knowledge, and left in
+    /// the recall pool they DROWN real memory (glass-boxed 2026-07-17: 271
+    /// self-authored "I ran X because Y is acting" receipts recalling at
+    /// salience 0.78-0.85, teaching the survey-spin). Still explicitly
+    /// queryable by keyword (`recall_by_keyword`) — this gates AMBIENT recall
+    /// only, the same treatment as Tool receipts and stale inner-speech.
+    owner_id: RwLock<Option<Uuid>>,
 }
 
 impl Default for AdmissionState {
@@ -210,6 +222,7 @@ impl AdmissionState {
             engrams: Mutex::new(Vec::new()),
             recall_metadata,
             persistence: RwLock::new(persistence),
+            owner_id: RwLock::new(None),
         }
     }
 
@@ -253,6 +266,7 @@ impl AdmissionState {
             engrams: Mutex::new(loaded_engrams),
             recall_metadata,
             persistence: RwLock::new(persistence),
+            owner_id: RwLock::new(None),
         }
     }
 
@@ -263,6 +277,20 @@ impl AdmissionState {
         &self,
     ) -> &Arc<crate::persona::recall_metadata::RecallMetadataRegistry> {
         &self.recall_metadata
+    }
+
+    /// Bind this store to the persona that owns it (its own user id). Called once
+    /// at spawn (`persona_workspace` ActingBody construction). Enables the
+    /// own-authored-chat recall gate (#166). Idempotent; last write wins.
+    pub fn set_owner_id(&self, id: Uuid) {
+        *self.owner_id.write().unwrap() = Some(id);
+    }
+
+    /// The owning persona's id, if bound. `None` for bare/test states — the
+    /// own-chat recall gate is then a no-op (fail-open: never gate what we can't
+    /// prove is self-authored).
+    fn owner_id_snapshot(&self) -> Option<Uuid> {
+        *self.owner_id.read().unwrap()
     }
 
     /// Construct AdmissionState for a specific persona — opens the
@@ -840,6 +868,9 @@ impl AdmissionState {
         // long enough that a fresh musing can still bubble up the same activity, short
         // enough that a stale self-assessment cannot masquerade as the present.
         const INNER_SPEECH_RECALL_TTL_MS: u64 = 15 * 60 * 1000;
+        // The owning persona's id (if bound) — for the own-authored-chat gate below.
+        // Snapshotted once, outside the per-engram closure.
+        let owner = self.owner_id_snapshot();
         let engrams = self.engrams.lock().unwrap();
         // Enumerate in insertion order: `idx` is a monotonic recency rank
         // (higher == more recently admitted), used as the tiebreaker below.
@@ -860,6 +891,21 @@ impl AdmissionState {
                 // couldn't stop them surfacing when knowledge was sparse.
                 if matches!(e.origin, EngramOrigin::Tool(_)) {
                     return None;
+                }
+                // The persona's OWN authored chat is the SIBLING leak (#166, glass-boxed
+                // 2026-07-17 on Casper: 271 self-authored "I ran X because Y is acting"
+                // messages — receipt-mimicry SPEECH, #158 — admitted as durable Chat
+                // engrams, recalling at salience 0.78-0.85 and teaching the survey-spin).
+                // The Tool gate can't catch them (they're Chat-origin, not Tool). A
+                // persona's own broadcast is proprioception, not external knowledge —
+                // she said it, she knows she said it. Gate own-authored chat out of
+                // AMBIENT recall the same way; it stays keyword-queryable
+                // (`recall_by_keyword`). Fail-open: only when we can PROVE self-authorship
+                // (owner bound AND sender matches) — never gate others' chat.
+                if let (Some(owner_id), EngramOrigin::Chat(chat_ref)) = (owner, &e.origin) {
+                    if chat_ref.sender_id == owner_id {
+                        return None;
+                    }
                 }
                 // Wanderer inner-speech (EngramKind::SelfReflection) is a PASSING
                 // thought, not durable knowledge. A FRESH one may bubble up as ambient
@@ -1594,6 +1640,99 @@ mod tests {
         let report = state.redact(&RedactionPolicy::new(vec![]));
         assert!(report.is_empty());
         assert_eq!(state.recall_recent(1)[0].content, "plain memory, nothing sensitive");
+    }
+
+    fn chat_engram(content: &str, sender: Uuid) -> Engram {
+        Engram {
+            id: Uuid::new_v4(),
+            context_id: None,
+            kind: EngramKind::Episodic,
+            content: content.to_string(),
+            origin: EngramOrigin::Chat(ChatMessageRef {
+                message_id: Uuid::new_v4(),
+                room_id: Uuid::new_v4(),
+                sender_id: sender,
+                posted_at_ms: 1_000,
+                content_hash: format!("sha256:{content}"),
+            }),
+            recall_keys: vec![],
+            admitted_at_ms: 1_000,
+            trust_state_at_admission: TrustState::ApprovedPeer,
+            admission_trace_id: None,
+        }
+    }
+
+    // what this catches: #166 sibling leak — a persona's OWN authored chat is
+    // gated out of AMBIENT recall (it's proprioception, not knowledge) once
+    // owner-id is bound, while OTHERS' chat still surfaces AND the own message
+    // stays explicitly keyword-queryable. This is the structural kill for the
+    // 271 self-authored "I ran X because Y" engrams that were drowning Casper's
+    // real memory and teaching the survey-spin.
+    #[test]
+    fn own_authored_chat_is_gated_from_ambient_recall_but_stays_queryable() {
+        let owner = Uuid::new_v4();
+        let other = Uuid::new_v4();
+        let state = AdmissionState::new(Arc::new(
+            crate::persona::recall_metadata::RecallMetadataRegistry::new(),
+        ));
+        state.set_owner_id(owner);
+
+        state
+            .admit_reflection(chat_engram(
+                "I ran commands/list because Asha is acting on the situation",
+                owner,
+            ))
+            .expect("own chat admits");
+        state
+            .admit_reflection(chat_engram("The service loop lives in service_loop.rs", other))
+            .expect("other's chat admits");
+
+        let ambient: Vec<String> = state
+            .recall_candidates(2_000, 10)
+            .into_iter()
+            .map(|(e, _)| e.content)
+            .collect();
+        assert!(
+            ambient.iter().any(|c| c.contains("service_loop.rs")),
+            "others' knowledge still surfaces in ambient recall"
+        );
+        assert!(
+            !ambient.iter().any(|c| c.contains("because Asha is acting")),
+            "own chatter is gated out of ambient recall"
+        );
+
+        // Still there when asked for explicitly.
+        let queried: Vec<String> = state
+            .recall_by_keyword("commands/list", 10)
+            .into_iter()
+            .map(|e| e.content)
+            .collect();
+        assert!(
+            queried.iter().any(|c| c.contains("because Asha is acting")),
+            "own chat remains keyword-queryable (gated from AMBIENT recall only)"
+        );
+    }
+
+    // what this catches: fail-open — with no owner bound (bare/test state), the
+    // gate never fires, so we never drop chat we can't prove is self-authored.
+    #[test]
+    fn chat_recall_gate_is_noop_without_owner_bound() {
+        let author = Uuid::new_v4();
+        let state = AdmissionState::new(Arc::new(
+            crate::persona::recall_metadata::RecallMetadataRegistry::new(),
+        ));
+        state
+            .admit_reflection(chat_engram("some chat from an author", author))
+            .expect("admits");
+        let ambient: Vec<String> = state
+            .recall_candidates(2_000, 10)
+            .into_iter()
+            .map(|(e, _)| e.content)
+            .collect();
+        assert!(
+            ambient.iter().any(|c| c.contains("some chat from an author")),
+            "no owner bound → nothing gated (fail-open)"
+        );
     }
 
     /// What this catches: re-distilling the same cluster on a later dream tick
