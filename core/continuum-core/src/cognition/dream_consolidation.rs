@@ -91,7 +91,22 @@ pub struct SemanticDistiller {
     /// MUST thread the persona's live binding model — omitting it caused the
     /// first live dream's degenerate role-token output (2026-07-12).
     model: Option<String>,
+    /// Max chars the observation block may occupy (#175 budget-at-assembly). The
+    /// distiller BUDGETS the cluster to fit the served slot by dropping whole
+    /// trailing engrams — it never truncates an engram's text (that malforms the
+    /// prompt) — so an over-large cluster can never overflow the per-slot window
+    /// and 500 "Compute error" / poison the lane
+    /// ([[budget-at-assembly-never-clamp-the-prompt]]). Injected at construction
+    /// (where the live served window is known) so the distiller itself stays a
+    /// pure fn of (engrams, budget). Defaults conservative.
+    max_observation_chars: usize,
 }
+
+/// Conservative default observation budget (chars) when the caller doesn't inject
+/// the live served window — sized to fit comfortably inside a small served slot
+/// (~6k tokens × ~4 chars/token) so a dream can never overflow even an unwired
+/// build. Production wires the real per-slot window via `with_observation_budget`.
+pub const DEFAULT_MAX_OBSERVATION_CHARS: usize = 24_000;
 
 /// A sub-personal LENS — one inner voice of the mind-wanderer arc (#145,
 /// [[mind-wanderers-subpersonal-processes]]). Each lens is the SAME machinery
@@ -156,12 +171,22 @@ impl SemanticDistiller {
         Self {
             adapter,
             model: None,
+            max_observation_chars: DEFAULT_MAX_OBSERVATION_CHARS,
         }
     }
 
     /// Ask the adapter for a specific served model (the persona's live binding).
     pub fn with_model(mut self, model: Option<String>) -> Self {
         self.model = model;
+        self
+    }
+
+    /// Budget the observation block to `chars` (#175). The caller derives this from
+    /// the LIVE served per-slot window (tokens → chars, minus system-prompt + reply
+    /// reserve) so the dream prompt is composed WITHIN the slot and never overflows.
+    /// Floored at one engram's worth so a single large memory still distills.
+    pub fn with_observation_budget(mut self, chars: usize) -> Self {
+        self.max_observation_chars = chars.max(2_000);
         self
     }
 
@@ -193,11 +218,30 @@ impl SemanticDistiller {
             return Err(DistillError::NoSources);
         }
 
+        // #175 budget-at-assembly: compose the observation block WITHIN the served
+        // slot by including whole engrams up to the budget, dropping the tail — never
+        // truncating an engram (that malforms). `kept` is the prefix that actually
+        // fed the distillation; provenance (source_ids/tags) must reflect ONLY those,
+        // so the dropped engrams stay unconsolidated and get another pass in a smaller
+        // future cluster ([[budget-at-assembly-never-clamp-the-prompt]]).
+        let (block, kept_n) = Self::observations_block(sources, self.max_observation_chars);
+        let kept = &sources[..kept_n];
+        if kept_n < sources.len() {
+            tracing::info!(
+                probe_class = "dream.cluster.budgeted",
+                cluster = sources.len(),
+                kept = kept_n,
+                budget_chars = self.max_observation_chars,
+                "dream cluster exceeded the served slot budget — distilling the first \
+                 {kept_n} engrams, deferring the rest (never overflow the slot, #175)"
+            );
+        }
+
         // max_tokens stays None — the adapter owns generation length (#45/#46);
         // no per-call clamp. The distillation's faithfulness is gated by VDD
         // with a real model, not by hand-tuned sampling knobs here.
         let request = TextGenerationRequest {
-            messages: vec![ChatMessage::text("user", Self::observations_block(sources))],
+            messages: vec![ChatMessage::text("user", block)],
             system_prompt: Some(lens.system_prompt.to_string()),
             model: self.model.clone(),
             provider: None,
@@ -240,18 +284,31 @@ impl SemanticDistiller {
 
         Ok(DistilledFact {
             content,
-            source_ids: sources.iter().map(|e| e.id).collect(),
-            tags: Self::union_recall_keys(sources),
+            source_ids: kept.iter().map(|e| e.id).collect(),
+            tags: Self::union_recall_keys(kept),
         })
     }
 
-    /// Render the cluster as a numbered observation list for the prompt.
-    fn observations_block(sources: &[Engram]) -> String {
+    /// Render the cluster as a numbered observation list, BUDGETED to `budget_chars`
+    /// (#175). Includes whole engrams in order until the next would exceed the budget,
+    /// then stops — dropping the tail rather than truncating an engram's text (which
+    /// would malform the prompt). Always includes at least the first engram so a
+    /// single large memory still distills (the adapter's overflow backstop is the
+    /// last-resort net for that degenerate case). Returns the block AND how many
+    /// engrams it kept, so the caller's provenance reflects only what was distilled.
+    fn observations_block(sources: &[Engram], budget_chars: usize) -> (String, usize) {
         let mut block = String::new();
+        let mut kept = 0usize;
         for (i, e) in sources.iter().enumerate() {
-            block.push_str(&format!("{}. {}\n", i + 1, e.content.trim()));
+            let line = format!("{}. {}\n", i + 1, e.content.trim());
+            // First engram always goes in; after that, stop before overflowing.
+            if kept > 0 && block.len() + line.len() > budget_chars {
+                break;
+            }
+            block.push_str(&line);
+            kept += 1;
         }
-        block
+        (block, kept)
     }
 
     /// Union of every source's recall keys, first-seen order preserved.
@@ -471,8 +528,23 @@ async fn dream_pass(
     fresh: Vec<Engram>,
     consolidated: Arc<Mutex<HashMap<Uuid, HashSet<Uuid>>>>,
 ) {
-    let distiller =
-        SemanticDistiller::new(reflector.adapter.clone()).with_model(reflector.model.clone());
+    // #175 budget-at-assembly: derive the observation budget from the LIVE served
+    // per-slot window (the single source of truth, same the deliberation clamp reads)
+    // so a dream cluster is composed WITHIN the slot and can never overflow it →
+    // 500 "Compute error" → poisoned lane. tokens → chars (~4/token) minus a reserve
+    // for the lens system prompt + the distilled-fact reply. Unknown/not-ready window
+    // (mid-relaunch) → the conservative default. [[budget-at-assembly-never-clamp-the-prompt]]
+    let obs_budget_chars = {
+        let live = crate::inference::llama_server::current_serving();
+        if live.ready && live.served_context_window > 0 {
+            (live.served_context_window.saturating_sub(1_024) as usize).saturating_mul(4)
+        } else {
+            DEFAULT_MAX_OBSERVATION_CHARS
+        }
+    };
+    let distiller = SemanticDistiller::new(reflector.adapter.clone())
+        .with_model(reflector.model.clone())
+        .with_observation_budget(obs_budget_chars);
     let mut published = 0usize;
     for cluster in &clusters {
             // Distill the cluster into one durable fact. Fail LOUD per cluster:
@@ -759,6 +831,33 @@ mod tests {
             trust_state_at_admission: TrustState::SelfTrust,
             admission_trace_id: None,
         }
+    }
+
+    // what this catches (#175 budget-at-assembly): the observation block is composed
+    // WITHIN the char budget by dropping WHOLE trailing engrams — never truncating an
+    // engram's text (which would malform the prompt). This is what stops a big cluster
+    // from overflowing the served slot → 500 "Compute error" → poisoned lane.
+    #[test]
+    fn observations_block_budgets_by_dropping_whole_trailing_engrams() {
+        let big = "x".repeat(100);
+        let sources: Vec<Engram> =
+            (0..10).map(|i| episodic(Uuid::from_u128(i + 1), &big, &["k"])).collect();
+        let (block, kept) = SemanticDistiller::observations_block(&sources, 350);
+        assert!(kept >= 1 && kept < 10, "dropped the tail to fit; kept {kept}");
+        // The LAST kept engram is present whole (not truncated mid-content).
+        assert!(block.contains(&format!("{}. {}", kept, big)));
+    }
+
+    // what this catches: a single engram larger than the whole budget still distills
+    // (kept=1) — the distiller never drops to zero; the adapter's overflow backstop is
+    // the last-resort net for that degenerate case, not this composer.
+    #[test]
+    fn observations_block_always_keeps_at_least_one() {
+        let huge = "y".repeat(10_000);
+        let sources = vec![episodic(Uuid::from_u128(1), &huge, &["k"])];
+        let (block, kept) = SemanticDistiller::observations_block(&sources, 100);
+        assert_eq!(kept, 1);
+        assert!(block.contains(&huge), "the one engram is included whole, never sliced");
     }
 
     // what this catches: the distiller actually invokes the inference adapter,
