@@ -694,6 +694,68 @@ impl AdmissionState {
         before - engrams.len()
     }
 
+    /// The SURGICAL complement to [`forget_context`](Self::forget_context):
+    /// walk every engram and scrub a policy-defined *class* of content out of
+    /// its `content` and `recall_keys`, keeping the engram (its id, salience,
+    /// recall history, provenance) otherwise intact. Where `forget_context`
+    /// drops a whole exam episode, `redact` keeps the memory of *having been
+    /// asked and having answered* and excises only the crib sheet — the held-out
+    /// answer key, a leaked secret, PII on export. Returns an aggregate report
+    /// of what was removed across the whole store.
+    ///
+    /// Durable: every rewritten engram is re-saved through the persistence sink
+    /// (`observe_content_update`) so the scrub survives restart. A noop policy
+    /// (no detectors) short-circuits — no store walk, no lock churn.
+    ///
+    /// Note on dedup: rewriting `content` changes its hash, so the
+    /// `seen_content` map's old-hash→id pointer goes stale. That is harmless and
+    /// arguably correct — the pre-redaction content is gone, so a future admit of
+    /// the *old* text should NOT dedup against a memory that no longer holds it.
+    pub fn redact(
+        &self,
+        policy: &crate::persona::redaction::RedactionPolicy,
+    ) -> crate::persona::redaction::RedactionReport {
+        let mut total = crate::persona::redaction::RedactionReport::default();
+        if policy.is_noop() {
+            return total;
+        }
+
+        // Rewrite in-memory under the engrams lock; collect the changed rows to
+        // persist AFTER releasing it (never hold the store lock across the sink).
+        let mut changed: Vec<Engram> = Vec::new();
+        {
+            let mut engrams = self.engrams.lock().unwrap();
+            for engram in engrams.iter_mut() {
+                let mut touched = false;
+                let (new_content, r) = policy.redact(&engram.content);
+                if !r.is_empty() {
+                    engram.content = new_content;
+                    total.merge(&r);
+                    touched = true;
+                }
+                for key in engram.recall_keys.iter_mut() {
+                    let (new_key, rk) = policy.redact(key);
+                    if !rk.is_empty() {
+                        *key = new_key;
+                        total.merge(&rk);
+                        touched = true;
+                    }
+                }
+                if touched {
+                    changed.push(engram.clone());
+                }
+            }
+        }
+
+        if !changed.is_empty() {
+            let sink = self.persistence.read().unwrap().clone();
+            for engram in &changed {
+                sink.observe_content_update(engram);
+            }
+        }
+        total
+    }
+
     /// Algorithm 4 recall. Returns the top `limit` engrams ranked by
     /// `salience × recency-decay`, after applying decay to bring each
     /// engram's salience up to `now_ms`. Records a recall hit on the
@@ -1484,6 +1546,54 @@ mod tests {
         assert_eq!(recent.len(), 1);
         assert_eq!(recent[0].content, fact.content);
         assert_eq!(recent[0].kind, EngramKind::Semantic);
+    }
+
+    /// What this catches: `redact` is the surgical complement to
+    /// `forget_context` — it scrubs the held-out answer key out of a memory
+    /// while KEEPING the engram and the experience of having answered. The
+    /// proctored-exam integrity guarantee at the store level: she can't
+    /// memorize the crib sheet, but her autobiography of struggling stays.
+    #[test]
+    fn redact_scrubs_exam_key_from_memory_keeping_the_experience() {
+        use crate::persona::redaction::{ExamKeyDetector, RedactionClass, RedactionPolicy};
+        let state = AdmissionState::new(Arc::new(
+            crate::persona::recall_metadata::RecallMetadataRegistry::new(),
+        ));
+        let mem = semantic_reflection(
+            "I was asked which file holds the loop; I answered service_loop.rs and it passed.",
+            Uuid::new_v4(),
+        );
+        state.admit_reflection(mem).expect("admits");
+
+        let policy = RedactionPolicy::new(vec![Box::new(ExamKeyDetector::new(
+            ["service_loop.rs".to_string()],
+            ExamKeyDetector::DEFAULT_MIN_LEN,
+        ))]);
+        let report = state.redact(&policy);
+        assert_eq!(report.count(RedactionClass::ExamKey), 1);
+
+        let recalled = state.recall_recent(1);
+        assert_eq!(recalled.len(), 1);
+        let content = &recalled[0].content;
+        assert!(content.contains("I was asked which file holds the loop"));
+        assert!(content.contains("it passed."));
+        assert!(!content.contains("service_loop.rs"));
+        assert!(content.contains("[redacted:exam-key]"));
+    }
+
+    /// What this catches: a noop policy (no detectors) short-circuits to an
+    /// empty report and mutates nothing — the hot path when no exam is in play.
+    #[test]
+    fn redact_with_noop_policy_changes_nothing() {
+        use crate::persona::redaction::RedactionPolicy;
+        let state = AdmissionState::new(Arc::new(
+            crate::persona::recall_metadata::RecallMetadataRegistry::new(),
+        ));
+        let mem = semantic_reflection("plain memory, nothing sensitive", Uuid::new_v4());
+        state.admit_reflection(mem).expect("admits");
+        let report = state.redact(&RedactionPolicy::new(vec![]));
+        assert!(report.is_empty());
+        assert_eq!(state.recall_recent(1)[0].content, "plain memory, nothing sensitive");
     }
 
     /// What this catches: re-distilling the same cluster on a later dream tick

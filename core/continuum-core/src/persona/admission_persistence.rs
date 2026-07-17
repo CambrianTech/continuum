@@ -61,6 +61,18 @@ pub trait AdmissionPersistenceSink: Send + Sync {
     /// `record_recall_hit` mutates the in-memory DashMap. The
     /// metadata snapshot reflects the post-mutation state.
     fn observe_metadata_update(&self, engram_id: Uuid, metadata: RecallMetadata);
+
+    /// Called from `AdmissionState::redact` after an already-admitted engram's
+    /// `content`/`recall_keys` are rewritten in place (a policy scrubbed an
+    /// answer key / secret / PII out of it). This is a CONTENT update, not a new
+    /// admission and not a metadata update — the engram keeps its id, salience,
+    /// and recall history; only its text changed. The durable row must be
+    /// re-saved so the scrub survives restart (else the un-redacted content
+    /// rehydrates from disk).
+    ///
+    /// Default is a no-op so in-memory-only sinks (Noop) and any future adapter
+    /// stay correct without change; persistence-backed sinks override it.
+    fn observe_content_update(&self, _engram: &Engram) {}
 }
 
 // ─── NoopSink ──────────────────────────────────────────────────────────
@@ -217,6 +229,28 @@ impl AdmissionPersistenceSink for OrmPersistenceSink {
             }
         });
     }
+
+    fn observe_content_update(&self, engram: &Engram) {
+        // Re-save the engram row under its EXISTING id (OrmStore::save is an
+        // upsert keyed by engram_id, same call the admission path uses). Only
+        // the content/recall_keys changed; metadata is untouched, so we do not
+        // touch the metadata store or the row_id cache. Fire-and-forget, same
+        // as admission — the redaction command's report reflects the in-memory
+        // rewrite; this makes it durable.
+        let engram = engram.clone();
+        let engram_id = engram.id;
+        let engram_store = Arc::clone(&self.engram_store);
+        tokio::spawn(async move {
+            if let Err(e) = engram_store.save(engram_id, &engram).await {
+                tracing::warn!(
+                    engram_id = %engram_id,
+                    error = %e,
+                    "OrmPersistenceSink: redaction content-update save failed — \
+                     the un-redacted content will rehydrate on next boot; re-run redaction"
+                );
+            }
+        });
+    }
 }
 
 /// Helper struct so the async task can take a tidy bundle of values
@@ -272,6 +306,7 @@ async fn update_metadata_row(
 pub struct RecordingSink {
     admissions: std::sync::Mutex<Vec<(Engram, RecallMetadata)>>,
     metadata_updates: std::sync::Mutex<Vec<(Uuid, RecallMetadata)>>,
+    content_updates: std::sync::Mutex<Vec<Engram>>,
 }
 
 impl RecordingSink {
@@ -279,6 +314,7 @@ impl RecordingSink {
         Self {
             admissions: std::sync::Mutex::new(Vec::new()),
             metadata_updates: std::sync::Mutex::new(Vec::new()),
+            content_updates: std::sync::Mutex::new(Vec::new()),
         }
     }
 
@@ -292,6 +328,12 @@ impl RecordingSink {
 
     pub fn metadata_updates_seen(&self) -> Vec<(Uuid, RecallMetadata)> {
         self.metadata_updates.lock().unwrap().clone()
+    }
+
+    /// Engrams whose content was re-saved via `observe_content_update`
+    /// (redaction rewrote them). Lets a test assert the durable-rewrite fired.
+    pub fn content_updates_seen(&self) -> Vec<Engram> {
+        self.content_updates.lock().unwrap().clone()
     }
 }
 
@@ -310,6 +352,9 @@ impl AdmissionPersistenceSink for RecordingSink {
     }
     fn observe_metadata_update(&self, engram_id: Uuid, metadata: RecallMetadata) {
         self.metadata_updates.lock().unwrap().push((engram_id, metadata));
+    }
+    fn observe_content_update(&self, engram: &Engram) {
+        self.content_updates.lock().unwrap().push(engram.clone());
     }
 }
 

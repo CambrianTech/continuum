@@ -20,6 +20,7 @@ use crate::sdk_codegen::DynCommand;
 
 pub mod admit_inbox_message;
 pub mod forget_context;
+pub mod redact_memory;
 pub mod cache_message;
 pub mod check_adequacy;
 pub mod check_content_dedup;
@@ -63,6 +64,7 @@ pub mod vision_describe;
 
 use admit_inbox_message::AdmitInboxMessage;
 use forget_context::ForgetContext;
+use redact_memory::RedactMemory;
 use cache_message::CacheMessage;
 use check_content_dedup::CheckContentDedup;
 use classify_domain::ClassifyDomain;
@@ -189,6 +191,9 @@ pub fn command_objects(
             state: state.clone(),
         }),
         Arc::new(ForgetContext {
+            state: state.clone(),
+        }),
+        Arc::new(RedactMemory {
             state: state.clone(),
         }),
         Arc::new(RecallEngrams {
