@@ -36,6 +36,7 @@ pub mod config_env;
 pub mod context;
 pub mod contracts;
 pub mod events;
+pub mod experience;
 pub mod ffi;
 pub mod forge;
 pub mod genome;

@@ -169,6 +169,22 @@ pub fn is_command_authorized(command: &str, trust: TrustLevel) -> bool {
     }
 }
 
+/// The minimum [`TrustLevel`] a caller needs to invoke `command` — the wire-typed
+/// projection of the ACL's required tier, for surfacing on an affordance's
+/// `who_may` field. `None` means the command is [`CommandAccess::LocalOnly`]: it is
+/// never grantable to a non-local caller, so it must not be offered as a remote
+/// affordance (a local human/persona may still invoke it directly). This is the
+/// ONE place "who may invoke this" is derived for the interface layer — the same
+/// resolver [`is_command_authorized`] enforces at the door, never a parallel table.
+pub fn required_trust(command: &str) -> Option<TrustLevel> {
+    match command_access_level(command) {
+        CommandAccess::LocalOnly => None,
+        CommandAccess::Provisional => Some(TrustLevel::Provisional),
+        CommandAccess::Trusted => Some(TrustLevel::Trusted),
+        CommandAccess::Owner => Some(TrustLevel::Owner),
+    }
+}
+
 /// The set of commands a command declared `AccessLevel::AiSafe` in its own
 /// CommandSpec — the single source of truth for "safe for an autonomous AI
 /// caller." Collected ONCE from the (static, inventory-built) command registry.
