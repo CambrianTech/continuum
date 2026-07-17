@@ -99,7 +99,13 @@ pub struct Scoreboard {
     /// Receiver-clock ms of the last progress tick — staleness signal.
     #[ts(type = "number")]
     pub updated_at_ms: u64,
-    /// True once the focused run's ledger row exists (final number is in).
+    /// Every task in the pass has been graded (`done == total > 0`). The live
+    /// "it's finished" signal a watcher needs WITHOUT a run_id — distinct from
+    /// `complete` (which waits for the durable ledger row). Dogfood: `done=3/3`
+    /// with `complete=false` read as "still going?"; this removes that ambiguity.
+    pub pass_finished: bool,
+    /// True once the focused run's ledger row exists (durable final number is in).
+    /// Requires a `run_id`. `pass_finished` is the live precursor.
     pub complete: bool,
 }
 
@@ -189,6 +195,7 @@ impl BenchmarkObserveResult {
             scoreboard.updated_at_ms = p.updated_at_ms;
             central.current_task = Some(p.current_task.clone());
             central.last_ok = Some(p.last_ok);
+            scoreboard.pass_finished = p.done > 0 && p.done == p.total;
         }
         // Provenance is not stamped on the watch/ledger yet — honest Unknown until
         // the quiesce-verify fix stamps it (slice 2). Never fabricate Clean.
@@ -324,7 +331,8 @@ mod tests {
         // focused run's final 0.375, and complete flipped true.
         assert_eq!(out.scoreboard.done, 6);
         assert_eq!(out.scoreboard.total, 8);
-        assert!(out.scoreboard.complete);
+        assert!(!out.scoreboard.pass_finished, "6/8 is mid-pass, not finished");
+        assert!(out.scoreboard.complete, "the focused run's ledger row exists");
         assert!((out.scoreboard.pass_rate - 0.375).abs() < 1e-9);
         assert_eq!(out.scoreboard.provenance, BenchmarkProvenance::Unknown);
         assert_eq!(out.scoreboard.vram_free_gb, Some(36));
@@ -352,6 +360,19 @@ mod tests {
         // Raw cognition/eval with a named set and no benchmark note → fall back to evalSet.
         assert_eq!(benchmark_name(Some("baseline"), Some("coder-eval")).as_deref(), Some("coder-eval"));
         assert_eq!(benchmark_name(None, None), None);
+    }
+
+    // what this catches: pass_finished flips true when every task is graded
+    // (done==total>0) — the live "it's done" signal without a run_id.
+    #[test]
+    fn pass_finished_flips_when_all_tasks_graded() {
+        let progress = Some(EvalPassProgress {
+            done: 3, total: 3, pass: 0, current_task: "rle_roundtrip".to_string(),
+            last_ok: false, updated_at_ms: 1, vram_free_gb: None,
+        });
+        let out = BenchmarkObserveResult::assemble(progress, None, None, None, 10);
+        assert!(out.scoreboard.pass_finished);
+        assert!(!out.scoreboard.complete, "no run_id → no durable-row completion");
     }
 
     // what this catches: nothing running + no run row = honest idle, not a fabricated

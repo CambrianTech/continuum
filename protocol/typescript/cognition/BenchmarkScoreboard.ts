@@ -26,6 +26,14 @@ vramFreeGb?: number,
  */
 updatedAtMs: number, 
 /**
- * True once the focused run's ledger row exists (final number is in).
+ * Every task in the pass has been graded (`done == total > 0`). The live
+ * "it's finished" signal a watcher needs WITHOUT a run_id — distinct from
+ * `complete` (which waits for the durable ledger row). Dogfood: `done=3/3`
+ * with `complete=false` read as "still going?"; this removes that ambiguity.
+ */
+passFinished: boolean, 
+/**
+ * True once the focused run's ledger row exists (durable final number is in).
+ * Requires a `run_id`. `pass_finished` is the live precursor.
  */
 complete: boolean, };
