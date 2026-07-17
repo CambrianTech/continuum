@@ -244,6 +244,52 @@ impl ToolCallFormat for MistralToolCallsFormat {
     }
 }
 
+/// Detect a tool-call ATTEMPT that did NOT lift to a valid call — the Mistral/Devstral
+/// native `[TOOL_CALLS]` marker is present, but the tail named no real (slash) tool,
+/// only reserved receipt vocabulary (`[recall]`, `[action]`, `[active-work]`). The
+/// parser correctly yields no call for those (they are not tools). The DANGER is
+/// downstream: the verdict layer then treats the whole `[TOOL_CALLS][recall]…` emission
+/// as ordinary SPEECH, so the mind gets ZERO feedback that its "call" was bogus, never
+/// learns to reach for `code/search`, and rambles to the deadline — `acts:0`,
+/// glass-boxed 2026-07-16 (#158 reserved-vocab mimicry, #159 unknown-tool must fail
+/// loud). Returning the attempted NAME lets the verdict route it through the executor's
+/// unknown-command TEACHER (`"…is not a tool you can call. Closest: …"`) so the failure
+/// is LOUD and `drive_to_settle` gives her another generation to do it right.
+///
+/// Precision: fires ONLY on the explicit `[TOOL_CALLS]` marker (a token no persona
+/// emits in ordinary prose) AND only when nothing valid parsed — a well-formed
+/// `[TOOL_CALLS]code/search(…)` returns `None` here because it lifts on the normal path.
+pub fn attempted_tool_name(text: &str) -> Option<String> {
+    if !text.contains("[TOOL_CALLS]") {
+        return None;
+    }
+    // A real call lifted — this is not a failed attempt, leave it to the normal path.
+    if !parse_tool_calls(text).is_empty() {
+        return None;
+    }
+    // Best-effort: the first token after the marker is what she tried to "call".
+    let tail = text.split("[TOOL_CALLS]").nth(1).unwrap_or("").trim_start();
+    let name = if let Some(rest) = tail.strip_prefix('[') {
+        // Reserved bracket-token: `[recall]` → `recall`.
+        rest.split(']').next().unwrap_or("").trim().to_string()
+    } else {
+        // Else the leading identifier-ish token (stop at whitespace / open-bracket).
+        tail.chars()
+            .take_while(|c| !c.is_whitespace() && !matches!(c, '(' | '{' | '[' | '\n'))
+            .collect::<String>()
+    };
+    let name = name
+        .trim()
+        .trim_matches(|c: char| c == '"' || c == '`' || c == ',')
+        .to_string();
+    // Marker with no parseable name at all is still a loud-worthy attempt.
+    Some(if name.is_empty() {
+        "[TOOL_CALLS]".to_string()
+    } else {
+        name
+    })
+}
+
 /// A model that wraps a function-style call in explicit BBCode tags —
 /// `[tool_call]list_commands()[/tool_call]`. Observed live 2026-07-12 (idiom 6,
 /// Casper): the most FORMAL invocation any persona has invented — explicit
@@ -2379,5 +2425,36 @@ Please provide the output so I can review it.";
         // marker before a NON-call reserved token → nothing
         assert!(parse_tool_calls("[TOOL_CALLS][active-work] card 08ece9e8 claimed").is_empty(),
             "a marker before reserved vocab is not a tool call");
+    }
+
+    // what this catches: a [TOOL_CALLS] marker that names a NON-tool (reserved receipt
+    // vocab [recall]/[action]) must be REPORTED as an attempted-but-unlifted call so the
+    // verdict can fail loud through the executor's unknown-command teacher (#158/#159) —
+    // never silently pass as speech (acts:0 spiral, glass-boxed 2026-07-16, Anwen's
+    // exact live "[TOOL_CALLS][recall]" emission). A well-formed native call is NOT a
+    // failed attempt (it lifts on the normal path).
+    #[test]
+    fn attempted_tool_name_flags_reserved_vocab_mimicry_not_real_calls() {
+        // Anwen's exact live emission — the [recall] receipt token mimicked as a call.
+        assert_eq!(
+            attempted_tool_name("[TOOL_CALLS][recall]\nYou are Anwen. You were handed the silent hatch").as_deref(),
+            Some("recall"),
+            "reserved [recall] after the marker is a failed tool attempt"
+        );
+        assert_eq!(
+            attempted_tool_name("[TOOL_CALLS][active-work] card claimed").as_deref(),
+            Some("active-work")
+        );
+        // A well-formed native call LIFTS on the normal path → NOT a failed attempt.
+        assert_eq!(
+            attempted_tool_name("[TOOL_CALLS]code/search({\"pattern\": \"fn build\"})"),
+            None,
+            "a real call that lifts must not be flagged as a failed attempt"
+        );
+        // No marker → ordinary prose (incl. an eval question) is never a tool attempt.
+        assert_eq!(
+            attempted_tool_name("Which file defines the struct WorkspaceCycle?"),
+            None
+        );
     }
 }

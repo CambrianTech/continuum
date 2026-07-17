@@ -1244,6 +1244,25 @@ impl Faculty for LlmDeliberationFaculty {
                 call.name = crate::cognition::tool_dialect::from_wire_name(&call.name).to_string();
                 return Some(self.act_verdict(vec![call], &resp));
             }
+            // #159 fail-loud: she emitted the native `[TOOL_CALLS]` marker but named no
+            // valid tool — `[recall]`/`[action]` are receipt vocabulary she MIMICS as a
+            // call (#158), not something callable. Silently rendering the bogus attempt
+            // as SPEECH gives her zero feedback → she never switches to `code/search` and
+            // rambles to the deadline (`acts:0`, glass-boxed 2026-07-16). Route the
+            // attempted name as an `Act` so the executor's unknown-command TEACHER fires
+            // as an observation and `drive_to_settle` hands her another generation to do
+            // it right. Bounded by `max_acts`; an identical repeat short-circuits via
+            // `all_calls_already_satisfied`. [[unknown-tool-intent-must-fail-loud]]
+            if let Some(attempted) =
+                crate::ai::json_in_prompt_tools::attempted_tool_name(&resp.text)
+            {
+                let call = crate::ai::types::ToolCall {
+                    id: "tool-attempt".to_string(),
+                    name: crate::cognition::tool_dialect::from_wire_name(&attempted).to_string(),
+                    input: serde_json::json!({}),
+                };
+                return Some(self.act_verdict(vec![call], &resp));
+            }
         }
 
         // No action chosen → the prose IS the verdict (PASS token → silence, else
