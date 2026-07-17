@@ -796,7 +796,16 @@ impl ActionCommand for CognitionEval {
                         "cognition/eval detached run complete — result in progress ledger"
                     ),
                     Err(e) => {
-                        tracing::error!(note = %note, error = %e, "cognition/eval detached run failed")
+                        tracing::error!(note = %note, error = %e, "cognition/eval detached run failed");
+                        // Fail loud on the POLL SURFACE, not only the log. A detached run
+                        // that dies before `append_progress_ledger` leaves eval-status
+                        // returning `complete:false, row:null` forever — indistinguishable
+                        // from "still starting", so the poller waits on a corpse (cost me
+                        // two cycles staring at `total:null` while the real error — a
+                        // post-reboot "no workspace template" fork race — sat in the log).
+                        // Write a FAILED row keyed on the SAME run_id so the poller sees the
+                        // error and can retry. [[fallbacks-are-illegal-fail-loud]]
+                        append_failed_ledger(&persona_id, &run_id, &note, &e.to_string());
                     }
                 }
             });
@@ -967,11 +976,33 @@ impl CognitionEval {
                 cycle
             }
             // Neither → fork onto her LIVE lane (a plain number on whatever she's served on).
-            (None, None) => crate::cognition::persona_workspace::global()
-                .fork_eval_cycle(&persona_uuid, needs_tools)
-                .ok_or_else(|| CommandError::NotFound(format!(
-                    "no workspace template for persona {persona_uuid} — its mind was not assembled at spawn (register_from_cfg), so eval cannot fork a measurement copy without measuring her live mind"
-                )))?,
+            // Bounded wait-for-template (the fork race, glass-boxed 2026-07-17): after a
+            // reboot the supervisor's `register_from_cfg` assembles each persona's
+            // fork-template ASYNChronously, so an eval fired seconds after boot can race
+            // ahead of it → "no workspace template". A run a few seconds later succeeded.
+            // Retry a bounded number of times — the template appears as registration
+            // completes — and fail loud only once it's clearly not coming.
+            (None, None) => {
+                let mut forked = None;
+                for attempt in 0..WORKSPACE_TEMPLATE_WAIT_TRIES {
+                    if let Some(c) = crate::cognition::persona_workspace::global()
+                        .fork_eval_cycle(&persona_uuid, needs_tools)
+                    {
+                        forked = Some(c);
+                        break;
+                    }
+                    if attempt == 0 {
+                        tracing::info!(
+                            %persona_uuid,
+                            "eval: workspace template not ready (post-spawn register_from_cfg race) — waiting"
+                        );
+                    }
+                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                }
+                forked.ok_or_else(|| CommandError::NotFound(format!(
+                    "no workspace template for persona {persona_uuid} after waiting {WORKSPACE_TEMPLATE_WAIT_TRIES}s — its mind was not assembled at spawn (register_from_cfg), so eval cannot fork a measurement copy without measuring her live mind"
+                )))?
+            }
         };
 
         // GLASS-BOX (task #14): if a capture_dir is pinned, wrap the fork's cognition in the
@@ -1436,6 +1467,36 @@ impl ActionCommand for CognitionEvalStatus {
 
 crate::register_stateless_command!(CognitionEvalStatus);
 
+/// Write a FAILED run row to the progress ledger so `cognition/eval-status` surfaces
+/// the error (keyed on `run_id`) instead of returning `null` forever. The poll surface
+/// must be able to tell "died" from "still starting" — a detached run that errors before
+/// [`append_progress_ledger`] otherwise reads as an eternal pending. `error` + `failed:true`
+/// mark it; `total:0` keeps the numeric shape valid for consumers.
+fn append_failed_ledger(persona_id: &str, run_id: &str, note: &str, error: &str) {
+    let Some(home) = std::env::var("HOME").ok() else {
+        return;
+    };
+    let dir = std::path::PathBuf::from(home).join(".continuum/progress");
+    if std::fs::create_dir_all(&dir).is_err() {
+        return;
+    }
+    let path = dir.join(format!("{persona_id}.jsonl"));
+    let row = serde_json::json!({
+        "capturedAtMs": crate::persona::trace::now_ms(),
+        "personaId": persona_id,
+        "runId": run_id,
+        "note": note,
+        "failed": true,
+        "error": error,
+        "score": 0,
+        "total": 0,
+    });
+    use std::io::Write;
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+        let _ = writeln!(f, "{row}");
+    }
+}
+
 fn append_progress_ledger(result: &CognitionEvalResult, note: Option<&str>, eval_set: &str) {
     let Some(home) = std::env::var("HOME").ok() else {
         return;
@@ -1486,6 +1547,11 @@ fn append_progress_ledger(result: &CognitionEvalResult, note: Option<&str>, eval
 /// before we score it a miss. This is the agentic-recovery budget — the edge over one-shot
 /// inference. 3 keeps a full eval bounded while giving real iteration room.
 const MAX_FAIL_RETRIES: u32 = 3;
+
+/// Seconds to wait (1s/try) for a persona's fork-template to appear before failing the
+/// eval. Covers the post-reboot window where the supervisor's `register_from_cfg` is
+/// still assembling the mind when an eval fires (the fork race, 2026-07-17).
+const WORKSPACE_TEMPLATE_WAIT_TRIES: u32 = 10;
 
 /// Run a REAL definition-of-done: a shell command in the persona's workspace (cwd). Pass =
 /// exit 0. Returns `(ok, verdict)`; on failure the verdict carries the real stdout+stderr
