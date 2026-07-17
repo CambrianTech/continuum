@@ -21,6 +21,7 @@ use crate::sdk_codegen::DynCommand;
 pub mod admit_inbox_message;
 pub mod forget_context;
 pub mod redact_memory;
+pub mod observe;
 pub mod cache_message;
 pub mod check_adequacy;
 pub mod check_content_dedup;
