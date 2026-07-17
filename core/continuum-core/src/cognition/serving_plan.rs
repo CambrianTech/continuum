@@ -56,19 +56,24 @@
 /// slot is memory-safe. This ceiling stays only to bound pathological demand (a
 /// runaway roster) and llama.cpp `--parallel` practicality; real fit is the fit math.
 ///
-/// ⚠️ 2026-07-16 REVERTED 6 → 2 (OOM regression). Raising to 6 with the
-/// `compute_buffer_per_lane` reserve passed a SMALL-prompt 4-way burst but was false
-/// confidence: 4 lanes at a large served window (15104) + ~10k-token prompts blew the
-/// Metal pool again (`kIOGPU…OutOfMemory`, 35 errors / 120 log lines). The reserve's bug
-/// is that the transient prefill compute buffer is NOT a weights-fraction constant — it
-/// scales with the WINDOW (prefill attention graph ≈ O(ubatch × n_ctx)), so a
-/// window-independent reserve under-provisions exactly as the window grows, and 4
-/// concurrent large-window prefills overflow. The real slot-per-persona win needs a
-/// WINDOW-SCALED compute term (reserve ∝ n_ctx) validated with LARGE prompts + real GPU
-/// contention, not a small-prompt burst. Until then, 2 is the floor of safety; the
-/// compute_buffer_per_lane reserve stays (harmless at 2 lanes, correct direction).
-/// [[verify-real-device-numbers-not-a-clamp-premise]]
-pub const MAX_LANES: u32 = 2;
+/// 2026-07-16 RAISED 2 → 4 — the window-scaled compute term the earlier revert
+/// demanded now EXISTS. History: raised 2→6, reverted 6→2 same day (OOM) because the
+/// `compute_buffer_per_lane` reserve was a window-INDEPENDENT constant, so a 4-lane plan
+/// at a large served window under-provisioned the transient prefill buffer (which scales
+/// `O(ubatch × n_ctx)`) and 4 concurrent large-window prefills blew the Metal pool
+/// (`kIOGPU…OutOfMemory`). The prerequisite named there — "a WINDOW-SCALED compute term
+/// (reserve ∝ n_ctx)" — landed in [`plan_serving`] (commit 0925aa1ac): the served window
+/// now SOLVES THE FIXPOINT, shrinking so `lanes × (KV(C) + compute(C))` fits every lane,
+/// AND reserves co-consumer headroom. So more lanes no longer overcommit — the window
+/// auto-shrinks to pay for them (`served_window_footprint_fits_effective_budget…` pins
+/// the invariant). 4 = the resident-persona count: each mind gets its OWN warm slot, so a
+/// turn reuses ITS prefilled KV instead of re-prefilling ~10k cold after a slot-mate
+/// clobbered it (#139's whole latency story). Still a SANITY backstop, not the binding
+/// constraint — the real cap is the fit math (`kv_lanes`) ∩ DEMAND ∩ perf cores; this
+/// only bounds a pathological roster and llama.cpp `--parallel` practicality. Kept modest
+/// (4, not the 6 that OOM'd) pending a LARGE-prompt 4-lane live-GPU burst — the doc's
+/// acceptance gate. [[verify-real-device-numbers-not-a-clamp-premise]] [[capacity-fabric-live-never-block-sim-as-gym]]
+pub const MAX_LANES: u32 = 4;
 
 /// Bare-minimum served window for a model to be runnable at ALL — a hardware
 /// reality floor, NOT a serving target or a cheapening cap. The served window is
@@ -527,8 +532,11 @@ mod tests {
     fn served_window_footprint_fits_effective_budget_including_window_scaled_compute() {
         let host = HostBudget { usable_bytes: 48 * GB, perf_cores: 10 };
         let devstral = fp("devstral-24b", 14, 112 * 1024, 131_072, 3); // ~112 KiB/token KV
-        let plan = plan_serving(host, std::slice::from_ref(&devstral), MAX_LANES).unwrap();
+        // Demand = 4 personas. On a roomy 64GB-class host each gets its OWN warm slot
+        // (the cross-turn-clobber fix), and the window shrinks to pay for all four.
+        let plan = plan_serving(host, std::slice::from_ref(&devstral), 4).unwrap();
         assert!(plan.fits_on_gpu, "{}", plan.rationale);
+        assert_eq!(plan.lanes, 4, "roomy host + 4-persona demand → 4 warm slots");
         let c = plan.served_context_window as u64;
         let lanes = plan.lanes as u64;
         let compute_floor = devstral.compute_buffer_per_lane();
@@ -545,6 +553,31 @@ mod tests {
         // (weights + KV filling the FULL usable budget) — the fix demonstrably shrinks it.
         let naive = (host.usable_bytes - devstral.weights_bytes) / lanes / devstral.kv_per_token;
         assert!(c < naive, "window-scaled + headroom reserve must shrink the window ({c} < {naive})");
+    }
+
+    // what this catches: lanes DEGRADE on a tight host — MAX_LANES is a sanity backstop,
+    // the fit math is the real cap. A 4-persona demand on a budget that can't feed 4 warm
+    // slots must serve FEWER (well-fed) lanes, never 4 starving ones that OOM. The window
+    // still fits every lane it does serve. Guards the 2→4 raise from re-introducing the
+    // OOM on a small box.
+    #[test]
+    fn lanes_degrade_on_a_tight_host_never_overcommitting() {
+        // ~18GB usable — fits the 14GB weights + a couple lanes' KV, not four.
+        let host = HostBudget { usable_bytes: 18 * GB, perf_cores: 10 };
+        let devstral = fp("devstral-24b", 14, 112 * 1024, 131_072, 3);
+        let plan = plan_serving(host, std::slice::from_ref(&devstral), 4).unwrap();
+        assert!(plan.fits_on_gpu, "{}", plan.rationale);
+        assert!(plan.lanes < 4, "tight host must serve fewer than the 4 demanded: got {}", plan.lanes);
+        assert!(plan.lanes >= 1);
+        let lanes = plan.lanes as u64;
+        let c = plan.served_context_window as u64;
+        let compute_floor = devstral.compute_buffer_per_lane();
+        let compute_rate = devstral.kv_per_token / PREFILL_COMPUTE_KV_DIVISOR;
+        let footprint = devstral.weights_bytes
+            + devstral.kv_at(c as u32) * lanes
+            + (compute_floor + compute_rate * c) * lanes;
+        let effective = (host.usable_bytes as f64 * (1.0 - CO_CONSUMER_HEADROOM)) as u64;
+        assert!(footprint <= effective, "degraded plan still overcommits: {footprint} > {effective}");
     }
 
     // what this catches: an 8GB Air must NOT be handed the 14B (won't fit) and
