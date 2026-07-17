@@ -608,6 +608,18 @@ pub struct CognitionEvalParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub capture_dir: Option<String>,
+    /// LEARN mode (the exam as a legitimate teacher). When true, after the exam the
+    /// redacted lesson of each task — "I was asked X; I solved it / did not (grade Y)" with
+    /// the held-out answer key scrubbed — is admitted into the LIVING persona via
+    /// `admit_reflection`, so she carries the *experience* forward and gets better across
+    /// retakes WITHOUT ever memorizing the crib sheet. The exam still runs on the fork
+    /// (#59: living persona never frozen/degraded); only the redacted lesson crosses back.
+    /// This is what makes "learn from the exam" honest — provably clean, encouraged. Default
+    /// false = pure measurement (the discarded fork teaches nothing, as before). Single-pass
+    /// only in this slice (ignored under a `gene` A/B). [[redaction-makes-exam-learning-honest-so-encourage-it]]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub learn: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, TS)]
@@ -1268,6 +1280,22 @@ impl CognitionEval {
             run_pass(&cycle, &isolation, &tasks, room, max_acts, max_retries).await
         };
         drop(isolation);
+
+        // LEARN mode: the exam just taught her — carry the redacted lesson back to the
+        // LIVING self. She keeps the experience of having been asked and how she did; the
+        // held-out answer key is scrubbed so she can never memorize it (redaction, not
+        // forget-context: keep the memory, excise the crib sheet). The exam ran on the fork
+        // (#59 intact); only the clean lesson crosses back. Single-pass only in this slice.
+        if p.learn.unwrap_or(false) && p.gene.is_none() {
+            let transferred = transfer_redacted_lessons(&persona_uuid, room, &tasks, &results);
+            tracing::info!(
+                persona = %persona_uuid,
+                transferred,
+                tasks = tasks.len(),
+                "learn mode: redacted exam lessons admitted to the living self"
+            );
+        }
+
         let verify = self_verify_rate(&results);
         let agg = speed_latency_aggregates(&results);
         let mut result = CognitionEvalResult {
@@ -1303,6 +1331,87 @@ impl CognitionEval {
         append_progress_ledger(&result, p.note.as_deref(), &eval_set_label);
         Ok(result)
     }
+}
+
+/// Build the durable LESSON string for one graded exam task — what she was asked
+/// and how she did. Pure and answer-key-agnostic (the caller's redaction policy
+/// scrubs the crib sheet); kept separate so it's unit-testable.
+fn format_exam_lesson(task: &EvalTask, result: &EvalTaskResult) -> String {
+    let outcome = if result.ok { "I solved it" } else { "I did NOT solve it" };
+    format!(
+        "Exam task '{}'. I was asked: {} {} (grade: {}).",
+        task.id.trim(),
+        task.prompt.trim(),
+        outcome,
+        result.grade.trim()
+    )
+}
+
+/// LEARN mode's transfer step: admit each task's REDACTED lesson into the LIVING
+/// persona so the exam becomes a real teacher without leaking the answer key. The
+/// exam already ran on the fork (#59 untouched); this is the ONLY thing that
+/// reaches her durable memory, and only after the held-out answers are scrubbed.
+/// Returns how many FRESH lessons were admitted (an identical lesson from a
+/// re-take dedups idempotently via `admit_reflection` and is not counted).
+fn transfer_redacted_lessons(
+    persona_uuid: &uuid::Uuid,
+    room: uuid::Uuid,
+    tasks: &[EvalTask],
+    results: &[EvalTaskResult],
+) -> usize {
+    // Policy: scrub every held-out answer key (each task's `expect`).
+    let answers: Vec<String> = tasks
+        .iter()
+        .map(|t| t.expect.clone())
+        .filter(|a| !a.trim().is_empty())
+        .collect();
+    let policy = crate::persona::redaction::RedactionPolicy::new(vec![Box::new(
+        crate::persona::redaction::ExamKeyDetector::new(
+            answers,
+            crate::persona::redaction::ExamKeyDetector::DEFAULT_MIN_LEN,
+        ),
+    )]);
+
+    // The LIVING persona's admission — never the fork.
+    let Some(admission) = crate::cognition::persona_workspace::global()
+        .get(persona_uuid)
+        .and_then(|cycle| cycle.acting().map(|a| a.admission.clone()))
+    else {
+        tracing::warn!(
+            persona = %persona_uuid,
+            "learn mode: no live admission for persona — lesson not transferred \
+             (she was measured, but the living self is not resident to teach)"
+        );
+        return 0;
+    };
+
+    let mut admitted = 0usize;
+    for (task, result) in tasks.iter().zip(results.iter()) {
+        if task.prompt.trim().is_empty() {
+            continue;
+        }
+        let (lesson, _report) = policy.redact(&format_exam_lesson(task, result));
+        let engram = crate::persona::engram::Engram {
+            id: uuid::Uuid::new_v4(),
+            context_id: Some(room),
+            kind: crate::persona::engram::EngramKind::Episodic,
+            content: lesson,
+            origin: crate::persona::engram::EngramOrigin::SelfReflection {
+                parent_engram_id: uuid::Uuid::nil(),
+            },
+            recall_keys: vec!["exam".to_string(), task.id.clone()],
+            admitted_at_ms: crate::persona::trace::now_ms(),
+            trust_state_at_admission: crate::persona::engram::TrustState::SelfTrust,
+            admission_trace_id: None,
+        };
+        if matches!(
+            admission.admit_reflection(engram),
+            Ok(crate::persona::engram::AdmissionDecision::Admit { .. })
+        ) {
+            admitted += 1;
+        }
+    }
+    admitted
 }
 
 /// Fraction of tasks where she ACTED at least once before settling — the
@@ -2068,6 +2177,38 @@ mod tests {
             prefill_ms: 0,
             decode_ms: 0,
         }
+    }
+
+    // what this catches: LEARN mode's lesson keeps the EXPERIENCE (what she was
+    // asked + how she did) while the redaction policy scrubs the held-out answer
+    // key — so the exam teaches her without ever letting her memorize the crib
+    // sheet. If the format changed to drop the experience, or redaction stopped
+    // catching the key, "learn from exams" would either teach nothing or cheat.
+    #[test]
+    fn learn_mode_lesson_keeps_experience_but_scrubs_the_answer_key() {
+        use crate::persona::redaction::{ExamKeyDetector, RedactionClass, RedactionPolicy};
+        let task = EvalTask {
+            id: "loop-file".into(),
+            prompt: "Which file holds the service loop, service_loop.rs perhaps?".into(),
+            expect: "service_loop.rs".into(),
+            ..Default::default()
+        };
+        let mut result = task_result(1000, 10, 5.0);
+        result.grade = "answer contained service_loop.rs".into();
+
+        let lesson = format_exam_lesson(&task, &result);
+        assert!(lesson.contains("I was asked"));
+        assert!(lesson.contains("I solved it"));
+
+        let policy = RedactionPolicy::new(vec![Box::new(ExamKeyDetector::new(
+            [task.expect.clone()],
+            ExamKeyDetector::DEFAULT_MIN_LEN,
+        ))]);
+        let (redacted, report) = policy.redact(&lesson);
+        assert!(!redacted.contains("service_loop.rs"), "answer key must be scrubbed");
+        assert!(report.count(RedactionClass::ExamKey) >= 1);
+        assert!(redacted.contains("I was asked"), "the experience survives");
+        assert!(redacted.contains("I solved it"), "the outcome survives");
     }
 
     // what this catches: the speed/latency aggregate math behind the scoreboard —
