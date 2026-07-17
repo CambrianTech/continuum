@@ -1232,7 +1232,12 @@ impl CognitionEval {
             };
             result.run_id = p.run_id.clone();
             result.run_id = p.run_id.clone();
-        append_progress_ledger(&result, p.note.as_deref(), &eval_set_label);
+        append_progress_ledger(
+            &result,
+            p.note.as_deref(),
+            &eval_set_label,
+            _fleet_lease.as_ref().map(|_| true),
+        );
             return Ok(result);
         }
 
@@ -1328,7 +1333,12 @@ impl CognitionEval {
             lane_estimated_footprint_bytes: None,
         };
         result.run_id = p.run_id.clone();
-        append_progress_ledger(&result, p.note.as_deref(), &eval_set_label);
+        append_progress_ledger(
+            &result,
+            p.note.as_deref(),
+            &eval_set_label,
+            _fleet_lease.as_ref().map(|_| true),
+        );
         Ok(result)
     }
 }
@@ -1610,7 +1620,18 @@ fn append_failed_ledger(persona_id: &str, run_id: &str, note: &str, error: &str)
     }
 }
 
-fn append_progress_ledger(result: &CognitionEvalResult, note: Option<&str>, eval_set: &str) {
+/// `clean_lane`: whether an eval-preemption quiesce lease was held for this run
+/// (`Some(true)` = the live fleet was suspended, the fork measured on a clean GPU
+/// lane; `None` = no lease acquired — no live roster, so the provenance is UNKNOWN,
+/// never falsely claimed clean). This is the honesty stamp: a number carries whether
+/// it was measured contended, on the durable row, so `cognition/observe` can light a
+/// CLEAN/UNKNOWN chip instead of anyone inferring it. [[benchmark-numbers-carry-gpu-provenance]]
+fn append_progress_ledger(
+    result: &CognitionEvalResult,
+    note: Option<&str>,
+    eval_set: &str,
+    clean_lane: Option<bool>,
+) {
     let Some(home) = std::env::var("HOME").ok() else {
         return;
     };
@@ -1623,6 +1644,7 @@ fn append_progress_ledger(result: &CognitionEvalResult, note: Option<&str>, eval
         "capturedAtMs": crate::persona::trace::now_ms(),
         "personaId": result.persona_id,
         "evalSet": eval_set,
+        "cleanLane": clean_lane,
         "score": result.score,
         "total": result.total,
         "passRate": result.pass_rate,

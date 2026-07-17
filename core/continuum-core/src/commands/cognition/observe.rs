@@ -141,6 +141,8 @@ pub struct FeedEvent {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional, type = "number")]
     pub pass_rate: Option<f64>,
+    /// Was this run measured on a CLEAN (quiesced) GPU lane? The honesty chip per run.
+    pub provenance: BenchmarkProvenance,
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub note: Option<String>,
@@ -210,9 +212,17 @@ impl BenchmarkObserveResult {
                     continue;
                 };
                 let row_run = v.get("runId").and_then(|r| r.as_str());
+                // The honesty stamp eval now writes: cleanLane=true → measured on a
+                // quiesced lane → CLEAN; absent/null → UNKNOWN (never falsely Clean).
+                let prov = if v.get("cleanLane").and_then(|x| x.as_bool()) == Some(true) {
+                    BenchmarkProvenance::Clean
+                } else {
+                    BenchmarkProvenance::Unknown
+                };
                 if let Some(want) = run_id {
                     if row_run == Some(want) {
                         scoreboard.complete = true;
+                        scoreboard.provenance = prov;
                         if let Some(pr) = v.get("passRate").and_then(|x| x.as_f64()) {
                             scoreboard.pass_rate = pr;
                         }
@@ -222,6 +232,7 @@ impl BenchmarkObserveResult {
                     let note = v.get("note").and_then(|x| x.as_str());
                     feed.push(FeedEvent {
                         run_id: row_run.map(str::to_string),
+                        provenance: prov,
                         // The clean benchmark NAME for the feed. `benchmark/run` records
                         // `evalSet="inline"` (it passes tasks inline) but stamps the name into
                         // the note as `benchmark/run <name>[ on <model>]`; parse it so the feed
@@ -317,7 +328,7 @@ mod tests {
         });
         // Two ledger rows, oldest first on disk; newest = the focused run.
         let ledger = "{\"runId\":\"old\",\"evalSet\":\"humaneval-rs\",\"passRate\":0.25,\"note\":\"a\",\"capturedAtMs\":10}\n\
-                      {\"runId\":\"r2\",\"evalSet\":\"hard-rs\",\"passRate\":0.375,\"note\":\"rebaseline\",\"capturedAtMs\":20}";
+                      {\"runId\":\"r2\",\"evalSet\":\"hard-rs\",\"passRate\":0.375,\"note\":\"rebaseline\",\"capturedAtMs\":20,\"cleanLane\":true}";
 
         let out = BenchmarkObserveResult::assemble(
             progress,
@@ -334,7 +345,8 @@ mod tests {
         assert!(!out.scoreboard.pass_finished, "6/8 is mid-pass, not finished");
         assert!(out.scoreboard.complete, "the focused run's ledger row exists");
         assert!((out.scoreboard.pass_rate - 0.375).abs() < 1e-9);
-        assert_eq!(out.scoreboard.provenance, BenchmarkProvenance::Unknown);
+        // r2 was stamped cleanLane=true → the focused run's chip is CLEAN.
+        assert_eq!(out.scoreboard.provenance, BenchmarkProvenance::Clean);
         assert_eq!(out.scoreboard.vram_free_gb, Some(36));
         // central: current focus from the watch.
         assert_eq!(out.central.current_task.as_deref(), Some("lru_cache"));
@@ -343,7 +355,9 @@ mod tests {
         assert_eq!(out.feed.len(), 2);
         assert_eq!(out.feed[0].run_id.as_deref(), Some("r2"));
         assert_eq!(out.feed[0].benchmark.as_deref(), Some("hard-rs"));
+        assert_eq!(out.feed[0].provenance, BenchmarkProvenance::Clean, "r2 stamped clean");
         assert_eq!(out.feed[1].run_id.as_deref(), Some("old"));
+        assert_eq!(out.feed[1].provenance, BenchmarkProvenance::Unknown, "unstamped row → unknown");
         assert!(!out.meta.idle);
     }
 
