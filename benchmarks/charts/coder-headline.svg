@@ -1,14 +1,14 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="820" height="929" viewBox="0 0 820 929" font-family="-apple-system,Segoe UI,Roboto,sans-serif">
+<svg xmlns="http://www.w3.org/2000/svg" width="820" height="1324" viewBox="0 0 820 1324" font-family="-apple-system,Segoe UI,Roboto,sans-serif">
 <text x="20" y="26" font-size="17" font-weight="700" fill="#768390">Same weights, different harness — pass-rate (higher is better)</text>
 <text x="20" y="46" font-size="12" fill="#768390">rustc compile+run graded · RAW = model one-shot · OURS = full Continuum loop · opencode = standard local agentic harness</text>
-<line x1="328" y1="60" x2="328" y2="913" stroke="#8b949e" stroke-opacity="0.18" stroke-width="1"/>
-<text x="328" y="925" font-size="10" fill="#768390" text-anchor="middle">25%</text>
-<line x1="456" y1="60" x2="456" y2="913" stroke="#8b949e" stroke-opacity="0.18" stroke-width="1"/>
-<text x="456" y="925" font-size="10" fill="#768390" text-anchor="middle">50%</text>
-<line x1="584" y1="60" x2="584" y2="913" stroke="#8b949e" stroke-opacity="0.18" stroke-width="1"/>
-<text x="584" y="925" font-size="10" fill="#768390" text-anchor="middle">75%</text>
-<line x1="712" y1="60" x2="712" y2="913" stroke="#8b949e" stroke-opacity="0.18" stroke-width="1"/>
-<text x="712" y="925" font-size="10" fill="#768390" text-anchor="middle">100%</text>
+<line x1="328" y1="60" x2="328" y2="1308" stroke="#8b949e" stroke-opacity="0.18" stroke-width="1"/>
+<text x="328" y="1320" font-size="10" fill="#768390" text-anchor="middle">25%</text>
+<line x1="456" y1="60" x2="456" y2="1308" stroke="#8b949e" stroke-opacity="0.18" stroke-width="1"/>
+<text x="456" y="1320" font-size="10" fill="#768390" text-anchor="middle">50%</text>
+<line x1="584" y1="60" x2="584" y2="1308" stroke="#8b949e" stroke-opacity="0.18" stroke-width="1"/>
+<text x="584" y="1320" font-size="10" fill="#768390" text-anchor="middle">75%</text>
+<line x1="712" y1="60" x2="712" y2="1308" stroke="#8b949e" stroke-opacity="0.18" stroke-width="1"/>
+<text x="712" y="1320" font-size="10" fill="#768390" text-anchor="middle">100%</text>
 <text x="20" y="78" font-size="12" font-weight="700" fill="#768390">HumanEval-Rust · Devstral-Small-24B</text>
 <rect x="200" y="84" width="512.0" height="20" rx="3" fill="#6e7681"/>
 <text x="192" y="98" font-size="10.5" fill="#768390" text-anchor="end">RAW one-shot</text>
@@ -69,15 +69,51 @@
 <rect x="200" y="709" width="371.2" height="20" rx="3" fill="#58a6ff"/>
 <text x="192" y="723" font-size="10.5" fill="#768390" text-anchor="end">aider CLI</text>
 <text x="577.2" y="723" font-size="10.5" font-weight="600" fill="#58a6ff">72% (29/40)</text>
-<text x="20" y="768" font-size="12" font-weight="700" fill="#768390">Hard-Rust · Devstral-Small-24B</text>
-<rect x="200" y="774" width="192.0" height="20" rx="3" fill="#6e7681"/>
-<text x="192" y="788" font-size="10.5" fill="#768390" text-anchor="end">RAW one-shot</text>
-<text x="398.0" y="788" font-size="10.5" font-weight="600" fill="#6e7681">38% (3/8)</text>
-<rect x="200" y="799" width="192.0" height="20" rx="3" fill="#2ea043"/>
-<text x="192" y="813" font-size="10.5" fill="#768390" text-anchor="end">OURS (Continuum)</text>
-<text x="398.0" y="813" font-size="10.5" font-weight="600" fill="#2ea043">38% (3/8)</text>
-<text x="20" y="858" font-size="12" font-weight="700" fill="#768390">Hard-Rust · Qwen2.5-Coder-3B</text>
-<rect x="200" y="864" width="128.0" height="20" rx="3" fill="#2ea043"/>
-<text x="192" y="878" font-size="10.5" fill="#768390" text-anchor="end">OURS (Continuum)</text>
-<text x="334.0" y="878" font-size="10.5" font-weight="600" fill="#2ea043">25% (2/8)</text>
+<text x="20" y="768" font-size="12" font-weight="700" fill="#768390">Hard-Rust · Qwen2.5-Coder-14B</text>
+<rect x="200" y="774" width="320.0" height="20" rx="3" fill="#2ea043"/>
+<text x="192" y="788" font-size="10.5" fill="#768390" text-anchor="end">OURS (Continuum)</text>
+<text x="526.0" y="788" font-size="10.5" font-weight="600" fill="#2ea043">62% (5/8)</text>
+<rect x="200" y="799" width="2.0" height="20" rx="3" fill="#d29922"/>
+<text x="192" y="813" font-size="10.5" fill="#768390" text-anchor="end">opencode CLI</text>
+<text x="208.0" y="813" font-size="10.5" font-weight="600" fill="#d29922">0% (0/8)</text>
+<text x="20" y="858" font-size="12" font-weight="700" fill="#768390">Hard-Rust · Devstral-Small-24B</text>
+<rect x="200" y="864" width="192.0" height="20" rx="3" fill="#6e7681"/>
+<text x="192" y="878" font-size="10.5" fill="#768390" text-anchor="end">RAW one-shot</text>
+<text x="398.0" y="878" font-size="10.5" font-weight="600" fill="#6e7681">38% (3/8)</text>
+<rect x="200" y="889" width="192.0" height="20" rx="3" fill="#2ea043"/>
+<text x="192" y="903" font-size="10.5" fill="#768390" text-anchor="end">OURS (Continuum)</text>
+<text x="398.0" y="903" font-size="10.5" font-weight="600" fill="#2ea043">38% (3/8)</text>
+<rect x="200" y="914" width="256.0" height="20" rx="3" fill="#d29922"/>
+<text x="192" y="928" font-size="10.5" fill="#768390" text-anchor="end">opencode CLI</text>
+<text x="462.0" y="928" font-size="10.5" font-weight="600" fill="#d29922">50% (4/8)</text>
+<rect x="200" y="939" width="256.0" height="20" rx="3" fill="#a371f7"/>
+<text x="192" y="953" font-size="10.5" fill="#768390" text-anchor="end">Hermes CLI</text>
+<text x="462.0" y="953" font-size="10.5" font-weight="600" fill="#a371f7">50% (4/8)</text>
+<rect x="200" y="964" width="192.0" height="20" rx="3" fill="#58a6ff"/>
+<text x="192" y="978" font-size="10.5" fill="#768390" text-anchor="end">aider CLI</text>
+<text x="398.0" y="978" font-size="10.5" font-weight="600" fill="#58a6ff">38% (3/8)</text>
+<text x="20" y="1023" font-size="12" font-weight="700" fill="#768390">Hard-Rust · Qwen2.5-Coder-3B</text>
+<rect x="200" y="1029" width="128.0" height="20" rx="3" fill="#2ea043"/>
+<text x="192" y="1043" font-size="10.5" fill="#768390" text-anchor="end">OURS (Continuum)</text>
+<text x="334.0" y="1043" font-size="10.5" font-weight="600" fill="#2ea043">25% (2/8)</text>
+<text x="20" y="1088" font-size="12" font-weight="700" fill="#768390">Hard-Rust · Hermes-3-Llama-3.1-8B</text>
+<rect x="200" y="1094" width="64.0" height="20" rx="3" fill="#6e7681"/>
+<text x="192" y="1108" font-size="10.5" fill="#768390" text-anchor="end">RAW one-shot</text>
+<text x="270.0" y="1108" font-size="10.5" font-weight="600" fill="#6e7681">12% (1/8)</text>
+<rect x="200" y="1119" width="2.0" height="20" rx="3" fill="#2ea043"/>
+<text x="192" y="1133" font-size="10.5" fill="#768390" text-anchor="end">OURS (Continuum)</text>
+<text x="208.0" y="1133" font-size="10.5" font-weight="600" fill="#2ea043">0% (0/8)</text>
+<rect x="200" y="1144" width="2.0" height="20" rx="3" fill="#d29922"/>
+<text x="192" y="1158" font-size="10.5" fill="#768390" text-anchor="end">opencode CLI</text>
+<text x="208.0" y="1158" font-size="10.5" font-weight="600" fill="#d29922">0% (0/8)</text>
+<rect x="200" y="1169" width="64.0" height="20" rx="3" fill="#a371f7"/>
+<text x="192" y="1183" font-size="10.5" fill="#768390" text-anchor="end">Hermes CLI</text>
+<text x="270.0" y="1183" font-size="10.5" font-weight="600" fill="#a371f7">12% (1/8)</text>
+<rect x="200" y="1194" width="2.0" height="20" rx="3" fill="#58a6ff"/>
+<text x="192" y="1208" font-size="10.5" fill="#768390" text-anchor="end">aider CLI</text>
+<text x="208.0" y="1208" font-size="10.5" font-weight="600" fill="#58a6ff">0% (0/8)</text>
+<text x="20" y="1253" font-size="12" font-weight="700" fill="#768390">Hard-Rust · Qwen2.5-Coder-1.5B</text>
+<rect x="200" y="1259" width="2.0" height="20" rx="3" fill="#2ea043"/>
+<text x="192" y="1273" font-size="10.5" fill="#768390" text-anchor="end">OURS (Continuum)</text>
+<text x="208.0" y="1273" font-size="10.5" font-weight="600" fill="#2ea043">0% (0/8)</text>
 </svg>

@@ -420,9 +420,12 @@ Every number here is rendered from [`benchmarks/RESULTS.jsonl`](benchmarks/RESUL
 
 | model | RAW | OURS | opencode | Hermes | aider | Δ vs best rival |
 |---|---|---|---|---|---|---|
-| **Qwen2.5-Coder-14B** | — | ***excluded¹*** | — | — | — | — |
-| **Devstral-Small-24B** | 38% (3/8) | **38% (3/8)** | — | — | — | — |
+| **qwen3.5-4b-code-forged (OURS-forged)** *(we forged it)* | — | ***excluded¹*** | — | — | — | — |
+| **Qwen2.5-Coder-14B** | *excluded¹* | **62% (5/8)** | 0% (0/8) | — | — | **+62** vs opencode |
+| **Devstral-Small-24B** | 38% (3/8) | **38% (3/8)** | 50% (4/8) | 50% (4/8) | 38% (3/8) | -12 vs opencode |
 | **Qwen2.5-Coder-3B** | — | **25% (2/8)** | — | — | — | — |
+| **Hermes-3-Llama-3.1-8B** | 12% (1/8) | **0% (0/8)** | 0% (0/8) | 12% (1/8) | 0% (0/8) | -12 vs Hermes |
+| **Qwen2.5-Coder-1.5B** | — | **0% (0/8)** | — | — | — | — |
 
 **Frontier-Rust** — Dijkstra · Levenshtein · LIS · topo-sort · bignum · calc · regex
 

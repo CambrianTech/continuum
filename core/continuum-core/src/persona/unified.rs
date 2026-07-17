@@ -30,19 +30,22 @@ use crate::rag::RagEngine;
 use std::sync::Arc;
 use uuid::Uuid;
 
-/// Token ceiling for the lightweight room-roster source. A roster is a
-/// handful of presence lines (tens of tokens); capping its budget keeps
-/// it from competing with the heavyweight engram/airc sources for grow
-/// headroom (which would shrink delivered recent_history). See the
-/// budget-claim rationale in `compose_for_turn`.
-const ROSTER_MAX_TOKENS: u32 = 256;
+/// Room-roster grounding ceiling as a FRACTION (1/64) of the served window,
+/// never a baked constant (task #124, [[no-hardcoded-context-numbers-derive-from-the-live-window]]).
+/// A roster is a handful of presence lines (tens of tokens), so its SHARE stays
+/// tiny — floorless, always `.min(per_source_max)` — but it now SCALES with the
+/// window: ~256 tokens at the common 16k window (the tuned value), more on a big
+/// model, less on a tight one. Keeps the "never starve airc's recent_history"
+/// property (a small fraction, sorted last) while never clamping a 128k window to
+/// a constant. See the budget-claim rationale in `compose_for_turn`.
+const ROSTER_WINDOW_FRACTION: u32 = 64;
 
-/// Token ceiling for the room-doctrine source. A doctrine is a short
-/// operating contract (a few paragraphs); capped so it grounds the
-/// persona in the room's nature without competing with engram/airc for
-/// grow headroom. Larger than the roster (prose, not a name list) but
-/// still bounded and floorless.
-const DOCTRINE_MAX_TOKENS: u32 = 1024;
+/// Room-doctrine grounding ceiling as a FRACTION (1/16) of the served window.
+/// A doctrine is a short operating contract (a few paragraphs) — larger than the
+/// roster (prose, not a name list) but still a small, floorless share that scales:
+/// ~1024 tokens at a 16k window (the tuned value), growing so a big model can hold
+/// a richer room contract without competing with engram/airc for grow headroom.
+const DOCTRINE_WINDOW_FRACTION: u32 = 16;
 
 /// All cognitive state for a single persona — single lock, cache-local.
 pub struct PersonaCognition {
@@ -356,8 +359,12 @@ impl PersonaCognition {
                 // they never starve airc's recent_history or compete for
                 // grow headroom with the heavyweight engram/airc sources.
                 let (floor, min, max) = match s.source_id() {
-                    "room-roster" => (0, 0, ROSTER_MAX_TOKENS.min(per_source_max)),
-                    "room-doctrine" => (0, 0, DOCTRINE_MAX_TOKENS.min(per_source_max)),
+                    "room-roster" => {
+                        (0, 0, (context_window / ROSTER_WINDOW_FRACTION).min(per_source_max))
+                    }
+                    "room-doctrine" => {
+                        (0, 0, (context_window / DOCTRINE_WINDOW_FRACTION).min(per_source_max))
+                    }
                     _ => {
                         let f = 500_u32.min(per_source_max);
                         (f, f, per_source_max)

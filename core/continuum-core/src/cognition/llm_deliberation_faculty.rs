@@ -327,12 +327,21 @@ impl LlmDeliberationFaculty {
             .map(crate::cognition::tool_dialect::to_wire_spec)
             .collect();
         // ADAPTIVE surface ([[adaptive-tool-surface-meets-you-in-the-middle]]): the full
-        // native working set (~11 schemas, ~2.7k tokens) only rides when the served window
-        // can afford it. On a small window (a 4k lane) it would crowd out the prompt itself
-        // and break the prompt-fit invariant, so we shrink to the discovery pair — the
-        // long tail stays reachable by name, just not natively.
-        const NATIVE_SURFACE_MIN_CTX: u32 = 8192;
-        if self.binding.load().context_window < NATIVE_SURFACE_MIN_CTX {
+        // native working set only rides when the served window can afford it. On a small
+        // window it would crowd out the prompt itself and break the prompt-fit invariant,
+        // so we shrink to the discovery pair — the long tail stays reachable by name, just
+        // not natively. The threshold is DERIVED from the surface's ACTUAL rendered token
+        // cost, never a baked constant (task #124, [[no-hardcoded-context-numbers-derive-from-the-live-window]]):
+        // offer the full set only when it would claim at most 1/`SURFACE_MAX_WINDOW_SHARE`
+        // of the window, leaving the rest for prompt + reply. Self-calibrating — as the
+        // native tool set grows or shrinks, the threshold tracks it, instead of an 8192
+        // that silently mismatched a re-sized surface.
+        const SURFACE_MAX_WINDOW_SHARE: u32 = 3;
+        let full_surface_tokens = serde_json::to_string(&specs)
+            .map(|j| crate::cognition::token_budget::estimate_prompt_tokens(&j))
+            .unwrap_or(0);
+        let native_surface_min_ctx = full_surface_tokens.saturating_mul(SURFACE_MAX_WINDOW_SHARE);
+        if self.binding.load().context_window < native_surface_min_ctx {
             specs.truncate(2); // ["commands/list", commands/help] lead the list by contract
         }
         self.native_specs = specs;

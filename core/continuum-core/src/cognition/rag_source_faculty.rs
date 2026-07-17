@@ -58,17 +58,32 @@ use uuid::Uuid;
 use super::workspace::{Contribution, Faculty, FacultyId, Workspace};
 use crate::persona::rag_budget::{RagContext, RagSource, ResolutionPreference};
 
-/// Token budget a bridged grounding source gets per tick. This is a per-source
-/// CEILING the source fills up to, then self-truncates — the window-sized prompt
-/// packer downstream is the real bound, and standing framing carries a high
-/// salience floor so it is never the first thing dropped. So the ceiling should be
-/// GENEROUS: let the workspace map show its full layout, the work board show every
-/// card, the wall show the whole plan — "be more verbose as the budget allows"
-/// (Joel 2026-07-13). The old 512 forced the ENTIRE board + map + roster + doctrine
-/// + wall to each squeeze into ~380 words regardless of a 18k or 128k window — a
-/// self-inflicted choke that starved the persona of the very grounding a big model
-/// could hold. 4096 lets each breathe; the packer still keeps the total ≤ window.
-const DEFAULT_GROUNDING_BUDGET: u32 = 4096;
+/// Per-source grounding ceiling as a FRACTION of the LIVE served window — the
+/// per-source budget must SCALE with the window, never a baked constant (task
+/// #124, [[no-hardcoded-context-numbers-derive-from-the-live-window]]). A source
+/// fills up to this ceiling then self-truncates; the window-sized prompt packer
+/// downstream is the real bound, and standing framing carries a high salience floor
+/// so it is never the first thing dropped. So the ceiling should be GENEROUS: let
+/// the workspace map show its full layout, the work board show every card, the wall
+/// show the whole plan — "be more verbose as the budget allows" (Joel 2026-07-13).
+///
+/// The old fixed 4096 was the exact anti-pattern: it forced the board + map + roster
+/// + doctrine + wall to each squeeze into ~4k tokens whether the served window was
+/// 16k or 128k — starving a big model of the very grounding it could hold, and
+/// (worse) over-spending on a tiny 2k window. Sizing at `window / 4` gives ~4096 at
+/// the common 16k served window (preserving the tuned value that let each source
+/// breathe), grows so a 128k model holds its full board/map/roster, and shrinks
+/// honestly on a tight window — the packer still keeps the TOTAL ≤ window.
+const GROUNDING_WINDOW_FRACTION: u32 = 4;
+
+/// The per-source grounding ceiling for a given LIVE served window. Floored at the
+/// substrate serving floor's share ([`MIN_SERVE_CTX`]/[`GROUNDING_WINDOW_FRACTION`])
+/// so a faculty built without a window (tests) still gets a sane ceiling derived
+/// from a substrate constant, never a fresh magic number.
+pub fn grounding_budget_for(served_window: u32) -> u32 {
+    use crate::cognition::serving_plan::MIN_SERVE_CTX;
+    (served_window / GROUNDING_WINDOW_FRACTION).max(MIN_SERVE_CTX / GROUNDING_WINDOW_FRACTION)
+}
 
 /// Salience floor for **standing framing** (roster, doctrine) — always-present
 /// structural context, like the system prompt. High enough that the top-k arbiter
@@ -160,7 +175,10 @@ impl RagSourceFaculty {
             salience: policy.salience(),
             // Standing framing is session-stable; retrieved grounding is volatile.
             stable: matches!(policy, SaliencePolicy::StandingFraming),
-            budget: DEFAULT_GROUNDING_BUDGET,
+            // Floor default (derived from the substrate serving floor, not a magic
+            // number). Production overrides via `with_budget(grounding_budget_for(
+            // cfg.context_window))` so the ceiling tracks the LIVE served window.
+            budget: grounding_budget_for(crate::cognition::serving_plan::MIN_SERVE_CTX),
             clock: wall_clock(),
         }
     }

@@ -58,23 +58,51 @@ const DEFAULT_MAX_ACTS: u32 = 8;
 /// only its constancy matters.
 const EVAL_EPOCH_MS: u64 = 1_700_000_000_000;
 
-/// PHYSICAL launch window (`-c`) cap for the EPHEMERAL gene-measurement lane — NOT
-/// the fork's cognition window. The fork's cognition window is read back from the
-/// lane's real `/props` after spawn (`EphemeralServingLane::served_context_window`),
-/// the SAME served-truth pin the supervisor applies to the living persona, so a
-/// measurement copy always budgets against exactly what its lane serves — never a
-/// constant fed to cognition independently of the lane
-/// ([[dreaming-mind-eval-must-match-live-cognition]], task #50). This constant only
-/// bounds how big that throwaway lane's KV may get: it has to coexist with the
-/// LIVING persona's lane while we score a copy (#59), so its `-c` is deliberately
-/// small — coder-eval prompts are short and the deliberation faculty bounds its
-/// offered tools to whatever window the fork carries. Always capped by the base
-/// model's own trained ceiling. Follow-up (env-match, not self-consistency): size
-/// this lane's `-c` host-fit via `plan_serving` against the live budget (needs a
-/// daemon-published budget watch threaded in, the way `serving/plan` reads it) so
-/// the measurement lane's geometry mirrors what production would serve THIS base —
-/// negligible for short coder prompts, but the last constant on this path.
-const EVAL_LANE_CONTEXT: u32 = 16_384;
+/// Host-fit PHYSICAL launch window (`-c`) for the EPHEMERAL measurement lane —
+/// derived from the LIVE serving budget through the SAME [`plan_serving`] classifier
+/// the autonomic serving daemon uses, NEVER a baked constant (task #124; the old
+/// `EVAL_LANE_CONTEXT: u32 = 16_384` was the exact "clamp a 128k window to a magic
+/// number → the model is starved" anti-pattern [[no-hardcoded-context-numbers-derive-from-the-live-window]]).
+///
+/// The fork's COGNITION window is still read back from the lane's real `/props` after
+/// spawn ([`EphemeralServingLane::served_context_window`]) — the SAME served-truth pin
+/// the supervisor applies to the living persona, so a measurement copy budgets against
+/// exactly what its lane serves ([[dreaming-mind-eval-must-match-live-cognition]], task
+/// #50). This value only sizes the launch `-c` + KV allocation. Because it now comes
+/// from `plan_serving` against live FREE VRAM (already net of the resident living lane,
+/// the same figure [`decide_eval_lane_placement`] reads), the throwaway lane's geometry
+/// mirrors what production would serve THIS base on THIS host RIGHT NOW: roomy host →
+/// big window up to the model's trained ceiling; contended host → honestly smaller;
+/// always floored at [`MIN_SERVE_CTX`](crate::cognition::serving_plan::MIN_SERVE_CTX)
+/// and capped at the base's own trained window.
+///
+/// Degrades honestly (never a fresh magic cap): no GPU monitor on the node (CPU-only
+/// host) or a base whose GGUF can't be sized → fall back to the model's own trained
+/// window. Short coder-eval prompts dominate, so an over-large `-c` on a CPU host costs
+/// KV allocation but never starves cognition; the point is to stop clamping a capable
+/// GPU host's window to a constant below what it could serve. Remaining edge: when
+/// placement spills this lane to CPU, the window is still sized off the GPU free-VRAM
+/// budget (under-sizes for the rare CPU-spilled eval) — acceptable for short prompts;
+/// the two-phase device-aware sizing rides with #56's `ResourceGovernor`.
+fn plan_eval_lane_ctx(base: &crate::model_registry::Model) -> u32 {
+    use crate::cognition::serving_plan::{plan_serving, MIN_SERVE_CTX};
+    use crate::modules::serving_daemon::{footprint_for, host_budget_from, perf_cores};
+
+    let plan = match (crate::gpu::monitor::detect(), footprint_for(base)) {
+        (Some(mon), Some(footprint)) => {
+            // Live free VRAM (net of the resident living lane) against physical VRAM,
+            // scaled by the serving headroom fraction — the coexistence-safe budget.
+            // One measurement stream, no batching → demand_lanes = 1.
+            let budget = host_budget_from(mon.free_bytes(), mon.total_bytes(), perf_cores());
+            plan_serving(budget, std::slice::from_ref(&footprint), 1)
+        }
+        // CPU-only host or unsizable base: the model's own trained window, floored —
+        // never a fresh invented cap.
+        _ => None,
+    };
+    plan.map(|p| p.served_context_window)
+        .unwrap_or_else(|| base.context_window.max(MIN_SERVE_CTX))
+}
 
 /// Base port the ephemeral eval lane scans up from for a free one. Deliberately
 /// ABOVE the default serving port (58057) so the scan never lands on — or has to
@@ -252,14 +280,15 @@ async fn spawn_gene_eval_lane(
             ))
         })?;
 
-    // 3. Bounded, model-capped PHYSICAL window (`-c`) for the throwaway lane (see
-    //    EVAL_LANE_CONTEXT). One lane: a single measurement stream, no batching.
-    //    This sizes the lane's launch `-c` + its placement; the fork's COGNITION
-    //    window is read back from the lane's real `/props` after spawn (below), the
-    //    same served-truth pin the supervisor applies to the living persona — so a
-    //    measurement copy budgets against exactly what its lane serves, never this
-    //    planned value ([[dreaming-mind-eval-must-match-live-cognition]], task #50).
-    let lane_ctx = base.context_window.min(EVAL_LANE_CONTEXT);
+    // 3. Host-fit PHYSICAL window (`-c`) for the throwaway lane, derived from the
+    //    live serving budget (see `plan_eval_lane_ctx`). One lane: a single
+    //    measurement stream, no batching. This sizes the lane's launch `-c` + its
+    //    placement; the fork's COGNITION window is read back from the lane's real
+    //    `/props` after spawn (below), the same served-truth pin the supervisor
+    //    applies to the living persona — so a measurement copy budgets against
+    //    exactly what its lane serves, never this planned value
+    //    ([[dreaming-mind-eval-must-match-live-cognition]], task #50).
+    let lane_ctx = plan_eval_lane_ctx(&base);
 
     // 3b. GPU-FIRST placement (Joel: fill GPU lanes first, ~100% utilization; CPU is
     //     spillover of last resort, never the default for a coexisting lane). Probe
@@ -374,7 +403,7 @@ async fn spawn_base_eval_lane(
                 "base_model_id '{base_id}' is not in the model registry — cannot stand up a measurement lane for it. Call ai/inference/models for loadable ids."
             ))
         })?;
-    let lane_ctx = base.context_window.min(EVAL_LANE_CONTEXT);
+    let lane_ctx = plan_eval_lane_ctx(&base);
     let placement_evidence =
         decide_eval_lane_placement(&base, lane_ctx, &format!("eval-lane base:{base_id}"));
     let target = ServingTarget {

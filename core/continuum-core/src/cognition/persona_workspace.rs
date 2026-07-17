@@ -351,8 +351,15 @@ pub fn build_workspace_cycle(cfg: PersonaBrainConfig) -> WorkspaceCycle {
     // synchronous so it's never `None` on the first tick. Eval/harness keep
     // everything synchronous (`defer_grounding == false`) — their tight settle-loops
     // never yield to the worker, so deferral there would measure a starved mind.
+    // Per-source grounding ceiling scales with the LIVE served window (task #50's
+    // single-sourced `cfg.context_window`), exactly like recall's budget above —
+    // never a baked constant (task #124). A 128k model lets each source hold its
+    // full board/map/roster; a tight window shrinks them honestly; the packer keeps
+    // the total ≤ window.
+    let grounding_budget = super::rag_source_faculty::grounding_budget_for(cfg.context_window);
     for g in cfg.grounding_sources {
-        let faculty = RagSourceFaculty::new(cfg.persona_id, g.source, g.policy);
+        let faculty =
+            RagSourceFaculty::new(cfg.persona_id, g.source, g.policy).with_budget(grounding_budget);
         match g.deferrability {
             Deferrability::DeferTolerant if cfg.defer_grounding => {
                 faculties.push(Arc::new(DeferredFaculty::spawn(Arc::new(faculty))));

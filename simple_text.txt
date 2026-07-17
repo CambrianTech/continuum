@@ -1,0 +1,2 @@
+This is a simple test file with only lowercase words.
+It has multiple lines and various word frequencies.

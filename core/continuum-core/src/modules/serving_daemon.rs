@@ -751,7 +751,11 @@ fn governed_vram_ceiling(resource_daemon: &ResourceDaemon) -> Option<u64> {
 /// `MAX_LANES` ceiling in the classifier is the binding cap on capable boxes,
 /// so this only matters on tiny machines where physical-core count is a fine
 /// proxy. Refined to true P-core detection in a later slice.
-fn perf_cores() -> u32 {
+///
+/// `pub` so off-daemon planners that build a one-shot [`HostBudget`] (e.g. the
+/// ephemeral eval lane sizing its `-c` via [`plan_serving`]) derive the lane cap
+/// from the SAME proxy, never a second constant.
+pub fn perf_cores() -> u32 {
     num_cpus::get_physical().max(1) as u32
 }
 
