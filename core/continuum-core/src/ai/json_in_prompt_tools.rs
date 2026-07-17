@@ -2457,4 +2457,25 @@ Please provide the output so I can review it.";
             None
         );
     }
+
+    // what this catches: Casper's EXACT live emission (glass-boxed 2026-07-17) —
+    // a hallucinated `[room-roster]` tool followed by prose. #159 must flag it as a
+    // failed attempt (Some("room-roster")) so it routes to the executor's teacher;
+    // if it returns None the turn falls through to Speech and the bogus tag leaks,
+    // exactly as observed. Also asserts parse_tool_calls does NOT spuriously lift a
+    // call from the prose (the guard that would wrongly suppress the flag).
+    #[test]
+    fn attempted_tool_name_flags_hallucinated_room_roster_from_live_emission() {
+        let live = "[TOOL_CALLS][room-roster] (no one else is present right now)\n\
+                    The room is empty aside from you. The question is addressed to you alone.";
+        assert!(
+            parse_tool_calls(live).is_empty(),
+            "no valid tool should lift from the hallucinated-tag prose"
+        );
+        assert_eq!(
+            attempted_tool_name(live).as_deref(),
+            Some("room-roster"),
+            "the hallucinated tool must be flagged so #159 routes it to the teacher"
+        );
+    }
 }
