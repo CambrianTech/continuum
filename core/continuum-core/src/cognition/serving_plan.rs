@@ -85,6 +85,28 @@ pub const MIN_SERVE_CTX: u32 = 2048;
 /// thrash: free memory jitters, the "best fit" flips, the model reloads).
 pub const SWITCH_UP_HEADROOM: f64 = 0.10;
 
+/// Co-consumer headroom (Joel 2026-07-16). The live GPU budget is a SHARED,
+/// fluctuating Metal pool — a browser, LiveKit, the compositor, or a game can grab
+/// (or, minutes later, RELEASE) memory the spawn-time free-VRAM snapshot can't
+/// predict. Sizing to 100% of that snapshot is what let a high-free reading pick a
+/// 53k window that then OOM'd (`kIOGPU…OutOfMemory`) when those consumers spiked.
+/// Reserve this fraction so serving never fills a pool it doesn't solely own; the
+/// ResourceGovernor (#56) re-plans the window UP into VRAM a closing game frees, DOWN
+/// under live pressure. Bias: a smaller window is a slower turn; overcommit is an OOM
+/// that takes the whole shared lane down. [[capacity-fabric-live-never-block-sim-as-gym]]
+pub const CO_CONSUMER_HEADROOM: f64 = 0.15;
+
+/// The transient prefill compute buffer, expressed as a fraction of the KV rate
+/// (`kv_per_token / this`). llama.cpp sizes the prefill graph for the FULL served
+/// window (`O(ubatch × n_ctx)`), so the buffer GROWS with the window — a
+/// window-independent reserve under-provisions exactly as the window grows (the 53k
+/// OOM). Calibrated to Devstral-24B Q4 (MTL compute buffer 551 MiB @ ~26k → 1209 MiB
+/// @ ~53k ≈ 23.7 KiB/token; KV ≈ 112 KiB/token → ratio ≈ 1/5; rounded to 1/4 to
+/// over-reserve). Model-RELATIVE, never an absolute magic byte count — a smaller
+/// model's cheaper graph scales down with its KV rate. Refine as more (model, window)
+/// GPU-measured points land (the calibration the `MAX_LANES` doc flags as open).
+pub const PREFILL_COMPUTE_KV_DIVISOR: u64 = 4;
+
 /// The honest, already-netted serving memory budget for THIS host — VRAM on
 /// a discrete GPU, the unified-memory serving slice on Apple Silicon. The
 /// caller subtracts OS + non-inference headroom before building this, so this
@@ -276,11 +298,16 @@ pub fn plan_serving(
     // 2026-07-14 OOM). With the buffer accounted, the lane count can follow persona
     // demand on a roomy host (each persona its OWN warm slot → no cross-persona
     // clobber → prefill caches) and still degrade to fewer lanes on a small one.
-    let after_weights = host.usable_bytes.saturating_sub(model.weights_bytes);
-    let compute_per_lane = model.compute_buffer_per_lane();
+    // Effective budget = the live snapshot MINUS co-consumer headroom (the shared,
+    // fluctuating Metal pool this process doesn't solely own). Everything downstream
+    // sizes against THIS, so a mid-session spike from a game/browser can't OOM the
+    // window we picked (Joel 2026-07-16; the governor #56 grows it back on reclaim).
+    let effective = (host.usable_bytes as f64 * (1.0 - CO_CONSUMER_HEADROOM)) as u64;
+    let after_weights = effective.saturating_sub(model.weights_bytes);
+    let compute_floor = model.compute_buffer_per_lane();
     let per_lane_floor = model
         .kv_at(MIN_SERVE_CTX)
-        .saturating_add(compute_per_lane)
+        .saturating_add(compute_floor)
         .max(1);
     let kv_lanes = (after_weights / per_lane_floor) as u32;
     let lanes = demand_lanes
@@ -295,15 +322,30 @@ pub fn plan_serving(
     // case: all lanes prefill at once, the wake-briefing burst). Capped at the model's
     // own trained ceiling and floored at MIN_SERVE_CTX. Derived from (model ∩ host),
     // never a constant — this is the serving window everyone downstream reads (task #50).
-    let compute_reserve = compute_per_lane.saturating_mul(lanes as u64);
-    let kv_budget = after_weights.saturating_sub(compute_reserve);
-    let per_lane_budget = kv_budget / lanes as u64;
+    // SOLVE THE FIXPOINT. The prefill compute buffer is NOT a constant — llama.cpp
+    // sizes the graph for the FULL served window, so the buffer grows with C. Model it
+    // as `compute_floor + compute_rate·C` per lane and solve for the largest C where KV
+    // AND compute fit every lane at once (the worst case: all lanes prefill together):
+    //   after_weights ≥ lanes · (kv_per_token·C + compute_floor + compute_rate·C)
+    //   C ≤ (after_weights − lanes·compute_floor) / (lanes · (kv_per_token + compute_rate))
+    // A window-independent reserve (the old `compute_per_lane × lanes`) under-provisions
+    // exactly as the window grows — the 53k prefill OOM. Over-reserve → smaller window
+    // (safe); under-reserve → OOM (fatal), so `compute_rate` rounds UP.
+    let lanes64 = lanes as u64;
+    let compute_rate = model.kv_per_token / PREFILL_COMPUTE_KV_DIVISOR;
+    let per_token_cost = model.kv_per_token.saturating_add(compute_rate).max(1);
     let fit_ctx = if model.kv_per_token == 0 {
         model.context_window
     } else {
-        (per_lane_budget / model.kv_per_token).min(u32::MAX as u64) as u32
+        let after_compute_floor = after_weights.saturating_sub(compute_floor.saturating_mul(lanes64));
+        ((after_compute_floor / lanes64) / per_token_cost).min(u32::MAX as u64) as u32
     };
     let served_context_window = fit_ctx.min(model.context_window).max(MIN_SERVE_CTX);
+    // The honest per-lane compute reserve AT the chosen window (floor + window-scaled),
+    // reused by the packing math below so resident accounting can't under-charge it.
+    let compute_reserve = compute_floor
+        .saturating_add(compute_rate.saturating_mul(served_context_window as u64))
+        .saturating_mul(lanes64);
 
     // Resident models: pack the smallest other candidates (each at its minimum
     // runnable footprint) into whatever is left after the chosen base + its lanes'
@@ -314,7 +356,7 @@ pub fn plan_serving(
         .weights_bytes
         .saturating_add(model.kv_at(served_context_window).saturating_mul(lanes as u64))
         .saturating_add(compute_reserve);
-    let mut left = host.usable_bytes.saturating_sub(chosen_cost);
+    let mut left = effective.saturating_sub(chosen_cost);
     let mut resident = 1u32;
     let mut others: Vec<&ModelFootprint> = candidates
         .iter()
@@ -472,6 +514,37 @@ mod tests {
         assert_eq!(f.resident_bytes(11_008, 0), 9 * GB + per_lane_kv);
         // No window served yet → weights only (KV term is zero).
         assert_eq!(f.resident_bytes(0, 4), 9 * GB);
+    }
+
+    // what this catches: the "alive" OOM (2026-07-16). The served window's FULL live
+    // footprint — weights + lanes·KV(C) + lanes·(compute_floor + compute_rate·C), every
+    // lane prefilling at once — must fit within the EFFECTIVE budget (usable − co-consumer
+    // headroom). The pre-fix math reserved a WINDOW-INDEPENDENT compute buffer, so a roomy
+    // snapshot sized a huge window whose real (window-scaled) prefill buffer then blew the
+    // shared Metal pool (`kIOGPU…OutOfMemory`). Devstral-24B-class model on a 64GB-class
+    // budget — the exact shape that picked the OOMing 53k window.
+    #[test]
+    fn served_window_footprint_fits_effective_budget_including_window_scaled_compute() {
+        let host = HostBudget { usable_bytes: 48 * GB, perf_cores: 10 };
+        let devstral = fp("devstral-24b", 14, 112 * 1024, 131_072, 3); // ~112 KiB/token KV
+        let plan = plan_serving(host, std::slice::from_ref(&devstral), MAX_LANES).unwrap();
+        assert!(plan.fits_on_gpu, "{}", plan.rationale);
+        let c = plan.served_context_window as u64;
+        let lanes = plan.lanes as u64;
+        let compute_floor = devstral.compute_buffer_per_lane();
+        let compute_rate = devstral.kv_per_token / PREFILL_COMPUTE_KV_DIVISOR;
+        let footprint = devstral.weights_bytes
+            + devstral.kv_at(c as u32) * lanes
+            + (compute_floor + compute_rate * c) * lanes;
+        let effective = (host.usable_bytes as f64 * (1.0 - CO_CONSUMER_HEADROOM)) as u64;
+        assert!(
+            footprint <= effective,
+            "served window {c} overcommits: footprint {footprint} > effective {effective}"
+        );
+        // And it's strictly smaller than the compute-blind, headroom-blind math would pick
+        // (weights + KV filling the FULL usable budget) — the fix demonstrably shrinks it.
+        let naive = (host.usable_bytes - devstral.weights_bytes) / lanes / devstral.kv_per_token;
+        assert!(c < naive, "window-scaled + headroom reserve must shrink the window ({c} < {naive})");
     }
 
     // what this catches: an 8GB Air must NOT be handed the 14B (won't fit) and
