@@ -787,6 +787,10 @@ impl ActionCommand for CognitionEval {
             let mut inner = p.clone();
             inner.detach = Some(false);
             inner.run_id = Some(run_id.clone());
+            // Own copies for the spawned closure so `persona_id`/`run_id` remain available
+            // for the ack's return value below (they're `String`, not `Copy`).
+            let ledger_persona = persona_id.clone();
+            let ledger_run = run_id.clone();
             tokio::spawn(async move {
                 match CognitionEval::run_eval(inner).await {
                     Ok(r) => tracing::info!(
@@ -805,7 +809,7 @@ impl ActionCommand for CognitionEval {
                         // post-reboot "no workspace template" fork race — sat in the log).
                         // Write a FAILED row keyed on the SAME run_id so the poller sees the
                         // error and can retry. [[fallbacks-are-illegal-fail-loud]]
-                        append_failed_ledger(&persona_id, &run_id, &note, &e.to_string());
+                        append_failed_ledger(&ledger_persona, &ledger_run, &note, &e.to_string());
                     }
                 }
             });
