@@ -212,7 +212,8 @@ export class DomSurface implements Surface {
     if (a.width !== b.width || a.height !== b.height) {
       return { pixelsChanged: total, totalPixels: total, ratio: 1 };
     }
-    const changed = pixelmatch(a.data, b.data, null, a.width, a.height, { threshold: 0.1 });
+    // No diff-image output needed — just the mismatch count (pixelmatch 7 takes `void` here).
+    const changed = pixelmatch(a.data, b.data, undefined, a.width, a.height, { threshold: 0.1 });
     return { pixelsChanged: changed, totalPixels: total, ratio: total === 0 ? 0 : changed / total };
   }
 
