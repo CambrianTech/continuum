@@ -1,0 +1,22 @@
+{
+  "//": "Typecheck config for @continuum/experience-view. Mirrors chat-view's strict contract; compiles against the SDK + patterns source (workspace resolves to ./index.ts, no build step). Framework-free and platform-neutral, so NO DOM lib — it must typecheck the same under a browser bundler (apps/web), Node (apps/tui), and a mobile/RAG target. tsc is --noEmit typecheck only; each consumer's bundler/runtime owns transpilation.",
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "lib": ["ES2022"],
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true,
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "types": []
+  },
+  "include": ["*.ts"],
+  "exclude": ["node_modules"]
+}
