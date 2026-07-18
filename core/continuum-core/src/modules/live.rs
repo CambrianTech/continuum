@@ -100,6 +100,24 @@ impl ServiceModule for VoiceModule {
                 let room_id = p.str("room_id")?;
                 let participants: Vec<VoiceParticipant> = p.json_or("participants");
 
+                // GLASS-BOX the mirror-room stink (#193): a voice session/call must BE the airc
+                // room. Today the LiveKit call is keyed by a client-minted `session_id`
+                // (`call_id = session_id` below), a room authority PARALLEL to airc. Surface any
+                // divergence LOUD so the collapse — the client passing `session_id == room_id` so
+                // the call IS the airc room — is observable by this warning going SILENT. Zero
+                // behaviour change; a pure diagnostic until the client-coordinated cutover lands
+                // ([[all-rooms-are-airc-rooms-no-mirrors]], [[livekit-media-plane-rides-airc-not-parallel]]).
+                if session_id != room_id {
+                    tracing::warn!(
+                        probe_class = "airc.room.mirror.voice_session_diverges",
+                        session_id = %session_id,
+                        room_id = %room_id,
+                        "MIRROR ROOM: voice session/call id != airc room id — the LiveKit call is \
+                         keyed by a client-minted session_id, not the airc room_id. Collapse (#193): \
+                         the client must pass session_id == room_id so the call IS the airc room."
+                    );
+                }
+
                 // Idempotency: skip if this session is already registered.
                 // Browser refresh triggers a re-join which calls register-session again.
                 // Without this guard, we spawn duplicate STT listeners and agent batches,
