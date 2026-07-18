@@ -32,6 +32,8 @@ export type {
 export { buildCommandUri, buildEventTopic, stampContext } from './transport';
 export { WebSocketTransport } from './WebSocketTransport';
 export type { WebSocketLike, WebSocketCtor } from './WebSocketTransport';
+export { NodeSocketTransport } from './NodeSocketTransport';
+export type { DuplexSocketLike, SocketConnector } from './NodeSocketTransport';
 export { StateConnection } from './StateConnection';
 export type {
   StateSink,
