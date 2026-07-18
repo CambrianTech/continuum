@@ -101,6 +101,27 @@ pub(crate) fn citizen_layer_path(peer: &str) -> Result<std::path::PathBuf, Comma
 }
 
 pub(crate) fn ensure_citizen_layer(peer: &str) -> Result<std::path::PathBuf, CommandError> {
+    // The shared base is the core's cwd — OUR checkout. Resolve it ONCE here, then
+    // hand the provisioning body a concrete base so it is a pure function of
+    // (peer, base). That seam is why the citizen-layer test can inject a fake base
+    // WITHOUT mutating the process-global cwd: a test that chdir'd raced every
+    // parallel ts-rs `export_bindings_*` write (each resolves its relative
+    // `export_to` against the same process cwd, so a mid-run chdir sent those
+    // writes to `/protocol/...` and panicked the whole suite). #191.
+    let base = std::env::current_dir()
+        .map_err(|e| CommandError::Internal(format!("shared base unavailable: {e}")))?;
+    ensure_citizen_layer_from_base(peer, &base)
+}
+
+/// Provision (or refresh) a peer's citizen layer, cloning from `base` — the shared
+/// checkout. Split out from [`ensure_citizen_layer`] so the base is an explicit
+/// argument (production passes the core's cwd; tests pass a scoped temp dir) rather
+/// than an implicit read of the process-global cwd. See the note above on why that
+/// matters for the parallel test suite.
+fn ensure_citizen_layer_from_base(
+    peer: &str,
+    base: &std::path::Path,
+) -> Result<std::path::PathBuf, CommandError> {
     let layer = citizen_layer_path(peer)?;
     if layer.is_dir() {
         // Self-heal the stale-clone bug ([[citizen-workspaces-are-stale-one-time-
@@ -111,38 +132,46 @@ pub(crate) fn ensure_citizen_layer(peer: &str) -> Result<std::path::PathBuf, Com
         // autocommits + merges, shared wins framework conflicts). Non-fatal: a sync
         // that fails logs LOUD but still returns the usable (if stale) workspace
         // rather than denying the persona her hands.
-        if let Ok(base) = std::env::current_dir() {
-            match crate::code::git_bridge::git_sync_from_shared(&layer, &base) {
-                Ok(report) if report.synced => {
-                    write_workspace_sync_note(&layer, &report.summary);
-                    crate::probe!(
-                        class = "workspace.layer.sync",
-                        peer = %peer,
-                        summary = %report.summary,
-                        "citizen workspace refreshed from shared — persona work preserved"
-                    );
-                }
-                Ok(_) => {} // already current — nothing to notify.
-                Err(e) => tracing::warn!(
+        match crate::code::git_bridge::git_sync_from_shared(&layer, base) {
+            Ok(report) if report.synced => {
+                write_workspace_sync_note(&layer, &report.summary);
+                crate::probe!(
+                    class = "workspace.layer.sync",
                     peer = %peer,
-                    error = %e,
-                    "citizen workspace sync from shared failed — persona continues on existing workspace"
-                ),
+                    summary = %report.summary,
+                    "citizen workspace refreshed from shared — persona work preserved"
+                );
             }
+            Ok(_) => {} // already current — nothing to notify.
+            Err(e) => tracing::warn!(
+                peer = %peer,
+                error = %e,
+                "citizen workspace sync from shared failed — persona continues on existing workspace"
+            ),
         }
         return Ok(layer);
     }
-    let base = std::env::current_dir()
-        .map_err(|e| CommandError::Internal(format!("shared base unavailable: {e}")))?;
     let parent = layer
         .parent()
         .ok_or_else(|| CommandError::Internal("citizen layer has no parent".into()))?;
     std::fs::create_dir_all(parent)
         .map_err(|e| CommandError::Internal(format!("citizen layer mkdir failed: {e}")))?;
     let started = std::time::Instant::now();
-    let out = std::process::Command::new("cp")
-        .arg("-cR")
-        .arg(&base)
+    // Copy-on-write clone of the shared base → the peer's layer via the platform's
+    // reflink-capable `cp`. macOS APFS uses `-c` (clonefile); GNU coreutils uses
+    // `--reflink=auto` — reflink where the filesystem supports it (btrfs/XFS), a plain
+    // recursive copy otherwise, never failing for lack of CoW. `-cR` is macOS-ONLY (GNU
+    // cp rejects `-c`), which silently broke citizen provisioning on every Linux deploy
+    // until #191 surfaced it. `cfg!` (not `#[cfg]`) so BOTH branches compile and
+    // type-check on every platform — a Linux-only arm must never escape a macOS build.
+    let mut clone = std::process::Command::new("cp");
+    if cfg!(target_os = "macos") {
+        clone.arg("-cR");
+    } else {
+        clone.args(["--reflink=auto", "-R"]);
+    }
+    let out = clone
+        .arg(base)
         .arg(&layer)
         .output()
         .map_err(|e| CommandError::Internal(format!("citizen layer clone spawn failed: {e}")))?;
@@ -152,8 +181,10 @@ pub(crate) fn ensure_citizen_layer(peer: &str) -> Result<std::path::PathBuf, Com
         let _ = std::fs::remove_dir_all(&layer);
         return Err(CommandError::Internal(format!(
             "citizen layer CoW clone failed for peer {peer} (base {}): {}. \
-             The base and <continuum home> must be on the same APFS volume — \
-             copy-on-write is the contract, a silent full copy per peer is not.",
+             Copy-on-write is the intent (APFS clonefile on macOS, reflink on Linux \
+             btrfs/XFS); cp falls back to a full recursive copy on a non-CoW filesystem \
+             rather than failing, so a hard error here means the base is missing or \
+             unreadable, not a missing reflink.",
             base.display(),
             String::from_utf8_lossy(&out.stderr).trim()
         )));
@@ -1822,15 +1853,20 @@ mod tests {
     fn identified_peer_roots_at_citizen_layer_never_shared_cwd() {
         // Scoped homes so the test never touches the real ~/.continuum. A tiny
         // base dir keeps the CoW clone instant.
+        //
+        // The base is passed EXPLICITLY via `ensure_citizen_layer_from_base` — this
+        // test used to `set_current_dir(base)` to steer the clone source, but process
+        // cwd is global: while it was pointed at this temp dir, every parallel ts-rs
+        // `export_bindings_*` test resolved its relative `export_to` against it and
+        // panicked trying to write outside the tree. Injecting the base keeps the
+        // clone exercised end-to-end with zero global-cwd mutation. #191.
         let base = tempfile::tempdir().expect("base");
         std::fs::write(base.path().join("Cargo.toml"), "[workspace]\n").unwrap();
         let home = tempfile::tempdir().expect("home");
-        let old_cwd = std::env::current_dir().unwrap();
-        std::env::set_current_dir(base.path()).unwrap();
         std::env::set_var("CONTINUUM_HOME", home.path());
 
         let peer = "test-peer-1234";
-        let layer = ensure_citizen_layer(peer).expect("layer provisions");
+        let layer = ensure_citizen_layer_from_base(peer, base.path()).expect("layer provisions");
         assert!(
             layer.starts_with(home.path()),
             "layer lives under CONTINUUM_HOME: {layer:?}"
@@ -1852,7 +1888,7 @@ mod tests {
             "the shared base is untouched by layer writes"
         );
         // Idempotent: second call reuses the existing layer (her diff survives).
-        let again = ensure_citizen_layer(peer).expect("layer reused");
+        let again = ensure_citizen_layer_from_base(peer, base.path()).expect("layer reused");
         assert_eq!(again, layer);
         assert_eq!(
             std::fs::read_to_string(again.join("Cargo.toml")).unwrap(),
@@ -1861,6 +1897,5 @@ mod tests {
         );
 
         std::env::remove_var("CONTINUUM_HOME");
-        std::env::set_current_dir(old_cwd).unwrap();
     }
 }
