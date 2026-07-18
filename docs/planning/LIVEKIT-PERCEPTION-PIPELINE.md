@@ -60,6 +60,22 @@ has to be small by default and reused hard ([[perception-feedback-must-not-blow-
   once for all." Sampling cadence (not 30fps) + one-cell-per-content-hash + shared KV is
   what makes the N-persona wall affordable. The ambient look is designed to be nearly free
   on the second-and-Nth consumer.
+- **ABSOLUTELY NON-BLOCKING — cells arrive when they arrive** ([[command-async-shape-prefer-stream-never-block]]).
+  The persona NEVER waits on a thumbnail or a description; the cognitive turn proceeds on
+  what's ready NOW and the deeper cells (describe/pose/detect) BRIDGE IN as they resolve —
+  exactly like deep thoughts don't stall the rapid response ([[alive-fast-and-deep-three-layer-stack]],
+  [[two-tier-resolution-mesh]]). Design async/buffer-first, not blocking-then-patched: a
+  frame enters a buffer, its cells compute async on `SharedCompute`, the persona reads the
+  latest resolved projection. A pending cell is simply absent this tick, present the next.
+- **MANAGED RAG BUDGET — perception must NOT dominate.** These pile up (frames × participants
+  × cells over time), so perception is a BUDGETED RAG SOURCE like any other, not a firehose
+  into context. A `MediaPerceptionSource: RagSource` delivers the CURRENT projected percepts
+  under a per-turn budget via the one flexbox allocator ([[budget-at-assembly-not-clamp-the-prompt]],
+  [[situation-aware-focuser]], #8 converged allocator, #167 focus→per-layer budget) — coalesced
+  to the room-as-it-is-NOW (latest per participant, not a backlog — [[perceive-the-room-as-it-is-now]]),
+  decayed/evicted like memory, weighted by focus/situation. It competes for context with
+  engram/airc/roster; it never crowds them out. Half-assing this = a persona drowning in
+  stale thumbnails instead of thinking. Don't.
 
 ## Current state (what's already real — don't rebuild)
 
