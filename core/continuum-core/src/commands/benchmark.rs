@@ -23,6 +23,10 @@ pub enum Grader {
     Rust,
     /// Execute each solution (python). Catalogued; grader lands with the python collections.
     Python,
+    /// OBSERVE the rendered UI through the eye-node (`perception/observe`) and score its element
+    /// tree against a `UiCheck` spec. Live today via cognition/eval's `perception_grade` — the
+    /// functional web-dev tier (`webdev-rs`).
+    Perception,
 }
 
 /// One known benchmark collection — mirrors a `model_registry::ModelSpec` row.
@@ -81,6 +85,21 @@ pub fn known_benchmarks() -> &'static [BenchmarkSpec] {
             grader: Grader::Rust,
             tasks: 6,
             eval_set: Some("games-rs.jsonl"),
+            source_url: None,
+        },
+        BenchmarkSpec {
+            name: "webdev-rs",
+            description: "Functional web-dev — OUR UI benchmark, the tier public UI benchmarks lack \
+                          (they grade an agent NAVIGATING a site, or a screenshot's pixel diff, not \
+                          whether the agent BUILT a UI that structurally WORKS). Each task asks the \
+                          persona to write a complete index.html; the grade OBSERVES what actually \
+                          rendered through the eye-node (perception/observe) and scores the element \
+                          tree (headings, inputs, buttons, lists) against a spec. 6 tasks. Proves \
+                          image-perception + code-dev in one benchmark; equal footing for every model \
+                          (the structure tree is text a non-visual model reads too).",
+            grader: Grader::Perception,
+            tasks: 6,
+            eval_set: Some("webdev-rs.jsonl"),
             source_url: None,
         },
         BenchmarkSpec {

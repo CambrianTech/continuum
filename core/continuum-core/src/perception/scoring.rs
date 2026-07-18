@@ -23,6 +23,7 @@
 //! persona's output through an eye-node to get the `ObserveResult`, then calls
 //! [`score_observation`] here to turn it into a number.
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
@@ -35,7 +36,7 @@ fn default_min_count() -> u32 {
 /// One structural acceptance criterion on the observed element tree. A web-dev
 /// task's spec is a list of these; the score is the fraction satisfied. All set
 /// fields must hold on the SAME node for it to match (AND semantics).
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 #[ts(export, export_to = "../../../protocol/typescript/perception/UiCheck.ts")]
 pub struct UiCheck {

@@ -453,6 +453,12 @@ async fn spawn_base_eval_lane(
 /// than failing the whole run. A task is TEST-GRADED when it carries `test`, else
 /// substring-graded against `expect`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, TS, JsonSchema)]
+// `#[ts(export)]` so the binding at `bindings/EvalTask.ts` (imported by
+// GenomeTeachParams / MinedTask / RedactMemoryParams) REGENERATES with this struct
+// instead of drifting stale — the file was orphaned (a derive without export) and a
+// new field silently rotted it. Default export path = `bindings/EvalTask.ts`, exactly
+// where the parents already import it from.
+#[ts(export)]
 pub struct EvalTask {
     /// Stable id for the task (echoed in results so a regression is identifiable).
     #[serde(default)]
@@ -498,6 +504,26 @@ pub struct EvalTask {
     #[serde(default, alias = "setupShell", skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub setup_shell: Option<String>,
+    /// FUNCTIONAL WEB-DEV grade: structural acceptance criteria checked against what the
+    /// persona's UI ACTUALLY RENDERED. When non-empty, the grade OBSERVES `target` through
+    /// HER OWN eyes (the `perception/observe` eye-node path — the same purity as every other
+    /// tool) and scores the element tree with `perception::scoring::grade_ui`. This measures a
+    /// persona on building a UI that WORKS, on equal footing for every model: the structure tree
+    /// is plain text a non-visual model reads exactly like a VLM ([[built-to-teach-lesser-tuned-intelligences-win]]).
+    /// The SAME `UiScore` is her self-check, her training label, and this benchmark score.
+    #[serde(default, alias = "uiChecks", skip_serializing_if = "Vec::is_empty")]
+    pub ui_checks: Vec<crate::perception::scoring::UiCheck>,
+    /// What to observe for a web-dev task: a workspace-relative path (absolutized to a `file://`
+    /// URL against her workspace root — where `code/write` sandboxes her files) or an explicit
+    /// URL (e.g. an `http://localhost` dev server she started). Defaults to `index.html`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub target: Option<String>,
+    /// Fraction of `ui_checks` that must hold to PASS (`1.0` = every criterion; the fractional
+    /// score always rides along in the grade line). Defaults to `1.0` — "the UI works".
+    #[serde(default, alias = "uiPassThreshold", skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub ui_pass_threshold: Option<f32>,
 }
 
 /// A gene to page in for the candidate arm of an A/B. The persona runs the eval
@@ -1723,6 +1749,100 @@ async fn run_dod(cmd: &str) -> (bool, String) {
     }
 }
 
+/// Grade a FUNCTIONAL WEB-DEV task by OBSERVING what the persona's UI actually rendered, then
+/// scoring the element tree against the task's `ui_checks`. Returns `(ok, verdict)` in the same
+/// shape as [`run_dod`].
+///
+/// # Purity — she is graded through HER OWN eyes
+///
+/// The observation routes `perception/observe` through the persona's OWN identity-bearing
+/// executor (`cycle.acting().executor`), exactly like the workspace-root seam roots her file
+/// engine — NOT a separate grader-only command path. The persona sees her work via the same
+/// eye-node the benchmark scores it with; there is one path, so the first-class citizen stays one
+/// ([[dispatch-path-purity-and-load-harness]]). The core is headless and cannot render, so a
+/// perception task requires a connected eye-node adapter; with none, the observe call fails LOUD
+/// and the task grades an honest infra-fail, never a fabricated pass ([[fallbacks-are-illegal-fail-loud]]).
+async fn perception_grade(
+    cycle: &crate::cognition::workspace::WorkspaceCycle,
+    target: &str,
+    checks: &[crate::perception::scoring::UiCheck],
+    threshold: f32,
+) -> (bool, String) {
+    let acting = match cycle.acting() {
+        Some(a) => a,
+        None => {
+            return (
+                false,
+                "web-dev grade needs hands (no acting body) to route perception/observe — \
+                 cannot observe a pure-cognition persona's UI"
+                    .to_string(),
+            )
+        }
+    };
+    // Absolutize a workspace-relative target to a `file://` URL (she wrote her UI into her
+    // workspace root = core cwd, where `code/write` sandboxes); pass an explicit URL through.
+    let target_url = if target.contains("://") {
+        target.to_string()
+    } else {
+        match std::env::current_dir() {
+            Ok(cwd) => format!("file://{}/{}", cwd.display(), target.trim_start_matches('/')),
+            Err(e) => return (false, format!("could not resolve workspace cwd for target '{target}': {e}")),
+        }
+    };
+    let params = crate::perception::ObserveParams {
+        target: target_url.clone(),
+        viewport: None,
+        selector: None,
+    };
+    let ws_ctx = crate::cognition::tool_executor::ToolExecutionContext {
+        persona_id: acting.persona_id,
+        persona_name: acting.persona_name.clone(),
+        session_id: Uuid::new_v4(),
+        context_id: Uuid::new_v4(),
+        caller_context: serde_json::Value::Null,
+        persona_config: crate::cognition::tool_executor::PersonaMediaConfigLite {
+            auto_load_media: false,
+            supported_media_types: vec![],
+        },
+    };
+    let observe_call = crate::ai::types::ToolCall {
+        id: "eval-perception-observe".to_string(),
+        name: "perception/observe".to_string(),
+        input: serde_json::json!(params),
+    };
+    // Generous char bound: the ObserveResult carries the structure tree + (inline) the rendered
+    // PNG, which the model-facing path would fold. Grading is not latency-critical and needs the
+    // WHOLE JSON, so we don't fold it here.
+    const OBSERVE_RESULT_BOUND: usize = 16_000_000;
+    let out = match acting
+        .executor
+        .execute_native_batch(std::slice::from_ref(&observe_call), &ws_ctx, OBSERVE_RESULT_BOUND)
+        .await
+    {
+        Ok(o) => o,
+        Err(e) => {
+            return (
+                false,
+                format!("perception/observe could not run for '{target_url}' (no eye-node adapter connected?): {e}"),
+            )
+        }
+    };
+    let content = match out.results.first() {
+        Some(r) if r.is_error.is_none() => &r.content,
+        Some(r) => return (false, format!("perception/observe failed for '{target_url}': {}", r.content)),
+        None => return (false, format!("perception/observe returned no result for '{target_url}'")),
+    };
+    let obs: crate::perception::ObserveResult = match serde_json::from_str(content) {
+        Ok(o) => o,
+        Err(e) => {
+            let preview: String = content.chars().take(400).collect();
+            return (false, format!("could not parse observation for '{target_url}': {e} — got: {preview}"));
+        }
+    };
+    let grade = crate::perception::scoring::grade_ui(&obs, checks, threshold);
+    (grade.passed, grade.summary)
+}
+
 // ── Live eval progress (#123/#141, Joel: "widgets and others like yourself should
 // subscribe to these events, current totals, by command, and also display the
 // process — things like this take forever so you really need to provide feedback").
@@ -1969,6 +2089,14 @@ async fn run_pass(
             // only as trustworthy as the metric). `ok = false`, but the grade tells the
             // truth instead of a misleading "no match".
             (false, format!("inference failed: {cause}"))
+        } else if !t.ui_checks.is_empty() {
+            // FUNCTIONAL WEB-DEV: grade what her UI ACTUALLY RENDERED. Observe `target` through
+            // her own eyes (the eye-node path) and score the element tree — the money signal for
+            // "can a persona build a UI that works", judged on the structure a non-visual model
+            // reads too. Default target `index.html`; default threshold 1.0 ("it works").
+            let target = t.target.as_deref().unwrap_or("index.html");
+            let threshold = t.ui_pass_threshold.unwrap_or(1.0);
+            perception_grade(cycle, target, &t.ui_checks, threshold).await
         } else if let (Some(file), Some(test)) = (&t.solution_file, &t.test) {
             // ARTIFACT-graded: she was told to WRITE her solution to `file` and verify it with her
             // own tools. Grade her HANDS (the file she wrote + compiled), not her MOUTH (spoken
