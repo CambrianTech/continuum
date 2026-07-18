@@ -14,6 +14,7 @@
   },
   "dependencies": {
     "@continuum/chat-view": "*",
+    "@continuum/experience-view": "*",
     "@continuum/foundry-view": "*",
     "@continuum/sdk-typescript": "*",
     "highlight.js": "^11.11.1",
