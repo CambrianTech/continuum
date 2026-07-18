@@ -54,9 +54,15 @@ impl RecipeExperienceSource {
     /// JSON (`recipes/*.json`). Fails loud if an embedded recipe is malformed — that
     /// is a build-time authoring bug, pinned by the tests.
     pub fn builtins(purpose: SharedRoomPurpose) -> Self {
+        // Each line is a whole experience, authored as DATA. A recipe loader
+        // (RECIPE-EXECUTION-RUNTIME) will later read `system/recipes/*` and remove
+        // even these `include_str!`s — at which point adding an experience touches
+        // no Rust at all.
         let recipes = [
             include_str!("recipes/benchmark.json"),
             include_str!("recipes/chat.json"),
+            include_str!("recipes/video-chat.json"),
+            include_str!("recipes/profile.json"),
         ]
         .into_iter()
         .map(|json| {
@@ -84,7 +90,7 @@ impl ExperienceSource for RecipeExperienceSource {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::experience::RegionScope;
+    use crate::experience::{RegionRole, RegionScope};
     use crate::modules::grid::node::TrustLevel;
 
     /// A stub purpose source that reports one fixed purpose for every room — enough
@@ -136,5 +142,53 @@ mod tests {
         let purpose: SharedRoomPurpose = Arc::new(FixedPurpose("no-such-experience"));
         let source = RecipeExperienceSource::builtins(purpose);
         assert!(source.experience_for(Uuid::nil()).is_none());
+    }
+
+    // what this catches: the "extend indefinitely, zero code" claim. Four maximally
+    // different experiences — structured/ephemeral (benchmark), social/durable
+    // (chat), social/live (video-chat), form/CRUD (profile) — all project from
+    // recipe DATA alone, with NO per-experience Rust. If the projection stopped
+    // being generic (e.g. someone special-cased a purpose in code), the spread
+    // would break here.
+    fn built(purpose: &'static str) -> Experience {
+        RecipeExperienceSource::builtins(Arc::new(FixedPurpose(purpose)))
+            .experience_for(Uuid::nil())
+            .expect("purpose resolves to a recipe")
+    }
+
+    #[test]
+    fn recipes_span_the_spread_as_pure_data() {
+        for (purpose, region_count) in [
+            ("benchmark/hard-rs", 3usize),
+            ("chat", 2),
+            ("video-chat", 3),
+            ("profile", 1),
+        ] {
+            let exp = built(purpose);
+            assert_eq!(exp.purpose, purpose);
+            assert_eq!(exp.regions.len(), region_count, "region count for {purpose}");
+            assert!(exp.regions.iter().all(|r| r.scope == RegionScope::Activity));
+        }
+
+        // profile's save affordance is Owner-gated — authz COMPUTED per command, a
+        // DIFFERENT tier than observe's Provisional, proving who_may tracks the real
+        // ACL across tiers from authored data.
+        let save = built("profile")
+            .affordances
+            .into_iter()
+            .find(|a| a.verb == "save")
+            .expect("profile declares save");
+        assert_eq!(save.command, "data/update");
+        assert_eq!(save.who_may, Some(TrustLevel::Owner));
+
+        // video-chat interpolates: it reuses the chat kind AND adds a live primary
+        // video stage — a new point in the latent space, no new architecture.
+        let vc = built("video-chat");
+        assert!(vc
+            .regions
+            .iter()
+            .any(|r| r.kind == "video" && r.role == RegionRole::Primary));
+        assert!(vc.regions.iter().any(|r| r.kind == "chat"));
+        assert!(vc.layout.is_some(), "video-chat composes stage beside a side panel");
     }
 }
