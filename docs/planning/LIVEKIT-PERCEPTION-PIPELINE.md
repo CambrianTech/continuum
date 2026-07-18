@@ -79,11 +79,19 @@ has to be small by default and reused hard ([[perception-feedback-must-not-blow-
 ## Phases (critical path bolded) + validation gate per phase
 
 **Phase 1 — Qwen3-VL-7B actually serving (#106 bring-up). THE EYES.**
-Pull `Qwen3-VL-7B-Instruct` GGUF + its `mmproj`, bring up in llama-server, register the
-`Vision` capability + the mmproj path on the Model row. Bounded and validatable ALONE —
-nothing perceives without a describer.
-*Gate:* `cu ai/generate` (or `cognition/vision-describe`) with an image → a real
-description returns from the local model.
+**SELF-PROVISIONING, not a manual pull** ([[managed-product-everything-self-provisions-no-operator-steps]]):
+a repo user is NOT going to run `huggingface-cli` — the system fetches the model itself.
+Concretely: (a) one catalog `Model` row (id, `Vision` capability, `hf_source`/`gguf_hint`,
+mmproj path); (b) make the VL bring-up SELF-PROVISION via the EXISTING provisioning path
+(`provisioning::Downloader` / `fetch.rs` / `commands/models/pull.rs`) — pull the GGUF **and
+its mmproj** from `hf_source`, no CLI dependency; (c) **uniform resolution** — `mmproj`
+must resolve local→HF-cache→pull the SAME way the GGUF already does (today
+`resolve_mmproj_for_model` only checks the declared local path — the gap that would force a
+manual placement); (d) llama-server serves it (`--mmproj` already wired, #1955). Nothing
+perceives without a describer, AND nothing ships if a user has to fetch it by hand.
+*Gate:* on a clean machine, declaring the VL row + starting the system → the model
+auto-provisions → `cu cognition/vision-describe` with an image returns a real description,
+**with zero manual download/placement steps.**
 
 **Phase 2 — Frame ingest: LiveKit video → `MediaFrame`.**
 Tap the existing per-participant `video_rx`; wrap sampled frames as content-hash
