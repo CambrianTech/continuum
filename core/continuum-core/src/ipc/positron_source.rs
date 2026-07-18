@@ -85,6 +85,7 @@ use continuum_positron::{
     ChatMessageView, ChatViewState, Provenance, RosterSlotView, SenderKind, StateBuilder, Substrate,
 };
 
+use crate::experience::{Experience, ExperienceSource, Member, RecipeExperienceSource, Standing};
 use crate::runtime::MessageBus;
 
 /// Bus event prefix carrying posted-message payloads. A cheap prefix
@@ -386,10 +387,24 @@ struct ChatProjection {
     /// foundry / scada / academy room reports its own recipe-defined purpose with NO
     /// projection change once the real (recipe-backed) resolver is injected.
     purpose_source: crate::ipc::room_purpose::SharedRoomPurpose,
+    /// Recipe-backed source for this room's [`Experience`] manifest (the Join
+    /// Contract), keyed by the SAME purpose the chat view uses. Published alongside
+    /// chat so a renderer/agent sees the full room — regions, affordances, and the
+    /// live membership — not just the message stream.
+    /// `[[join-contract-experience-is-a-latent-space]]`.
+    experience_source: RecipeExperienceSource,
+    /// Own monotonic revisions well for the `"experience"` kind — the projection is
+    /// its sole writer, exactly as `builder` is for `"chat"`.
+    experience_builder: StateBuilder,
 }
 
 impl ChatProjection {
     fn new(substrate: Substrate) -> Self {
+        // ONE shared purpose resolver feeds BOTH the chat view's `purpose` field and
+        // the Experience manifest's recipe lookup. Default (every room → "chat") until
+        // the recipe-backed source lands; injecting a real one is a one-line change
+        // here, no call-site churn.
+        let purpose_source = crate::ipc::room_purpose::default_source();
         Self {
             substrate,
             // The projection is the SOLE writer of the `chat` kind, so
@@ -401,9 +416,9 @@ impl ChatProjection {
             messages: VecDeque::new(),
             roster: Vec::new(),
             vitals: HashMap::new(),
-            // Default resolver (every room → "chat") until the recipe-backed source
-            // lands; injecting a real one is a one-line change here, no call-site churn.
-            purpose_source: crate::ipc::room_purpose::default_source(),
+            experience_source: RecipeExperienceSource::builtins(purpose_source.clone()),
+            experience_builder: StateBuilder::standalone(),
+            purpose_source,
         }
     }
 
@@ -524,6 +539,21 @@ impl ChatProjection {
                 None => slot.clone(),
             })
             .collect();
+
+        // Publish the room's Experience manifest (the Join Contract) ALONGSIDE the
+        // chat view, so a renderer/agent sees the whole room — regions, affordances,
+        // and the live membership — not just the message stream. Membership is
+        // projected from the SAME roster (kind-agnostic: human/persona/agent are all
+        // Members). `Experience` is renderer-agnostic (no positron-core dep), so it
+        // rides `session_raw` under its own `KIND`. No recipe for the room's purpose
+        // → nothing published (fail-quiet on this OPTIONAL surface; chat still ships).
+        if let Some(exp) = self.build_experience(room_id, &roster) {
+            let payload = serde_json::to_value(&exp)
+                .expect("Experience must serialize — substrate bug, not a runtime error");
+            self.substrate
+                .store(self.experience_builder.session_raw(Experience::KIND, payload));
+        }
+
         let view = ChatViewState {
             room_id,
             room_name: self.room_name.clone(),
@@ -537,6 +567,27 @@ impl ChatProjection {
             roster,
         };
         self.substrate.store(self.builder.session(view));
+    }
+
+    /// Assemble this room's [`Experience`] manifest: recipe (by the room's purpose)
+    /// → static manifest, live roster → `membership`. Pure over `(room_id, roster)`
+    /// so it's unit-testable without a live bus. `None` when no recipe matches the
+    /// room's purpose (the manifest is an OPTIONAL surface; chat still ships).
+    ///
+    /// Membership is kind-agnostic — every present peer becomes a plain
+    /// [`Standing::Member`]; structural-role overlay (examinee/owner) is a higher
+    /// concern supplied by run/room context, not this presence projection.
+    fn build_experience(&self, room_id: Uuid, roster: &[RosterSlotView]) -> Option<Experience> {
+        let membership: Vec<Member> = roster
+            .iter()
+            .map(|slot| Member {
+                peer_id: slot.member_id.to_string(),
+                standing: Standing::Member,
+            })
+            .collect();
+        self.experience_source
+            .experience_for(room_id)
+            .map(|exp| exp.with_membership(membership))
     }
 }
 

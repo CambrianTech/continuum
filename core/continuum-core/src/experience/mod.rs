@@ -110,6 +110,15 @@ pub struct Experience {
     pub layout: Option<Layout>,
 }
 
+impl Experience {
+    /// The on-wire `kind` a room's manifest publishes under — the value a
+    /// `StateEnvelope` carries and a renderer routes on (like `ChatViewState::KIND`).
+    /// Open self-registration; never a central enum. Paired with
+    /// `StateBuilder::session_raw` at the emit site so `Experience` stays
+    /// renderer-agnostic (no positron-core dependency on the contract type).
+    pub const KIND: &'static str = "experience";
+}
+
 /// An optional, renderer-agnostic composition tree over a room's regions — the
 /// level-3 layout escape hatch. Containers nest freely; a leaf names a [`Region`].
 /// Sizing is by relative `weight` (flex-like), **never pixels**, so a phone, a wide
