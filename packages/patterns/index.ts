@@ -115,6 +115,32 @@ export interface PanelWidget<Body = unknown> {
   readonly scope?: 'global' | 'activity';
 }
 
+/** The stable id the participants `Listing` carries — the ONE listing a persona
+ *  grounds on (who is here) and mobile surfaces as its "Who" tab, distinct from a
+ *  Rooms/DMs listing that may share the rail. Single-sourced so the RAG + mobile rules
+ *  can find the roster among several listing widgets without a magic string each. */
+export const ROSTER_LISTING_ID = 'roster';
+
+/** A metrics `PanelWidget` body — a small, pre-formatted readout the rail draws as a
+ *  labelled stat row (+ an optional sparkline). The projection owns the numbers AND
+ *  their formatting (units, precision); a target only paints. Drives the left rail's
+ *  "AI Performance / team cognition" widget. */
+export interface MetricStat {
+  /** Short uppercase label ("HERE", "THINKING", "TOK", "COST"). */
+  readonly label: string;
+  /** Pre-formatted value string ("4", "18k", "$0.00", "58%"). */
+  readonly value: string;
+  /** Optional semantic tone a target maps to colour — separate from the accent hue. */
+  readonly tone?: 'good' | 'warn' | 'accent' | 'muted';
+}
+
+/** The `metrics` widget body — a stat row + optional 0..=100 sparkline series. */
+export interface MetricsView {
+  readonly stats: readonly MetricStat[];
+  /** Optional time-series (0..=100) a target draws as a sparkline; absent = no history. */
+  readonly spark?: readonly number[];
+}
+
 /** Wrap a `ListingView` as a `kind:'listing'` `PanelWidget` — the common case (the
  *  roster, a rooms list). Keeps constructors terse and single-sources the wrapping so
  *  the widget id/title default to the listing's own ([[compression]]). */
@@ -282,10 +308,12 @@ export function mount<State, Out>(
  */
 export function createRagTarget(content: ContentRegistry<string>): RenderTarget<string> {
   const names = (v: ListingView): string => v.cells.map((c) => c.title).join(', ');
-  // The roster is the first `kind:'listing'` widget in the rail — a persona grounds on
-  // who is present, not on the metrics/status chrome around them.
+  // The roster is the participants `Listing` (id === ROSTER_LISTING_ID) — a persona
+  // grounds on WHO is present, not on a Rooms/metrics widget that may share the rail.
   const rosterOf = (ws: WorkspaceView): ListingView | undefined => {
-    const w = ws.left.find((widget) => widget.kind === 'listing');
+    const w = ws.left.find(
+      (widget) => widget.kind === 'listing' && (widget.body as ListingView).id === ROSTER_LISTING_ID,
+    );
     return w ? (w.body as ListingView) : undefined;
   };
   return {

@@ -179,6 +179,56 @@ export class ChatWidget extends LitElement {
     .rail-widget:last-child {
       border-bottom: none;
     }
+    /* AI Performance widget — the live team-cognition stat row (HERE / THINKING /
+     * GENOME), the honest roster-derived slice of the old AI PERFORMANCE panel. */
+    .metrics-row {
+      display: flex;
+      gap: var(--spacing-xs);
+      padding: 2px var(--spacing-md) var(--spacing-sm);
+    }
+    .metric {
+      display: flex;
+      flex-direction: column;
+      align-items: flex-start;
+      flex: 1;
+      padding: var(--spacing-xs) var(--spacing-sm);
+      border-radius: var(--radius-sm);
+      background: var(--widget-surface, rgba(255, 255, 255, 0.03));
+    }
+    .metric-val {
+      font-size: 18px;
+      font-weight: 700;
+      font-variant-numeric: tabular-nums;
+      line-height: 1.1;
+      color: var(--content-primary);
+    }
+    .metric-label {
+      font-size: 9px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--content-secondary);
+    }
+    .metric[data-tone='good'] .metric-val {
+      color: var(--status-online, #3fb950);
+    }
+    .metric[data-tone='accent'] .metric-val {
+      color: var(--content-accent);
+    }
+    .metric[data-tone='muted'] .metric-val {
+      color: var(--content-secondary);
+    }
+    /* #186 LIVE COMPASS: the cognition diamond's triangles glow + fade smoothly as the
+     * radiator pushes new faculty levels (~2s). This CSS transition IS the "steady glow"
+     * lane — a faculty firing brightens its triangle, then it eases back toward dark.
+     * The per-event FLASH (lane B) rides on top of this. Honors reduced-motion. */
+    .cog-tri {
+      transition: opacity 0.7s ease, fill 0.7s ease;
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .cog-tri {
+        transition: none;
+      }
+    }
     /* Member card — the old persona-tile: avatar + presence dot, name, meta. */
     .member {
       position: relative;

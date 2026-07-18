@@ -67,7 +67,9 @@ function stringTarget(): RenderTarget<string> {
   const content = createContentRegistry<string>();
   content.register<ChatContentBody>('chat', (b) => JSON.stringify(b.messages));
   const listing = (v: ListingView): string => `${v.title}[${v.cells.map((c) => c.title).join(',')}]`;
-  const widget = (w: PanelWidget): string => listing(w.body as ListingView);
+  // A rail widget renders its listing body, or its title for a non-listing kind (metrics).
+  const widget = (w: PanelWidget): string =>
+    w.kind === 'listing' ? listing(w.body as ListingView) : `<${w.title}>`;
   return {
     listing,
     content: (v: ContentView) => content.render(v),

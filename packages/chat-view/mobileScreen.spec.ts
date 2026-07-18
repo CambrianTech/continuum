@@ -45,9 +45,12 @@ describe('toMobileScreen — the mobile adaptation rule', () => {
 
     expect(screen.title).toBe('general'); // app bar = room
     expect(screen.primary.purpose).toBe('chat'); // conversation owns the screen
-    expect(screen.tabs.length).toBe(1); // the roster listing → one bottom-nav tab
+    // The rail's LISTING widgets become bottom-nav tabs (Rooms + Who); the metrics
+    // widget is NOT a tab (a phone shows presence, not a dashboard in the nav).
+    expect(screen.tabs.map((t) => t.id)).toEqual(['rooms', 'roster']);
 
-    const rosterCell = screen.tabs[0]?.cells[0];
+    const rosterTab = screen.tabs.find((t) => t.id === 'roster');
+    const rosterCell = rosterTab?.cells[0];
     expect(rosterCell?.title).toBe('Asha'); // presence kept
     expect(rosterCell?.status).toBeDefined();
     expect(rosterCell?.badges).toBeUndefined(); // dossier dropped

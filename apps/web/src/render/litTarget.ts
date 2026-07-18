@@ -10,22 +10,26 @@
  */
 
 import { html, nothing, type TemplateResult } from 'lit';
-import type {
-  RenderTarget,
-  WorkspaceView,
-  ListingView,
-  ContentView,
-  ContextPanelView,
-  PanelWidget,
+import {
+  ROSTER_LISTING_ID,
+  type RenderTarget,
+  type WorkspaceView,
+  type ListingView,
+  type ContentView,
+  type ContextPanelView,
+  type PanelWidget,
 } from '@continuum/patterns';
 import { renderListing } from './parts';
 import { webContentRegistry } from '../content/registry';
 import { webWidgetRegistry } from './widgets';
 
-/** The first `kind:'listing'` widget in the rail — the roster — used only for the
- *  header's "active / total" count. The rail itself draws every widget generically. */
+/** The participants `Listing` (id === ROSTER_LISTING_ID) among the rail's widgets — used
+ *  only for the header's "active / total" count. NOT just the first listing (that may be
+ *  the Rooms widget); the header counts PEOPLE, not rooms. */
 function rosterOf(ws: WorkspaceView): ListingView | undefined {
-  const w = ws.left.find((widget) => widget.kind === 'listing');
+  const w = ws.left.find(
+    (widget) => widget.kind === 'listing' && (widget.body as ListingView).id === ROSTER_LISTING_ID,
+  );
   return w ? (w.body as ListingView) : undefined;
 }
 

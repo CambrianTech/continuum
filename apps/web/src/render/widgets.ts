@@ -19,6 +19,7 @@ import {
   createWidgetRegistry,
   type WidgetRegistry,
   type ListingView,
+  type MetricsView,
 } from '@continuum/patterns';
 import { renderListing } from './parts';
 
@@ -39,6 +40,29 @@ webWidgetRegistry.register('listing', (widget) => {
         <span class="who-count">${view.cells.length}</span>
       </div>
       ${renderListing(view)}
+    </section>
+  `;
+});
+
+/** `'metrics'` — the "AI Performance" rail widget: an uppercase header over a compact
+ *  stat row (value over label, tone-coloured), the live team-cognition readout. A
+ *  sparkline draws when the body carries a `spark` series (a future real-metrics feed);
+ *  today the honest slice is the stat row. */
+webWidgetRegistry.register('metrics', (widget) => {
+  const view = widget.body as MetricsView;
+  return html`
+    <section class="rail-widget" data-widget="metrics" data-id=${widget.id}>
+      <div class="who-head">
+        <span class="who-title">${widget.title}</span>
+      </div>
+      <div class="metrics-row">
+        ${view.stats.map(
+          (s) => html`<span class="metric" data-tone=${s.tone ?? 'muted'}>
+            <span class="metric-val">${s.value}</span>
+            <span class="metric-label">${s.label}</span>
+          </span>`,
+        )}
+      </div>
     </section>
   `;
 });
