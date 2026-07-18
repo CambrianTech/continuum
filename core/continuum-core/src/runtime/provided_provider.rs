@@ -38,7 +38,7 @@
 //! is the substrate half, testable now with an in-core fake provider.
 
 use std::collections::HashSet;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use async_trait::async_trait;
 use dashmap::DashMap;
@@ -47,6 +47,67 @@ use serde_json::Value;
 use super::command_interceptor::{CommandInterceptor, InterceptorOutcome};
 use super::CommandResult;
 use crate::sdk_codegen::{command_registry, WireShape};
+
+/// The set of command names whose [`WireShape`] is `Provided` — computed once
+/// from the registry (after-boot-immutable). This is the SINGLE source of "is
+/// this command client-fulfilled (an eye-node verb), not a substrate module?",
+/// shared by BOTH dispatch paths — the [`ProvidedCommandInterceptor`] (the
+/// in-process/persona route via `CommandExecutor`) and `Runtime::route_command`
+/// (the socket route: `cu`/IPC/MCP) — so they never disagree on what routes to a
+/// provider vs a `ServiceModule`.
+pub fn provided_command_names() -> &'static HashSet<&'static str> {
+    static SET: OnceLock<HashSet<&'static str>> = OnceLock::new();
+    SET.get_or_init(|| {
+        command_registry()
+            .into_iter()
+            .filter(|d| d.wire == WireShape::Provided)
+            .map(|d| d.name)
+            .collect()
+    })
+}
+
+/// Whether `name` is a `Provided` command (fulfilled by a connected client
+/// adapter, never a substrate `ServiceModule`). See [`provided_command_names`].
+pub fn is_provided_command(name: &str) -> bool {
+    provided_command_names().contains(name)
+}
+
+/// The ONE Provided-routing decision — the single place a `Provided` command
+/// (`perception/observe`, `interface/screenshot`) is routed to its connected
+/// provider or failed loud. BOTH dispatch paths call this and nothing else:
+/// the [`ProvidedCommandInterceptor`] (the in-process/persona route via
+/// `CommandExecutor`) and `Runtime::route_command` (the socket route: `cu` / IPC
+/// / MCP). Commands are infinite and every caller — persona, CLI, MCP, benchmark
+/// — MUST reach a capability through the same infrastructure; a second copy of
+/// this logic is exactly how one path gains a command the other lacks.
+///
+/// Returns `None` when `command` is not `Provided` (the caller continues its own
+/// normal dispatch); `Some(Ok)` with the adapter's bare result; `Some(Err)` when
+/// `Provided` but nothing is connected (fail loud, named — never a fabrication).
+pub async fn route_provided(
+    registry: &ProviderRegistry,
+    command: &str,
+    params: Value,
+) -> Option<Result<Value, String>> {
+    if !is_provided_command(command) {
+        return None;
+    }
+    Some(match registry.provider_for(command) {
+        Some(provider) => provider.fulfill(command, params).await.map_err(|e| {
+            format!(
+                "eye-node provider '{}' failed to fulfil '{command}': {e}",
+                provider.label()
+            )
+        }),
+        None => Err(format!(
+            "'{command}' is a Provided capability (an eye-node verb like \
+             perception/observe or interface/screenshot), but no adapter is connected \
+             to fulfil it. The headless core cannot render/capture itself — connect a \
+             client that provides '{command}' (a browser-capable eye-node). \
+             [[fallbacks-are-illegal-fail-loud]]"
+        )),
+    })
+}
 
 /// A connected adapter that fulfills one or more `Provided` commands — an
 /// eye-node holding a browser/renderer, a UI client that can screenshot, a VR
@@ -127,23 +188,13 @@ impl ProviderRegistry {
 /// fails loud when none is connected. See module docs for placement + contract.
 pub struct ProvidedCommandInterceptor {
     registry: Arc<ProviderRegistry>,
-    /// The set of command names whose [`WireShape`] is `Provided`, snapshotted
-    /// from the registry at construction (the registry is after-boot-immutable).
-    /// Membership decides whether this interceptor acts or declines — so a normal
-    /// command (`code/read`) is never touched and flows to local dispatch.
-    provided: HashSet<&'static str>,
 }
 
 impl ProvidedCommandInterceptor {
     /// Build over a shared registry. The IPC connection layer keeps the same
     /// `Arc` to register/unregister providers as eye-nodes come and go.
     pub fn new(registry: Arc<ProviderRegistry>) -> Self {
-        let provided = command_registry()
-            .into_iter()
-            .filter(|d| d.wire == WireShape::Provided)
-            .map(|d| d.name)
-            .collect();
-        Self { registry, provided }
+        Self { registry }
     }
 
     /// The shared registry — the connection layer registers a connected
@@ -161,35 +212,15 @@ impl CommandInterceptor for ProvidedCommandInterceptor {
         params: &Value,
         _caller: Option<&crate::routing::CallerIdentity>,
     ) -> Result<InterceptorOutcome, String> {
-        // Not a Provided command — this interceptor has no opinion; let the chain
-        // fall through to local Rust dispatch unchanged.
-        if !self.provided.contains(command) {
-            return Ok(InterceptorOutcome::Decline);
-        }
-
-        match self.registry.provider_for(command) {
-            // A connected adapter owns this command — forward the bare params and
-            // return its bare result. A provider-side failure surfaces (no silent
-            // swallow): the caller learns the adapter tried and failed.
-            Some(provider) => {
-                let value = provider.fulfill(command, params.clone()).await.map_err(|e| {
-                    format!(
-                        "eye-node provider '{}' failed to fulfill '{command}': {e}",
-                        provider.label()
-                    )
-                })?;
-                Ok(InterceptorOutcome::Handled(CommandResult::Json(value)))
-            }
-            // Provided, but nothing is connected to fulfill it. Fail loud, named —
-            // the honest state of a browserless core with no eye attached. Never a
-            // fabricated observation.
-            None => Err(format!(
-                "'{command}' is a Provided capability (an eye-node verb like \
-                 perception/observe or interface/screenshot), but no adapter is \
-                 connected to fulfill it. The headless core cannot render/capture \
-                 itself — connect a client that provides '{command}' (a \
-                 browser-capable eye-node). [[fallbacks-are-illegal-fail-loud]]"
-            )),
+        // Delegate to the ONE Provided-routing decision (shared with the socket
+        // route in `Runtime::route_command`): None ⇒ not Provided, decline so the
+        // chain falls through to local Rust dispatch unchanged; Some(Ok) ⇒ the
+        // connected eye-node's bare result; Some(Err) ⇒ fail loud (no provider, or
+        // the adapter itself failed).
+        match route_provided(&self.registry, command, params.clone()).await {
+            None => Ok(InterceptorOutcome::Decline),
+            Some(Ok(value)) => Ok(InterceptorOutcome::Handled(CommandResult::Json(value))),
+            Some(Err(e)) => Err(e),
         }
     }
 
@@ -289,11 +320,11 @@ mod tests {
     // that decides "act vs decline".
     #[test]
     fn provided_set_is_the_real_provided_slice_of_the_registry() {
-        let interceptor = ProvidedCommandInterceptor::new(Arc::new(ProviderRegistry::new()));
-        assert!(interceptor.provided.contains("perception/observe"));
-        assert!(interceptor.provided.contains("interface/screenshot"));
+        // The shared set both dispatch paths consult (interceptor + route_command).
+        assert!(is_provided_command("perception/observe"));
+        assert!(is_provided_command("interface/screenshot"));
         assert!(
-            !interceptor.provided.contains("code/read"),
+            !is_provided_command("code/read"),
             "a Bare command must NOT be in the Provided set"
         );
     }

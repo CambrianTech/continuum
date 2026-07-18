@@ -2434,12 +2434,13 @@ pub fn start_server(
     // decline cleanly when their routing decision is "local," so
     // existing commands see zero behavior change.
     //
-    // Hoisted so BOTH the ProvidedCommandInterceptor (reader) and the connection
-    // layer (writer, via ServerState) share the ONE registry: an eye-node's
-    // `provider/register` on any connection binds here, and this interceptor
-    // routes perception/observe + interface/screenshot to it. Empty until an
-    // eye-node connects ⇒ those commands fail loud, honestly.
-    let provider_registry = Arc::new(crate::runtime::ProviderRegistry::new());
+    // The ONE provider registry, OWNED by the Runtime so all three readers share
+    // it: the ProvidedCommandInterceptor (in-process/persona route), the
+    // connection layer (writer, via ServerState — binds an eye-node on connect),
+    // AND `Runtime::route_command` (the socket route: cu / IPC / MCP). An
+    // eye-node's `provider/register` on any connection binds here; every dispatch
+    // path routes perception/observe to it, or fails loud when none is connected.
+    let provider_registry = runtime.provider_registry();
     let executor = Arc::new(
         crate::runtime::CommandExecutor::new(runtime.registry_arc())
             // Share the ONE runtime bus (the same Arc every ModuleContext
