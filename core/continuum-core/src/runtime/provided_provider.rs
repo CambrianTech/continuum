@@ -91,6 +91,23 @@ impl ProviderRegistry {
         }
     }
 
+    /// Remove the binding for each command ONLY if the currently-registered
+    /// provider is `provider` (pointer identity). This is the disconnect path: a
+    /// dropping eye-node must not evict a *newer* eye-node that re-registered the
+    /// same command in the meantime (last-registration-wins means the newer one
+    /// is the live entry; blindly `unregister`ing would blind personas to it).
+    /// Idempotent — a command already replaced or gone is left untouched.
+    pub fn unregister_matching(
+        &self,
+        commands: &[String],
+        provider: &Arc<dyn ProvidedCommandProvider>,
+    ) {
+        for c in commands {
+            self.by_command
+                .remove_if(c, |_name, current| Arc::ptr_eq(current, provider));
+        }
+    }
+
     /// The provider currently serving `command`, if any.
     pub fn provider_for(&self, command: &str) -> Option<Arc<dyn ProvidedCommandProvider>> {
         self.by_command.get(command).map(|e| Arc::clone(e.value()))
