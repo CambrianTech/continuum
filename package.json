@@ -7,6 +7,8 @@
     "packages/patterns",
     "packages/chat-view",
     "packages/foundry-view",
+    "packages/experience-view",
+    "packages/perception",
     "apps/web",
     "apps/tui",
     "apps/desktop"

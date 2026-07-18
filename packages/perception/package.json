@@ -1,0 +1,27 @@
+{
+  "name": "@continuum/perception",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Perception Surface (#187) — universal eyes/ears/hands for what personas create or observe. The Surface contract (Percept/Probe/Actuator + diff) and DomSurface, the web surface via Playwright (screenshot + DOM/a11y tree + click/type/hot-swap). Reuses any installed Chromium-family browser. See docs/architecture/PERCEPTION-SURFACE.md.",
+  "type": "module",
+  "main": "./index.ts",
+  "types": "./index.ts",
+  "exports": {
+    ".": "./index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "pixelmatch": "^5.3.0",
+    "playwright": "^1.48.2",
+    "pngjs": "^7.0.0"
+  },
+  "devDependencies": {
+    "@types/pixelmatch": "^5.2.6",
+    "@types/pngjs": "^6.0.5",
+    "typescript": "^5.6.0",
+    "vitest": "^2.1.0"
+  }
+}
