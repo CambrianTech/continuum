@@ -1210,6 +1210,28 @@ impl WorkspaceCycle {
         self.faculty_pulse.clone()
     }
 
+    /// #186 glass-box tap: record that a faculty CONTRIBUTED this tick on the live
+    /// compass, brightness scaled by its salience (a strong recall lights brighter than
+    /// a weak one) but floored so any real firing is visibly lit. Maps the internal
+    /// faculty → its display axis; a faculty with no compass home (Affect/Volition/
+    /// Salience) is a silent no-op. PURE OBSERVABILITY — called from the tick after a
+    /// bid, never reads back into a decision.
+    fn note_faculty_firing(&self, faculty: &FacultyId, salience: f32) {
+        if let Some(axis) = super::faculty_pulse::CognitionAxis::of(faculty) {
+            // 35..=100: a bid always lights (≥35), salience carries the rest.
+            let level = (35.0 + salience.clamp(0.0, 1.0) * 65.0).round() as u8;
+            self.faculty_pulse.note(axis, level);
+        }
+    }
+
+    /// #186 glass-box: fire the Act axis on the live compass — the hands moving, a tool
+    /// actually executing. Called from the acting seam ([`super::act_observe::apply_act`]);
+    /// Act has no `FacultyId` (the hands run AFTER deliberation, not as a workspace
+    /// faculty), so it is bumped explicitly rather than through the tick map.
+    pub fn note_acting(&self) {
+        self.faculty_pulse.fire(super::faculty_pulse::CognitionAxis::Act);
+    }
+
     /// Share the persona's decoding handle — call with the SAME [`DecodingHandle`]
     /// passed to [`LlmDeliberationFaculty::with_decoding`] so the eval window's
     /// greedy flip takes effect on the faculty's next generation.
@@ -1524,6 +1546,11 @@ impl WorkspaceCycle {
             .await;
         let mut context_bids: Vec<Contribution> = Vec::with_capacity(perception_timed.len());
         for (id, us, bid) in perception_timed {
+            // #186 compass: a perception faculty that surfaced something FIRES its axis
+            // (Recall→recall, WorldModel→focus), scaled by salience.
+            if let Some(c) = &bid {
+                self.note_faculty_firing(&id, c.salience);
+            }
             timings.push(FacultyTiming {
                 faculty: id,
                 elapsed_us: us,
@@ -1611,6 +1638,11 @@ impl WorkspaceCycle {
             .await;
         let mut decision_bids: Vec<Contribution> = Vec::with_capacity(deliberation_timed.len());
         for (id, us, bid) in deliberation_timed {
+            // #186 compass: the reasoner (Deliberation→reason) FIRES when it emits a
+            // verdict — the bright Reason phase you watch while she thinks.
+            if let Some(c) = &bid {
+                self.note_faculty_firing(&id, c.salience);
+            }
             timings.push(FacultyTiming {
                 faculty: id,
                 elapsed_us: us,
@@ -1782,6 +1814,26 @@ mod tests {
 
         c.page_out();
         assert!(c.genome().is_empty(), "page_out reverts to the clean base");
+    }
+
+    // what this catches: the #186 acting tap lights the Act axis on the live cognition
+    // compass THROUGH the cycle's public API — the exact path `act_observe::apply_act`
+    // drives when a real tool batch executes. A resting cycle's compass is dark; a
+    // `note_acting()` lights ONLY Act (idx 3 in the Focus/Reason/Recall/Act order the
+    // radiator samples). If the tap regressed (wrong axis, or the pulse field dropped)
+    // the tile's Act corner would never light while she runs tools.
+    #[test]
+    fn acting_lights_only_the_act_axis_on_the_compass() {
+        let c = cycle(vec![], 4);
+        assert_eq!(
+            c.faculty_pulse().levels(),
+            [0, 0, 0, 0],
+            "a resting cycle's compass is dark"
+        );
+        c.note_acting();
+        let levels = c.faculty_pulse().levels();
+        assert!(levels[3] > 0, "acting lights the Act axis");
+        assert_eq!(levels[0] + levels[1] + levels[2], 0, "and nothing else");
     }
 
     // what this catches: `rebind_model` writes THROUGH to the SAME shared binding

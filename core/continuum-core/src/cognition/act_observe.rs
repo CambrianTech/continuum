@@ -450,6 +450,12 @@ pub async fn apply_act(
         None => calls.to_vec(),
     };
 
+    // #186 compass: the hands are moving — fire the Act axis on the live glass-box the
+    // instant a real tool batch executes (skip an empty foreground batch: a
+    // background-only dispatch already lit its own path). Pure observability.
+    if !fg_calls.is_empty() {
+        cycle.note_acting();
+    }
     let outcome = match body
         .executor
         .execute_native_batch(&fg_calls, &ctx, RESULT_FOLD_MAX_CHARS)
