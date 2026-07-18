@@ -475,6 +475,15 @@ fn format_lease_error(err: ThroughputLeaseError) -> String {
 mod tests {
     use super::*;
 
+    // These tests each mutate PROCESS-GLOBAL admission statics — the in-flight gauge,
+    // the ambient-turn semaphore, the serving-lane semaphores — and must NOT run
+    // concurrently. The sharp edge (#191): `acquire_serving_lane` bumps the same
+    // `INFLIGHT_MODEL_CALLS` gauge (via `ServingLanePermit._inflight`) that the gauge
+    // test asserts starts at zero, so `directed_turn_always_finds_a_reserved_lane`
+    // racing it made the gauge test flap. Each state-touching test takes this lock
+    // first, then establishes its own baseline, so sibling order can't leak.
+    static TEST_SERIAL: Mutex<()> = Mutex::new(());
+
     // what this catches (#139 idle admission): the in-flight gauge counts each
     // model-call entry, releases on drop, and reads SATURATED exactly at the serving
     // concurrency (serving_plan::MAX_LANES) — the signal a self-tick yields on so an
@@ -482,6 +491,7 @@ mod tests {
     // is the only test that touches the process-global gauge, so it starts at zero.
     #[test]
     fn inflight_gauge_counts_releases_and_saturates_at_serving_concurrency() {
+        let _serial = TEST_SERIAL.lock().unwrap_or_else(|p| p.into_inner());
         let max = crate::cognition::serving_plan::MAX_LANES as usize;
         assert_eq!(inflight_model_calls(), 0, "gauge starts clean");
         assert!(!shared_model_saturated(), "idle model is not saturated");
@@ -518,6 +528,7 @@ mod tests {
     // the process-global ambient semaphore, so it starts with all slots free.
     #[test]
     fn ambient_permit_bounds_concurrency_and_releases_on_drop() {
+        let _serial = TEST_SERIAL.lock().unwrap_or_else(|p| p.into_inner());
         // A simultaneous-wake burst: several ambient turns try to claim a slot at once.
         // Exactly AMBIENT_TURN_CONCURRENCY win; the rest get None and must yield.
         let mut held: Vec<tokio::sync::OwnedSemaphorePermit> = Vec::new();
@@ -551,6 +562,7 @@ mod tests {
     // touches the process-global serving-lane semaphores, so it starts all-free.
     #[tokio::test]
     async fn directed_turn_always_finds_a_reserved_lane() {
+        let _serial = TEST_SERIAL.lock().unwrap_or_else(|p| p.into_inner());
         use std::time::Duration;
         let budget = nondirected_lane_budget();
 
