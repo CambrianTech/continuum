@@ -394,10 +394,57 @@ impl positron_core::ViewState for ChatViewState {
     // real one. See `Revisions` for the one-counter-per-kind semantics.
 }
 
+/// Top-level state for the `"roster"` widget kind — a room's live participant roster
+/// as rich `RosterSlotView`s (name, kind, vitals meters), DECOMPOSED out of
+/// `ChatViewState` so the Join Contract's roster REGION binds to its own payload kind
+/// (path-3 per-region ViewStates). The experience renderer subscribes to THIS for the
+/// display data the manifest's minimal `Member` intentionally omits; the room's
+/// message stream stays on `ChatViewState` (`"chat"`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/positron/RosterViewState.ts"
+)]
+pub struct RosterViewState {
+    /// The room this roster describes.
+    #[ts(type = "string")]
+    pub room_id: Uuid,
+    /// Members present, in richest form — the same slots the chat view carries,
+    /// published under their own kind so a region renderer draws them alone.
+    pub roster: Vec<RosterSlotView>,
+}
+
+impl RosterViewState {
+    /// The on-wire `kind` — the Experience manifest's roster region binds to this.
+    pub const KIND: &'static str = "roster";
+}
+
+impl positron_core::ViewState for RosterViewState {
+    fn kind(&self) -> &'static str {
+        Self::KIND
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use positron_core::ViewState as _;
+
+    // what this catches: RosterViewState is the path-3 decomposed roster kind — its
+    // KIND must be "roster" (the Experience roster region binds to it) and it must
+    // round-trip, since a renderer keys off both.
+    #[test]
+    fn roster_view_state_kind_and_round_trip() {
+        let rv = RosterViewState {
+            room_id: Uuid::nil(),
+            roster: vec![],
+        };
+        assert_eq!(rv.kind(), "roster");
+        assert_eq!(RosterViewState::KIND, "roster");
+        let json = serde_json::to_string(&rv).expect("serializes");
+        let back: RosterViewState = serde_json::from_str(&json).expect("round-trips");
+        assert_eq!(back, rv);
+    }
 
     #[test]
     fn sender_kind_wire_shape_is_tagged() {

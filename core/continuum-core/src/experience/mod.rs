@@ -386,8 +386,13 @@ mod tests {
             .any(|r| r.name == "messages"
                 && r.scope == RegionScope::Activity
                 && r.role == RegionRole::Primary));
-        // Region kind is single-sourced from the live ViewState, never a literal.
-        assert!(chat.regions.iter().all(|r| r.kind == continuum_positron::ChatViewState::KIND));
+        // Region kinds bind to their live ViewStates (path-3 per-region decomposition):
+        // messages → ChatViewState::KIND, roster → RosterViewState::KIND. Single-sourced
+        // from the payload consts, never literals.
+        assert!(chat.regions.iter().any(|r| r.name == "messages"
+            && r.kind == continuum_positron::ChatViewState::KIND));
+        assert!(chat.regions.iter().any(|r| r.name == "roster"
+            && r.kind == continuum_positron::RosterViewState::KIND));
 
         // Both are the SAME type — the whole point.
         for exp in [&bench, &chat] {

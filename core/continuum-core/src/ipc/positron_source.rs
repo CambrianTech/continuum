@@ -82,7 +82,8 @@ use uuid::Uuid;
 
 use airc_lib::{AgentAvailabilityState, RoomMember};
 use continuum_positron::{
-    ChatMessageView, ChatViewState, Provenance, RosterSlotView, SenderKind, StateBuilder, Substrate,
+    ChatMessageView, ChatViewState, Provenance, RosterSlotView, RosterViewState, SenderKind,
+    StateBuilder, Substrate,
 };
 
 use crate::experience::{Experience, ExperienceSource, Member, RecipeExperienceSource, Standing};
@@ -402,6 +403,12 @@ struct ChatProjection {
     /// (`[[optimization-is-always-first]]`, `[[never-thrash-sticky-hysteresis-on-every-lane]]`).
     /// `RefCell` because `store` takes `&self`.
     last_experience: std::cell::RefCell<Option<Experience>>,
+    /// Own Revisions well for the decomposed `"roster"` kind (path-3): the Experience
+    /// manifest's roster region binds to this rich payload (names/kinds/vitals).
+    roster_builder: StateBuilder,
+    /// Last-published roster, for emit-on-change (roster shifts on presence, not per
+    /// message) — same discipline as `last_experience`.
+    last_roster: std::cell::RefCell<Option<Vec<RosterSlotView>>>,
 }
 
 impl ChatProjection {
@@ -425,6 +432,8 @@ impl ChatProjection {
             experience_source: RecipeExperienceSource::builtins(purpose_source.clone()),
             experience_builder: StateBuilder::standalone(),
             last_experience: std::cell::RefCell::new(None),
+            roster_builder: StateBuilder::standalone(),
+            last_roster: std::cell::RefCell::new(None),
             purpose_source,
         }
     }
@@ -565,6 +574,18 @@ impl ChatProjection {
                     .store(self.experience_builder.session_raw(Experience::KIND, payload));
                 *self.last_experience.borrow_mut() = Some(exp);
             }
+        }
+
+        // Publish the rich roster under its OWN "roster" kind (path-3 per-region
+        // ViewState): the Experience manifest's roster region binds to this for
+        // names/kinds/vitals — the display data the manifest's minimal Member omits.
+        // Emit-on-change (roster only shifts on presence, not per message).
+        if self.last_roster.borrow().as_deref() != Some(roster.as_slice()) {
+            self.substrate.store(
+                self.roster_builder
+                    .session(RosterViewState { room_id, roster: roster.clone() }),
+            );
+            *self.last_roster.borrow_mut() = Some(roster.clone());
         }
 
         let view = ChatViewState {
