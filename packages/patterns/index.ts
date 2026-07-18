@@ -50,6 +50,20 @@ export interface ListingCell {
    *  cell LOSSLESS so rich rows (the roster's ACT meters) survive the projection instead
    *  of forcing the rich view-model across the boundary. Empty/absent = no meters. */
   readonly meters?: Readonly<Record<string, number>>;
+  /** Optional **loadout** — the model backing this item (`model · size · ctx`), carried
+   *  losslessly for a target to draw as a caption strip. The label sibling of `meters`:
+   *  `meters` are 0–100 gauges, a loadout is capability text/counts. Absent = none
+   *  reported (a human, a room, a model-less row) — the target draws no strip. */
+  readonly loadout?: CellLoadout;
+}
+
+/** A roster cell's model loadout — the display facts of an AI member's backend. RAW
+ *  numbers (`params: 24_000_000_000`, `contextWindow: 32768`); the target formats the
+ *  unit (`24B`, `32k`). Every field optional — honest-absent, never a fabricated model. */
+export interface CellLoadout {
+  readonly model?: string;
+  readonly params?: number;
+  readonly contextWindow?: number;
 }
 
 /** The `Listing` pattern — a repeating list. The SAME shape backs the users list,

@@ -41,8 +41,13 @@ function kindGlyph(kind: MemberKind): string {
 function rosterCell(m: RosterMemberVM): ListingCell {
   const badges = m.runtime ? [m.kind, m.runtime] : [m.kind];
   const status: CellStatus = m.active ? 'active' : 'idle';
-  const cell: ListingCell = { id: m.id, title: m.name, glyph: kindGlyph(m.kind), badges, status };
-  return Object.keys(m.vitals).length > 0 ? { ...cell, meters: m.vitals } : cell;
+  let cell: ListingCell = { id: m.id, title: m.name, glyph: kindGlyph(m.kind), badges, status };
+  // Vitals (0–100 meters) and loadout (model·size·ctx labels) both ride the neutral
+  // cell so the projection stays LOSSLESS — a target draws both from the Listing alone,
+  // no rich view-model crosses the render boundary. Each attaches only when present.
+  if (Object.keys(m.vitals).length > 0) cell = { ...cell, meters: m.vitals };
+  if (m.loadout) cell = { ...cell, loadout: m.loadout };
+  return cell;
 }
 
 /** The chat activity's `who` panel projected as the `Listing` primitive. Same shape

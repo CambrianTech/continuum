@@ -405,6 +405,29 @@ export class ChatWidget extends LitElement {
       background: rgba(0, 212, 255, 0.14);
       color: var(--content-accent);
     }
+    /* LOADOUT strip — the model backing the persona (model · size · ctx), the
+       spec-sheet line under the identity chips. Monospace digits so param/ctx
+       counts read as hard numbers; the model name carries the accent, the
+       size/ctx sit quieter. The "model size, context size" the tile surfaces. */
+    .member .loadout {
+      display: flex;
+      align-items: baseline;
+      gap: 4px;
+      margin-top: 2px;
+      font-size: 8.5px;
+      font-variant-numeric: tabular-nums;
+      color: var(--content-secondary);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .member .loadout-part:first-of-type {
+      color: var(--content-accent);
+      letter-spacing: 0.02em;
+    }
+    .member .loadout-sep {
+      opacity: 0.4;
+    }
     /* Live genome-energy meters — the old persona-tile INT/NRG/QUE bars, reborn
      * sci-fi: a thin cyan bar per vital with a moving glint on live agents. The
      * readout that makes a persona feel alive in the roster. */
@@ -1065,18 +1088,28 @@ export class ChatWidget extends LitElement {
     if (new URLSearchParams(location.search).has('demo')) {
       vm = {
         ...vm,
-        members: vm.members.map((m, i) => ({
-          ...m,
-          vitals: {
-            focus: 30 + ((i * 27) % 60),
-            reason: 80 - ((i * 19) % 55),
-            recall: 45 + ((i * 23) % 45),
-            act: 20 + ((i * 31) % 70),
-            genome: 33 + ((i * 17) % 60),
-            speed: 55 + ((i * 13) % 40),
-            size: 40 + ((i * 21) % 45),
-          },
-        })),
+        members: vm.members.map((m, i) => {
+          // A small spread of real model shapes so the LOADOUT strip previews the
+          // formatting (B/T sizes, k/M ctx) — demo-only, never a live default.
+          const models = [
+            { model: 'devstral-24b', params: 24_000_000_000, contextWindow: 32_768 },
+            { model: 'qwen3-coder-30b', params: 30_500_000_000, contextWindow: 262_144 },
+            { model: 'claude-opus-4-8', params: 671_000_000_000, contextWindow: 1_000_000 },
+          ];
+          return {
+            ...m,
+            vitals: {
+              focus: 30 + ((i * 27) % 60),
+              reason: 80 - ((i * 19) % 55),
+              recall: 45 + ((i * 23) % 45),
+              act: 20 + ((i * 31) % 70),
+              genome: 33 + ((i * 17) % 60),
+              speed: 55 + ((i * 13) % 40),
+              size: 40 + ((i * 21) % 45),
+            },
+            loadout: models[i % models.length],
+          };
+        }),
       };
     }
     // #170 live typing: overlay a transient bubble per persona mid-turn, growing

@@ -11,7 +11,7 @@ import { html, svg, nothing, type TemplateResult } from 'lit';
 import { unsafeHTML } from 'lit/directives/unsafe-html.js';
 import hljs from 'highlight.js/lib/common';
 import type { ListingCell, ListingView } from '@continuum/patterns';
-import type { MemberKind, MessageRowVM, RosterMemberVM } from '@continuum/chat-view';
+import type { LoadoutVM, MemberKind, MessageRowVM, RosterMemberVM } from '@continuum/chat-view';
 
 /** GENERIC listing-cell renderer — the first real positron web *component*: it draws
  *  ANY already-projected `ListingCell` (a foundry model, a room, a cohort) the same
@@ -177,6 +177,45 @@ export function cognitionCluster(v: Readonly<Record<string, number>>): TemplateR
   return html`<span class="cog-cluster">${hasCog ? cognitionDiamond(v) : nothing}${genome}</span>`;
 }
 
+/** RAW parameter count → a compact unit label: `24_000_000_000` → "24B",
+ *  `671_000_000_000` → "671B", `2_800_000_000_000` → "2.8T", `300_000_000` → "300M".
+ *  The renderer owns the unit so the wire carries the honest raw count. */
+function formatParams(n: number): string {
+  if (n >= 1e12) return `${+(n / 1e12).toFixed(1)}T`;
+  if (n >= 1e9) return `${Math.round(n / 1e9)}B`;
+  if (n >= 1e6) return `${Math.round(n / 1e6)}M`;
+  return String(n);
+}
+
+/** RAW context window (tokens) → a compact label: `32768` → "32k", `128000` → "128k",
+ *  `1_000_000` → "1M". */
+function formatCtx(n: number): string {
+  if (n >= 1e6) return `${+(n / 1e6).toFixed(1)}M`;
+  if (n >= 1e3) return `${Math.round(n / 1e3)}k`;
+  return String(n);
+}
+
+/** The LOADOUT strip — the model backing a persona, `model · size · ctx`. Each part
+ *  drawn only when present; an all-absent loadout renders nothing (a human, an
+ *  unresolved agent — honest, never a fabricated model line). The "model size,
+ *  context size" Joel asked the tile to surface. */
+export function loadoutStrip(lo: LoadoutVM | undefined): TemplateResult | typeof nothing {
+  if (!lo) return nothing;
+  const parts: string[] = [];
+  if (lo.model) parts.push(lo.model);
+  if (lo.params) parts.push(formatParams(lo.params));
+  if (lo.contextWindow) parts.push(`${formatCtx(lo.contextWindow)} ctx`);
+  if (parts.length === 0) return nothing;
+  return html`<span class="loadout" title="model · size · context">
+    ${parts.map(
+      (p, i) =>
+        html`${i > 0 ? html`<span class="loadout-sep">·</span>` : nothing}<span class="loadout-part"
+            >${p}</span
+          >`,
+    )}
+  </span>`;
+}
+
 /** One member card — avatar + presence dot, name, kind/runtime, live vitals —
  *  the old Users & Agents persona-tile as the `Listing` cell (INTERFACE-PORT-MAP.md). */
 export function memberCard(m: RosterMemberVM): TemplateResult {
@@ -193,6 +232,7 @@ export function memberCard(m: RosterMemberVM): TemplateResult {
           <span class="kind-badge">${kindLabel(m.kind)}</span>
           ${runtimeBadge(m.runtime)}
         </span>
+        ${loadoutStrip(m.loadout)}
         ${personaReadout(m.vitals)}
       </span>
       ${cognitionCluster(m.vitals)}
@@ -224,6 +264,7 @@ export function memberCardFromCell(cell: ListingCell): TemplateResult {
           <span class="kind-badge">${kind}</span>
           ${runtimeBadge(runtime)}
         </span>
+        ${loadoutStrip(cell.loadout)}
         ${cell.meters ? personaReadout(cell.meters) : nothing}
       </span>
       ${cell.meters ? cognitionCluster(cell.meters) : nothing}

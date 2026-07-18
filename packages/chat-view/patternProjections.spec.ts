@@ -19,7 +19,15 @@ const vm: ChatViewModel = {
   memberCount: 2,
   activeCount: 1,
   members: [
-    { id: 'a', name: 'Asha', kind: 'agent', active: true, runtime: 'persona', vitals: { energy: 80, attention: 90 } },
+    {
+      id: 'a',
+      name: 'Asha',
+      kind: 'agent',
+      active: true,
+      runtime: 'persona',
+      vitals: { energy: 80, attention: 90 },
+      loadout: { model: 'devstral-24b', params: 24_000_000_000, contextWindow: 32_768 },
+    },
     { id: 'j', name: 'Joel', kind: 'human', active: false, runtime: '', vitals: {} },
   ],
   messages: [
@@ -56,6 +64,20 @@ describe('chat → pattern projections', () => {
     const cells = rosterListing(vm).cells;
     expect(cells[0]?.meters).toEqual({ energy: 80, attention: 90 });
     expect(cells[1]).not.toHaveProperty('meters');
+  });
+
+  // what this catches: a member's LOADOUT (model·size·ctx) rides the neutral cell
+  // losslessly — the SAME design as `meters` — so a target draws the strip from the
+  // Listing alone. A member with no loadout carries no `loadout` key (absent, never
+  // a fabricated model).
+  it('carries member loadout as a neutral cell field, absent when none', () => {
+    const cells = rosterListing(vm).cells;
+    expect(cells[0]?.loadout).toEqual({
+      model: 'devstral-24b',
+      params: 24_000_000_000,
+      contextWindow: 32_768,
+    });
+    expect(cells[1]).not.toHaveProperty('loadout');
   });
 
   // what this catches: the focused room projects to the nav `Listing` (the tab

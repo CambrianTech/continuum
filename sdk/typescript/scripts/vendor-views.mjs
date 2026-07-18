@@ -33,6 +33,8 @@ const VENDORED = [
   { src: 'positron', dest: 'views', name: 'ChatViewState' },
   { src: 'positron', dest: 'views', name: 'ChatMessageView' },
   { src: 'positron', dest: 'views', name: 'RosterSlotView' },
+  // RosterSlotView imports ./Loadout (the model·size·ctx strip, #186)
+  { src: 'positron', dest: 'views', name: 'Loadout' },
   { src: 'positron', dest: 'views', name: 'SenderKind' },
   { src: 'positron', dest: 'views', name: 'Provenance' },
   // foundry widget closure

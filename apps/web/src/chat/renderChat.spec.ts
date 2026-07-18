@@ -161,6 +161,41 @@ describe('renderChat (Lit)', () => {
     expect(markup(noVitals)).not.toContain('stat-fill');
   });
 
+  // what this catches: a member's LOADOUT must DRAW the model·size·ctx strip with
+  // the renderer's unit formatting (raw 24_000_000_000 → "24B", 32768 → "32k ctx"),
+  // while a member with no loadout draws NO strip (never a fabricated model line).
+  // This is the "model size, context size" the glass-box tile surfaces.
+  it('draws the loadout strip with unit formatting, and none without a loadout', () => {
+    const withLoadout = project({
+      room_id: 'room-1',
+      room_name: 'general',
+      purpose: 'chat',
+      roster: [
+        member({
+          member_id: 'a',
+          display_name: 'Asha',
+          kind: kind('agent'),
+          loadout: { model: 'devstral-24b', params: 24_000_000_000, context_window: 32_768 },
+        }),
+      ],
+      messages: [],
+    });
+    expect(markup(withLoadout)).toContain('class="loadout"'); // the strip rendered
+    const chunks = flatten(renderChat(withLoadout));
+    expect(chunks).toContain('devstral-24b'); // model id, verbatim
+    expect(chunks).toContain('24B'); // raw params → billions
+    expect(chunks).toContain('32k ctx'); // raw window → k, labelled
+
+    const noLoadout = project({
+      room_id: 'room-1',
+      room_name: 'general',
+      purpose: 'chat',
+      roster: [member({ member_id: 'j', display_name: 'Joel', kind: kind('human') })],
+      messages: [],
+    });
+    expect(markup(noLoadout)).not.toContain('class="loadout"');
+  });
+
   // what this catches: an empty conversation must draw the honest empty-state
   // string, not an error and not a bare void — matching the ANSI renderer's
   // "No messages yet — say hello." contract exactly.

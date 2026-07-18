@@ -18,7 +18,9 @@ const kind = (k: SenderKind['kind']): SenderKind => ({ kind: k });
 const member = (over: Partial<RosterSlotView> = {}): RosterSlotView => ({
   member_id: 'm-1', display_name: 'Asha', kind: kind('agent'), integrations: {},
   provenance: { runtime: 'persona' }, active: true, last_seen_ms: 0,
-  vitals: { activity: 42 }, ...over,
+  vitals: { activity: 42 },
+  loadout: { model: 'devstral-24b', params: 24_000_000_000, context_window: 32_768 },
+  ...over,
 });
 const message = (over: Partial<ChatMessageView> = {}): ChatMessageView => ({
   id: 'msg-1', room_id: 'room-1', sender_id: 's-1', sender_name: 'Asha',
@@ -55,5 +57,6 @@ describe('toMobileScreen — the mobile adaptation rule', () => {
     expect(rosterCell?.status).toBeDefined();
     expect(rosterCell?.badges).toBeUndefined(); // dossier dropped
     expect(rosterCell?.meters).toBeUndefined(); // vitals meters dropped for the phone
+    expect(rosterCell?.loadout).toBeUndefined(); // loadout strip dropped too (dossier)
   });
 });
