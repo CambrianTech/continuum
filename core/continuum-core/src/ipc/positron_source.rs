@@ -82,8 +82,8 @@ use uuid::Uuid;
 
 use airc_lib::{AgentAvailabilityState, RoomMember};
 use continuum_positron::{
-    ChatMessageView, ChatViewState, Provenance, RosterSlotView, RosterViewState, SenderKind,
-    StateBuilder, Substrate,
+    ChatMessageView, ChatViewState, Loadout, Provenance, RosterSlotView, RosterViewState,
+    SenderKind, StateBuilder, Substrate,
 };
 
 use crate::experience::{Experience, ExperienceSource, Member, RecipeExperienceSource, Standing};
@@ -196,6 +196,12 @@ pub(crate) const PERSONA_VITALS: &str = "persona:vitals";
 pub(crate) struct PersonaVitalsUpdate {
     pub(crate) member_id: Uuid,
     pub(crate) vitals: BTreeMap<String, u8>,
+    /// The model backing this persona (`model · size · ctx`) — the slow-moving
+    /// capability half of the same radiator that carries `vitals`. `None` when
+    /// the persona's cycle reports no bound model. `#[serde(default)]` so a
+    /// vitals payload minted before this field deserializes with no loadout.
+    #[serde(default)]
+    pub(crate) loadout: Option<Loadout>,
 }
 
 /// airc's `AgentAvailabilityState` → its stable neutral wire label — airc's
@@ -271,6 +277,11 @@ pub(crate) fn roster_slot_from_member(member: &RoomMember) -> RosterSlotView {
         // never through this presence path. Empty here = no vitals reported,
         // never fabricated bars ([[fallbacks-are-illegal-fail-loud]]).
         vitals: BTreeMap::new(),
+        // Same design B as vitals: an AI member's loadout (`model · size · ctx`)
+        // arrives on its OWN `persona:vitals` event and is folded in by id at
+        // `store` time. `None` here = no bound model reported (a human, an
+        // unresolved agent) — honest-absent, never a fabricated model.
+        loadout: None,
     }
 }
 
@@ -305,6 +316,7 @@ pub(crate) fn test_roster_slot(member: Uuid, name: &str, kind: SenderKind) -> Ro
         availability: None,
         last_seen_ms: 0,
         vitals: BTreeMap::new(),
+        loadout: None,
     }
 }
 
@@ -383,6 +395,13 @@ struct ChatProjection {
     /// into each slot at `store` time, surviving roster churn. A member with no
     /// entry simply has empty vitals (no meter), never a fabricated one.
     vitals: HashMap<Uuid, BTreeMap<String, u8>>,
+    /// Latest radiated **loadout** (`model · size · ctx`) per member id, folded
+    /// from the SAME `persona:vitals` events. Kept SEPARATE from the roster for
+    /// the same reason as `vitals` — presence replaces the roster wholesale, so
+    /// the loadout overlay lives here and is merged into each slot at `store`
+    /// time, surviving roster churn. A member with no entry carries `None` (no
+    /// loadout strip), never a fabricated model.
+    loadout: HashMap<Uuid, Loadout>,
     /// Resolves this room's activity **purpose** (the `Content` dispatch key) — #6.
     /// The projection no longer hardcodes `"chat"`; it routes through this seam so a
     /// foundry / scada / academy room reports its own recipe-defined purpose with NO
@@ -429,6 +448,7 @@ impl ChatProjection {
             messages: VecDeque::new(),
             roster: Vec::new(),
             vitals: HashMap::new(),
+            loadout: HashMap::new(),
             experience_source: RecipeExperienceSource::builtins(purpose_source.clone()),
             experience_builder: StateBuilder::standalone(),
             last_experience: std::cell::RefCell::new(None),
@@ -451,6 +471,7 @@ impl ChatProjection {
             self.messages.clear();
             self.roster.clear();
             self.vitals.clear();
+            self.loadout.clear();
         }
     }
 
@@ -461,6 +482,13 @@ impl ChatProjection {
     /// roster keeps no bearing here — `store` only merges vitals for members the
     /// current roster still lists.
     fn apply_vitals(&mut self, update: PersonaVitalsUpdate) {
+        // Loadout only OVERWRITES when the radiator reports one this tick — a
+        // `None` means "not sampled" (the persona's cycle has no binding), never
+        // "clear the last-known loadout". So a member keeps its resolved loadout
+        // across ticks; it's a durable capability fact, not a per-tick meter.
+        if let Some(loadout) = update.loadout {
+            self.loadout.insert(update.member_id, loadout);
+        }
         self.vitals.insert(update.member_id, update.vitals);
         self.store();
     }
@@ -547,12 +575,18 @@ impl ChatProjection {
         let roster: Vec<RosterSlotView> = self
             .roster
             .iter()
-            .map(|slot| match self.vitals.get(&slot.member_id) {
-                Some(v) => RosterSlotView {
-                    vitals: v.clone(),
+            .map(|slot| {
+                let vitals = self.vitals.get(&slot.member_id);
+                let loadout = self.loadout.get(&slot.member_id);
+                // No live overlay for this member → the presence slot, verbatim.
+                if vitals.is_none() && loadout.is_none() {
+                    return slot.clone();
+                }
+                RosterSlotView {
+                    vitals: vitals.cloned().unwrap_or_else(|| slot.vitals.clone()),
+                    loadout: loadout.cloned().or_else(|| slot.loadout.clone()),
                     ..slot.clone()
-                },
-                None => slot.clone(),
+                }
             })
             .collect();
 
@@ -811,6 +845,7 @@ mod tests {
                 ("energy".to_string(), 80u8),
                 ("attention".to_string(), 90u8),
             ]),
+            loadout: None,
         })
         .unwrap();
         match classify(PERSONA_VITALS, &radiated).unwrap() {
@@ -836,6 +871,64 @@ mod tests {
             Some(&80),
             "vitals survive a roster refresh (they are keyed by id, not carried on presence)"
         );
+    }
+
+    #[test]
+    fn persona_loadout_folds_into_the_slot_and_survives_a_vitals_only_tick() {
+        // what this catches: a radiated LOADOUT (model · size · ctx) must fold
+        // into the member's slot by id — the strip the tile draws — AND persist
+        // as a durable capability fact: a later vitals-only tick (`loadout:
+        // None`, the common 2s pulse) must NOT wipe the known model. A
+        // regression that overwrote loadout with every tick would blank the
+        // strip the instant vitals moved without a re-home.
+        let substrate = Substrate::new();
+        let mut p = ChatProjection::new(substrate.clone());
+        let room = Uuid::from_u128(0xa);
+        let asha = Uuid::from_u128(0xd);
+        if let ProjectionInput::Presence(u) =
+            classify(PRESENCE_UPDATED, &presence_one(room, asha, "Asha", "agent", json!({})))
+                .unwrap()
+        {
+            p.apply_presence(u);
+        }
+
+        // Radiate the model backing this persona.
+        let radiated = serde_json::to_value(PersonaVitalsUpdate {
+            member_id: asha,
+            vitals: BTreeMap::new(),
+            loadout: Some(Loadout {
+                model: Some("devstral-24b".into()),
+                params: Some(24_000_000_000),
+                context_window: Some(32_768),
+            }),
+        })
+        .unwrap();
+        if let ProjectionInput::Vitals(v) = classify(PERSONA_VITALS, &radiated).unwrap() {
+            p.apply_vitals(v);
+        }
+        let slot = current_chat(&substrate).roster.remove(0);
+        let lo = slot.loadout.as_ref().expect("loadout folded into the slot");
+        assert_eq!(lo.model.as_deref(), Some("devstral-24b"));
+        assert_eq!(lo.params, Some(24_000_000_000));
+        assert_eq!(lo.context_window, Some(32_768));
+
+        // A later vitals-only tick (no loadout this sample) must keep the model.
+        let vitals_only = serde_json::to_value(PersonaVitalsUpdate {
+            member_id: asha,
+            vitals: BTreeMap::from([("activity".to_string(), 50u8)]),
+            loadout: None,
+        })
+        .unwrap();
+        if let ProjectionInput::Vitals(v) = classify(PERSONA_VITALS, &vitals_only).unwrap() {
+            p.apply_vitals(v);
+        }
+        let slot = current_chat(&substrate).roster.remove(0);
+        assert_eq!(
+            slot.loadout.as_ref().and_then(|l| l.context_window),
+            Some(32_768),
+            "a vitals-only tick must not clear the durable loadout"
+        );
+        assert_eq!(slot.vitals.get("activity"), Some(&50));
     }
 
     #[test]
@@ -1142,6 +1235,7 @@ mod tests {
         let radiated = serde_json::to_value(PersonaVitalsUpdate {
             member_id: m,
             vitals: BTreeMap::from([("energy".to_string(), 70u8)]),
+            loadout: None,
         })
         .unwrap();
         if let ProjectionInput::Vitals(v) = classify(PERSONA_VITALS, &radiated).unwrap() {

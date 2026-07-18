@@ -213,6 +213,7 @@ mod tests {
                 availability: Some("ready".into()),
                 last_seen_ms: 1_700_000_000_000,
                 vitals: BTreeMap::new(),
+                loadout: None,
             }],
         }
     }

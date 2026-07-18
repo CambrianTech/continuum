@@ -1319,6 +1319,22 @@ impl WorkspaceCycle {
         })
     }
 
+    /// The served-model id + EFFECTIVE context window, as ONE atomic read of the
+    /// shared binding — the display inputs a roster LOADOUT projects (`model ·
+    /// ctx`). `None` for a cycle with no deliberation faculty (no binding to
+    /// report). The parameter COUNT is deliberately NOT here: it isn't on the
+    /// binding, and the caller resolves it from the model registry by this id
+    /// (honest-absent when the row is unhydrated) — the cognition layer must not
+    /// take a `model_registry` dependency to hand a display fact to the projector.
+    /// Reading both in one `load()` avoids a torn `(model, window)` across a
+    /// concurrent [`rebind_model`](Self::rebind_model).
+    pub fn model_loadout(&self) -> Option<(Option<String>, u32)> {
+        self.model_binding.as_ref().map(|handle| {
+            let b = handle.load();
+            (b.model.clone(), b.context_window)
+        })
+    }
+
     /// Page a gene (set of LoRA layers) into the persona's genome — the next
     /// generation runs the base model adapted by these layers. Wait-free swap.
     /// This is the measured page-in: the genome loop pages in a freshly forged
