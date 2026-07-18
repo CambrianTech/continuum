@@ -70,15 +70,29 @@ pub fn write_typescript_sdk(
     seeds.insert("transport/WsClientMessage".to_string());
     seeds.insert("transport/WsServerMessage".to_string());
 
-    // 2. Vendor: copy each seed file + everything it transitively imports. Clean
-    //    the wire tree first so a removed/renamed command/event leaves no orphan
-    //    vendored type behind (only `wire/` — sibling files are untouched).
+    // 2. Vendor: copy each seed file + everything it transitively imports.
+    //
+    //    ATOMIC swap: vendor into a STAGING dir first, then replace `wire/` only
+    //    once the whole transitive closure copied successfully. A missing/renamed
+    //    protocol binding (a stale `protocol/typescript`) must fail LOUD WITHOUT
+    //    destroying the committed `wire/` tree — the old "remove_dir_all then error
+    //    mid-copy" shape left the repo's generated SDK deleted on any failure,
+    //    forcing a manual `git checkout` to recover. Staging makes a re-run safe.
     let wire_dir = out_dir.join(WIRE_SUBDIR);
-    let _ = fs::remove_dir_all(&wire_dir);
+    let staging = out_dir.join(".wire.staging");
+    let _ = fs::remove_dir_all(&staging);
     let mut copied: BTreeSet<String> = BTreeSet::new();
     for module in &seeds {
-        copy_with_deps(module, protocol_dir, &wire_dir, &mut copied)?;
+        if let Err(e) = copy_with_deps(module, protocol_dir, &staging, &mut copied) {
+            // Drop the partial staging tree so a retry starts clean; the committed
+            // `wire/` was never touched.
+            let _ = fs::remove_dir_all(&staging);
+            return Err(e);
+        }
     }
+    // Closure complete — now (and only now) swap the freshly-built tree in.
+    let _ = fs::remove_dir_all(&wire_dir);
+    fs::rename(&staging, &wire_dir)?;
 
     // 3. Emit both primitives' surfaces, importing the vendored tree locally.
     let import_base = format!("./{WIRE_SUBDIR}");
