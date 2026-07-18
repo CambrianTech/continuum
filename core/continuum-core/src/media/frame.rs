@@ -14,10 +14,28 @@
 
 use std::sync::Arc;
 
+use async_trait::async_trait;
 use sha2::{Digest, Sha256};
 
 use super::image_ops::{scale_crop, CropRect, DestSize};
 use crate::runtime::SharedCompute;
+
+/// Produces the text DESCRIPTION of a media frame — the sensory bridge that lets a
+/// non-vision model "see" ([[perception-feedback-must-not-blow-rag]]). Kept as a
+/// trait so `media/` never depends on `cognition/` (the live implementor is
+/// `cognition::vision_describe`, which routes `ai/generate`); tests inject a stub.
+///
+/// The frame caches ONE description per content hash via [`MediaFrame::description`],
+/// so the same image described for 13 personas costs one describe call, not 13
+/// ([[media-is-compute-once-zero-copy-hardware-grade]]).
+#[async_trait]
+pub trait FrameDescriber: Send + Sync {
+    /// Describe these encoded image bytes as text. `mime` is the source encoding
+    /// (e.g. `image/png`). Fails loud — a describe error is cached as `Err` (the
+    /// bytes are fixed, so the failure is deterministic) and surfaced, never
+    /// silently swapped for a placeholder ([[fallbacks-are-illegal-fail-loud]]).
+    async fn describe(&self, source: &[u8], mime: &str) -> Result<String, String>;
+}
 
 /// A media artifact addressed by the sha256 of its bytes. Cheap to clone (the
 /// source is `Arc`-shared); derivatives live in [`SharedCompute`], not on the
@@ -46,6 +64,39 @@ impl MediaFrame {
     /// derivatives, and the handle by which the same content is deduped everywhere.
     pub fn content_hash(&self) -> &str {
         &self.content_hash
+    }
+
+    /// The source bytes, shared by `Arc` (zero-copy). This is the FULL-resolution
+    /// derivative — a native-vision persona with room in its window gets these
+    /// exact bytes, no scale, no clamp ([[perception-feedback-must-not-blow-rag]]).
+    pub fn source(&self) -> Arc<Vec<u8>> {
+        Arc::clone(&self.source)
+    }
+
+    /// The text DESCRIPTION of this frame — the sensory-bridge derivative, computed
+    /// at most ONCE per content hash and shared as `Arc<Result<..>>`. Every persona
+    /// (and every turn) that needs the description of THIS content gets the same
+    /// cached string; the describer runs once ([[media-is-compute-once-zero-copy-hardware-grade]]).
+    ///
+    /// This is the deep-lane cell named in the module header: it may cost a real
+    /// vision inference, so it is async and cached — call it ahead of the turn (or
+    /// let it resolve async and bridge in) so it never stalls the conversation
+    /// ([[media-is-compute-once-zero-copy-hardware-grade]] two-tier resolution).
+    /// `describer` is passed by reference; the compute future borrows it and is
+    /// awaited inline (SharedCompute does not spawn), so no `'static` clone is needed.
+    pub async fn description(
+        &self,
+        compute: &SharedCompute,
+        describer: &dyn FrameDescriber,
+        mime: &str,
+    ) -> Arc<Result<String, String>> {
+        let source = Arc::clone(&self.source);
+        let mime = mime.to_string();
+        compute
+            .get_or_compute(&self.content_hash, DESCRIBE_KEY, async move {
+                describer.describe(&source, &mime).await
+            })
+            .await
     }
 
     /// Eagerly warm a set of scaled cells CONCURRENTLY — "if we know we'll need it,
@@ -95,6 +146,11 @@ fn sha256_hex(bytes: &[u8]) -> String {
     }
     s
 }
+
+/// The SharedCompute key for the description cell within a frame's scope. One
+/// description per content hash — the describer/mime don't fork the key because the
+/// bytes fully determine the derivative (the compute-once contract).
+const DESCRIBE_KEY: &str = "describe";
 
 /// The SharedCompute key for one scaled derivative within a frame's scope —
 /// stable and unique per `(crop, dest)` so identical requests share a cell.
@@ -191,6 +247,63 @@ mod tests {
         let hit = frame.scaled(&compute, None, sizes[0]).await;
         let again = frame.scaled(&compute, None, sizes[0]).await;
         assert!(Arc::ptr_eq(&hit, &again));
+    }
+
+    /// A describer that counts how many times it actually ran — proves the
+    /// description cell computes once and shares. Returns a fixed string keyed on
+    /// byte length so different content yields different descriptions.
+    struct CountingDescriber {
+        calls: Arc<std::sync::atomic::AtomicUsize>,
+    }
+    #[async_trait]
+    impl FrameDescriber for CountingDescriber {
+        async fn describe(&self, source: &[u8], mime: &str) -> Result<String, String> {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(format!("a {mime} image of {} bytes", source.len()))
+        }
+    }
+
+    // what this catches: THE description compute-once property — the describer (a
+    // potentially expensive vision call) runs at most ONCE per content hash; every
+    // later request returns the SAME cached Arc. This is the "13 personas → one
+    // describe" guarantee for the non-vision sensory bridge.
+    #[tokio::test]
+    async fn a_description_is_computed_once_and_shared() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let compute = SharedCompute::new();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let describer = CountingDescriber {
+            calls: Arc::clone(&calls),
+        };
+        let frame = MediaFrame::from_bytes(png(30, 30));
+
+        let first = frame.description(&compute, &describer, "image/png").await;
+        let second = frame.description(&compute, &describer, "image/png").await;
+
+        assert!(first.as_ref().is_ok(), "describe should succeed");
+        assert!(
+            Arc::ptr_eq(&first, &second),
+            "same content → SAME cached description Arc (computed once)"
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "describer ran at most once");
+    }
+
+    // what this catches: a describe FAILURE is cached as Err and surfaced — the
+    // bytes are fixed so the failure is deterministic, and we never silently swap a
+    // placeholder ([[fallbacks-are-illegal-fail-loud]]).
+    #[tokio::test]
+    async fn a_description_failure_is_cached_and_surfaced() {
+        struct FailingDescriber;
+        #[async_trait]
+        impl FrameDescriber for FailingDescriber {
+            async fn describe(&self, _: &[u8], _: &str) -> Result<String, String> {
+                Err("vision model unavailable".into())
+            }
+        }
+        let compute = SharedCompute::new();
+        let frame = MediaFrame::from_bytes(png(8, 8));
+        let d = frame.description(&compute, &FailingDescriber, "image/png").await;
+        assert_eq!(d.as_ref().as_ref().unwrap_err(), "vision model unavailable");
     }
 
     // what this catches: two SEPARATE frame handles to the SAME content share the

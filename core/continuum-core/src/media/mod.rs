@@ -26,5 +26,7 @@
 
 pub mod frame;
 pub mod image_ops;
+pub mod projection;
 
-pub use frame::MediaFrame;
+pub use frame::{FrameDescriber, MediaFrame};
+pub use projection::{project_image, MediaResolution, ProjectedMedia};
