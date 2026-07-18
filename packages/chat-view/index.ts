@@ -21,6 +21,7 @@ export type {
   ChatViewModel,
   MemberKind,
   RosterMemberVM,
+  LoadoutVM,
   MessageRowVM,
 } from './chatViewModel';
 

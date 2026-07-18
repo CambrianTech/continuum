@@ -187,11 +187,17 @@ function formatParams(n: number): string {
   return String(n);
 }
 
-/** RAW context window (tokens) → a compact label: `32768` → "32k", `128000` → "128k",
- *  `1_000_000` → "1M". */
+/** RAW context window (tokens) → a compact label: `32768` → "32k", `262144` → "256k",
+ *  `200000` → "200k", `1_000_000` → "1M". Context windows come in TWO conventions: local
+ *  GGUF models quote powers of two (32768, 131072, 262144), read in 1024-units so they land
+ *  on the round 32k/128k/256k a model is actually known by; cloud models quote round base-10
+ *  (200000, 1_000_000), read in 1000-units. Keying the unit on `% 1024` picks the right one. */
 function formatCtx(n: number): string {
-  if (n >= 1e6) return `${+(n / 1e6).toFixed(1)}M`;
-  if (n >= 1e3) return `${Math.round(n / 1e3)}k`;
+  if (n <= 0) return String(n);
+  const unit = n % 1024 === 0 ? 1024 : 1000;
+  const mega = unit * unit;
+  if (n >= mega) return `${+(n / mega).toFixed(n % mega === 0 ? 0 : 1)}M`;
+  if (n >= unit) return `${Math.round(n / unit)}k`;
   return String(n);
 }
 

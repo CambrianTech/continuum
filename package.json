@@ -30,7 +30,8 @@
     "service:status": "bash tools/scripts/install-service.sh status",
     "docker:ensure": "bash scripts/ensure-docker.sh",
     "ship": "node scripts/ship.mjs",
-    "shot": "node scripts/shot.mjs"
+    "shot": "node scripts/shot.mjs",
+    "preview:shot": "node scripts/preview-shot.mjs"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.2.76",
