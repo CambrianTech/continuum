@@ -132,6 +132,32 @@ impl MediaFrame {
             })
             .await
     }
+
+    /// NON-BLOCKING read of an already-warmed scaled cell — the read-side twin of
+    /// [`scaled`] (which WARMS async). Returns `Some(Arc<Result<..>>)` ONLY if the
+    /// `(crop, dest)` derivative has ALREADY resolved on `compute`; `None` if it hasn't
+    /// been computed yet. This is how live perception stays alive: a persona takes what's
+    /// ready NOW and the rest bridges in on a later tick — it NEVER awaits a cell
+    /// ([[command-async-shape-prefer-stream-never-block]]). Warm with `scaled`/`prefetch`
+    /// (fire-and-forget in a spawned task); read here.
+    pub fn scaled_if_ready(
+        &self,
+        compute: &SharedCompute,
+        crop: Option<CropRect>,
+        dest: DestSize,
+    ) -> Option<Arc<Result<Vec<u8>, String>>> {
+        compute.get::<Result<Vec<u8>, String>>(&self.content_hash, &derivative_key(crop, dest))
+    }
+
+    /// NON-BLOCKING read of the already-warmed description cell — the read-side twin of
+    /// [`description`]. `Some` only if the describe cell has resolved; `None` otherwise.
+    /// Same "take what's ready, never wait" contract as [`scaled_if_ready`].
+    pub fn description_if_ready(
+        &self,
+        compute: &SharedCompute,
+    ) -> Option<Arc<Result<String, String>>> {
+        compute.get::<Result<String, String>>(&self.content_hash, DESCRIBE_KEY)
+    }
 }
 
 /// sha256-hex of `bytes` — the content address (same hashing spill/vision use).
@@ -304,6 +330,38 @@ mod tests {
         let frame = MediaFrame::from_bytes(png(8, 8));
         let d = frame.description(&compute, &FailingDescriber, "image/png").await;
         assert_eq!(d.as_ref().as_ref().unwrap_err(), "vision model unavailable");
+    }
+
+    // what this catches: THE non-blocking-read contract — a cell reads None BEFORE it's
+    // warmed (perception takes what's ready, never waits), and after warming the _if_ready
+    // read returns the SAME cached Arc (zero-copy, no recompute). How live perception stays
+    // alive: fire the warm, read what's ready NOW, the rest bridges in later.
+    #[tokio::test]
+    async fn ready_reads_are_none_until_warmed_then_share_the_cell() {
+        let compute = SharedCompute::new();
+        let frame = MediaFrame::from_bytes(png(50, 40));
+        let dest = DestSize { width: 20, height: 16 };
+        let describer = CountingDescriber {
+            calls: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        };
+
+        // Cold: nothing warmed → non-blocking reads see nothing (absent this tick).
+        assert!(frame.scaled_if_ready(&compute, None, dest).is_none(), "scaled cold → None");
+        assert!(frame.description_if_ready(&compute).is_none(), "describe cold → None");
+
+        // Warm the cells (the async fire; in the PerceptionBuffer this is a spawned task).
+        let warmed_scaled = frame.scaled(&compute, None, dest).await;
+        let warmed_desc = frame.description(&compute, &describer, "image/png").await;
+
+        // Non-blocking reads now return the SAME cached Arc — ready, zero-copy.
+        let read_scaled = frame.scaled_if_ready(&compute, None, dest).expect("scaled ready");
+        let read_desc = frame.description_if_ready(&compute).expect("describe ready");
+        assert!(Arc::ptr_eq(&read_scaled, &warmed_scaled), "ready read shares the warmed cell");
+        assert!(Arc::ptr_eq(&read_desc, &warmed_desc), "ready read shares the warmed cell");
+        // A DIFFERENT spec is still cold — reads only what was actually warmed.
+        assert!(frame
+            .scaled_if_ready(&compute, None, DestSize { width: 8, height: 8 })
+            .is_none());
     }
 
     // what this catches: two SEPARATE frame handles to the SAME content share the
