@@ -82,6 +82,17 @@ const EMBEDDED_GYMS: &[(&str, &str)] = &[
         "games-rs.jsonl",
         include_str!("../../../../docs/genome/games-rs.jsonl"),
     ),
+    (
+        // webdev-rs: OUR functional web-dev benchmark — the tier public UI benchmarks lack (they
+        // grade an agent NAVIGATING a site, or a screenshot's pixel similarity, not whether the
+        // agent BUILT a UI that structurally WORKS). Each task asks the persona to write a
+        // complete `index.html`, then grades what it ACTUALLY RENDERED by OBSERVING it through the
+        // eye-node (`perception/observe`) and scoring the element tree against a UiCheck spec. The
+        // structure tree is text every model reads, so a lesser local model competes on the same
+        // rendered-UI facts as Claude. Proves images (perception) + code-dev in one benchmark.
+        "webdev-rs.jsonl",
+        include_str!("../../../../docs/genome/webdev-rs.jsonl"),
+    ),
 ];
 
 /// Look up a committed gym's embedded bytes by the basename of `reference`.
