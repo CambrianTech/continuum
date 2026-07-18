@@ -1053,6 +1053,31 @@ impl LlamaServerControl for LlamaServerProcess {
             // surfaces the real defect: a RAG budget that overshot the served
             // window ([[fallbacks-are-illegal-fail-loud]]).
             .arg("--no-context-shift");
+        // MULTIMODAL PROJECTOR (#106): a vision/audio-capable model needs its mmproj GGUF so
+        // llama-server loads the vision (or audio) encoder and can tokenize image/audio content
+        // parts. Present → the model actually SEES (the `ContentPart::Image` the persona render
+        // seam attaches gets mtmd-encoded). Absent on a Vision-capable row → the server serves
+        // TEXT only and silently ignores images, which is a capability LIE — so warn LOUD rather
+        // than fabricate sight ([[fallbacks-are-illegal-fail-loud]]). Safe on a generation lane
+        // (unlike `--embeddings` below): the projector only adds the encoder, it does not switch
+        // the server out of causal-generation mode.
+        if let Some(mmproj) = crate::model_registry::artifacts::resolve_mmproj_for_model(&target.model)
+        {
+            cmd.arg("--mmproj").arg(&mmproj);
+        } else if target
+            .model
+            .capabilities
+            .contains(&crate::model_registry::Capability::Vision)
+        {
+            tracing::warn!(
+                probe_class = "serving.vision.no_mmproj",
+                model = %target.model.id,
+                declared = ?target.model.mmproj_local_path,
+                "vision-capable model has no resolvable mmproj projector — serving TEXT-ONLY; \
+                 image parts will be silently ignored. Fetch the mmproj GGUF (see the model row's \
+                 mmproj_local_path) or drop the Vision capability so the row stops claiming sight."
+            );
+        }
         // `--embeddings` is deliberately NOT set on this GENERATION lane. On the
         // current llama.cpp build it puts the server in embedding (non-causal)
         // mode, which makes generation fail with `500 "Compute error."` on EVERY

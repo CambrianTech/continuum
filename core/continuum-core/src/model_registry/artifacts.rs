@@ -32,6 +32,21 @@ pub fn resolve_gguf_for_model_id(model_id: &str) -> Option<PathBuf> {
     resolve_gguf(model_id, None, None)
 }
 
+/// Resolve a vision/audio model's multimodal projector (mmproj) GGUF for serving —
+/// expands `~` and VERIFIES the file exists on disk. `None` when the row declares no
+/// projector, or declares one that isn't present.
+///
+/// A VL model needs this to SEE: `llama-server --mmproj <path>` loads the vision
+/// encoder so image content parts are tokenized. Without it the server serves text
+/// but silently ignores images — so the serving spawn treats a Vision-capable row
+/// with no resolvable projector as a LOUD warning (blind, not a fabricated sight),
+/// never a silent capability lie ([[fallbacks-are-illegal-fail-loud]]).
+pub fn resolve_mmproj_for_model(model: &Model) -> Option<PathBuf> {
+    let declared = model.mmproj_local_path.as_deref()?;
+    let expanded = expand_user_path(declared);
+    expanded.exists().then_some(expanded)
+}
+
 /// Resolve a canonical model id to the HF safetensors repo id of its
 /// *trainable* form (`Model::hf_source`). The training lane (`mlx_lm.lora
 /// --model`) and the forge custodian's HF→PEFT→GGUF convert both need the
@@ -442,6 +457,29 @@ mod tests {
             sampling: crate::model_registry::types::ModelSampling::default(),
             persona_serving_eligible: true,
         }
+    }
+
+    // what this catches: a vision model's projector resolves (with `~` expansion +
+    // existence check) so the serving spawn passes `--mmproj` and the model can SEE;
+    // a declared-but-absent projector, or no projector, resolves to None so a Vision
+    // row can't silently claim sight it can't deliver (the spawn's loud-warn path).
+    #[test]
+    fn resolves_mmproj_only_when_the_projector_file_exists() {
+        let dir = tempfile::tempdir().unwrap();
+        let mmproj = dir.path().join("mmproj-f16.gguf");
+        fs::write(&mmproj, b"\0").unwrap();
+
+        let mut m = model("qwen-vl", None, None);
+        m.mmproj_local_path = Some(mmproj.clone());
+        assert_eq!(resolve_mmproj_for_model(&m).as_deref(), Some(mmproj.as_path()));
+
+        // Declared but not on disk → None (serving warns TEXT-ONLY, never fakes sight).
+        m.mmproj_local_path = Some(dir.path().join("absent-mmproj.gguf"));
+        assert!(resolve_mmproj_for_model(&m).is_none());
+
+        // No projector declared → None.
+        m.mmproj_local_path = None;
+        assert!(resolve_mmproj_for_model(&m).is_none());
     }
 
     #[test]
