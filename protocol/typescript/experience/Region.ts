@@ -18,13 +18,22 @@ name: string,
  */
 kind: string, 
 /**
- * Which layout zone this region belongs to.
+ * Where this region sits in the app hierarchy (app-wide vs this activity).
  */
 scope: RegionScope, 
 /**
- * How central this region is within its zone.
+ * How much emphasis this region gets.
  */
 role: RegionRole, 
+/**
+ * Open semantic hint for what this region is FOR (`"content"`, `"context"`,
+ * `"nav"`, `"composer"`, `"status"`) — a renderer maps it to its own idiom
+ * (our desktop shell routes `"context"` to the right inspector, `"content"` to
+ * the center tab). Open string, never an enum
+ * (`[[room-purpose-is-per-recipe-not-an-enum]]`); `None` = let `scope`/`role`
+ * decide placement.
+ */
+slot?: string, 
 /**
  * Whether the region streams (subscribe + re-render on revision) or is static.
  */

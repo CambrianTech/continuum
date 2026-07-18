@@ -39,6 +39,26 @@
 //! frame. The manifest points at the region; the region's ViewState carries its
 //! own provenance. Keeping it there avoids a second Clean/Contended/Unknown type
 //! (`[[compression]]`).
+//!
+//! ## Layout flexibility — any app, three levels, never pixels
+//! The contract must express *any* app, not the 3-pane form we happened to start
+//! with. It does so at three levels, none of which embeds HTML/React (those couple
+//! to one renderer and break on AR / TUI / a persona's RAG — they are **compile
+//! targets** a renderer maps intent onto, not the contract):
+//!
+//! 1. **Inside a region — unbounded.** A [`Region`]'s `kind` is open: a chat, a
+//!    scoreboard, a form, a WebGL canvas, a whole game. The manifest never
+//!    constrains a region's internal content.
+//! 2. **Across regions, default — semantic, not spatial.** A region carries
+//!    *meaning* ([`RegionScope`] = app-wide vs this-activity; [`RegionRole`] =
+//!    emphasis; `slot` = an open hint like `"content"`/`"context"`/`"nav"`). Each
+//!    paradigm maps that meaning to *its own* layout — the 3-pane is only the
+//!    desktop renderer's mapping; mobile → full-screen + sheets, a dashboard →
+//!    grid, AR → floating panels. Nothing is pane-locked.
+//! 3. **Across regions, explicit — the builder.** An optional [`Layout`] tree
+//!    (`row`/`col`/`grid`/`stack`/`tabs` over regions, with relative *weights*,
+//!    never pixels) for authors who want a specific composition. Always optional;
+//!    a renderer that can't honor it falls back to level 2.
 
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -70,6 +90,61 @@ pub struct Experience {
     pub affordances: Vec<Affordance>,
     /// Who is in the room and their structural standing.
     pub membership: Vec<Member>,
+    /// OPTIONAL explicit composition (layout level 3). `None` (the common case) =
+    /// the renderer lays regions out from their `scope`/`role`/`slot` (level 2, and
+    /// each paradigm does it organically). `Some` = a renderer-agnostic tree of
+    /// `row`/`col`/`grid`/`stack`/`tabs` over the regions, sized by relative weight,
+    /// never pixels — the "builder" for authors who want a specific arrangement. A
+    /// renderer that can't honor it falls back to level 2, so it never traps an
+    /// experience in one form.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub layout: Option<Layout>,
+}
+
+/// An optional, renderer-agnostic composition tree over a room's regions — the
+/// level-3 layout escape hatch. Containers nest freely; a leaf names a [`Region`].
+/// Sizing is by relative `weight` (flex-like), **never pixels**, so a phone, a wide
+/// desktop, and an AR panel each realize the same intent at their own scale.
+/// HTML/React/SwiftUI/TUI are compile targets a renderer maps this onto — never
+/// embedded here (that would couple the contract to one surface).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../../protocol/typescript/experience/Layout.ts")]
+#[serde(tag = "container", rename_all = "lowercase")]
+pub enum Layout {
+    /// Leaf: the region with this `name`.
+    Region { name: String },
+    /// Children arranged left-to-right.
+    Row { children: Vec<LayoutChild> },
+    /// Children arranged top-to-bottom.
+    Col { children: Vec<LayoutChild> },
+    /// Children z-stacked / overlaid (last on top).
+    Stack { children: Vec<LayoutChild> },
+    /// Children flowed into `cols` columns.
+    Grid { cols: u32, children: Vec<LayoutChild> },
+    /// Children as tabs — one visible at a time.
+    Tabs { children: Vec<LayoutChild> },
+}
+
+/// A child in a [`Layout`] with its relative sizing weight (flex-like share of the
+/// parent, never pixels). `weight: None` = an equal share.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../../protocol/typescript/experience/LayoutChild.ts")]
+#[serde(rename_all = "camelCase")]
+pub struct LayoutChild {
+    /// The nested container or region leaf.
+    pub node: Layout,
+    /// Relative sizing share among siblings. `None` = equal.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub weight: Option<f32>,
+}
+
+impl LayoutChild {
+    /// A leaf child naming a region, with an optional weight — the common builder call.
+    pub fn region(name: &str, weight: Option<f32>) -> Self {
+        Self { node: Layout::Region { name: name.to_string() }, weight }
+    }
 }
 
 /// A view-intent: one surface of the room bound to a live payload `kind`. Carries
@@ -84,29 +159,40 @@ pub struct Region {
     /// `ObserverSpec` subscribes to and a `StateEnvelope` carries (e.g. a
     /// `ChatViewState`'s `KIND`). The renderer resolves the payload by this kind.
     pub kind: String,
-    /// Which layout zone this region belongs to.
+    /// Where this region sits in the app hierarchy (app-wide vs this activity).
     pub scope: RegionScope,
-    /// How central this region is within its zone.
+    /// How much emphasis this region gets.
     pub role: RegionRole,
+    /// Open semantic hint for what this region is FOR (`"content"`, `"context"`,
+    /// `"nav"`, `"composer"`, `"status"`) — a renderer maps it to its own idiom
+    /// (our desktop shell routes `"context"` to the right inspector, `"content"` to
+    /// the center tab). Open string, never an enum
+    /// (`[[room-purpose-is-per-recipe-not-an-enum]]`); `None` = let `scope`/`role`
+    /// decide placement.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub slot: Option<String>,
     /// Whether the region streams (subscribe + re-render on revision) or is static.
     pub live: bool,
 }
 
-/// The layout zone a region belongs to — the who/where/which axes made structural
-/// (`docs/architecture/LAYOUT-PHILOSOPHY.md`). Meaning, not pixels: desktop maps
-/// these to three draggable panes, mobile to a segmented full-screen + nav, an
-/// agent to grouped `observe` fields.
+/// Where a region sits in the app hierarchy — the only paradigm-INDEPENDENT
+/// structural axis (the who/where split, `docs/architecture/LAYOUT-PHILOSOPHY.md`).
+/// Deliberately NOT a pane count: a *renderer* maps these to its own zones. Our
+/// desktop (VS Code-style) shell maps `Global` → the left rail and `Activity` → the
+/// current tab, then uses `role`/`slot` to place activity regions (`"content"` →
+/// center, `"context"`/peripheral → the right inspector). Mobile maps `Global` →
+/// drawer + bottom tabs and `Activity` → the full screen; a dashboard renderer may
+/// ignore scope and drive purely off [`Experience::layout`]. The 3-pane form is one
+/// renderer's choice, never the contract's.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../../protocol/typescript/experience/RegionScope.ts")]
 #[serde(rename_all = "lowercase")]
 pub enum RegionScope {
-    /// App-wide, same across every room (rooms list, live activities). Left/explorer.
+    /// App-wide, the same across every room (rooms list, live activities, identity).
     Global,
-    /// The current activity's own content. Center.
+    /// This activity's own surface — its content and its context.
     Activity,
-    /// The current activity's context/inspector (scoreboard, participants,
-    /// recipe-scoped tools). Right.
-    Inspector,
 }
 
 /// How central a region is within its zone — drives emphasis, not size.
@@ -226,8 +312,9 @@ pub fn benchmark_experience(examinee_peer_id: &str, owner_peer_id: &str) -> Expe
             Region {
                 name: "scoreboard".to_string(),
                 kind: "benchmark".to_string(),
-                scope: RegionScope::Inspector,
-                role: RegionRole::Primary,
+                scope: RegionScope::Activity,
+                role: RegionRole::Primary, // the score IS the point (emphasis)…
+                slot: Some("context".to_string()), // …but it's context → right inspector
                 live: true,
             },
             Region {
@@ -235,6 +322,7 @@ pub fn benchmark_experience(examinee_peer_id: &str, owner_peer_id: &str) -> Expe
                 kind: "benchmark".to_string(),
                 scope: RegionScope::Activity,
                 role: RegionRole::Primary,
+                slot: Some("content".to_string()),
                 live: true,
             },
             Region {
@@ -242,6 +330,7 @@ pub fn benchmark_experience(examinee_peer_id: &str, owner_peer_id: &str) -> Expe
                 kind: "benchmark".to_string(),
                 scope: RegionScope::Activity,
                 role: RegionRole::Peripheral,
+                slot: Some("content".to_string()),
                 live: true,
             },
         ],
@@ -253,6 +342,24 @@ pub fn benchmark_experience(examinee_peer_id: &str, owner_peer_id: &str) -> Expe
             Member { peer_id: examinee_peer_id.to_string(), standing: Standing::Examinee },
             Member { peer_id: owner_peer_id.to_string(), standing: Standing::Owner },
         ],
+        // Level-3 explicit composition: content column (current task over the run
+        // feed) beside the scoreboard — proving arbitrary layout is expressible
+        // without pixels. A renderer that ignores this still gets a sane layout from
+        // scope/role/slot (level 2).
+        layout: Some(Layout::Row {
+            children: vec![
+                LayoutChild {
+                    node: Layout::Col {
+                        children: vec![
+                            LayoutChild::region("central", Some(2.0)),
+                            LayoutChild::region("feed", Some(3.0)),
+                        ],
+                    },
+                    weight: Some(3.0),
+                },
+                LayoutChild::region("scoreboard", Some(1.0)),
+            ],
+        }),
     }
 }
 
@@ -274,13 +381,15 @@ pub fn chat_experience(owner_peer_id: &str, member_peer_id: &str) -> Experience 
                 kind: chat_kind.clone(),
                 scope: RegionScope::Activity,
                 role: RegionRole::Primary,
+                slot: Some("content".to_string()),
                 live: true,
             },
             Region {
                 name: "roster".to_string(),
                 kind: chat_kind,
-                scope: RegionScope::Inspector,
+                scope: RegionScope::Activity,
                 role: RegionRole::Peripheral,
+                slot: Some("context".to_string()),
                 live: true,
             },
         ],
@@ -289,6 +398,10 @@ pub fn chat_experience(owner_peer_id: &str, member_peer_id: &str) -> Experience 
             Member { peer_id: owner_peer_id.to_string(), standing: Standing::Owner },
             Member { peer_id: member_peer_id.to_string(), standing: Standing::Member },
         ],
+        // No explicit layout — chat relies on level-2 semantic placement, and each
+        // paradigm arranges content + context organically. Proof the builder tree is
+        // genuinely optional.
+        layout: None,
     }
 }
 
@@ -306,15 +419,18 @@ mod tests {
         let bench = benchmark_experience("examinee-1", "joel");
         let chat = chat_experience("joel", "asha");
 
-        // Benchmark: structured, its primary surface is the score in the inspector.
+        // Benchmark: structured, its primary surface is the score — activity-scoped,
+        // slotted as context (the desktop shell routes that to the right inspector),
+        // emphasised as primary. Placement is meaning, not a hardcoded pane.
         assert_eq!(bench.purpose, "benchmark/hard-rs");
-        assert!(bench
-            .regions
-            .iter()
-            .any(|r| r.name == "scoreboard"
-                && r.scope == RegionScope::Inspector
-                && r.role == RegionRole::Primary));
+        assert!(bench.regions.iter().any(|r| r.name == "scoreboard"
+            && r.scope == RegionScope::Activity
+            && r.slot.as_deref() == Some("context")
+            && r.role == RegionRole::Primary));
         assert!(bench.membership.iter().any(|m| m.standing == Standing::Examinee));
+        // Benchmark opts into explicit composition (level 3); chat does not (level 2).
+        assert!(bench.layout.is_some(), "benchmark declares an explicit layout tree");
+        assert!(chat.layout.is_none(), "chat relies on organic semantic placement");
 
         // Chat: social, its primary surface is the message stream in the activity zone.
         assert_eq!(chat.purpose, "chat");
@@ -333,6 +449,44 @@ mod tests {
             let round: Experience = serde_json::from_str(&json).expect("and round-trip");
             assert_eq!(&&round, &exp);
         }
+    }
+
+    // what this catches: the level-3 layout tree must express ARBITRARY composition
+    // — not just the 3-pane form we started with — without pixels. If a refactor
+    // ever collapsed Layout back toward a fixed pane model, a grid-of-tabs would stop
+    // round-tripping. Proves a designer isn't limited to the VS Code shell's shape.
+    #[test]
+    fn layout_tree_expresses_arbitrary_composition() {
+        // A 2-column dashboard whose left cell is itself a tab group — nothing a
+        // fixed 3-pane scope could describe.
+        let dash = Layout::Grid {
+            cols: 2,
+            children: vec![
+                LayoutChild {
+                    node: Layout::Tabs {
+                        children: vec![
+                            LayoutChild::region("chart", None),
+                            LayoutChild::region("table", None),
+                        ],
+                    },
+                    weight: Some(2.0),
+                },
+                LayoutChild::region("sidebar", Some(1.0)),
+            ],
+        };
+        let exp = Experience {
+            purpose: "dashboard".to_string(),
+            regions: vec![],
+            affordances: vec![],
+            membership: vec![],
+            layout: Some(dash),
+        };
+        let json = serde_json::to_string(&exp).expect("arbitrary layout serializes");
+        // Tagged by `container` — a clean discriminated union on the wire.
+        assert!(json.contains(r#""container":"grid""#));
+        assert!(json.contains(r#""container":"tabs""#));
+        let round: Experience = serde_json::from_str(&json).expect("and round-trips");
+        assert_eq!(round, exp);
     }
 
     // what this catches: `who_may` must be DERIVED from the ACL, never hand-set —
