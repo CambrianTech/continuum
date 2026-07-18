@@ -48,6 +48,15 @@ impl MediaFrame {
         &self.content_hash
     }
 
+    /// Eagerly warm a set of scaled cells CONCURRENTLY — "if we know we'll need it,
+    /// do it ahead of time, ONCE, not on the hot path." Call it when a frame is
+    /// about to be shown (a room opening media, a bench about to score a UI) so the
+    /// later reads are cache hits (the fast lane). Idempotent — an already-cached
+    /// cell is a free hit, so re-warming never recomputes.
+    pub async fn prefetch(&self, compute: &SharedCompute, sizes: &[DestSize]) {
+        futures::future::join_all(sizes.iter().map(|&dest| self.scaled(compute, None, dest))).await;
+    }
+
     /// A scaled/cropped derivative, computed at most ONCE per `(content, crop,
     /// dest)` via `compute` and shared as `Arc<Result<..>>`. Two calls with the
     /// same spec return the SAME `Arc` (zero-copy, one transform); different specs
@@ -156,6 +165,32 @@ mod tests {
         // A different destination is a distinct cell (its own cached transform).
         let other = frame.scaled(&compute, None, DestSize { width: 10, height: 8 }).await;
         assert!(!Arc::ptr_eq(&first, &other), "different spec → different cell");
+    }
+
+    // what this catches: prefetch WARMS cells ahead of time — after it, the
+    // requested sizes are already in the cache (proven by key_count), so the later
+    // hot-path reads are free hits. "Do it ahead of time, once, not on the hot path."
+    #[tokio::test]
+    async fn prefetch_warms_cells_ahead_of_time() {
+        let compute = SharedCompute::new();
+        let frame = MediaFrame::from_bytes(png(64, 64));
+        let sizes = [
+            DestSize { width: 16, height: 16 },
+            DestSize { width: 32, height: 32 },
+        ];
+
+        assert_eq!(compute.key_count(frame.content_hash()), 0, "cold");
+        frame.prefetch(&compute, &sizes).await;
+        assert_eq!(
+            compute.key_count(frame.content_hash()),
+            sizes.len(),
+            "prefetch warmed every requested size"
+        );
+
+        // A later read is a cache hit — same Arc, no recompute.
+        let hit = frame.scaled(&compute, None, sizes[0]).await;
+        let again = frame.scaled(&compute, None, sizes[0]).await;
+        assert!(Arc::ptr_eq(&hit, &again));
     }
 
     // what this catches: two SEPARATE frame handles to the SAME content share the
