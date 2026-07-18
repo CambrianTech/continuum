@@ -14,3 +14,4 @@ export * from './surface';
 export { imageDiff } from './imageDiff';
 export { DomSurface, findChromium, type DomSurfaceOptions, type DomViewSpec, type DomAction } from './domSurface';
 export { SceneSurface, type SceneSurfaceOptions, type SceneViewSpec, type SceneAction } from './sceneSurface';
+export { PerceptionSession, type Observation, type Interaction } from './session';
