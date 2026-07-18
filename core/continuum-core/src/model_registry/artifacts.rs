@@ -32,19 +32,51 @@ pub fn resolve_gguf_for_model_id(model_id: &str) -> Option<PathBuf> {
     resolve_gguf(model_id, None, None)
 }
 
-/// Resolve a vision/audio model's multimodal projector (mmproj) GGUF for serving —
-/// expands `~` and VERIFIES the file exists on disk. `None` when the row declares no
-/// projector, or declares one that isn't present.
+/// Resolve a vision/audio model's multimodal projector (mmproj) GGUF for serving.
+/// Two tiers, in order — an explicitly declared path first, then the SAME cache the
+/// GGUF resolves from:
 ///
-/// A VL model needs this to SEE: `llama-server --mmproj <path>` loads the vision
-/// encoder so image content parts are tokenized. Without it the server serves text
-/// but silently ignores images — so the serving spawn treats a Vision-capable row
-/// with no resolvable projector as a LOUD warning (blind, not a fabricated sight),
-/// never a silent capability lie ([[fallbacks-are-illegal-fail-loud]]).
+/// 1. **Declared local path** — the row's `mmproj_local_path`, with `~` expanded, when
+///    it's present on disk. Operator/row placement is honored first.
+/// 2. **Beside the resolved GGUF** — the projector ships in the same `*-GGUF` repo
+///    snapshot as the model (bartowski-style layout: `model-Q4_K_M.gguf` +
+///    `mmproj-model-f16.gguf` side by side). So we resolve the GGUF the normal way
+///    (local root → HF cache) and look for a `*mmproj*.gguf` sibling in its directory.
+///
+/// Tier 2 is what makes vision serving self-provisioning: pulling the model pulls its
+/// projector into the HF cache, and the mmproj resolves from there exactly like the
+/// GGUF does — no hand-placed path, no manual step. This mirrors
+/// [`resolve_gguf_for_model`]; a projector must never require a placement the GGUF
+/// doesn't ([[fallbacks-are-illegal-fail-loud]]).
+///
+/// `None` when the row declares no projector AND none sits beside the GGUF. A VL model
+/// needs this to SEE: `llama-server --mmproj <path>` loads the vision encoder so image
+/// content parts are tokenized. Without it the server serves text but silently ignores
+/// images — so the serving spawn treats a Vision-capable row with an unresolved
+/// projector as a LOUD warning (blind, not a fabricated sight), never a silent
+/// capability lie.
 pub fn resolve_mmproj_for_model(model: &Model) -> Option<PathBuf> {
-    let declared = model.mmproj_local_path.as_deref()?;
-    let expanded = expand_user_path(declared);
-    expanded.exists().then_some(expanded)
+    // Tier 1: an explicitly declared projector that's actually on disk.
+    if let Some(declared) = model.mmproj_local_path.as_deref() {
+        let expanded = expand_user_path(declared);
+        if expanded.exists() {
+            return Some(expanded);
+        }
+    }
+    // Tier 2: the projector sibling in the GGUF's resolved snapshot dir.
+    let gguf = resolve_gguf_for_model(model)?;
+    find_mmproj_beside(gguf.parent()?)
+}
+
+/// Find a multimodal projector GGUF sitting in `dir` — a `*mmproj*.gguf` sibling of
+/// the model's GGUF (the layout every `*-GGUF` vision repo snapshot uses). First match
+/// wins; a snapshot ships one projector.
+fn find_mmproj_beside(dir: &Path) -> Option<PathBuf> {
+    fs::read_dir(dir).ok()?.flatten().find_map(|entry| {
+        let path = entry.path();
+        let name = path.file_name()?.to_str()?.to_ascii_lowercase();
+        (name.contains("mmproj") && name.ends_with(".gguf")).then_some(path)
+    })
 }
 
 /// Resolve a canonical model id to the HF safetensors repo id of its
@@ -459,27 +491,69 @@ mod tests {
         }
     }
 
-    // what this catches: a vision model's projector resolves (with `~` expansion +
-    // existence check) so the serving spawn passes `--mmproj` and the model can SEE;
-    // a declared-but-absent projector, or no projector, resolves to None so a Vision
-    // row can't silently claim sight it can't deliver (the spawn's loud-warn path).
+    // what this catches: tier-1 resolution — an explicitly declared projector resolves
+    // (with `~` expansion + existence check) so the serving spawn passes `--mmproj` and
+    // the model can SEE; a declared-but-absent projector with no GGUF-sibling either,
+    // or no projector at all, resolves to None so a Vision row can't silently claim
+    // sight it can't deliver (the spawn's loud-warn path). Runs under an empty test HOME
+    // so tier-2's `resolve_gguf` finds nothing — the None cases stay deterministic and
+    // don't leak a real on-disk projector from the dev machine's HF cache (cf. #72).
     #[test]
-    fn resolves_mmproj_only_when_the_projector_file_exists() {
-        let dir = tempfile::tempdir().unwrap();
-        let mmproj = dir.path().join("mmproj-f16.gguf");
-        fs::write(&mmproj, b"\0").unwrap();
+    fn resolves_declared_mmproj_only_when_the_projector_file_exists() {
+        let home = tempfile::tempdir().unwrap();
+        with_test_home(home.path(), || {
+            let dir = tempfile::tempdir().unwrap();
+            let mmproj = dir.path().join("mmproj-f16.gguf");
+            fs::write(&mmproj, b"\0").unwrap();
 
-        let mut m = model("qwen-vl", None, None);
-        m.mmproj_local_path = Some(mmproj.clone());
-        assert_eq!(resolve_mmproj_for_model(&m).as_deref(), Some(mmproj.as_path()));
+            let mut m = model("qwen-vl", None, None);
+            m.mmproj_local_path = Some(mmproj.clone());
+            assert_eq!(resolve_mmproj_for_model(&m).as_deref(), Some(mmproj.as_path()));
 
-        // Declared but not on disk → None (serving warns TEXT-ONLY, never fakes sight).
-        m.mmproj_local_path = Some(dir.path().join("absent-mmproj.gguf"));
-        assert!(resolve_mmproj_for_model(&m).is_none());
+            // Declared but not on disk, and no GGUF resolves (empty HOME) → None
+            // (serving warns TEXT-ONLY, never fakes sight).
+            m.mmproj_local_path = Some(dir.path().join("absent-mmproj.gguf"));
+            assert!(resolve_mmproj_for_model(&m).is_none());
 
-        // No projector declared → None.
-        m.mmproj_local_path = None;
-        assert!(resolve_mmproj_for_model(&m).is_none());
+            // No projector declared, no GGUF → None.
+            m.mmproj_local_path = None;
+            assert!(resolve_mmproj_for_model(&m).is_none());
+        });
+    }
+
+    // what this catches: tier-2 self-provisioning — a VL model's mmproj auto-resolves
+    // from the SAME HF cache snapshot as its GGUF, with NO declared-local path. The
+    // projector ships beside the GGUF in `*-GGUF` repos, so pulling the model into the
+    // HF cache is enough; there is no separate hand-placement step for the projector.
+    // This is the resolution asymmetry fix: the mmproj now resolves like the GGUF
+    // (local → HF cache), so vision serving is managed, not manually wired.
+    #[test]
+    fn resolves_mmproj_from_the_gguf_hf_cache_snapshot_when_not_declared() {
+        let home = tempfile::tempdir().unwrap();
+        with_test_home(home.path(), || {
+            let snap = home.path().join(
+                ".cache/huggingface/hub/models--continuum-ai--qwen3-vl-7b-GGUF/snapshots/abc",
+            );
+            fs::create_dir_all(&snap).unwrap();
+            let gguf = snap.join("qwen3-vl-7b-Q4_K_M.gguf");
+            write_empty_gguf(&gguf);
+            let mmproj = snap.join("mmproj-qwen3-vl-7b-f16.gguf");
+            write_empty_gguf(&mmproj);
+
+            // GGUF resolves from the HF cache via the hint; the projector is NOT declared
+            // locally (declared path is stale/absent) but sits beside the GGUF.
+            let mut m = model("qwen3-vl-7b", Some("continuum-ai/qwen3-vl-7b-GGUF"), None);
+            m.mmproj_local_path = Some(PathBuf::from("~/nonexistent/mmproj.gguf"));
+            assert_eq!(
+                resolve_mmproj_for_model(&m).as_deref(),
+                Some(mmproj.as_path()),
+                "mmproj must resolve beside the GGUF in the HF cache snapshot"
+            );
+
+            // Tier 1 still wins when a declared projector is actually present.
+            m.mmproj_local_path = Some(mmproj.clone());
+            assert_eq!(resolve_mmproj_for_model(&m).as_deref(), Some(mmproj.as_path()));
+        });
     }
 
     #[test]
