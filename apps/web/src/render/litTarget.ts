@@ -9,25 +9,31 @@
  * verified by the before/after screenshot of the live three-panel.
  */
 
-import { html, type TemplateResult } from 'lit';
+import { html, nothing, type TemplateResult } from 'lit';
 import type {
   RenderTarget,
   WorkspaceView,
   ListingView,
   ContentView,
   ContextPanelView,
+  PanelWidget,
 } from '@continuum/patterns';
-import { memberCardFromCell, listingCell } from './parts';
+import { renderListing } from './parts';
 import { webContentRegistry } from '../content/registry';
+import { webWidgetRegistry } from './widgets';
+
+/** The first `kind:'listing'` widget in the rail — the roster — used only for the
+ *  header's "active / total" count. The rail itself draws every widget generically. */
+function rosterOf(ws: WorkspaceView): ListingView | undefined {
+  const w = ws.left.find((widget) => widget.kind === 'listing');
+  return w ? (w.body as ListingView) : undefined;
+}
 
 export const webTarget: RenderTarget<TemplateResult> = {
   /** A `Listing`. The roster draws as rich member cards (the neutral cell now carries
    *  glyph/name/badges/status/meters); every other listing uses the generic cell. */
   listing(view: ListingView): TemplateResult {
-    if (view.id === 'roster') {
-      return html`<ul class="roster">${view.cells.map(memberCardFromCell)}</ul>`;
-    }
-    return html`<ul class="cells">${view.cells.map(listingCell)}</ul>`;
+    return renderListing(view);
   },
 
   /** The center, dispatched by room purpose through the web Content registry. */
@@ -39,12 +45,19 @@ export const webTarget: RenderTarget<TemplateResult> = {
     return html`${view.listings.map((l) => this.listing(l))}`;
   },
 
-  /** The three-panel who/what/where — reproduced from the WorkspaceView alone. */
+  /** One left-rail widget, dispatched by kind through the web Widget registry. */
+  widget(view: PanelWidget): TemplateResult {
+    return webWidgetRegistry.render(view);
+  },
+
+  /** The three-panel who/what/where — reproduced from the WorkspaceView alone. The left
+   *  rail is now a GLOBAL WIDGET STACK: each `PanelWidget` draws as a titled rail section
+   *  (Metrics · Rooms · Users & Agents · …), dispatched by kind. */
   workspace(ws: WorkspaceView): TemplateResult {
     const room = ws.nav.cells[0];
-    const rosterView = ws.left[0] ?? { id: 'roster', title: 'Users & Agents', cells: [] };
-    const memberCount = rosterView.cells.length;
-    const activeCount = rosterView.cells.filter((c) => c.status === 'active').length;
+    const roster = rosterOf(ws);
+    const memberCount = roster?.cells.length ?? 0;
+    const activeCount = roster?.cells.filter((c) => c.status === 'active').length ?? 0;
     return html`
       <header class="room">
         <div class="room-name">${room?.title ?? ''}</div>
@@ -54,12 +67,8 @@ export const webTarget: RenderTarget<TemplateResult> = {
         </div>
       </header>
       <div class="panels">
-        <aside class="who" aria-label="roster">
-          <div class="who-head">
-            <span class="who-title">Users &amp; Agents</span>
-            <span class="who-count">${memberCount}</span>
-          </div>
-          ${this.listing(rosterView)}
+        <aside class="who" aria-label="global widgets">
+          ${ws.left.length > 0 ? ws.left.map((w) => this.widget(w)) : nothing}
         </aside>
         <section class="what" aria-label="conversation">${this.content(ws.content)}</section>
       </div>

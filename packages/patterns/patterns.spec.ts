@@ -12,6 +12,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   createContentRegistry,
+  listingWidget,
   type ListingView,
   type ContentView,
   type WorkspaceView,
@@ -42,8 +43,9 @@ function htmlTarget(content: ContentRegistry<string>): RenderTarget<string> {
       `</ul></section>`,
     content: (v) => content.render(v),
     contextPanel: (v) => v.listings.map((l) => self.listing(l)).join(''),
+    widget: (w) => `<div class="widget" data-kind="${w.kind}">${self.listing(w.body as ListingView)}</div>`,
     workspace: (v) =>
-      `<nav>${self.listing(v.nav)}</nav><aside>${v.left.map((l) => self.listing(l)).join('')}</aside>` +
+      `<nav>${self.listing(v.nav)}</nav><aside>${v.left.map((w) => self.widget(w)).join('')}</aside>` +
       `<main>${self.content(v.content)}</main><section>${self.contextPanel(v.context)}</section>`,
   };
   return self;
@@ -63,8 +65,9 @@ function ragTarget(content: ContentRegistry<string>): RenderTarget<string> {
         .join('\n'),
     content: (v) => content.render(v),
     contextPanel: (v) => v.listings.map((l) => self.listing(l)).join('\n\n'),
+    widget: (w) => self.listing(w.body as ListingView),
     workspace: (v) =>
-      `${self.listing(v.nav)}\n\n${v.left.map((l) => self.listing(l)).join('\n\n')}\n\n` +
+      `${self.listing(v.nav)}\n\n${v.left.map((w) => self.widget(w)).join('\n\n')}\n\n` +
       `${self.content(v.content)}\n\n${self.contextPanel(v.context)}`,
   };
   return self;
@@ -109,7 +112,7 @@ describe('pattern primitives — one projection, many render targets', () => {
 
     const ws: WorkspaceView = {
       nav: { id: 'rooms', title: 'Rooms', cells: [{ id: 'general', title: 'general', status: 'active' }] },
-      left: [roster],
+      left: [listingWidget(roster)],
       content: { purpose: 'chat', body: { text: 'hello' } } satisfies ContentView<{ text: string }>,
       context: { listings: [] } satisfies ContextPanelView,
     };

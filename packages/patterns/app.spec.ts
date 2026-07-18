@@ -3,9 +3,11 @@ import {
   defineApp,
   mount,
   createContentRegistry,
+  listingWidget,
   type WorkspaceView,
   type RenderTarget,
   type ListingView,
+  type PanelWidget,
   type ContentView,
   type ContextPanelView,
   type AppSource,
@@ -25,7 +27,11 @@ const app = defineApp<RoomState>({
   project: (s): WorkspaceView => ({
     nav: { id: 'rooms', title: 'Rooms', cells: [{ id: s.room, title: s.room }] },
     left: [
-      { id: 'roster', title: 'Users & Agents', cells: s.people.map((p) => ({ id: p, title: p })) },
+      listingWidget({
+        id: 'roster',
+        title: 'Users & Agents',
+        cells: s.people.map((p) => ({ id: p, title: p })),
+      }),
     ],
     content: { purpose: 'chat', body: { text: s.message } },
     context: { listings: [] },
@@ -39,12 +45,15 @@ function makeTarget(label: string): RenderTarget<string> {
   content.register<{ text: string }>('chat', (b) => `${label}:msg(${b.text})`);
   const listing = (v: ListingView) =>
     `${label}:list(${v.title}:${v.cells.map((c) => c.title).join(',')})`;
+  // A rail widget renders its listing body (the only kind this test uses).
+  const widget = (w: PanelWidget) => listing(w.body as ListingView);
   return {
     listing,
     content: (v: ContentView) => content.render(v),
     contextPanel: (v: ContextPanelView) => `${label}:ctx(${v.listings.length})`,
+    widget,
     workspace: (v: WorkspaceView) =>
-      `${label}:ws[nav=${listing(v.nav)} left=${v.left.map(listing).join('|')} ${content.render(v.content)}]`,
+      `${label}:ws[nav=${listing(v.nav)} left=${v.left.map(widget).join('|')} ${content.render(v.content)}]`,
   };
 }
 

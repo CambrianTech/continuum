@@ -12,7 +12,7 @@
  * satisfies `RenderTarget<string>` (no per-call flag).
  */
 
-import { createContentRegistry, type RenderTarget, type WorkspaceView, type ListingView, type ListingCell, type ContentView, type ContextPanelView } from '@continuum/patterns';
+import { createContentRegistry, type RenderTarget, type WorkspaceView, type ListingView, type ListingCell, type ContentView, type ContextPanelView, type PanelWidget } from '@continuum/patterns';
 import type { ChatContentBody, MessageRowVM, MemberKind } from '@continuum/chat-view';
 
 const SGR = {
@@ -71,17 +71,29 @@ export function createAnsiTarget(useColor = true): RenderTarget<string> {
     contextPanel(_view: ContextPanelView): string {
       return '';
     },
+    /** One left-rail widget. A `'listing'` draws its rows; a terminal can't paint a
+     *  sparkline, so a richer kind (metrics/status) degrades to its title line — the
+     *  ANSI analogue of mobile dropping the dossier. */
+    widget(view: PanelWidget): string {
+      if (view.kind === 'listing') return this.listing(view.body as ListingView);
+      return paint('dim', `  [${view.title}]`);
+    },
     workspace(ws: WorkspaceView): string {
       const room = ws.nav.cells[0];
-      const roster = ws.left[0]?.cells ?? [];
+      // Count comes from the roster — the first `kind:'listing'` widget in the rail.
+      const rosterWidget = ws.left.find((w) => w.kind === 'listing');
+      const roster = rosterWidget ? (rosterWidget.body as ListingView).cells : [];
       const activeCount = roster.filter((c) => c.status === 'active').length;
       const lines: string[] = [];
       lines.push(
         `${paint('cyan', paint('bold', room?.title ?? ''))}  ${paint('dim', `${activeCount}/${roster.length} here`)} · ${paint('green', '●')} ${paint('dim', 'live')}`,
       );
-      lines.push('');
-      lines.push(paint('yellow', 'WHO'));
-      lines.push(this.listing(ws.left[0] ?? { id: 'roster', title: '', cells: [] }));
+      // The global widget stack: each widget titled, drawn by kind.
+      for (const w of ws.left) {
+        lines.push('');
+        lines.push(paint('yellow', w.title.toUpperCase()));
+        lines.push(this.widget(w));
+      }
       lines.push('');
       lines.push(paint('yellow', 'WHAT'));
       lines.push(this.content(ws.content));

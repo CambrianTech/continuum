@@ -9,6 +9,7 @@
  * a target only draws them.
  */
 
+import { listingWidget } from '@continuum/patterns';
 import type {
   ListingView,
   ListingCell,
@@ -84,7 +85,9 @@ export function chatWorkspace(vm: ChatViewModel): WorkspaceView {
   };
   return {
     nav: roomsListing(vm),
-    left: [rosterListing(vm)],
+    // The left rail as a global widget stack: the roster is one `kind:'listing'` widget.
+    // Metrics / Rooms widgets join this stack as they land (task #184) with no shape change.
+    left: [listingWidget(rosterListing(vm))],
     content,
     context: { listings: [] },
   };

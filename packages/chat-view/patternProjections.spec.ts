@@ -74,8 +74,12 @@ describe('chat → pattern projections', () => {
   it('composes the room into a Workspace with purpose-keyed Content', () => {
     const ws = chatWorkspace(vm);
     expect(ws.nav.id).toBe('rooms');
+    // The left rail is a widget stack; the roster is one `kind:'listing'` widget whose
+    // body is the roster ListingView (the rail grows Metrics/Rooms widgets in #184).
     expect(ws.left).toHaveLength(1);
+    expect(ws.left[0]?.kind).toBe('listing');
     expect(ws.left[0]?.id).toBe('roster');
+    expect((ws.left[0]?.body as { id: string }).id).toBe('roster');
     expect(ws.content.purpose).toBe('chat');
     // `WorkspaceView.content.body` is deliberately opaque (`ContentView<unknown>`) at
     // the workspace boundary; a chat-aware test narrows to the exported chat body.

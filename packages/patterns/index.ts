@@ -87,14 +87,60 @@ export interface ContextPanelView {
   readonly listings: readonly ListingView[];
 }
 
+// ── PanelWidget (the left rail's global widget stack) ────────────────────────
+
+/** One widget in a panel stack — the left rail's `Metrics` (resources + spend),
+ *  `Rooms`, `Users & Agents`, and (later) `Continuon` / `Status`. A widget is
+ *  dispatched by `kind` EXACTLY as `Content` is dispatched by `purpose`: the rail is
+ *  heterogeneous (a chart is not a list), so a target draws each widget through its
+ *  `WidgetRegistry`. A `Listing` is simply `kind:'listing'` whose `body` is a
+ *  `ListingView` — the roster/rooms lists stay the one `Listing` primitive, now as
+ *  one widget kind among several. This is what makes the left rail a real, reorderable,
+ *  resizable stack instead of a hardcoded roster ([[app-shell-layout-left-global-right-per-activity]]). */
+export interface PanelWidget<Body = unknown> {
+  /** Stable identity — the key per-user layout state (height / order / collapse) is
+   *  stored under, so a resized/reordered rail survives across sessions and devices. */
+  readonly id: string;
+  /** Dispatch key: `'listing' | 'metrics' | 'rooms' | 'status' | 'continuon'`. A target
+   *  looks this up in its `WidgetRegistry` and **fails loud** on an unknown kind. */
+  readonly kind: string;
+  /** Panel header a target draws as the widget's title bar ("AI Performance", "Rooms"). */
+  readonly title: string;
+  /** kind-specific payload the registered widget renderer understands (a `ListingView`
+   *  for `'listing'`, a metrics snapshot for `'metrics'`, …). Opaque here. */
+  readonly body: Body;
+  /** Where the widget lives: `'global'` persists across every activity (the left rail
+   *  is the same in chat, metrics, and the call), `'activity'` is scoped to the focused
+   *  room. Default `'global'`. */
+  readonly scope?: 'global' | 'activity';
+}
+
+/** Wrap a `ListingView` as a `kind:'listing'` `PanelWidget` — the common case (the
+ *  roster, a rooms list). Keeps constructors terse and single-sources the wrapping so
+ *  the widget id/title default to the listing's own ([[compression]]). */
+export function listingWidget(
+  view: ListingView,
+  over?: Partial<Omit<PanelWidget<ListingView>, 'kind' | 'body'>>,
+): PanelWidget<ListingView> {
+  return {
+    id: over?.id ?? view.id,
+    kind: 'listing',
+    title: over?.title ?? view.title,
+    body: view,
+    scope: over?.scope ?? 'global',
+  };
+}
+
 /** The `Workspace` shell — the whole who/what/where for one focused room. `nav` is
  *  the rooms-`Listing`: the tab bar for a human, the channel-attention set for a
  *  persona. `left`/`content`/`context` are the three zones. */
 export interface WorkspaceView {
   /** The rooms-`Listing` — tab bar == persona channel-attention (one nav primitive). */
   readonly nav: ListingView;
-  /** Left-panel listings (users, rooms/DMs) — identical across every activity. */
-  readonly left: readonly ListingView[];
+  /** The left rail — a GLOBAL, reorderable/resizable stack of `PanelWidget`s (Metrics,
+   *  Rooms, Users & Agents, …), identical across every activity. A roster is one widget
+   *  (`kind:'listing'`), not the whole rail. */
+  readonly left: readonly PanelWidget[];
   /** The focused room's content, dispatched by its purpose. */
   readonly content: ContentView;
   /** The right-hand supporting widgets for the focused activity. */
@@ -124,7 +170,48 @@ export interface RenderTarget<Out> {
   listing(view: ListingView): Out;
   content(view: ContentView): Out;
   contextPanel(view: ContextPanelView): Out;
+  /** Draw one left-rail `PanelWidget`, dispatched by its `kind` through the target's
+   *  `WidgetRegistry` — the panel-stack analogue of `content` dispatching by purpose.
+   *  Adding a rail widget is registering a renderer, never a new target method. */
+  widget(view: PanelWidget): Out;
   workspace(view: WorkspaceView): Out;
+}
+
+// ── WidgetRegistry — the left-rail dispatch table (mirrors ContentRegistry) ───
+
+/** A per-kind widget renderer: given a `PanelWidget`, produce this target's output.
+ *  Registered on a `WidgetRegistry` — the widget-kind table. */
+export type WidgetRenderer<Out, Body = unknown> = (widget: PanelWidget<Body>) => Out;
+
+/** The widget-dispatch table for one target: `kind → renderer`. `render` looks up by
+ *  `widget.kind` and **fails loud** on an unregistered kind — an unknown rail widget is
+ *  a wiring bug, never a silent blank ([[fallbacks-are-illegal-fail-loud]]). */
+export interface WidgetRegistry<Out> {
+  register<Body>(kind: string, renderer: WidgetRenderer<Out, Body>): void;
+  render(widget: PanelWidget): Out;
+}
+
+/** Build an empty widget-dispatch table for a target. Fail-loud on unknown kind. */
+export function createWidgetRegistry<Out>(): WidgetRegistry<Out> {
+  const table = new Map<string, WidgetRenderer<Out>>();
+  return {
+    register<Body>(kind: string, renderer: WidgetRenderer<Out, Body>): void {
+      if (table.has(kind)) {
+        throw new Error(`widget renderer already registered for kind "${kind}"`);
+      }
+      table.set(kind, renderer as WidgetRenderer<Out>);
+    },
+    render(widget: PanelWidget): Out {
+      const renderer = table.get(widget.kind);
+      if (!renderer) {
+        const known = [...table.keys()].join(', ') || '(none)';
+        throw new Error(
+          `no widget renderer for panel-widget kind "${widget.kind}" — registered: ${known}`,
+        );
+      }
+      return renderer(widget);
+    },
+  };
 }
 
 // ── defineApp / mount — define an app ONCE, render it on every modality ───────
@@ -195,15 +282,26 @@ export function mount<State, Out>(
  */
 export function createRagTarget(content: ContentRegistry<string>): RenderTarget<string> {
   const names = (v: ListingView): string => v.cells.map((c) => c.title).join(', ');
+  // The roster is the first `kind:'listing'` widget in the rail — a persona grounds on
+  // who is present, not on the metrics/status chrome around them.
+  const rosterOf = (ws: WorkspaceView): ListingView | undefined => {
+    const w = ws.left.find((widget) => widget.kind === 'listing');
+    return w ? (w.body as ListingView) : undefined;
+  };
   return {
     // In a grounding block a Listing collapses to just its members' names — no rows, no chrome.
     listing: (view: ListingView): string => names(view),
     content: (view: ContentView): string => content.render(view),
     // Context chrome is dropped entirely — an agent grounds on who + what, not side widgets.
     contextPanel: (_view: ContextPanelView): string => '',
+    // A rail widget collapses to its listing's names (roster) or nothing (metrics/status
+    // carry no grounding value for a persona acting in the room).
+    widget: (view: PanelWidget): string =>
+      view.kind === 'listing' ? names(view.body as ListingView) : '',
     workspace: (ws: WorkspaceView): string => {
       const room = ws.nav.cells[0]?.title ?? 'a room';
-      const who = ws.left[0] && ws.left[0].cells.length > 0 ? names(ws.left[0]) : 'no one else';
+      const roster = rosterOf(ws);
+      const who = roster && roster.cells.length > 0 ? names(roster) : 'no one else';
       return `You are in "${room}" with ${who}.\n${content.render(ws.content)}`;
     },
   };
@@ -255,7 +353,11 @@ export function toMobileScreen(ws: WorkspaceView): MobileScreen {
   return {
     title: ws.nav.cells[0]?.title ?? '',
     primary: ws.content,
-    tabs: ws.left.map(tab),
+    // Only `Listing` widgets become bottom-nav tabs (roster → "Who"); a phone doesn't
+    // put the metrics/status chrome in the nav — presence, not a dashboard.
+    tabs: ws.left
+      .filter((w) => w.kind === 'listing')
+      .map((w) => tab(w.body as ListingView)),
   };
 }
 

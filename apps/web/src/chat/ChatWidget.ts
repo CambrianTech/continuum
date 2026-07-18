@@ -169,6 +169,16 @@ export class ChatWidget extends LitElement {
       color: var(--content-accent);
       font-size: 10px;
     }
+    /* One stacked global widget in the left rail (Metrics · Rooms · Users & Agents).
+     * The rail is a vertical stack; a hairline separates each widget module. Draggable
+     * heights + reorder land in task #185 (this is the static stack it resizes). */
+    .rail-widget {
+      display: block;
+      border-bottom: 1px solid var(--border-subtle);
+    }
+    .rail-widget:last-child {
+      border-bottom: none;
+    }
     /* Member card — the old persona-tile: avatar + presence dot, name, meta. */
     .member {
       position: relative;

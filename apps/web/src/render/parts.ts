@@ -10,7 +10,7 @@
 import { html, svg, nothing, type TemplateResult } from 'lit';
 import { unsafeHTML } from 'lit/directives/unsafe-html.js';
 import hljs from 'highlight.js/lib/common';
-import type { ListingCell } from '@continuum/patterns';
+import type { ListingCell, ListingView } from '@continuum/patterns';
 import type { MemberKind, MessageRowVM, RosterMemberVM } from '@continuum/chat-view';
 
 /** GENERIC listing-cell renderer — the first real positron web *component*: it draws
@@ -34,6 +34,17 @@ export function listingCell(cell: ListingCell): TemplateResult {
         : nothing}
     </li>
   `;
+}
+
+/** Render a `ListingView`'s rows — the roster as rich member cards (the neutral cell
+ *  carries glyph/name/badges/status/meters), every other listing as generic cells.
+ *  Single-sourced here so `webTarget.listing` AND the `'listing'` rail-widget renderer
+ *  draw the SAME rows without duplication ([[compression]]). */
+export function renderListing(view: ListingView): TemplateResult {
+  if (view.id === 'roster') {
+    return html`<ul class="roster">${view.cells.map(memberCardFromCell)}</ul>`;
+  }
+  return html`<ul class="cells">${view.cells.map(listingCell)}</ul>`;
 }
 
 /** Short glyph per author kind — the neutral human/agent/system discriminant. */

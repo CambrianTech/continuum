@@ -100,9 +100,12 @@ describe('makeExperienceSource + webTarget', () => {
     expect(latest!.manifest.purpose).toBe('chat');
     expect(latest!.roster?.roster).toHaveLength(2);
 
-    // Render the roster region through the REAL webTarget → both members reach the markup.
+    // Render the roster rail-widget through the REAL webTarget → both members reach the
+    // markup. `left[0]` is now a `kind:'listing'` PanelWidget (the roster), drawn via
+    // `widget()` — the rail's dispatch seam.
     const ws = experienceWorkspace(latest!);
-    const rosterMarkup = flatten(webTarget.listing(ws.left[0]!));
+    expect(ws.left[0]!.kind).toBe('listing');
+    const rosterMarkup = flatten(webTarget.widget(ws.left[0]!));
     expect(rosterMarkup).toContain('Joel');
     expect(rosterMarkup).toContain('Asha');
 

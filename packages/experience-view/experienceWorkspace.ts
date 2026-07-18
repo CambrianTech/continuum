@@ -15,6 +15,7 @@
  * standing, which is the seam this proves.
  */
 
+import { listingWidget } from '@continuum/patterns';
 import type {
   CellStatus,
   ContentView,
@@ -125,7 +126,9 @@ export function experienceWorkspace(state: ExperienceState): WorkspaceView {
   };
   return {
     nav: roomsListing(state.manifest, state.roster),
-    left: state.roster ? [rosterListing(state.manifest, state.roster)] : [],
+    // Left rail = global widget stack; the roster is one `kind:'listing'` widget (absent
+    // until the first presence snapshot). Metrics/Rooms widgets join with no shape change.
+    left: state.roster ? [listingWidget(rosterListing(state.manifest, state.roster))] : [],
     content,
     context: { listings: [] },
   };
