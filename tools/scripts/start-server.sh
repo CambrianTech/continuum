@@ -256,6 +256,32 @@ echo "▶ building continuum-core-server"
 cargo build --manifest-path "$CORE_MANIFEST" --bin continuum-core-server $PROFILE_FLAG $CONTINUUM_FEATURES \
   || { echo "✗ FATAL: continuum-core-server build failed — leaving the running core untouched" >&2; exit 1; }
 
+# ── #194 FRESHNESS GUARD: never launch (or report "ready" on) a STALE binary ──
+# cargo's incremental fingerprint can MISS a source edit (mtime granularity, an
+# editor writing a non-advancing mtime, or a prior `cargo check` updating the
+# fingerprint without codegen) and emit a no-op "Finished" that leaves the OLD
+# continuum-core-server on disk. The deploy then reports "core ready" while stale
+# code runs — the verify-the-build-actually-deployed trap (observed 2026-07-18:
+# a committed one-line change never shipped; every headless live validation lied).
+# Assert the invariant DIRECTLY: the built binary must be at least as new as every
+# tracked source. If a source is newer, cargo missed it — bust the fingerprint by
+# touching the crate src and rebuild ONCE; if STILL stale, FAIL LOUD rather than
+# launch a lie. [[verify-the-build-actually-deployed]], [[fallbacks-are-illegal-fail-loud]].
+CORE_SRC_DIR="$(dirname "$CORE_MANIFEST")/src"
+CORE_BIN="$CARGO_TARGET_DIR/$PROFILE_LABEL/continuum-core-server"
+core_bin_is_stale() { [ -f "$CORE_BIN" ] && [ -n "$(find "$CORE_SRC_DIR" -name '*.rs' -type f -newer "$CORE_BIN" 2>/dev/null | head -1)" ]; }
+if core_bin_is_stale; then
+  echo "⚠ #194: continuum-core-server is STALE (a source is newer than the binary) — cargo missed an edit; busting fingerprint + rebuilding" >&2
+  find "$CORE_SRC_DIR" -name '*.rs' -type f -exec touch {} +
+  cargo build --manifest-path "$CORE_MANIFEST" --bin continuum-core-server $PROFILE_FLAG $CONTINUUM_FEATURES \
+    || { echo "✗ FATAL #194: forced rebuild failed — leaving the running core untouched" >&2; exit 1; }
+  if core_bin_is_stale; then
+    echo "✗ FATAL #194: continuum-core-server STILL stale after a forced rebuild — refusing to launch old code (verify-the-build-actually-deployed)" >&2
+    exit 1
+  fi
+  echo "✓ #194: forced a fresh continuum-core-server rebuild — binary now reflects source"
+fi
+
 # Now the new binary is ready: stop the old core (if any) and take the socket.
 stop_existing_core
 
@@ -266,4 +292,8 @@ echo "  socket:   $CONTINUUM_SOCKET"
 echo "  airc:     room=${AIRC_DEFAULT_ROOM_NAME:-?} channel=${AIRC_DEFAULT_CHANNEL:-?}"
 echo ""
 
-exec cargo run --manifest-path "$CORE_MANIFEST" --bin continuum-core-server $PROFILE_FLAG $CONTINUUM_FEATURES -- "$CONTINUUM_SOCKET"
+# Run the EXACT binary the freshness guard (#194) just verified — NOT `cargo run`,
+# which re-runs cargo's build logic at launch and could second-guess (or re-stale)
+# what we already verified. We built it, we checked it reflects source, we run it.
+# Unambiguous: the process image is the verified $CORE_BIN. [[verify-the-build-actually-deployed]]
+exec "$CORE_BIN" "$CONTINUUM_SOCKET"
