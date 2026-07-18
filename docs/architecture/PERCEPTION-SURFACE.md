@@ -145,17 +145,29 @@ are this started for capture; Playwright is the full trilogy.
 
 ## 7. Build order (outlier-validation discipline, `CLAUDE.md` § Methodical Process)
 
-1. **DOM `Surface` via Playwright** — biggest immediate need; gives all three channels at
-   once. Natural next brick after the preview harness (it IS the "click/drive" extension).
-   Fixtures from `apps/web/preview.html` are its deterministic inputs.
-2. **Extract `Surface` / `Percept` / `Probe` / `Action` traits from it** (outlier A).
-3. **Prove on the maximally-different outlier B** — the 3D scene Surface (turntable +
-   scene-graph + orbit) *or* the live-video Surface. If the trait fits both extremes
-   without forcing, mobile/animation/audio in the middle are trivial.
+1. **DOM `Surface` via Playwright** ✅ **DONE** (`packages/perception/domSurface.ts`) —
+   biggest immediate need; gives all three channels at once. Reuses any installed
+   Chromium-family browser. 2 integration tests green against a real browser.
+2. **Extract `Surface` / `Percept` / `Probe` / `Action` traits** ✅ **DONE** (outlier A,
+   `packages/perception/surface.ts`).
+3. **Prove on the maximally-different outlier B** ✅ **DONE** — the 3D scene Surface
+   (`packages/perception/sceneSurface.ts`), a Bevy-shaped scene-graph/orbit world. It
+   consumes the REAL backend-neutral `SceneDescription` invariant (#107/#108) — the SAME
+   type Bevy instantiates, a *second consumer* beside Bevy's instantiate seam, not a
+   parallel scene model. render() is a small deterministic software projector standing in
+   for Bevy's offscreen readback (exactly as DomSurface delegates pixels to Playwright);
+   a future `BevySurface` keeps this exact trait and only changes how `render()` gets its
+   bytes. 3 tests green, headless (no GPU/Bevy/browser).
+   **Result — what fitting both extremes without forcing revealed:** SEE (`Percept`),
+   JUDGE (`Delta`, one shared `imageDiff`), and REASON (`StructuredState`/`ProbeNode`) are
+   **universal**; only VIEW-hints (`ViewSpec`) and ACT-verbs (`Action`) are surface-flavored.
+   So the trait is generic over exactly those two axes — `Surface<V, A>` — and each surface
+   owns its own view/action union (no central god-enum). `setViewport` is the one universal
+   concrete actuator. Mobile/animation/video in the middle are now trivial.
 4. **CV-aid providers** (rung 2) as `ai/*` adapters: YOLO element-detect, semseg,
    OCR, layout/contrast/aesthetic classifiers — same adapter pattern as every other `ai/*`.
-5. **Critique/score/vote** cognition wiring + capture → first training corpus → LoRA the
-   design personas → re-run the Frontend Arena.
+5. **Wire a `Surface` as a persona-callable command** + **Critique/score/vote** cognition
+   wiring + capture → first training corpus → LoRA the design personas → re-run the Arena.
 
 ---
 

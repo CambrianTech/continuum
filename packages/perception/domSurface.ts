@@ -13,18 +13,40 @@
 import { existsSync } from 'node:fs';
 import { platform } from 'node:os';
 import { chromium, type Browser, type LaunchOptions, type Page } from 'playwright';
-import pixelmatch from 'pixelmatch';
-import { PNG } from 'pngjs';
+import { imageDiff } from './imageDiff';
 import {
   ActError,
-  type Action,
   type Delta,
   type Percept,
   type ProbeNode,
+  type SetViewportAction,
   type StructuredState,
   type Surface,
   type ViewSpec,
 } from './surface';
+
+/** The DOM surface's view-hints (outlier A): the neutral `ViewSpec` plus the web-specific
+ *  clip/theme/full-page knobs. This is one of the two surface-flavored axes the trait is
+ *  generic over — a 3D surface's `SceneViewSpec` carries a camera here instead. */
+export interface DomViewSpec extends ViewSpec {
+  /** Clip the render to this element (a CSS selector). Omit = whole view. */
+  readonly selector?: string;
+  /** Force a colour scheme (UI surfaces honour `prefers-color-scheme`). */
+  readonly theme?: 'light' | 'dark';
+  /** Capture the full scrollable page, not just the viewport. */
+  readonly fullPage?: boolean;
+}
+
+/** The DOM surface's act-verbs (outlier A): the universal base `Action` (`setViewport`)
+ *  plus the web driver — click/type/hot-swap CSS. `injectCss` is the hot-swap seam
+ *  (retheme/relayout the LIVE page, no redeploy) that makes design iteration fast. */
+export type DomAction =
+  | SetViewportAction
+  | { readonly kind: 'click'; readonly selector: string }
+  | { readonly kind: 'type'; readonly selector: string; readonly text: string }
+  | { readonly kind: 'press'; readonly key: string }
+  | { readonly kind: 'hover'; readonly selector: string }
+  | { readonly kind: 'injectCss'; readonly css: string };
 
 export interface DomSurfaceOptions {
   readonly url: string;
@@ -98,7 +120,7 @@ function pngSize(bytes: Uint8Array): { width: number; height: number } {
   return { width: dv.getUint32(16), height: dv.getUint32(20) };
 }
 
-export class DomSurface implements Surface {
+export class DomSurface implements Surface<DomViewSpec, DomAction> {
   private constructor(
     private readonly browser: Browser,
     private readonly page: Page,
@@ -127,7 +149,7 @@ export class DomSurface implements Surface {
     return new DomSurface(browser, page);
   }
 
-  async render(view: ViewSpec = {}): Promise<Percept> {
+  async render(view: DomViewSpec = {}): Promise<Percept> {
     if (view.viewport) await this.page.setViewportSize({ width: view.viewport.width, height: view.viewport.height });
     if (view.theme) await this.page.emulateMedia({ colorScheme: view.theme });
     const bytes = view.selector
@@ -174,7 +196,7 @@ export class DomSurface implements Surface {
     }
   }
 
-  async act(action: Action): Promise<void> {
+  async act(action: DomAction): Promise<void> {
     switch (action.kind) {
       case 'click':
         await this.page.locator(action.selector).first().click();
@@ -202,20 +224,9 @@ export class DomSurface implements Surface {
     }
   }
 
+  // JUDGE is universal — one shared pixel diff for every surface (see imageDiff.ts).
   diff(before: Percept, after: Percept): Delta {
-    if (before.kind !== 'image' || after.kind !== 'image') {
-      throw new ActError('diff requires two image Percepts');
-    }
-    const a = PNG.sync.read(Buffer.from(before.bytes));
-    const b = PNG.sync.read(Buffer.from(after.bytes));
-    const total = a.width * a.height;
-    // Mismatched dimensions = a layout-scale change; treat as fully changed rather than throw.
-    if (a.width !== b.width || a.height !== b.height) {
-      return { pixelsChanged: total, totalPixels: total, ratio: 1 };
-    }
-    // No diff-image output needed — just the mismatch count (pixelmatch 7 takes `void` here).
-    const changed = pixelmatch(a.data, b.data, undefined, a.width, a.height, { threshold: 0.1 });
-    return { pixelsChanged: changed, totalPixels: total, ratio: total === 0 ? 0 : changed / total };
+    return imageDiff(before, after);
   }
 
   async close(): Promise<void> {
