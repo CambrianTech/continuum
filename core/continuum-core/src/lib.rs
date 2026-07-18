@@ -58,6 +58,7 @@ pub mod modules;
 pub mod orm;
 pub mod paging;
 pub mod paths;
+pub mod perception;
 pub mod persona;
 pub mod provisioning;
 pub mod rag;

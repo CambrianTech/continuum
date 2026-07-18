@@ -394,6 +394,10 @@ pub fn native_tool_specs() -> Vec<NativeToolSpec> {
         // they can build like we do." Routed to a client adapter (WireShape::
         // Provided); fails loud when no UI adapter is connected, never fabricates.
         "interface/screenshot",
+        // Perception Surface (#187): observe = SEE + REASON — pixels AND the
+        // structure tree to aim actions at an element, not a pixel. The enriched
+        // sibling of screenshot; also Provided (fails loud with no eye-node).
+        "perception/observe",
         // The shared-board lifecycle: claiming work as yourself is core to the
         // room workflow (rides the wire as `claim_task` via the dialect).
         "work/claim",
