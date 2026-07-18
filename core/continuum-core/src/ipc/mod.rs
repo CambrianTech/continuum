@@ -2305,6 +2305,18 @@ pub fn start_server(
             .with_message_bus(runtime.bus_arc())
             .with_interceptor(Arc::new(crate::runtime::AircInterceptor::new()))
             .with_interceptor(Arc::new(crate::runtime::GridInterceptor::new(grid_state)))
+            // `provided` sits at the TAIL of the chain: airc/grid get first look
+            // so an explicitly remote-targeted perception/observe still hops to a
+            // peer's eye, but an ordinary (untargeted) Provided call — a persona
+            // asking to SEE — routes here to a connected eye-node adapter, or
+            // fails loud naming the missing eye-node. Empty registry today (the
+            // eye-node client rides task #29): perception/observe + interface/
+            // screenshot fail loud honestly instead of "no Rust module handles".
+            // The connection layer will register providers via the interceptor's
+            // shared `ProviderRegistry` when an eye-node connects.
+            .with_interceptor(Arc::new(crate::runtime::ProvidedCommandInterceptor::new(
+                Arc::new(crate::runtime::ProviderRegistry::new()),
+            )))
             // Hard ACL gate: cross-grid (airc) + TCP callers — incl. a persona's
             // command inbound pump — are gated by the grid ACL, capped at
             // Provisional. A remote room peer may request ai/generate and nothing
