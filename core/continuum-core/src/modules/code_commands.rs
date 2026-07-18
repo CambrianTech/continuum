@@ -157,8 +157,20 @@ fn ensure_citizen_layer_from_base(
     std::fs::create_dir_all(parent)
         .map_err(|e| CommandError::Internal(format!("citizen layer mkdir failed: {e}")))?;
     let started = std::time::Instant::now();
-    let out = std::process::Command::new("cp")
-        .arg("-cR")
+    // Copy-on-write clone of the shared base → the peer's layer via the platform's
+    // reflink-capable `cp`. macOS APFS uses `-c` (clonefile); GNU coreutils uses
+    // `--reflink=auto` — reflink where the filesystem supports it (btrfs/XFS), a plain
+    // recursive copy otherwise, never failing for lack of CoW. `-cR` is macOS-ONLY (GNU
+    // cp rejects `-c`), which silently broke citizen provisioning on every Linux deploy
+    // until #191 surfaced it. `cfg!` (not `#[cfg]`) so BOTH branches compile and
+    // type-check on every platform — a Linux-only arm must never escape a macOS build.
+    let mut clone = std::process::Command::new("cp");
+    if cfg!(target_os = "macos") {
+        clone.arg("-cR");
+    } else {
+        clone.args(["--reflink=auto", "-R"]);
+    }
+    let out = clone
         .arg(base)
         .arg(&layer)
         .output()
@@ -169,8 +181,10 @@ fn ensure_citizen_layer_from_base(
         let _ = std::fs::remove_dir_all(&layer);
         return Err(CommandError::Internal(format!(
             "citizen layer CoW clone failed for peer {peer} (base {}): {}. \
-             The base and <continuum home> must be on the same APFS volume — \
-             copy-on-write is the contract, a silent full copy per peer is not.",
+             Copy-on-write is the intent (APFS clonefile on macOS, reflink on Linux \
+             btrfs/XFS); cp falls back to a full recursive copy on a non-CoW filesystem \
+             rather than failing, so a hard error here means the base is missing or \
+             unreadable, not a missing reflink.",
             base.display(),
             String::from_utf8_lossy(&out.stderr).trim()
         )));
