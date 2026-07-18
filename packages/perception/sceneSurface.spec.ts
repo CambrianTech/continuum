@@ -14,45 +14,11 @@
 import { describe, it, expect } from 'vitest';
 import { SceneSurface, type SceneAction } from './sceneSurface';
 import { ActError } from './surface';
-import type { SceneDescription } from '../../protocol/typescript/scene/SceneDescription';
-import type { SceneNode } from '../../protocol/typescript/scene/SceneNode';
-import type { NodePayload } from '../../protocol/typescript/scene/NodePayload';
-
-const IDENTITY_ROT = { x: 0, y: 0, z: 0, w: 1 };
-const ONE = { x: 1, y: 1, z: 1 };
-
-function node(id: string, payload: NodePayload, pos: { x: number; y: number; z: number }, scale = ONE): SceneNode {
-  return {
-    id,
-    transform: { translation: pos, rotation: IDENTITY_ROT, scale },
-    payload,
-    physics: null,
-    children: [],
-  };
-}
-
-/** A minimal but real scene: a transform-only Group root over two Props and a Light, on a
- *  dark backdrop. Exercises drawables (prop/light), a non-drawable (group), and inheritance. */
-function fixtureScene(): SceneDescription {
-  const prop: NodePayload = { Prop: { asset: { source: 'crate.glb', kind: 'Mesh' } } };
-  const light: NodePayload = { Light: { kind: 'Directional', color: { r: 1, g: 1, b: 1, a: 1 }, intensity: 1 } };
-  const root: SceneNode = {
-    id: 'stage',
-    transform: { translation: { x: 0, y: 0, z: 0 }, rotation: IDENTITY_ROT, scale: ONE },
-    payload: 'Group',
-    physics: null,
-    children: [
-      node('crate-a', prop, { x: -1.2, y: 0, z: 0 }, { x: 1, y: 1, z: 1 }),
-      node('crate-b', prop, { x: 1.2, y: 0, z: 0 }, { x: 1.4, y: 1.4, z: 1.4 }),
-      node('key-light', light, { x: 0, y: 2, z: 1 }),
-    ],
-  };
-  return { version: 1, backdrop: { r: 0.05, g: 0.06, b: 0.1, a: 1 }, root };
-}
+import { testScene } from './testScene';
 
 describe('SceneSurface (outlier B)', () => {
   it('renders, and an orbit changes the frame (SEE + JUDGE bend to a scene)', async () => {
-    const surface = SceneSurface.open({ scene: fixtureScene(), viewport: { width: 320, height: 240 } });
+    const surface = SceneSurface.open({ scene: testScene(), viewport: { width: 320, height: 240 } });
 
     const before = await surface.render();
     expect(before.kind).toBe('image');
@@ -76,7 +42,7 @@ describe('SceneSurface (outlier B)', () => {
   });
 
   it('probes the real SceneDescription into a ProbeNode tree with inherited positions', async () => {
-    const surface = SceneSurface.open({ scene: fixtureScene(), viewport: { width: 320, height: 240 } });
+    const surface = SceneSurface.open({ scene: testScene(), viewport: { width: 320, height: 240 } });
     const state = await surface.probe();
 
     expect(state.title).toBe('stage');
@@ -85,18 +51,18 @@ describe('SceneSurface (outlier B)', () => {
     expect(state.tree.children).toHaveLength(3);
 
     const names = state.tree.children.map((c) => c.name);
-    expect(names).toEqual(['crate-a', 'crate-b', 'key-light']);
+    expect(names).toEqual(['box-a', 'box-b', 'key-light']);
 
-    const crateB = state.tree.children.find((c) => c.name === 'crate-b');
-    expect(crateB?.tag).toBe('prop');
-    expect(crateB?.attrs?.position).toBe('1.20,0.00,0.00'); // inherited world position
-    expect(crateB?.box?.width).toBeGreaterThan(0); // projected screen bounds present
+    const boxB = state.tree.children.find((c) => c.name === 'box-b');
+    expect(boxB?.tag).toBe('prop');
+    expect(boxB?.attrs?.position).toBe('1.20,0.00,0.00'); // inherited world position
+    expect(boxB?.box?.width).toBeGreaterThan(0); // projected screen bounds present
 
     await surface.close();
   });
 
   it('rejects a foreign (DOM) action with ActError — the observe/act boundary', async () => {
-    const surface = SceneSurface.open({ scene: fixtureScene() });
+    const surface = SceneSurface.open({ scene: testScene() });
     // A DOM verb is not in SceneAction's vocabulary; force it to prove the boundary fails loud.
     await expect(surface.act({ kind: 'click', selector: 'button' } as unknown as SceneAction)).rejects.toBeInstanceOf(
       ActError,

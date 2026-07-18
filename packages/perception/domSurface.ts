@@ -8,6 +8,17 @@
  * Reuses the machine's installed Chrome via `channel: 'chrome'` — no 150MB browser
  * download forced on a public user ([[solve-for-public-users]]); pass `channel: null`
  * to use Playwright's bundled Chromium instead.
+ *
+ * ## This is an ADAPTER that lives on an eye-node — NOT a core dependency
+ *
+ * The headless Rust core never renders and never assumes a browser is present (a datacenter
+ * rack instance has none). `DomSurface` runs wherever a browser exists — a laptop client, or
+ * a render-worker node that CHOSE to install a Chromium-family browser — and registers the
+ * `perception/*` capability from there via `WireShape::Provided` (one command name, N
+ * adapters, like `interface/screenshot`). The core routes to it by capability, never links
+ * or spawns it, and never calls `findChromium()`. So: nothing here may be pulled into the
+ * core's build or startup — if a browserless rack can't run the core, this seam is wrong.
+ * See README.md § "the core is agnostic and browserless".
  */
 
 import { existsSync } from 'node:fs';
