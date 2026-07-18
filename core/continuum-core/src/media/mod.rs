@@ -21,6 +21,10 @@
 //! clamps ([[perception-feedback-must-not-blow-rag]]).
 //!
 //! This module starts with [`image_ops`] — the canvas-style scale/crop primitive
-//! every scaled cell / mip level is built from.
+//! every scaled cell / mip level is built from — and [`frame`], the content-hash
+//! `MediaFrame` that caches derivatives on `SharedCompute` (compute-once, shared).
 
+pub mod frame;
 pub mod image_ops;
+
+pub use frame::MediaFrame;
