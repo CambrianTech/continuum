@@ -52,6 +52,7 @@ pub mod interface;
 pub mod ipc;
 pub mod live;
 pub mod logging;
+pub mod media;
 pub mod memory;
 pub mod model_registry;
 pub mod modules;
