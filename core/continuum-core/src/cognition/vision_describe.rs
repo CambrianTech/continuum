@@ -338,6 +338,78 @@ pub async fn describe_image(
     }))
 }
 
+/// The live [`FrameDescriber`](crate::media::FrameDescriber) — the sensory bridge that
+/// `media/` promises but cannot implement itself (the layering rule forbids `media/`
+/// from depending on `cognition/`). This is the ONE production implementor: it routes a
+/// frame's bytes through [`describe_image`] (i.e. `ai/generate` on the best available
+/// vision model) and hands back the prose a non-vision persona reads to "see"
+/// ([[perception-feedback-must-not-blow-rag]]).
+///
+/// A [`MediaFrame`](crate::media::MediaFrame) caches the result per content hash, so
+/// wrapping this describer ONCE and pointing every persona's frame at it means the same
+/// image is described a single time and shared — N personas in a call cost one describe
+/// per distinct frame, not N ([[media-is-compute-once-zero-copy-hardware-grade]]).
+pub struct VisionDescribeFramer {
+    executor: std::sync::Arc<crate::runtime::CommandExecutor>,
+    options: VisionDescribeOptions,
+}
+
+impl VisionDescribeFramer {
+    /// Bridge over the given command executor with default describe options
+    /// (concise prose, best available vision model).
+    pub fn new(executor: std::sync::Arc<crate::runtime::CommandExecutor>) -> Self {
+        Self {
+            executor,
+            options: VisionDescribeOptions::default(),
+        }
+    }
+
+    /// Bridge with caller-tuned options (e.g. `detect_objects`, a length cap, or a
+    /// pinned model) applied to every frame this describer handles.
+    pub fn with_options(
+        executor: std::sync::Arc<crate::runtime::CommandExecutor>,
+        options: VisionDescribeOptions,
+    ) -> Self {
+        Self { executor, options }
+    }
+}
+
+/// Encode + shape a frame's raw bytes into a [`VisionDescribeRequest`]. Pulled out as a
+/// pure function so the base64 + option threading is unit-testable without standing up a
+/// `CommandExecutor` or the model registry (the executor IO lives in `describe_image`).
+fn build_frame_request(
+    source: &[u8],
+    mime: &str,
+    options: VisionDescribeOptions,
+) -> VisionDescribeRequest {
+    use base64::Engine;
+    VisionDescribeRequest {
+        base64_data: base64::engine::general_purpose::STANDARD.encode(source),
+        mime_type: mime.to_string(),
+        options,
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::media::FrameDescriber for VisionDescribeFramer {
+    async fn describe(&self, source: &[u8], mime: &str) -> Result<String, String> {
+        let req = build_frame_request(source, mime, self.options.clone());
+        match describe_image(req, &self.executor).await? {
+            Some(desc) => Ok(desc.description),
+            // No vision-capable model resolved (or the model errored / returned empty).
+            // Fail loud — a describe with no real sight must never fabricate a
+            // placeholder a persona would read AS having seen the frame
+            // ([[fallbacks-are-illegal-fail-loud]]). `MediaFrame` caches this `Err` per
+            // content hash, so the gap is surfaced deterministically, not silently
+            // retried per persona.
+            None => Err(format!(
+                "no vision-capable model available to describe this {mime} frame — bring \
+                 up a VL model (or grant a vision provider) before a persona can see it"
+            )),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -346,6 +418,25 @@ mod tests {
     fn build_prompt_default_is_concise() {
         let prompt = build_prompt(&VisionDescribeOptions::default());
         assert_eq!(prompt, "Describe this image concisely.");
+    }
+
+    // what this catches: the live FrameDescriber bridge encodes a frame's raw bytes as
+    // standard base64 and threads the caller's describe options through to the
+    // ai/generate request — the wiring the compute-once description cell depends on to
+    // let a non-vision persona "see". A regression here silently corrupts every frame
+    // the perception pipeline sends for description.
+    #[test]
+    fn build_frame_request_base64_encodes_and_threads_options() {
+        let opts = VisionDescribeOptions {
+            detect_objects: true,
+            max_length: Some(120),
+            ..Default::default()
+        };
+        let req = build_frame_request(b"hello", "image/png", opts);
+        assert_eq!(req.base64_data, "aGVsbG8=", "base64('hello')");
+        assert_eq!(req.mime_type, "image/png");
+        assert!(req.options.detect_objects);
+        assert_eq!(req.options.max_length, Some(120));
     }
 
     #[test]
