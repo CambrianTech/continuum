@@ -108,13 +108,14 @@ impl ServiceModule for VoiceModule {
                 // behaviour change; a pure diagnostic until the client-coordinated cutover lands
                 // ([[all-rooms-are-airc-rooms-no-mirrors]], [[livekit-media-plane-rides-airc-not-parallel]]).
                 if session_id != room_id {
-                    tracing::warn!(
-                        probe_class = "airc.room.mirror.voice_session_diverges",
-                        session_id = %session_id,
-                        room_id = %room_id,
-                        "MIRROR ROOM: voice session/call id != airc room id — the LiveKit call is \
-                         keyed by a client-minted session_id, not the airc room_id. Collapse (#193): \
-                         the client must pass session_id == room_id so the call IS the airc room."
+                    crate::log_warn!(
+                        "module",
+                        "voice_register_session",
+                        "MIRROR ROOM (#193): voice session/call id {} != airc room id {} — the LiveKit \
+                         call is keyed by a client-minted session_id, not the airc room_id. Collapse: \
+                         the client must pass session_id == room_id so the call IS the airc room.",
+                        session_id,
+                        room_id
                     );
                 }
 
