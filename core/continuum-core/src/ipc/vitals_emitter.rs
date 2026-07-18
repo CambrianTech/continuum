@@ -22,6 +22,7 @@ use std::time::Duration;
 
 use uuid::Uuid;
 
+use crate::cognition::faculty_pulse::CognitionAxis;
 use crate::cognition::persona_workspace;
 use crate::ipc::positron_source::{PersonaVitalsUpdate, PERSONA_VITALS};
 use crate::runtime::message_bus::MessageBus;
@@ -86,6 +87,18 @@ pub fn spawn_vitals_emitter(rt: &tokio::runtime::Handle, bus: Arc<MessageBus>) {
                     if genome_len > 0 {
                         vitals
                             .insert("genome".to_string(), pct_usize(genome_len, GEN_FULL_SCALE_GENES));
+                    }
+                    // #186 COGNITION COMPASS: the decaying per-axis firing levels
+                    // (Focus/Reason/Recall/Act) the cognition tick + acting seam bumped.
+                    // Omit a dark (0) axis so an idle persona radiates no compass — the
+                    // tile's diamond triangle stays unlit until that faculty actually
+                    // fires (honest empty, never a fabricated glow). Keys are exactly
+                    // what the tile's `cognitionDiamond` reads.
+                    let levels = cycle.faculty_pulse().levels();
+                    for (axis, level) in CognitionAxis::ALL.iter().zip(levels) {
+                        if level > 0 {
+                            vitals.insert(axis.vital_key().to_string(), level);
+                        }
                     }
 
                     // Change-dedup: a stable persona radiates nothing.

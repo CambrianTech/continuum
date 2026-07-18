@@ -1090,6 +1090,12 @@ pub struct WorkspaceCycle {
     token_sink: std::sync::Mutex<
         Option<tokio::sync::mpsc::UnboundedSender<crate::ai::adapter::GenerationChunk>>,
     >,
+    /// #186 glass-box: the decaying per-axis "which faculty is firing" accumulator the
+    /// vitals radiator samples (Focus/Reason/Recall/Act → the tile's live compass). The
+    /// tick seam bumps it from the faculties this cycle already runs + times; the acting
+    /// seam bumps Act. PURE OBSERVABILITY — no decision path ever reads it. `Arc` so the
+    /// radiator can hold a cheap clone without the cycle lock. See [`FacultyPulse`].
+    faculty_pulse: Arc<super::faculty_pulse::FacultyPulse>,
 }
 
 /// RAII guard for a memory-isolated measurement window over a cycle's
@@ -1194,7 +1200,14 @@ impl WorkspaceCycle {
             model_binding: None,
             cycle_counter: std::sync::atomic::AtomicU64::new(0),
             token_sink: std::sync::Mutex::new(None),
+            faculty_pulse: Arc::new(super::faculty_pulse::FacultyPulse::new()),
         }
+    }
+
+    /// The live cognition-compass accumulator (#186). The tick seam + acting seam bump
+    /// it; the vitals radiator samples [`FacultyPulse::levels`]. `Arc` clone is cheap.
+    pub fn faculty_pulse(&self) -> Arc<super::faculty_pulse::FacultyPulse> {
+        self.faculty_pulse.clone()
     }
 
     /// Share the persona's decoding handle — call with the SAME [`DecodingHandle`]

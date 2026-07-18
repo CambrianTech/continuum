@@ -44,6 +44,7 @@ pub mod dream_consolidation;
 pub mod embedding;
 pub mod eval;
 pub mod experience;
+pub mod faculty_pulse;
 pub mod inference_session;
 pub mod generate_recipe;
 pub mod generate_response;
