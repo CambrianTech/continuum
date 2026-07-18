@@ -27,6 +27,10 @@ export type { RosterSlotView } from './RosterSlotView';
 export type { SenderKind } from './SenderKind';
 export type { Provenance } from './Provenance';
 
+// roster widget kind (kind="roster" → RosterViewState) — the Join Contract's roster
+// region payload, decomposed out of ChatViewState (path-3 per-region ViewStates).
+export type { RosterViewState } from './RosterViewState';
+
 // foundry widget closure (kind="foundry" → ForgeViewState + its model row)
 export type { ForgeViewState } from './ForgeViewState';
 export type { ForgeModelView } from './ForgeModelView';

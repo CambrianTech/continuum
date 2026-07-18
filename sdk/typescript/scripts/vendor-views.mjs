@@ -1,6 +1,5 @@
 // Re-vendor continuum view payloads from the canonical ts-rs output
-// (`protocol/typescript/positron/`) into the self-contained SDK
-// (`sdk/typescript/generated/views/`).
+// (`protocol/typescript/*`) into the self-contained SDK (`sdk/typescript/generated/*`).
 //
 // The SDK VENDORS these (copies, not cross-package imports) so a UI app depends
 // only on `@continuum/sdk-typescript` and stays public-user-installable
@@ -12,46 +11,65 @@
 //   node scripts/vendor-views.mjs           # re-vendor (copy protocol/ → SDK)
 //   node scripts/vendor-views.mjs --check   # CI: fail loud if any copy drifted
 //
-// Adding a widget's view kind = add its name (and its transitive same-dir imports)
-// to VENDORED below, then run it.
+// Adding a widget's view kind = add its name (with `src`/`dest` dirs, and its
+// transitive same-dir + cross-dir imports) to VENDORED below, then run it.
+//
+// `dest` MIRRORS `src` so a type's RELATIVE imports (`./Sibling`, `../grid/TrustLevel`)
+// resolve identically in the vendored copy. The Experience manifest closure therefore
+// keeps its own `experience/` + `grid/` dirs rather than flattening; positron payloads
+// keep their historical `views/` dest name.
 
-import { readFileSync, writeFileSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, '..', '..', '..'); // sdk/typescript/scripts → repo root
-const SRC = join(root, 'protocol', 'typescript', 'positron');
-const DEST = join(root, 'sdk', 'typescript', 'generated', 'views');
+const protoDir = (sub) => join(root, 'protocol', 'typescript', sub);
+const genDir = (sub) => join(root, 'sdk', 'typescript', 'generated', sub);
 
-// The vendored closure: each view kind the SDK exposes + its transitive same-dir
-// imports (verbatim copy works because every view imports its siblings by `./Name`).
 const VENDORED = [
-  // chat widget closure
-  'ChatViewState',
-  'ChatMessageView',
-  'RosterSlotView',
-  'SenderKind',
-  'Provenance',
+  // chat widget closure (positron payloads → views)
+  { src: 'positron', dest: 'views', name: 'ChatViewState' },
+  { src: 'positron', dest: 'views', name: 'ChatMessageView' },
+  { src: 'positron', dest: 'views', name: 'RosterSlotView' },
+  { src: 'positron', dest: 'views', name: 'SenderKind' },
+  { src: 'positron', dest: 'views', name: 'Provenance' },
   // foundry widget closure
-  'ForgeViewState',
-  'ForgeModelView',
+  { src: 'positron', dest: 'views', name: 'ForgeViewState' },
+  { src: 'positron', dest: 'views', name: 'ForgeModelView' },
+  // roster widget kind — path-3 per-region ViewState; imports ./RosterSlotView (views)
+  { src: 'positron', dest: 'views', name: 'RosterViewState' },
+  // Experience / Join Contract manifest closure — mirrored into experience/, keeps
+  // its `./Sibling` + `../grid/TrustLevel` relative imports.
+  { src: 'experience', dest: 'experience', name: 'Experience' },
+  { src: 'experience', dest: 'experience', name: 'Region' },
+  { src: 'experience', dest: 'experience', name: 'RegionRole' },
+  { src: 'experience', dest: 'experience', name: 'RegionScope' },
+  { src: 'experience', dest: 'experience', name: 'Affordance' },
+  { src: 'experience', dest: 'experience', name: 'ProofSpec' },
+  { src: 'experience', dest: 'experience', name: 'Member' },
+  { src: 'experience', dest: 'experience', name: 'Standing' },
+  { src: 'experience', dest: 'experience', name: 'Layout' },
+  { src: 'experience', dest: 'experience', name: 'LayoutChild' },
+  // cross-dir dep of Affordance (`../grid/TrustLevel`)
+  { src: 'grid', dest: 'grid', name: 'TrustLevel' },
 ];
 
 const check = process.argv.includes('--check');
 let drift = 0;
 
-for (const name of VENDORED) {
-  const src = join(SRC, `${name}.ts`);
-  const dest = join(DEST, `${name}.ts`);
+for (const { src, dest, name } of VENDORED) {
+  const srcPath = join(protoDir(src), `${name}.ts`);
+  const destPath = join(genDir(dest), `${name}.ts`);
 
   let canonical;
   try {
-    canonical = readFileSync(src, 'utf8');
+    canonical = readFileSync(srcPath, 'utf8');
   } catch {
     console.error(
-      `vendor-views: missing canonical source ${src} — regenerate it first ` +
-        `(cargo test -p continuum-positron). Not vendoring a phantom type.`,
+      `vendor-views: missing canonical source ${srcPath} — regenerate it first ` +
+        `(cargo test -p continuum-positron / continuum-core). Not vendoring a phantom type.`,
     );
     process.exit(1);
   }
@@ -59,20 +77,21 @@ for (const name of VENDORED) {
   if (check) {
     let vendored = null;
     try {
-      vendored = readFileSync(dest, 'utf8');
+      vendored = readFileSync(destPath, 'utf8');
     } catch {
       vendored = null;
     }
     if (vendored !== canonical) {
       console.error(
-        `vendor-views: DRIFT in views/${name}.ts — the vendored SDK copy differs ` +
-          `from protocol/typescript/positron/. Run \`npm run vendor:views -w @continuum/sdk-typescript\`.`,
+        `vendor-views: DRIFT in ${dest}/${name}.ts — the vendored SDK copy differs ` +
+          `from protocol/typescript/${src}/. Run \`npm run vendor:views -w @continuum/sdk-typescript\`.`,
       );
       drift++;
     }
   } else {
-    writeFileSync(dest, canonical);
-    console.log(`vendored views/${name}.ts`);
+    mkdirSync(genDir(dest), { recursive: true });
+    writeFileSync(destPath, canonical);
+    console.log(`vendored ${dest}/${name}.ts`);
   }
 }
 
