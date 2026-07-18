@@ -114,6 +114,15 @@ export class DomSurface implements Surface {
       viewport: opts.viewport ?? { width: 1440, height: 900 },
       deviceScaleFactor: 2,
     });
+    // esbuild's `keepNames` (tsx, vite, ts-node all use it) wraps named functions with a
+    // `__name(fn, 'name')` helper. When Playwright serializes our `domWalk` into the page,
+    // that helper isn't defined in the browser → ReferenceError. Shim a no-op so the
+    // serialized walk runs under ANY bundler, not just the one whose transform omits it.
+    // (The arrow args here are anonymous, so they are never `__name`-wrapped themselves.)
+    await page.addInitScript(() => {
+      const g = globalThis as { __name?: (fn: unknown) => unknown };
+      g.__name = g.__name ?? ((fn) => fn);
+    });
     await page.goto(opts.url, { waitUntil: 'networkidle' });
     return new DomSurface(browser, page);
   }
