@@ -396,6 +396,12 @@ struct ChatProjection {
     /// Own monotonic revisions well for the `"experience"` kind — the projection is
     /// its sole writer, exactly as `builder` is for `"chat"`.
     experience_builder: StateBuilder,
+    /// Last-published manifest, for emit-on-change: the Experience only shifts when
+    /// membership/purpose change (presence), NOT on every message, so re-publishing
+    /// an identical manifest per message is wasted work + churned revisions
+    /// (`[[optimization-is-always-first]]`, `[[never-thrash-sticky-hysteresis-on-every-lane]]`).
+    /// `RefCell` because `store` takes `&self`.
+    last_experience: std::cell::RefCell<Option<Experience>>,
 }
 
 impl ChatProjection {
@@ -418,6 +424,7 @@ impl ChatProjection {
             vitals: HashMap::new(),
             experience_source: RecipeExperienceSource::builtins(purpose_source.clone()),
             experience_builder: StateBuilder::standalone(),
+            last_experience: std::cell::RefCell::new(None),
             purpose_source,
         }
     }
@@ -548,10 +555,16 @@ impl ChatProjection {
         // rides `session_raw` under its own `KIND`. No recipe for the room's purpose
         // → nothing published (fail-quiet on this OPTIONAL surface; chat still ships).
         if let Some(exp) = self.build_experience(room_id, &roster) {
-            let payload = serde_json::to_value(&exp)
-                .expect("Experience must serialize — substrate bug, not a runtime error");
-            self.substrate
-                .store(self.experience_builder.session_raw(Experience::KIND, payload));
+            // Emit-on-change: skip re-publishing an identical manifest (messages don't
+            // move membership/purpose). Only presence-driven changes reach the wire.
+            let unchanged = self.last_experience.borrow().as_ref() == Some(&exp);
+            if !unchanged {
+                let payload = serde_json::to_value(&exp)
+                    .expect("Experience must serialize — substrate bug, not a runtime error");
+                self.substrate
+                    .store(self.experience_builder.session_raw(Experience::KIND, payload));
+                *self.last_experience.borrow_mut() = Some(exp);
+            }
         }
 
         let view = ChatViewState {
